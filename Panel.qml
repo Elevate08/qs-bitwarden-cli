@@ -13,6 +13,9 @@ Panel {
   ipcTarget: "qs-bitwarden-cli"
   manageIpc: false
 
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
   // Configuration settings from shell.json
   readonly property int autoLockMinutes: Number(setting("autoLockMinutes", 15))
   readonly property int clearClipboardSec: Number(setting("clearClipboardSec", 30))
