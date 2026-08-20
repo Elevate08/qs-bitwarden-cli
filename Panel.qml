@@ -665,7 +665,7 @@ Panel {
   function copyToClipboard(text, label) {
     if (!text) return
     resetAutoLockTimer()
-    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy"])
+    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy --sensitive"])
     flashNotification(label + " copied!")
 
     if (clearClipboardSec > 0) {
@@ -704,7 +704,7 @@ Panel {
       return
     }
     if (session) {
-      Quickshell.execDetached(["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy"])
+      Quickshell.execDetached(["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy --sensitive"])
       flashNotification("Password copied!")
       if (clearClipboardSec > 0) clipboardClearTimer.restart()
     } else {
@@ -723,7 +723,7 @@ Panel {
       copyToClipboard(liveTotp, "TOTP code")
       return
     }
-    Quickshell.execDetached(["bash", "-c", "bw get totp " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy"])
+    Quickshell.execDetached(["bash", "-c", "bw get totp " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy --sensitive"])
     flashNotification("TOTP code copied!")
     if (clearClipboardSec > 0) clipboardClearTimer.restart()
   }
@@ -2201,7 +2201,7 @@ Panel {
                     }
 
                     Text {
-                      visible: root.detailItem && root.detailItem.favorite
+                      visible: Boolean(root.detailItem && root.detailItem.favorite)
                       text: "★"
                       color: Color.accent
                       font.pixelSize: Style.font.body
@@ -2229,7 +2229,7 @@ Panel {
 
               // FIELD: Username
               Column {
-                visible: root.detailItem && root.detailItem.username !== ""
+                visible: Boolean(root.detailItem && root.detailItem.username !== "")
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -2271,7 +2271,7 @@ Panel {
 
               // FIELD: Password
               Column {
-                visible: root.detailItem && (root.detailPassword !== "" || root.detailItem.hasPassword)
+                visible: Boolean(root.detailItem && (root.detailPassword !== "" || root.detailItem.hasPassword))
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -2324,7 +2324,7 @@ Panel {
 
               // FIELD: TOTP (2FA Code)
               Column {
-                visible: root.detailItem && root.detailItem.hasTotp
+                visible: Boolean(root.detailItem && root.detailItem.hasTotp)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -2389,7 +2389,7 @@ Panel {
 
               // FIELD: Website / URIs
               Column {
-                visible: root.detailItem && root.detailItem.uris && root.detailItem.uris.length > 0
+                visible: Boolean(root.detailItem && root.detailItem.uris && root.detailItem.uris.length > 0)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -2434,7 +2434,7 @@ Panel {
 
               // FIELD: Notes
               Column {
-                visible: root.detailItem && root.detailItem.notes !== ""
+                visible: Boolean(root.detailItem && root.detailItem.notes !== "")
                 width: parent.width
                 spacing: Style.space(4)
 
