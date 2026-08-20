@@ -5,7 +5,13 @@
 
 const KEYRING_SERVICE = "qs-bitwarden-cli"
 const KEYRING_ACCOUNT = "session"
-const PASSWORD_ENV = "BW_PASSWORD"
+const KEYRING_CLIENT_ID = "client_id"
+const KEYRING_CLIENT_SECRET = "client_secret"
+const KEYRING_EMAIL = "user_email"
+
+function shellQuote(value) {
+  return "'" + String(value || "").replace(/'/g, "'\\''") + "'"
+}
 
 function buildCommand(args, session, useSession) {
   var cmd = ["bw"].concat(args || [])
@@ -13,13 +19,6 @@ function buildCommand(args, session, useSession) {
     cmd.push("--session", String(session).trim())
   }
   return cmd
-}
-
-function passwordEnvironment(password) {
-  var env = ({})
-  env[PASSWORD_ENV] = String(password || "")
-  env["BW_NOINTERACTION"] = "true"
-  return env
 }
 
 // -------------------------------------------------------------------------
@@ -30,8 +29,43 @@ function statusCommand(session) {
   return buildCommand(["status"], session, Boolean(session))
 }
 
-function unlockCommand() {
-  return ["bw", "unlock", "--passwordenv", PASSWORD_ENV, "--raw"]
+function unlockCommand(password) {
+  var p = shellQuote(password)
+  var script = "BW_PASSWORD=" + p + " BW_NOINTERACTION=true bw unlock --passwordenv BW_PASSWORD --raw"
+  return ["bash", "-c", script]
+}
+
+function emailLoginCommand(email, password, code, serverUrl) {
+  var e = shellQuote(email)
+  var p = shellQuote(password)
+  var c = code ? (" --code " + shellQuote(code)) : ""
+  var script = ""
+
+  if (serverUrl && serverUrl.trim()) {
+    script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
+  }
+
+  script += "BW_PASSWORD=" + p + " BW_NOINTERACTION=true bw login " + e + " --passwordenv BW_PASSWORD" + c + " --raw"
+  return ["bash", "-c", script]
+}
+
+function apiKeyLoginCommand(clientId, clientSecret, password, serverUrl) {
+  var id = shellQuote(clientId)
+  var sec = shellQuote(clientSecret)
+  var p = shellQuote(password)
+  var script = ""
+
+  if (serverUrl && serverUrl.trim()) {
+    script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
+  }
+
+  script += "BW_CLIENTID=" + id + " BW_CLIENTSECRET=" + sec + " BW_PASSWORD=" + p + " BW_NOINTERACTION=true bw login --apikey >/dev/null 2>&1 && "
+  script += "BW_PASSWORD=" + p + " BW_NOINTERACTION=true bw unlock --passwordenv BW_PASSWORD --raw"
+  return ["bash", "-c", script]
+}
+
+function logoutCommand() {
+  return ["bw", "logout"]
 }
 
 function listCommand(session) {
@@ -68,6 +102,30 @@ function keyringLookupCommand() {
 
 function keyringClearCommand() {
   return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
+}
+
+function keyringStoreApiKeyIdCommand() {
+  return ["secret-tool", "store", "--label=Bitwarden API Client ID", "service", KEYRING_SERVICE, "account", KEYRING_CLIENT_ID]
+}
+
+function keyringLookupApiKeyIdCommand() {
+  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_CLIENT_ID]
+}
+
+function keyringStoreApiKeySecretCommand() {
+  return ["secret-tool", "store", "--label=Bitwarden API Client Secret", "service", KEYRING_SERVICE, "account", KEYRING_CLIENT_SECRET]
+}
+
+function keyringLookupApiKeySecretCommand() {
+  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_CLIENT_SECRET]
+}
+
+function keyringStoreEmailCommand() {
+  return ["secret-tool", "store", "--label=Bitwarden User Email", "service", KEYRING_SERVICE, "account", KEYRING_EMAIL]
+}
+
+function keyringLookupEmailCommand() {
+  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_EMAIL]
 }
 
 // -------------------------------------------------------------------------

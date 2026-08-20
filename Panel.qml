@@ -28,7 +28,18 @@ Panel {
   property string session: ""
   property string masterPassword: ""
 
-  // Screens: "main" (item list) | "detail" (item detail) | "locked"
+  // Login form state
+  property string loginMethod: "email" // "email" | "apikey"
+  property string loginEmail: ""
+  property string loginPassword: ""
+  property string login2faCode: ""
+  property string loginServerUrl: ""
+  property string loginClientId: ""
+  property string loginClientSecret: ""
+  property bool show2faField: false
+  property bool showServerField: false
+
+  // Screens: "main" (item list) | "detail" (item detail) | "locked" | "login"
   property string currentScreen: "main"
 
   property var items: []
@@ -92,6 +103,7 @@ Panel {
     errorMessage = ""
     passwordRevealed = false
     masterPassword = ""
+    loginPassword = ""
     root.controller.hide()
   }
 
@@ -113,6 +125,8 @@ Panel {
           searchField.forceActiveFocus()
         } else if (status === "locked") {
           passField.forceActiveFocus()
+        } else if (status === "unauthenticated") {
+          emailField.forceActiveFocus()
         }
       })
     }
@@ -148,16 +162,25 @@ Panel {
     }
   }
 
+  function onKeyringLookupFailed() {
+    statusProc.command = Model.statusCommand("")
+    statusProc.running = true
+  }
+
   function onStatusFinished(rawJson) {
     isLoading = false
     var st = Model.parseStatus(rawJson)
     if (!st) {
-      status = "locked"
-      errorMessage = "Could not parse status from bw CLI"
+      status = "unauthenticated"
+      currentScreen = "login"
       return
     }
 
     userEmail = st.userEmail
+    if (st.userEmail && !loginEmail) {
+      loginEmail = st.userEmail
+    }
+
     if (st.unlocked) {
       status = "unlocked"
       currentScreen = "main"
@@ -170,30 +193,146 @@ Panel {
       filteredItems = []
     } else {
       status = "unauthenticated"
-      currentScreen = "locked"
+      currentScreen = "login"
+      items = []
+      filteredItems = []
     }
   }
 
   // -------------------------------------------------------------------------
-  // Authentication & Unlock
+  // In-Plugin Login & Authentication
+  // -------------------------------------------------------------------------
+
+  function submitLogin() {
+    errorMessage = ""
+    if (loginMethod === "email") {
+      var email = String(loginEmail || "").trim()
+      var pass = String(loginPassword || "").trim()
+      if (!email) {
+        errorMessage = "Email address is required"
+        return
+      }
+      if (!pass) {
+        errorMessage = "Master password is required"
+        return
+      }
+
+      isLoading = true
+      loginProc.command = Model.emailLoginCommand(email, pass, login2faCode.trim(), loginServerUrl.trim())
+      loginProc.running = true
+    } else {
+      // API Key method
+      var id = String(loginClientId || "").trim()
+      var secret = String(loginClientSecret || "").trim()
+      var pass2 = String(loginPassword || "").trim()
+
+      if (!id) {
+        errorMessage = "API Client ID is required"
+        return
+      }
+      if (!secret) {
+        errorMessage = "API Client Secret is required"
+        return
+      }
+      if (!pass2) {
+        errorMessage = "Master password is required to unlock vault"
+        return
+      }
+
+      isLoading = true
+      loginProc.command = Model.apiKeyLoginCommand(id, secret, pass2, loginServerUrl.trim())
+      loginProc.running = true
+    }
+  }
+
+  function onLoginOutput(stdoutText, stderrText, exitCode) {
+    isLoading = false
+    var out = String(stdoutText || "").trim()
+    var err = String(stderrText || "").trim()
+
+    // Check if 2FA code is needed
+    if (err.indexOf("Two-step") !== -1 || err.indexOf("verification") !== -1 || err.indexOf("code") !== -1) {
+      show2faField = true
+      errorMessage = "Two-step verification code required. Enter your code below."
+      Qt.callLater(function() { code2faField.forceActiveFocus() })
+      return
+    }
+
+    if (exitCode === 0 && out.length > 10) {
+      // Login succeeded and returned session key!
+      loginPassword = ""
+      login2faCode = ""
+      onUnlockSuccess(out)
+      return
+    }
+
+    if (err) {
+      errorMessage = err
+    } else if (exitCode !== 0) {
+      errorMessage = "Login failed. Please check your credentials."
+    } else {
+      // Try unlocking now that login completed
+      unlockVaultWithPassword(loginPassword)
+    }
+  }
+
+  function launchTerminalLogin() {
+    close()
+    Quickshell.execDetached(["bash", "-c", "omarchy launch terminal -e bash -c 'bw login; read -p \"Login complete. Press enter to close...\"' || alacritty -e bash -c 'bw login; read -p \"Login complete. Press enter to close...\"'"])
+  }
+
+  function logoutAccount() {
+    lockVault()
+    logoutProc.command = Model.logoutCommand()
+    logoutProc.running = true
+    status = "unauthenticated"
+    currentScreen = "login"
+    userEmail = ""
+    flashNotification("Logged out")
+  }
+
+  // -------------------------------------------------------------------------
+  // Vault Unlock & Lock
   // -------------------------------------------------------------------------
 
   function unlockVault() {
-    var pass = String(masterPassword || "").trim()
-    if (!pass) {
+    unlockVaultWithPassword(masterPassword)
+  }
+
+  function unlockVaultWithPassword(pass) {
+    var p = String(pass || "").trim()
+    if (!p) {
       errorMessage = "Master password required"
       return
     }
     errorMessage = ""
     isLoading = true
-    unlockProc.environment = Model.passwordEnvironment(pass)
-    unlockProc.command = Model.unlockCommand()
+    unlockProc.command = Model.unlockCommand(p)
     unlockProc.running = true
+  }
+
+  function onUnlockOutput(stdoutText, stderrText, exitCode) {
+    isLoading = false
+    var out = String(stdoutText || "").trim()
+    var err = String(stderrText || "").trim()
+
+    if (exitCode === 0 && out) {
+      onUnlockSuccess(out)
+    } else {
+      if (err.indexOf("not logged in") !== -1) {
+        status = "unauthenticated"
+        currentScreen = "login"
+        errorMessage = "You are not logged in. Please log in below."
+      } else {
+        errorMessage = err || "Unlock failed: invalid master password"
+      }
+    }
   }
 
   function onUnlockSuccess(rawSession) {
     var s = String(rawSession || "").trim()
     masterPassword = ""
+    loginPassword = ""
     if (!s) {
       errorMessage = "Unlock did not return a session key"
       isLoading = false
@@ -371,7 +510,6 @@ Panel {
       copyToClipboard(detailPassword, "Password")
       return
     }
-    // Read on demand via getItemProc or copy if already loaded
     Quickshell.execDetached(["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy"])
     flashNotification("Password copied!")
     if (clearClipboardSec > 0) clipboardClearTimer.restart()
@@ -473,11 +611,6 @@ Panel {
     }
   }
 
-  function onKeyringLookupFailed() {
-    statusProc.command = Model.statusCommand("")
-    statusProc.running = true
-  }
-
   Process {
     id: keyringLookupProc
     command: Model.keyringLookupCommand()
@@ -507,26 +640,37 @@ Panel {
   }
 
   Process {
-    id: unlockProc
+    id: loginProc
     stdout: StdioCollector {
+      id: loginStdout
       waitForEnd: true
-      onStreamFinished: root.onUnlockSuccess(text)
     }
     stderr: StdioCollector {
+      id: loginStderr
       waitForEnd: true
-      onStreamFinished: {
-        if (text && text.trim()) {
-          root.errorMessage = text.trim()
-          root.isLoading = false
-        }
-      }
     }
     onExited: function(exitCode) {
-      if (exitCode !== 0 && !root.errorMessage) {
-        root.errorMessage = "Unlock failed: invalid password"
-        root.isLoading = false
-      }
+      root.onLoginOutput(loginStdout.text, loginStderr.text, exitCode)
     }
+  }
+
+  Process {
+    id: unlockProc
+    stdout: StdioCollector {
+      id: unlockStdout
+      waitForEnd: true
+    }
+    stderr: StdioCollector {
+      id: unlockStderr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      root.onUnlockOutput(unlockStdout.text, unlockStderr.text, exitCode)
+    }
+  }
+
+  Process {
+    id: logoutProc
   }
 
   Process {
@@ -607,7 +751,7 @@ Panel {
     dimmed: root.status !== "unlocked"
     tooltipText: root.status === "unlocked"
       ? ("Bitwarden (" + (root.items.length > 0 ? root.items.length + " items" : "Unlocked") + ")")
-      : "Bitwarden (Locked)"
+      : (root.status === "unauthenticated" ? "Bitwarden (Log In)" : "Bitwarden (Locked)")
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) {
         if (root.status === "unlocked") root.lockVault()
@@ -637,7 +781,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: (root.status === "locked" && passField.activeFocus) || (root.status === "unlocked" && root.currentScreen === "main" && searchField.activeFocus)
+      blocked: (root.status === "unauthenticated")
+        || (root.status === "locked" && passField.activeFocus)
+        || (root.status === "unlocked" && root.currentScreen === "main" && searchField.activeFocus)
 
       onCloseRequested: {
         if (root.currentScreen === "detail") {
@@ -720,13 +866,13 @@ Panel {
             }
             if (root.status === "locked") return "Vault Locked"
             if (root.status === "checking") return "Checking status..."
-            return "Not logged in"
+            return "Log In"
           }
           foreground: root.fg
           fontFamily: root.fontFamily
 
           iconComponent: Text {
-            text: root.status === "unlocked" ? "󰞀" : "󰒃"
+            text: "󰞀"
             color: root.barIconColor
             font.family: root.fontFamily
             font.pixelSize: Style.font.display
@@ -736,21 +882,20 @@ Panel {
             spacing: Style.space(6)
 
             PanelActionButton {
+              visible: root.status === "unlocked"
               iconText: "󰑐"
-              tooltipText: "Sync vault"
+              tooltipText: "Sync vault (r)"
               fontFamily: root.fontFamily
-              enabled: root.status === "unlocked" && !root.isSyncing
+              enabled: !root.isSyncing
               onClicked: root.syncVault()
             }
 
             PanelActionButton {
-              iconText: root.status === "unlocked" ? "󰒃" : "󰌋"
-              tooltipText: root.status === "unlocked" ? "Lock vault (l)" : "Unlock vault"
+              visible: root.status === "unlocked"
+              iconText: "󰒃"
+              tooltipText: "Lock vault (l)"
               fontFamily: root.fontFamily
-              onClicked: {
-                if (root.status === "unlocked") root.lockVault()
-                else root.refreshStatus()
-              }
+              onClicked: root.lockVault()
             }
 
             PanelActionButton {
@@ -827,10 +972,232 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 1: LOCKED VIEW
+        // SCREEN 1: LOGIN VIEW (When unauthenticated)
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "locked" || root.status === "unauthenticated" || root.status === "checking"
+          visible: root.status === "unauthenticated"
+          width: parent.width
+          spacing: Style.space(12)
+
+          PanelSeparator { width: parent.width }
+
+          // Login Method Selector
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(8)
+
+            Button {
+              text: "Email & Password"
+              iconText: "󰇮"
+              selected: root.loginMethod === "email"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.loginMethod = "email"
+            }
+
+            Button {
+              text: "API Key"
+              iconText: "󰌋"
+              selected: root.loginMethod === "apikey"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.loginMethod = "apikey"
+            }
+          }
+
+          // METHOD A: Email & Password
+          Column {
+            visible: root.loginMethod === "email"
+            width: parent.width
+            spacing: Style.space(10)
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+              Text { text: "EMAIL ADDRESS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              TextField {
+                id: emailField
+                width: parent.width
+                placeholderText: "you@example.com"
+                text: root.loginEmail
+                onTextChanged: root.loginEmail = text
+                onAccepted: loginPassField.forceActiveFocus()
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+              Text { text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+                TextField {
+                  id: loginPassField
+                  width: parent.width - eyeBtnLogin.width - Style.space(6)
+                  placeholderText: "Master password..."
+                  password: !eyeBtnLogin.revealed
+                  text: root.loginPassword
+                  onTextChanged: root.loginPassword = text
+                  onAccepted: {
+                    if (root.show2faField) code2faField.forceActiveFocus()
+                    else root.submitLogin()
+                  }
+                }
+                Button {
+                  id: eyeBtnLogin
+                  property bool revealed: false
+                  iconText: revealed ? "󰈉" : "󰈈"
+                  tooltipText: revealed ? "Hide password" : "Show password"
+                  fontFamily: root.fontFamily
+                  onClicked: revealed = !revealed
+                }
+              }
+            }
+
+            // Optional / Auto 2FA Field
+            Column {
+              visible: root.show2faField
+              width: parent.width
+              spacing: Style.space(3)
+              Text { text: "TWO-STEP VERIFICATION CODE"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              TextField {
+                id: code2faField
+                width: parent.width
+                placeholderText: "6-digit 2FA / Verification code"
+                text: root.login2faCode
+                onTextChanged: root.login2faCode = text
+                onAccepted: root.submitLogin()
+              }
+            }
+
+            // Custom Server URL (collapsible)
+            Column {
+              width: parent.width
+              spacing: Style.space(4)
+
+              MouseArea {
+                width: parent.width
+                height: Style.space(20)
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.showServerField = !root.showServerField
+                Row {
+                  spacing: Style.space(4)
+                  Text {
+                    text: root.showServerField ? "▾ Custom Server URL" : "▸ Custom Server (Self-hosted Vaultwarden)"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
+
+              TextField {
+                visible: root.showServerField
+                width: parent.width
+                placeholderText: "https://vault.example.com"
+                text: root.loginServerUrl
+                onTextChanged: root.loginServerUrl = text
+              }
+            }
+
+            Button {
+              width: parent.width
+              text: root.isLoading ? "Logging in..." : "Log In & Unlock"
+              iconText: root.isLoading ? "󰑐" : "󰌋"
+              iconSpinning: root.isLoading
+              selected: true
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              enabled: !root.isLoading
+              onClicked: root.submitLogin()
+            }
+          }
+
+          // METHOD B: API Key
+          Column {
+            visible: root.loginMethod === "apikey"
+            width: parent.width
+            spacing: Style.space(10)
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+              Text { text: "CLIENT ID"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              TextField {
+                width: parent.width
+                placeholderText: "user.xxxxxxxx-xxxx-xxxx..."
+                text: root.loginClientId
+                onTextChanged: root.loginClientId = text
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+              Text { text: "CLIENT SECRET"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              TextField {
+                width: parent.width
+                placeholderText: "Client secret string..."
+                password: true
+                text: root.loginClientSecret
+                onTextChanged: root.loginClientSecret = text
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+              Text { text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              TextField {
+                width: parent.width
+                placeholderText: "Master password to unlock vault..."
+                password: true
+                text: root.loginPassword
+                onTextChanged: root.loginPassword = text
+                onAccepted: root.submitLogin()
+              }
+            }
+
+            Button {
+              width: parent.width
+              text: root.isLoading ? "Logging in..." : "Log In with API Key"
+              iconText: root.isLoading ? "󰑐" : "󰌋"
+              iconSpinning: root.isLoading
+              selected: true
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              enabled: !root.isLoading
+              onClicked: root.submitLogin()
+            }
+          }
+
+          // Terminal Login Alternative
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(6)
+            Text {
+              text: "Prefer interactive TTY login?"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              anchors.verticalCenter: parent.verticalCenter
+            }
+            Button {
+              text: "Launch Terminal"
+              iconText: "󰞷"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.launchTerminalLogin()
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 2: LOCKED VIEW (When authenticated, but vault locked)
+        // -------------------------------------------------------------------
+        Column {
+          visible: root.status === "locked" || root.status === "checking"
           width: parent.width
           spacing: Style.space(14)
 
@@ -853,7 +1220,7 @@ Panel {
 
             Text {
               anchors.horizontalCenter: parent.horizontalCenter
-              text: root.status === "unauthenticated" ? "Log in via Bitwarden CLI" : "Enter Master Password"
+              text: "Enter Master Password"
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
@@ -873,7 +1240,6 @@ Panel {
           Column {
             width: parent.width
             spacing: Style.space(10)
-            visible: root.status !== "unauthenticated"
 
             Row {
               width: parent.width
@@ -912,20 +1278,22 @@ Panel {
             }
           }
 
-          Text {
-            visible: root.status === "unauthenticated"
-            width: parent.width
-            text: "Please run 'bw login' in your terminal to authenticate your Bitwarden account on this machine."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.Wrap
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(8)
+
+            Button {
+              text: "Switch / Log Out"
+              iconText: "󰍃"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.logoutAccount()
+            }
           }
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 2: UNLOCKED - ITEM LIST VIEW
+        // SCREEN 3: UNLOCKED - ITEM LIST VIEW
         // -------------------------------------------------------------------
         Column {
           visible: root.status === "unlocked" && root.currentScreen === "main"
@@ -1188,7 +1556,7 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 3: UNLOCKED - ITEM DETAIL VIEW
+        // SCREEN 4: UNLOCKED - ITEM DETAIL VIEW
         // -------------------------------------------------------------------
         Column {
           visible: root.status === "unlocked" && root.currentScreen === "detail"
