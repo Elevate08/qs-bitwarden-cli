@@ -3,7 +3,7 @@
 
 .pragma library
 
-const KEYRING_SERVICE = "quickshell-bitwarden-cli"
+const KEYRING_SERVICE = "qs-bitwarden-cli"
 const KEYRING_ACCOUNT = "session"
 const KEYRING_CLIENT_ID = "client_id"
 const KEYRING_CLIENT_SECRET = "client_secret"

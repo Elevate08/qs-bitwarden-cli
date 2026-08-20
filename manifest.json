@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "quickshell-bitwarden-cli",
+  "id": "qs-bitwarden-cli",
   "name": "Bitwarden",
   "version": "1.0.0",
-  "author": "quickshell-bitwarden-cli",
+  "author": "qs-bitwarden-cli",
   "license": "MIT",
   "description": "Bitwarden password manager integration for the Omarchy status bar and quick access panel.",
   "kinds": [
