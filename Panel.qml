@@ -80,6 +80,7 @@ Panel {
 
   // Status & indicators
   property bool isLoading: false
+  property bool isUnlocking: false
   property bool isSyncing: false
   property string errorMessage: ""
   property string flashMessage: ""
@@ -105,7 +106,7 @@ Panel {
     { id: "login", label: "Logins", icon: "󰌋" },
     { id: "secureNote", label: "Notes", icon: "󰈐" },
     { id: "card", label: "Cards", icon: "󰅝" },
-    { id: "identity", label: "Identities", icon: "󰓹" },
+    { id: "identity", label: "Identities", icon: "" },
     { id: "favorite", label: "★ Favorites", icon: "󰓎" }
   ]
 
@@ -120,9 +121,12 @@ Panel {
     cursorActive = true
     showDeleteConfirm = false
     totpFollowupActive = false
+    isUnlocking = false
     root.controller.show()
     focusAppropriateField()
-    refreshStatus()
+    if (status !== "locked" && status !== "unlocked") {
+      refreshStatus()
+    }
   }
 
   function close() {
@@ -132,6 +136,7 @@ Panel {
     loginPassword = ""
     showDeleteConfirm = false
     totpFollowupActive = false
+    isUnlocking = false
     root.controller.hide()
   }
 
@@ -159,7 +164,7 @@ Panel {
         currentScreen = "main"
         loadItems()
         loadOrganizations()
-      } else {
+      } else if (status === "checking") {
         refreshStatus()
       }
     }
@@ -170,12 +175,12 @@ Panel {
   // -------------------------------------------------------------------------
 
   function refreshStatus() {
-    isLoading = true
+    if (status === "locked" && !session) return
     errorMessage = ""
     if (session) {
       statusProc.command = Model.statusCommand(session)
       statusProc.running = true
-    } else if (rememberSession) {
+    } else if (rememberSession && status !== "locked") {
       keyringLookupProc.running = true
     } else {
       statusProc.command = Model.statusCommand("")
@@ -341,13 +346,13 @@ Panel {
       return
     }
     errorMessage = ""
-    isLoading = true
+    isUnlocking = true
     unlockProc.command = Model.unlockCommand(p)
     unlockProc.running = true
   }
 
   function onUnlockOutput(stdoutText, stderrText, exitCode) {
-    isLoading = false
+    isUnlocking = false
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
 
@@ -368,9 +373,9 @@ Panel {
     var s = Model.extractSessionToken(rawSession)
     masterPassword = ""
     loginPassword = ""
+    isUnlocking = false
     if (!s) {
       errorMessage = "Unlock did not return a session key"
-      isLoading = false
       return
     }
 
@@ -399,6 +404,7 @@ Panel {
     }
 
     session = ""
+    masterPassword = ""
     status = "locked"
     currentScreen = "locked"
     items = []
@@ -408,7 +414,9 @@ Panel {
     detailPassword = ""
     liveTotp = ""
     totpFollowupActive = false
+    isUnlocking = false
     flashNotification("Vault locked")
+    focusAppropriateField()
   }
 
   // -------------------------------------------------------------------------
@@ -1647,7 +1655,7 @@ Panel {
                 text: root.masterPassword
                 onTextChanged: root.masterPassword = text
                 onAccepted: root.unlockVault()
-                enabled: !root.isLoading
+                enabled: !root.isUnlocking
               }
 
               Button {
@@ -1662,12 +1670,13 @@ Panel {
 
             Button {
               width: parent.width
-              text: root.isLoading ? "Unlocking..." : "Unlock Vault"
-              iconText: root.isLoading ? "󰑐" : "󰌋"
-              iconSpinning: root.isLoading
+              text: root.isUnlocking ? "Unlocking..." : "Unlock Vault"
+              iconText: root.isUnlocking ? "󰑐" : "󰌋"
+              iconSpinning: root.isUnlocking
               selected: true
               accent: Color.accent
               fontFamily: root.fontFamily
+              enabled: !root.isUnlocking
               onClicked: root.unlockVault()
             }
           }
@@ -1760,7 +1769,7 @@ Panel {
 
               Button {
                 text: "My Vault"
-                iconText: "󰀭"
+                iconText: ""
                 selected: root.selectedOrg === "personal"
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
@@ -1936,7 +1945,7 @@ Panel {
 
                     PanelActionButton {
                       visible: itemData.username !== ""
-                      iconText: "󰀭"
+                      iconText: ""
                       tooltipText: "Copy username (u)"
                       fontFamily: root.fontFamily
                       onClicked: root.copyUsername(itemData)
@@ -2212,7 +2221,7 @@ Panel {
                     PanelActionButton {
                       id: copyUserBtn
                       anchors.verticalCenter: parent.verticalCenter
-                      iconText: "󰀭"
+                      iconText: ""
                       tooltipText: "Copy username (u)"
                       fontFamily: root.fontFamily
                       onClicked: root.copyToClipboard(root.detailItem ? root.detailItem.username : "", "Username")
@@ -2525,7 +2534,7 @@ Panel {
                   spacing: Style.space(6)
                   Button {
                     text: "Personal Vault"
-                    iconText: "󰀭"
+                    iconText: ""
                     selected: !root.formOrgId || root.formOrgId === "personal"
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption

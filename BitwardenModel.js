@@ -231,7 +231,7 @@ function itemTypeGlyph(type) {
     case "login": return "󰌋"      // key icon
     case "secureNote": return "󰈐" // note icon
     case "card": return "󰅝"       // credit card icon
-    case "identity": return "󰓹"   // id card icon
+    case "identity": return ""   // person icon
     default: return "󰞀"           // shield icon
   }
 }
