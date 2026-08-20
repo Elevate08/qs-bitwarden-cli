@@ -106,10 +106,10 @@ Or edit `~/.config/omarchy/shell.json` directly:
 
 ### 4. Global Hotkey Configuration
 
-To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + L`), add the binding to `~/.config/hypr/bindings.lua`:
+To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + CTRL + L", "Bitwarden vault", "omarchy-shell shell toggle quickshell-bitwarden-cli")
+o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell shell toggle quickshell-bitwarden-cli")
 ```
 
 Apply changes by restarting the shell:
