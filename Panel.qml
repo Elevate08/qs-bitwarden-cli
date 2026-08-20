@@ -121,6 +121,7 @@ Panel {
     showDeleteConfirm = false
     totpFollowupActive = false
     root.controller.show()
+    focusAppropriateField()
     refreshStatus()
   }
 
@@ -139,8 +140,21 @@ Panel {
     else open()
   }
 
+  function focusAppropriateField() {
+    Qt.callLater(function() {
+      if (status === "unlocked" && currentScreen === "main") {
+        searchField.forceActiveFocus()
+      } else if (status === "locked" || status === "checking") {
+        passField.forceActiveFocus()
+      } else if (status === "unauthenticated") {
+        emailField.forceActiveFocus()
+      }
+    })
+  }
+
   onOpenedChanged: {
     if (opened) {
+      focusAppropriateField()
       if (status === "unlocked") {
         currentScreen = "main"
         loadItems()
@@ -148,15 +162,6 @@ Panel {
       } else {
         refreshStatus()
       }
-      Qt.callLater(function() {
-        if (status === "unlocked") {
-          searchField.forceActiveFocus()
-        } else if (status === "locked") {
-          passField.forceActiveFocus()
-        } else if (status === "unauthenticated") {
-          emailField.forceActiveFocus()
-        }
-      })
     }
   }
 
@@ -201,6 +206,7 @@ Panel {
     if (!st) {
       status = "unauthenticated"
       currentScreen = "login"
+      focusAppropriateField()
       return
     }
 
@@ -215,16 +221,19 @@ Panel {
       loadItems()
       loadOrganizations()
       resetAutoLockTimer()
+      focusAppropriateField()
     } else if (st.locked) {
       status = "locked"
       currentScreen = "locked"
       items = []
       filteredItems = []
+      focusAppropriateField()
     } else {
       status = "unauthenticated"
       currentScreen = "login"
       items = []
       filteredItems = []
+      focusAppropriateField()
     }
   }
 
@@ -356,7 +365,7 @@ Panel {
   }
 
   function onUnlockSuccess(rawSession) {
-    var s = String(rawSession || "").trim()
+    var s = Model.extractSessionToken(rawSession)
     masterPassword = ""
     loginPassword = ""
     if (!s) {
@@ -377,6 +386,7 @@ Panel {
     loadItems()
     loadOrganizations()
     resetAutoLockTimer()
+    focusAppropriateField()
   }
 
   function lockVault() {
@@ -680,13 +690,18 @@ Panel {
 
   function copyPassword(item) {
     if (!item) return
-    if (item.id === (detailItem ? detailItem.id : "") && detailPassword) {
-      copyToClipboard(detailPassword, "Password")
+    var pass = (detailItem && detailItem.id === item.id && detailPassword) ? detailPassword : (item.password || "")
+    if (pass) {
+      copyToClipboard(pass, "Password")
       return
     }
-    Quickshell.execDetached(["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy"])
-    flashNotification("Password copied!")
-    if (clearClipboardSec > 0) clipboardClearTimer.restart()
+    if (session) {
+      Quickshell.execDetached(["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy"])
+      flashNotification("Password copied!")
+      if (clearClipboardSec > 0) clipboardClearTimer.restart()
+    } else {
+      errorMessage = "Vault is locked or session expired. Please unlock your vault."
+    }
   }
 
   function copyUsername(item) {
@@ -1051,7 +1066,9 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: (root.status === "unlocked" && root.currentScreen === "main")
+      ? keyCatcher
+      : (root.status === "unauthenticated" ? emailField : passField)
     contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640))
 
@@ -2198,7 +2215,7 @@ Panel {
                       iconText: "󰀭"
                       tooltipText: "Copy username (u)"
                       fontFamily: root.fontFamily
-                      onClicked: root.copyToClipboard(root.detailItem.username, "Username")
+                      onClicked: root.copyToClipboard(root.detailItem ? root.detailItem.username : "", "Username")
                     }
                   }
                 }

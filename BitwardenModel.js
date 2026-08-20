@@ -21,6 +21,22 @@ function buildCommand(args, session, useSession) {
   return cmd
 }
 
+function extractSessionToken(raw) {
+  var s = String(raw || "").trim()
+  var match = s.match(/BW_SESSION="?([^"\n\r]+)"?/)
+  if (match && match[1]) {
+    return match[1].trim()
+  }
+  var lines = s.split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    if (line && line.indexOf(" ") === -1 && line.length > 20) {
+      return line
+    }
+  }
+  return s
+}
+
 // -------------------------------------------------------------------------
 // CLI Commands
 // -------------------------------------------------------------------------
@@ -281,11 +297,14 @@ function parseItems(raw) {
       typeCode: Number(it.type || 1),
       favorite: Boolean(it.favorite),
       username: String(login.username || ""),
+      password: String(login.password || ""),
       hasPassword: Boolean(login.password),
       hasTotp: Boolean(login.totp),
+      totpKey: String(login.totp || ""),
       uris: uris,
       subtitle: subtitle,
-      notes: String(it.notes || "")
+      notes: String(it.notes || ""),
+      rawObject: it
     })
   }
 
