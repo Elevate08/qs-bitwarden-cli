@@ -250,10 +250,11 @@ Panel {
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
 
-    // Check if 2FA code is needed
-    if (err.indexOf("Two-step") !== -1 || err.indexOf("verification") !== -1 || err.indexOf("code") !== -1) {
+    // Check if 2FA code is needed or failed
+    var combined = (err + " " + out).toLowerCase()
+    if (combined.indexOf("two-step") !== -1 || combined.indexOf("verification") !== -1 || combined.indexOf("twofactor") !== -1 || combined.indexOf("2fa") !== -1 || combined.indexOf("invalid_grant") !== -1 || combined.indexOf("code") !== -1) {
       show2faField = true
-      errorMessage = "Two-step verification code required. Enter your code below."
+      errorMessage = "Two-step verification code required or incorrect. Please enter your 6-digit code below."
       Qt.callLater(function() { code2faField.forceActiveFocus() })
       return
     }
@@ -1039,10 +1040,7 @@ Panel {
                   password: !eyeBtnLogin.revealed
                   text: root.loginPassword
                   onTextChanged: root.loginPassword = text
-                  onAccepted: {
-                    if (root.show2faField) code2faField.forceActiveFocus()
-                    else root.submitLogin()
-                  }
+                  onAccepted: code2faField.forceActiveFocus()
                 }
                 Button {
                   id: eyeBtnLogin
@@ -1055,16 +1053,33 @@ Panel {
               }
             }
 
-            // Optional / Auto 2FA Field
+            // 2FA / Verification Code Field (Always visible)
             Column {
-              visible: root.show2faField
               width: parent.width
               spacing: Style.space(3)
-              Text { text: "TWO-STEP VERIFICATION CODE"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+
+              Row {
+                width: parent.width
+                Text {
+                  text: "TWO-STEP VERIFICATION CODE (2FA)"
+                  color: root.show2faField ? Color.accent : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                Item { Layout.fillWidth: true }
+                Text {
+                  text: "Optional if not enabled"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
               TextField {
                 id: code2faField
                 width: parent.width
-                placeholderText: "6-digit 2FA / Verification code"
+                placeholderText: "6-digit Authenticator / Email verification code..."
                 text: root.login2faCode
                 onTextChanged: root.login2faCode = text
                 onAccepted: root.submitLogin()
@@ -1247,9 +1262,9 @@ Panel {
 
               TextField {
                 id: passField
-                width: parent.width - eyeBtn.width - Style.space(8)
+                width: parent.width - eyeBtnUnlock.width - Style.space(8)
                 placeholderText: "Master password..."
-                password: !eyeBtn.revealed
+                password: !eyeBtnUnlock.revealed
                 text: root.masterPassword
                 onTextChanged: root.masterPassword = text
                 onAccepted: root.unlockVault()
@@ -1257,7 +1272,7 @@ Panel {
               }
 
               Button {
-                id: eyeBtn
+                id: eyeBtnUnlock
                 property bool revealed: false
                 iconText: revealed ? "󰈉" : "󰈈"
                 tooltipText: revealed ? "Hide password" : "Show password"
