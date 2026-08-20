@@ -738,6 +738,11 @@ Panel {
     function status(): string { return root.status }
   }
 
+  readonly property string barIconGlyph: {
+    if (status === "locked") return "󰒃" // Shield with padlock in bottom right
+    return "󰞀"                         // Standard shield
+  }
+
   // -------------------------------------------------------------------------
   // Status Bar Button
   // -------------------------------------------------------------------------
@@ -746,13 +751,19 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰞀"
-    foreground: root.barIconColor
+    text: root.barIconGlyph
+    foreground: bar ? bar.barForeground : Color.foreground
     useActiveColor: false
-    dimmed: root.status !== "unlocked"
-    tooltipText: root.status === "unlocked"
-      ? ("Bitwarden (" + (root.items.length > 0 ? root.items.length + " items" : "Unlocked") + ")")
-      : (root.status === "unauthenticated" ? "Bitwarden (Log In)" : "Bitwarden (Locked)")
+    dimmed: root.status === "unauthenticated" || root.status === "checking"
+    tooltipText: {
+      if (root.status === "unlocked") {
+        return "Bitwarden (" + (root.items.length > 0 ? root.items.length + " items" : "Unlocked") + ")"
+      }
+      if (root.status === "locked") {
+        return "Bitwarden (Locked)"
+      }
+      return "Bitwarden (Not Logged In)"
+    }
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) {
         if (root.status === "unlocked") root.lockVault()
