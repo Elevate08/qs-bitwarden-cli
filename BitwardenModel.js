@@ -542,6 +542,27 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
 // Context-Aware Window & Active Tab Matching (Bitwarden Standard Rules)
 // -------------------------------------------------------------------------
 
+var STOP_WORDS = {
+  "home": 1, "login": 1, "signin": 1, "sign": 1, "portal": 1, "console": 1,
+  "dashboard": 1, "overview": 1, "welcome": 1, "auth": 1, "authentication": 1,
+  "page": 1, "web": 1, "app": 1, "the": 1, "and": 1, "for": 1, "with": 1, "your": 1,
+  "online": 1, "account": 1, "service": 1, "services": 1
+}
+
+function extractTokens(str) {
+  if (!str) return []
+  var clean = String(str).toLowerCase().replace(/[-_/\\^$*+?.()|[\]{}:,;!@#%&=]/g, " ")
+  var words = clean.split(/\s+/)
+  var tokens = []
+  for (var i = 0; i < words.length; i++) {
+    var w = words[i].trim()
+    if (w.length >= 3 && !STOP_WORDS[w]) {
+      tokens.push(w)
+    }
+  }
+  return tokens
+}
+
 function parseDomain(urlStr) {
   if (!urlStr) return null
   var clean = String(urlStr).trim().toLowerCase()
@@ -551,13 +572,32 @@ function parseDomain(urlStr) {
   var parts = host.split(".")
   var baseDomain = parts.length >= 2 ? parts.slice(-2).join(".") : host
   var rootName = parts.length >= 2 ? parts[parts.length - 2] : parts[0]
-  return { host: host, baseDomain: baseDomain, rootName: rootName }
+  return { host: host, baseDomain: baseDomain, rootName: rootName, parts: parts }
+}
+
+function getActiveWindowFromData(windowData) {
+  if (!windowData) return null
+  if (Array.isArray(windowData)) {
+    var clients = windowData.slice().sort(function(a, b) {
+      return (a.focusHistoryID || 0) - (b.focusHistoryID || 0)
+    })
+    for (var i = 0; i < clients.length; i++) {
+      var c = clients[i]
+      var cls = String(c.class || c.initialClass || "").toLowerCase()
+      if (cls && cls !== "quickshell" && cls !== "omarchy-shell" && cls !== "omarchy") {
+        return c
+      }
+    }
+    return clients[0] || null
+  }
+  return windowData
 }
 
 function cleanWindowContext(windowData) {
-  if (!windowData) return null
-  var cls = String(windowData.class || windowData.initialClass || "").toLowerCase()
-  var title = String(windowData.title || windowData.initialTitle || "").trim()
+  var w = getActiveWindowFromData(windowData)
+  if (!w) return null
+  var cls = String(w.class || w.initialClass || "").toLowerCase()
+  var title = String(w.title || w.initialTitle || "").trim()
   if (!cls && !title) return null
 
   var isBrowser = /chrome|chromium|firefox|brave|zen|vivaldi|edge|opera|epiphany|qutebrowser|librewolf|floorp|waterfox/i.test(cls)
@@ -571,7 +611,7 @@ function cleanWindowContext(windowData) {
     // Strip browser branding
     cleanTitle = cleanTitle.replace(/\s*[-—|•]\s*(Google Chrome|Chromium|Mozilla Firefox|Firefox|Brave(?:\s*Browser)?|Zen(?:\s*Browser)?|Vivaldi|Microsoft Edge|Edge|Opera|LibreWolf|Floorp|Waterfox)$/i, "").trim()
     // Strip login and portal navigation noise
-    cleanTitle = cleanTitle.replace(/^(Sign in to|Sign in ·|Sign In -|Log in to|Log in ·|Log In -|Login to|Login ·|Login -|Welcome to|Welcome ·|Welcome -|Authenticate|Dashboard ·|Dashboard -|Overview -|Console -|Portal -|Home ·|Home -|Home \/)\s*/i, "").trim()
+    cleanTitle = cleanTitle.replace(/^(Sign in to|Sign in ·|Sign In -|Log in to|Log in ·|Log In -|Login to|Login ·|Login -|Welcome to|Welcome ·|Welcome -|Authenticate|Dashboard ·|Dashboard -|Overview -|Console -|Portal -|Home ·|Home -|Home \/|Home –)\s*/i, "").trim()
 
     var domainMatch = cleanTitle.match(/(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/i)
     if (domainMatch) {
@@ -606,6 +646,7 @@ function cleanWindowContext(windowData) {
     rawTitle: title,
     displayName: displayName,
     detectedDomain: detectedDomain,
+    titleTokens: extractTokens(cleanTitle),
     isBrowser: isBrowser,
     isTerminal: isTerminal
   }
@@ -619,6 +660,7 @@ function matchItem(item, ctx) {
 
   var score = 0
   var itemName = String(item.name || "").toLowerCase().trim()
+  var itemTokens = extractTokens(itemName)
   var titleLower = ctx.title.toLowerCase()
   var clsLower = ctx.cls.toLowerCase()
 
@@ -629,35 +671,41 @@ function matchItem(item, ctx) {
       if (!itemDom) continue
 
       if (ctx.detectedDomain) {
-        if (ctx.detectedDomain.host === itemDom.host) {
-          return 100 // Exact host match
-        }
-        if (ctx.detectedDomain.baseDomain === itemDom.baseDomain) {
-          return 95 // Base domain match
-        }
+        if (ctx.detectedDomain.host === itemDom.host) return 100
+        if (ctx.detectedDomain.baseDomain === itemDom.baseDomain) return 95
       }
 
-      if (itemDom.rootName && itemDom.rootName.length >= 3) {
-        var wordRegex = new RegExp("(?:^|[^a-z0-9])" + itemDom.rootName.replace(/[-]/g, "\\-") + "(?:$|[^a-z0-9])", "i")
-        if (wordRegex.test(titleLower)) {
-          score = Math.max(score, 90)
+      // Check host parts (e.g. "auth", "example") against title tokens
+      for (var p = 0; p < itemDom.parts.length; p++) {
+        var part = itemDom.parts[p]
+        if (part.length >= 3 && !STOP_WORDS[part]) {
+          var partRegex = new RegExp("(?:^|[^a-z0-9])" + part.replace(/[-]/g, "\\-") + "(?:$|[^a-z0-9])", "i")
+          if (partRegex.test(titleLower)) {
+            score = Math.max(score, 90)
+          }
         }
       }
     }
   }
 
-  // 2. Direct Name Match with word boundary in Title
-  if (itemName.length >= 3 && titleLower.length >= 3) {
-    var nameRegex = new RegExp("(?:^|[^a-z0-9])" + itemName.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "(?:$|[^a-z0-9])", "i")
-    if (nameRegex.test(titleLower) || titleLower === itemName) {
-      score = Math.max(score, 85)
+  // 2. Token overlap between Title and Item Name
+  for (var t = 0; t < ctx.titleTokens.length; t++) {
+    var titleTok = ctx.titleTokens[t]
+    if (titleTok.length < 3) continue
+
+    if (itemTokens.indexOf(titleTok) >= 0 || itemName.indexOf(titleTok) >= 0) {
+      score = Math.max(score, 90)
     }
   }
 
-  // 3. Desktop Application Class Match (non-browser)
+  // 3. Exact full title or name match
+  if (itemName.length >= 3 && (titleLower === itemName || itemName.indexOf(titleLower) >= 0 || titleLower.indexOf(itemName) >= 0)) {
+    score = Math.max(score, 85)
+  }
+
+  // 4. Desktop Application Class Match (non-browser)
   if (!ctx.isBrowser && !ctx.isTerminal && clsLower.length >= 3) {
-    var appClassRegex = new RegExp("(?:^|[^a-z0-9])" + clsLower.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "(?:$|[^a-z0-9])", "i")
-    if (appClassRegex.test(itemName) || itemName === clsLower) {
+    if (itemTokens.indexOf(clsLower) >= 0 || itemName.indexOf(clsLower) >= 0) {
       score = Math.max(score, 85)
     }
   }

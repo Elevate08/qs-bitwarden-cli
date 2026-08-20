@@ -158,15 +158,19 @@ Panel {
 
   function detectActiveWindowContext() {
     if (!suggestOnOpen) return
+    activeWindowProc.command = ["sh", "-c", "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' && hyprctl activewindow -j || hyprctl clients -j 2>/dev/null"]
     activeWindowProc.running = true
   }
 
   function handleActiveWindowDetected(data) {
     activeWindowData = data
-    if (!suggestOnOpen || items.length === 0) {
+    if (!suggestOnOpen) {
       suggestedItems = []
       detectedContext = null
       rebuildFilter()
+      return
+    }
+    if (items.length === 0) {
       return
     }
     var res = Model.findContextualMatches(items, data)
@@ -1014,19 +1018,18 @@ Panel {
 
   Process {
     id: activeWindowProc
-    command: ["hyprctl", "activewindow", "-j"]
+    command: ["sh", "-c", "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' && hyprctl activewindow -j || hyprctl clients -j 2>/dev/null"]
     stdout: StdioCollector {
-      id: activeWindowStdout
       waitForEnd: true
-    }
-    onExited: function(exitCode) {
-      if (exitCode === 0 && activeWindowStdout.text) {
-        try {
-          var data = JSON.parse(activeWindowStdout.text)
-          root.handleActiveWindowDetected(data)
-        } catch (e) {
-          root.suggestedItems = []
-          root.detectedContext = null
+      onStreamFinished: {
+        if (text && text.trim()) {
+          try {
+            var data = JSON.parse(text)
+            root.handleActiveWindowDetected(data)
+          } catch (e) {
+            root.suggestedItems = []
+            root.detectedContext = null
+          }
         }
       }
     }
