@@ -54,11 +54,14 @@ Panel {
   readonly property color accent: Color.accent
   readonly property color dim: Qt.darker(fg, 1.5)
   readonly property color barIconColor: {
-    if (status === "unlocked") return accent
-    if (status === "locked") return fg
-    return urgent
+    var base = bar ? bar.barForeground : Color.foreground
+    if (status === "unlocked") return Color.accent
+    if (status === "locked" || status === "checking") return base
+    return bar ? bar.urgent : Color.urgent
   }
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+
+  Component.onCompleted: root.refreshStatus()
 
   readonly property var categories: [
     { id: "all", label: "All", icon: "󰞀" },
@@ -595,9 +598,13 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.status === "unlocked" ? "󰞀" : "󰒃"
+    text: "󰞀"
     foreground: root.barIconColor
-    active: root.status === "unlocked"
+    useActiveColor: false
+    dimmed: root.status !== "unlocked"
+    tooltipText: root.status === "unlocked"
+      ? ("Bitwarden (" + (root.items.length > 0 ? root.items.length + " items" : "Unlocked") + ")")
+      : "Bitwarden (Locked)"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) {
         if (root.status === "unlocked") root.lockVault()
