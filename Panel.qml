@@ -738,9 +738,50 @@ Panel {
     function status(): string { return root.status }
   }
 
-  readonly property string barIconGlyph: {
-    if (status === "locked") return "󰒃" // Shield with padlock in bottom right
-    return "󰞀"                         // Standard shield
+  Component {
+    id: shieldIconComp
+
+    Item {
+      anchors.fill: parent
+
+      // Constant Base Shield
+      Text {
+        anchors.centerIn: parent
+        text: "󰞀"
+        font.family: root.fontFamily
+        font.pixelSize: Style.bar.iconFont
+        color: bar ? bar.barForeground : Color.foreground
+        renderType: Text.NativeRendering
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+      }
+
+      // Mini Padlock Badge in Bottom-Right Corner when locked
+      Item {
+        visible: root.status === "locked"
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: -Style.space(2)
+        anchors.bottomMargin: -Style.space(2)
+        width: Style.space(10)
+        height: Style.space(10)
+
+        Rectangle {
+          anchors.fill: parent
+          radius: width / 2
+          color: bar ? bar.background : Color.background
+        }
+
+        Text {
+          anchors.centerIn: parent
+          text: "󰌾"
+          font.family: root.fontFamily
+          font.pixelSize: Style.space(8)
+          color: bar ? bar.barForeground : Color.foreground
+          renderType: Text.NativeRendering
+        }
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -751,8 +792,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.barIconGlyph
-    foreground: bar ? bar.barForeground : Color.foreground
+    iconComponent: shieldIconComp
     useActiveColor: false
     dimmed: root.status === "unauthenticated" || root.status === "checking"
     tooltipText: {
