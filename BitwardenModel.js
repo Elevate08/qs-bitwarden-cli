@@ -539,8 +539,20 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
 }
 
 // -------------------------------------------------------------------------
-// Context-Aware Window & Active Tab Matching
+// Context-Aware Window & Active Tab Matching (Bitwarden Standard Rules)
 // -------------------------------------------------------------------------
+
+function parseDomain(urlStr) {
+  if (!urlStr) return null
+  var clean = String(urlStr).trim().toLowerCase()
+  var match = clean.match(/(?:https?:\/\/)?(?:[a-z0-9_.-]+@)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/i)
+  if (!match) return null
+  var host = match[1]
+  var parts = host.split(".")
+  var baseDomain = parts.length >= 2 ? parts.slice(-2).join(".") : host
+  var rootName = parts.length >= 2 ? parts[parts.length - 2] : parts[0]
+  return { host: host, baseDomain: baseDomain, rootName: rootName }
+}
 
 function cleanWindowContext(windowData) {
   if (!windowData) return null
@@ -548,14 +560,42 @@ function cleanWindowContext(windowData) {
   var title = String(windowData.title || windowData.initialTitle || "").trim()
   if (!cls && !title) return null
 
-  var isBrowser = /chrome|firefox|brave|chromium|zen|edge|vivaldi/i.test(cls)
+  var isBrowser = /chrome|chromium|firefox|brave|zen|vivaldi|edge|opera|epiphany|qutebrowser|librewolf|floorp|waterfox/i.test(cls)
+  var isTerminal = /foot|alacritty|kitty|ghostty|terminal|konsole|wezterm|xterm|rxvt/i.test(cls)
 
-  // Clean browser branding suffixes
-  var cleanTitle = title.replace(/\s*[-—|•]\s*(Google Chrome|Mozilla Firefox|Brave|Chromium|Vivaldi|Zen Browser|Microsoft Edge)$/i, "").trim()
-  // Strip common login/welcome phrases
-  cleanTitle = cleanTitle.replace(/^(Log in to|Sign in to|Log In -|Sign In -|Login to|Welcome to|Sign in ·|Log in ·)\s*/i, "").trim()
+  var cleanTitle = title
+  var detectedDomain = null
+  var displayName = ""
 
-  var displayName = cleanTitle || cls
+  if (isBrowser) {
+    // Strip browser branding
+    cleanTitle = cleanTitle.replace(/\s*[-—|•]\s*(Google Chrome|Chromium|Mozilla Firefox|Firefox|Brave(?:\s*Browser)?|Zen(?:\s*Browser)?|Vivaldi|Microsoft Edge|Edge|Opera|LibreWolf|Floorp|Waterfox)$/i, "").trim()
+    // Strip login and portal navigation noise
+    cleanTitle = cleanTitle.replace(/^(Sign in to|Sign in ·|Sign In -|Log in to|Log in ·|Log In -|Login to|Login ·|Login -|Welcome to|Welcome ·|Welcome -|Authenticate|Dashboard ·|Dashboard -|Overview -|Console -|Portal -|Home ·|Home -|Home \/)\s*/i, "").trim()
+
+    var domainMatch = cleanTitle.match(/(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/i)
+    if (domainMatch) {
+      detectedDomain = parseDomain(domainMatch[0])
+    }
+    displayName = cleanTitle || (detectedDomain ? detectedDomain.host : cls)
+  } else if (isTerminal) {
+    // In terminal: only match remote SSH or DB connections, never local shells (e.g. "hostname: dir")
+    var sshMatch = cleanTitle.match(/ssh\s+(?:[a-zA-Z0-9_.-]+@)?([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+)/i)
+    if (sshMatch) {
+      detectedDomain = parseDomain(sshMatch[1])
+      cleanTitle = sshMatch[1]
+      displayName = "SSH: " + sshMatch[1]
+    } else {
+      cleanTitle = ""
+      displayName = ""
+    }
+  } else {
+    // Standalone desktop application (Discord, Slack, Spotify, Steam, etc.)
+    var appTitle = cleanTitle.replace(/\s*[-—|•].*$/, "").trim()
+    displayName = appTitle || cls
+    cleanTitle = appTitle
+  }
+
   if (displayName.length > 32) {
     displayName = displayName.slice(0, 29) + "..."
   }
@@ -565,55 +605,89 @@ function cleanWindowContext(windowData) {
     title: cleanTitle,
     rawTitle: title,
     displayName: displayName,
-    isBrowser: isBrowser
+    detectedDomain: detectedDomain,
+    isBrowser: isBrowser,
+    isTerminal: isTerminal
   }
+}
+
+function matchItem(item, ctx) {
+  if (!ctx || !item) return 0
+  if (ctx.isTerminal && !ctx.detectedDomain) {
+    return 0
+  }
+
+  var score = 0
+  var itemName = String(item.name || "").toLowerCase().trim()
+  var titleLower = ctx.title.toLowerCase()
+  var clsLower = ctx.cls.toLowerCase()
+
+  // 1. URI Domain Match (Bitwarden Base Domain / Host matching)
+  if (item.uris && item.uris.length > 0) {
+    for (var u = 0; u < item.uris.length; u++) {
+      var itemDom = parseDomain(item.uris[u])
+      if (!itemDom) continue
+
+      if (ctx.detectedDomain) {
+        if (ctx.detectedDomain.host === itemDom.host) {
+          return 100 // Exact host match
+        }
+        if (ctx.detectedDomain.baseDomain === itemDom.baseDomain) {
+          return 95 // Base domain match
+        }
+      }
+
+      if (itemDom.rootName && itemDom.rootName.length >= 3) {
+        var wordRegex = new RegExp("(?:^|[^a-z0-9])" + itemDom.rootName.replace(/[-]/g, "\\-") + "(?:$|[^a-z0-9])", "i")
+        if (wordRegex.test(titleLower)) {
+          score = Math.max(score, 90)
+        }
+      }
+    }
+  }
+
+  // 2. Direct Name Match with word boundary in Title
+  if (itemName.length >= 3 && titleLower.length >= 3) {
+    var nameRegex = new RegExp("(?:^|[^a-z0-9])" + itemName.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "(?:$|[^a-z0-9])", "i")
+    if (nameRegex.test(titleLower) || titleLower === itemName) {
+      score = Math.max(score, 85)
+    }
+  }
+
+  // 3. Desktop Application Class Match (non-browser)
+  if (!ctx.isBrowser && !ctx.isTerminal && clsLower.length >= 3) {
+    var appClassRegex = new RegExp("(?:^|[^a-z0-9])" + clsLower.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "(?:$|[^a-z0-9])", "i")
+    if (appClassRegex.test(itemName) || itemName === clsLower) {
+      score = Math.max(score, 85)
+    }
+  }
+
+  return score
 }
 
 function findContextualMatches(items, windowData) {
   var ctx = cleanWindowContext(windowData)
   if (!ctx || !Array.isArray(items) || items.length === 0) {
-    return { matches: [], context: ctx }
+    return { matches: [], context: null }
   }
 
-  var titleLower = ctx.title.toLowerCase()
-  var clsLower = ctx.cls.toLowerCase()
-  var scored = []
+  // If local terminal without detected SSH domain, no suggestions
+  if (ctx.isTerminal && !ctx.detectedDomain) {
+    return { matches: [], context: null }
+  }
 
+  var scored = []
   for (var i = 0; i < items.length; i++) {
     var item = items[i]
     if (!item) continue
-    var score = 0
-    var itemName = String(item.name || "").toLowerCase()
-
-    // 1. URI domain / host match
-    if (item.uris && item.uris.length > 0) {
-      for (var u = 0; u < item.uris.length; u++) {
-        var uri = String(item.uris[u] || "").toLowerCase()
-        var hostMatch = uri.match(/(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/i)
-        if (hostMatch) {
-          var domain = hostMatch[1]
-          var domainParts = domain.split(".")
-          var rootDomain = domainParts.length >= 2 ? domainParts[domainParts.length - 2] : domain
-          if (rootDomain.length >= 3 && (titleLower.indexOf(rootDomain) >= 0 || titleLower.indexOf(domain) >= 0)) {
-            score = Math.max(score, 100)
-          }
-        }
-      }
-    }
-
-    // 2. Direct name match in title
-    if (itemName.length >= 3 && titleLower.indexOf(itemName) >= 0) {
-      score = Math.max(score, 90)
-    }
-
-    // 3. Non-browser App class match (e.g. Discord, Spotify, Telegram)
-    if (!ctx.isBrowser && itemName.length >= 3 && (clsLower.indexOf(itemName) >= 0 || itemName.indexOf(clsLower) >= 0)) {
-      score = Math.max(score, 85)
-    }
-
-    if (score > 0) {
+    var score = matchItem(item, ctx)
+    if (score >= 80) {
       scored.push({ item: item, score: score })
     }
+  }
+
+  if (scored.length === 0) {
+    return { matches: [], context: null }
   }
 
   // Sort by score descending

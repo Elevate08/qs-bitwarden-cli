@@ -1922,7 +1922,7 @@ Panel {
 
           // Contextual Suggestion Banner
           BorderSurface {
-            visible: root.suggestedItems.length > 0 && !root.suggestionsDismissed && root.searchQuery.trim() === "" && root.detectedContext !== null
+            visible: Boolean(root.suggestedItems.length > 0 && !root.suggestionsDismissed && root.searchQuery.trim() === "" && root.detectedContext && root.detectedContext.displayName)
             width: parent.width
             implicitHeight: Style.space(28)
             radius: Style.cornerRadius
