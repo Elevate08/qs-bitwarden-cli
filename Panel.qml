@@ -481,6 +481,9 @@ Panel {
   function moveCursor(delta) {
     if (filteredItems.length === 0) return
     selectedIndex = Math.max(0, Math.min(filteredItems.length - 1, selectedIndex + delta))
+    if (itemsListView) {
+      itemsListView.positionViewAtIndex(selectedIndex, ListView.Contain)
+    }
   }
 
   function getSelectedItem() {
@@ -557,6 +560,13 @@ Panel {
   // -------------------------------------------------------------------------
   // Timers
   // -------------------------------------------------------------------------
+
+  Timer {
+    id: searchDebounceTimer
+    interval: 50
+    repeat: false
+    onTriggered: root.rebuildFilter()
+  }
 
   Timer {
     id: flashTimer
@@ -833,9 +843,11 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: (root.status === "unauthenticated")
-        || (root.status === "locked" && passField.activeFocus)
-        || (root.status === "unlocked" && root.currentScreen === "main" && searchField.activeFocus)
+      blocked: searchField.activeFocus
+        || emailField.activeFocus
+        || loginPassField.activeFocus
+        || code2faField.activeFocus
+        || passField.activeFocus
 
       onCloseRequested: {
         if (root.currentScreen === "detail") {
@@ -1379,7 +1391,7 @@ Panel {
               onTextChanged: {
                 root.searchQuery = text
                 root.selectedIndex = 0
-                root.rebuildFilter()
+                searchDebounceTimer.restart()
               }
               Keys.onDownPressed: {
                 keyCatcher.forceActiveFocus()
@@ -1435,176 +1447,174 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          // Item List Flickable
-          Flickable {
-            id: listFlickable
+          // Item List View (Fast Virtualized ListView with Delegate Recycling)
+          Item {
             width: parent.width
-            height: Math.min(Style.space(360), Math.max(Style.space(180), itemsColumn.implicitHeight))
-            contentWidth: width
-            contentHeight: itemsColumn.implicitHeight
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.VerticalFlick
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            height: Style.space(340)
 
-            Column {
-              id: itemsColumn
-              width: listFlickable.width
+            ListView {
+              id: itemsListView
+              anchors.fill: parent
+              clip: true
+              model: root.filteredItems
               spacing: Style.space(4)
+              boundsBehavior: Flickable.StopAtBounds
+              reuseItems: true
+              currentIndex: root.selectedIndex
+              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-              Repeater {
-                model: root.filteredItems
-                delegate: BorderSurface {
-                  id: itemRow
-                  readonly property var itemData: modelData
-                  readonly property bool isSelected: root.cursorActive && root.selectedIndex === index
-                  readonly property bool isHovered: rowMouseArea.containsMouse
+              delegate: BorderSurface {
+                id: itemRow
+                required property var modelData
+                required property int index
 
-                  width: itemsColumn.width
-                  implicitHeight: Style.space(46)
-                  radius: Style.cornerRadius
-                  color: isSelected
-                    ? Style.selectedFillFor(root.fg, Color.accent)
-                    : (isHovered ? Style.hoverFillFor(root.fg, Color.accent) : "transparent")
-                  borderSpec: isSelected
-                    ? Border.controlSpec("selected", root.fg, Color.accent)
-                    : Border.none()
+                readonly property var itemData: modelData
+                readonly property bool isSelected: root.cursorActive && root.selectedIndex === index
+                readonly property bool isHovered: rowMouseArea.containsMouse
 
-                  Row {
-                    anchors.fill: parent
-                    anchors.leftMargin: Style.space(10)
-                    anchors.rightMargin: Style.space(8)
-                    spacing: Style.space(10)
+                width: ListView.view.width
+                implicitHeight: Style.space(46)
+                radius: Style.cornerRadius
+                color: isSelected
+                  ? Style.selectedFillFor(root.fg, Color.accent)
+                  : (isHovered ? Style.hoverFillFor(root.fg, Color.accent) : "transparent")
+                borderSpec: isSelected
+                  ? Border.controlSpec("selected", root.fg, Color.accent)
+                  : Border.none()
 
-                    // Type Icon
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: Model.itemTypeGlyph(itemData.typeCode)
-                      color: itemData.favorite ? Color.accent : root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.title
-                      width: Style.space(20)
-                    }
+                Row {
+                  anchors.fill: parent
+                  anchors.leftMargin: Style.space(10)
+                  anchors.rightMargin: Style.space(8)
+                  spacing: Style.space(10)
 
-                    // Labels (Title + Subtitle)
-                    Column {
-                      anchors.verticalCenter: parent.verticalCenter
-                      width: parent.width - Style.space(20) - actionButtonsRow.implicitWidth - Style.space(28)
-                      spacing: Style.space(1)
+                  // Type Icon
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Model.itemTypeGlyph(itemData.typeCode)
+                    color: itemData.favorite ? Color.accent : root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title
+                    width: Style.space(20)
+                  }
 
-                      Row {
-                        spacing: Style.space(4)
-                        width: parent.width
+                  // Labels (Title + Subtitle)
+                  Column {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - Style.space(20) - actionButtonsRow.implicitWidth - Style.space(28)
+                    spacing: Style.space(1)
 
-                        Text {
-                          text: itemData.name
-                          color: root.fg
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.body
-                          font.bold: true
-                          elide: Text.ElideRight
-                          width: Math.min(implicitWidth, parent.width - (itemData.favorite ? Style.space(16) : 0))
-                        }
+                    Row {
+                      spacing: Style.space(4)
+                      width: parent.width
 
-                        Text {
-                          visible: itemData.favorite
-                          text: "★"
-                          color: Color.accent
-                          font.pixelSize: Style.font.bodySmall
-                          anchors.verticalCenter: parent.verticalCenter
-                        }
+                      Text {
+                        text: itemData.name
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        font.bold: true
+                        elide: Text.ElideRight
+                        width: Math.min(implicitWidth, parent.width - (itemData.favorite ? Style.space(16) : 0))
                       }
 
                       Text {
-                        text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
-                        color: root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        elide: Text.ElideRight
-                        width: parent.width
+                        visible: itemData.favorite
+                        text: "★"
+                        color: Color.accent
+                        font.pixelSize: Style.font.bodySmall
+                        anchors.verticalCenter: parent.verticalCenter
                       }
                     }
 
-                    // Quick Action Buttons
-                    Row {
-                      id: actionButtonsRow
-                      anchors.verticalCenter: parent.verticalCenter
-                      spacing: Style.space(4)
-                      visible: isSelected || isHovered
-
-                      PanelActionButton {
-                        visible: itemData.hasPassword
-                        iconText: "󰌆"
-                        tooltipText: "Copy password (y)"
-                        fontFamily: root.fontFamily
-                        onClicked: root.copyPassword(itemData)
-                      }
-
-                      PanelActionButton {
-                        visible: itemData.username !== ""
-                        iconText: "󰀭"
-                        tooltipText: "Copy username (u)"
-                        fontFamily: root.fontFamily
-                        onClicked: root.copyUsername(itemData)
-                      }
-
-                      PanelActionButton {
-                        visible: itemData.hasTotp
-                        iconText: "󰑐"
-                        tooltipText: "Copy TOTP code (t)"
-                        fontFamily: root.fontFamily
-                        onClicked: root.copyTotpCode(itemData)
-                      }
-
-                      PanelActionButton {
-                        visible: itemData.uris && itemData.uris.length > 0
-                        iconText: "󰖟"
-                        tooltipText: "Open URL (o)"
-                        fontFamily: root.fontFamily
-                        onClicked: root.openUrl(itemData.uris[0])
-                      }
+                    Text {
+                      text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                      width: parent.width
                     }
                   }
 
-                  MouseArea {
-                    id: rowMouseArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      root.cursorActive = true
-                      root.selectedIndex = index
-                      root.openDetail(itemData)
+                  // Quick Action Buttons
+                  Row {
+                    id: actionButtonsRow
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(4)
+                    visible: isSelected || isHovered
+
+                    PanelActionButton {
+                      visible: itemData.hasPassword
+                      iconText: "󰌆"
+                      tooltipText: "Copy password (y)"
+                      fontFamily: root.fontFamily
+                      onClicked: root.copyPassword(itemData)
+                    }
+
+                    PanelActionButton {
+                      visible: itemData.username !== ""
+                      iconText: "󰀭"
+                      tooltipText: "Copy username (u)"
+                      fontFamily: root.fontFamily
+                      onClicked: root.copyUsername(itemData)
+                    }
+
+                    PanelActionButton {
+                      visible: itemData.hasTotp
+                      iconText: "󰑐"
+                      tooltipText: "Copy TOTP code (t)"
+                      fontFamily: root.fontFamily
+                      onClicked: root.copyTotpCode(itemData)
+                    }
+
+                    PanelActionButton {
+                      visible: itemData.uris && itemData.uris.length > 0
+                      iconText: "󰖟"
+                      tooltipText: "Open URL (o)"
+                      fontFamily: root.fontFamily
+                      onClicked: root.openUrl(itemData.uris[0])
                     }
                   }
                 }
+
+                MouseArea {
+                  id: rowMouseArea
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.cursorActive = true
+                    root.selectedIndex = index
+                    root.openDetail(itemData)
+                  }
+                }
               }
+            }
 
-              // Empty state
-              Item {
-                visible: root.filteredItems.length === 0
-                width: parent.width
-                height: Style.space(120)
+            // Empty state overlay
+            Item {
+              visible: root.filteredItems.length === 0
+              anchors.fill: parent
 
-                Column {
-                  anchors.centerIn: parent
-                  spacing: Style.space(6)
+              Column {
+                anchors.centerIn: parent
+                spacing: Style.space(6)
 
-                  Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: root.items.length === 0 ? "󰒃" : "󰍡"
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.space(32)
-                  }
+                Text {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  text: root.items.length === 0 ? "󰒃" : "󰍡"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.space(32)
+                }
 
-                  Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: root.items.length === 0 ? "Vault is empty" : ("No items match '" + root.searchQuery + "'")
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
+                Text {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  text: root.items.length === 0 ? "Vault is empty" : ("No items match '" + root.searchQuery + "'")
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
                 }
               }
             }
