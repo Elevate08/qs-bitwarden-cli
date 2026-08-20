@@ -39,11 +39,14 @@ Panel {
   property bool show2faField: false
   property bool showServerField: false
 
-  // Screens: "main" (item list) | "detail" (item detail) | "locked" | "login"
+  // Screens: "main" | "detail" | "edit" | "locked" | "login"
   property string currentScreen: "main"
 
+  // Vault data
   property var items: []
   property var filteredItems: []
+  property var organizations: []
+  property string selectedOrg: "all" // "all" | "personal" | orgId
   property string searchQuery: ""
   property string selectedCategory: "all"
   property int selectedIndex: 0
@@ -54,6 +57,26 @@ Panel {
   property bool passwordRevealed: false
   property string liveTotp: ""
   property int totpSecRemaining: 30
+
+  // Follow-up TOTP sequential copy state (Enter -> Password -> Enter -> TOTP)
+  property var totpFollowupItem: null
+  property string totpFollowupCode: ""
+  property bool totpFollowupActive: false
+
+  // Add / Edit Form State
+  property bool formIsEditing: false
+  property string formItemId: ""
+  property int formTypeCode: 1 // 1: Login, 2: Secure Note
+  property string formName: ""
+  property string formUsername: ""
+  property string formPassword: ""
+  property string formTotp: ""
+  property string formUri: ""
+  property string formNotes: ""
+  property bool formFavorite: false
+  property string formOrgId: ""
+  property bool formPasswordRevealed: false
+  property bool showDeleteConfirm: false
 
   // Status & indicators
   property bool isLoading: false
@@ -95,6 +118,8 @@ Panel {
     flashMessage = ""
     passwordRevealed = false
     cursorActive = true
+    showDeleteConfirm = false
+    totpFollowupActive = false
     root.controller.show()
     refreshStatus()
   }
@@ -104,6 +129,8 @@ Panel {
     passwordRevealed = false
     masterPassword = ""
     loginPassword = ""
+    showDeleteConfirm = false
+    totpFollowupActive = false
     root.controller.hide()
   }
 
@@ -117,6 +144,7 @@ Panel {
       if (status === "unlocked") {
         currentScreen = "main"
         loadItems()
+        loadOrganizations()
       } else {
         refreshStatus()
       }
@@ -185,6 +213,7 @@ Panel {
       status = "unlocked"
       currentScreen = "main"
       loadItems()
+      loadOrganizations()
       resetAutoLockTimer()
     } else if (st.locked) {
       status = "locked"
@@ -221,7 +250,6 @@ Panel {
       loginProc.command = Model.emailLoginCommand(email, pass, login2faCode.trim(), loginServerUrl.trim())
       loginProc.running = true
     } else {
-      // API Key method
       var id = String(loginClientId || "").trim()
       var secret = String(loginClientSecret || "").trim()
       var pass2 = String(loginPassword || "").trim()
@@ -250,7 +278,6 @@ Panel {
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
 
-    // Check if 2FA code is needed or failed
     var combined = (err + " " + out).toLowerCase()
     if (combined.indexOf("two-step") !== -1 || combined.indexOf("verification") !== -1 || combined.indexOf("twofactor") !== -1 || combined.indexOf("2fa") !== -1 || combined.indexOf("invalid_grant") !== -1 || combined.indexOf("code") !== -1) {
       show2faField = true
@@ -260,7 +287,6 @@ Panel {
     }
 
     if (exitCode === 0 && out.length > 10) {
-      // Login succeeded and returned session key!
       loginPassword = ""
       login2faCode = ""
       onUnlockSuccess(out)
@@ -272,7 +298,6 @@ Panel {
     } else if (exitCode !== 0) {
       errorMessage = "Login failed. Please check your credentials."
     } else {
-      // Try unlocking now that login completed
       unlockVaultWithPassword(loginPassword)
     }
   }
@@ -350,6 +375,7 @@ Panel {
     }
 
     loadItems()
+    loadOrganizations()
     resetAutoLockTimer()
   }
 
@@ -367,9 +393,11 @@ Panel {
     currentScreen = "locked"
     items = []
     filteredItems = []
+    organizations = []
     detailItem = null
     detailPassword = ""
     liveTotp = ""
+    totpFollowupActive = false
     flashNotification("Vault locked")
   }
 
@@ -390,6 +418,16 @@ Panel {
     rebuildFilter()
   }
 
+  function loadOrganizations() {
+    if (!session) return
+    listOrgsProc.command = Model.listOrganizationsCommand(session)
+    listOrgsProc.running = true
+  }
+
+  function onListOrgsFinished(rawJson) {
+    organizations = Model.parseOrganizations(rawJson)
+  }
+
   function syncVault() {
     if (!session) return
     isSyncing = true
@@ -402,6 +440,7 @@ Panel {
     if (exitCode === 0) {
       flashNotification("Vault synced with Bitwarden")
       loadItems()
+      loadOrganizations()
     } else {
       errorMessage = "Sync failed"
     }
@@ -412,6 +451,7 @@ Panel {
     isLoading = true
     errorMessage = ""
     passwordRevealed = false
+    showDeleteConfirm = false
     detailItem = null
     detailPassword = ""
     liveTotp = ""
@@ -443,7 +483,108 @@ Panel {
   }
 
   function onTotpFinished(code) {
-    liveTotp = String(code || "").trim()
+    var c = String(code || "").trim()
+    liveTotp = c
+    if (totpFollowupActive && totpFollowupItem) {
+      totpFollowupCode = c
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // CRUD Operations (Add, Edit, Delete)
+  // -------------------------------------------------------------------------
+
+  function startAddNewItem() {
+    formIsEditing = false
+    formItemId = ""
+    formTypeCode = 1
+    formName = ""
+    formUsername = ""
+    formPassword = ""
+    formTotp = ""
+    formUri = ""
+    formNotes = ""
+    formFavorite = false
+    formOrgId = selectedOrg !== "all" ? selectedOrg : ""
+    formPasswordRevealed = false
+    errorMessage = ""
+    currentScreen = "edit"
+  }
+
+  function startEditItem(item) {
+    if (!item) return
+    formIsEditing = true
+    formItemId = item.id
+    formTypeCode = item.typeCode || 1
+    formName = item.name || ""
+    formUsername = item.username || ""
+    formPassword = detailPassword || (item.rawObject && item.rawObject.login ? item.rawObject.login.password : "") || ""
+    formTotp = item.totpKey || (item.rawObject && item.rawObject.login ? item.rawObject.login.totp : "") || ""
+    formUri = item.uris && item.uris.length > 0 ? item.uris[0] : ""
+    formNotes = item.notes || ""
+    formFavorite = Boolean(item.favorite)
+    formOrgId = item.organizationId || ""
+    formPasswordRevealed = false
+    errorMessage = ""
+    currentScreen = "edit"
+  }
+
+  function generateAndSetPassword() {
+    var generated = Model.generatePassword(20, true, true, true, true)
+    formPassword = generated
+    formPasswordRevealed = true
+    flashNotification("Generated strong password!")
+  }
+
+  function saveItemForm() {
+    var name = String(formName || "").trim()
+    if (!name) {
+      errorMessage = "Item title is required"
+      return
+    }
+
+    errorMessage = ""
+    isLoading = true
+
+    if (formIsEditing) {
+      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId)
+      editItemProc.command = Model.editItemCommand(formItemId, editPayload, session)
+      editItemProc.running = true
+    } else {
+      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId)
+      createItemProc.command = Model.createItemCommand(createPayload, session)
+      createItemProc.running = true
+    }
+  }
+
+  function onSaveItemFinished(exitCode, stdoutText, stderrText) {
+    isLoading = false
+    if (exitCode === 0) {
+      flashNotification(formIsEditing ? "Item updated successfully!" : "Item created successfully!")
+      currentScreen = "main"
+      loadItems()
+    } else {
+      errorMessage = stderrText || "Failed to save item"
+    }
+  }
+
+  function deleteCurrentItem() {
+    if (!detailItem || !detailItem.id) return
+    isLoading = true
+    deleteItemProc.command = Model.deleteItemCommand(detailItem.id, session)
+    deleteItemProc.running = true
+  }
+
+  function onDeleteItemFinished(exitCode, stdoutText, stderrText) {
+    isLoading = false
+    showDeleteConfirm = false
+    if (exitCode === 0) {
+      flashNotification("Item deleted")
+      currentScreen = "main"
+      loadItems()
+    } else {
+      errorMessage = stderrText || "Failed to delete item"
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -451,7 +592,7 @@ Panel {
   // -------------------------------------------------------------------------
 
   function rebuildFilter() {
-    filteredItems = Model.filterItems(items, searchQuery, selectedCategory)
+    filteredItems = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg)
     if (selectedIndex >= filteredItems.length) {
       selectedIndex = Math.max(0, filteredItems.length - 1)
     }
@@ -462,6 +603,12 @@ Panel {
 
   function selectCategory(catId) {
     selectedCategory = catId
+    selectedIndex = 0
+    rebuildFilter()
+  }
+
+  function selectOrganization(orgId) {
+    selectedOrg = orgId
     selectedIndex = 0
     rebuildFilter()
   }
@@ -494,7 +641,7 @@ Panel {
   }
 
   // -------------------------------------------------------------------------
-  // Clipboard Actions
+  // Clipboard Actions & Sequential Password -> TOTP Follow-Up
   // -------------------------------------------------------------------------
 
   function copyToClipboard(text, label) {
@@ -505,6 +652,29 @@ Panel {
 
     if (clearClipboardSec > 0) {
       clipboardClearTimer.restart()
+    }
+  }
+
+  // Smart sequential Enter handler: Copies Password, then arms TOTP on follow-up
+  function handleSmartEnter(item) {
+    if (!item) return
+
+    // If already in active TOTP follow-up mode for this item, copy TOTP now!
+    if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id) {
+      copyTotpCode(item)
+      totpFollowupActive = false
+      return
+    }
+
+    // Step 1: Copy password
+    copyPassword(item)
+
+    // Step 2: If item has TOTP, arm sequential follow-up!
+    if (item.hasTotp) {
+      totpFollowupItem = item
+      totpFollowupActive = true
+      fetchTotp(item.id)
+      totpFollowupTimer.restart()
     }
   }
 
@@ -575,6 +745,12 @@ Panel {
   }
 
   Timer {
+    id: totpFollowupTimer
+    interval: 8000
+    onTriggered: root.totpFollowupActive = false
+  }
+
+  Timer {
     id: clipboardClearTimer
     interval: root.clearClipboardSec * 1000
     onTriggered: {
@@ -596,13 +772,17 @@ Panel {
   Timer {
     id: totpCountdownTimer
     interval: 1000
-    running: root.opened && root.currentScreen === "detail" && root.detailItem !== null && root.detailItem.hasTotp
+    running: root.opened && (root.currentScreen === "detail" || root.totpFollowupActive)
     repeat: true
     onTriggered: {
       var sec = 30 - (Math.floor(Date.now() / 1000) % 30)
       root.totpSecRemaining = sec
-      if (sec === 30 && root.detailItem) {
-        root.fetchTotp(root.detailItem.id)
+      if (sec === 30) {
+        if (root.currentScreen === "detail" && root.detailItem && root.detailItem.hasTotp) {
+          root.fetchTotp(root.detailItem.id)
+        } else if (root.totpFollowupActive && root.totpFollowupItem) {
+          root.fetchTotp(root.totpFollowupItem.id)
+        }
       }
     }
   }
@@ -702,6 +882,14 @@ Panel {
   }
 
   Process {
+    id: listOrgsProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onListOrgsFinished(text)
+    }
+  }
+
+  Process {
     id: getItemProc
     stdout: StdioCollector {
       waitForEnd: true
@@ -720,6 +908,33 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onTotpFinished(text)
+    }
+  }
+
+  Process {
+    id: createItemProc
+    stdout: StdioCollector { id: createItemStdout; waitForEnd: true }
+    stderr: StdioCollector { id: createItemStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.onSaveItemFinished(exitCode, createItemStdout.text, createItemStderr.text)
+    }
+  }
+
+  Process {
+    id: editItemProc
+    stdout: StdioCollector { id: editItemStdout; waitForEnd: true }
+    stderr: StdioCollector { id: editItemStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.onSaveItemFinished(exitCode, editItemStdout.text, editItemStderr.text)
+    }
+  }
+
+  Process {
+    id: deleteItemProc
+    stdout: StdioCollector { id: deleteItemStdout; waitForEnd: true }
+    stderr: StdioCollector { id: deleteItemStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.onDeleteItemFinished(exitCode, deleteItemStdout.text, deleteItemStderr.text)
     }
   }
 
@@ -837,8 +1052,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(440))
-    contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(620))
+    contentWidth: panel.fittedContentWidth(Style.space(450))
+    contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -848,9 +1063,10 @@ Panel {
         || loginPassField.activeFocus
         || code2faField.activeFocus
         || passField.activeFocus
+        || (root.currentScreen === "edit")
 
       onCloseRequested: {
-        if (root.currentScreen === "detail") {
+        if (root.currentScreen === "detail" || root.currentScreen === "edit") {
           root.currentScreen = "main"
         } else {
           root.close()
@@ -876,7 +1092,9 @@ Panel {
       onActivateRequested: {
         if (root.currentScreen === "main") {
           var item = root.getSelectedItem()
-          if (item) root.openDetail(item)
+          if (item) {
+            root.handleSmartEnter(item)
+          }
         }
       }
       onTextKey: function(key) {
@@ -891,6 +1109,10 @@ Panel {
             if (item && item.hasTotp) root.copyTotpCode(item)
           } else if (lower === "o") {
             if (item && item.uris && item.uris.length > 0) root.openUrl(item.uris[0])
+          } else if (lower === "n") {
+            root.startAddNewItem()
+          } else if (lower === "e") {
+            if (item) root.openDetail(item)
           } else if (lower === "l") {
             root.lockVault()
           } else if (lower === "r") {
@@ -905,6 +1127,10 @@ Panel {
             if (root.detailItem && root.detailItem.username) root.copyToClipboard(root.detailItem.username, "Username")
           } else if (lower === "t") {
             if (root.liveTotp) root.copyToClipboard(root.liveTotp, "TOTP")
+          } else if (lower === "e") {
+            if (root.detailItem) root.startEditItem(root.detailItem)
+          } else if (lower === "x") {
+            root.showDeleteConfirm = true
           } else if (lower === "v") {
             root.passwordRevealed = !root.passwordRevealed
           } else if (lower === "b" || lower === "q") {
@@ -926,7 +1152,8 @@ Panel {
           title: "Bitwarden"
           meta: {
             if (root.status === "unlocked") {
-              return root.userEmail ? (root.userEmail + " • " + root.items.length + " items") : (root.items.length + " items")
+              var count = root.filteredItems.length
+              return root.userEmail ? (root.userEmail + " • " + count + " items") : (count + " items")
             }
             if (root.status === "locked") return "Vault Locked"
             if (root.status === "checking") return "Checking status..."
@@ -945,6 +1172,16 @@ Panel {
           trailingControl: Row {
             spacing: Style.space(6)
 
+            // New Item Button
+            PanelActionButton {
+              visible: root.status === "unlocked" && root.currentScreen === "main"
+              iconText: "󰐕"
+              tooltipText: "New item (n)"
+              fontFamily: root.fontFamily
+              onClicked: root.startAddNewItem()
+            }
+
+            // Sync Vault Button
             PanelActionButton {
               visible: root.status === "unlocked"
               iconText: "󰑐"
@@ -954,6 +1191,7 @@ Panel {
               onClicked: root.syncVault()
             }
 
+            // Lock Vault Button
             PanelActionButton {
               visible: root.status === "unlocked"
               iconText: "󰒃"
@@ -962,6 +1200,7 @@ Panel {
               onClicked: root.lockVault()
             }
 
+            // Close Panel Button
             PanelActionButton {
               iconText: "󰅖"
               tooltipText: "Close (Esc)"
@@ -972,10 +1211,72 @@ Panel {
         }
 
         // -------------------------------------------------------------------
+        // Sequential TOTP Follow-Up Action Banner
+        // -------------------------------------------------------------------
+        BorderSurface {
+          visible: root.totpFollowupActive && root.totpFollowupItem !== null
+          width: parent.width
+          implicitHeight: Style.space(42)
+          color: Util.alpha(Color.accent, 0.2)
+          radius: Style.cornerRadius
+          borderSpec: Border.surfaceSpec("menu", "border", Color.accent, 1)
+
+          Row {
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(10)
+            anchors.rightMargin: Style.space(10)
+            spacing: Style.space(8)
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: "󰄬"
+              color: Color.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+
+            Column {
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - copyFollowupTotpBtn.width - Style.space(40)
+              spacing: 1
+
+              Text {
+                text: "Password copied! Press Enter for TOTP"
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+              }
+
+              Text {
+                text: root.totpFollowupCode ? ("Code: " + root.totpFollowupCode + " (expires in " + root.totpSecRemaining + "s)") : "Fetching 2FA code..."
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Button {
+              id: copyFollowupTotpBtn
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Copy TOTP (Enter)"
+              selected: true
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: {
+                if (root.totpFollowupItem) root.copyTotpCode(root.totpFollowupItem)
+                root.totpFollowupActive = false
+              }
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
         // Flash Message Banner
         // -------------------------------------------------------------------
         BorderSurface {
-          visible: root.flashMessage !== ""
+          visible: root.flashMessage !== "" && !root.totpFollowupActive
           width: parent.width
           implicitHeight: flashText.implicitHeight + Style.space(10)
           color: Util.alpha(Color.accent, 0.15)
@@ -1045,7 +1346,6 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          // Login Method Selector
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(8)
@@ -1116,7 +1416,7 @@ Panel {
               }
             }
 
-            // 2FA / Verification Code Field (Always visible)
+            // 2FA Field (Always visible)
             Column {
               width: parent.width
               spacing: Style.space(3)
@@ -1250,7 +1550,6 @@ Panel {
             }
           }
 
-          // Terminal Login Alternative
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
@@ -1376,7 +1675,7 @@ Panel {
         Column {
           visible: root.status === "unlocked" && root.currentScreen === "main"
           width: parent.width
-          spacing: Style.space(10)
+          spacing: Style.space(8)
 
           // Search Field
           Row {
@@ -1399,7 +1698,7 @@ Panel {
               }
               Keys.onReturnPressed: {
                 var itm = root.getSelectedItem()
-                if (itm) root.openDetail(itm)
+                if (itm) root.handleSmartEnter(itm)
               }
               Keys.onEscapePressed: {
                 if (text) text = ""
@@ -1414,6 +1713,58 @@ Panel {
               tooltipText: "Clear search"
               fontFamily: root.fontFamily
               onClicked: searchField.text = ""
+            }
+          }
+
+          // Organization / Vault Selector Bar (Shown if organizations exist)
+          Flickable {
+            visible: root.organizations.length > 0
+            width: parent.width
+            height: Style.space(26)
+            contentWidth: orgRow.implicitWidth
+            flickableDirection: Flickable.HorizontalFlick
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            Row {
+              id: orgRow
+              spacing: Style.space(6)
+
+              Button {
+                text: "All Vaults"
+                iconText: "󰞀"
+                selected: root.selectedOrg === "all"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(8)
+                verticalPadding: Style.space(2)
+                onClicked: root.selectOrganization("all")
+              }
+
+              Button {
+                text: "My Vault"
+                iconText: "󰀭"
+                selected: root.selectedOrg === "personal"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(8)
+                verticalPadding: Style.space(2)
+                onClicked: root.selectOrganization("personal")
+              }
+
+              Repeater {
+                model: root.organizations
+                delegate: Button {
+                  text: modelData.name
+                  iconText: "󰓹"
+                  selected: root.selectedOrg === modelData.id
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  horizontalPadding: Style.space(8)
+                  verticalPadding: Style.space(2)
+                  onClicked: root.selectOrganization(modelData.id)
+                }
+              }
             }
           }
 
@@ -1450,7 +1801,7 @@ Panel {
           // Item List View (Fast Virtualized ListView with Delegate Recycling)
           Item {
             width: parent.width
-            height: Style.space(340)
+            height: Style.space(320)
 
             ListView {
               id: itemsListView
@@ -1498,7 +1849,7 @@ Panel {
                     width: Style.space(20)
                   }
 
-                  // Labels (Title + Subtitle)
+                  // Labels (Title + Subtitle + Org Tag)
                   Column {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - Style.space(20) - actionButtonsRow.implicitWidth - Style.space(28)
@@ -1527,13 +1878,27 @@ Panel {
                       }
                     }
 
-                    Text {
-                      text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      elide: Text.ElideRight
+                    Row {
+                      spacing: Style.space(4)
                       width: parent.width
+
+                      Text {
+                        visible: Boolean(itemData.organizationId)
+                        text: "󰓹 Org"
+                        color: Color.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                      }
+
+                      Text {
+                        text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                        width: parent.width - (itemData.organizationId ? Style.space(40) : 0)
+                      }
                     }
                   }
 
@@ -1547,9 +1912,9 @@ Panel {
                     PanelActionButton {
                       visible: itemData.hasPassword
                       iconText: "󰌆"
-                      tooltipText: "Copy password (y)"
+                      tooltipText: "Copy password (Enter / y)"
                       fontFamily: root.fontFamily
-                      onClicked: root.copyPassword(itemData)
+                      onClicked: root.handleSmartEnter(itemData)
                     }
 
                     PanelActionButton {
@@ -1566,6 +1931,13 @@ Panel {
                       tooltipText: "Copy TOTP code (t)"
                       fontFamily: root.fontFamily
                       onClicked: root.copyTotpCode(itemData)
+                    }
+
+                    PanelActionButton {
+                      iconText: "󰏫"
+                      tooltipText: "View / Edit item (e)"
+                      fontFamily: root.fontFamily
+                      onClicked: root.openDetail(itemData)
                     }
 
                     PanelActionButton {
@@ -1623,7 +1995,7 @@ Panel {
           // Keyboard Shortcuts Footer
           Text {
             width: parent.width
-            text: "↑↓: move   Enter: view   y: pass   u: user   t: totp   l: lock   /: search"
+            text: "Enter: copy pass + totp   ↑↓: move   n: new   e: edit   u: user   t: totp   l: lock"
             color: Qt.darker(root.dim, 1.2)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1639,7 +2011,7 @@ Panel {
           width: parent.width
           spacing: Style.space(12)
 
-          // Back Navigation Button
+          // Back Navigation & Action Header
           Row {
             width: parent.width
             spacing: Style.space(8)
@@ -1653,6 +2025,64 @@ Panel {
             }
 
             Item { Layout.fillWidth: true }
+
+            Button {
+              text: "Edit"
+              iconText: "󰏫"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: if (root.detailItem) root.startEditItem(root.detailItem)
+            }
+
+            Button {
+              text: "Delete"
+              iconText: "󰆴"
+              accent: Color.urgent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.showDeleteConfirm = true
+            }
+          }
+
+          // Delete Confirmation Banner
+          BorderSurface {
+            visible: root.showDeleteConfirm
+            width: parent.width
+            implicitHeight: Style.space(64)
+            color: Util.alpha(Color.urgent, 0.15)
+            radius: Style.cornerRadius
+            borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+            Row {
+              anchors.centerIn: parent
+              spacing: Style.space(12)
+
+              Text {
+                text: "Permanently delete this item?"
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Button {
+                text: "Confirm Delete"
+                iconText: "󰆴"
+                selected: true
+                accent: Color.urgent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.deleteCurrentItem()
+              }
+
+              Button {
+                text: "Cancel"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.showDeleteConfirm = false
+              }
+            }
           }
 
           PanelSeparator { width: parent.width }
@@ -1660,7 +2090,7 @@ Panel {
           Flickable {
             id: detailFlickable
             width: parent.width
-            height: Math.min(Style.space(400), detailContentColumn.implicitHeight)
+            height: Math.min(Style.space(380), detailContentColumn.implicitHeight)
             contentWidth: width
             contentHeight: detailContentColumn.implicitHeight
             clip: true
@@ -1673,7 +2103,7 @@ Panel {
               width: detailFlickable.width
               spacing: Style.space(12)
 
-              // Item Header (Icon, Name, Type Pill)
+              // Item Header
               Row {
                 width: parent.width
                 spacing: Style.space(10)
@@ -1713,11 +2143,21 @@ Panel {
                     }
                   }
 
-                  Text {
-                    text: root.detailItem ? Model.itemTypeLabel(root.detailItem.typeCode) : ""
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
+                  Row {
+                    spacing: Style.space(6)
+                    Text {
+                      text: root.detailItem ? Model.itemTypeLabel(root.detailItem.typeCode) : ""
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                    Text {
+                      visible: Boolean(root.detailItem && root.detailItem.organizationId)
+                      text: "• Shared Organization"
+                      color: Color.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
                   }
                 }
               }
@@ -1808,7 +2248,7 @@ Panel {
 
                       PanelActionButton {
                         iconText: "󰌆"
-                        tooltipText: "Copy password (y)"
+                        tooltipText: "Copy password (y / Enter)"
                         fontFamily: root.fontFamily
                         onClicked: root.copyToClipboard(root.detailPassword, "Password")
                       }
@@ -1844,7 +2284,6 @@ Panel {
                   color: Style.hoverFillFor(root.fg, Color.accent)
                   borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
-                  // Progress bar at bottom showing TOTP countdown
                   Rectangle {
                     anchors.left: parent.left
                     anchors.bottom: parent.bottom
@@ -1928,64 +2367,6 @@ Panel {
                 }
               }
 
-              // FIELD: Card details
-              Column {
-                visible: root.detailItem && root.detailItem.card !== null
-                width: parent.width
-                spacing: Style.space(4)
-
-                PanelSectionHeader { text: "CARD INFORMATION" }
-
-                BorderSurface {
-                  width: parent.width
-                  implicitHeight: cardDetailsCol.implicitHeight + Style.space(16)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                  Column {
-                    id: cardDetailsCol
-                    anchors.fill: parent
-                    anchors.margins: Style.space(10)
-                    spacing: Style.space(6)
-
-                    Row {
-                      width: parent.width
-                      Text { text: "Cardholder:"; color: root.dim; width: Style.space(100); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-                      Text { text: (root.detailItem && root.detailItem.card) ? root.detailItem.card.cardholderName : ""; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall }
-                    }
-                    Row {
-                      width: parent.width
-                      Text { text: "Number:"; color: root.dim; width: Style.space(100); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-                      Text {
-                        text: (root.detailItem && root.detailItem.card) ? (root.passwordRevealed ? root.detailItem.card.number : Model.maskString(root.detailItem.card.number)) : ""
-                        color: root.fg
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                      }
-                      Item { Layout.fillWidth: true }
-                      PanelActionButton {
-                        iconText: "󰅝"
-                        tooltipText: "Copy card number"
-                        size: Style.space(20)
-                        fontFamily: root.fontFamily
-                        onClicked: if (root.detailItem && root.detailItem.card) root.copyToClipboard(root.detailItem.card.number, "Card number")
-                      }
-                    }
-                    Row {
-                      width: parent.width
-                      Text { text: "Expiration:"; color: root.dim; width: Style.space(100); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-                      Text { text: (root.detailItem && root.detailItem.card) ? (root.detailItem.card.expMonth + "/" + root.detailItem.card.expYear) : ""; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall }
-                    }
-                    Row {
-                      width: parent.width
-                      Text { text: "Security Code:"; color: root.dim; width: Style.space(100); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-                      Text { text: (root.detailItem && root.detailItem.card) ? (root.passwordRevealed ? root.detailItem.card.code : "•••") : ""; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall }
-                    }
-                  }
-                }
-              }
-
               // FIELD: Notes
               Column {
                 visible: root.detailItem && root.detailItem.notes !== ""
@@ -2025,62 +2406,248 @@ Panel {
                 }
               }
 
-              // Custom Fields
+              Item { height: Style.space(8); width: 1 }
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 5: ADD / EDIT ITEM FORM VIEW
+        // -------------------------------------------------------------------
+        Column {
+          visible: root.status === "unlocked" && root.currentScreen === "edit"
+          width: parent.width
+          spacing: Style.space(10)
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Cancel (Esc)"
+              iconText: "󰁍"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.currentScreen = root.formIsEditing ? "detail" : "main"
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.formIsEditing ? "Edit Item" : "New Vault Item"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+          }
+
+          PanelSeparator { width: parent.width }
+
+          Flickable {
+            id: editFlickable
+            width: parent.width
+            height: Math.min(Style.space(420), editFormCol.implicitHeight)
+            contentWidth: width
+            contentHeight: editFormCol.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            Column {
+              id: editFormCol
+              width: editFlickable.width
+              spacing: Style.space(10)
+
+              // Item Type Selector (only for new items)
+              Row {
+                visible: !root.formIsEditing
+                spacing: Style.space(8)
+
+                Button {
+                  text: "Login"
+                  iconText: "󰌋"
+                  selected: root.formTypeCode === 1
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.formTypeCode = 1
+                }
+
+                Button {
+                  text: "Secure Note"
+                  iconText: "󰈐"
+                  selected: root.formTypeCode === 2
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.formTypeCode = 2
+                }
+              }
+
+              // FIELD: Title / Name
               Column {
-                visible: root.detailItem && root.detailItem.fields && root.detailItem.fields.length > 0
                 width: parent.width
-                spacing: Style.space(4)
+                spacing: Style.space(3)
+                Text { text: "TITLE / NAME *"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "e.g. GitHub, Google, Work Server..."
+                  text: root.formName
+                  onTextChanged: root.formName = text
+                }
+              }
 
-                PanelSectionHeader { text: "CUSTOM FIELDS" }
-
-                Repeater {
-                  model: root.detailItem ? root.detailItem.fields : []
-                  delegate: BorderSurface {
-                    width: detailContentColumn.width
-                    implicitHeight: Style.space(34)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                    Row {
-                      anchors.fill: parent
-                      anchors.leftMargin: Style.space(10)
-                      anchors.rightMargin: Style.space(6)
-
-                      Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.name + ":"
-                        color: root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        width: Style.space(100)
-                        elide: Text.ElideRight
-                      }
-
-                      Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: (modelData.type === 1 && !root.passwordRevealed) ? Model.maskString(modelData.value) : modelData.value
-                        color: root.fg
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        elide: Text.ElideRight
-                        width: parent.width - Style.space(110) - copyFieldBtn.width - Style.space(6)
-                      }
-
-                      PanelActionButton {
-                        id: copyFieldBtn
-                        anchors.verticalCenter: parent.verticalCenter
-                        iconText: "󰌆"
-                        tooltipText: "Copy " + modelData.name
-                        fontFamily: root.fontFamily
-                        onClicked: root.copyToClipboard(modelData.value, modelData.name)
-                      }
+              // FIELD: Vault / Organization Selector
+              Column {
+                visible: root.organizations.length > 0
+                width: parent.width
+                spacing: Style.space(3)
+                Text { text: "ORGANIZATION / VAULT"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                Row {
+                  spacing: Style.space(6)
+                  Button {
+                    text: "Personal Vault"
+                    iconText: "󰀭"
+                    selected: !root.formOrgId || root.formOrgId === "personal"
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    onClicked: root.formOrgId = ""
+                  }
+                  Repeater {
+                    model: root.organizations
+                    delegate: Button {
+                      text: modelData.name
+                      iconText: "󰓹"
+                      selected: root.formOrgId === modelData.id
+                      fontFamily: root.fontFamily
+                      fontSize: Style.font.caption
+                      onClicked: root.formOrgId = modelData.id
                     }
                   }
                 }
               }
 
-              Item { height: Style.space(8); width: 1 }
+              // FIELD: Username (Login only)
+              Column {
+                visible: root.formTypeCode === 1
+                width: parent.width
+                spacing: Style.space(3)
+                Text { text: "USERNAME / EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "username or email address..."
+                  text: root.formUsername
+                  onTextChanged: root.formUsername = text
+                }
+              }
+
+              // FIELD: Password with Generator (Login only)
+              Column {
+                visible: root.formTypeCode === 1
+                width: parent.width
+                spacing: Style.space(3)
+                Row {
+                  width: parent.width
+                  Text { text: "PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                  Item { Layout.fillWidth: true }
+                  Button {
+                    text: "Generate Strong Password"
+                    iconText: "󰑐"
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    onClicked: root.generateAndSetPassword()
+                  }
+                }
+                Row {
+                  width: parent.width
+                  spacing: Style.space(6)
+                  TextField {
+                    id: formPassField
+                    width: parent.width - eyeBtnForm.width - Style.space(6)
+                    placeholderText: "Password..."
+                    password: !root.formPasswordRevealed
+                    text: root.formPassword
+                    onTextChanged: root.formPassword = text
+                  }
+                  Button {
+                    id: eyeBtnForm
+                    iconText: root.formPasswordRevealed ? "󰈉" : "󰈈"
+                    tooltipText: root.formPasswordRevealed ? "Hide password" : "Show password"
+                    fontFamily: root.fontFamily
+                    onClicked: root.formPasswordRevealed = !root.formPasswordRevealed
+                  }
+                }
+              }
+
+              // FIELD: TOTP Authenticator Key (Login only)
+              Column {
+                visible: root.formTypeCode === 1
+                width: parent.width
+                spacing: Style.space(3)
+                Text { text: "AUTHENTICATOR KEY (TOTP SECRET)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "e.g. JBSWY3DPEHPK3PXP (optional)..."
+                  text: root.formTotp
+                  onTextChanged: root.formTotp = text
+                }
+              }
+
+              // FIELD: Website URL (Login only)
+              Column {
+                visible: root.formTypeCode === 1
+                width: parent.width
+                spacing: Style.space(3)
+                Text { text: "WEBSITE URL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "https://example.com/login..."
+                  text: root.formUri
+                  onTextChanged: root.formUri = text
+                }
+              }
+
+              // FIELD: Notes
+              Column {
+                width: parent.width
+                spacing: Style.space(3)
+                Text { text: "NOTES"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "Additional secure notes..."
+                  text: root.formNotes
+                  onTextChanged: root.formNotes = text
+                }
+              }
+
+              // Favorite Star Toggle
+              Row {
+                spacing: Style.space(8)
+                Button {
+                  text: root.formFavorite ? "★ In Favorites" : "☆ Add to Favorites"
+                  selected: root.formFavorite
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.formFavorite = !root.formFavorite
+                }
+              }
+
+              // Save Action Button
+              Button {
+                width: parent.width
+                text: root.isLoading ? "Saving..." : (root.formIsEditing ? "Save Changes" : "Create Item")
+                iconText: root.isLoading ? "󰑐" : "󰄬"
+                iconSpinning: root.isLoading
+                selected: true
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                enabled: !root.isLoading
+                onClicked: root.saveItemForm()
+              }
+
+              Item { height: Style.space(12); width: 1 }
             }
           }
         }

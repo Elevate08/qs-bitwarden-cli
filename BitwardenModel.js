@@ -1,5 +1,5 @@
 // BitwardenModel.js — Helper module for Bitwarden plugin.
-// Pure JavaScript: CLI command constructors, output parsers, and filtering.
+// Pure JavaScript: CLI command constructors, output parsers, filtering, and CRUD builders.
 
 .pragma library
 
@@ -72,6 +72,10 @@ function listCommand(session) {
   return buildCommand(["list", "items"], session, true)
 }
 
+function listOrganizationsCommand(session) {
+  return buildCommand(["list", "organizations"], session, true)
+}
+
 function getItemCommand(id, session) {
   return buildCommand(["get", "item", String(id)], session, true)
 }
@@ -86,6 +90,27 @@ function syncCommand(session) {
 
 function lockCommand(session) {
   return buildCommand(["lock"], session, Boolean(session))
+}
+
+// -------------------------------------------------------------------------
+// CRUD Commands (Create, Edit, Delete)
+// -------------------------------------------------------------------------
+
+function createItemCommand(itemData, session) {
+  var jsonStr = JSON.stringify(itemData)
+  var orgArg = (itemData && itemData.organizationId) ? (" --organizationid " + shellQuote(itemData.organizationId)) : ""
+  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create item" + orgArg + " --session " + shellQuote(session)
+  return ["bash", "-c", script]
+}
+
+function editItemCommand(itemId, itemData, session) {
+  var jsonStr = JSON.stringify(itemData)
+  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw edit item " + shellQuote(itemId) + " --session " + shellQuote(session)
+  return ["bash", "-c", script]
+}
+
+function deleteItemCommand(itemId, session) {
+  return ["bw", "delete", "item", String(itemId), "--session", String(session).trim()]
 }
 
 // -------------------------------------------------------------------------
@@ -149,6 +174,28 @@ function parseStatus(raw) {
     lastSync: String(st.lastSync || ""),
     serverUrl: String(st.serverUrl || "")
   }
+}
+
+function parseOrganizations(raw) {
+  var arr = null
+  try {
+    arr = JSON.parse(raw)
+  } catch (e) {
+    return []
+  }
+  if (!Array.isArray(arr)) return []
+
+  var out = []
+  for (var i = 0; i < arr.length; i++) {
+    var o = arr[i]
+    if (!o || typeof o !== "object") continue
+    out.push({
+      id: String(o.id || ""),
+      name: String(o.name || "Organization"),
+      status: Number(o.status || 0)
+    })
+  }
+  return out
 }
 
 var ITEM_TYPES = {
@@ -228,6 +275,7 @@ function parseItems(raw) {
 
     out.push({
       id: String(it.id || ""),
+      organizationId: it.organizationId ? String(it.organizationId) : null,
       name: String(it.name || "Untitled"),
       type: itemTypeName(it.type),
       typeCode: Number(it.type || 1),
@@ -314,6 +362,7 @@ function parseItemDetail(raw) {
 
   return {
     id: String(it.id || ""),
+    organizationId: it.organizationId ? String(it.organizationId) : null,
     name: String(it.name || "Untitled"),
     type: itemTypeName(it.type),
     typeCode: Number(it.type || 1),
@@ -322,10 +371,12 @@ function parseItemDetail(raw) {
     username: String(login.username || ""),
     password: String(login.password || ""),
     hasTotp: Boolean(login.totp),
+    totpKey: String(login.totp || ""),
     uris: uris,
     card: card,
     identity: identity,
-    fields: customFields
+    fields: customFields,
+    rawObject: it
   }
 }
 
@@ -350,20 +401,31 @@ function matchesQuery(item, query) {
   return false
 }
 
-function filterItems(items, query, category) {
+function filterItems(items, query, category, selectedOrg) {
   if (!Array.isArray(items)) return []
   var q = String(query || "").toLowerCase().trim()
   var cat = String(category || "all").toLowerCase()
+  var org = String(selectedOrg || "all")
 
   var out = []
   for (var i = 0; i < items.length; i++) {
     var it = items[i]
+
+    // Organization filter
+    if (org === "personal") {
+      if (it.organizationId) continue
+    } else if (org !== "all") {
+      if (it.organizationId !== org) continue
+    }
+
+    // Category filter
     if (cat === "favorite") {
       if (!it.favorite) continue
     } else if (cat !== "all" && it.type !== cat) {
       continue
     }
 
+    // Search query match
     if (q && !matchesQuery(it, q)) {
       continue
     }
@@ -376,4 +438,83 @@ function filterItems(items, query, category) {
 function maskString(str) {
   if (!str) return ""
   return "•".repeat(Math.min(str.length, 16))
+}
+
+// -------------------------------------------------------------------------
+// Password Generator
+// -------------------------------------------------------------------------
+
+function generatePassword(length, upper, lower, numbers, special) {
+  var u = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+  var l = "abcdefghijkmnopqrstuvwxyz"
+  var n = "23456789"
+  var s = "!@#$%^&*()-_=+[]{}|;:,.<>?"
+  var charset = ""
+  if (upper !== false) charset += u
+  if (lower !== false) charset += l
+  if (numbers !== false) charset += n
+  if (special !== false) charset += s
+  if (!charset) charset = u + l + n + s
+
+  var len = Math.max(8, Number(length) || 20)
+  var res = ""
+  for (var i = 0; i < len; i++) {
+    var idx = Math.floor(Math.random() * charset.length)
+    res += charset.charAt(idx)
+  }
+  return res
+}
+
+// -------------------------------------------------------------------------
+// Payload Builders for Create & Edit
+// -------------------------------------------------------------------------
+
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId) {
+  var payload = {
+    type: Number(typeCode || 1),
+    name: String(name || "Untitled").trim(),
+    notes: String(notes || "").trim(),
+    favorite: Boolean(favorite),
+    organizationId: organizationId && organizationId !== "personal" && organizationId !== "all" ? String(organizationId) : null,
+    folderId: null
+  }
+
+  if (Number(typeCode) === 1) { // Login
+    var uris = []
+    if (uri && uri.trim()) {
+      uris.push({ match: null, uri: uri.trim() })
+    }
+    payload.login = {
+      username: String(username || "").trim(),
+      password: String(password || "").trim(),
+      totp: totp && totp.trim() ? totp.trim() : null,
+      uris: uris
+    }
+  } else if (Number(typeCode) === 2) { // Secure Note
+    payload.secureNote = { type: 0 }
+  }
+
+  return payload
+}
+
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId) {
+  var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
+  payload.name = String(name || "Untitled").trim()
+  payload.notes = String(notes || "").trim()
+  payload.favorite = Boolean(favorite)
+  if (organizationId && organizationId !== "personal" && organizationId !== "all") {
+    payload.organizationId = String(organizationId)
+  }
+
+  if (payload.type === 1 || !payload.type) {
+    if (!payload.login) payload.login = {}
+    payload.login.username = String(username || "").trim()
+    payload.login.password = String(password || "").trim()
+    payload.login.totp = totp && totp.trim() ? totp.trim() : null
+    if (uri && uri.trim()) {
+      payload.login.uris = [{ match: null, uri: uri.trim() }]
+    }
+  }
+
+  return payload
 }
