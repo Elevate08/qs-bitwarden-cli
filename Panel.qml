@@ -2001,10 +2001,10 @@ Panel {
 
                 Text {
                   anchors.horizontalCenter: parent.horizontalCenter
-                  text: root.items.length === 0 ? "󰒃" : "󰍡"
+                  text: root.items.length === 0 ? "󰞀" : "󰍡"
                   color: root.dim
                   font.family: root.fontFamily
-                  font.pixelSize: Style.space(32)
+                  font.pixelSize: Style.space(36)
                 }
 
                 Text {
