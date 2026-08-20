@@ -1,4 +1,4 @@
-# Bitwarden Plugin for Omarchy Shell
+# quickshell-bitwarden-cli
 
 A native, high-performance Bitwarden password manager widget and panel for [Omarchy](https://omarchy.org/) powered by [Quickshell](https://quickshell.org/) and the official [Bitwarden CLI](https://bitwarden.com/help/bitwarden-cli/) (`bw`).
 
@@ -61,11 +61,11 @@ sudo pacman -S bitwarden-cli wl-clipboard libsecret
 
 ### 2. Plugin Installation
 
-Clone or place the plugin repository in `~/projects/qs-bitwarden-cli` and symlink it to Omarchy's user plugin directory:
+Clone or place the plugin repository in `~/projects/quickshell-bitwarden-cli` and symlink it to Omarchy's user plugin directory:
 
 ```bash
 mkdir -p ~/.config/omarchy/plugins
-ln -s ~/projects/qs-bitwarden-cli ~/.config/omarchy/plugins/qs-bitwarden-cli
+ln -s ~/projects/quickshell-bitwarden-cli ~/.config/omarchy/plugins/quickshell-bitwarden-cli
 ```
 
 ### 3. Add to Bar Configuration
@@ -73,8 +73,8 @@ ln -s ~/projects/qs-bitwarden-cli ~/.config/omarchy/plugins/qs-bitwarden-cli
 Add the plugin to your `~/.config/omarchy/shell.json` in the status bar layout:
 
 ```bash
-omarchy plugin enable qs-bitwarden-cli
-omarchy bar move qs-bitwarden-cli --section right
+omarchy plugin enable quickshell-bitwarden-cli
+omarchy bar move quickshell-bitwarden-cli --section right
 ```
 
 Or edit `~/.config/omarchy/shell.json` directly:
@@ -82,7 +82,7 @@ Or edit `~/.config/omarchy/shell.json` directly:
 ```json
 {
   "plugins": {
-    "qs-bitwarden-cli": {
+    "quickshell-bitwarden-cli": {
       "autoLockMinutes": 15,
       "clearClipboardSec": 30,
       "rememberSession": true
@@ -91,7 +91,7 @@ Or edit `~/.config/omarchy/shell.json` directly:
   "bar": {
     "layout": {
       "right": [
-        "qs-bitwarden-cli"
+        "quickshell-bitwarden-cli"
       ]
     }
   }
@@ -103,7 +103,7 @@ Or edit `~/.config/omarchy/shell.json` directly:
 To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + B`), add the binding to `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + B", "Bitwarden vault", "omarchy-shell shell toggle qs-bitwarden-cli")
+o.bind("SUPER + B", "Bitwarden vault", "omarchy-shell shell toggle quickshell-bitwarden-cli")
 ```
 
 Apply changes by restarting the shell:
@@ -155,29 +155,29 @@ You can control and query the Bitwarden plugin from the terminal, scripts, or wi
 
 ```bash
 # Toggle the popup panel
-omarchy-shell shell toggle qs-bitwarden-cli
+omarchy-shell shell toggle quickshell-bitwarden-cli
 
 # Open the popup panel
-omarchy-shell shell open qs-bitwarden-cli
+omarchy-shell shell open quickshell-bitwarden-cli
 
 # Close the popup panel
-omarchy-shell shell close qs-bitwarden-cli
+omarchy-shell shell close quickshell-bitwarden-cli
 
 # Lock the vault immediately
-omarchy-shell shell call qs-bitwarden-cli lock '{}'
+omarchy-shell shell call quickshell-bitwarden-cli lock '{}'
 
 # Trigger a vault sync with Bitwarden cloud
-omarchy-shell shell call qs-bitwarden-cli sync '{}'
+omarchy-shell shell call quickshell-bitwarden-cli sync '{}'
 
 # Query vault status ("unlocked" | "locked" | "unauthenticated")
-omarchy-shell shell call qs-bitwarden-cli status '{}'
+omarchy-shell shell call quickshell-bitwarden-cli status '{}'
 ```
 
 ---
 
 ## Configuration Reference
 
-The following settings can be configured under `plugins.qs-bitwarden-cli` in `~/.config/omarchy/shell.json`:
+The following settings can be configured under `plugins.quickshell-bitwarden-cli` in `~/.config/omarchy/shell.json`:
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |

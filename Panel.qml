@@ -9,8 +9,8 @@ import "BitwardenModel.js" as Model
 
 Panel {
   id: root
-  moduleName: "qs-bitwarden-cli"
-  ipcTarget: "qs-bitwarden-cli"
+  moduleName: "quickshell-bitwarden-cli"
+  ipcTarget: "quickshell-bitwarden-cli"
   manageIpc: false
 
   implicitWidth: button.implicitWidth
@@ -977,7 +977,7 @@ Panel {
   // -------------------------------------------------------------------------
 
   IpcHandler {
-    target: "qs-bitwarden-cli"
+    target: "quickshell-bitwarden-cli"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
