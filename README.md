@@ -23,10 +23,11 @@ A native, high-performance Bitwarden password manager widget and panel for [Omar
     - **Custom Server Support**: Works seamlessly with official Bitwarden servers and self-hosted Vaultwarden instances.
     - Optional quick-launch button for interactive terminal login (`bw login`).
 
-- **Sequential Password → TOTP Copy on <kbd>Enter</kbd>**:
-  - Selecting a login item and pressing <kbd>Enter</kbd> immediately copies the **Password** to your clipboard.
-  - If the login item has a TOTP 2FA secret configured, a follow-up action banner activates for 8 seconds with a live countdown:
-    - Pressing <kbd>Enter</kbd> a second time (or pressing <kbd>t</kbd>) immediately copies the live 6-digit **TOTP code** to your clipboard.
+- **Smart Auto-Copy TOTP Flow on <kbd>Enter</kbd>**:
+  - Selecting a login item and pressing <kbd>Enter</kbd> copies the **Password** to the clipboard and automatically closes the panel, returning focus immediately to your target application so you can paste (<kbd>Ctrl+V</kbd>) and submit.
+  - If the item has a TOTP 2FA secret configured, the plugin automatically copies the live 6-digit **TOTP code** to your clipboard after a brief delay (default: 3s) and displays a desktop notification:
+    - You can immediately paste the TOTP code into the 2FA prompt without ever reopening or refocusing the plugin!
+    - If you prefer manual progression, pressing <kbd>Enter</kbd> or <kbd>t</kbd> while the follow-up banner is active also copies the code immediately.
 
 - **Full Add, Edit & Delete (CRUD) Operations**:
   - **Create Items (`n` key or `+` button)**: Add new **Logins** (`󰌋`) or **Secure Notes** (`󰈐`).
@@ -184,6 +185,8 @@ The following settings can be configured under `plugins.quickshell-bitwarden-cli
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). |
 | `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). |
 | `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. |
+| `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). |
+| `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 
 ---
 

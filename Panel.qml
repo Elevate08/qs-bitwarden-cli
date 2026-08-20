@@ -20,6 +20,8 @@ Panel {
   readonly property int autoLockMinutes: Number(setting("autoLockMinutes", 15))
   readonly property int clearClipboardSec: Number(setting("clearClipboardSec", 30))
   readonly property bool rememberSession: Boolean(setting("rememberSession", true))
+  readonly property int autoCopyTotpSec: Number(setting("autoCopyTotpSec", 3))
+  readonly property bool closeOnCopy: Boolean(setting("closeOnCopy", true))
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -673,7 +675,7 @@ Panel {
     }
   }
 
-  // Smart sequential Enter handler: Copies Password, then arms TOTP on follow-up
+  // Smart sequential Enter handler: Copies Password, then arms and auto-copies TOTP
   function handleSmartEnter(item) {
     if (!item) return
 
@@ -681,18 +683,28 @@ Panel {
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id) {
       copyTotpCode(item)
       totpFollowupActive = false
+      if (closeOnCopy) close()
       return
     }
 
     // Step 1: Copy password
     copyPassword(item)
 
-    // Step 2: If item has TOTP, arm sequential follow-up!
+    // Step 2: If item has TOTP, arm follow-up and schedule auto-copy!
     if (item.hasTotp) {
       totpFollowupItem = item
       totpFollowupActive = true
       fetchTotp(item.id)
       totpFollowupTimer.restart()
+
+      if (autoCopyTotpSec > 0) {
+        autoTotpTimer.interval = autoCopyTotpSec * 1000
+        autoTotpTimer.restart()
+      }
+    }
+
+    if (closeOnCopy) {
+      close()
     }
   }
 
@@ -771,6 +783,20 @@ Panel {
     id: totpFollowupTimer
     interval: 8000
     onTriggered: root.totpFollowupActive = false
+  }
+
+  Timer {
+    id: autoTotpTimer
+    repeat: false
+    onTriggered: {
+      if (root.totpFollowupItem && root.totpFollowupItem.hasTotp) {
+        root.copyTotpCode(root.totpFollowupItem)
+        var codeStr = root.totpFollowupCode || root.liveTotp
+        var msg = codeStr ? ("2FA Code: " + codeStr + " (Ready to paste!)") : "2FA verification code ready to paste!"
+        Quickshell.execDetached(["notify-send", "-a", "Bitwarden", "-i", "dialog-password", "-t", "4000", "󰄬 TOTP Code Copied", msg])
+        root.totpFollowupActive = false
+      }
+    }
   }
 
   Timer {

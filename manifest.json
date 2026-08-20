@@ -21,7 +21,9 @@
     "defaults": {
       "autoLockMinutes": 15,
       "clearClipboardSec": 30,
-      "rememberSession": true
+      "rememberSession": true,
+      "autoCopyTotpSec": 3,
+      "closeOnCopy": true
     },
     "schema": [
       {
@@ -49,6 +51,23 @@
         "type": "boolean",
         "label": "Remember session in OS keyring",
         "description": "Store session key in libsecret OS keyring while unlocked",
+        "defaultValue": true
+      },
+      {
+        "key": "autoCopyTotpSec",
+        "type": "integer",
+        "label": "Auto-copy TOTP delay (seconds)",
+        "description": "Automatically copy TOTP 2FA code to clipboard after copying password (0 to disable)",
+        "min": 0,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 3
+      },
+      {
+        "key": "closeOnCopy",
+        "type": "boolean",
+        "label": "Close panel on Enter copy",
+        "description": "Automatically close panel after selecting an item with Enter",
         "defaultValue": true
       }
     ]
