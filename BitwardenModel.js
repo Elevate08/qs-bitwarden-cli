@@ -537,3 +537,94 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
 
   return payload
 }
+
+// -------------------------------------------------------------------------
+// Context-Aware Window & Active Tab Matching
+// -------------------------------------------------------------------------
+
+function cleanWindowContext(windowData) {
+  if (!windowData) return null
+  var cls = String(windowData.class || windowData.initialClass || "").toLowerCase()
+  var title = String(windowData.title || windowData.initialTitle || "").trim()
+  if (!cls && !title) return null
+
+  var isBrowser = /chrome|firefox|brave|chromium|zen|edge|vivaldi/i.test(cls)
+
+  // Clean browser branding suffixes
+  var cleanTitle = title.replace(/\s*[-—|•]\s*(Google Chrome|Mozilla Firefox|Brave|Chromium|Vivaldi|Zen Browser|Microsoft Edge)$/i, "").trim()
+  // Strip common login/welcome phrases
+  cleanTitle = cleanTitle.replace(/^(Log in to|Sign in to|Log In -|Sign In -|Login to|Welcome to|Sign in ·|Log in ·)\s*/i, "").trim()
+
+  var displayName = cleanTitle || cls
+  if (displayName.length > 32) {
+    displayName = displayName.slice(0, 29) + "..."
+  }
+
+  return {
+    cls: cls,
+    title: cleanTitle,
+    rawTitle: title,
+    displayName: displayName,
+    isBrowser: isBrowser
+  }
+}
+
+function findContextualMatches(items, windowData) {
+  var ctx = cleanWindowContext(windowData)
+  if (!ctx || !Array.isArray(items) || items.length === 0) {
+    return { matches: [], context: ctx }
+  }
+
+  var titleLower = ctx.title.toLowerCase()
+  var clsLower = ctx.cls.toLowerCase()
+  var scored = []
+
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i]
+    if (!item) continue
+    var score = 0
+    var itemName = String(item.name || "").toLowerCase()
+
+    // 1. URI domain / host match
+    if (item.uris && item.uris.length > 0) {
+      for (var u = 0; u < item.uris.length; u++) {
+        var uri = String(item.uris[u] || "").toLowerCase()
+        var hostMatch = uri.match(/(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/i)
+        if (hostMatch) {
+          var domain = hostMatch[1]
+          var domainParts = domain.split(".")
+          var rootDomain = domainParts.length >= 2 ? domainParts[domainParts.length - 2] : domain
+          if (rootDomain.length >= 3 && (titleLower.indexOf(rootDomain) >= 0 || titleLower.indexOf(domain) >= 0)) {
+            score = Math.max(score, 100)
+          }
+        }
+      }
+    }
+
+    // 2. Direct name match in title
+    if (itemName.length >= 3 && titleLower.indexOf(itemName) >= 0) {
+      score = Math.max(score, 90)
+    }
+
+    // 3. Non-browser App class match (e.g. Discord, Spotify, Telegram)
+    if (!ctx.isBrowser && itemName.length >= 3 && (clsLower.indexOf(itemName) >= 0 || itemName.indexOf(clsLower) >= 0)) {
+      score = Math.max(score, 85)
+    }
+
+    if (score > 0) {
+      scored.push({ item: item, score: score })
+    }
+  }
+
+  // Sort by score descending
+  scored.sort(function(a, b) { return b.score - a.score })
+  var matchedItems = []
+  for (var m = 0; m < scored.length; m++) {
+    matchedItems.push(scored[m].item)
+  }
+
+  return {
+    matches: matchedItems,
+    context: ctx
+  }
+}

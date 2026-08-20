@@ -23,7 +23,8 @@
       "clearClipboardSec": 30,
       "rememberSession": true,
       "autoCopyTotpSec": 3,
-      "closeOnCopy": true
+      "closeOnCopy": true,
+      "suggestOnOpen": true
     },
     "schema": [
       {
@@ -68,6 +69,13 @@
         "type": "boolean",
         "label": "Close panel on Enter copy",
         "description": "Automatically close panel after selecting an item with Enter",
+        "defaultValue": true
+      },
+      {
+        "key": "suggestOnOpen",
+        "type": "boolean",
+        "label": "Contextual password suggestions",
+        "description": "Automatically match active window / browser tab to vault items on open",
         "defaultValue": true
       }
     ]

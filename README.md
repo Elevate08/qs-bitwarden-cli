@@ -23,6 +23,11 @@ A native, high-performance Bitwarden password manager widget and panel for [Omar
     - **Custom Server Support**: Works seamlessly with official Bitwarden servers and self-hosted Vaultwarden instances.
     - Optional quick-launch button for interactive terminal login (`bw login`).
 
+- **Context-Aware Password Suggestions (Active Window / Browser Tab)**:
+  - Automatically queries the active window or browser tab on open (`hyprctl activewindow -j`).
+  - Matches current web domains and application names against your vault items by URL and Title.
+  - Places a highlighted **`󰌠 Suggested for <App / Website>`** banner and pins matching credentials to the top of the list with pre-selection, so pressing <kbd>Enter</kbd> immediately copies the right credential.
+
 - **Smart Auto-Copy TOTP Flow on <kbd>Enter</kbd>**:
   - Selecting a login item and pressing <kbd>Enter</kbd> copies the **Password** to the clipboard and automatically closes the panel, returning focus immediately to your target application so you can paste (<kbd>Ctrl+V</kbd>) and submit.
   - If the item has a TOTP 2FA secret configured, the plugin automatically copies the live 6-digit **TOTP code** to your clipboard after a brief delay (default: 3s) and displays a desktop notification:
@@ -101,10 +106,10 @@ Or edit `~/.config/omarchy/shell.json` directly:
 
 ### 4. Global Hotkey Configuration
 
-To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + B`), add the binding to `~/.config/hypr/bindings.lua`:
+To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + L`), add the binding to `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + B", "Bitwarden vault", "omarchy-shell shell toggle quickshell-bitwarden-cli")
+o.bind("SUPER + CTRL + L", "Bitwarden vault", "omarchy-shell shell toggle quickshell-bitwarden-cli")
 ```
 
 Apply changes by restarting the shell:
@@ -187,6 +192,7 @@ The following settings can be configured under `plugins.quickshell-bitwarden-cli
 | `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. |
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
+| `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 
 ---
 

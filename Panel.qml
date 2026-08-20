@@ -22,6 +22,7 @@ Panel {
   readonly property bool rememberSession: Boolean(setting("rememberSession", true))
   readonly property int autoCopyTotpSec: Number(setting("autoCopyTotpSec", 3))
   readonly property bool closeOnCopy: Boolean(setting("closeOnCopy", true))
+  readonly property bool suggestOnOpen: Boolean(setting("suggestOnOpen", true))
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -88,6 +89,12 @@ Panel {
   property string flashMessage: ""
   property bool cursorActive: false
 
+  // Contextual suggestions state
+  property var activeWindowData: null
+  property var detectedContext: null
+  property var suggestedItems: []
+  property bool suggestionsDismissed: false
+
   // Visual styles
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -124,6 +131,8 @@ Panel {
     showDeleteConfirm = false
     totpFollowupActive = false
     isUnlocking = false
+    suggestionsDismissed = false
+    detectActiveWindowContext()
     root.controller.show()
     focusAppropriateField()
     if (status !== "locked" && status !== "unlocked") {
@@ -147,6 +156,25 @@ Panel {
     else open()
   }
 
+  function detectActiveWindowContext() {
+    if (!suggestOnOpen) return
+    activeWindowProc.running = true
+  }
+
+  function handleActiveWindowDetected(data) {
+    activeWindowData = data
+    if (!suggestOnOpen || items.length === 0) {
+      suggestedItems = []
+      detectedContext = null
+      rebuildFilter()
+      return
+    }
+    var res = Model.findContextualMatches(items, data)
+    detectedContext = res.context
+    suggestedItems = res.matches
+    rebuildFilter()
+  }
+
   function focusAppropriateField() {
     Qt.callLater(function() {
       if (status === "unlocked" && currentScreen === "main") {
@@ -162,6 +190,7 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       focusAppropriateField()
+      detectActiveWindowContext()
       if (status === "unlocked") {
         currentScreen = "main"
         loadItems()
@@ -435,7 +464,11 @@ Panel {
   function onListFinished(rawJson) {
     isLoading = false
     items = Model.parseItems(rawJson)
-    rebuildFilter()
+    if (activeWindowData) {
+      handleActiveWindowDetected(activeWindowData)
+    } else {
+      rebuildFilter()
+    }
   }
 
   function loadOrganizations() {
@@ -612,7 +645,26 @@ Panel {
   // -------------------------------------------------------------------------
 
   function rebuildFilter() {
-    filteredItems = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg)
+    var baseList = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg)
+    if (searchQuery.trim() === "" && selectedCategory === "all" && selectedOrg === "all" && !suggestionsDismissed && suggestedItems.length > 0) {
+      var suggestedIds = {}
+      var topMatches = []
+      for (var s = 0; s < suggestedItems.length; s++) {
+        var sItem = Object.assign({}, suggestedItems[s], { isSuggested: true })
+        topMatches.push(sItem)
+        suggestedIds[sItem.id] = true
+      }
+      var otherItems = []
+      for (var o = 0; o < baseList.length; o++) {
+        if (!suggestedIds[baseList[o].id]) {
+          otherItems.push(baseList[o])
+        }
+      }
+      filteredItems = topMatches.concat(otherItems)
+    } else {
+      filteredItems = baseList
+    }
+
     if (selectedIndex >= filteredItems.length) {
       selectedIndex = Math.max(0, filteredItems.length - 1)
     }
@@ -957,6 +1009,26 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onTotpFinished(text)
+    }
+  }
+
+  Process {
+    id: activeWindowProc
+    command: ["hyprctl", "activewindow", "-j"]
+    stdout: StdioCollector {
+      id: activeWindowStdout
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0 && activeWindowStdout.text) {
+        try {
+          var data = JSON.parse(activeWindowStdout.text)
+          root.handleActiveWindowDetected(data)
+        } catch (e) {
+          root.suggestedItems = []
+          root.detectedContext = null
+        }
+      }
     }
   }
 
@@ -1848,6 +1920,57 @@ Panel {
             }
           }
 
+          // Contextual Suggestion Banner
+          BorderSurface {
+            visible: root.suggestedItems.length > 0 && !root.suggestionsDismissed && root.searchQuery.trim() === "" && root.detectedContext !== null
+            width: parent.width
+            implicitHeight: Style.space(28)
+            radius: Style.cornerRadius
+            color: Style.selectedFillFor(root.fg, Color.accent)
+            borderSpec: Border.controlSpec("normal", Color.accent, Color.accent)
+
+            Row {
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(8)
+              anchors.rightMargin: Style.space(6)
+              spacing: Style.space(6)
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "󰌠"
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Suggested for " + (root.detectedContext ? root.detectedContext.displayName : "active window")
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                elide: Text.ElideRight
+                width: parent.width - Style.space(60)
+              }
+
+              Item { Layout.fillWidth: true }
+
+              PanelActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "󰅖"
+                tooltipText: "Dismiss suggestion"
+                fontFamily: root.fontFamily
+                size: Style.space(18)
+                fontSize: Style.font.caption
+                onClicked: {
+                  root.suggestionsDismissed = true
+                  root.rebuildFilter()
+                }
+              }
+            }
+          }
+
           PanelSeparator { width: parent.width }
 
           // Item List View (Fast Virtualized ListView with Delegate Recycling)
@@ -1935,6 +2058,15 @@ Panel {
                       width: parent.width
 
                       Text {
+                        visible: Boolean(itemData.isSuggested)
+                        text: "󰌠 Suggested"
+                        color: Color.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                      }
+
+                      Text {
                         visible: Boolean(itemData.organizationId)
                         text: "󰓹 Org"
                         color: Color.accent
@@ -1949,7 +2081,7 @@ Panel {
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                         elide: Text.ElideRight
-                        width: parent.width - (itemData.organizationId ? Style.space(40) : 0)
+                        width: parent.width - (itemData.organizationId ? Style.space(40) : 0) - (itemData.isSuggested ? Style.space(75) : 0)
                       }
                     }
                   }
