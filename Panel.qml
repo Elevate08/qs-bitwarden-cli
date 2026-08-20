@@ -793,7 +793,7 @@ Panel {
         root.copyTotpCode(root.totpFollowupItem)
         var codeStr = root.totpFollowupCode || root.liveTotp
         var msg = codeStr ? ("2FA Code: " + codeStr + " (Ready to paste!)") : "2FA verification code ready to paste!"
-        Quickshell.execDetached(["notify-send", "-a", "Bitwarden", "-i", "dialog-password", "-t", "4000", "󰄬 TOTP Code Copied", msg])
+        Quickshell.execDetached(["omarchy-notification-send", "-g", "󰞀", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", msg])
         root.totpFollowupActive = false
       }
     }
