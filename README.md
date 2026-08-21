@@ -92,7 +92,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 - **Folders**:
   - Filter by folder from the bottom filter bar: **All Folders**, **No Folder**, or any specific folder.
   - Items show their folder inline (`󰉋 Name`) when no folder filter is active.
-  - Assign a folder when creating or editing an item, including clearing an existing assignment, and create a new folder inline from the item form without leaving it.
+  - Assign a folder when creating or editing an item from an expandable list, including clearing an existing assignment, and create a new folder inline without leaving the form.
 
 - **Unified Bottom Filter Bar**:
   - Three identical buttons centred at the bottom -- **Folders**, **Organizations**, **Types** -- each showing its current selection, so the active filters are readable at a glance without opening anything.
@@ -100,6 +100,11 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Five options are visible at a time and the rest scroll underneath the pinned header.
   - Any action outside the drawer closes it -- selecting an item, searching, copying, syncing, locking or opening another screen -- so it never sits over the results.
   - Fully keyboard driven: <kbd>f</kbd> folders, <kbd>v</kbd> organizations, <kbd>i</kbd> types; <kbd>↑</kbd>/<kbd>↓</kbd> move through the options, <kbd>Enter</kbd> applies, <kbd>Esc</kbd> closes. The cursor starts on the option already active, so <kbd>Enter</kbd> changes nothing by accident.
+
+- **Organizations & Collections**:
+  - The item form picks an organization from an expandable list, and reveals that organization's **collections** once one is chosen -- Bitwarden files org-owned items into collections rather than folders, and refuses to save one that is in none.
+  - Collections are a multi-select, since an item can belong to several. A lone collection is pre-selected, and the form says "pick at least one" before the CLI would.
+  - Choosing **My Vault** for an organization item clears both its organization and its collections.
 
 - **Multi-Organization & Vault Filtering**:
   - Automatically queries and displays organizations you belong to.
@@ -374,6 +379,7 @@ node tests/setup-settings.test.js   # dependency probe, settings writer, PIN cry
 node tests/generator.test.js        # generator option clamping and strength
 node tests/folders.test.js          # folder parsing, filtering and assignment
 node tests/sends.test.js            # Send payloads, parsing, and argv-safety
+node tests/collections.test.js      # organization collections and item ownership
 ```
 
 ---

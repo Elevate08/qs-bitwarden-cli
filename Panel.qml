@@ -83,6 +83,11 @@ Panel {
     : Style.space(30) + Math.min(filterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
   property string formFolderId: ""
   property string newFolderName: ""
+  // Which picker in the item form is expanded: "" | "folder" | "organization"
+  property string formPicker: ""
+  property var formCollections: []
+  property var formCollectionIds: []
+  property bool formCollectionsLoading: false
   property bool creatingFolder: false
   property string searchQuery: ""
   property string selectedCategory: "all"
@@ -1401,6 +1406,72 @@ Panel {
     else if (group === "types") { selectCategory(id); openFilterGroup = "" }
   }
 
+  function toggleFormPicker(which) {
+    formPicker = (formPicker === which) ? "" : which
+  }
+
+  function setFormFolder(id) {
+    formFolderId = id
+    formPicker = ""
+  }
+
+  // Changing owner invalidates the collection choice: collections belong to a
+  // single organization, and a personal item cannot have any.
+  function setFormOrganization(id) {
+    formOrgId = id
+    formPicker = ""
+    formCollectionIds = []
+    formCollections = []
+    if (id && id !== "personal" && id !== "all") loadOrgCollections(id)
+  }
+
+  function loadOrgCollections(orgId) {
+    if (!session || !orgId) return
+    formCollectionsLoading = true
+    orgCollectionsProc.command = Model.listOrgCollectionsCommand(orgId)
+    orgCollectionsProc.running = true
+  }
+
+  function onOrgCollectionsLoaded(raw) {
+    formCollectionsLoading = false
+    formCollections = Model.parseCollections(raw)
+    // A single collection is not a choice; pre-select it.
+    if (formCollections.length === 1 && formCollectionIds.length === 0) {
+      formCollectionIds = [formCollections[0].id]
+    }
+  }
+
+  function toggleFormCollection(id) {
+    var next = []
+    var found = false
+    for (var i = 0; i < formCollectionIds.length; i++) {
+      if (formCollectionIds[i] === id) found = true
+      else next.push(formCollectionIds[i])
+    }
+    if (!found) next.push(id)
+    formCollectionIds = next
+  }
+
+  function isFormCollectionSelected(id) {
+    for (var i = 0; i < formCollectionIds.length; i++) {
+      if (formCollectionIds[i] === id) return true
+    }
+    return false
+  }
+
+  function formFolderLabel() {
+    if (!formFolderId) return "No Folder"
+    return Model.folderName(folders, formFolderId) || "No Folder"
+  }
+
+  function formOrgLabel() {
+    if (!formOrgId || formOrgId === "personal") return "My Vault"
+    for (var i = 0; i < organizations.length; i++) {
+      if (organizations[i].id === formOrgId) return organizations[i].name
+    }
+    return "My Vault"
+  }
+
   function submitNewFolder() {
     var name = String(newFolderName || "").trim()
     if (!name) return
@@ -1510,6 +1581,10 @@ Panel {
     formOrgId = selectedOrg !== "all" ? selectedOrg : ""
     formFolderId = (selectedFolder !== "all" && selectedFolder !== "none") ? selectedFolder : ""
     newFolderName = ""
+    formPicker = ""
+    formCollections = []
+    formCollectionIds = []
+    if (formOrgId && formOrgId !== "personal") loadOrgCollections(formOrgId)
     formPasswordRevealed = false
     errorMessage = ""
     currentScreen = "edit"
@@ -1530,6 +1605,12 @@ Panel {
     formOrgId = item.organizationId || ""
     formFolderId = item.folderId || ""
     newFolderName = ""
+    formPicker = ""
+    formCollections = []
+    // Editing keeps whatever collections the item already has until changed.
+    formCollectionIds = (item.rawObject && item.rawObject.collectionIds)
+      ? item.rawObject.collectionIds.slice() : []
+    if (formOrgId && formOrgId !== "personal") loadOrgCollections(formOrgId)
     formPasswordRevealed = false
     errorMessage = ""
     currentScreen = "edit"
@@ -1543,9 +1624,11 @@ Panel {
   }
 
   function saveItemForm() {
-    var name = String(formName || "").trim()
-    if (!name) {
-      errorMessage = "Item title is required"
+    // Bitwarden refuses an organization item with no collection; say so here
+    // rather than letting the CLI fail after the form is gone.
+    var problem = Model.validateItemForm(formName, formOrgId, formCollectionIds)
+    if (problem) {
+      errorMessage = problem
       return
     }
 
@@ -1553,12 +1636,12 @@ Panel {
     isLoading = true
 
     if (formIsEditing) {
-      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId)
+      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
       itemPayloadJson = JSON.stringify(editPayload)
       editItemProc.command = Model.editItemCommand(formItemId)
       editItemProc.running = true
     } else {
-      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId)
+      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
       itemPayloadJson = JSON.stringify(createPayload)
       createItemProc.command = Model.createItemCommand(createPayload)
       createItemProc.running = true
@@ -1959,6 +2042,16 @@ Panel {
       waitForEnd: true
       onStreamFinished: root.onListFoldersFinished(text)
     }
+  }
+
+  Process {
+    id: orgCollectionsProc
+    environment: root.bwEnv()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onOrgCollectionsLoaded(text)
+    }
+    onExited: function(exitCode) { if (exitCode !== 0) root.formCollectionsLoading = false }
   }
 
   Process {
@@ -5588,37 +5681,64 @@ Panel {
                 }
               }
 
-              // FIELD: Folder
+              // FIELD: Folder -- expandable list rather than a wrapping row of
+              // buttons, which grew unreadable once a vault had more than a few.
               Column {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { text: "FOLDER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
-                Flow {
+                Button {
                   width: parent.width
-                  spacing: Style.space(6)
+                  text: root.formFolderLabel()
+                  iconText: root.formPicker === "folder" ? "\u{F0140}" : "\u{F024B}"
+                  selected: root.formPicker === "folder"
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  leftAlign: true
+                  onClicked: root.toggleFormPicker("folder")
+                }
 
-                  Button {
-                    text: "No Folder"
-                    iconText: "󰉖"
-                    selected: !root.formFolderId
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.caption
-                    horizontalPadding: Style.space(8)
-                    onClicked: root.formFolderId = ""
-                  }
+                Flickable {
+                  id: folderPickList
+                  visible: root.formPicker === "folder"
+                  width: parent.width
+                  height: visible ? Math.min(Style.space(150), folderPickCol.implicitHeight) : 0
+                  contentWidth: width
+                  contentHeight: folderPickCol.implicitHeight
+                  clip: true
+                  boundsBehavior: Flickable.StopAtBounds
+                  flickableDirection: Flickable.VerticalFlick
+                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                  Repeater {
-                    model: root.folders
-                    delegate: Button {
-                      required property var modelData
-                      text: modelData.name
-                      iconText: "󰉋"
-                      selected: root.formFolderId === modelData.id
+                  Column {
+                    id: folderPickCol
+                    width: folderPickList.width
+                    spacing: Style.space(2)
+
+                    FormPickerRow {
+                      width: parent.width
+                      foreground: root.fg
                       fontFamily: root.fontFamily
-                      fontSize: Style.font.caption
-                      horizontalPadding: Style.space(8)
-                      onClicked: root.formFolderId = modelData.id
+                      label: "No Folder"
+                      glyph: "\u{F0256}"
+                      picked: !root.formFolderId
+                      onActivated: root.setFormFolder("")
+                    }
+
+                    Repeater {
+                      model: root.folders
+                      delegate: FormPickerRow {
+                        required property var modelData
+                        width: parent.width
+                        foreground: root.fg
+                        fontFamily: root.fontFamily
+                        label: modelData.name
+                        glyph: "\u{F024B}"
+                        picked: root.formFolderId === modelData.id
+                        onActivated: root.setFormFolder(modelData.id)
+                      }
                     }
                   }
                 }
@@ -5639,7 +5759,7 @@ Panel {
 
                   Button {
                     text: root.creatingFolder ? "Adding..." : "Add"
-                    iconText: root.creatingFolder ? "󰑐" : "󰐕"
+                    iconText: root.creatingFolder ? "\u{F0450}" : "\u{F0415}"
                     iconSpinning: root.creatingFolder
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption
@@ -5649,31 +5769,141 @@ Panel {
                 }
               }
 
-              // FIELD: Vault / Organization Selector
+              // FIELD: Organization, and the collections it files items into.
               Column {
                 visible: root.organizations.length > 0
                 width: parent.width
                 spacing: Style.space(3)
-                Text { text: "ORGANIZATION / VAULT"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                Row {
-                  spacing: Style.space(6)
-                  Button {
-                    text: "Personal Vault"
-                    iconText: ""
-                    selected: !root.formOrgId || root.formOrgId === "personal"
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.caption
-                    onClicked: root.formOrgId = ""
-                  }
-                  Repeater {
-                    model: root.organizations
-                    delegate: Button {
-                      text: modelData.name
-                      iconText: "󰓹"
-                      selected: root.formOrgId === modelData.id
+                Text { text: "ORGANIZATION"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+
+                Button {
+                  width: parent.width
+                  text: root.formOrgLabel()
+                  iconText: root.formPicker === "organization" ? "\u{F0140}" : "\u{F0991}"
+                  selected: root.formPicker === "organization"
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  leftAlign: true
+                  onClicked: root.toggleFormPicker("organization")
+                }
+
+                Flickable {
+                  id: orgPickList
+                  visible: root.formPicker === "organization"
+                  width: parent.width
+                  height: visible ? Math.min(Style.space(150), orgPickCol.implicitHeight) : 0
+                  contentWidth: width
+                  contentHeight: orgPickCol.implicitHeight
+                  clip: true
+                  boundsBehavior: Flickable.StopAtBounds
+                  flickableDirection: Flickable.VerticalFlick
+                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                  Column {
+                    id: orgPickCol
+                    width: orgPickList.width
+                    spacing: Style.space(2)
+
+                    FormPickerRow {
+                      width: parent.width
+                      foreground: root.fg
                       fontFamily: root.fontFamily
-                      fontSize: Style.font.caption
-                      onClicked: root.formOrgId = modelData.id
+                      label: "My Vault"
+                      glyph: "\u{F0004}"
+                      picked: !root.formOrgId || root.formOrgId === "personal"
+                      onActivated: root.setFormOrganization("")
+                    }
+
+                    Repeater {
+                      model: root.organizations
+                      delegate: FormPickerRow {
+                        required property var modelData
+                        width: parent.width
+                        foreground: root.fg
+                        fontFamily: root.fontFamily
+                        label: modelData.name
+                        glyph: "\u{F0991}"
+                        picked: root.formOrgId === modelData.id
+                        onActivated: root.setFormOrganization(modelData.id)
+                      }
+                    }
+                  }
+                }
+
+                // Collections only exist for org-owned items, and Bitwarden
+                // requires at least one, so this appears with the choice.
+                Column {
+                  visible: Boolean(root.formOrgId) && root.formOrgId !== "personal"
+                  width: parent.width
+                  spacing: Style.space(3)
+
+                  Item { width: 1; height: Style.space(4) }
+
+                  Row {
+                    width: parent.width
+                    spacing: Style.space(6)
+                    Text {
+                      text: "COLLECTIONS"
+                      color: root.formCollectionIds.length === 0 ? root.urgent : root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+                    Text {
+                      text: root.formCollectionsLoading
+                        ? "loading..."
+                        : (root.formCollectionIds.length === 0
+                            ? "pick at least one"
+                            : root.formCollectionIds.length + " selected")
+                      color: root.formCollectionIds.length === 0 ? root.urgent : root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  Flickable {
+                    id: collectionList
+                    width: parent.width
+                    height: Math.min(Style.space(150), collectionCol.implicitHeight)
+                    contentWidth: width
+                    contentHeight: collectionCol.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.VerticalFlick
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    Column {
+                      id: collectionCol
+                      width: collectionList.width
+                      spacing: Style.space(2)
+
+                      Text {
+                        visible: !root.formCollectionsLoading && root.formCollections.length === 0
+                        width: parent.width
+                        text: "No collections available in this organization."
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        wrapMode: Text.WordWrap
+                      }
+
+                      Repeater {
+                        model: root.formCollections
+                        delegate: FormPickerRow {
+                          required property var modelData
+                          width: parent.width
+                          foreground: root.fg
+                          fontFamily: root.fontFamily
+                          label: modelData.name
+                          glyph: "\u{F0290}"
+                          picked: root.isFormCollectionSelected(modelData.id)
+                          // Several collections may hold one item, so these
+                          // toggle instead of replacing the choice.
+                          multi: true
+                          onActivated: root.toggleFormCollection(modelData.id)
+                        }
+                      }
                     }
                   }
                 }

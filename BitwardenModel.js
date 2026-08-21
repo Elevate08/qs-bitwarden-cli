@@ -171,6 +171,46 @@ function listFoldersCommand(session) {
   return buildCommand(["list", "folders"])
 }
 
+// An organization's collections. Bitwarden files org-owned items into
+// collections rather than folders, and refuses to create one without at least
+// one collection, so the form has to offer them.
+function listOrgCollectionsCommand(organizationId) {
+  return buildCommand(["list", "org-collections", "--organizationid", String(organizationId)])
+}
+
+function parseCollections(raw) {
+  var arr = null
+  try {
+    arr = JSON.parse(raw)
+  } catch (e) {
+    return []
+  }
+  if (!Array.isArray(arr)) return []
+
+  var out = []
+  for (var i = 0; i < arr.length; i++) {
+    var c = arr[i]
+    if (!c || typeof c !== "object" || !c.id) continue
+    out.push({
+      id: String(c.id),
+      name: String(c.name || "Collection"),
+      organizationId: c.organizationId ? String(c.organizationId) : ""
+    })
+  }
+  out.sort(function(a, b) {
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  })
+  return out
+}
+
+function collectionName(collections, id) {
+  if (!id || !Array.isArray(collections)) return ""
+  for (var i = 0; i < collections.length; i++) {
+    if (collections[i].id === id) return collections[i].name
+  }
+  return ""
+}
+
 function createFolderCommand(name, session) {
   var jsonStr = JSON.stringify({ name: String(name || "").trim() })
   var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder"
@@ -687,6 +727,16 @@ function filterItems(items, query, category, selectedOrg, selectedFolder) {
   return out
 }
 
+// Returns "" when the form is savable, or the reason it is not.
+function validateItemForm(name, organizationId, collectionIds) {
+  if (!String(name || "").trim()) return "Item title is required"
+  var isOrg = organizationId && organizationId !== "personal" && organizationId !== "all"
+  if (isOrg && (!Array.isArray(collectionIds) || collectionIds.length === 0)) {
+    return "Pick at least one collection for an organization item"
+  }
+  return ""
+}
+
 function maskString(str) {
   if (!str) return ""
   return "•".repeat(Math.min(str.length, 16))
@@ -721,7 +771,7 @@ function generatePassword(length, upper, lower, numbers, special) {
 // Payload Builders for Create & Edit
 // -------------------------------------------------------------------------
 
-function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId) {
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
   var payload = {
     type: Number(typeCode || 1),
     name: String(name || "Untitled").trim(),
@@ -729,6 +779,14 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
     favorite: Boolean(favorite),
     organizationId: organizationId && organizationId !== "personal" && organizationId !== "all" ? String(organizationId) : null,
     folderId: folderId && folderId !== "all" && folderId !== "none" ? String(folderId) : null
+  }
+
+  // Only org-owned items carry collections, and such an item must be in at
+  // least one -- Bitwarden rejects it otherwise. Omit the key entirely when
+  // none were chosen rather than sending an empty array, which would change
+  // what existing callers send.
+  if (payload.organizationId && Array.isArray(collectionIds) && collectionIds.length) {
+    payload.collectionIds = collectionIds.slice()
   }
 
   if (Number(typeCode) === 1) { // Login
@@ -749,17 +807,29 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
   return payload
 }
 
-function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId) {
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
   payload.name = String(name || "Untitled").trim()
   payload.notes = String(notes || "").trim()
   payload.favorite = Boolean(favorite)
+  // Set *and* clear. Only assigning meant picking "My Vault" for an item that
+  // belonged to an organization left it in the organization, so the form said
+  // one thing and the vault kept another.
   if (organizationId && organizationId !== "personal" && organizationId !== "all") {
     payload.organizationId = String(organizationId)
+  } else {
+    payload.organizationId = null
   }
   // An explicit empty selection means "no folder", so this must be able to
   // clear an existing assignment, not only set one.
   payload.folderId = folderId && folderId !== "all" && folderId !== "none" ? String(folderId) : null
+
+  if (payload.organizationId) {
+    payload.collectionIds = Array.isArray(collectionIds) && collectionIds.length
+      ? collectionIds.slice() : (payload.collectionIds || [])
+  } else {
+    delete payload.collectionIds
+  }
 
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}
