@@ -2669,8 +2669,10 @@ Panel {
           title: "Bitwarden"
           meta: {
             if (root.status === "unlocked") {
-              var count = root.filteredItems.length
-              return root.userEmail
+              // The email arrives with `bw status`, which lags the item list on
+              // a cold start and after a terminal-login handoff. Fall back to
+              // the count so the subtitle is never blank in that gap.
+              return root.userEmail || (root.filteredItems.length + " items")
             }
             if (root.status === "locked") return "Vault Locked"
             if (root.status === "checking") return "Checking status..."
