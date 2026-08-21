@@ -49,6 +49,10 @@ Panel {
 
   // Vault data
   property var items: []
+  // `bw list items` costs seconds on a large vault, so a reopen reuses what is
+  // already in memory until it goes stale. Any mutation reloads unconditionally.
+  property double itemsLoadedAt: 0
+  readonly property int itemsFreshMs: 60000
   property var filteredItems: []
   property var organizations: []
   property string selectedOrg: "all" // "all" | "personal" | orgId
@@ -154,13 +158,14 @@ Panel {
     isUnlocking = false
     suggestionsDismissed = false
     fingerprintMessage = ""
-    detectActiveWindowContext()
-    refreshFingerprintAvailability()
+
+    // controller.show() flips `opened`, which runs onPanelOpened via
+    // onOpenedChanged. Only drive it directly when the panel was already open
+    // and that signal will not fire -- otherwise every open did its startup
+    // work twice, including two `bw status` calls at ~3s each.
+    var wasOpen = opened
     root.controller.show()
-    focusAppropriateField()
-    if (status !== "locked" && status !== "unlocked") {
-      refreshStatus()
-    }
+    if (wasOpen) onPanelOpened()
   }
 
   function close() {
@@ -254,20 +259,22 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (opened) {
-      focusAppropriateField()
-      detectActiveWindowContext()
-      if (status === "unlocked") {
-        currentScreen = "main"
-        loadItems()
-        loadOrganizations()
-      } else if (status === "checking") {
-        refreshStatus()
-      } else if (status === "locked") {
-        startFingerprintUnlock()
-      }
+    if (opened) onPanelOpened()
+    else cancelFingerprintUnlock()
+  }
+
+  function onPanelOpened() {
+    focusAppropriateField()
+    detectActiveWindowContext()
+    refreshFingerprintAvailability()
+
+    if (status === "unlocked") {
+      currentScreen = "main"
+      ensureItemsFresh()
+    } else if (status === "locked") {
+      startFingerprintUnlock()
     } else {
-      cancelFingerprintUnlock()
+      refreshStatus()
     }
   }
 
@@ -324,8 +331,7 @@ Panel {
     if (st.unlocked) {
       status = "unlocked"
       currentScreen = "main"
-      loadItems()
-      loadOrganizations()
+      ensureItemsFresh()
       resetAutoLockTimer()
       focusAppropriateField()
     } else if (st.locked) {
@@ -637,6 +643,7 @@ Panel {
 
     session = ""
     masterPassword = ""
+    itemsLoadedAt = 0
     status = "locked"
     currentScreen = "locked"
     items = []
@@ -658,6 +665,17 @@ Panel {
   // Vault Data Operations
   // -------------------------------------------------------------------------
 
+  // Open-time load: skip the CLI entirely when the cached vault is still fresh.
+  function ensureItemsFresh() {
+    if (items.length > 0 && (Date.now() - itemsLoadedAt) < itemsFreshMs) {
+      if (activeWindowData) handleActiveWindowDetected(activeWindowData)
+      else rebuildFilter()
+      return
+    }
+    loadItems()
+    loadOrganizations()
+  }
+
   function loadItems() {
     if (!session) return
     isLoading = true
@@ -668,6 +686,7 @@ Panel {
   function onListFinished(rawJson) {
     isLoading = false
     items = Model.parseItems(rawJson)
+    itemsLoadedAt = Date.now()
     if (activeWindowData) {
       handleActiveWindowDetected(activeWindowData)
     } else {
