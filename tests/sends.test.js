@@ -137,15 +137,36 @@ for (const [name, build] of builders) {
 
 
 // --- terminal login handoff -------------------------------------------------
-const login = Model.terminalLoginCommand()[2]
+const login = Model.terminalLoginCommand("login")[2]
+const unlock = Model.terminalLoginCommand("unlock")[2]
 check("terminal login runs in a terminal", login.includes("omarchy launch terminal"), login.slice(0, 80))
 check("it falls back to a second terminal if the first is unavailable",
   login.includes("alacritty"), login.slice(0, 80))
 // --raw prints only the session key on stdout while prompts stay on stderr,
 // which is what lets the key be captured without breaking the interactive login.
 check("it captures the key with --raw", login.includes("--raw"), login.slice(0, 120))
-check("it logs in when logged out and unlocks when merely locked",
-  login.includes("bw login --raw") && login.includes("bw unlock --raw"), login.slice(0, 200))
+// The panel already knows which state it is in, so the terminal does not spend
+// a `bw status` round trip (~3.3s here) working it out before prompting.
+check("login mode runs bw login", login.includes("bw login --raw") && !login.includes("bw unlock"), login.slice(0, 200))
+check("unlock mode runs bw unlock", unlock.includes("bw unlock --raw") && !unlock.includes("bw login"), unlock.slice(0, 200))
+check("neither mode probes with bw status",
+  !login.includes("bw status") && !unlock.includes("bw status"), "expected no status probe")
+check("an unknown mode falls back to login",
+  Model.terminalLoginCommand("")[2].includes("bw login --raw"), "expected login")
+// Only the method name crosses the IPC boundary; the key never does.
+check("a successful login reopens the panel",
+  login.includes("omarchy-shell qs-bitwarden-cli open"), login.slice(0, 300))
+check("the session key is not passed over IPC",
+  !login.includes("open $f") && !login.includes("open \"$f\""), login.slice(0, 300))
+// The inner script appears twice -- once for the terminal, once for the
+// alacritty fallback -- so count pauses against failure branches rather than
+// assuming a single occurrence.
+check("the user is only made to press a key when the login failed",
+  login.split("read -p").length === login.split("Not completed").length,
+  `${login.split("read -p").length - 1} pauses vs ${login.split("Not completed").length - 1} failure branches`)
+check("a successful login closes the terminal on its own",
+  login.includes("Returning to the Bitwarden panel") && login.includes("sleep 1"),
+  "expected the success branch to close itself")
 // The key is a secret at rest: tmpfs, user-only, gone when the session ends.
 check("the handoff lives in XDG_RUNTIME_DIR, not on disk",
   login.includes("XDG_RUNTIME_DIR"), login.slice(0, 120))

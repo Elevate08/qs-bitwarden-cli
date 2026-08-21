@@ -129,16 +129,20 @@ function apiKeyLoginCommand(clientId, clientSecret, password, serverUrl) {
 var HANDOFF_DIR = "${XDG_RUNTIME_DIR:-/tmp}/qs-bitwarden-cli"
 var HANDOFF_FILE = HANDOFF_DIR + "/session-handoff"
 
-function terminalLoginCommand() {
-  var inner = "set -u; d=\"" + HANDOFF_DIR + "\"; mkdir -p \"$d\"; chmod 700 \"$d\"; umask 077; "
-    + "st=$(bw status 2>/dev/null | sed -n 's/.*\"status\":\"\\([a-z]*\\)\".*/\\1/p'); "
-    // Log in when logged out, unlock when merely locked: either way the panel
-    // gets a usable session instead of asking for the password again.
-    + "if [ \"$st\" = unauthenticated ] || [ -z \"$st\" ]; then bw login --raw > \"" + HANDOFF_FILE + "\"; "
-    + "else bw unlock --raw > \"" + HANDOFF_FILE + "\"; fi; "
-    + "if [ -s \"" + HANDOFF_FILE + "\" ]; then echo; echo 'Done. The Bitwarden panel will pick up this session.'; "
-    + "else rm -f \"" + HANDOFF_FILE + "\"; echo; echo 'Not completed -- nothing was handed to the panel.'; fi; "
-    + "read -p 'Press enter to close...'"
+// `mode` is "login" when logged out and "unlock" when merely locked. The panel
+// already knows which, so this does not probe with `bw status` first -- that
+// probe measured at ~3.3s, spent before the user was even shown a prompt.
+function terminalLoginCommand(mode) {
+  var verb = (mode === "unlock") ? "unlock" : "login"
+  var inner = "set -u; d=\"" + HANDOFF_DIR + "\"; f=\"" + HANDOFF_FILE + "\"; "
+    + "mkdir -p \"$d\"; chmod 700 \"$d\"; umask 077; "
+    + "if bw " + verb + " --raw > \"$f\" && [ -s \"$f\" ]; then "
+    // Bring the panel back itself rather than making the user find it again.
+    // Only the method name crosses this boundary; the key never does.
+    + "omarchy-shell qs-bitwarden-cli open >/dev/null 2>&1 || true; "
+    + "echo; echo 'Done. Returning to the Bitwarden panel...'; sleep 1; "
+    + "else rm -f \"$f\"; echo; echo 'Not completed -- nothing was handed to the panel.'; "
+    + "read -p 'Press enter to close...'; fi"
   var script = "omarchy launch terminal -e bash -c " + shellQuote(inner)
     + " || alacritty -e bash -c " + shellQuote(inner)
   return ["bash", "-c", script]

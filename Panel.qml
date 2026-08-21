@@ -371,6 +371,19 @@ Panel {
     if (handed) {
       session = handed
       if (rememberSession) keyringStoreProc.running = true
+
+      // bw minted this key moments ago, so trust it and start loading rather
+      // than spending another `bw status` (~3.3s) to be told what we know.
+      // The status check still runs, but alongside the loads instead of in
+      // front of them -- it only fills in the account email.
+      status = "unlocked"
+      currentScreen = "main"
+      itemsLoadedAt = 0
+      loadItems()
+      loadOrganizations()
+      loadFolders()
+      resetAutoLockTimer()
+      focusAppropriateField()
       statusProc.command = Model.statusCommand()
       statusProc.running = true
       flashNotification("Signed in from the terminal")
@@ -519,8 +532,11 @@ Panel {
   }
 
   function launchTerminalLogin() {
+    // The panel knows whether this is a login or an unlock, so the terminal
+    // does not have to spend a `bw status` round trip working it out.
+    var mode = (status === "locked") ? "unlock" : "login"
     close()
-    Quickshell.execDetached(Model.terminalLoginCommand())
+    Quickshell.execDetached(Model.terminalLoginCommand(mode))
   }
 
   function logoutAccount() {
