@@ -1360,6 +1360,29 @@ Panel {
     selectCategory(categories[nextIndex].id)
   }
 
+  // Every main-screen shortcut in one place. Reached two ways: bare letters
+  // when the list has focus, and Alt+letter from inside the search box, where
+  // a bare letter is search text and must stay that way.
+  function runShortcut(lower) {
+    var item = getSelectedItem()
+    switch (lower) {
+      case "y": case "p": if (item) copyPassword(item); return true
+      case "u": case "c": if (item) copyUsername(item); return true
+      case "m": if (item && item.hasTotp) copyTotpCode(item); return true
+      case "w": if (item && item.uris && item.uris.length > 0) openUrl(item.uris[0]); return true
+      case "e": if (item) openDetail(item); return true
+      case "n": startAddNewItem(); return true
+      case "l": lockVault(); return true
+      case "r": syncVault(); return true
+      case "f": toggleFilterGroup("folders"); return true
+      case "o": toggleFilterGroup("organizations"); return true
+      case "t": toggleFilterGroup("types"); return true
+      case "g": openGenerator(); return true
+      case "s": openSettings(); return true
+    }
+    return false
+  }
+
   function moveCursor(delta) {
     if (filteredItems.length === 0) return
     // Moving to an item means the user is done filtering; get the list out of
@@ -2097,36 +2120,8 @@ Panel {
       onTextKey: function(key) {
         var lower = String(key).toLowerCase()
         if (root.currentScreen === "main") {
-          var item = root.getSelectedItem()
-          if (lower === "y" || lower === "p") {
-            if (item) root.copyPassword(item)
-          } else if (lower === "u" || lower === "c") {
-            if (item) root.copyUsername(item)
-          } else if (lower === "m") {
-            if (item && item.hasTotp) root.copyTotpCode(item)
-          } else if (lower === "w") {
-            if (item && item.uris && item.uris.length > 0) root.openUrl(item.uris[0])
-          } else if (lower === "n") {
-            root.startAddNewItem()
-          } else if (lower === "e") {
-            if (item) root.openDetail(item)
-          } else if (lower === "l") {
-            root.lockVault()
-          } else if (lower === "r") {
-            root.syncVault()
-          } else if (lower === "f") {
-            root.toggleFilterGroup("folders")
-          } else if (lower === "o") {
-            root.toggleFilterGroup("organizations")
-          } else if (lower === "t") {
-            root.toggleFilterGroup("types")
-          } else if (lower === "g") {
-            root.openGenerator()
-          } else if (lower === "s") {
-            root.openSettings()
-          } else if (lower === "/") {
-            searchField.forceActiveFocus()
-          }
+          if (lower === "/") searchField.forceActiveFocus()
+          else root.runShortcut(lower)
         } else if (root.currentScreen === "detail") {
           if (lower === "y" || lower === "p") {
             if (root.detailPassword) root.copyToClipboard(root.detailPassword, "Password")
@@ -3698,6 +3693,14 @@ Panel {
                 root.selectedIndex = 0
                 root.closeFilterGroup()
                 searchDebounceTimer.restart()
+              }
+              // Alt+letter runs the same shortcuts without leaving the box.
+              Keys.onPressed: function(event) {
+                if (!(event.modifiers & Qt.AltModifier)) return
+                if (!event.text) return
+                if (root.runShortcut(String(event.text).toLowerCase())) {
+                  event.accepted = true
+                }
               }
               Keys.onDownPressed: {
                 keyCatcher.forceActiveFocus()

@@ -191,6 +191,10 @@ omarchy restart shell
 | <kbd>e</kbd> | Open detail inspector / **e**dit item |
 | <kbd>Esc</kbd> | Close the filter drawer, clear search, or close the panel |
 
+The panel opens with the list focused, so the single-letter shortcuts work straight away; press <kbd>/</kbd> to start typing a search.
+
+**While the search box has focus**, letters are search text -- that is what a text field should do. Hold <kbd>Alt</kbd> to reach the same shortcuts without leaving the box: <kbd>Alt</kbd>+<kbd>t</kbd> opens the types drawer with your query intact, <kbd>Alt</kbd>+<kbd>p</kbd> copies the highlighted item's password, and so on. <kbd>↓</kbd> also returns focus to the list.
+
 ### Detail Inspector View
 
 | Shortcut | Action |
