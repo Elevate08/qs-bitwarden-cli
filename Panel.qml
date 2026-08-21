@@ -2055,9 +2055,23 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0c: PIN SETUP
         // -------------------------------------------------------------------
-        Column {
+        // Scrolls rather than overflowing the panel: this screen is taller
+        // than the popup's height cap on smaller displays.
+        Flickable {
+          id: pinFlick
           visible: root.currentScreen === "pin"
           width: parent.width
+          height: Math.min(Style.space(520), pinCol.implicitHeight)
+          contentWidth: width
+          contentHeight: pinCol.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Column {
+            id: pinCol
+            width: pinFlick.width
           spacing: Style.space(12)
 
           PanelSeparator { width: parent.width }
@@ -2155,14 +2169,29 @@ Panel {
               }
             }
           }
+                  }
         }
 
         // -------------------------------------------------------------------
         // SCREEN 0a: SETUP WIZARD (missing dependencies)
         // -------------------------------------------------------------------
-        Column {
+        // Scrolls rather than overflowing the panel: this screen is taller
+        // than the popup's height cap on smaller displays.
+        Flickable {
+          id: setupFlick
           visible: root.currentScreen === "setup"
           width: parent.width
+          height: Math.min(Style.space(520), setupCol.implicitHeight)
+          contentWidth: width
+          contentHeight: setupCol.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Column {
+            id: setupCol
+            width: setupFlick.width
           spacing: Style.space(12)
 
           PanelSeparator { width: parent.width }
@@ -2320,14 +2349,29 @@ Panel {
               }
             }
           }
+                  }
         }
 
         // -------------------------------------------------------------------
         // SCREEN 0b: SETTINGS
         // -------------------------------------------------------------------
-        Column {
+        // Scrolls rather than overflowing the panel: this screen is taller
+        // than the popup's height cap on smaller displays.
+        Flickable {
+          id: settingsFlick
           visible: root.currentScreen === "settings"
           width: parent.width
+          height: Math.min(Style.space(520), settingsCol.implicitHeight)
+          contentWidth: width
+          contentHeight: settingsCol.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Column {
+            id: settingsCol
+            width: settingsFlick.width
           spacing: Style.space(10)
 
           PanelSeparator { width: parent.width }
@@ -2398,7 +2442,7 @@ Panel {
                 spacing: Style.space(10)
 
                 Column {
-                  width: parent.width - Style.space(130)
+                  width: parent.width - Style.space(modelData.type === "int" ? 200 : 130)
                   spacing: Style.space(2)
 
                   Text {
@@ -2428,6 +2472,15 @@ Panel {
                   foreground: root.fg
                   accent: Color.accent
                   onToggled: if (!blocked) root.writeSetting(modelData.key, !checked, "bool")
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: modelData.type === "int" && !!modelData.unit
+                  text: modelData.unit || ""
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
                 }
 
                 NumberField {
@@ -2492,6 +2545,7 @@ Panel {
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
           }
+                  }
         }
 
         // -------------------------------------------------------------------
