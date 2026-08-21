@@ -24,7 +24,8 @@
       "rememberSession": true,
       "autoCopyTotpSec": 3,
       "closeOnCopy": true,
-      "suggestOnOpen": true
+      "suggestOnOpen": true,
+      "fingerprintUnlock": false
     },
     "schema": [
       {
@@ -77,6 +78,13 @@
         "label": "Contextual password suggestions",
         "description": "Automatically match active window / browser tab to vault items on open",
         "defaultValue": true
+      },
+      {
+        "key": "fingerprintUnlock",
+        "type": "boolean",
+        "label": "Unlock with fingerprint",
+        "description": "Use an enrolled fingerprint to unlock the vault. Requires 'omarchy setup security fingerprint'. Stores your master password in the OS login keyring so a verified fingerprint can unlock the vault, the same trade-off as Bitwarden desktop biometrics. Turning this off deletes the stored password.",
+        "defaultValue": false
       }
     ]
   }

@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
+import Quickshell.Services.Pam
 import qs.Commons
 import qs.Ui
 import "BitwardenModel.js" as Model
@@ -23,6 +24,7 @@ Panel {
   readonly property int autoCopyTotpSec: Number(setting("autoCopyTotpSec", 3))
   readonly property bool closeOnCopy: Boolean(setting("closeOnCopy", true))
   readonly property bool suggestOnOpen: Boolean(setting("suggestOnOpen", true))
+  readonly property bool fingerprintUnlock: Boolean(setting("fingerprintUnlock", false))
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -89,11 +91,26 @@ Panel {
   property string flashMessage: ""
   property bool cursorActive: false
 
+  // Fingerprint unlock state.
+  // PAM only proves presence, so a verified finger is used as the gate on
+  // reading the master password back out of the login keyring.
+  property bool fingerprintAvailable: false   // PAM stack + reader + enrolled finger
+  property bool fingerprintStored: false      // master password present in keyring
+  property bool fingerprintScanning: false
+  property string fingerprintMessage: ""
+  property string pendingUnlockPassword: ""   // held only until the unlock lands
+  property bool pendingUnlockFromFingerprint: false
+  readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME") || ""
+  readonly property bool fingerprintReady: fingerprintUnlock && fingerprintAvailable && fingerprintStored
+
   // Contextual suggestions state
   property var activeWindowData: null
   property var detectedContext: null
   property var suggestedItems: []
   property bool suggestionsDismissed: false
+  property var associations: ({ version: 1, keys: {} })
+  property var learnedIds: ({})
+  property string pendingAssociationsJson: ""
 
   // Visual styles
   readonly property color fg: bar ? bar.foreground : Color.foreground
@@ -108,7 +125,10 @@ Panel {
   }
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  Component.onCompleted: root.refreshStatus()
+  Component.onCompleted: {
+    root.refreshStatus()
+    root.refreshFingerprintAvailability()
+  }
 
   readonly property var categories: [
     { id: "all", label: "All", icon: "󰞀" },
@@ -132,7 +152,9 @@ Panel {
     totpFollowupActive = false
     isUnlocking = false
     suggestionsDismissed = false
+    fingerprintMessage = ""
     detectActiveWindowContext()
+    refreshFingerprintAvailability()
     root.controller.show()
     focusAppropriateField()
     if (status !== "locked" && status !== "unlocked") {
@@ -148,6 +170,8 @@ Panel {
     showDeleteConfirm = false
     totpFollowupActive = false
     isUnlocking = false
+    pendingUnlockPassword = ""
+    cancelFingerprintUnlock()
     root.controller.hide()
   }
 
@@ -201,21 +225,17 @@ Panel {
         loadOrganizations()
       } else if (status === "checking") {
         refreshStatus()
+      } else if (status === "locked") {
+        startFingerprintUnlock()
       }
+    } else {
+      cancelFingerprintUnlock()
     }
   }
 
   // -------------------------------------------------------------------------
   // Status & Keyring Handlers
   // -------------------------------------------------------------------------
-
-  // Secrets go to secret-tool through the environment, never argv. See
-  // keyringStoreScript() in BitwardenModel.js for why stdin is not usable.
-  function secretEnv(value) {
-    var env = {}
-    env[Model.keyringSecretEnvVar()] = String(value || "")
-    return env
-  }
 
   function refreshStatus() {
     if (status === "locked" && !session) return
@@ -276,6 +296,7 @@ Panel {
       items = []
       filteredItems = []
       focusAppropriateField()
+      if (opened) startFingerprintUnlock()
     } else {
       status = "unauthenticated"
       currentScreen = "login"
@@ -366,6 +387,11 @@ Panel {
 
   function logoutAccount() {
     lockVault()
+    if (fingerprintStored) {
+      keyringClearMasterProc.running = true
+      fingerprintStored = false
+    }
+    pendingUnlockPassword = ""
     logoutProc.command = Model.logoutCommand()
     logoutProc.running = true
     status = "unauthenticated"
@@ -375,10 +401,113 @@ Panel {
   }
 
   // -------------------------------------------------------------------------
+  // Fingerprint Unlock
+  // -------------------------------------------------------------------------
+
+  // Secrets go to secret-tool through the environment, never argv. See
+  // keyringStoreScript() in BitwardenModel.js for why stdin is not usable.
+  function associationsEnv() {
+    var env = {}
+    env[Model.associationsEnvVar()] = String(pendingAssociationsJson || "")
+    return env
+  }
+
+  function secretEnv(value) {
+    var env = {}
+    env[Model.keyringSecretEnvVar()] = String(value || "")
+    return env
+  }
+
+  function refreshFingerprintAvailability() {
+    if (!fingerprintCheckProc.running) fingerprintCheckProc.running = true
+  }
+
+  function onFingerprintAvailabilityChecked(raw) {
+    fingerprintAvailable = String(raw || "").trim() === "yes"
+    if (fingerprintAvailable && fingerprintUnlock) {
+      if (!keyringHasMasterProc.running) keyringHasMasterProc.running = true
+    } else {
+      fingerprintStored = false
+    }
+  }
+
+  function onFingerprintStoredChecked(raw) {
+    fingerprintStored = String(raw || "").trim() === "yes"
+    if (opened && status === "locked") startFingerprintUnlock()
+  }
+
+  function startFingerprintUnlock() {
+    if (!fingerprintReady || status !== "locked" || isUnlocking) return
+    if (fingerprintScanning || fingerprintPam.active) return
+    if (!userName) {
+      fingerprintMessage = "Cannot determine current user for fingerprint verification"
+      return
+    }
+
+    errorMessage = ""
+    fingerprintScanning = true
+    fingerprintMessage = "󰈷  Touch the fingerprint reader..."
+    if (!fingerprintPam.start()) {
+      fingerprintScanning = false
+      fingerprintMessage = "Could not start fingerprint verification"
+    }
+  }
+
+  function cancelFingerprintUnlock() {
+    fingerprintScanning = false
+    if (fingerprintPam.active) fingerprintPam.abort()
+  }
+
+  function onFingerprintResult(result) {
+    fingerprintScanning = false
+    if (status !== "locked") return
+
+    if (result === PamResult.Success) {
+      fingerprintMessage = "󰈷  Fingerprint verified, unlocking..."
+      if (!keyringLookupMasterProc.running) keyringLookupMasterProc.running = true
+    } else if (result === PamResult.MaxTries) {
+      fingerprintMessage = "Too many fingerprint attempts. Use your master password."
+    } else {
+      fingerprintMessage = "Fingerprint not recognised. Try again or use your master password."
+    }
+  }
+
+  // Only ever called after PamResult.Success.
+  function onFingerprintPasswordRetrieved(raw) {
+    var pw = String(raw || "").trim()
+    if (!pw) {
+      fingerprintStored = false
+      fingerprintMessage = "No stored master password. Unlock with your password once to enable this."
+      return
+    }
+    pendingUnlockFromFingerprint = true
+    unlockVaultWithPassword(pw)
+  }
+
+  function forgetFingerprintUnlock() {
+    keyringClearMasterProc.running = true
+    fingerprintStored = false
+    cancelFingerprintUnlock()
+    fingerprintMessage = ""
+    flashNotification("Fingerprint unlock forgotten")
+  }
+
+  onFingerprintUnlockChanged: {
+    if (!fingerprintUnlock) {
+      cancelFingerprintUnlock()
+      fingerprintMessage = ""
+      if (fingerprintStored) forgetFingerprintUnlock()
+    } else {
+      refreshFingerprintAvailability()
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Vault Unlock & Lock
   // -------------------------------------------------------------------------
 
   function unlockVault() {
+    pendingUnlockFromFingerprint = false
     unlockVaultWithPassword(masterPassword)
   }
 
@@ -388,8 +517,11 @@ Panel {
       errorMessage = "Master password required"
       return
     }
+    cancelFingerprintUnlock()
     errorMessage = ""
     isUnlocking = true
+    // Kept only until the unlock result is known; cleared on both paths below.
+    pendingUnlockPassword = p
     unlockProc.command = Model.unlockCommand(p)
     unlockProc.running = true
   }
@@ -402,6 +534,16 @@ Panel {
     if (exitCode === 0 && out) {
       onUnlockSuccess(out)
     } else {
+      pendingUnlockPassword = ""
+      if (pendingUnlockFromFingerprint) {
+        pendingUnlockFromFingerprint = false
+        keyringClearMasterProc.running = true
+        fingerprintStored = false
+        fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
+        errorMessage = ""
+        focusAppropriateField()
+        return
+      }
       if (err.indexOf("not logged in") !== -1) {
         status = "unauthenticated"
         currentScreen = "login"
@@ -431,6 +573,15 @@ Panel {
       keyringStoreProc.running = true
     }
 
+    // Opting in stores the master password so a finger can stand in for it later.
+    if (fingerprintUnlock && fingerprintAvailable && pendingUnlockPassword && !pendingUnlockFromFingerprint) {
+      keyringStoreMasterProc.running = true
+    } else {
+      pendingUnlockPassword = ""
+    }
+    pendingUnlockFromFingerprint = false
+    fingerprintMessage = ""
+
     loadItems()
     loadOrganizations()
     resetAutoLockTimer()
@@ -458,8 +609,11 @@ Panel {
     liveTotp = ""
     totpFollowupActive = false
     isUnlocking = false
+    pendingUnlockPassword = ""
+    fingerprintMessage = ""
     flashNotification("Vault locked")
     focusAppropriateField()
+    if (opened) startFingerprintUnlock()
   }
 
   // -------------------------------------------------------------------------
@@ -943,6 +1097,99 @@ Panel {
   Process {
     id: keyringClearProc
     command: Model.keyringClearCommand()
+  }
+
+  // ---- Fingerprint unlock ----
+
+  Process {
+    id: fingerprintCheckProc
+    command: Model.fingerprintAvailableCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onFingerprintAvailabilityChecked(text)
+    }
+  }
+
+  Process {
+    id: keyringHasMasterProc
+    command: Model.keyringHasMasterPasswordCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onFingerprintStoredChecked(text)
+    }
+  }
+
+  Process {
+    id: keyringStoreMasterProc
+    command: Model.keyringStoreMasterPasswordCommand()
+    environment: root.secretEnv(root.pendingUnlockPassword)
+    onExited: function(exitCode) {
+      root.pendingUnlockPassword = ""
+      root.fingerprintStored = (exitCode === 0)
+      if (exitCode === 0) {
+        root.flashNotification("Fingerprint unlock enabled")
+      } else {
+        root.errorMessage = "Could not save master password to the OS keyring, so fingerprint unlock is unavailable."
+      }
+    }
+  }
+
+  Process {
+    id: keyringLookupMasterProc
+    command: Model.keyringLookupMasterPasswordCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onFingerprintPasswordRetrieved(text)
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.fingerprintStored = false
+        root.fingerprintMessage = "Stored master password unavailable. Use your password."
+      }
+    }
+  }
+
+  Process {
+    id: keyringClearMasterProc
+    command: Model.keyringClearMasterPasswordCommand()
+  }
+
+  // ---- Learned associations ----
+
+  Process {
+    id: associationsReadProc
+    command: Model.associationsReadCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onAssociationsLoaded(text)
+    }
+  }
+
+  Process {
+    id: associationsWriteProc
+    command: Model.associationsWriteCommand()
+    environment: root.associationsEnv()
+    onExited: function(exitCode) {
+      root.pendingAssociationsJson = ""
+      if (exitCode !== 0) {
+        console.warn("qs-bitwarden-cli: could not save learned suggestions (exit " + exitCode + ")")
+      }
+    }
+  }
+
+  PamContext {
+    id: fingerprintPam
+    config: "omarchy-lock-fingerprint"
+    user: root.userName
+
+    onCompleted: function(result) {
+      root.onFingerprintResult(result)
+    }
+
+    onError: function(error) {
+      root.fingerprintScanning = false
+      root.fingerprintMessage = "Fingerprint verification unavailable"
+    }
   }
 
   Process {
@@ -1724,16 +1971,24 @@ Panel {
 
             Text {
               anchors.horizontalCenter: parent.horizontalCenter
-              text: "󰌋"
-              color: root.fg
+              text: root.fingerprintScanning ? "󰈷" : "󰌋"
+              color: root.fingerprintScanning ? Color.accent : root.fg
               opacity: 0.85
               font.family: root.fontFamily
               font.pixelSize: Style.space(38)
+
+              SequentialAnimation on opacity {
+                running: root.fingerprintScanning
+                loops: Animation.Infinite
+                NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
+                NumberAnimation { to: 0.95; duration: 700; easing.type: Easing.InOutQuad }
+                onStopped: parent.opacity = 0.85
+              }
             }
 
             Text {
               anchors.horizontalCenter: parent.horizontalCenter
-              text: "Enter Master Password"
+              text: root.fingerprintReady ? "Unlock Vault" : "Enter Master Password"
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
@@ -1750,9 +2005,45 @@ Panel {
             }
           }
 
+          // Fingerprint status / prompt
+          Text {
+            visible: root.fingerprintMessage !== ""
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: root.fingerprintMessage
+            color: root.fingerprintScanning ? Color.accent : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          // Offered when fingerprint unlock is on but nothing is stored yet.
+          Text {
+            visible: root.fingerprintUnlock && root.fingerprintAvailable && !root.fingerprintStored
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: "󰈷  Unlock once with your master password to enable fingerprint unlock."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
           Column {
             width: parent.width
             spacing: Style.space(10)
+
+            Button {
+              visible: root.fingerprintReady
+              width: parent.width
+              text: root.fingerprintScanning ? "Waiting for fingerprint..." : "Unlock with Fingerprint"
+              iconText: "󰈷"
+              selected: true
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              enabled: !root.isUnlocking && !root.fingerprintScanning
+              onClicked: root.startFingerprintUnlock()
+            }
 
             Row {
               width: parent.width
@@ -1802,6 +2093,16 @@ Panel {
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.logoutAccount()
+            }
+
+            Button {
+              visible: root.fingerprintStored
+              text: "Forget Fingerprint"
+              iconText: "󰈷"
+              tooltipText: "Remove the stored master password from the OS keyring"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.forgetFingerprintUnlock()
             }
           }
         }

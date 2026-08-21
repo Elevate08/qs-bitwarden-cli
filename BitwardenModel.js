@@ -8,6 +8,7 @@ const KEYRING_ACCOUNT = "session"
 const KEYRING_CLIENT_ID = "client_id"
 const KEYRING_CLIENT_SECRET = "client_secret"
 const KEYRING_EMAIL = "user_email"
+const KEYRING_MASTER = "master_password"
 
 // `secret-tool store` reads its secret from stdin until EOF, and Quickshell's
 // Process.write() cannot close stdin -- writing a value alone leaves the process
@@ -184,6 +185,43 @@ function keyringStoreEmailCommand() {
 
 function keyringLookupEmailCommand() {
   return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_EMAIL]
+}
+
+// -------------------------------------------------------------------------
+// Fingerprint Unlock
+// -------------------------------------------------------------------------
+//
+// PAM can prove the user is present but cannot produce the Bitwarden master
+// password, and `bw unlock` accepts nothing else. So fingerprint unlock keeps
+// the master password in the login keyring and uses a successful fingerprint
+// verification as the gate on reading it back -- the same trade the Bitwarden
+// desktop client makes for its own biometric unlock. Opt-in only.
+
+function keyringStoreMasterPasswordCommand() {
+  return ["bash", "-c", keyringStoreScript("Bitwarden Master Password (fingerprint unlock)", KEYRING_MASTER)]
+}
+
+function keyringLookupMasterPasswordCommand() {
+  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_MASTER]
+}
+
+function keyringClearMasterPasswordCommand() {
+  return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", KEYRING_MASTER]
+}
+
+// Presence check that never puts the secret on stdout, so the panel can show
+// the right prompt without reading the password until a finger is verified.
+function keyringHasMasterPasswordCommand() {
+  var script = "if secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
+    + " account " + shellQuote(KEYRING_MASTER) + " >/dev/null 2>&1; then echo yes; else echo no; fi"
+  return ["bash", "-c", script]
+}
+
+// Reports "yes" only when every piece is in place: the Omarchy PAM stack, a
+// reader, and at least one enrolled finger. Mirrors the omarchy lock screen.
+function fingerprintAvailableCommand() {
+  var script = "if [[ -f /etc/pam.d/omarchy-lock-fingerprint ]] && command -v fprintd-list >/dev/null 2>&1 && fprintd-list \"$USER\" 2>/dev/null | grep -qi 'finger'; then echo yes; else echo no; fi"
+  return ["bash", "-c", script]
 }
 
 // -------------------------------------------------------------------------

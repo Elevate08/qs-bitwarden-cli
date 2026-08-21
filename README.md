@@ -24,6 +24,12 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
   - **Custom Server Support**: Works seamlessly with official Bitwarden servers and self-hosted Vaultwarden instances.
   - Optional quick-launch button for interactive terminal login (`bw login`).
 
+- **Fingerprint Unlock** (opt-in, `fingerprintUnlock`):
+  - Unlock the vault with an enrolled fingerprint instead of retyping your master password.
+  - Verifies through the same PAM stack as the Omarchy lock screen (`/etc/pam.d/omarchy-lock-fingerprint`), so it works wherever `omarchy setup security fingerprint` has been run.
+  - The reader is armed automatically whenever you open the panel on a locked vault; the master password field always stays available as a fallback.
+  - See [Fingerprint Unlock](#fingerprint-unlock) below for the security trade-off before enabling it.
+
 - **Context-Aware Password Suggestions (Active Window / Browser Tab)**:
   - Automatically queries the active window or browser tab on open (`hyprctl activewindow -j`).
   - Matches current web domains and application names against your vault items by URL and Title.
@@ -92,7 +98,8 @@ Or edit `~/.config/omarchy/shell.json` directly:
     "qs-bitwarden-cli": {
       "autoLockMinutes": 15,
       "clearClipboardSec": 30,
-      "rememberSession": true
+      "rememberSession": true,
+      "fingerprintUnlock": false
     }
   },
   "bar": {
@@ -194,6 +201,29 @@ The following settings can be configured under `plugins.qs-bitwarden-cli` in `~/
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
+| `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see below. |
+
+---
+
+## Fingerprint Unlock
+
+Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of your master password.
+
+**Requirements**
+
+- A fingerprint reader with at least one enrolled finger, configured through `omarchy setup security fingerprint`. The plugin verifies all of this itself (`/etc/pam.d/omarchy-lock-fingerprint`, `fprintd-list`) and silently stays hidden when any part is missing.
+- `secret-tool` (libsecret) and a running OS keyring, as used by `rememberSession`.
+
+**How it works**
+
+1. Enable the setting, then unlock the vault once with your master password. That unlock stores the password in the login keyring under `service=qs-bitwarden-cli, account=master_password`.
+2. On every later lock, opening the panel arms the reader. A verified fingerprint releases the stored password to `bw unlock`; the password field remains available as a fallback at all times.
+
+**Security trade-off -- read before enabling**
+
+PAM can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. Fingerprint unlock therefore keeps your master password in the OS login keyring and treats a verified fingerprint as the gate on reading it back. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock, and it means **anyone who can read your unlocked login keyring can read your master password**. It is off by default and worth leaving off on a shared or unattended machine.
+
+The stored password is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, log out of the account, or when the vault rejects it (for example after a master password change, which then prompts you for the new one).
 
 ---
 
