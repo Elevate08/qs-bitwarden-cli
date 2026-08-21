@@ -117,7 +117,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - A missing **required** tool opens the wizard automatically; **Install** runs `omarchy pkg add <pkg>` in a terminal so you can see it happen and answer the password prompt. `fprintd` present without an enrolled finger offers **Enroll** (`omarchy setup security fingerprint`).
   - Press <kbd>,</kbd> or the `󰒓` button for settings, grouped into **Security**, **Behavior** and **Suggestions**: auto-lock timeout, clipboard clear delay, TOTP auto-copy delay, and every toggle. A setting whose dependency is missing is shown but inert, with the reason given.
   - Changes are written to the plugin's entry in `~/.config/omarchy/shell.json` through `omarchy bar set`, so Omarchy owns the file and the shell hot-reloads the change. Nothing is stored in a second place.
-  - Reachable from a keybind too: `omarchy-shell shell call qs-bitwarden-cli settings '{}'` (or `setup`).
+  - Reachable from a keybind too: `omarchy-shell qs-bitwarden-cli settings` (or `setup`).
 
 - **Hardware-Accelerated Performance & Security**:
   - Virtualized `ListView` with component delegate recycling for instant rendering of large vaults.
@@ -183,7 +183,7 @@ Or edit `~/.config/omarchy/shell.json` directly:
 To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell shell toggle qs-bitwarden-cli")
+o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell qs-bitwarden-cli toggle")
 ```
 
 Apply changes by restarting the shell:
@@ -275,26 +275,32 @@ The cursor starts on the option already in effect, so <kbd>Enter</kbd> never cha
 
 ## IPC & Scripting Interface
 
-You can control and query the Bitwarden plugin from the terminal, scripts, or window manager bindings via `omarchy-shell`:
+You can control and query the Bitwarden plugin from the terminal, scripts, or window manager bindings. The form is `omarchy-shell <target> <method>`:
 
 ```bash
-# Toggle the popup panel
-omarchy-shell shell toggle qs-bitwarden-cli
+# Show, hide, or toggle the popup panel
+omarchy-shell qs-bitwarden-cli open
+omarchy-shell qs-bitwarden-cli close
+omarchy-shell qs-bitwarden-cli toggle
 
-# Open the popup panel
-omarchy-shell shell open qs-bitwarden-cli
-
-# Close the popup panel
-omarchy-shell shell close qs-bitwarden-cli
+# Jump straight to a screen
+omarchy-shell qs-bitwarden-cli settings     # -> "settings"
+omarchy-shell qs-bitwarden-cli setup        # -> "setup" (dependency wizard)
 
 # Lock the vault immediately
-omarchy-shell shell call qs-bitwarden-cli lock '{}'
+omarchy-shell qs-bitwarden-cli lock         # -> "locked"
 
-# Trigger a vault sync with Bitwarden cloud
-omarchy-shell shell call qs-bitwarden-cli sync '{}'
+# Sync with Bitwarden
+omarchy-shell qs-bitwarden-cli sync         # -> "syncing"
 
-# Query vault status ("unlocked" | "locked" | "unauthenticated")
-omarchy-shell shell call qs-bitwarden-cli status '{}'
+# Query vault state
+omarchy-shell qs-bitwarden-cli status       # -> "unlocked" | "locked" | "unauthenticated"
+```
+
+`open`, `close` and `toggle` return nothing; the rest echo the state they moved to. The same calls work through Quickshell directly, which is useful when `omarchy-shell` is not on `PATH`:
+
+```bash
+qs -p /usr/share/omarchy/shell/shell.qml ipc call qs-bitwarden-cli status
 ```
 
 ---
