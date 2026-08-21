@@ -479,6 +479,13 @@ Panel {
     return env
   }
 
+  function pinEnv(pin, secret) {
+    var env = {}
+    env[Model.pinEnvVar()] = String(pin || "")
+    if (secret) env[Model.keyringSecretEnvVar()] = String(secret)
+    return env
+  }
+
   function secretEnv(value) {
     var env = {}
     env[Model.keyringSecretEnvVar()] = String(value || "")
@@ -1383,6 +1390,41 @@ Panel {
   }
 
   // ---- Fingerprint unlock ----
+
+  // ---- PIN unlock ----
+  //
+  // PIN and master password are handed over in the environment; encrypt-and-store
+  // and lookup-and-decrypt each run inside one process, so the plaintext never
+  // travels back through QML on its way to or from the keyring.
+
+  Process {
+    id: pinStoreProc
+    command: Model.pinStoreCommand()
+    environment: root.pinEnv(root.pinSetupPin, root.pinSetupMaster)
+    onExited: function(exitCode) { root.onPinStored(exitCode) }
+  }
+
+  Process {
+    id: pinUnlockProc
+    command: Model.pinUnlockCommand()
+    environment: root.pinEnv(root.pinEntry, "")
+    stdout: StdioCollector { id: pinUnlockStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onPinUnlockResult(exitCode, pinUnlockStdout.text) }
+  }
+
+  Process {
+    id: keyringHasPinProc
+    command: Model.keyringHasPinCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onPinConfiguredChecked(text)
+    }
+  }
+
+  Process {
+    id: keyringClearPinProc
+    command: Model.keyringClearPinCommand()
+  }
 
   Process {
     id: depsCheckProc
@@ -2471,7 +2513,17 @@ Panel {
                   interactive: !blocked
                   foreground: root.fg
                   accent: Color.accent
-                  onToggled: if (!blocked) root.writeSetting(modelData.key, !checked, "bool")
+                  onToggled: {
+                    if (blocked) return
+                    // A PIN cannot simply be switched on: it has to be chosen,
+                    // and encrypting it needs the master password.
+                    if (modelData.action === "pin") {
+                      if (checked) root.disablePinUnlock()
+                      else root.beginPinSetup()
+                      return
+                    }
+                    root.writeSetting(modelData.key, !checked, "bool")
+                  }
                 }
 
                 Text {

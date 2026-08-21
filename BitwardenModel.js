@@ -1414,3 +1414,120 @@ function settingWriteCommand(key, value, type) {
   else raw = String(Number(value) || 0)
   return ["omarchy", "bar", "set", "qs-bitwarden-cli", String(key), raw, "--json"]
 }
+
+// -------------------------------------------------------------------------
+// Password / Passphrase Generator
+// -------------------------------------------------------------------------
+//
+// Mirrors the option set of the Bitwarden browser extension's generator and
+// delegates the actual generation to `bw generate`, so the output comes from
+// Bitwarden's own generator rather than a reimplementation of it.
+
+var GENERATOR_DEFAULTS = {
+  type: "password",       // "password" | "passphrase"
+  length: 14,
+  uppercase: true,
+  lowercase: true,
+  numbers: true,
+  special: false,
+  minNumber: 1,
+  minSpecial: 1,
+  ambiguous: false,       // true = avoid ambiguous characters
+  words: 3,
+  separator: "-",
+  capitalize: false,
+  includeNumber: false
+}
+
+var GENERATOR_LIMITS = {
+  length: { min: 5, max: 128 },
+  words: { min: 3, max: 20 },
+  minNumber: { min: 0, max: 9 },
+  minSpecial: { min: 0, max: 9 }
+}
+
+function generatorDefaults() {
+  var out = {}
+  for (var k in GENERATOR_DEFAULTS) out[k] = GENERATOR_DEFAULTS[k]
+  return out
+}
+
+function clampInt(value, limit) {
+  var n = Math.floor(Number(value))
+  if (isNaN(n)) n = limit.min
+  return Math.max(limit.min, Math.min(limit.max, n))
+}
+
+// At least one character set must be on, or `bw generate` errors out. Falling
+// back to lowercase keeps the control usable while the user toggles the rest.
+function normalizeGeneratorOptions(opts) {
+  var o = generatorDefaults()
+  for (var k in opts) if (opts[k] !== undefined) o[k] = opts[k]
+
+  o.length = clampInt(o.length, GENERATOR_LIMITS.length)
+  o.words = clampInt(o.words, GENERATOR_LIMITS.words)
+  o.minNumber = clampInt(o.minNumber, GENERATOR_LIMITS.minNumber)
+  o.minSpecial = clampInt(o.minSpecial, GENERATOR_LIMITS.minSpecial)
+
+  if (!o.uppercase && !o.lowercase && !o.numbers && !o.special) o.lowercase = true
+  if (!o.numbers) o.minNumber = 0
+  if (!o.special) o.minSpecial = 0
+
+  // Asking for more required characters than there is room for cannot be met.
+  var required = (o.numbers ? o.minNumber : 0) + (o.special ? o.minSpecial : 0)
+  if (required > o.length) o.length = Math.min(GENERATOR_LIMITS.length.max, required)
+
+  if (!o.separator) o.separator = "-"
+  return o
+}
+
+function generateCommand(opts) {
+  var o = normalizeGeneratorOptions(opts)
+  var args = ["generate"]
+
+  if (o.type === "passphrase") {
+    args.push("--passphrase", "--words", String(o.words), "--separator", String(o.separator))
+    if (o.capitalize) args.push("--capitalize")
+    if (o.includeNumber) args.push("--includeNumber")
+    return ["bw"].concat(args)
+  }
+
+  if (o.uppercase) args.push("--uppercase")
+  if (o.lowercase) args.push("--lowercase")
+  if (o.numbers) args.push("--number")
+  if (o.special) args.push("--special")
+  args.push("--length", String(o.length))
+  if (o.numbers) args.push("--minNumber", String(o.minNumber))
+  if (o.special) args.push("--minSpecial", String(o.minSpecial))
+  if (o.ambiguous) args.push("--ambiguous")
+
+  return ["bw"].concat(args)
+}
+
+// Rough strength read for the meter. Deliberately simple: it describes the
+// search space the options imply, not the specific string produced.
+function generatorStrength(opts) {
+  var o = normalizeGeneratorOptions(opts)
+  var bits
+
+  if (o.type === "passphrase") {
+    // EFF-style wordlist, ~12.9 bits per word.
+    bits = o.words * 12.9 + (o.includeNumber ? 3.3 : 0)
+  } else {
+    var pool = 0
+    if (o.uppercase) pool += 26
+    if (o.lowercase) pool += 26
+    if (o.numbers) pool += 10
+    if (o.special) pool += 26
+    if (o.ambiguous) pool -= 6
+    bits = o.length * (Math.log(Math.max(pool, 2)) / Math.log(2))
+  }
+
+  var label = "Weak"
+  if (bits >= 120) label = "Excellent"
+  else if (bits >= 90) label = "Strong"
+  else if (bits >= 60) label = "Good"
+  else if (bits >= 40) label = "Fair"
+
+  return { bits: Math.round(bits), label: label, fraction: Math.max(0, Math.min(1, bits / 128)) }
+}
