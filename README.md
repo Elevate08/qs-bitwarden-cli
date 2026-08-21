@@ -173,22 +173,21 @@ omarchy bar move io.github.elevate08.qs-bitwarden-cli --section right
 ```
 
 Settings are editable from the panel's own settings screen, or directly in
-`~/.config/omarchy/shell.json`:
+`~/.config/omarchy/shell.json`. Each setting lives **inline on the bar entry**,
+not in a separate block:
 
 ```json
 {
-  "plugins": {
-    "io.github.elevate08.qs-bitwarden-cli": {
-      "autoLockMinutes": 15,
-      "clearClipboardSec": 30,
-      "rememberSession": true,
-      "fingerprintUnlock": false
-    }
-  },
   "bar": {
     "layout": {
       "right": [
-        "io.github.elevate08.qs-bitwarden-cli"
+        {
+          "id": "io.github.elevate08.qs-bitwarden-cli",
+          "autoLockMinutes": 15,
+          "clearClipboardSec": 30,
+          "rememberSession": true,
+          "fingerprintUnlock": false
+        }
       ]
     }
   }
@@ -358,7 +357,10 @@ qs -p /usr/share/omarchy/shell/shell.qml ipc call io.github.elevate08.qs-bitward
 
 ## Configuration Reference
 
-The following settings can be configured under `plugins.io.github.elevate08.qs-bitwarden-cli` in `~/.config/omarchy/shell.json`:
+The following settings are read from the plugin's own entry in the
+`bar.layout` array of `~/.config/omarchy/shell.json` -- inline alongside its
+`id`, as shown above. The panel's settings screen writes them for you via
+`omarchy bar set`, so editing the file by hand is optional:
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
