@@ -145,7 +145,7 @@ plugin shells out to all of them; none are bundled.
 | `fprintd-list` | `fprintd` | no | Fingerprint unlock. Also needs an enrolled finger via `omarchy setup security fingerprint`. |
 
 ```bash
-sudo pacman -S bitwarden-cli wl-clipboard libsecret
+omarchy pkg add bitwarden-cli wl-clipboard libsecret
 ```
 
 The panel checks these itself and offers an exact install command for anything
@@ -468,12 +468,16 @@ node tests/sends.test.js            # Send payloads, parsing, and argv-safety
 node tests/collections.test.js      # organization collections and item ownership
 node tests/items.test.js            # item parsing, and that a list entry can build the detail view
 node tests/handoff-urls.test.js     # session-handoff file path, and which URI schemes may be opened
+node tests/rich-text.test.js        # vault text is drawn as text, never parsed as markup
 ```
 
-One suite covers key routing instead of logic, so it needs Qt rather than Node -- which any machine running the plugin already has:
+Two suites need Qt rather than Node -- which any machine running the plugin
+already has. One checks that Escape reaches the panel from inside a text
+field; the other checks how Qt itself decides to draw a string, which is what
+makes a vault value markup or text:
 
 ```bash
-QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml   # Escape reaches the panel from inside a text field
+QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml
 ```
 
 ---

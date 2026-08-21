@@ -2703,6 +2703,7 @@ Panel {
 
       // Constant Base Shield
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent
         text: "󰞀"
         font.family: root.fontFamily
@@ -2730,6 +2731,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           anchors.centerIn: parent
           text: "󰌾"
           font.family: root.fontFamily
@@ -2962,6 +2964,7 @@ Panel {
           fontFamily: root.fontFamily
 
           iconComponent: Text {
+            textFormat: Text.PlainText
             text: "󰞀"
             color: root.barIconColor
             font.family: root.fontFamily
@@ -3054,6 +3057,7 @@ Panel {
             spacing: Style.space(8)
 
             Text {
+              textFormat: Text.PlainText
               anchors.verticalCenter: parent.verticalCenter
               text: "󰄬"
               color: Color.accent
@@ -3067,6 +3071,7 @@ Panel {
               spacing: 1
 
               Text {
+                textFormat: Text.PlainText
                 text: "Password copied! Press Enter for TOTP"
                 color: root.fg
                 font.family: root.fontFamily
@@ -3075,6 +3080,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 text: root.totpFollowupCode ? ("Code: " + root.totpFollowupCode + " (expires in " + root.totpSecRemaining + "s)") : "Fetching 2FA code..."
                 color: Color.accent
                 font.family: root.fontFamily
@@ -3113,12 +3119,14 @@ Panel {
             anchors.centerIn: parent
             spacing: Style.space(8)
             Text {
+              textFormat: Text.PlainText
               text: "󰄬"
               color: Color.accent
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
             Text {
+              textFormat: Text.PlainText
               id: flashText
               text: root.flashMessage
               color: root.fg
@@ -3145,12 +3153,14 @@ Panel {
             width: parent.width - Style.space(16)
             spacing: Style.space(8)
             Text {
+              textFormat: Text.PlainText
               text: "󰅚"
               color: Color.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
             Text {
+              textFormat: Text.PlainText
               id: errorText
               text: root.errorMessage
               color: root.fg
@@ -3222,6 +3232,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.sendError !== ""
               width: parent.width
               text: root.sendError
@@ -3238,6 +3249,7 @@ Panel {
               spacing: Style.space(8)
 
               Text {
+                textFormat: Text.PlainText
                 visible: !root.sendsLoading && root.sends.length === 0
                 width: parent.width
                 text: "No Sends yet. A Send shares a secret through a link that expires on its own -- useful for handing someone a credential without it living in a chat log."
@@ -3248,6 +3260,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: root.sendsLoading
                 text: "Loading Sends..."
                 color: root.dim
@@ -3281,6 +3294,7 @@ Panel {
                     spacing: Style.space(8)
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: modelData.isFile ? "󰈤" : "󰈙"
                       color: Color.accent
@@ -3294,6 +3308,7 @@ Panel {
                       spacing: Style.space(2)
 
                       Text {
+                        textFormat: Text.PlainText
                         width: parent.width
                         text: modelData.name
                         color: root.fg
@@ -3307,18 +3322,21 @@ Panel {
                         spacing: Style.space(6)
 
                         Text {
+                          textFormat: Text.PlainText
                           text: Model.sendExpiryLabel(modelData, Date.now())
                           color: Model.sendExpiryLabel(modelData, Date.now()) === "expired" ? root.urgent : root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
                         Text {
+                          textFormat: Text.PlainText
                           text: "\u00b7 " + Model.sendAccessLabel(modelData)
                           color: root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
                         Text {
+                          textFormat: Text.PlainText
                           visible: modelData.passwordSet
                           text: "\u00b7 󰌾 password"
                           color: Color.accent
@@ -3355,7 +3373,7 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Text { text: "NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
                 id: sendNameField
                 width: parent.width
@@ -3365,7 +3383,7 @@ Panel {
                 enabled: !root.sendBusy
               }
 
-              Text { text: "TEXT TO SEND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "TEXT TO SEND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
                 width: parent.width
                 placeholderText: "The secret to share..."
@@ -3393,6 +3411,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(10)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Delete after"
@@ -3401,6 +3420,7 @@ Panel {
                   font.pixelSize: Style.font.body
                 }
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: "days"
                   color: root.dim
@@ -3424,6 +3444,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(10)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Maximum views"
@@ -3432,6 +3453,7 @@ Panel {
                   font.pixelSize: Style.font.body
                 }
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.sendFormMaxAccess === 0 ? "unlimited" : ""
                   color: root.dim
@@ -3451,7 +3473,7 @@ Panel {
                 }
               }
 
-              Text { text: "PASSWORD (OPTIONAL)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "PASSWORD (OPTIONAL)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
                 width: parent.width
                 placeholderText: "Recipient must enter this to open the Send..."
@@ -3503,6 +3525,7 @@ Panel {
               spacing: Style.space(4)
 
               Text {
+                textFormat: Text.PlainText
                 text: "Enable fingerprint unlock"
                 color: root.fg
                 font.family: root.fontFamily
@@ -3511,6 +3534,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: "A fingerprint proves you are present but cannot produce your master password, and bw unlock accepts nothing else. The password is stored in the OS login keyring, and a verified fingerprint is the gate on reading it back."
                 color: root.dim
@@ -3520,6 +3544,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: "Anyone who can read your unlocked login keyring can read the password. A PIN stores it encrypted instead."
                 color: root.urgent
@@ -3533,7 +3558,7 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Text { text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
               TextField {
                 id: fpMasterField
@@ -3547,6 +3572,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: root.fpError !== ""
                 width: parent.width
                 text: root.fpError
@@ -3650,6 +3676,7 @@ Panel {
                 spacing: Style.space(4)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(90)
                   text: root.genBusy ? "Generating..." : (root.genValue || "-")
@@ -3692,6 +3719,7 @@ Panel {
               Row {
                 width: parent.width
                 Text {
+                  textFormat: Text.PlainText
                   text: parent.parent.strength.label
                   color: Color.accent
                   font.family: root.fontFamily
@@ -3700,6 +3728,7 @@ Panel {
                 }
                 Item { width: Style.space(6); height: 1 }
                 Text {
+                  textFormat: Text.PlainText
                   text: "~" + parent.parent.strength.bits + " bits of entropy"
                   color: root.dim
                   font.family: root.fontFamily
@@ -3760,6 +3789,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(10)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Length"
@@ -3832,6 +3862,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(10)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Minimum numbers"
@@ -3857,6 +3888,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(10)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Minimum special"
@@ -3888,6 +3920,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(10)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Number of words"
@@ -3912,6 +3945,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(10)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Word separator"
@@ -3978,6 +4012,7 @@ Panel {
             spacing: Style.space(4)
 
             Text {
+              textFormat: Text.PlainText
               text: "Set an unlock PIN"
               color: root.fg
               font.family: root.fontFamily
@@ -3986,6 +4021,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: "Your master password is encrypted with a key derived from this PIN, and only the encrypted form is stored. "
                 + "Use " + Model.pinRecommendedLength() + " digits or more; " + Model.pinMinLength()
@@ -4001,7 +4037,7 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Text { text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+            Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
             TextField {
               width: parent.width
               placeholderText: "Needed once, to encrypt the PIN..."
@@ -4012,6 +4048,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: "PIN"
               // The label turns with the field, so the warning is visible even
               // when the cursor has moved on to Confirm.
@@ -4035,6 +4072,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.pinSetupWeak
               width: parent.width
               text: "󰀪  " + Model.pinWeakWarning(root.pinSetupPin)
@@ -4044,7 +4082,7 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
-            Text { text: "CONFIRM PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+            Text { textFormat: Text.PlainText; text: "CONFIRM PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
             TextField {
               width: parent.width
               placeholderText: "Repeat the PIN..."
@@ -4056,6 +4094,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.pinError !== ""
               width: parent.width
               text: root.pinError
@@ -4121,6 +4160,7 @@ Panel {
             spacing: Style.space(4)
 
             Text {
+              textFormat: Text.PlainText
               text: root.missingRequired.length > 0 ? "Setup required" : "All set"
               color: root.fg
               font.family: root.fontFamily
@@ -4129,6 +4169,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: root.missingRequired.length > 0
                 ? "The plugin shells out to these tools. The ones marked required must be installed for it to work at all."
@@ -4159,6 +4200,7 @@ Panel {
                 spacing: Style.space(10)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: modelData.ready ? "󰄬" : (modelData.required ? "󰅖" : "󰋗")
                   color: modelData.ready ? Color.accent : (modelData.required ? root.urgent : root.dim)
@@ -4173,6 +4215,7 @@ Panel {
                   Row {
                     spacing: Style.space(6)
                     Text {
+                      textFormat: Text.PlainText
                       text: modelData.label
                       color: root.fg
                       font.family: root.fontFamily
@@ -4180,6 +4223,7 @@ Panel {
                       font.bold: true
                     }
                     Text {
+                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: modelData.required ? "required" : "optional"
                       color: root.dim
@@ -4189,6 +4233,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: modelData.purpose
                     color: root.dim
@@ -4199,6 +4244,7 @@ Panel {
 
                   // fprintd on PATH still needs an enrolled finger.
                   Text {
+                    textFormat: Text.PlainText
                     visible: modelData.key === "fprintd" && modelData.installed && !modelData.ready
                     width: parent.width
                     text: "Installed, but no finger is enrolled yet."
@@ -4314,6 +4360,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               anchors.verticalCenter: parent.verticalCenter
               visible: root.settingsFlash !== ""
               text: "󰄬 " + root.settingsFlash
@@ -4357,6 +4404,7 @@ Panel {
               }
 
               PanelSectionHeader {
+                textFormat: Text.PlainText
                 visible: modelData.groupLabel !== ""
                 text: modelData.groupLabel === "" ? "" : modelData.groupLabel.toUpperCase()
                 foreground: root.fg
@@ -4387,6 +4435,7 @@ Panel {
                   spacing: Style.space(2)
 
                   Text {
+                    textFormat: Text.PlainText
                     text: modelData.label
                     color: blocked ? root.dim : root.fg
                     font.family: root.fontFamily
@@ -4394,6 +4443,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: blocked
                       ? "Needs fingerprint setup -- see Dependencies below."
@@ -4431,6 +4481,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   visible: modelData.type === "int" && !!modelData.unit
                   text: modelData.unit || ""
@@ -4454,6 +4505,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: modelData.type === "int" && root.settingValue(modelData) === 0 && !!modelData.zeroLabel
                 text: modelData.zeroLabel + " -- this is disabled."
                 color: root.urgent
@@ -4494,6 +4546,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: "Saved to the plugin's entry in ~/.config/omarchy/shell.json via `omarchy bar set`."
             color: root.dim
@@ -4546,7 +4599,7 @@ Panel {
             Column {
               width: parent.width
               spacing: Style.space(3)
-              Text { text: "EMAIL ADDRESS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "EMAIL ADDRESS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
                 id: emailField
                 width: parent.width
@@ -4560,7 +4613,7 @@ Panel {
             Column {
               width: parent.width
               spacing: Style.space(3)
-              Text { text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               Row {
                 width: parent.width
                 spacing: Style.space(6)
@@ -4592,6 +4645,7 @@ Panel {
               Row {
                 width: parent.width
                 Text {
+                  textFormat: Text.PlainText
                   text: "TWO-STEP VERIFICATION CODE (2FA)"
                   color: root.show2faField ? Color.accent : root.dim
                   font.family: root.fontFamily
@@ -4600,6 +4654,7 @@ Panel {
                 }
                 Item { Layout.fillWidth: true }
                 Text {
+                  textFormat: Text.PlainText
                   text: "Optional if not enabled"
                   color: root.dim
                   font.family: root.fontFamily
@@ -4630,6 +4685,7 @@ Panel {
                 Row {
                   spacing: Style.space(4)
                   Text {
+                    textFormat: Text.PlainText
                     text: root.showServerField ? "▾ Custom Server URL" : "▸ Custom Server (Self-hosted Vaultwarden)"
                     color: root.dim
                     font.family: root.fontFamily
@@ -4669,7 +4725,7 @@ Panel {
             Column {
               width: parent.width
               spacing: Style.space(3)
-              Text { text: "CLIENT ID"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "CLIENT ID"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
                 width: parent.width
                 placeholderText: "user.xxxxxxxx-xxxx-xxxx..."
@@ -4681,7 +4737,7 @@ Panel {
             Column {
               width: parent.width
               spacing: Style.space(3)
-              Text { text: "CLIENT SECRET"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "CLIENT SECRET"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
                 width: parent.width
                 placeholderText: "Client secret string..."
@@ -4694,7 +4750,7 @@ Panel {
             Column {
               width: parent.width
               spacing: Style.space(3)
-              Text { text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
                 width: parent.width
                 placeholderText: "Master password to unlock vault..."
@@ -4722,6 +4778,7 @@ Panel {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
             Text {
+              textFormat: Text.PlainText
               text: "Prefer interactive TTY login?"
               color: root.dim
               font.family: root.fontFamily
@@ -4756,6 +4813,7 @@ Panel {
             spacing: Style.space(6)
 
             Text {
+              textFormat: Text.PlainText
               anchors.horizontalCenter: parent.horizontalCenter
               text: root.fingerprintScanning ? "󰈷" : "󰌋"
               color: root.fingerprintScanning ? Color.accent : root.fg
@@ -4773,6 +4831,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               anchors.horizontalCenter: parent.horizontalCenter
               text: root.fingerprintReady ? "Unlock Vault" : "Enter Master Password"
               color: root.fg
@@ -4782,6 +4841,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.userEmail !== ""
               anchors.horizontalCenter: parent.horizontalCenter
               text: root.userEmail
@@ -4793,6 +4853,7 @@ Panel {
 
           // Fingerprint status / prompt
           Text {
+            textFormat: Text.PlainText
             visible: root.fingerprintMessage !== ""
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
@@ -4805,6 +4866,7 @@ Panel {
 
           // Offered when fingerprint unlock is on but nothing is stored yet.
           Text {
+            textFormat: Text.PlainText
             visible: root.fingerprintUnlock && root.fingerprintAvailable && !root.fingerprintStored
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
@@ -4821,7 +4883,7 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Text { text: "PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+            Text { textFormat: Text.PlainText; text: "PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
             Row {
               width: parent.width
@@ -4852,6 +4914,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.pinError !== ""
               width: parent.width
               text: root.pinError
@@ -4862,6 +4925,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: "or use your master password below"
               color: root.dim
               font.family: root.fontFamily
@@ -4872,6 +4936,7 @@ Panel {
           // A PIN was set but the vault rejected it -- surfaced even once
           // pinReady has gone false, so the reason is not lost.
           Text {
+            textFormat: Text.PlainText
             visible: !root.pinReady && root.pinError !== ""
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
@@ -5040,6 +5105,7 @@ Panel {
               spacing: Style.space(6)
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: "󰌠"
                 color: Color.accent
@@ -5048,6 +5114,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: "Suggested for " + (root.detectedContext ? root.detectedContext.displayName : "active window")
                 color: Color.accent
@@ -5120,6 +5187,7 @@ Panel {
 
                   // Type Icon
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: Model.itemTypeGlyph(itemData.typeCode)
                     color: itemData.favorite ? Color.accent : root.fg
@@ -5139,6 +5207,7 @@ Panel {
                       width: parent.width
 
                       Text {
+                        textFormat: Text.PlainText
                         text: itemData.name
                         color: root.fg
                         font.family: root.fontFamily
@@ -5149,6 +5218,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         visible: itemData.favorite
                         text: "★"
                         color: Color.accent
@@ -5162,6 +5232,7 @@ Panel {
                       width: parent.width
 
                       Text {
+                        textFormat: Text.PlainText
                         visible: Boolean(itemData.isSuggested)
                         text: root.learnedIds[itemData.id] ? "󰐾 Suggested" : "󰌠 Suggested"
                         color: Color.accent
@@ -5171,6 +5242,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         visible: Boolean(itemData.organizationId)
                         text: "󰓹 Org"
                         color: Color.accent
@@ -5180,6 +5252,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         id: rowSubtitle
                         text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
                         color: root.dim
@@ -5196,6 +5269,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         id: rowFolderTag
                         // Only worth showing when it is not already implied by the filter.
                         visible: Boolean(itemData.folderId) && root.selectedFolder === "all"
@@ -5282,6 +5356,7 @@ Panel {
                 spacing: Style.space(6)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.horizontalCenter: parent.horizontalCenter
                   text: root.items.length === 0 ? "󰞀" : "󰍡"
                   color: root.dim
@@ -5290,6 +5365,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.horizontalCenter: parent.horizontalCenter
                   text: root.items.length === 0 ? "Vault is empty" : ("No items match '" + root.searchQuery + "'")
                   color: root.dim
@@ -5329,6 +5405,7 @@ Panel {
               spacing: Style.space(8)
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.openFilterGroup === "folders" ? "󰉋"
                     : root.openFilterGroup === "organizations" ? "󰦑"
@@ -5339,6 +5416,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.openFilterGroup === "folders" ? "FOLDERS"
                     : root.openFilterGroup === "organizations" ? "ORGANIZATIONS"
@@ -5352,6 +5430,7 @@ Panel {
               Item { width: parent.width - Style.space(190); height: 1 }
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.currentFilterOptions.length > root.filterVisibleRows
                 text: root.currentFilterOptions.length + " total"
@@ -5424,6 +5503,7 @@ Panel {
                       spacing: Style.space(8)
 
                       Text {
+                        textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.icon
                         color: modelData.active ? Color.accent : root.dim
@@ -5432,6 +5512,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width - Style.space(50)
                         text: modelData.label
@@ -5443,6 +5524,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
                         visible: modelData.active
                         text: "󰄬"
@@ -5472,7 +5554,9 @@ Panel {
 
               delegate: Button {
                 required property var modelData
-                text: modelData.name + ": " + modelData.value
+                // The value half is a vault folder/organization name, and
+                // Ui.Button renders it with an auto-detecting Text.
+                text: Model.plainLabel(modelData.name + ": " + modelData.value)
                 iconText: root.openFilterGroup === modelData.group ? "󰅀" : modelData.icon
                 selected: root.openFilterGroup === modelData.group
                 accent: Color.accent
@@ -5520,8 +5604,10 @@ Panel {
               iconText: pinned ? "󰐾" : "󰐽"
               selected: pinned
               accent: Color.accent
-              tooltipText: (pinned ? "Stop suggesting this for " : "Always suggest this for ")
-                + (root.detectedContext ? root.detectedContext.displayName : "")
+              // The window title is no more trustworthy than a vault value,
+              // and the kit renders tooltips with an auto-detecting Text.
+              tooltipText: Model.plainLabel((pinned ? "Stop suggesting this for " : "Always suggest this for ")
+                + (root.detectedContext ? root.detectedContext.displayName : ""))
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.toggleAssociation(root.detailItem)
@@ -5559,6 +5645,7 @@ Panel {
               spacing: Style.space(12)
 
               Text {
+                textFormat: Text.PlainText
                 text: "Permanently delete this item?"
                 color: root.fg
                 font.family: root.fontFamily
@@ -5610,6 +5697,7 @@ Panel {
                 spacing: Style.space(10)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.detailItem ? Model.itemTypeGlyph(root.detailItem.typeCode) : "󰌋"
                   color: (root.detailItem && root.detailItem.favorite) ? Color.accent : root.fg
@@ -5627,6 +5715,7 @@ Panel {
                     width: parent.width
 
                     Text {
+                      textFormat: Text.PlainText
                       text: root.detailItem ? root.detailItem.name : "Loading..."
                       color: root.fg
                       font.family: root.fontFamily
@@ -5637,6 +5726,7 @@ Panel {
                     }
 
                     Text {
+                      textFormat: Text.PlainText
                       visible: Boolean(root.detailItem && root.detailItem.favorite)
                       text: "★"
                       color: Color.accent
@@ -5647,12 +5737,14 @@ Panel {
                   Row {
                     spacing: Style.space(6)
                     Text {
+                      textFormat: Text.PlainText
                       text: root.detailItem ? Model.itemTypeLabel(root.detailItem.typeCode) : ""
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
                     Text {
+                      textFormat: Text.PlainText
                       visible: Boolean(root.detailItem && root.detailItem.organizationId)
                       text: "• Shared Organization"
                       color: Color.accent
@@ -5660,6 +5752,7 @@ Panel {
                       font.pixelSize: Style.font.caption
                     }
                     Text {
+                      textFormat: Text.PlainText
                       visible: Boolean(root.detailItem && root.detailItem.folderId)
                       text: root.detailItem
                         ? "• 󰉋 " + Model.folderName(root.folders, root.detailItem.folderId)
@@ -5693,6 +5786,7 @@ Panel {
                     anchors.rightMargin: Style.space(6)
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.detailItem ? root.detailItem.username : ""
                       color: root.fg
@@ -5735,6 +5829,7 @@ Panel {
                     anchors.rightMargin: Style.space(6)
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.passwordRevealed ? root.detailPassword : Model.maskString(root.detailPassword || "password")
                       color: root.fg
@@ -5778,6 +5873,7 @@ Panel {
                   PanelSectionHeader { text: "VERIFICATION CODE (TOTP)" }
                   Item { Layout.fillWidth: true }
                   Text {
+                    textFormat: Text.PlainText
                     text: root.totpSecRemaining + "s"
                     color: Color.accent
                     font.family: root.fontFamily
@@ -5809,6 +5905,7 @@ Panel {
                     anchors.rightMargin: Style.space(6)
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.liveTotp ? (root.liveTotp.length === 6 ? root.liveTotp.slice(0, 3) + " " + root.liveTotp.slice(3) : root.liveTotp) : "Loading..."
                       color: Color.accent
@@ -5855,6 +5952,7 @@ Panel {
                       anchors.rightMargin: Style.space(6)
 
                       Text {
+                        textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData
                         color: root.fg
@@ -5904,6 +6002,7 @@ Panel {
                   borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                   Text {
+                    textFormat: Text.PlainText
                     id: notesText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
@@ -5944,6 +6043,7 @@ Panel {
             Item { Layout.fillWidth: true }
 
             Text {
+              textFormat: Text.PlainText
               anchors.verticalCenter: parent.verticalCenter
               text: root.formIsEditing ? "Edit Item" : "New Vault Item"
               color: root.fg
@@ -5999,7 +6099,7 @@ Panel {
               Column {
                 width: parent.width
                 spacing: Style.space(3)
-                Text { text: "TITLE / NAME *"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "TITLE / NAME *"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                 TextField {
                   id: formNameField
                   width: parent.width
@@ -6014,11 +6114,11 @@ Panel {
               Column {
                 width: parent.width
                 spacing: Style.space(3)
-                Text { text: "FOLDER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "FOLDER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
                 Button {
                   width: parent.width
-                  text: root.formFolderLabel()
+                  text: Model.plainLabel(root.formFolderLabel())
                   iconText: root.formPicker === "folder" ? "\u{F0140}" : "\u{F024B}"
                   selected: root.formPicker === "folder"
                   accent: Color.accent
@@ -6102,11 +6202,11 @@ Panel {
                 visible: root.organizations.length > 0
                 width: parent.width
                 spacing: Style.space(3)
-                Text { text: "ORGANIZATION"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "ORGANIZATION"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
                 Button {
                   width: parent.width
-                  text: root.formOrgLabel()
+                  text: Model.plainLabel(root.formOrgLabel())
                   iconText: root.formPicker === "organization" ? "\u{F0140}" : "\u{F0991}"
                   selected: root.formPicker === "organization"
                   accent: Color.accent
@@ -6172,6 +6272,7 @@ Panel {
                     width: parent.width
                     spacing: Style.space(6)
                     Text {
+                      textFormat: Text.PlainText
                       text: "COLLECTIONS"
                       color: root.formCollectionIds.length === 0 ? root.urgent : root.dim
                       font.family: root.fontFamily
@@ -6179,6 +6280,7 @@ Panel {
                       font.bold: true
                     }
                     Text {
+                      textFormat: Text.PlainText
                       text: root.formCollectionsLoading
                         ? "loading..."
                         : (root.formCollectionIds.length === 0
@@ -6207,6 +6309,7 @@ Panel {
                       spacing: Style.space(2)
 
                       Text {
+                        textFormat: Text.PlainText
                         visible: !root.formCollectionsLoading && root.formCollections.length === 0
                         width: parent.width
                         text: "No collections available in this organization."
@@ -6242,7 +6345,7 @@ Panel {
                 visible: root.formTypeCode === 1
                 width: parent.width
                 spacing: Style.space(3)
-                Text { text: "USERNAME / EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "USERNAME / EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                 TextField {
                   width: parent.width
                   placeholderText: "username or email address..."
@@ -6258,7 +6361,7 @@ Panel {
                 spacing: Style.space(3)
                 Row {
                   width: parent.width
-                  Text { text: "PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                  Text { textFormat: Text.PlainText; text: "PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                   Item { Layout.fillWidth: true }
                   // Opens the real generator, which fills this field in and
                   // comes back. The ellipsis says it goes somewhere first.
@@ -6296,7 +6399,7 @@ Panel {
                 visible: root.formTypeCode === 1
                 width: parent.width
                 spacing: Style.space(3)
-                Text { text: "AUTHENTICATOR KEY (TOTP SECRET)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "AUTHENTICATOR KEY (TOTP SECRET)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                 TextField {
                   width: parent.width
                   placeholderText: "e.g. JBSWY3DPEHPK3PXP (optional)..."
@@ -6310,7 +6413,7 @@ Panel {
                 visible: root.formTypeCode === 1
                 width: parent.width
                 spacing: Style.space(3)
-                Text { text: "WEBSITE URL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "WEBSITE URL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                 TextField {
                   width: parent.width
                   placeholderText: "https://example.com/login..."
@@ -6323,7 +6426,7 @@ Panel {
               Column {
                 width: parent.width
                 spacing: Style.space(3)
-                Text { text: "NOTES"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "NOTES"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                 TextField {
                   width: parent.width
                   placeholderText: "Additional secure notes..."

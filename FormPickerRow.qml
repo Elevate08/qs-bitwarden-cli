@@ -40,6 +40,7 @@ BorderSurface {
     spacing: Style.space(8)
 
     Text {
+      textFormat: Text.PlainText
       anchors.verticalCenter: parent.verticalCenter
       text: row.glyph
       color: row.picked ? Color.accent : Qt.darker(row.foreground, 1.5)
@@ -48,6 +49,7 @@ BorderSurface {
     }
 
     Text {
+      textFormat: Text.PlainText
       anchors.verticalCenter: parent.verticalCenter
       width: parent.width - Style.space(46)
       text: row.label
@@ -59,6 +61,7 @@ BorderSurface {
     }
 
     Text {
+      textFormat: Text.PlainText
       anchors.verticalCenter: parent.verticalCenter
       visible: row.multi || row.picked
       text: row.multi ? (row.picked ? "󰄲" : "󰄱") : "󰄬"
