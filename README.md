@@ -65,6 +65,11 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
   - **Edit Items (`e` key or Edit button)**: Modify titles, credentials, authenticator keys, URLs, and notes.
   - **Delete Items (`x` key or Delete button)**: Delete items with confirmation protection.
 
+- **Folders**:
+  - Folder filter bar alongside the vault filter: **All Folders**, **No Folder**, or any specific folder.
+  - Items show their folder inline (`󰉋 Name`) when no folder filter is active.
+  - Assign a folder when creating or editing an item, including clearing an existing assignment, and create a new folder inline from the item form without leaving it.
+
 - **Multi-Organization & Vault Filtering**:
   - Automatically queries and displays organizations you belong to.
   - Organization filter bar: **All Vaults**, **My Vault** (Personal items), or specific shared **Organization**.
@@ -275,6 +280,7 @@ Regression suites, no dependencies beyond Node:
 node tests/context-match.test.js    # window-title matching and learned suggestions
 node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
 node tests/generator.test.js        # generator option clamping and strength
+node tests/folders.test.js          # folder parsing, filtering and assignment
 ```
 
 ---

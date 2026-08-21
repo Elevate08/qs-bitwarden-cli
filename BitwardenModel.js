@@ -117,6 +117,20 @@ function listOrganizationsCommand(session) {
   return buildCommand(["list", "organizations"], session, true)
 }
 
+function listFoldersCommand(session) {
+  return buildCommand(["list", "folders"], session, true)
+}
+
+function createFolderCommand(name, session) {
+  var jsonStr = JSON.stringify({ name: String(name || "").trim() })
+  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder --session " + shellQuote(session)
+  return ["bash", "-c", script]
+}
+
+function deleteFolderCommand(folderId, session) {
+  return ["bw", "delete", "folder", String(folderId), "--session", String(session).trim()]
+}
+
 function getItemCommand(id, session) {
   return buildCommand(["get", "item", String(id)], session, true)
 }
@@ -333,6 +347,39 @@ function parseOrganizations(raw) {
   return out
 }
 
+function parseFolders(raw) {
+  var arr = null
+  try {
+    arr = JSON.parse(raw)
+  } catch (e) {
+    return []
+  }
+  if (!Array.isArray(arr)) return []
+
+  var out = []
+  for (var i = 0; i < arr.length; i++) {
+    var f = arr[i]
+    if (!f || typeof f !== "object") continue
+    // bw represents "no folder" as an entry with a null id on some versions.
+    // The panel has its own control for that, so drop it here.
+    if (!f.id) continue
+    out.push({ id: String(f.id), name: String(f.name || "Folder") })
+  }
+
+  out.sort(function(a, b) {
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  })
+  return out
+}
+
+function folderName(folders, folderId) {
+  if (!folderId || !Array.isArray(folders)) return ""
+  for (var i = 0; i < folders.length; i++) {
+    if (folders[i].id === folderId) return folders[i].name
+  }
+  return ""
+}
+
 var ITEM_TYPES = {
   "1": "login",
   "2": "secureNote",
@@ -411,6 +458,7 @@ function parseItems(raw) {
     out.push({
       id: String(it.id || ""),
       organizationId: it.organizationId ? String(it.organizationId) : null,
+      folderId: it.folderId ? String(it.folderId) : null,
       name: String(it.name || "Untitled"),
       type: itemTypeName(it.type),
       typeCode: Number(it.type || 1),
@@ -501,6 +549,7 @@ function parseItemDetail(raw) {
   return {
     id: String(it.id || ""),
     organizationId: it.organizationId ? String(it.organizationId) : null,
+    folderId: it.folderId ? String(it.folderId) : null,
     name: String(it.name || "Untitled"),
     type: itemTypeName(it.type),
     typeCode: Number(it.type || 1),
@@ -539,11 +588,12 @@ function matchesQuery(item, query) {
   return false
 }
 
-function filterItems(items, query, category, selectedOrg) {
+function filterItems(items, query, category, selectedOrg, selectedFolder) {
   if (!Array.isArray(items)) return []
   var q = String(query || "").toLowerCase().trim()
   var cat = String(category || "all").toLowerCase()
   var org = String(selectedOrg || "all")
+  var folder = String(selectedFolder || "all")
 
   var out = []
   for (var i = 0; i < items.length; i++) {
@@ -554,6 +604,13 @@ function filterItems(items, query, category, selectedOrg) {
       if (it.organizationId) continue
     } else if (org !== "all") {
       if (it.organizationId !== org) continue
+    }
+
+    // Folder filter: "all" | "none" (unfiled) | folder id
+    if (folder === "none") {
+      if (it.folderId) continue
+    } else if (folder !== "all") {
+      if (it.folderId !== folder) continue
     }
 
     // Category filter
@@ -607,14 +664,14 @@ function generatePassword(length, upper, lower, numbers, special) {
 // Payload Builders for Create & Edit
 // -------------------------------------------------------------------------
 
-function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId) {
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId) {
   var payload = {
     type: Number(typeCode || 1),
     name: String(name || "Untitled").trim(),
     notes: String(notes || "").trim(),
     favorite: Boolean(favorite),
     organizationId: organizationId && organizationId !== "personal" && organizationId !== "all" ? String(organizationId) : null,
-    folderId: null
+    folderId: folderId && folderId !== "all" && folderId !== "none" ? String(folderId) : null
   }
 
   if (Number(typeCode) === 1) { // Login
@@ -635,7 +692,7 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
   return payload
 }
 
-function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId) {
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId) {
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
   payload.name = String(name || "Untitled").trim()
   payload.notes = String(notes || "").trim()
@@ -643,6 +700,9 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
   if (organizationId && organizationId !== "personal" && organizationId !== "all") {
     payload.organizationId = String(organizationId)
   }
+  // An explicit empty selection means "no folder", so this must be able to
+  // clear an existing assignment, not only set one.
+  payload.folderId = folderId && folderId !== "all" && folderId !== "none" ? String(folderId) : null
 
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}

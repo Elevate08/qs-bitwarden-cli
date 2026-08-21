@@ -64,6 +64,11 @@ Panel {
   property var filteredItems: []
   property var organizations: []
   property string selectedOrg: "all" // "all" | "personal" | orgId
+  property var folders: []
+  property string selectedFolder: "all" // "all" | "none" | folderId
+  property string formFolderId: ""
+  property string newFolderName: ""
+  property bool creatingFolder: false
   property string searchQuery: ""
   property string selectedCategory: "all"
   property int selectedIndex: 0
@@ -907,6 +912,7 @@ Panel {
 
     loadItems()
     loadOrganizations()
+    loadFolders()
     resetAutoLockTimer()
     focusAppropriateField()
   }
@@ -953,6 +959,7 @@ Panel {
     }
     loadItems()
     loadOrganizations()
+    loadFolders()
   }
 
   function loadItems() {
@@ -983,6 +990,46 @@ Panel {
     organizations = Model.parseOrganizations(rawJson)
   }
 
+  function loadFolders() {
+    if (!session) return
+    listFoldersProc.command = Model.listFoldersCommand(session)
+    listFoldersProc.running = true
+  }
+
+  function onListFoldersFinished(rawJson) {
+    folders = Model.parseFolders(rawJson)
+  }
+
+  function selectFolder(folderId) {
+    selectedFolder = folderId
+    selectedIndex = 0
+    rebuildFilter()
+  }
+
+  function submitNewFolder() {
+    var name = String(newFolderName || "").trim()
+    if (!name) return
+    creatingFolder = true
+    createFolderProc.command = Model.createFolderCommand(name, session)
+    createFolderProc.running = true
+  }
+
+  function onFolderCreated(exitCode, stdoutText) {
+    creatingFolder = false
+    if (exitCode !== 0) {
+      errorMessage = "Could not create folder"
+      return
+    }
+    var created = null
+    try { created = JSON.parse(stdoutText) } catch (e) { created = null }
+    newFolderName = ""
+    // Creating a folder from the item form is only ever a prelude to filing
+    // the item into it, so select it straight away.
+    if (created && created.id) formFolderId = String(created.id)
+    flashNotification("Folder created")
+    loadFolders()
+  }
+
   function syncVault() {
     if (!session) return
     isSyncing = true
@@ -996,6 +1043,7 @@ Panel {
       flashNotification("Vault synced with Bitwarden")
       loadItems()
       loadOrganizations()
+      loadFolders()
     } else {
       errorMessage = "Sync failed"
     }
@@ -1062,6 +1110,8 @@ Panel {
     formNotes = ""
     formFavorite = false
     formOrgId = selectedOrg !== "all" ? selectedOrg : ""
+    formFolderId = (selectedFolder !== "all" && selectedFolder !== "none") ? selectedFolder : ""
+    newFolderName = ""
     formPasswordRevealed = false
     errorMessage = ""
     currentScreen = "edit"
@@ -1080,6 +1130,8 @@ Panel {
     formNotes = item.notes || ""
     formFavorite = Boolean(item.favorite)
     formOrgId = item.organizationId || ""
+    formFolderId = item.folderId || ""
+    newFolderName = ""
     formPasswordRevealed = false
     errorMessage = ""
     currentScreen = "edit"
@@ -1103,11 +1155,11 @@ Panel {
     isLoading = true
 
     if (formIsEditing) {
-      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId)
+      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId)
       editItemProc.command = Model.editItemCommand(formItemId, editPayload, session)
       editItemProc.running = true
     } else {
-      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId)
+      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId)
       createItemProc.command = Model.createItemCommand(createPayload, session)
       createItemProc.running = true
     }
@@ -1148,8 +1200,8 @@ Panel {
   // -------------------------------------------------------------------------
 
   function rebuildFilter() {
-    var baseList = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg)
-    if (searchQuery.trim() === "" && selectedCategory === "all" && selectedOrg === "all" && !suggestionsDismissed && suggestedItems.length > 0) {
+    var baseList = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg, selectedFolder)
+    if (searchQuery.trim() === "" && selectedCategory === "all" && selectedOrg === "all" && selectedFolder === "all" && !suggestionsDismissed && suggestedItems.length > 0) {
       var suggestedIds = {}
       var topMatches = []
       for (var s = 0; s < suggestedItems.length; s++) {
@@ -1438,6 +1490,20 @@ Panel {
   }
 
   // ---- Fingerprint unlock ----
+
+  Process {
+    id: listFoldersProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onListFoldersFinished(text)
+    }
+  }
+
+  Process {
+    id: createFolderProc
+    stdout: StdioCollector { id: createFolderStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onFolderCreated(exitCode, createFolderStdout.text) }
+  }
 
   Process {
     id: generateProc
@@ -3522,6 +3588,56 @@ Panel {
             }
           }
 
+          // Folder Selector Bar (shown once any folder exists)
+          Flickable {
+            visible: root.folders.length > 0
+            width: parent.width
+            height: Style.space(26)
+            contentWidth: folderRow.implicitWidth
+            flickableDirection: Flickable.HorizontalFlick
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            Row {
+              id: folderRow
+              spacing: Style.space(6)
+
+              Button {
+                text: "All Folders"
+                iconText: "󰉋"
+                selected: root.selectedFolder === "all"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(8)
+                onClicked: root.selectFolder("all")
+              }
+
+              Button {
+                text: "No Folder"
+                iconText: "󰉖"
+                selected: root.selectedFolder === "none"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(8)
+                onClicked: root.selectFolder("none")
+              }
+
+              Repeater {
+                model: root.folders
+                delegate: Button {
+                  required property var modelData
+                  text: modelData.name
+                  iconText: "󰉋"
+                  selected: root.selectedFolder === modelData.id
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  horizontalPadding: Style.space(8)
+                  onClicked: root.selectFolder(modelData.id)
+                }
+              }
+            }
+          }
+
           // Organization / Vault Selector Bar (Shown if organizations exist)
           Flickable {
             visible: root.organizations.length > 0
@@ -3758,12 +3874,31 @@ Panel {
                       }
 
                       Text {
+                        id: rowSubtitle
                         text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                         elide: Text.ElideRight
-                        width: parent.width - (itemData.organizationId ? Style.space(40) : 0) - (itemData.isSuggested ? Style.space(75) : 0)
+                        // Take only what is needed, so the folder tag that follows
+                        // keeps its place instead of being pushed off the row.
+                        width: Math.min(implicitWidth,
+                          parent.width
+                            - (itemData.organizationId ? Style.space(40) : 0)
+                            - (itemData.isSuggested ? Style.space(75) : 0)
+                            - (rowFolderTag.visible ? Style.space(90) : 0))
+                      }
+
+                      Text {
+                        id: rowFolderTag
+                        // Only worth showing when it is not already implied by the filter.
+                        visible: Boolean(itemData.folderId) && root.selectedFolder === "all"
+                        text: "· 󰉋 " + Model.folderName(root.folders, itemData.folderId)
+                        color: Qt.darker(root.dim, 1.1)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                        width: Math.min(implicitWidth, Style.space(90))
                       }
                     }
                   }
@@ -4027,6 +4162,15 @@ Panel {
                       visible: Boolean(root.detailItem && root.detailItem.organizationId)
                       text: "• Shared Organization"
                       color: Color.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                    Text {
+                      visible: Boolean(root.detailItem && root.detailItem.folderId)
+                      text: root.detailItem
+                        ? "• 󰉋 " + Model.folderName(root.folders, root.detailItem.folderId)
+                        : ""
+                      color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
@@ -4367,6 +4511,67 @@ Panel {
                   placeholderText: "e.g. GitHub, Google, Work Server..."
                   text: root.formName
                   onTextChanged: root.formName = text
+                }
+              }
+
+              // FIELD: Folder
+              Column {
+                width: parent.width
+                spacing: Style.space(3)
+                Text { text: "FOLDER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+
+                Flow {
+                  width: parent.width
+                  spacing: Style.space(6)
+
+                  Button {
+                    text: "No Folder"
+                    iconText: "󰉖"
+                    selected: !root.formFolderId
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    horizontalPadding: Style.space(8)
+                    onClicked: root.formFolderId = ""
+                  }
+
+                  Repeater {
+                    model: root.folders
+                    delegate: Button {
+                      required property var modelData
+                      text: modelData.name
+                      iconText: "󰉋"
+                      selected: root.formFolderId === modelData.id
+                      fontFamily: root.fontFamily
+                      fontSize: Style.font.caption
+                      horizontalPadding: Style.space(8)
+                      onClicked: root.formFolderId = modelData.id
+                    }
+                  }
+                }
+
+                // Creating a folder here saves leaving the form to make one.
+                Row {
+                  width: parent.width
+                  spacing: Style.space(6)
+
+                  TextField {
+                    width: parent.width - Style.space(96)
+                    placeholderText: "New folder name..."
+                    text: root.newFolderName
+                    onTextChanged: root.newFolderName = text
+                    onAccepted: root.submitNewFolder()
+                    enabled: !root.creatingFolder
+                  }
+
+                  Button {
+                    text: root.creatingFolder ? "Adding..." : "Add"
+                    iconText: root.creatingFolder ? "󰑐" : "󰐕"
+                    iconSpinning: root.creatingFolder
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    enabled: !root.creatingFolder && root.newFolderName.trim() !== ""
+                    onClicked: root.submitNewFolder()
+                  }
                 }
               }
 
