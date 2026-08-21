@@ -155,7 +155,7 @@ check("an unknown mode falls back to login",
   Model.terminalLoginCommand("")[2].includes("bw login --raw"), "expected login")
 // Only the method name crosses the IPC boundary; the key never does.
 check("a successful login reopens the panel",
-  login.includes("omarchy-shell qs-bitwarden-cli open"), login.slice(0, 300))
+  login.includes("omarchy-shell io.github.elevate08.qs-bitwarden-cli open"), login.slice(0, 300))
 check("the session key is not passed over IPC",
   !login.includes("open $f") && !login.includes("open \"$f\""), login.slice(0, 300))
 // The inner script appears twice -- once for the terminal, once for the

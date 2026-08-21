@@ -77,7 +77,7 @@ for (const [label, raw] of [["empty", ""], ["garbage", "???\n=\nbw\n"]]) {
 // hands the panel a string where it expects a number or a bool.
 check("int setting is written with --json",
   JSON.stringify(Model.settingWriteCommand("autoLockMinutes", 15, "int"))
-    === JSON.stringify(["omarchy","bar","set","qs-bitwarden-cli","autoLockMinutes","15","--json"]),
+    === JSON.stringify(["omarchy","bar","set","io.github.elevate08.qs-bitwarden-cli","autoLockMinutes","15","--json"]),
   JSON.stringify(Model.settingWriteCommand("autoLockMinutes", 15, "int")))
 
 for (const [v, want] of [[true, "true"], [false, "false"]]) {

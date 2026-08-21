@@ -139,7 +139,7 @@ function terminalLoginCommand(mode) {
     + "if bw " + verb + " --raw > \"$f\" && [ -s \"$f\" ]; then "
     // Bring the panel back itself rather than making the user find it again.
     // Only the method name crosses this boundary; the key never does.
-    + "omarchy-shell qs-bitwarden-cli open >/dev/null 2>&1 || true; "
+    + "omarchy-shell io.github.elevate08.qs-bitwarden-cli open >/dev/null 2>&1 || true; "
     + "echo; echo 'Done. Returning to the Bitwarden panel...'; sleep 1; "
     + "else rm -f \"$f\"; echo; echo 'Not completed -- nothing was handed to the panel.'; "
     + "read -p 'Press enter to close...'; fi"
@@ -1599,7 +1599,7 @@ function settingWriteCommand(key, value, type) {
   var raw
   if (type === "bool") raw = value ? "true" : "false"
   else raw = String(Number(value) || 0)
-  return ["omarchy", "bar", "set", "qs-bitwarden-cli", String(key), raw, "--json"]
+  return ["omarchy", "bar", "set", "io.github.elevate08.qs-bitwarden-cli", String(key), raw, "--json"]
 }
 
 // -------------------------------------------------------------------------

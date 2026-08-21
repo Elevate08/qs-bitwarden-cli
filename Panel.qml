@@ -10,8 +10,8 @@ import "BitwardenModel.js" as Model
 
 Panel {
   id: root
-  moduleName: "qs-bitwarden-cli"
-  ipcTarget: "qs-bitwarden-cli"
+  moduleName: "io.github.elevate08.qs-bitwarden-cli"
+  ipcTarget: "io.github.elevate08.qs-bitwarden-cli"
   manageIpc: false
 
   implicitWidth: button.implicitWidth
@@ -2389,7 +2389,7 @@ Panel {
   // -------------------------------------------------------------------------
 
   IpcHandler {
-    target: "qs-bitwarden-cli"
+    target: "io.github.elevate08.qs-bitwarden-cli"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }

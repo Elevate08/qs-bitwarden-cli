@@ -11,7 +11,7 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 
 ## Screenshots
 
-Every screenshot below is captured against a **fixture vault** of made-up entries, never a real one -- see [Screenshots](#screenshots-1) under Development for how, and how to regenerate them.
+Every screenshot below is captured against a **fixture vault** of made-up entries, never a real one -- see [Regenerating the Screenshots](#regenerating-the-screenshots) for how they are made and how to regenerate them.
 
 | Vault list | Filter drawer |
 | :---: | :---: |
@@ -117,7 +117,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - A missing **required** tool opens the wizard automatically; **Install** runs `omarchy pkg add <pkg>` in a terminal so you can see it happen and answer the password prompt. `fprintd` present without an enrolled finger offers **Enroll** (`omarchy setup security fingerprint`).
   - Press <kbd>,</kbd> or the `󰒓` button for settings, grouped into **Security**, **Behavior** and **Suggestions**: auto-lock timeout, clipboard clear delay, TOTP auto-copy delay, and every toggle. A setting whose dependency is missing is shown but inert, with the reason given.
   - Changes are written to the plugin's entry in `~/.config/omarchy/shell.json` through `omarchy bar set`, so Omarchy owns the file and the shell hot-reloads the change. Nothing is stored in a second place.
-  - Reachable from a keybind too: `omarchy-shell qs-bitwarden-cli settings` (or `setup`).
+  - Reachable from a keybind too: `omarchy-shell io.github.elevate08.qs-bitwarden-cli settings` (or `setup`).
 
 - **Hardware-Accelerated Performance & Security**:
   - Virtualized `ListView` with component delegate recycling for instant rendering of large vaults.
@@ -132,36 +132,53 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 
 ### 1. Requirements
 
-Ensure the required dependencies are installed on your Arch Linux system:
+Omarchy with the Quickshell-based shell, plus the external tools below. The
+plugin shells out to all of them; none are bundled.
+
+| Tool | Package | Required | Used for |
+| --- | --- | :---: | --- |
+| `bw` | `bitwarden-cli` | yes | Reading and writing your vault. Nothing works without it. |
+| `wl-copy` | `wl-clipboard` | yes | Copying passwords and TOTP codes to the Wayland clipboard. |
+| `secret-tool` | `libsecret` | no | Storing the session in the OS keyring, and the master password when PIN or fingerprint unlock is on. |
+| `hyprctl` | `hyprland` | no | Identifying the active window so the right login can be suggested. Already present on Omarchy. |
+| `fprintd-list` | `fprintd` | no | Fingerprint unlock. Also needs an enrolled finger via `omarchy setup security fingerprint`. |
 
 ```bash
 sudo pacman -S bitwarden-cli wl-clipboard libsecret
 ```
 
-### 2. Plugin Installation
+The panel checks these itself and offers an exact install command for anything
+missing -- press <kbd>,</kbd> for settings, or run
+`omarchy-shell io.github.elevate08.qs-bitwarden-cli setup`.
 
-Clone or place the plugin repository in `~/projects/qs-bitwarden-cli` and symlink it to Omarchy's user plugin directory:
-
-```bash
-mkdir -p ~/.config/omarchy/plugins
-ln -s ~/projects/qs-bitwarden-cli ~/.config/omarchy/plugins/qs-bitwarden-cli
-```
-
-### 3. Add to Bar Configuration
-
-Add the plugin to your `~/.config/omarchy/shell.json` in the status bar layout:
+### 2. Install the Plugin
 
 ```bash
-omarchy plugin enable qs-bitwarden-cli
-omarchy bar move qs-bitwarden-cli --section right
+omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 ```
 
-Or edit `~/.config/omarchy/shell.json` directly:
+That clones the plugin into `~/.config/omarchy/plugins/`, enables it, and places
+it in the bar section named by the manifest (`right`). To update it later:
+
+```bash
+omarchy plugin update io.github.elevate08.qs-bitwarden-cli
+```
+
+### 3. Bar Placement & Configuration
+
+`--enable` already puts the widget in the bar. To move it:
+
+```bash
+omarchy bar move io.github.elevate08.qs-bitwarden-cli --section right
+```
+
+Settings are editable from the panel's own settings screen, or directly in
+`~/.config/omarchy/shell.json`:
 
 ```json
 {
   "plugins": {
-    "qs-bitwarden-cli": {
+    "io.github.elevate08.qs-bitwarden-cli": {
       "autoLockMinutes": 15,
       "clearClipboardSec": 30,
       "rememberSession": true,
@@ -171,7 +188,7 @@ Or edit `~/.config/omarchy/shell.json` directly:
   "bar": {
     "layout": {
       "right": [
-        "qs-bitwarden-cli"
+        "io.github.elevate08.qs-bitwarden-cli"
       ]
     }
   }
@@ -183,7 +200,7 @@ Or edit `~/.config/omarchy/shell.json` directly:
 To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell qs-bitwarden-cli toggle")
+o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle")
 ```
 
 Apply changes by restarting the shell:
@@ -191,6 +208,30 @@ Apply changes by restarting the shell:
 ```bash
 omarchy restart shell
 ```
+
+### 5. Removal
+
+```bash
+omarchy plugin remove io.github.elevate08.qs-bitwarden-cli
+```
+
+That removes the plugin folder and its bar entry. Nothing the plugin stores
+lives inside that folder, so clear the rest yourself if you want it gone:
+
+```bash
+# Session key, and the master password stored for PIN/fingerprint unlock
+secret-tool clear service qs-bitwarden-cli
+
+# Learned window-title -> vault item suggestions
+rm -rf ~/.local/state/qs-bitwarden-cli
+
+# Settings block, if you edited shell.json by hand
+# -> delete the "io.github.elevate08.qs-bitwarden-cli" key under "plugins"
+```
+
+The plugin never writes outside these paths and your `shell.json` entry, and it
+never modifies your Bitwarden vault on removal. Your vault is untouched -- log
+out of the `bw` CLI separately with `bw logout` if you also want that cleared.
 
 ---
 
@@ -279,22 +320,22 @@ You can control and query the Bitwarden plugin from the terminal, scripts, or wi
 
 ```bash
 # Show, hide, or toggle the popup panel
-omarchy-shell qs-bitwarden-cli open
-omarchy-shell qs-bitwarden-cli close
-omarchy-shell qs-bitwarden-cli toggle
+omarchy-shell io.github.elevate08.qs-bitwarden-cli open
+omarchy-shell io.github.elevate08.qs-bitwarden-cli close
+omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle
 
 # Jump straight to a screen
-omarchy-shell qs-bitwarden-cli settings     # -> "settings"
-omarchy-shell qs-bitwarden-cli setup        # -> "setup" (dependency wizard)
+omarchy-shell io.github.elevate08.qs-bitwarden-cli settings     # -> "settings"
+omarchy-shell io.github.elevate08.qs-bitwarden-cli setup        # -> "setup" (dependency wizard)
 
 # Lock the vault immediately
-omarchy-shell qs-bitwarden-cli lock         # -> "locked"
+omarchy-shell io.github.elevate08.qs-bitwarden-cli lock         # -> "locked"
 
 # Sync with Bitwarden
-omarchy-shell qs-bitwarden-cli sync         # -> "syncing"
+omarchy-shell io.github.elevate08.qs-bitwarden-cli sync         # -> "syncing"
 
 # Query vault state
-omarchy-shell qs-bitwarden-cli status       # -> "unlocked" | "locked" | "unauthenticated"
+omarchy-shell io.github.elevate08.qs-bitwarden-cli status       # -> "unlocked" | "locked" | "unauthenticated"
 ```
 
 `open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
@@ -302,7 +343,7 @@ omarchy-shell qs-bitwarden-cli status       # -> "unlocked" | "locked" | "unauth
 Omarchy's shell-level dispatcher also toggles any plugin, and works equally well for a keybinding:
 
 ```bash
-omarchy-shell shell toggle qs-bitwarden-cli
+omarchy-shell shell toggle io.github.elevate08.qs-bitwarden-cli
 ```
 
 Only `toggle` exists at that level, though -- `omarchy-shell shell open|close <id>` answers `Function not found`, and `omarchy-shell shell call <id> <method> '{}'` answers `unknown`. Use the plugin-target form above for everything other than toggling.
@@ -310,14 +351,14 @@ Only `toggle` exists at that level, though -- `omarchy-shell shell open|close <i
 The same calls work through Quickshell directly, which is useful when `omarchy-shell` is not on `PATH`:
 
 ```bash
-qs -p /usr/share/omarchy/shell/shell.qml ipc call qs-bitwarden-cli status
+qs -p /usr/share/omarchy/shell/shell.qml ipc call io.github.elevate08.qs-bitwarden-cli status
 ```
 
 ---
 
 ## Configuration Reference
 
-The following settings can be configured under `plugins.qs-bitwarden-cli` in `~/.config/omarchy/shell.json`:
+The following settings can be configured under `plugins.io.github.elevate08.qs-bitwarden-cli` in `~/.config/omarchy/shell.json`:
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -369,7 +410,7 @@ The stored password is removed when you turn the setting off, press **Forget Fin
 
 ---
 
-## Screenshots
+## Regenerating the Screenshots
 
 The screenshots in this README are generated, not hand-cropped, and never show a real vault:
 
@@ -382,6 +423,31 @@ The screenshots in this README are generated, not hand-cropped, and never show a
 `demo/find_panel.py` crops each image to the panel by locating its accent-coloured border. That matters for privacy as much as tidiness: a fixed crop leaves a margin of whatever is behind the panel -- windows, filenames, terminal scrollback -- in the published image.
 
 To change what the screenshots show, edit `demo/fixtures.json` and re-run the script.
+
+---
+
+## Linting
+
+Omarchy plugins are Qt6/Quickshell, so lint with the **Qt6** `qmllint` --
+`/usr/bin/qmllint` on Arch is the Qt5 binary from `qt5-declarative` and exits
+255 with no diagnostics on this file. The `qs.*` modules resolve only when the
+import path contains a directory named `qs`:
+
+```bash
+mkdir -p /tmp/qs-imports && ln -sfn /usr/share/omarchy/shell /tmp/qs-imports/qs
+/usr/lib/qt6/bin/qmllint -I /tmp/qs-imports Panel.qml FormPickerRow.qml
+```
+
+Remaining `unqualified` and `missing-property` warnings are baseline Quickshell
+noise -- the stock Omarchy plugins report the same categories -- as are the
+`signal-handler-parameters` warnings on `Process.onExited`, whose
+`QProcess::ExitStatus` argument qmllint cannot see.
+
+Validate the manifest against the schema the shell enforces:
+
+```bash
+omarchy plugin validate .
+```
 
 ---
 

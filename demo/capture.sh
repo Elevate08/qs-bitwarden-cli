@@ -11,7 +11,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$REPO/docs/screenshots}"
-IPC=(qs -p /usr/share/omarchy/shell/shell.qml ipc call qs-bitwarden-cli)
+IPC=(qs -p /usr/share/omarchy/shell/shell.qml ipc call io.github.elevate08.qs-bitwarden-cli)
 
 for tool in grim magick wtype hyprctl quickshell /usr/bin/python3; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 1; }
