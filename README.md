@@ -297,7 +297,17 @@ omarchy-shell qs-bitwarden-cli sync         # -> "syncing"
 omarchy-shell qs-bitwarden-cli status       # -> "unlocked" | "locked" | "unauthenticated"
 ```
 
-`open`, `close` and `toggle` return nothing; the rest echo the state they moved to. The same calls work through Quickshell directly, which is useful when `omarchy-shell` is not on `PATH`:
+`open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
+
+Omarchy's shell-level dispatcher also toggles any plugin, and works equally well for a keybinding:
+
+```bash
+omarchy-shell shell toggle qs-bitwarden-cli
+```
+
+Only `toggle` exists at that level, though -- `omarchy-shell shell open|close <id>` answers `Function not found`, and `omarchy-shell shell call <id> <method> '{}'` answers `unknown`. Use the plugin-target form above for everything other than toggling.
+
+The same calls work through Quickshell directly, which is useful when `omarchy-shell` is not on `PATH`:
 
 ```bash
 qs -p /usr/share/omarchy/shell/shell.qml ipc call qs-bitwarden-cli status
