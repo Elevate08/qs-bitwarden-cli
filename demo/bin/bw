@@ -13,9 +13,22 @@ import json,sys
 d=json.load(open('$FIXTURES'))
 sys.stdout.write(json.dumps(d[sys.argv[1]]))" "$1"; }
 
+# The vault state the fixture reports. `unlocked` for the populated shots;
+# `unauthenticated` drives the login screen, `locked` the unlock screen.
+DEMO_STATUS="${QSBW_DEMO_STATUS:-unlocked}"
+
 case "${1:-}" in
   --version) echo "2026.2.0-demo" ;;
-  status)    j status ;;
+  status)    python3 -c "
+import json,sys
+d=json.load(open('$FIXTURES'))
+st=dict(d['status']); st['status']=sys.argv[1]
+if sys.argv[1]=='unauthenticated':
+    st['userEmail']=''; st['userId']=''
+sys.stdout.write(json.dumps(st))" "$DEMO_STATUS" ;;
+  # The new generator reaches for `bw serve` first. Exiting immediately is the
+  # bind-failure path, which is exactly the fallback we want exercised here.
+  serve)     exit 1 ;;
   sync)      echo "Syncing complete." ;;
   lock)      echo "Your vault is locked." ;;
   unlock)    echo "demo-session-token-not-real" ;;

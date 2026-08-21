@@ -13,10 +13,10 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 
 Every screenshot below is captured against a **fixture vault** of made-up entries, never a real one -- see [Regenerating the Screenshots](#regenerating-the-screenshots) for how they are made and how to regenerate them.
 
-| Vault list | Filter drawer |
-| :---: | :---: |
-| ![Vault list](docs/screenshots/01-vault-list.png) | ![Folder drawer](docs/screenshots/02-folder-drawer.png) |
-| Folders, organizations, favourites and TOTP at a glance | Folders, Organizations and Types open as a drawer |
+| Log in | Vault list | Filter drawer |
+| :---: | :---: | :---: |
+| ![Login](docs/screenshots/06-login.png) | ![Vault list](docs/screenshots/01-vault-list.png) | ![Folder drawer](docs/screenshots/02-folder-drawer.png) |
+| Email + password or API key, 2FA, custom server, or hand off to a terminal | Folders, organizations, favourites and TOTP at a glance | Folders, Organizations and Types open as a drawer |
 
 | Generator | Bitwarden Send | Settings |
 | :---: | :---: | :---: |
