@@ -24,6 +24,9 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.SETTINGS_GROUPS = SETTINGS_GROUPS
   exports.validatePin = validatePin
   exports.pinMinLength = pinMinLength
+  exports.pinRecommendedLength = pinRecommendedLength
+  exports.pinWeakWarning = pinWeakWarning
+  exports.isPinWeak = isPinWeak
   exports.pinStoreCommand = pinStoreCommand
   exports.pinUnlockCommand = pinUnlockCommand
 `)(Model)
@@ -128,6 +131,30 @@ check("grouping does not mutate the schema",
 
 // --- PIN validation ---------------------------------------------------------
 check("minimum PIN length is 4", Model.pinMinLength() === 4, String(Model.pinMinLength()))
+check("recommended PIN length is 6", Model.pinRecommendedLength() === 6, String(Model.pinRecommendedLength()))
+
+// A short PIN is allowed -- the point is that it is flagged, not blocked.
+check("a 4-digit PIN still validates", Model.validatePin("1234", "1234") === "", Model.validatePin("1234", "1234"))
+check("a 5-digit PIN still validates", Model.validatePin("12345", "12345") === "", Model.validatePin("12345", "12345"))
+check("but 4 digits is flagged weak", Model.isPinWeak("1234"), "expected weak")
+check("and 5 digits is flagged weak", Model.isPinWeak("12345"), "expected weak")
+check("6 digits is not flagged", !Model.isPinWeak("123456"), Model.pinWeakWarning("123456"))
+check("longer than 6 is not flagged", !Model.isPinWeak("1234567890"), Model.pinWeakWarning("1234567890"))
+
+// No warning while still typing towards a good PIN, or it would flash on
+// every keystroke from the first digit onwards.
+check("nothing is flagged before the floor is even reached",
+  !Model.isPinWeak("") && !Model.isPinWeak("1") && !Model.isPinWeak("123"),
+  "expected no warning below the minimum")
+
+// The warning has to carry the actual number, not a vague 'weak'.
+check("the warning names the search space for 4 digits",
+  Model.pinWeakWarning("1234").includes("10,000") && Model.pinWeakWarning("1234").includes("4-digit"),
+  Model.pinWeakWarning("1234"))
+check("the warning names the search space for 5 digits",
+  Model.pinWeakWarning("12345").includes("100,000"), Model.pinWeakWarning("12345"))
+check("the warning points at the recommendation",
+  Model.pinWeakWarning("1234").includes("6 or more"), Model.pinWeakWarning("1234"))
 for (const [pin, confirm, wantErr] of [
   ["123",    "123",    true],   // too short
   ["1234",   "1234",   false],  // the minimum is accepted

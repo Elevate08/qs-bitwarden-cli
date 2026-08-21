@@ -91,7 +91,7 @@
         "key": "pinUnlock",
         "type": "boolean",
         "label": "Unlock with PIN",
-        "description": "Unlock the vault with a numeric PIN (minimum 4 digits, longer is stronger). Your master password is encrypted with a key derived from the PIN and only the ciphertext is kept, so reading the keyring alone does not reveal it. Turning this off deletes the stored ciphertext.",
+        "description": "Unlock the vault with a numeric PIN (6 digits or more recommended; 4 is the floor and is flagged as weak while you type). Your master password is encrypted with a key derived from the PIN and only the ciphertext is kept, so reading the keyring alone does not reveal it. Turning this off deletes the stored ciphertext.",
         "defaultValue": false
       }
     ]

@@ -23,7 +23,14 @@ const PIN_ENV = "QSBW_PIN"
 // PBKDF2 rounds for PIN unlock. Matches Bitwarden's own default and measures
 // at ~300ms here -- unnoticeable once, punishing a few million times over.
 const PIN_ITERATIONS = 600000
+
+// Two thresholds, because the arithmetic is unforgiving and the choice is
+// still the user's. Six digits is what we ask for: 10^6 candidates against
+// 600k PBKDF2 rounds is a real cost to an attacker holding the ciphertext.
+// Four is 10,000 candidates -- minutes of offline work -- so it is allowed but
+// called out in red rather than quietly accepted.
 const PIN_MIN_LENGTH = 4
+const PIN_RECOMMENDED_LENGTH = 6
 
 function keyringSecretEnvVar() {
   return KEYRING_SECRET_ENV
@@ -44,28 +51,89 @@ function shellQuote(value) {
 // natively; see sessionEnvVar() and the callers that set it.
 const SESSION_ENV = "BW_SESSION"
 
+// The same reasoning applies to the credentials that unlock the vault in the
+// first place, and bw reads all three of these natively: BW_PASSWORD via
+// --passwordenv, BW_CLIENTID and BW_CLIENTSECRET on `login --apikey`. So the
+// master password and API key reach bw without appearing in any argv -- not
+// bw's, and not the wrapping shell's. The builders below interpolate nothing
+// secret into the script text; see authEnv() in Panel.qml for the values.
+const PASSWORD_ENV = "BW_PASSWORD"
+const CLIENT_ID_ENV = "BW_CLIENTID"
+const CLIENT_SECRET_ENV = "BW_CLIENTSECRET"
+
+// The one credential that cannot follow that rule: bw offers no environment
+// option for the two-step code, so --code is the only way in and the code does
+// land in bw's own argv. Carrying it in the environment still keeps it out of
+// the wrapping shell's argv, which lives for the whole login chain rather than
+// just the login process. A six-digit code is single-use and expires in
+// seconds, which is why this residue is acceptable where a password would not
+// be.
+const TWOFACTOR_CODE_ENV = "QSBW_CODE"
+
+// bw prompts on a tty it does not have here, so every auth command runs with
+// interaction disabled and fails fast instead of hanging.
+const NOINTERACTION_ENV = "BW_NOINTERACTION"
+
 function sessionEnvVar() {
   return SESSION_ENV
+}
+
+function passwordEnvVar() {
+  return PASSWORD_ENV
+}
+
+function clientIdEnvVar() {
+  return CLIENT_ID_ENV
+}
+
+function clientSecretEnvVar() {
+  return CLIENT_SECRET_ENV
+}
+
+function twoFactorCodeEnvVar() {
+  return TWOFACTOR_CODE_ENV
+}
+
+function noInteractionEnvVar() {
+  return NOINTERACTION_ENV
 }
 
 function buildCommand(args) {
   return ["bw"].concat(args || [])
 }
 
+// A bw session key is base64: 88 characters for the 64 bytes bw mints. Only
+// something shaped like one is accepted, and anything else yields "" rather
+// than the raw input.
+//
+// The old last-resort `return s` meant any non-empty text became a "session":
+// a bw error message, or whatever happened to be sitting in the handoff file,
+// would be written to the keyring and the panel would declare itself unlocked
+// on the strength of it. Both callers already treat "" as failure.
+var SESSION_TOKEN_RE = /^[A-Za-z0-9+/=_-]{32,}$/
+
+function isSessionToken(value) {
+  return SESSION_TOKEN_RE.test(String(value || "").trim())
+}
+
 function extractSessionToken(raw) {
   var s = String(raw || "").trim()
+
+  // `export BW_SESSION="..."`, which is what bw prints without --raw.
   var match = s.match(/BW_SESSION="?([^"\n\r]+)"?/)
-  if (match && match[1]) {
+  if (match && match[1] && isSessionToken(match[1])) {
     return match[1].trim()
   }
+
+  // --raw prints the key alone, but stray output can share the stream.
   var lines = s.split("\n")
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i].trim()
-    if (line && line.indexOf(" ") === -1 && line.length > 20) {
+    if (isSessionToken(line)) {
       return line
     }
   }
-  return s
+  return ""
 }
 
 // -------------------------------------------------------------------------
@@ -76,38 +144,39 @@ function statusCommand(session) {
   return buildCommand(["status"])
 }
 
-function unlockCommand(password) {
-  var p = shellQuote(password)
-  var script = "BW_PASSWORD=" + p + " BW_NOINTERACTION=true bw unlock --passwordenv BW_PASSWORD --raw"
-  return ["bash", "-c", script]
+// No shell at all: the password is already in the environment, so there is
+// nothing to interpolate and nothing to quote.
+function unlockCommand() {
+  return buildCommand(["unlock", "--passwordenv", PASSWORD_ENV, "--raw"])
 }
 
-function emailLoginCommand(email, password, code, serverUrl) {
-  var e = shellQuote(email)
-  var p = shellQuote(password)
-  var c = code ? (" --code " + shellQuote(code)) : ""
+// `hasCode` rather than the code itself -- only whether the flag is present
+// shapes the command; the value comes from the environment.
+function emailLoginCommand(email, hasCode, serverUrl) {
   var script = ""
 
   if (serverUrl && serverUrl.trim()) {
     script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
   }
 
-  script += "BW_PASSWORD=" + p + " BW_NOINTERACTION=true bw login " + e + " --passwordenv BW_PASSWORD" + c + " --raw"
+  script += "bw login " + shellQuote(email) + " --passwordenv " + PASSWORD_ENV
+  if (hasCode) script += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
+  script += " --raw"
+
   return ["bash", "-c", script]
 }
 
-function apiKeyLoginCommand(clientId, clientSecret, password, serverUrl) {
-  var id = shellQuote(clientId)
-  var sec = shellQuote(clientSecret)
-  var p = shellQuote(password)
+// `login --apikey` authenticates but does not unlock, so the master password
+// is still needed for the second step. Both come from the environment.
+function apiKeyLoginCommand(serverUrl) {
   var script = ""
 
   if (serverUrl && serverUrl.trim()) {
     script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
   }
 
-  script += "BW_CLIENTID=" + id + " BW_CLIENTSECRET=" + sec + " BW_PASSWORD=" + p + " BW_NOINTERACTION=true bw login --apikey >/dev/null 2>&1 && "
-  script += "BW_PASSWORD=" + p + " BW_NOINTERACTION=true bw unlock --passwordenv BW_PASSWORD --raw"
+  script += "bw login --apikey >/dev/null 2>&1 && "
+  script += "bw unlock --passwordenv " + PASSWORD_ENV + " --raw"
   return ["bash", "-c", script]
 }
 
@@ -126,16 +195,28 @@ function apiKeyLoginCommand(clientId, clientSecret, password, serverUrl) {
 // the key on stdout while bw's prompts stay on stderr, so redirecting it keeps
 // the login interactive.
 
-var HANDOFF_DIR = "${XDG_RUNTIME_DIR:-/tmp}/qs-bitwarden-cli"
-var HANDOFF_FILE = HANDOFF_DIR + "/session-handoff"
+// No fallback if XDG_RUNTIME_DIR is missing. It is set by pam_systemd at login
+// and is a precondition of the systemd user manager that `omarchy launch
+// terminal` runs the terminal under, so it cannot realistically be absent --
+// and a `${XDG_RUNTIME_DIR:-/tmp}` default would quietly turn that impossible
+// case into "write the session key somewhere world-writable", where another
+// user could have pre-created the directory. Fail closed instead.
+var HANDOFF_SUBDIR = "qs-bitwarden-cli"
+var HANDOFF_BASENAME = "session-handoff"
 
 // `mode` is "login" when logged out and "unlock" when merely locked. The panel
 // already knows which, so this does not probe with `bw status` first -- that
 // probe measured at ~3.3s, spent before the user was even shown a prompt.
 function terminalLoginCommand(mode) {
   var verb = (mode === "unlock") ? "unlock" : "login"
-  var inner = "set -u; d=\"" + HANDOFF_DIR + "\"; f=\"" + HANDOFF_FILE + "\"; "
-    + "mkdir -p \"$d\"; chmod 700 \"$d\"; umask 077; "
+  var inner = "set -u; "
+    + "d=\"${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR -- refusing to write a session key}/"
+    + HANDOFF_SUBDIR + "\"; f=\"$d/" + HANDOFF_BASENAME + "\"; "
+    // umask before mkdir, so the directory is born 700 rather than created
+    // world-readable and narrowed a moment later. The chmod then covers a
+    // directory that already existed, and both are checked: a chmod that
+    // fails means the directory is not ours, which is not a place for a key.
+    + "umask 077; mkdir -p \"$d\" || exit 1; chmod 700 \"$d\" || exit 1; "
     + "if bw " + verb + " --raw > \"$f\" && [ -s \"$f\" ]; then "
     // Bring the panel back itself rather than making the user find it again.
     // Only the method name crosses this boundary; the key never does.
@@ -150,9 +231,44 @@ function terminalLoginCommand(mode) {
 
 // Read-once: the key is consumed by the panel and the file removed, so it does
 // not linger for the next process that goes looking.
+// Runs on every status refresh, so a missing runtime dir means "nothing was
+// handed over" and exits quietly rather than erroring into the shell log the
+// way the write side deliberately does.
 function sessionHandoffReadCommand() {
-  var script = "f=\"" + HANDOFF_FILE + "\"; if [ -s \"$f\" ]; then cat \"$f\"; rm -f \"$f\"; fi"
+  var script = "d=\"${XDG_RUNTIME_DIR:-}\"; [ -n \"$d\" ] || exit 0; "
+    + "f=\"$d/" + HANDOFF_SUBDIR + "/" + HANDOFF_BASENAME + "\"; "
+    + "if [ -s \"$f\" ]; then cat \"$f\"; rm -f \"$f\"; fi"
   return ["bash", "-c", script]
+}
+
+// -------------------------------------------------------------------------
+// Opening an item's URI
+// -------------------------------------------------------------------------
+//
+// A vault item's URI is data, not something the panel wrote, and an item can
+// arrive from a shared organization collection that somebody else can edit.
+// xdg-open hands whatever scheme it is given to whichever program claims it,
+// so `file:///`, `ftp://` or a desktop-registered custom scheme would all be
+// launched on a click. Only the web schemes are followed.
+//
+// A colon followed by digits is a port, not a scheme, so "example.com:8080"
+// and "localhost:3000" still work as the bare hosts they are.
+var HTTP_URL_RE = /^https?:\/\//i
+var URL_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):(?!\d)/
+
+// Returns { ok: true, url } for something safe to open, or { ok: false,
+// scheme } naming what was refused.
+function normalizeOpenableUrl(raw) {
+  var target = String(raw || "").trim()
+  if (!target) return { ok: false, scheme: "" }
+
+  if (HTTP_URL_RE.test(target)) return { ok: true, url: target }
+
+  var scheme = target.match(URL_SCHEME_RE)
+  if (scheme) return { ok: false, scheme: scheme[1].toLowerCase() }
+
+  // No scheme: a bare host, optionally with a port and path.
+  return { ok: true, url: "https://" + target }
 }
 
 function logoutCommand() {
@@ -352,6 +468,7 @@ function keyringHasMasterPasswordCommand() {
 
 function pinEnvVar() { return PIN_ENV }
 function pinMinLength() { return PIN_MIN_LENGTH }
+function pinRecommendedLength() { return PIN_RECOMMENDED_LENGTH }
 
 function validatePin(pin, confirm) {
   var p = String(pin || "")
@@ -359,6 +476,23 @@ function validatePin(pin, confirm) {
   if (!/^[0-9]+$/.test(p)) return "PIN must contain only digits"
   if (confirm !== undefined && String(confirm || "") !== p) return "PINs do not match"
   return ""
+}
+
+// Not an error -- the PIN is accepted -- but short enough to deserve saying so
+// in as many words, with the number rather than a vague "weak". Empty for a
+// PIN of the recommended length or longer, and empty while still typing so the
+// warning does not flash up at every keystroke on the way to six.
+function pinWeakWarning(pin) {
+  var p = String(pin || "")
+  if (p.length < PIN_MIN_LENGTH || p.length >= PIN_RECOMMENDED_LENGTH) return ""
+  var combinations = Math.pow(10, p.length).toLocaleString("en-US")
+  return "A " + p.length + "-digit PIN is only " + combinations + " combinations. "
+    + "If the encrypted blob ever leaks, that is minutes of offline guessing. "
+    + "Use " + PIN_RECOMMENDED_LENGTH + " or more."
+}
+
+function isPinWeak(pin) {
+  return pinWeakWarning(pin) !== ""
 }
 
 // Encrypt and store in one process, so the plaintext never travels back
@@ -590,6 +724,16 @@ function parseItemDetail(raw) {
   } catch (e) {
     return null
   }
+  return itemDetailFromObject(it)
+}
+
+// `bw list items` already returns complete cipher objects -- password, TOTP
+// key, card, identity and custom fields included -- and parseItems keeps each
+// one as `rawObject`. So opening an item needs no second trip to the CLI: the
+// detail view is built from what the list already fetched, which is the
+// difference between a spinner and an instant open. `bw get item` costs a full
+// CLI bootstrap (~0.9s) plus service init (~2s) before it decrypts anything.
+function itemDetailFromObject(it) {
   if (!it || typeof it !== "object") return null
 
   var login = it.login || {}
@@ -742,30 +886,12 @@ function maskString(str) {
   return "•".repeat(Math.min(str.length, 16))
 }
 
-// -------------------------------------------------------------------------
-// Password Generator
-// -------------------------------------------------------------------------
-
-function generatePassword(length, upper, lower, numbers, special) {
-  var u = "ABCDEFGHJKLMNPQRSTUVWXYZ"
-  var l = "abcdefghijkmnopqrstuvwxyz"
-  var n = "23456789"
-  var s = "!@#$%^&*()-_=+[]{}|;:,.<>?"
-  var charset = ""
-  if (upper !== false) charset += u
-  if (lower !== false) charset += l
-  if (numbers !== false) charset += n
-  if (special !== false) charset += s
-  if (!charset) charset = u + l + n + s
-
-  var len = Math.max(8, Number(length) || 20)
-  var res = ""
-  for (var i = 0; i < len; i++) {
-    var idx = Math.floor(Math.random() * charset.length)
-    res += charset.charAt(idx)
-  }
-  return res
-}
+// There is deliberately no local password generator here. QML's Math.random()
+// is not a CSPRNG -- it is seeded predictably and its output can be recovered
+// from a handful of samples -- which makes it unfit to produce a password that
+// will guard an account. The only generator is generateCommand() further down,
+// which delegates to `bw generate`, and the item form reaches it by way of the
+// generator screen. See openGenerator() in Panel.qml.
 
 // -------------------------------------------------------------------------
 // Payload Builders for Create & Edit
@@ -1564,7 +1690,7 @@ var SETTINGS_SCHEMA = [
     description: "Store the master password in the OS keyring, gated behind a fingerprint." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN",
     action: "pin",
-    description: "Encrypt the master password with a key derived from a PIN. Minimum 4 digits; longer is stronger." },
+    description: "Encrypt the master password with a key derived from a PIN. Use 6 digits or more; 4 is the floor and is flagged as weak." },
 
   { key: "closeOnCopy", group: "behavior", type: "bool", label: "Close panel on copy",
     description: "Return focus to your app as soon as Enter copies a credential." },
@@ -1666,6 +1792,71 @@ function normalizeGeneratorOptions(opts) {
 
   if (!o.separator) o.separator = "-"
   return o
+}
+
+// -------------------------------------------------------------------------
+// Generator over `bw serve`
+// -------------------------------------------------------------------------
+//
+// `bw generate` costs ~2.9s on this machine, and none of it is generation:
+// ~0.9s is the CLI's Node bootstrap and ~2s is Bitwarden's service container
+// coming up, all of it repaid on every option toggle. `bw serve` pays that
+// once and answers /generate in ~2ms.
+//
+// The served instance is deliberately started with **no session**, so it is a
+// locked vault that can generate passwords and nothing else -- /list and the
+// rest return errors. That matters: a loopback port has no authentication and
+// is reachable by every user on the machine, so an unlocked `bw serve` would
+// hand the whole vault to anyone who could curl it. A locked one exposes the
+// generator, which is not a secret. Vault reads stay on the CLI, where the
+// session key is ours alone.
+var GENERATE_HOST = "127.0.0.1"
+var GENERATE_PORT = 8087
+
+function generateServeHost() { return GENERATE_HOST }
+function generateServePort() { return GENERATE_PORT }
+
+// Started as a managed child so it dies with the shell rather than lingering.
+// BW_SESSION is cleared by the caller; see generatorServeEnv() in Panel.qml.
+function generateServeCommand() {
+  return ["bw", "serve", "--hostname", GENERATE_HOST, "--port", String(GENERATE_PORT)]
+}
+
+// The serve API takes the same options as the CLI flags, as query parameters.
+function generateServeUrl(opts) {
+  var o = normalizeGeneratorOptions(opts)
+  var q = []
+
+  if (o.type === "passphrase") {
+    q.push("passphrase=true")
+    q.push("words=" + encodeURIComponent(String(o.words)))
+    q.push("separator=" + encodeURIComponent(String(o.separator)))
+    if (o.capitalize) q.push("capitalize=true")
+    if (o.includeNumber) q.push("includeNumber=true")
+  } else {
+    if (o.uppercase) q.push("uppercase=true")
+    if (o.lowercase) q.push("lowercase=true")
+    if (o.numbers) q.push("number=true")
+    if (o.special) q.push("special=true")
+    q.push("length=" + encodeURIComponent(String(o.length)))
+    if (o.numbers) q.push("minNumber=" + encodeURIComponent(String(o.minNumber)))
+    if (o.special) q.push("minSpecial=" + encodeURIComponent(String(o.minSpecial)))
+    if (o.ambiguous) q.push("ambiguous=true")
+  }
+
+  return "http://" + GENERATE_HOST + ":" + GENERATE_PORT + "/generate?" + q.join("&")
+}
+
+// { success: true, data: { data: "<password>" } } on the way out.
+function parseServeGenerated(raw) {
+  var parsed = null
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    return ""
+  }
+  if (!parsed || parsed.success !== true || !parsed.data) return ""
+  return String(parsed.data.data || "")
 }
 
 function generateCommand(opts) {

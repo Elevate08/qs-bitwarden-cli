@@ -41,12 +41,12 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Interactive login with Email + Password / 2FA (Authenticator App, Email, Duo, YubiKey) or API Key credentials (`BW_CLIENTID` / `BW_CLIENTSECRET`).
   - **Custom Server Support**: Works seamlessly with official Bitwarden servers and self-hosted Vaultwarden instances.
   - **Terminal login fallback**: when the built-in form cannot cover your login method -- SSO, a Duo push, a hardware key -- the login screen offers **Launch Terminal**, which runs `bw login` in a real terminal so Bitwarden's own prompts handle it.
-  - That terminal hands its session straight back: it captures the key with `bw login --raw` (prompts stay on stderr, so the login is still interactive) and writes it to `$XDG_RUNTIME_DIR/qs-bitwarden-cli/session-handoff`, mode `600`. The panel reads that file once, deletes it, and comes back unlocked -- no second login just to get in. If the vault was merely locked rather than logged out, the same button unlocks instead.
+  - That terminal hands its session straight back: it captures the key with `bw login --raw` (prompts stay on stderr, so the login is still interactive) and writes it to `$XDG_RUNTIME_DIR/qs-bitwarden-cli/session-handoff`, mode `600`, in a directory created `700` before the file exists. There is no fallback path: if `XDG_RUNTIME_DIR` is somehow unset the login refuses to run rather than putting a session key anywhere a second user could have prepared. The panel reads that file once, deletes it, and comes back unlocked -- no second login just to get in. If the vault was merely locked rather than logged out, the same button unlocks instead.
   - **The terminal reopens the panel for you** on success, then closes itself; you only have to dismiss it if something went wrong and there is an error worth reading.
   - Two `bw status` calls used to sit on that path, each around three seconds on a real vault: one in the terminal to decide login-versus-unlock, one in the panel to confirm a key `bw` had just minted. Neither is needed -- the panel already knows which state it is in, and the confirming check now runs alongside the item load instead of in front of it.
 
 - **PIN Unlock** (opt-in, `pinUnlock`):
-  - Unlock with a numeric PIN instead of typing the master password. Minimum 4 digits, no upper limit -- longer is meaningfully harder to guess.
+  - Unlock with a numeric PIN instead of typing the master password. **6 digits or more is the recommendation**, 4 is the hard floor, and there is no upper limit. A PIN under 6 digits is accepted but the field turns red and tells you how small the search space you just chose is -- every extra digit multiplies an attacker's work by ten.
   - Unlike fingerprint unlock, the master password is **not** stored in the clear: it is encrypted with a key derived from your PIN (PBKDF2-SHA256, 600,000 iterations, salted) and only the ciphertext is kept, so reading the keyring alone does not reveal it.
   - A wrong PIN simply fails to decrypt, so no PIN hash is stored and there is none to attack.
   - Five wrong attempts removes the stored ciphertext entirely; re-enabling needs the master password again. So does a master password change, which is detected on the first failed unlock.
@@ -72,13 +72,14 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 
 - **Smart Auto-Copy TOTP Flow on <kbd>Enter</kbd>**:
   - Selecting a login item and pressing <kbd>Enter</kbd> copies the **Password** to the clipboard and automatically closes the panel, returning focus immediately to your target application so you can paste (<kbd>Ctrl+V</kbd>) and submit.
-  - If the item has a TOTP 2FA secret configured, the plugin automatically copies the live 6-digit **TOTP code** to your clipboard after a brief delay (default: 3s) and displays a desktop notification:
+  - If the item has a TOTP 2FA secret configured, the plugin automatically copies the live 6-digit **TOTP code** to your clipboard after a brief delay (default: 3s) and posts a desktop notification saying so. The notification deliberately does **not** contain the code: a notification daemon keeps history and can render a body over a lock screen, which is no place for a live second factor. The digits are shown in the panel itself, with their countdown.
     - You can immediately paste the TOTP code into the 2FA prompt without ever reopening or refocusing the plugin!
     - If you prefer manual progression, pressing <kbd>Enter</kbd> or <kbd>t</kbd> while the follow-up banner is active also copies the code immediately.
 
 - **Full Add, Edit & Delete (CRUD) Operations**:
   - **Create Items (`n` key or `+` button)**: Add new **Logins** (`󰌋`) or **Secure Notes** (`󰈐`).
-  - **Password Generator**: A full generator screen (<kbd>g</kbd> or the `󰌆` button) mirroring the Bitwarden browser extension's options -- password (length, A-Z, a-z, 0-9, special, minimum numbers, minimum special, avoid ambiguous) or passphrase (word count, separator, capitalise, include number), with a live strength meter. Generation is delegated to `bw generate`, so the output comes from Bitwarden's own generator rather than a reimplementation.
+  - **Password Generator**: A full generator screen (<kbd>g</kbd> or the `󰌆` button) mirroring the Bitwarden browser extension's options -- password (length, A-Z, a-z, 0-9, special, minimum numbers, minimum special, avoid ambiguous) or passphrase (word count, separator, capitalise, include number), with a live strength meter. Generation comes from Bitwarden's own generator rather than a reimplementation, and the item form's **Generate...** button opens this same screen and fills the password field in on the way back.
+  - **It is fast.** A fresh `bw generate` costs about 2.9 seconds, almost none of it generation: roughly 0.9s is the CLI's Node bootstrap and 2s is Bitwarden's service container starting, and every option toggle paid it again. The panel now starts `bw serve` on loopback the first time you open the generator and asks that, which answers in about **2ms**. The server is deliberately started with **no session**, so it is a locked vault that can generate passwords and nothing else -- a loopback port has no authentication and is reachable by every user on the machine, so it must never hold an unlocked vault. If the port is already taken by something that is not ours, the panel notices and quietly falls back to `bw generate` rather than trusting a stranger's server to pick your password.
   - **Edit Items (`e` key or Edit button)**: Modify titles, credentials, authenticator keys, URLs, and notes.
   - **Delete Items (`x` key or Delete button)**: Delete items with confirmation protection.
 
@@ -122,7 +123,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 - **Hardware-Accelerated Performance & Security**:
   - Virtualized `ListView` with component delegate recycling for instant rendering of large vaults.
   - Asynchronous search debouncing (50ms) for responsive 0ms typing latency.
-  - **Nothing secret ever reaches a command line.** `/proc/<pid>/cmdline` is world-readable on a default Linux install, so the session token travels in `BW_SESSION`, item and Send payloads in their own environment variables, copied secrets in `QSBW_CLIP` on the way to `wl-copy`, and the master password through `--passwordenv`. A test asserts no command builder emits `--session`.
+  - **Credentials do not reach a command line.** `/proc/<pid>/cmdline` is world-readable on a default Linux install while `/proc/<pid>/environ` is not, so every secret travels in the environment: the session token in `BW_SESSION`, the master password in `BW_PASSWORD` (named to `bw` by `--passwordenv`), API key credentials in `BW_CLIENTID` / `BW_CLIENTSECRET`, item and Send payloads and copied secrets in their own variables. None of them is interpolated into a command or a shell script. The one exception is the two-step login code: `bw` offers no environment option for it, so `--code` puts it in `bw`'s own argv for the length of the login — it is carried in `QSBW_CODE` and expanded there, which at least keeps it out of the wrapping shell. Tests assert that no builder emits `--session` and that none of the auth commands carries a password, client secret or client ID.
   - Automatic clipboard clearing (`wl-copy --clear`) after a configurable timeout (default: 30s).
   - Optional session token caching in Linux Secret Service (`secret-tool` / libsecret).
 
@@ -379,11 +380,11 @@ Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/as
 
 ## PIN Unlock
 
-Turn on **Unlock with PIN** in the settings screen. You are asked for your master password once (it is needed to encrypt) and for a PIN of at least 4 digits; there is no upper limit and a longer PIN is stronger.
+Turn on **Unlock with PIN** in the settings screen. You are asked for your master password once (it is needed to encrypt) and for a PIN. Six digits or more is what the screen asks for; four and five are accepted but shown in red with the number of combinations spelled out, so a weak PIN is a decision rather than an accident.
 
 **How it differs from fingerprint unlock.** Fingerprint unlock keeps your master password in the login keyring in the clear, because PAM can only prove presence. A PIN can do better: the master password is encrypted with a key derived from the PIN (PBKDF2-SHA256, 600,000 iterations, salted) and only the ciphertext is stored, so reading the keyring is not by itself enough. A wrong PIN fails decryption, which means correctness needs no stored hash and there is no hash to attack.
 
-**The honest limit.** A short PIN is a small search space, and if the ciphertext leaks, the iteration count is the only thing standing between an attacker and your master password. Five wrong attempts at the panel deletes the stored ciphertext, but that does nothing against an offline attack on a copy of it. Prefer more than 4 digits.
+**The honest limit.** A short PIN is a small search space, and if the ciphertext leaks, the iteration count is the only thing standing between an attacker and your master password. Five wrong attempts at the panel deletes the stored ciphertext, but that is a UI throttle and does nothing against an offline attack on a copy of the blob. Concretely: 4 digits is 10,000 candidates, which is minutes of offline guessing even at 600,000 PBKDF2 rounds each; 6 digits is 1,000,000, and 8 is 100,000,000. Pick accordingly.
 
 The stored ciphertext is removed when you turn the setting off, after five wrong attempts, or when the vault rejects the decrypted password (for example after a master password change).
 
@@ -458,12 +459,21 @@ omarchy plugin validate .
 Regression suites, no dependencies beyond Node:
 
 ```bash
+node tests/auth.test.js             # unlock/login commands, and that no credential reaches argv
 node tests/context-match.test.js    # window-title matching and learned suggestions
 node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
 node tests/generator.test.js        # generator option clamping and strength
 node tests/folders.test.js          # folder parsing, filtering and assignment
 node tests/sends.test.js            # Send payloads, parsing, and argv-safety
 node tests/collections.test.js      # organization collections and item ownership
+node tests/items.test.js            # item parsing, and that a list entry can build the detail view
+node tests/handoff-urls.test.js     # session-handoff file path, and which URI schemes may be opened
+```
+
+One suite covers key routing instead of logic, so it needs Qt rather than Node -- which any machine running the plugin already has:
+
+```bash
+QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml   # Escape reaches the panel from inside a text field
 ```
 
 ---

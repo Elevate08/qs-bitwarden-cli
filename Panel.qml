@@ -62,7 +62,11 @@ Panel {
   // `bw list items` costs seconds on a large vault, so a reopen reuses what is
   // already in memory until it goes stale. Any mutation reloads unconditionally.
   property double itemsLoadedAt: 0
+  property double orgsLoadedAt: 0
+  property double foldersLoadedAt: 0
   readonly property int itemsFreshMs: 60000
+  // Organizations and folders outlive an item refresh many times over.
+  readonly property int metaFreshMs: 600000
   property var filteredItems: []
   property var organizations: []
   property string selectedOrg: "all" // "all" | "personal" | orgId
@@ -169,6 +173,21 @@ Panel {
   property var genOpts: Model.generatorDefaults()
   property string genValue: ""
   property bool genBusy: false
+  // `bw serve` state. Ready means the loopback generator answered; failed
+  // means we stopped trying and the CLI carries the feature instead -- most
+  // likely because something else already holds the port, in which case we
+  // must not talk to it: a "generated password" from a stranger's server is
+  // a password they know.
+  property bool generateServeReady: false
+  property bool generateServeStarting: false
+  property bool generateServeFailed: false
+  // Where Back and Esc go, and whether the generator can hand its value
+  // somewhere. Opened from the item form it fills the password field in and
+  // returns; opened on its own it is just the generator. One screen either
+  // way, so the item form offers Bitwarden's own generator rather than a
+  // second, weaker one of its own.
+  property string generatorReturnScreen: "main"
+  readonly property bool generatorFeedsForm: generatorReturnScreen === "edit"
 
   // PIN unlock state
   property bool pinConfigured: false        // ciphertext present in the keyring
@@ -181,6 +200,9 @@ Panel {
   property string pinSetupMaster: ""
   property bool pinBusy: false
   readonly property bool pinReady: pinUnlock && pinConfigured
+  // Long enough to save, short enough to be a bad idea. Drives the red state
+  // on the PIN field during setup; see pinWeakWarning() in BitwardenModel.js.
+  readonly property bool pinSetupWeak: Model.isPinWeak(pinSetupPin)
   readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME") || ""
   readonly property bool fingerprintReady: fingerprintUnlock && fingerprintAvailable && fingerprintStored
 
@@ -481,7 +503,9 @@ Panel {
       }
 
       isLoading = true
-      loginProc.command = Model.emailLoginCommand(email, pass, login2faCode.trim(), loginServerUrl.trim())
+      // The password and the code go to loginProc through the environment;
+      // only whether a code was entered shapes the command itself.
+      loginProc.command = Model.emailLoginCommand(email, login2faCode.trim().length > 0, loginServerUrl.trim())
       loginProc.running = true
     } else {
       var id = String(loginClientId || "").trim()
@@ -502,7 +526,8 @@ Panel {
       }
 
       isLoading = true
-      loginProc.command = Model.apiKeyLoginCommand(id, secret, pass2, loginServerUrl.trim())
+      // Client ID, client secret and password all travel in the environment.
+      loginProc.command = Model.apiKeyLoginCommand(loginServerUrl.trim())
       loginProc.running = true
     }
   }
@@ -577,6 +602,26 @@ Panel {
     var env = {}
     if (session) env[Model.sessionEnvVar()] = String(session)
     if (extra) for (var k in extra) env[k] = extra[k]
+    return env
+  }
+
+  // The credentials that unlock the vault, handed to bw the same way the
+  // session token is: through the environment. bw reads BW_PASSWORD (named by
+  // --passwordenv), BW_CLIENTID and BW_CLIENTSECRET natively, so none of them
+  // reaches an argv -- neither bw's nor that of the shell wrapping it.
+  // /proc/<pid>/cmdline is world-readable on a default install; environ is not.
+  //
+  // Read as a binding by loginProc and unlockProc, so it always reflects the
+  // fields as they are when the process starts.
+  function authEnv(password, clientId, clientSecret, code) {
+    var env = bwEnv()
+    env[Model.noInteractionEnvVar()] = "true"
+    if (password) env[Model.passwordEnvVar()] = String(password)
+    if (clientId) env[Model.clientIdEnvVar()] = String(clientId)
+    if (clientSecret) env[Model.clientSecretEnvVar()] = String(clientSecret)
+    // The only one bw has no environment option for; see the comment on
+    // TWOFACTOR_CODE_ENV in BitwardenModel.js.
+    if (code) env[Model.twoFactorCodeEnvVar()] = String(code)
     return env
   }
 
@@ -711,19 +756,113 @@ Panel {
   // Generator
   // -------------------------------------------------------------------------
 
+  // Reached from the header button on any screen and from the item form's
+  // Generate button, which is the same thing: the form is just a caller that
+  // wants the value back.
   function openGenerator() {
     closeFilterGroup()
+    generatorReturnScreen = (currentScreen === "edit") ? "edit" : "main"
     screenBeforeSettings = "main"
     currentScreen = "generator"
-    if (!genValue) regenerate()
+    // A form asking for a password wants a new one every time. A standalone
+    // visit keeps whatever was last generated, so reopening does not throw
+    // away a value you were about to copy.
+    if (generatorFeedsForm || !genValue) regenerate()
   }
 
-  // Generation is delegated to `bw generate`, so the output comes from
-  // Bitwarden's own generator rather than a local reimplementation of it.
+  function closeGenerator() {
+    var toForm = generatorFeedsForm
+    currentScreen = generatorReturnScreen
+    generatorReturnScreen = "main"
+    // Land back on the field the trip was about, filled in or not.
+    if (toForm) Qt.callLater(function() { formPassField.forceActiveFocus() })
+  }
+
+  // The whole point of the round trip: put the value in the field the caller
+  // was on, and go back to it.
+  function useGeneratedPassword() {
+    if (!generatorFeedsForm || !genValue) return
+    formPassword = genValue
+    // Show it. A password you cannot read is hard to trust, and it is going
+    // into a form you are still filling in rather than straight to the vault.
+    formPasswordRevealed = true
+    closeGenerator()
+    flashNotification("Generated password filled in")
+  }
+
+  // Generation is delegated to Bitwarden's own generator either way; the only
+  // question is how we reach it. `bw serve` answers in ~2ms against ~2.9s for
+  // a fresh `bw generate`, so the server is started on first use and the CLI
+  // stays as the fallback for when it cannot be.
   function regenerate() {
+    genBusy = true
+    if (generateServeReady) {
+      requestGeneratedValue()
+      return
+    }
+    startGeneratorServe()
+    // Nothing to wait on if the server is already coming up -- onExited or the
+    // ready poll will drive the request.
+    if (!generateServeStarting) regenerateViaCli()
+  }
+
+  function regenerateViaCli() {
     genBusy = true
     generateProc.command = Model.generateCommand(genOpts)
     generateProc.running = true
+  }
+
+  // A locked server: no session in its environment, so it can generate and
+  // nothing else. See the comment on generateServeCommand in BitwardenModel.js
+  // for why that restriction is the whole point.
+  function generatorServeEnv() {
+    var env = {}
+    env[Model.sessionEnvVar()] = null
+    env[Model.noInteractionEnvVar()] = "true"
+    return env
+  }
+
+  function startGeneratorServe() {
+    if (generateServeReady || generateServeStarting || generateServeFailed) return
+    generateServeStarting = true
+    generateServeProc.running = true
+    generateServePoll.attempts = 0
+    generateServePoll.restart()
+  }
+
+  // The server is up when it answers. Polling rather than trusting a fixed
+  // delay: bw takes a couple of seconds to bind, and the first generator open
+  // should not sit behind a guess.
+  function pollGeneratorServe() {
+    var req = new XMLHttpRequest()
+    req.onreadystatechange = function() {
+      if (req.readyState !== XMLHttpRequest.DONE) return
+      if (req.status === 200 && Model.parseServeGenerated(req.responseText)) {
+        generateServeStarting = false
+        generateServeReady = true
+        generateServePoll.stop()
+        onGenerated(Model.parseServeGenerated(req.responseText), 0)
+      }
+    }
+    req.open("GET", Model.generateServeUrl(genOpts))
+    req.send()
+  }
+
+  function requestGeneratedValue() {
+    var req = new XMLHttpRequest()
+    req.onreadystatechange = function() {
+      if (req.readyState !== XMLHttpRequest.DONE) return
+      var value = req.status === 200 ? Model.parseServeGenerated(req.responseText) : ""
+      if (value) {
+        onGenerated(value, 0)
+        return
+      }
+      // The server went away mid-session; fall back and stop trusting it.
+      root.generateServeReady = false
+      root.regenerateViaCli()
+    }
+    req.open("GET", Model.generateServeUrl(genOpts))
+    req.send()
   }
 
   function onGenerated(text, exitCode) {
@@ -1142,8 +1281,9 @@ Panel {
     errorMessage = ""
     isUnlocking = true
     // Kept only until the unlock result is known; cleared on both paths below.
+    // unlockProc reads it as the BW_PASSWORD binding, so it must be set before
+    // the process starts.
     pendingUnlockPassword = p
-    unlockProc.command = Model.unlockCommand(p)
     unlockProc.running = true
   }
 
@@ -1240,6 +1380,8 @@ Panel {
     session = ""
     masterPassword = ""
     itemsLoadedAt = 0
+    orgsLoadedAt = 0
+    foldersLoadedAt = 0
     status = "locked"
     currentScreen = "locked"
     items = []
@@ -1262,20 +1404,33 @@ Panel {
   // -------------------------------------------------------------------------
 
   // Open-time load: skip the CLI entirely when the cached vault is still fresh.
+  // Stale-while-revalidate. `bw list items` is a CLI bootstrap plus a full
+  // vault decrypt, so blocking the panel on it means a spinner on every open
+  // once the cache ages out. Show what we already have immediately, refresh
+  // behind it, and swap the list in when it lands. The spinner is only for
+  // the case where there is genuinely nothing to show yet.
   function ensureItemsFresh() {
-    if (items.length > 0 && (Date.now() - itemsLoadedAt) < itemsFreshMs) {
+    var haveItems = items.length > 0
+    var stale = (Date.now() - itemsLoadedAt) >= itemsFreshMs
+
+    if (haveItems) {
       if (activeWindowData) handleActiveWindowDetected(activeWindowData)
       else rebuildFilter()
-      return
+      if (!stale) return
     }
-    loadItems()
+
+    loadItems(!haveItems)
+    // Organizations and folders change far less often than items and cost a
+    // separate `bw` each, so they get their own, longer freshness window.
     loadOrganizations()
     loadFolders()
   }
 
-  function loadItems() {
+  // `showSpinner` defaults to true, so existing callers are unchanged; a
+  // background revalidation passes false and refreshes without the UI moving.
+  function loadItems(showSpinner) {
     if (!session) return
-    isLoading = true
+    if (showSpinner !== false) isLoading = true
     listProc.command = Model.listCommand()
     listProc.running = true
   }
@@ -1291,24 +1446,31 @@ Panel {
     }
   }
 
-  function loadOrganizations() {
+  // Each of these is its own `bw` invocation, and organizations and folders
+  // change rarely -- new ones arrive through this panel, which invalidates
+  // them explicitly. `force` is for exactly that case.
+  function loadOrganizations(force) {
     if (!session) return
+    if (!force && organizations.length > 0 && (Date.now() - orgsLoadedAt) < metaFreshMs) return
     listOrgsProc.command = Model.listOrganizationsCommand()
     listOrgsProc.running = true
   }
 
   function onListOrgsFinished(rawJson) {
     organizations = Model.parseOrganizations(rawJson)
+    orgsLoadedAt = Date.now()
   }
 
-  function loadFolders() {
+  function loadFolders(force) {
     if (!session) return
+    if (!force && folders.length > 0 && (Date.now() - foldersLoadedAt) < metaFreshMs) return
     listFoldersProc.command = Model.listFoldersCommand()
     listFoldersProc.running = true
   }
 
   function onListFoldersFinished(rawJson) {
     folders = Model.parseFolders(rawJson)
+    foldersLoadedAt = Date.now()
   }
 
   function selectFolder(folderId) {
@@ -1410,6 +1572,82 @@ Panel {
     formPicker = (formPicker === which) ? "" : which
   }
 
+  // What Escape does, wherever it is pressed. Kept here rather than inline in
+  // the key handler because it has two callers: PanelKeyCatcher's
+  // closeRequested, and the shortcut interceptor -- the catcher goes `blocked`
+  // on every screen with a text field, which used to take Escape down with it.
+  //
+  // Innermost thing first: a drawer or picker closes before the screen it is
+  // on, and a screen goes back before the panel closes.
+  function handleEscape() {
+    if (openFilterGroup !== "") {
+      closeFilterGroup()
+      return
+    }
+    if (currentScreen === "edit" && formPicker !== "") {
+      formPicker = ""
+      return
+    }
+    if (currentScreen === "sends") {
+      if (sendMode === "create") {
+        sendError = ""
+        sendMode = "list"
+        // Leaving the composer does not change the screen, so nothing else
+        // takes focus off its (now hidden) name field.
+        restoreScreenFocus()
+      } else {
+        currentScreen = "main"
+      }
+    } else if (currentScreen === "generator") {
+      // Back to the item form when that is where this came from, leaving
+      // the password field as it was.
+      closeGenerator()
+    } else if (currentScreen === "fingerprint") {
+      fpError = ""
+      currentScreen = "settings"
+    } else if (currentScreen === "pin") {
+      pinError = ""
+      currentScreen = "settings"
+    } else if (currentScreen === "settings") {
+      closeSettings()
+    } else if (currentScreen === "setup") {
+      setupDismissed = true
+      currentScreen = status === "unlocked" ? "main"
+        : (status === "locked" ? "locked" : "login")
+    } else if (currentScreen === "edit") {
+      // Editing is abandoned, not saved -- the form is scratch space until
+      // Save, and Escape is how you throw it away. Back where the form was
+      // opened from, which is what the form's own Cancel button does.
+      currentScreen = formIsEditing ? "detail" : "main"
+    } else if (currentScreen === "detail") {
+      currentScreen = "main"
+    } else {
+      close()
+    }
+  }
+
+  // Qt does not clear active focus when an item is hidden, so leaving a screen
+  // whose field had focus leaves that field owning the keyboard from behind
+  // whatever replaced it -- which is how Escape on the item form reached the
+  // search box and closed the panel. Re-home focus whenever the screen
+  // changes, and the stale owner goes with it.
+  onCurrentScreenChanged: restoreScreenFocus()
+
+  function restoreScreenFocus() {
+    Qt.callLater(function() {
+      if (status !== "unlocked") { focusAppropriateField(); return }
+      switch (currentScreen) {
+        case "main": searchField.forceActiveFocus(); return
+        case "edit": formNameField.forceActiveFocus(); return
+        // These open through a function that focuses their own first field.
+        case "pin": case "fingerprint": return
+        case "sends": if (sendMode === "create") return; break
+      }
+      // Everything else is keyboard-navigated rather than typed into.
+      keyCatcher.forceActiveFocus()
+    })
+  }
+
   function setFormFolder(id) {
     formFolderId = id
     formPicker = ""
@@ -1493,7 +1731,7 @@ Panel {
     // the item into it, so select it straight away.
     if (created && created.id) formFolderId = String(created.id)
     flashNotification("Folder created")
-    loadFolders()
+    loadFolders(true)
   }
 
   function syncVault() {
@@ -1508,9 +1746,10 @@ Panel {
     isSyncing = false
     if (exitCode === 0) {
       flashNotification("Vault synced with Bitwarden")
+      itemsLoadedAt = 0
       loadItems()
-      loadOrganizations()
-      loadFolders()
+      loadOrganizations(true)
+      loadFolders(true)
     } else {
       errorMessage = "Sync failed"
     }
@@ -1529,9 +1768,21 @@ Panel {
     liveTotp = ""
     currentScreen = "detail"
 
-    getItemProc.command = Model.getItemCommand(item.id)
-    getItemProc.running = true
+    // The list already fetched the whole item, so render from that rather than
+    // spending a second CLI round trip on data we are holding. Only fall back
+    // to `bw get item` if this item somehow arrived without its raw object.
+    var detail = item.rawObject ? Model.itemDetailFromObject(item.rawObject) : null
+    if (detail) {
+      isLoading = false
+      detailItem = detail
+      detailPassword = detail.password
+    } else {
+      getItemProc.command = Model.getItemCommand(item.id)
+      getItemProc.running = true
+    }
 
+    // The TOTP code is time-based, so it is the one thing the list cannot
+    // carry. It loads alongside rather than in front of the detail view.
     if (item.hasTotp) {
       fetchTotp(item.id)
     }
@@ -1614,13 +1865,6 @@ Panel {
     formPasswordRevealed = false
     errorMessage = ""
     currentScreen = "edit"
-  }
-
-  function generateAndSetPassword() {
-    var generated = Model.generatePassword(20, true, true, true, true)
-    formPassword = generated
-    formPasswordRevealed = true
-    flashNotification("Generated strong password!")
   }
 
   function saveItemForm() {
@@ -1884,12 +2128,16 @@ Panel {
 
   function openUrl(url) {
     if (!url) return
-    var target = url
-    if (!target.match(/^[a-zA-Z]+:\/\//)) {
-      target = "https://" + target
+    // Only http and https are handed to xdg-open; see normalizeOpenableUrl().
+    var resolved = Model.normalizeOpenableUrl(url)
+    if (!resolved.ok) {
+      errorMessage = resolved.scheme
+        ? ("Refusing to open a " + resolved.scheme + ": link -- only http and https are opened")
+        : "That item has no link to open"
+      return
     }
-    Quickshell.execDetached(["xdg-open", target])
-    flashNotification("Opening " + target)
+    Quickshell.execDetached(["xdg-open", resolved.url])
+    flashNotification("Opening " + resolved.url)
   }
 
   function flashNotification(msg) {
@@ -1933,9 +2181,11 @@ Panel {
     onTriggered: {
       if (root.totpFollowupItem && root.totpFollowupItem.hasTotp) {
         root.copyTotpCode(root.totpFollowupItem)
-        var codeStr = root.totpFollowupCode || root.liveTotp
-        var msg = codeStr ? ("2FA Code: " + codeStr + " (Ready to paste!)") : "2FA verification code ready to paste!"
-        Quickshell.execDetached(["omarchy-notification-send", "-g", "󰥔", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", msg])
+        // The code itself stays out of the notification. It is already on the
+        // clipboard, and a notification is not a private channel: the daemon
+        // keeps history and can render the body over a lock screen. The panel
+        // shows the digits on screen instead, where you asked for them.
+        Quickshell.execDetached(["omarchy-notification-send", "-g", "󰥔", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", "2FA verification code ready to paste"])
         root.totpFollowupActive = false
       }
     }
@@ -2094,6 +2344,41 @@ Panel {
     onExited: function(exitCode) { root.onGenerated(generateStdout.text, exitCode) }
   }
 
+  // The generator server. A managed Process rather than execDetached, so it
+  // exits with the shell instead of outliving it.
+  Process {
+    id: generateServeProc
+    command: Model.generateServeCommand()
+    environment: root.generatorServeEnv()
+    onExited: function(exitCode) {
+      // Exiting means it never bound -- almost always because the port is
+      // taken. Whatever is on that port is not ours, so stop reaching for it.
+      root.generateServeStarting = false
+      root.generateServeReady = false
+      root.generateServeFailed = true
+      generateServePoll.stop()
+      if (root.genBusy) root.regenerateViaCli()
+    }
+  }
+
+  Timer {
+    id: generateServePoll
+    property int attempts: 0
+    interval: 250
+    repeat: true
+    onTriggered: {
+      attempts++
+      if (attempts > 40) {   // 10s, well past bw's usual couple of seconds
+        stop()
+        root.generateServeStarting = false
+        root.generateServeFailed = true
+        if (root.genBusy) root.regenerateViaCli()
+        return
+      }
+      root.pollGeneratorServe()
+    }
+  }
+
   // ---- PIN unlock ----
   //
   // PIN and master password are handed over in the environment; encrypt-and-store
@@ -2234,7 +2519,10 @@ Panel {
 
   Process {
     id: loginProc
-    environment: root.bwEnv()
+    environment: root.authEnv(root.loginPassword.trim(),
+                              root.loginMethod === "apikey" ? root.loginClientId.trim() : "",
+                              root.loginMethod === "apikey" ? root.loginClientSecret.trim() : "",
+                              root.login2faCode.trim())
     stdout: StdioCollector {
       id: loginStdout
       waitForEnd: true
@@ -2250,7 +2538,8 @@ Panel {
 
   Process {
     id: unlockProc
-    environment: root.bwEnv()
+    command: Model.unlockCommand()
+    environment: root.authEnv(root.pendingUnlockPassword, "", "", "")
     stdout: StdioCollector {
       id: unlockStdout
       waitForEnd: true
@@ -2512,6 +2801,18 @@ Panel {
     Item {
       id: shortcutInterceptor
       Keys.onPressed: function(event) {
+        // Escape is handled here rather than in the key catcher because the
+        // catcher is blocked on every screen built around a text field -- the
+        // item form, the PIN and fingerprint screens, the Send composer --
+        // and a blocked catcher swallows Escape along with everything else.
+        // This interceptor runs first and is not gated by `blocked`, so
+        // cancelling out of a form works while the cursor is in a field.
+        if (event.key === Qt.Key_Escape && !(event.modifiers & ~Qt.KeypadModifier)) {
+          root.handleEscape()
+          event.accepted = true
+          return
+        }
+
         // Alt may arrive with no text depending on the keymap, so fall back to
         // the key code for A-Z.
         var t = event.text ? String(event.text).toLowerCase() : ""
@@ -2547,34 +2848,9 @@ Panel {
         || (root.currentScreen === "fingerprint")
         || (root.currentScreen === "sends" && root.sendMode === "create")
 
-      onCloseRequested: {
-        if (root.openFilterGroup !== "") {
-          root.closeFilterGroup()
-          return
-        }
-        if (root.currentScreen === "sends") {
-          if (root.sendMode === "create") { root.sendError = ""; root.sendMode = "list" }
-          else root.currentScreen = "main"
-        } else if (root.currentScreen === "generator") {
-          root.currentScreen = "main"
-        } else if (root.currentScreen === "fingerprint") {
-          root.fpError = ""
-          root.currentScreen = "settings"
-        } else if (root.currentScreen === "pin") {
-          root.pinError = ""
-          root.currentScreen = "settings"
-        } else if (root.currentScreen === "settings") {
-          root.closeSettings()
-        } else if (root.currentScreen === "setup") {
-          root.setupDismissed = true
-          root.currentScreen = root.status === "unlocked" ? "main"
-            : (root.status === "locked" ? "locked" : "login")
-        } else if (root.currentScreen === "detail" || root.currentScreen === "edit") {
-          root.currentScreen = "main"
-        } else {
-          root.close()
-        }
-      }
+      // Reached only on screens where the catcher is not blocked; the
+      // interceptor handles Escape everywhere else. Same dispatch either way.
+      onCloseRequested: root.handleEscape()
       onTabRequested: function(direction) {
         if (root.currentScreen === "main") {
           root.cycleCategory(direction)
@@ -2607,6 +2883,10 @@ Panel {
         }
       }
       onActivateRequested: {
+        if (root.currentScreen === "generator" && root.generatorFeedsForm) {
+          root.useGeneratedPassword()
+          return
+        }
         if (root.currentScreen === "sends" && root.sendMode === "list") {
           if (root.sendIndex < root.sends.length) root.copySendLink(root.sends[root.sendIndex])
           return
@@ -3333,11 +3613,25 @@ Panel {
               spacing: Style.space(8)
 
               Button {
-                text: "Back (Esc)"
+                text: root.generatorFeedsForm ? "Back to item (Esc)" : "Back (Esc)"
                 iconText: "󰁍"
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
-                onClicked: root.currentScreen = "main"
+                onClicked: root.closeGenerator()
+              }
+
+              // Only when the generator was opened from the item form: hand
+              // the value back to the password field and return there.
+              Button {
+                visible: root.generatorFeedsForm
+                text: "Use this password (Enter)"
+                iconText: "󰄬"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                selected: true
+                accent: Color.accent
+                enabled: !root.genBusy && root.genValue !== ""
+                onClicked: root.useGeneratedPassword()
               }
             }
 
@@ -3694,7 +3988,8 @@ Panel {
             Text {
               width: parent.width
               text: "Your master password is encrypted with a key derived from this PIN, and only the encrypted form is stored. "
-                + "Minimum " + Model.pinMinLength() + " digits -- a longer PIN is meaningfully harder to guess."
+                + "Use " + Model.pinRecommendedLength() + " digits or more; " + Model.pinMinLength()
+                + " is the floor, and every extra digit multiplies an attacker's work by ten."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -3716,15 +4011,37 @@ Panel {
               enabled: !root.pinBusy
             }
 
-            Text { text: "PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+            Text {
+              text: "PIN"
+              // The label turns with the field, so the warning is visible even
+              // when the cursor has moved on to Confirm.
+              color: root.pinSetupWeak ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
             TextField {
               id: pinSetupPinField
               width: parent.width
-              placeholderText: "At least " + Model.pinMinLength() + " digits..."
+              placeholderText: Model.pinRecommendedLength() + " digits or more..."
               password: true
               text: root.pinSetupPin
               onTextChanged: root.pinSetupPin = text.replace(/[^0-9]/g, "")
               enabled: !root.pinBusy
+              // A short PIN is allowed but not waved through: the border goes
+              // red rather than accent while it is under the recommendation.
+              accent: root.pinSetupWeak ? root.urgent : Color.accent
+              foreground: root.pinSetupWeak ? root.urgent : root.fg
+            }
+
+            Text {
+              visible: root.pinSetupWeak
+              width: parent.width
+              text: "󰀪  " + Model.pinWeakWarning(root.pinSetupPin)
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
             }
 
             Text { text: "CONFIRM PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -4683,9 +5000,17 @@ Panel {
                 var itm = root.getSelectedItem()
                 if (itm) root.handleSmartEnter(itm)
               }
-              Keys.onEscapePressed: {
+              // Only while the search box is the screen. A hidden item keeps
+              // active focus in Qt, so without this guard the search field
+              // still owned Escape from behind the item form and closed the
+              // whole panel instead of cancelling the edit.
+              Keys.onEscapePressed: function(event) {
+                if (root.currentScreen !== "main") {
+                  event.accepted = false   // let it reach the panel's dispatch
+                  return
+                }
                 if (text) text = ""
-                else root.close()
+                else root.handleEscape()
               }
             }
 
@@ -5676,6 +6001,7 @@ Panel {
                 spacing: Style.space(3)
                 Text { text: "TITLE / NAME *"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                 TextField {
+                  id: formNameField
                   width: parent.width
                   placeholderText: "e.g. GitHub, Google, Work Server..."
                   text: root.formName
@@ -5934,12 +6260,14 @@ Panel {
                   width: parent.width
                   Text { text: "PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                   Item { Layout.fillWidth: true }
+                  // Opens the real generator, which fills this field in and
+                  // comes back. The ellipsis says it goes somewhere first.
                   Button {
-                    text: "Generate Strong Password"
-                    iconText: "󰑐"
+                    text: "Generate..."
+                    iconText: "󰌆"
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption
-                    onClicked: root.generateAndSetPassword()
+                    onClicked: root.openGenerator()
                   }
                 }
                 Row {

@@ -10,6 +10,9 @@ const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "") + `
   exports.generateCommand = generateCommand
+  exports.generateServeUrl = generateServeUrl
+  exports.parseServeGenerated = parseServeGenerated
+  exports.generateServeCommand = generateServeCommand
   exports.normalizeGeneratorOptions = normalizeGeneratorOptions
   exports.generatorDefaults = generatorDefaults
   exports.generatorStrength = generatorStrength
@@ -75,6 +78,56 @@ check("strength fraction stays within 0..1",
 
 check("defaults are a fresh object each call",
   Model.generatorDefaults() !== Model.generatorDefaults(), "same reference returned")
+
+
+// --- the same options over `bw serve` ---------------------------------------
+// `bw generate` spends ~2.9s on CLI bootstrap and service init before it
+// generates anything; the serve API answers the same request in ~2ms. These
+// URLs were verified against a live locked `bw serve`.
+
+const url = (o) => Model.generateServeUrl(o)
+
+check("the server is addressed on loopback only",
+  url({}).startsWith("http://127.0.0.1:"), url({}))
+check("a password request carries the character sets and length",
+  url({ length: 20, uppercase: true, lowercase: true, numbers: true, special: true })
+    .includes("length=20") && url({ length: 20, special: true }).includes("special=true"),
+  url({ length: 20, uppercase: true, lowercase: true, numbers: true, special: true }))
+check("a disabled set is omitted rather than sent false",
+  !url({ special: false, numbers: false }).includes("special=")
+    && !url({ special: false, numbers: false }).includes("number="),
+  url({ special: false, numbers: false }))
+check("minimums ride along only when their set is on",
+  url({ numbers: true, minNumber: 3 }).includes("minNumber=3")
+    && !url({ numbers: false, minNumber: 3 }).includes("minNumber"),
+  url({ numbers: true, minNumber: 3 }))
+check("a passphrase request switches shape entirely",
+  url({ type: "passphrase", words: 5 }).includes("passphrase=true")
+    && url({ type: "passphrase", words: 5 }).includes("words=5")
+    && !url({ type: "passphrase", words: 5 }).includes("length="),
+  url({ type: "passphrase", words: 5 }))
+check("a separator that means something in a URL is encoded",
+  url({ type: "passphrase", separator: "&" }).includes("separator=%26"),
+  url({ type: "passphrase", separator: "&" }))
+check("the serve options are clamped the same way the CLI ones are",
+  url({ length: 9999 }).includes("length=128") && url({ length: 1 }).includes("length=5"),
+  url({ length: 9999 }) + " / " + url({ length: 1 }))
+
+// The server is started without a session on purpose: a loopback port has no
+// authentication, so it must never hold an unlocked vault.
+check("the serve command binds loopback and names no session",
+  JSON.stringify(Model.generateServeCommand()) ===
+    JSON.stringify(["bw", "serve", "--hostname", "127.0.0.1", "--port", "8087"]),
+  JSON.stringify(Model.generateServeCommand()))
+
+check("a successful response yields the value",
+  Model.parseServeGenerated('{"success":true,"data":{"object":"string","data":"abc123"}}') === "abc123",
+  Model.parseServeGenerated('{"success":true,"data":{"object":"string","data":"abc123"}}'))
+check("a failed response yields nothing, so the caller falls back",
+  Model.parseServeGenerated('{"success":false,"message":"locked"}') === "", "expected empty")
+check("garbage yields nothing rather than throwing",
+  Model.parseServeGenerated("<html>not json</html>") === "", "expected empty")
+check("an empty body yields nothing", Model.parseServeGenerated("") === "", "expected empty")
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
