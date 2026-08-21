@@ -25,6 +25,7 @@ Panel {
   readonly property bool closeOnCopy: Boolean(setting("closeOnCopy", true))
   readonly property bool suggestOnOpen: Boolean(setting("suggestOnOpen", true))
   readonly property bool fingerprintUnlock: Boolean(setting("fingerprintUnlock", false))
+  readonly property bool pinUnlock: Boolean(setting("pinUnlock", false))
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -110,7 +111,21 @@ Panel {
   property bool fingerprintScanning: false
   property string fingerprintMessage: ""
   property string pendingUnlockPassword: ""   // held only until the unlock lands
-  property bool pendingUnlockFromFingerprint: false
+  // Which credential source drove the in-flight unlock, so a stale stored
+  // secret can be discarded rather than retried forever. "" | "fingerprint" | "pin"
+  property string pendingUnlockFrom: ""
+
+  // PIN unlock state
+  property bool pinConfigured: false        // ciphertext present in the keyring
+  property string pinEntry: ""              // locked-screen input
+  property int pinAttempts: 0
+  readonly property int pinMaxAttempts: 5
+  property string pinError: ""
+  property string pinSetupPin: ""
+  property string pinSetupConfirm: ""
+  property string pinSetupMaster: ""
+  property bool pinBusy: false
+  readonly property bool pinReady: pinUnlock && pinConfigured
   readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME") || ""
   readonly property bool fingerprintReady: fingerprintUnlock && fingerprintAvailable && fingerprintStored
 
@@ -258,7 +273,8 @@ Panel {
       if (status === "unlocked" && currentScreen === "main") {
         searchField.forceActiveFocus()
       } else if (status === "locked" || status === "checking") {
-        passField.forceActiveFocus()
+        if (pinReady) pinField.forceActiveFocus()
+        else passField.forceActiveFocus()
       } else if (status === "unauthenticated") {
         emailField.forceActiveFocus()
       }
@@ -470,6 +486,109 @@ Panel {
   }
 
   // -------------------------------------------------------------------------
+  // PIN Unlock
+  // -------------------------------------------------------------------------
+
+  function refreshPinConfigured() {
+    if (!keyringHasPinProc.running) keyringHasPinProc.running = true
+  }
+
+  function onPinConfiguredChecked(raw) {
+    pinConfigured = String(raw || "").trim() === "yes"
+  }
+
+  function beginPinSetup() {
+    pinSetupPin = ""
+    pinSetupConfirm = ""
+    pinSetupMaster = ""
+    pinError = ""
+    screenBeforeSettings = "main"
+    currentScreen = "pin"
+    Qt.callLater(function() { pinSetupPinField.forceActiveFocus() })
+  }
+
+  // Encrypting needs the master password, and the vault does not keep it in
+  // memory once unlocked, so setting a PIN has to ask for it.
+  function submitPinSetup() {
+    var err = Model.validatePin(pinSetupPin, pinSetupConfirm)
+    if (err) { pinError = err; return }
+    if (!pinSetupMaster) { pinError = "Master password is required to encrypt the PIN"; return }
+
+    pinError = ""
+    pinBusy = true
+    pinStoreProc.running = true
+  }
+
+  function onPinStored(exitCode) {
+    pinBusy = false
+    if (exitCode !== 0) {
+      pinError = "Could not save the PIN. Is the OS keyring available?"
+      return
+    }
+    pinConfigured = true
+    pinSetupPin = ""
+    pinSetupConfirm = ""
+    pinSetupMaster = ""
+    pinAttempts = 0
+    writeSetting("pinUnlock", true, "bool")
+    flashNotification("PIN unlock enabled")
+    currentScreen = "settings"
+  }
+
+  function submitPinUnlock() {
+    if (!pinReady || isUnlocking || pinBusy) return
+    if (String(pinEntry || "").length < Model.pinMinLength()) {
+      pinError = "PIN must be at least " + Model.pinMinLength() + " digits"
+      return
+    }
+    pinError = ""
+    pinBusy = true
+    pinUnlockProc.running = true
+  }
+
+  function onPinUnlockResult(exitCode, password) {
+    pinBusy = false
+    var pw = String(password || "").trim()
+
+    if (exitCode !== 0 || !pw) {
+      pinAttempts += 1
+      pinEntry = ""
+      if (pinAttempts >= pinMaxAttempts) {
+        // Refuse to keep serving guesses at the UI. The ciphertext goes too,
+        // so re-enabling requires the master password again.
+        clearPin()
+        pinError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
+      } else {
+        pinError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
+      }
+      return
+    }
+
+    pinAttempts = 0
+    pendingUnlockFrom = "pin"
+    unlockVaultWithPassword(pw)
+  }
+
+  function clearPin() {
+    keyringClearPinProc.running = true
+    pinConfigured = false
+    pinEntry = ""
+    pinAttempts = 0
+    if (pinUnlock) writeSetting("pinUnlock", false, "bool")
+  }
+
+  function disablePinUnlock() {
+    clearPin()
+    pinError = ""
+    flashNotification("PIN unlock removed")
+  }
+
+  onPinUnlockChanged: {
+    if (pinUnlock) refreshPinConfigured()
+    else if (pinConfigured) clearPin()
+  }
+
+  // -------------------------------------------------------------------------
   // Setup Wizard & Settings
   // -------------------------------------------------------------------------
 
@@ -480,6 +599,7 @@ Panel {
   function onDependenciesChecked(raw) {
     dependencies = Model.parseDependencies(raw)
     depsChecked = true
+    if (pinUnlock) refreshPinConfigured()
 
     // Fingerprint availability comes from the same probe, so keep them in step.
     for (var i = 0; i < dependencies.items.length; i++) {
@@ -556,6 +676,8 @@ Panel {
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock
+      // The toggle reflects a PIN actually being set, not just the flag.
+      case "pinUnlock": return pinUnlock && pinConfigured
     }
     return entry.type === "bool" ? Boolean(setting(entry.key, false)) : Number(setting(entry.key, 0))
   }
@@ -613,7 +735,7 @@ Panel {
       fingerprintMessage = "No stored master password. Unlock with your password once to enable this."
       return
     }
-    pendingUnlockFromFingerprint = true
+    pendingUnlockFrom = "fingerprint"
     unlockVaultWithPassword(pw)
   }
 
@@ -640,7 +762,7 @@ Panel {
   // -------------------------------------------------------------------------
 
   function unlockVault() {
-    pendingUnlockFromFingerprint = false
+    pendingUnlockFrom = ""
     unlockVaultWithPassword(masterPassword)
   }
 
@@ -668,11 +790,21 @@ Panel {
       onUnlockSuccess(out)
     } else {
       pendingUnlockPassword = ""
-      if (pendingUnlockFromFingerprint) {
-        pendingUnlockFromFingerprint = false
+      // A stored secret the vault no longer accepts is useless: drop it rather
+      // than fail on every open, and say which one went stale.
+      if (pendingUnlockFrom === "fingerprint") {
+        pendingUnlockFrom = ""
         keyringClearMasterProc.running = true
         fingerprintStored = false
         fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
+        errorMessage = ""
+        focusAppropriateField()
+        return
+      }
+      if (pendingUnlockFrom === "pin") {
+        pendingUnlockFrom = ""
+        clearPin()
+        pinError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
         errorMessage = ""
         focusAppropriateField()
         return
@@ -707,12 +839,15 @@ Panel {
     }
 
     // Opting in stores the master password so a finger can stand in for it later.
-    if (fingerprintUnlock && fingerprintAvailable && pendingUnlockPassword && !pendingUnlockFromFingerprint) {
+    if (fingerprintUnlock && fingerprintAvailable && pendingUnlockPassword && pendingUnlockFrom === "") {
       keyringStoreMasterProc.running = true
     } else {
       pendingUnlockPassword = ""
     }
-    pendingUnlockFromFingerprint = false
+    pendingUnlockFrom = ""
+    pinEntry = ""
+    pinAttempts = 0
+    pinError = ""
     fingerprintMessage = ""
 
     loadItems()
@@ -1159,7 +1294,7 @@ Panel {
         root.copyTotpCode(root.totpFollowupItem)
         var codeStr = root.totpFollowupCode || root.liveTotp
         var msg = codeStr ? ("2FA Code: " + codeStr + " (Ready to paste!)") : "2FA verification code ready to paste!"
-        Quickshell.execDetached(["omarchy-notification-send", "-g", "󰞀", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", msg])
+        Quickshell.execDetached(["omarchy-notification-send", "-g", "󰥔", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", msg])
         root.totpFollowupActive = false
       }
     }
@@ -1622,10 +1757,15 @@ Panel {
         || loginPassField.activeFocus
         || code2faField.activeFocus
         || passField.activeFocus
+        || pinField.activeFocus
         || (root.currentScreen === "edit")
+        || (root.currentScreen === "pin")
 
       onCloseRequested: {
-        if (root.currentScreen === "settings") {
+        if (root.currentScreen === "pin") {
+          root.pinError = ""
+          root.currentScreen = "settings"
+        } else if (root.currentScreen === "settings") {
           root.closeSettings()
         } else if (root.currentScreen === "setup") {
           root.setupDismissed = true
@@ -1760,7 +1900,7 @@ Panel {
 
             // Settings Button
             PanelActionButton {
-              visible: root.currentScreen !== "settings" && root.currentScreen !== "setup"
+              visible: root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin"
               iconText: "󰒓"
               tooltipText: "Settings (,)"
               fontFamily: root.fontFamily
@@ -1908,6 +2048,111 @@ Panel {
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.Wrap
               width: parent.width - Style.space(24)
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 0c: PIN SETUP
+        // -------------------------------------------------------------------
+        Column {
+          visible: root.currentScreen === "pin"
+          width: parent.width
+          spacing: Style.space(12)
+
+          PanelSeparator { width: parent.width }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+
+            Text {
+              text: "Set an unlock PIN"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              text: "Your master password is encrypted with a key derived from this PIN, and only the encrypted form is stored. "
+                + "Minimum " + Model.pinMinLength() + " digits -- a longer PIN is meaningfully harder to guess."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text { text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+            TextField {
+              width: parent.width
+              placeholderText: "Needed once, to encrypt the PIN..."
+              password: true
+              text: root.pinSetupMaster
+              onTextChanged: root.pinSetupMaster = text
+              enabled: !root.pinBusy
+            }
+
+            Text { text: "PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+            TextField {
+              id: pinSetupPinField
+              width: parent.width
+              placeholderText: "At least " + Model.pinMinLength() + " digits..."
+              password: true
+              text: root.pinSetupPin
+              onTextChanged: root.pinSetupPin = text.replace(/[^0-9]/g, "")
+              enabled: !root.pinBusy
+            }
+
+            Text { text: "CONFIRM PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+            TextField {
+              width: parent.width
+              placeholderText: "Repeat the PIN..."
+              password: true
+              text: root.pinSetupConfirm
+              onTextChanged: root.pinSetupConfirm = text.replace(/[^0-9]/g, "")
+              onAccepted: root.submitPinSetup()
+              enabled: !root.pinBusy
+            }
+
+            Text {
+              visible: root.pinError !== ""
+              width: parent.width
+              text: root.pinError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                text: root.pinBusy ? "Encrypting..." : "Save PIN"
+                iconText: root.pinBusy ? "󰑐" : "󰄬"
+                iconSpinning: root.pinBusy
+                selected: true
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                enabled: !root.pinBusy
+                onClicked: root.submitPinSetup()
+              }
+
+              Button {
+                text: "Cancel"
+                iconText: "󰅖"
+                fontFamily: root.fontFamily
+                enabled: !root.pinBusy
+                onClicked: { root.pinError = ""; root.currentScreen = "settings" }
+              }
             }
           }
         }
@@ -2115,12 +2360,26 @@ Panel {
           }
 
           Repeater {
-            model: Model.SETTINGS_SCHEMA
+            model: Model.groupedSettings()
 
             delegate: Column {
               required property var modelData
               width: parent.width
               spacing: Style.space(4)
+
+              // One header per group, drawn by the first entry in it.
+              Item {
+                visible: modelData.groupLabel !== ""
+                width: parent.width
+                height: visible ? Style.space(18) : 0
+              }
+
+              PanelSectionHeader {
+                visible: modelData.groupLabel !== ""
+                text: modelData.groupLabel === "" ? "" : modelData.groupLabel.toUpperCase()
+                foreground: root.fg
+                fontFamily: root.fontFamily
+              }
 
               // A setting whose dependency is missing is shown but inert, with
               // the reason stated rather than the control silently doing nothing.
@@ -2239,7 +2498,7 @@ Panel {
         // SCREEN 1: LOGIN VIEW (When unauthenticated)
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unauthenticated" && root.currentScreen !== "settings" && root.currentScreen !== "setup"
+          visible: root.status === "unauthenticated" && root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin"
           width: parent.width
           spacing: Style.space(12)
 
@@ -2474,7 +2733,7 @@ Panel {
         // -------------------------------------------------------------------
         Column {
           visible: (root.status === "locked" || root.status === "checking")
-            && root.currentScreen !== "settings" && root.currentScreen !== "setup"
+            && root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin"
           width: parent.width
           spacing: Style.space(14)
 
@@ -2543,6 +2802,73 @@ Panel {
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          // PIN entry, offered above the password field when one is set.
+          Column {
+            visible: root.pinReady
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text { text: "PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              TextField {
+                id: pinField
+                width: parent.width - pinUnlockBtn.width - Style.space(8)
+                placeholderText: "Enter your PIN..."
+                password: true
+                text: root.pinEntry
+                onTextChanged: root.pinEntry = text.replace(/[^0-9]/g, "")
+                onAccepted: root.submitPinUnlock()
+                enabled: !root.pinBusy && !root.isUnlocking
+              }
+
+              Button {
+                id: pinUnlockBtn
+                text: root.pinBusy ? "Checking..." : "Unlock"
+                iconText: root.pinBusy ? "󰑐" : "󰌿"
+                iconSpinning: root.pinBusy
+                selected: true
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                enabled: !root.pinBusy && !root.isUnlocking
+                onClicked: root.submitPinUnlock()
+              }
+            }
+
+            Text {
+              visible: root.pinError !== ""
+              width: parent.width
+              text: root.pinError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              text: "or use your master password below"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          // A PIN was set but the vault rejected it -- surfaced even once
+          // pinReady has gone false, so the reason is not lost.
+          Text {
+            visible: !root.pinReady && root.pinError !== ""
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: root.pinError
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
           }
 
@@ -2942,7 +3268,7 @@ Panel {
 
                     PanelActionButton {
                       visible: itemData.hasTotp
-                      iconText: "󰑐"
+                      iconText: "󰥔"
                       tooltipText: "Copy TOTP code (t)"
                       fontFamily: root.fontFamily
                       onClicked: root.copyTotpCode(itemData)
@@ -3333,7 +3659,7 @@ Panel {
                     PanelActionButton {
                       id: copyTotpBtn
                       anchors.verticalCenter: parent.verticalCenter
-                      iconText: "󰑐"
+                      iconText: "󰥔"
                       tooltipText: "Copy TOTP code (t)"
                       fontFamily: root.fontFamily
                       enabled: root.liveTotp !== ""

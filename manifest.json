@@ -25,7 +25,8 @@
       "autoCopyTotpSec": 3,
       "closeOnCopy": true,
       "suggestOnOpen": true,
-      "fingerprintUnlock": false
+      "fingerprintUnlock": false,
+      "pinUnlock": false
     },
     "schema": [
       {
@@ -84,6 +85,13 @@
         "type": "boolean",
         "label": "Unlock with fingerprint",
         "description": "Use an enrolled fingerprint to unlock the vault. Requires 'omarchy setup security fingerprint'. Stores your master password in the OS login keyring so a verified fingerprint can unlock the vault, the same trade-off as Bitwarden desktop biometrics. Turning this off deletes the stored password.",
+        "defaultValue": false
+      },
+      {
+        "key": "pinUnlock",
+        "type": "boolean",
+        "label": "Unlock with PIN",
+        "description": "Unlock the vault with a numeric PIN (minimum 4 digits, longer is stronger). Your master password is encrypted with a key derived from the PIN and only the ciphertext is kept, so reading the keyring alone does not reveal it. Turning this off deletes the stored ciphertext.",
         "defaultValue": false
       }
     ]

@@ -29,6 +29,12 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
   - **Custom Server Support**: Works seamlessly with official Bitwarden servers and self-hosted Vaultwarden instances.
   - Optional quick-launch button for interactive terminal login (`bw login`).
 
+- **PIN Unlock** (opt-in, `pinUnlock`):
+  - Unlock with a numeric PIN instead of typing the master password. Minimum 4 digits, no upper limit -- longer is meaningfully harder to guess.
+  - Unlike fingerprint unlock, the master password is **not** stored in the clear: it is encrypted with a key derived from your PIN (PBKDF2-SHA256, 600,000 iterations, salted) and only the ciphertext is kept, so reading the keyring alone does not reveal it.
+  - A wrong PIN simply fails to decrypt, so no PIN hash is stored and there is none to attack.
+  - Five wrong attempts removes the stored ciphertext entirely; re-enabling needs the master password again. So does a master password change, which is detected on the first failed unlock.
+
 - **Fingerprint Unlock** (opt-in, `fingerprintUnlock`):
   - Unlock the vault with an enrolled fingerprint instead of retyping your master password.
   - Verifies through the same PAM stack as the Omarchy lock screen (`/etc/pam.d/omarchy-lock-fingerprint`), so it works wherever `omarchy setup security fingerprint` has been run.
@@ -68,7 +74,7 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 - **Setup Wizard & In-Panel Settings**:
   - Checks every external tool the plugin shells out to (`bw`, `wl-copy`, `hyprctl`, `secret-tool`, `fprintd`) in a single probe, marking each required or optional and saying what it is for.
   - A missing **required** tool opens the wizard automatically; **Install** runs `omarchy pkg add <pkg>` in a terminal so you can see it happen and answer the password prompt. `fprintd` present without an enrolled finger offers **Enroll** (`omarchy setup security fingerprint`).
-  - Press <kbd>,</kbd> or the `󰒓` button for settings: auto-lock timeout, clipboard clear delay, TOTP auto-copy delay, and every toggle. A setting whose dependency is missing is shown but inert, with the reason given.
+  - Press <kbd>,</kbd> or the `󰒓` button for settings, grouped into **Security**, **Behavior** and **Suggestions**: auto-lock timeout, clipboard clear delay, TOTP auto-copy delay, and every toggle. A setting whose dependency is missing is shown but inert, with the reason given.
   - Changes are written to the plugin's entry in `~/.config/omarchy/shell.json` through `omarchy bar set`, so Omarchy owns the file and the shell hot-reloads the change. Nothing is stored in a second place.
   - Reachable from a keybind too: `omarchy-shell shell call qs-bitwarden-cli settings '{}'` (or `setup`).
 
@@ -221,8 +227,21 @@ The following settings can be configured under `plugins.qs-bitwarden-cli` in `~/
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see below. |
+| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see below. |
 
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned.
+
+---
+
+## PIN Unlock
+
+Turn on **Unlock with PIN** in the settings screen. You are asked for your master password once (it is needed to encrypt) and for a PIN of at least 4 digits; there is no upper limit and a longer PIN is stronger.
+
+**How it differs from fingerprint unlock.** Fingerprint unlock keeps your master password in the login keyring in the clear, because PAM can only prove presence. A PIN can do better: the master password is encrypted with a key derived from the PIN (PBKDF2-SHA256, 600,000 iterations, salted) and only the ciphertext is stored, so reading the keyring is not by itself enough. A wrong PIN fails decryption, which means correctness needs no stored hash and there is no hash to attack.
+
+**The honest limit.** A short PIN is a small search space, and if the ciphertext leaks, the iteration count is the only thing standing between an attacker and your master password. Five wrong attempts at the panel deletes the stored ciphertext, but that does nothing against an offline attack on a copy of it. Prefer more than 4 digits.
+
+The stored ciphertext is removed when you turn the setting off, after five wrong attempts, or when the vault rejects the decrypted password (for example after a master password change).
 
 ---
 
@@ -254,7 +273,7 @@ Regression suites, no dependencies beyond Node:
 
 ```bash
 node tests/context-match.test.js    # window-title matching and learned suggestions
-node tests/setup-settings.test.js   # dependency probe and settings writer
+node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
 ```
 
 ---

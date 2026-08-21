@@ -17,6 +17,13 @@ const KEYRING_MASTER = "master_password"
 // env var already used for `bw unlock`) and piped in by a shell that supplies
 // the EOF. Never pass secrets in argv: that is world-readable in /proc.
 const KEYRING_SECRET_ENV = "QSBW_SECRET"
+const KEYRING_PIN = "pin_blob"
+const PIN_ENV = "QSBW_PIN"
+
+// PBKDF2 rounds for PIN unlock. Matches Bitwarden's own default and measures
+// at ~300ms here -- unnoticeable once, punishing a few million times over.
+const PIN_ITERATIONS = 600000
+const PIN_MIN_LENGTH = 4
 
 function keyringSecretEnvVar() {
   return KEYRING_SECRET_ENV
@@ -214,6 +221,63 @@ function keyringClearMasterPasswordCommand() {
 function keyringHasMasterPasswordCommand() {
   var script = "if secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
     + " account " + shellQuote(KEYRING_MASTER) + " >/dev/null 2>&1; then echo yes; else echo no; fi"
+  return ["bash", "-c", script]
+}
+
+// -------------------------------------------------------------------------
+// PIN Unlock
+// -------------------------------------------------------------------------
+//
+// A PIN cannot produce the master password any more than a fingerprint can, so
+// the password is encrypted *with a key derived from the PIN* and only the
+// ciphertext is kept. Unlike fingerprint unlock, reading the keyring is then
+// not enough on its own -- an attacker also has to break the PIN. A wrong PIN
+// fails decryption outright, so correctness needs no separately stored hash
+// (and no hash to attack).
+//
+// Be honest about the limit: a short PIN is a small search space, and the only
+// thing standing between a leaked blob and the master password is the KDF cost.
+// That is why the iteration count is high and short PINs are refused.
+
+function pinEnvVar() { return PIN_ENV }
+function pinMinLength() { return PIN_MIN_LENGTH }
+
+function validatePin(pin, confirm) {
+  var p = String(pin || "")
+  if (p.length < PIN_MIN_LENGTH) return "PIN must be at least " + PIN_MIN_LENGTH + " digits"
+  if (!/^[0-9]+$/.test(p)) return "PIN must contain only digits"
+  if (confirm !== undefined && String(confirm || "") !== p) return "PINs do not match"
+  return ""
+}
+
+// Encrypt and store in one process, so the plaintext never travels back
+// through QML on the way to the keyring.
+function pinStoreCommand() {
+  var script = "printf '%s' \"$" + KEYRING_SECRET_ENV + "\""
+    + " | openssl enc -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
+    + " -salt -pass env:" + PIN_ENV + " -base64 -A"
+    + " | secret-tool store --label=" + shellQuote("Bitwarden Master Password (PIN unlock)")
+    + " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_PIN)
+  return ["bash", "-c", script]
+}
+
+// Non-zero exit means the PIN was wrong (or the blob is gone). stdout carries
+// the master password only on success.
+function pinUnlockCommand() {
+  var script = "set -o pipefail; secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
+    + " account " + shellQuote(KEYRING_PIN)
+    + " | openssl enc -d -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
+    + " -pass env:" + PIN_ENV + " -base64 -A"
+  return ["bash", "-c", script]
+}
+
+function keyringClearPinCommand() {
+  return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", KEYRING_PIN]
+}
+
+function keyringHasPinCommand() {
+  var script = "if secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
+    + " account " + shellQuote(KEYRING_PIN) + " >/dev/null 2>&1; then echo yes; else echo no; fi"
   return ["bash", "-c", script]
 }
 
@@ -1293,26 +1357,56 @@ function fingerprintSetupCommand() {
 // file directly, so Omarchy owns the parsing, merging and formatting, and the
 // shell picks the change up on its usual hot reload.
 
+var SETTINGS_GROUPS = [
+  { id: "security", label: "Security" },
+  { id: "behavior", label: "Behavior" },
+  { id: "suggestions", label: "Suggestions" }
+]
+
 var SETTINGS_SCHEMA = [
-  { key: "autoLockMinutes", type: "int", label: "Auto-lock after", unit: "minutes",
+  { key: "autoLockMinutes", group: "security", type: "int", label: "Auto-lock after", unit: "minutes",
     min: 0, max: 1440, step: 5, zeroLabel: "Never",
     description: "Lock the vault after this long without activity." },
-  { key: "clearClipboardSec", type: "int", label: "Clear clipboard after", unit: "seconds",
+  { key: "clearClipboardSec", group: "security", type: "int", label: "Clear clipboard after", unit: "seconds",
     min: 0, max: 300, step: 5, zeroLabel: "Never",
     description: "Wipe a copied password or code from the clipboard." },
-  { key: "autoCopyTotpSec", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
+  { key: "rememberSession", group: "security", type: "bool", label: "Remember session in keyring",
+    description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
+  { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint",
+    requires: "fprintd",
+    description: "Store the master password in the OS keyring, gated behind a fingerprint." },
+  { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN",
+    action: "pin",
+    description: "Encrypt the master password with a key derived from a PIN. Minimum 4 digits; longer is stronger." },
+
+  { key: "closeOnCopy", group: "behavior", type: "bool", label: "Close panel on copy",
+    description: "Return focus to your app as soon as Enter copies a credential." },
+  { key: "autoCopyTotpSec", group: "behavior", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
     min: 0, max: 30, step: 1, zeroLabel: "Off",
     description: "Replace the clipboard with the 2FA code this long after the password." },
-  { key: "closeOnCopy", type: "bool", label: "Close panel on copy",
-    description: "Return focus to your app as soon as Enter copies a credential." },
-  { key: "suggestOnOpen", type: "bool", label: "Suggest for active window",
-    description: "Match the focused window or browser tab against your vault." },
-  { key: "rememberSession", type: "bool", label: "Remember session in keyring",
-    description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
-  { key: "fingerprintUnlock", type: "bool", label: "Unlock with fingerprint",
-    requires: "fprintd",
-    description: "Store the master password in the OS keyring, gated behind a fingerprint." }
+
+  { key: "suggestOnOpen", group: "suggestions", type: "bool", label: "Suggest for active window",
+    description: "Match the focused window or browser tab against your vault." }
 ]
+
+// Schema entries in group order, each tagged with whether it opens a new
+// section, so the settings screen can draw one header per group.
+function groupedSettings() {
+  var out = []
+  for (var g = 0; g < SETTINGS_GROUPS.length; g++) {
+    var group = SETTINGS_GROUPS[g]
+    var first = true
+    for (var i = 0; i < SETTINGS_SCHEMA.length; i++) {
+      if (SETTINGS_SCHEMA[i].group !== group.id) continue
+      var entry = {}
+      for (var k in SETTINGS_SCHEMA[i]) entry[k] = SETTINGS_SCHEMA[i][k]
+      entry.groupLabel = first ? group.label : ""
+      out.push(entry)
+      first = false
+    }
+  }
+  return out
+}
 
 function settingWriteCommand(key, value, type) {
   var raw

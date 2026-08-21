@@ -20,6 +20,12 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.installPackagesCommand = installPackagesCommand
   exports.SETTINGS_SCHEMA = SETTINGS_SCHEMA
   exports.DEPENDENCIES = DEPENDENCIES
+  exports.groupedSettings = groupedSettings
+  exports.SETTINGS_GROUPS = SETTINGS_GROUPS
+  exports.validatePin = validatePin
+  exports.pinMinLength = pinMinLength
+  exports.pinStoreCommand = pinStoreCommand
+  exports.pinUnlockCommand = pinUnlockCommand
 `)(Model)
 
 let pass = 0
@@ -102,6 +108,62 @@ check("install runs in a terminal and quotes each package",
 check("dependency probe is one shell invocation",
   Model.dependencyCheckCommand()[0] === "bash" && Model.dependencyCheckCommand().length === 3,
   JSON.stringify(Model.dependencyCheckCommand().slice(0, 2)))
+
+
+// --- settings grouping ------------------------------------------------------
+const grouped = Model.groupedSettings()
+check("grouping keeps every setting",
+  grouped.length === Model.SETTINGS_SCHEMA.length,
+  `${grouped.length} vs ${Model.SETTINGS_SCHEMA.length}`)
+check("exactly one header per group",
+  grouped.filter(e => e.groupLabel !== "").length === Model.SETTINGS_GROUPS.length,
+  `got ${grouped.filter(e => e.groupLabel !== "").length} headers`)
+check("entries are contiguous within a group",
+  JSON.stringify(grouped.map(e => e.group)) ===
+    JSON.stringify(grouped.map(e => e.group).slice().sort(
+      (a, b) => Model.SETTINGS_GROUPS.findIndex(g => g.id === a) - Model.SETTINGS_GROUPS.findIndex(g => g.id === b))),
+  grouped.map(e => e.group).join(","))
+check("grouping does not mutate the schema",
+  Model.SETTINGS_SCHEMA.every(e => e.groupLabel === undefined), "schema was mutated")
+
+// --- PIN validation ---------------------------------------------------------
+check("minimum PIN length is 4", Model.pinMinLength() === 4, String(Model.pinMinLength()))
+for (const [pin, confirm, wantErr] of [
+  ["123",    "123",    true],   // too short
+  ["1234",   "1234",   false],  // the minimum is accepted
+  ["12345678901234", "12345678901234", false], // longer is allowed, no upper bound
+  ["12a4",   "12a4",   true],   // non-digits refused
+  ["",       "",       true],
+  ["1234",   "4321",   true],   // mismatch
+]) {
+  const err = Model.validatePin(pin, confirm)
+  check(`validatePin(${JSON.stringify(pin)}, ${JSON.stringify(confirm)})`,
+    (err !== "") === wantErr, `err=${JSON.stringify(err)}`)
+}
+check("confirm is optional when omitted", Model.validatePin("1234") === "", Model.validatePin("1234"))
+
+// --- PIN crypto command shape ----------------------------------------------
+// The whole point of PIN unlock over fingerprint unlock is that the keyring
+// holds ciphertext, not the master password. Guard that property.
+const store = Model.pinStoreCommand()[2]
+check("store derives a key from the PIN rather than saving it",
+  store.includes("openssl enc") && store.includes("-pbkdf2") && store.includes("env:QSBW_PIN"), store)
+check("store uses a high iteration count",
+  /-iter\s+(\d+)/.test(store) && Number(store.match(/-iter\s+(\d+)/)[1]) >= 600000, store)
+check("store salts the ciphertext", store.includes("-salt"), store)
+check("store pipes straight into the keyring, never through argv",
+  store.includes("secret-tool store") && !store.includes("$QSBW_SECRET\" secret-tool"), store)
+check("neither PIN nor secret appears as a literal argument",
+  !store.includes("--pass ") && store.includes("-pass env:"), store)
+
+const unlock = Model.pinUnlockCommand()[2]
+check("unlock decrypts with the PIN-derived key",
+  unlock.includes("openssl enc -d") && unlock.includes("env:QSBW_PIN"), unlock)
+check("unlock fails loudly when the lookup fails (pipefail)",
+  unlock.includes("set -o pipefail"), unlock)
+check("unlock iteration count matches store",
+  unlock.match(/-iter\s+(\d+)/)[1] === store.match(/-iter\s+(\d+)/)[1],
+  `${unlock.match(/-iter\s+(\d+)/)[1]} vs ${store.match(/-iter\s+(\d+)/)[1]}`)
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
