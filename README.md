@@ -71,10 +71,11 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
   - Assign a folder when creating or editing an item, including clearing an existing assignment, and create a new folder inline from the item form without leaving it.
 
 - **Unified Bottom Filter Bar**:
-  - Three identical buttons -- **Folders**, **Vaults**, **Types** -- each showing its current selection, so the active filters are readable at a glance without opening anything.
+  - Three identical buttons centred at the bottom -- **Folders**, **Organizations**, **Types** -- each showing its current selection, so the active filters are readable at a glance without opening anything.
   - Clicking one expands a vertical list in place. Only one opens at a time, and the item list gives back exactly the height the open list takes, so the panel does not jump.
   - Lists show up to five rows and scroll beyond that; shorter lists size to their content.
-  - Keyboard: <kbd>f</kbd> for folders, <kbd>v</kbd> for vaults, <kbd>Tab</kbd> still cycles types.
+  - Selecting an item collapses whichever list is open, so it never sits over the results.
+  - Keyboard: <kbd>f</kbd> for folders, <kbd>v</kbd> for organizations, <kbd>Tab</kbd> still cycles types.
 
 - **Multi-Organization & Vault Filtering**:
   - Automatically queries and displays organizations you belong to.

@@ -66,7 +66,7 @@ Panel {
   property string selectedOrg: "all" // "all" | "personal" | orgId
   property var folders: []
   property string selectedFolder: "all" // "all" | "none" | folderId
-  // Which bottom filter group is open: "" | "folders" | "vaults" | "types".
+  // Which bottom filter group is open: "" | "folders" | "organizations" | "types".
   // Only one at a time, so the panel grows by one list at most.
   property string openFilterGroup: ""
   property string formFolderId: ""
@@ -173,10 +173,10 @@ Panel {
   readonly property var categories: [
     { id: "all", label: "All", icon: "󰞀" },
     { id: "login", label: "Logins", icon: "󰌋" },
-    { id: "secureNote", label: "Notes", icon: "󰈐" },
-    { id: "card", label: "Cards", icon: "󰅝" },
+    { id: "secureNote", label: "Notes", icon: "󰈙" },
+    { id: "card", label: "Cards", icon: "󰿯" },
     { id: "identity", label: "Identities", icon: "" },
-    { id: "favorite", label: "★ Favorites", icon: "󰓎" }
+    { id: "favorite", label: "Favorites", icon: "󰓒" }
   ]
 
   // -------------------------------------------------------------------------
@@ -1022,7 +1022,7 @@ Panel {
     return Model.folderName(folders, selectedFolder) || "Folder"
   }
 
-  function vaultFilterLabel() {
+  function organizationFilterLabel() {
     if (selectedOrg === "all") return "All"
     if (selectedOrg === "personal") return "Personal"
     for (var i = 0; i < organizations.length; i++) {
@@ -1049,8 +1049,8 @@ Panel {
       for (i = 0; i < folders.length; i++) {
         out.push({ id: folders[i].id, label: folders[i].name, icon: "󰉋", active: selectedFolder === folders[i].id })
       }
-    } else if (group === "vaults") {
-      out.push({ id: "all", label: "All Vaults", icon: "󰞀", active: selectedOrg === "all" })
+    } else if (group === "organizations") {
+      out.push({ id: "all", label: "All Organizations", icon: "󰦑", active: selectedOrg === "all" })
       out.push({ id: "personal", label: "My Vault", icon: "", active: selectedOrg === "personal" })
       for (i = 0; i < organizations.length; i++) {
         out.push({ id: organizations[i].id, label: organizations[i].name, icon: "󰓹", active: selectedOrg === organizations[i].id })
@@ -1065,7 +1065,7 @@ Panel {
 
   function applyFilterOption(group, id) {
     if (group === "folders") selectFolder(id)
-    else if (group === "vaults") { selectOrganization(id); openFilterGroup = "" }
+    else if (group === "organizations") { selectOrganization(id); openFilterGroup = "" }
     else if (group === "types") { selectCategory(id); openFilterGroup = "" }
   }
 
@@ -1317,6 +1317,9 @@ Panel {
 
   function moveCursor(delta) {
     if (filteredItems.length === 0) return
+    // Moving to an item means the user is done filtering; get the list out of
+    // the way rather than leaving it covering the results.
+    openFilterGroup = ""
     selectedIndex = Math.max(0, Math.min(filteredItems.length - 1, selectedIndex + delta))
     if (itemsListView) {
       itemsListView.positionViewAtIndex(selectedIndex, ListView.Contain)
@@ -1347,6 +1350,7 @@ Panel {
 
   // Smart sequential Enter handler: Copies Password, then arms and auto-copies TOTP
   function handleSmartEnter(item) {
+    openFilterGroup = ""
     if (!item) return
 
     // If already in active TOTP follow-up mode for this item, copy TOTP now!
@@ -2052,7 +2056,7 @@ Panel {
           } else if (lower === "f") {
             root.toggleFilterGroup("folders")
           } else if (lower === "v") {
-            root.toggleFilterGroup("vaults")
+            root.toggleFilterGroup("organizations")
           } else if (lower === "g") {
             root.openGenerator()
           } else if (lower === ",") {
@@ -3896,6 +3900,7 @@ Panel {
                   cursorShape: Qt.PointingHandCursor
                   onClicked: {
                     root.cursorActive = true
+                    root.openFilterGroup = ""
                     root.selectedIndex = index
                     root.openDetail(itemData)
                   }
@@ -4027,27 +4032,25 @@ Panel {
           // The three collapsed buttons. Identical shape, so none reads as a
           // different kind of control from the others.
           Row {
-            width: parent.width
+            anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
 
             Repeater {
               model: [
                 { group: "folders", icon: "󰉋", name: "Folders", value: root.folderFilterLabel() },
-                { group: "vaults",  icon: "󰞀", name: "Vaults",  value: root.vaultFilterLabel() },
+                { group: "organizations", icon: "󰦑", name: "Organizations", value: root.organizationFilterLabel() },
                 { group: "types",   icon: "󰀻", name: "Types",   value: root.typeFilterLabel() }
               ]
 
               delegate: Button {
                 required property var modelData
-                width: (parent.width - Style.space(12)) / 3
                 text: modelData.name + ": " + modelData.value
                 iconText: root.openFilterGroup === modelData.group ? "󰅀" : modelData.icon
                 selected: root.openFilterGroup === modelData.group
                 accent: Color.accent
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
-                horizontalPadding: Style.space(6)
-                leftAlign: true
+                horizontalPadding: Style.space(10)
                 tooltipText: modelData.name + " filter"
                 onClicked: root.toggleFilterGroup(modelData.group)
               }
