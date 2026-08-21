@@ -2670,7 +2670,7 @@ Panel {
           meta: {
             if (root.status === "unlocked") {
               var count = root.filteredItems.length
-              return root.userEmail ? (root.userEmail + " • " + count + " items") : (count + " items")
+              return root.userEmail
             }
             if (root.status === "locked") return "Vault Locked"
             if (root.status === "checking") return "Checking status..."
