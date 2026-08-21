@@ -1617,7 +1617,7 @@ Panel {
             // Lock Vault Button
             PanelActionButton {
               visible: root.status === "unlocked"
-              iconText: "󰒃"
+              iconText: "󰌾"
               tooltipText: "Lock vault (l)"
               fontFamily: root.fontFamily
               onClicked: root.lockVault()
@@ -2530,54 +2530,6 @@ Panel {
             }
           }
 
-          // Keyboard Shortcuts Footer
-          Flow {
-            width: parent.width
-            spacing: Style.space(8)
-
-            Repeater {
-              model: [
-                { key: "↵", desc: "Copy" },
-                { key: "↑↓", desc: "Move" },
-                { key: "n", desc: "New" },
-                { key: "e", desc: "Edit" },
-                { key: "u", desc: "User" },
-                { key: "t", desc: "TOTP" },
-                { key: "l", desc: "Lock" },
-                { key: "/", desc: "Search" }
-              ]
-
-              delegate: Row {
-                spacing: Style.space(3)
-
-                BorderSurface {
-                  implicitHeight: Style.space(16)
-                  implicitWidth: Math.max(Style.space(16), keyHintText.implicitWidth + Style.space(6))
-                  radius: Style.space(3)
-                  color: Style.selectedFillFor(root.fg, Color.accent)
-                  borderSpec: Border.surfaceSpec("menu", "border", Color.accent, 1)
-
-                  Text {
-                    id: keyHintText
-                    anchors.centerIn: parent
-                    text: modelData.key
-                    color: Color.accent
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                  }
-                }
-
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: modelData.desc
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-              }
-            }
-          }
         }
 
         // -------------------------------------------------------------------
@@ -3001,53 +2953,6 @@ Panel {
             }
           }
 
-          // Keyboard Shortcuts Footer
-          Flow {
-            width: parent.width
-            spacing: Style.space(8)
-
-            Repeater {
-              model: [
-                { key: "↵ / y", desc: "Pass" },
-                { key: "u", desc: "User" },
-                { key: "t", desc: "TOTP" },
-                { key: "v", desc: "Show/Hide" },
-                { key: "e", desc: "Edit" },
-                { key: "x", desc: "Delete" },
-                { key: "Esc", desc: "Back" }
-              ]
-
-              delegate: Row {
-                spacing: Style.space(3)
-
-                BorderSurface {
-                  implicitHeight: Style.space(16)
-                  implicitWidth: Math.max(Style.space(16), keyDetailHintText.implicitWidth + Style.space(6))
-                  radius: Style.space(3)
-                  color: Style.selectedFillFor(root.fg, Color.accent)
-                  borderSpec: Border.surfaceSpec("menu", "border", Color.accent, 1)
-
-                  Text {
-                    id: keyDetailHintText
-                    anchors.centerIn: parent
-                    text: modelData.key
-                    color: Color.accent
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                  }
-                }
-
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: modelData.desc
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-              }
-            }
-          }
         }
 
         // -------------------------------------------------------------------
