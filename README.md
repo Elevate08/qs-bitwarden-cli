@@ -65,6 +65,13 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
   - Shared items display a prominent `󰓹 Org` tag in the list and detail views.
   - Choose destination vault (Personal vs. Organization) when creating or editing items.
 
+- **Setup Wizard & In-Panel Settings**:
+  - Checks every external tool the plugin shells out to (`bw`, `wl-copy`, `hyprctl`, `secret-tool`, `fprintd`) in a single probe, marking each required or optional and saying what it is for.
+  - A missing **required** tool opens the wizard automatically; **Install** runs `omarchy pkg add <pkg>` in a terminal so you can see it happen and answer the password prompt. `fprintd` present without an enrolled finger offers **Enroll** (`omarchy setup security fingerprint`).
+  - Press <kbd>,</kbd> or the `󰒓` button for settings: auto-lock timeout, clipboard clear delay, TOTP auto-copy delay, and every toggle. A setting whose dependency is missing is shown but inert, with the reason given.
+  - Changes are written to the plugin's entry in `~/.config/omarchy/shell.json` through `omarchy bar set`, so Omarchy owns the file and the shell hot-reloads the change. Nothing is stored in a second place.
+  - Reachable from a keybind too: `omarchy-shell shell call qs-bitwarden-cli settings '{}'` (or `setup`).
+
 - **Hardware-Accelerated Performance & Security**:
   - Virtualized `ListView` with component delegate recycling for instant rendering of large vaults.
   - Asynchronous search debouncing (50ms) for responsive 0ms typing latency.
@@ -243,10 +250,11 @@ The stored password is removed when you turn the setting off, press **Forget Fin
 
 ## Tests
 
-The context-matching heuristics have a regression suite covering real browser, terminal and desktop-app window titles (no dependencies beyond Node):
+Regression suites, no dependencies beyond Node:
 
 ```bash
-node tests/context-match.test.js
+node tests/context-match.test.js    # window-title matching and learned suggestions
+node tests/setup-settings.test.js   # dependency probe and settings writer
 ```
 
 ---

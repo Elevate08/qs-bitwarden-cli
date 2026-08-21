@@ -1180,3 +1180,143 @@ function learnedMatchIds(assoc, ctx) {
   out.sort(function(a, b) { return b.rank - a.rank })
   return out
 }
+
+// -------------------------------------------------------------------------
+// Dependency Checks (Setup Wizard)
+// -------------------------------------------------------------------------
+//
+// Everything the plugin shells out to, checked in one process rather than one
+// per tool. Each entry reports present/absent plus the package that provides
+// it, so the wizard can offer an exact install command instead of advice.
+
+var DEPENDENCIES = [
+  {
+    key: "bw", label: "Bitwarden CLI", binary: "bw", pkg: "bitwarden-cli", aur: false,
+    required: true,
+    purpose: "Reads and writes your vault. Nothing works without it."
+  },
+  {
+    key: "wlcopy", label: "wl-clipboard", binary: "wl-copy", pkg: "wl-clipboard", aur: false,
+    required: true,
+    purpose: "Copies passwords and TOTP codes to the Wayland clipboard."
+  },
+  {
+    key: "hyprctl", label: "Hyprland", binary: "hyprctl", pkg: "hyprland", aur: false,
+    required: false,
+    purpose: "Identifies the active window so the right login can be suggested."
+  },
+  {
+    key: "secrettool", label: "libsecret", binary: "secret-tool", pkg: "libsecret", aur: false,
+    required: false,
+    purpose: "Stores the session in the OS keyring, and the master password when fingerprint unlock is on."
+  },
+  {
+    key: "fprintd", label: "fprintd", binary: "fprintd-list", pkg: "fprintd", aur: false,
+    required: false,
+    purpose: "Fingerprint unlock. Also needs an enrolled finger via 'omarchy setup security fingerprint'."
+  }
+]
+
+// One shell round trip: `key=1` or `key=0` per line, plus the fingerprint
+// enrolment state, which needs more than a binary being on PATH.
+function dependencyCheckCommand() {
+  var parts = []
+  for (var i = 0; i < DEPENDENCIES.length; i++) {
+    var d = DEPENDENCIES[i]
+    parts.push("if command -v " + shellQuote(d.binary) + " >/dev/null 2>&1; then echo "
+      + shellQuote(d.key + "=1") + "; else echo " + shellQuote(d.key + "=0") + "; fi")
+  }
+  parts.push("if [ -f /etc/pam.d/omarchy-lock-fingerprint ] && command -v fprintd-list >/dev/null 2>&1 "
+    + "&& fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo fingerprint_ready=1; else echo fingerprint_ready=0; fi")
+  parts.push("if command -v omarchy >/dev/null 2>&1; then echo omarchy=1; else echo omarchy=0; fi")
+  return ["bash", "-c", parts.join("; ")]
+}
+
+function parseDependencies(raw) {
+  var found = {}
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var kv = lines[i].trim().split("=")
+    if (kv.length === 2) found[kv[0]] = kv[1] === "1"
+  }
+
+  var out = []
+  for (var d = 0; d < DEPENDENCIES.length; d++) {
+    var dep = DEPENDENCIES[d]
+    out.push({
+      key: dep.key,
+      label: dep.label,
+      binary: dep.binary,
+      pkg: dep.pkg,
+      required: dep.required,
+      purpose: dep.purpose,
+      installed: Boolean(found[dep.key]),
+      // fprintd on PATH is not the same as a usable reader with an enrolled finger.
+      ready: dep.key === "fprintd" ? Boolean(found["fingerprint_ready"]) : Boolean(found[dep.key])
+    })
+  }
+  return { items: out, hasOmarchy: Boolean(found["omarchy"]) }
+}
+
+function missingRequired(deps) {
+  var missing = []
+  if (!deps || !deps.items) return missing
+  for (var i = 0; i < deps.items.length; i++) {
+    if (deps.items[i].required && !deps.items[i].installed) missing.push(deps.items[i])
+  }
+  return missing
+}
+
+// Installs run in a terminal: they need a password prompt and the user should
+// see what is being installed rather than have it happen silently.
+function installPackagesCommand(pkgs) {
+  if (!pkgs || pkgs.length === 0) return null
+  var list = []
+  for (var i = 0; i < pkgs.length; i++) list.push(shellQuote(pkgs[i]))
+  var inner = "omarchy pkg add " + list.join(" ")
+    + "; echo; read -p 'Done. Press enter to close...'"
+  return ["bash", "-c", "omarchy launch terminal -e bash -c " + shellQuote(inner)]
+}
+
+function fingerprintSetupCommand() {
+  var inner = "omarchy setup security fingerprint; echo; read -p 'Done. Press enter to close...'"
+  return ["bash", "-c", "omarchy launch terminal -e bash -c " + shellQuote(inner)]
+}
+
+// -------------------------------------------------------------------------
+// Settings Persistence
+// -------------------------------------------------------------------------
+//
+// Settings belong in the widget's own entry in ~/.config/omarchy/shell.json --
+// that is where Panel.setting() reads them and where Omarchy's own tooling
+// expects them. Writing goes through `omarchy bar set` rather than editing the
+// file directly, so Omarchy owns the parsing, merging and formatting, and the
+// shell picks the change up on its usual hot reload.
+
+var SETTINGS_SCHEMA = [
+  { key: "autoLockMinutes", type: "int", label: "Auto-lock after", unit: "minutes",
+    min: 0, max: 1440, step: 5, zeroLabel: "Never",
+    description: "Lock the vault after this long without activity." },
+  { key: "clearClipboardSec", type: "int", label: "Clear clipboard after", unit: "seconds",
+    min: 0, max: 300, step: 5, zeroLabel: "Never",
+    description: "Wipe a copied password or code from the clipboard." },
+  { key: "autoCopyTotpSec", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
+    min: 0, max: 30, step: 1, zeroLabel: "Off",
+    description: "Replace the clipboard with the 2FA code this long after the password." },
+  { key: "closeOnCopy", type: "bool", label: "Close panel on copy",
+    description: "Return focus to your app as soon as Enter copies a credential." },
+  { key: "suggestOnOpen", type: "bool", label: "Suggest for active window",
+    description: "Match the focused window or browser tab against your vault." },
+  { key: "rememberSession", type: "bool", label: "Remember session in keyring",
+    description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
+  { key: "fingerprintUnlock", type: "bool", label: "Unlock with fingerprint",
+    requires: "fprintd",
+    description: "Store the master password in the OS keyring, gated behind a fingerprint." }
+]
+
+function settingWriteCommand(key, value, type) {
+  var raw
+  if (type === "bool") raw = value ? "true" : "false"
+  else raw = String(Number(value) || 0)
+  return ["omarchy", "bar", "set", "qs-bitwarden-cli", String(key), raw, "--json"]
+}

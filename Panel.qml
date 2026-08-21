@@ -44,8 +44,15 @@ Panel {
   property bool show2faField: false
   property bool showServerField: false
 
-  // Screens: "main" | "detail" | "edit" | "locked" | "login"
+  // Screens: "main" | "detail" | "edit" | "locked" | "login" | "settings" | "setup"
   property string currentScreen: "main"
+  property string screenBeforeSettings: "main"
+
+  // Dependency / setup state
+  property var dependencies: ({ items: [], hasOmarchy: true })
+  property bool depsChecked: false
+  property bool setupDismissed: false
+  property string settingsFlash: ""
 
   // Vault data
   property var items: []
@@ -462,17 +469,99 @@ Panel {
     return env
   }
 
-  function refreshFingerprintAvailability() {
-    if (!fingerprintCheckProc.running) fingerprintCheckProc.running = true
+  // -------------------------------------------------------------------------
+  // Setup Wizard & Settings
+  // -------------------------------------------------------------------------
+
+  function checkDependencies() {
+    if (!depsCheckProc.running) depsCheckProc.running = true
   }
 
-  function onFingerprintAvailabilityChecked(raw) {
-    fingerprintAvailable = String(raw || "").trim() === "yes"
+  function onDependenciesChecked(raw) {
+    dependencies = Model.parseDependencies(raw)
+    depsChecked = true
+
+    // Fingerprint availability comes from the same probe, so keep them in step.
+    for (var i = 0; i < dependencies.items.length; i++) {
+      if (dependencies.items[i].key === "fprintd") fingerprintAvailable = dependencies.items[i].ready
+    }
     if (fingerprintAvailable && fingerprintUnlock) {
       if (!keyringHasMasterProc.running) keyringHasMasterProc.running = true
     } else {
       fingerprintStored = false
     }
+
+    // A missing required tool is not something to discover mid-task.
+    if (!setupDismissed && Model.missingRequired(dependencies).length > 0) {
+      currentScreen = "setup"
+    }
+  }
+
+  readonly property var missingRequired: Model.missingRequired(dependencies)
+
+  function installMissing() {
+    var pkgs = []
+    for (var i = 0; i < dependencies.items.length; i++) {
+      if (!dependencies.items[i].installed) pkgs.push(dependencies.items[i].pkg)
+    }
+    var cmd = Model.installPackagesCommand(pkgs)
+    if (!cmd) return
+    Quickshell.execDetached(cmd)
+    flashNotification("Installing in a terminal, then re-check")
+  }
+
+  function installOne(dep) {
+    if (!dep) return
+    var cmd = Model.installPackagesCommand([dep.pkg])
+    if (!cmd) return
+    Quickshell.execDetached(cmd)
+    flashNotification("Installing " + dep.pkg + " in a terminal")
+  }
+
+  function runFingerprintSetup() {
+    Quickshell.execDetached(Model.fingerprintSetupCommand())
+    flashNotification("Fingerprint setup opened in a terminal")
+  }
+
+  function openSettings() {
+    if (currentScreen !== "settings") screenBeforeSettings = currentScreen
+    settingsFlash = ""
+    checkDependencies()
+    currentScreen = "settings"
+  }
+
+  function closeSettings() {
+    currentScreen = (screenBeforeSettings === "settings" ? "main" : screenBeforeSettings)
+  }
+
+  // Persisted via `omarchy bar set`, which owns shell.json. The shell reloads
+  // on write, so setting() reflects the new value without us caching it.
+  function writeSetting(key, value, type) {
+    settingWriteProc.command = Model.settingWriteCommand(key, value, type)
+    settingWriteProc.running = true
+    settingsFlash = "Saved"
+    settingsFlashTimer.restart()
+  }
+
+  // Read back through the same properties the plugin actually runs on, so the
+  // settings screen can never show a different value than the one in effect.
+  // (setting() alone would miss the manifest defaults for unset keys.)
+  function settingValue(entry) {
+    if (!entry) return 0
+    switch (entry.key) {
+      case "autoLockMinutes": return autoLockMinutes
+      case "clearClipboardSec": return clearClipboardSec
+      case "autoCopyTotpSec": return autoCopyTotpSec
+      case "closeOnCopy": return closeOnCopy
+      case "suggestOnOpen": return suggestOnOpen
+      case "rememberSession": return rememberSession
+      case "fingerprintUnlock": return fingerprintUnlock
+    }
+    return entry.type === "bool" ? Boolean(setting(entry.key, false)) : Number(setting(entry.key, 0))
+  }
+
+  function refreshFingerprintAvailability() {
+    checkDependencies()
   }
 
   function onFingerprintStoredChecked(raw) {
@@ -1161,12 +1250,32 @@ Panel {
   // ---- Fingerprint unlock ----
 
   Process {
-    id: fingerprintCheckProc
-    command: Model.fingerprintAvailableCommand()
+    id: depsCheckProc
+    command: Model.dependencyCheckCommand()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onFingerprintAvailabilityChecked(text)
+      onStreamFinished: root.onDependenciesChecked(text)
     }
+  }
+
+  Process {
+    id: settingWriteProc
+    stderr: StdioCollector {
+      id: settingWriteStderr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.settingsFlash = ""
+        root.errorMessage = (settingWriteStderr.text || "").trim() || "Could not save setting to shell.json"
+      }
+    }
+  }
+
+  Timer {
+    id: settingsFlashTimer
+    interval: 1600
+    onTriggered: root.settingsFlash = ""
   }
 
   Process {
@@ -1399,6 +1508,14 @@ Panel {
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
     function lock(): string { root.lockVault(); return "locked" }
+    function settings(): string { root.open(); root.openSettings(); return "settings" }
+    function setup(): string {
+      root.open()
+      root.setupDismissed = false
+      root.checkDependencies()
+      root.currentScreen = "setup"
+      return "setup"
+    }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
   }
@@ -1508,7 +1625,13 @@ Panel {
         || (root.currentScreen === "edit")
 
       onCloseRequested: {
-        if (root.currentScreen === "detail" || root.currentScreen === "edit") {
+        if (root.currentScreen === "settings") {
+          root.closeSettings()
+        } else if (root.currentScreen === "setup") {
+          root.setupDismissed = true
+          root.currentScreen = root.status === "unlocked" ? "main"
+            : (root.status === "locked" ? "locked" : "login")
+        } else if (root.currentScreen === "detail" || root.currentScreen === "edit") {
           root.currentScreen = "main"
         } else {
           root.close()
@@ -1559,6 +1682,8 @@ Panel {
             root.lockVault()
           } else if (lower === "r") {
             root.syncVault()
+          } else if (lower === ",") {
+            root.openSettings()
           } else if (lower === "/") {
             searchField.forceActiveFocus()
           }
@@ -1631,6 +1756,15 @@ Panel {
               fontFamily: root.fontFamily
               enabled: !root.isSyncing
               onClicked: root.syncVault()
+            }
+
+            // Settings Button
+            PanelActionButton {
+              visible: root.currentScreen !== "settings" && root.currentScreen !== "setup"
+              iconText: "󰒓"
+              tooltipText: "Settings (,)"
+              fontFamily: root.fontFamily
+              onClicked: root.openSettings()
             }
 
             // Lock Vault Button
@@ -1779,10 +1913,333 @@ Panel {
         }
 
         // -------------------------------------------------------------------
+        // SCREEN 0a: SETUP WIZARD (missing dependencies)
+        // -------------------------------------------------------------------
+        Column {
+          visible: root.currentScreen === "setup"
+          width: parent.width
+          spacing: Style.space(12)
+
+          PanelSeparator { width: parent.width }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+
+            Text {
+              text: root.missingRequired.length > 0 ? "Setup required" : "All set"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              text: root.missingRequired.length > 0
+                ? "The plugin shells out to these tools. The ones marked required must be installed for it to work at all."
+                : "Every required tool is installed. Optional ones below unlock extra features."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          Repeater {
+            model: root.dependencies.items
+
+            delegate: BorderSurface {
+              required property var modelData
+              width: parent.width
+              implicitHeight: depRow.implicitHeight + Style.space(16)
+              radius: Style.cornerRadius
+              color: modelData.ready ? "transparent" : Util.alpha(root.urgent, 0.12)
+              borderSpec: Border.surfaceSpec("menu", "border",
+                modelData.ready ? Color.accent : root.urgent, 1)
+
+              Row {
+                id: depRow
+                anchors.fill: parent
+                anchors.margins: Style.space(8)
+                spacing: Style.space(10)
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: modelData.ready ? "󰄬" : (modelData.required ? "󰅖" : "󰋗")
+                  color: modelData.ready ? Color.accent : (modelData.required ? root.urgent : root.dim)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.subtitle
+                }
+
+                Column {
+                  width: parent.width - Style.space(120)
+                  spacing: Style.space(2)
+
+                  Row {
+                    spacing: Style.space(6)
+                    Text {
+                      text: modelData.label
+                      color: root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      font.bold: true
+                    }
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: modelData.required ? "required" : "optional"
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  Text {
+                    width: parent.width
+                    text: modelData.purpose
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+
+                  // fprintd on PATH still needs an enrolled finger.
+                  Text {
+                    visible: modelData.key === "fprintd" && modelData.installed && !modelData.ready
+                    width: parent.width
+                    text: "Installed, but no finger is enrolled yet."
+                    color: root.urgent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+                }
+
+                Button {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: !modelData.installed
+                  text: "Install"
+                  iconText: "󰐕"
+                  tooltipText: "omarchy pkg add " + modelData.pkg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.installOne(modelData)
+                }
+
+                Button {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: modelData.key === "fprintd" && modelData.installed && !modelData.ready
+                  text: "Enroll"
+                  iconText: "󰈷"
+                  tooltipText: "omarchy setup security fingerprint"
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.runFingerprintSetup()
+                }
+              }
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Re-check"
+              iconText: "󰑐"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.checkDependencies()
+            }
+
+            Button {
+              visible: root.missingRequired.length > 1
+              text: "Install all missing"
+              iconText: "󰐕"
+              selected: true
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.installMissing()
+            }
+
+            Button {
+              text: root.missingRequired.length > 0 ? "Continue anyway" : "Done"
+              iconText: "󰁍"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: {
+                root.setupDismissed = true
+                root.currentScreen = root.status === "unlocked" ? "main"
+                  : (root.status === "locked" ? "locked" : "login")
+              }
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 0b: SETTINGS
+        // -------------------------------------------------------------------
+        Column {
+          visible: root.currentScreen === "settings"
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSeparator { width: parent.width }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Back (Esc)"
+              iconText: "󰁍"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.closeSettings()
+            }
+
+            Item {
+              width: parent.width - Style.space(220)
+              height: 1
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.settingsFlash !== ""
+              text: "󰄬 " + root.settingsFlash
+              color: Color.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Repeater {
+            model: Model.SETTINGS_SCHEMA
+
+            delegate: Column {
+              required property var modelData
+              width: parent.width
+              spacing: Style.space(4)
+
+              // A setting whose dependency is missing is shown but inert, with
+              // the reason stated rather than the control silently doing nothing.
+              readonly property bool blocked: {
+                if (!modelData.requires) return false
+                for (var i = 0; i < root.dependencies.items.length; i++) {
+                  if (root.dependencies.items[i].key === modelData.requires) {
+                    return !root.dependencies.items[i].ready
+                  }
+                }
+                return false
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(10)
+
+                Column {
+                  width: parent.width - Style.space(130)
+                  spacing: Style.space(2)
+
+                  Text {
+                    text: modelData.label
+                    color: blocked ? root.dim : root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  Text {
+                    width: parent.width
+                    text: blocked
+                      ? "Needs fingerprint setup -- see Dependencies below."
+                      : modelData.description
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+                }
+
+                ToggleSwitch {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: modelData.type === "bool"
+                  checked: modelData.type === "bool" && root.settingValue(modelData)
+                  interactive: !blocked
+                  foreground: root.fg
+                  accent: Color.accent
+                  onToggled: if (!blocked) root.writeSetting(modelData.key, !checked, "bool")
+                }
+
+                NumberField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: modelData.type === "int"
+                  value: modelData.type === "int" ? root.settingValue(modelData) : 0
+                  from: modelData.min || 0
+                  to: modelData.max || 100
+                  stepSize: modelData.step || 1
+                  foreground: root.fg
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  onModified: function(v) { root.writeSetting(modelData.key, v, "int") }
+                }
+              }
+
+              Text {
+                visible: modelData.type === "int" && root.settingValue(modelData) === 0 && !!modelData.zeroLabel
+                text: modelData.zeroLabel + " -- this is disabled."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              PanelSeparator { width: parent.width }
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Dependencies"
+              iconText: "󰏗"
+              tooltipText: "Check the tools this plugin needs"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: {
+                root.setupDismissed = false
+                root.checkDependencies()
+                root.currentScreen = "setup"
+              }
+            }
+
+            Button {
+              visible: root.fingerprintStored
+              text: "Forget Fingerprint"
+              iconText: "󰈷"
+              tooltipText: "Remove the stored master password from the OS keyring"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.forgetFingerprintUnlock()
+            }
+          }
+
+          Text {
+            width: parent.width
+            text: "Saved to the plugin's entry in ~/.config/omarchy/shell.json via `omarchy bar set`."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        // -------------------------------------------------------------------
         // SCREEN 1: LOGIN VIEW (When unauthenticated)
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unauthenticated"
+          visible: root.status === "unauthenticated" && root.currentScreen !== "settings" && root.currentScreen !== "setup"
           width: parent.width
           spacing: Style.space(12)
 
@@ -2016,7 +2473,8 @@ Panel {
         // SCREEN 2: LOCKED VIEW (When authenticated, but vault locked)
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "locked" || root.status === "checking"
+          visible: (root.status === "locked" || root.status === "checking")
+            && root.currentScreen !== "settings" && root.currentScreen !== "setup"
           width: parent.width
           spacing: Style.space(14)
 
