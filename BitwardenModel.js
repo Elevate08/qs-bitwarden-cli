@@ -1433,7 +1433,7 @@ var SETTINGS_SCHEMA = [
   { key: "rememberSession", group: "security", type: "bool", label: "Remember session in keyring",
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint",
-    requires: "fprintd",
+    requires: "fprintd", action: "fingerprint",
     description: "Store the master password in the OS keyring, gated behind a fingerprint." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN",
     action: "pin",

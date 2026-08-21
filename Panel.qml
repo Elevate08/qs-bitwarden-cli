@@ -131,6 +131,13 @@ Panel {
   property bool fingerprintScanning: false
   property string fingerprintMessage: ""
   property string pendingUnlockPassword: ""   // held only until the unlock lands
+  // The value the keyring store process reads. Set from whichever path is
+  // storing: the explicit setup form, or the automatic refresh after unlock.
+  property string masterToStore: ""
+  property bool fpSetupActive: false
+  property string fpSetupMaster: ""
+  property string fpError: ""
+  property bool fpBusy: false
   // Which credential source drove the in-flight unlock, so a stale stored
   // secret can be discarded rather than retried forever. "" | "fingerprint" | "pin"
   property string pendingUnlockFrom: ""
@@ -758,10 +765,15 @@ Panel {
     var e = settingsEntries[settingsIndex]
     if (!e || settingBlocked(e)) return
 
-    // The PIN switch opens a form rather than flipping a value.
+    // These two open a form rather than flipping a value.
     if (e.action === "pin") {
       if (pinConfigured) disablePinUnlock()
       else beginPinSetup()
+      return
+    }
+    if (e.action === "fingerprint") {
+      if (fingerprintStored) forgetFingerprintUnlock()
+      else beginFingerprintSetup()
       return
     }
     if (e.type === "bool") writeSetting(e.key, !settingValue(e), "bool")
@@ -801,7 +813,7 @@ Panel {
       case "closeOnCopy": return closeOnCopy
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
-      case "fingerprintUnlock": return fingerprintUnlock
+      case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       // The toggle reflects a PIN actually being set, not just the flag.
       case "pinUnlock": return pinUnlock && pinConfigured
     }
@@ -863,6 +875,51 @@ Panel {
     }
     pendingUnlockFrom = "fingerprint"
     unlockVaultWithPassword(pw)
+  }
+
+  // Enrolling asks for the master password up front, the same way setting a
+  // PIN does, rather than silently capturing it on some later unlock.
+  function beginFingerprintSetup() {
+    fpSetupMaster = ""
+    fpError = ""
+    currentScreen = "fingerprint"
+    Qt.callLater(function() { fpMasterField.forceActiveFocus() })
+  }
+
+  function submitFingerprintSetup() {
+    if (!fpSetupMaster) {
+      fpError = "Master password is required to enable fingerprint unlock"
+      return
+    }
+    fpError = ""
+    fpBusy = true
+    fpSetupActive = true
+    masterToStore = fpSetupMaster
+    keyringStoreMasterProc.running = true
+  }
+
+  function onMasterPasswordStored(exitCode) {
+    masterToStore = ""
+    pendingUnlockPassword = ""
+    fingerprintStored = (exitCode === 0)
+
+    if (fpSetupActive) {
+      fpSetupActive = false
+      fpBusy = false
+      fpSetupMaster = ""
+      if (exitCode !== 0) {
+        fpError = "Could not save the master password. Is the OS keyring available?"
+        return
+      }
+      writeSetting("fingerprintUnlock", true, "bool")
+      flashNotification("Fingerprint unlock enabled")
+      currentScreen = "settings"
+      return
+    }
+
+    if (exitCode !== 0) {
+      errorMessage = "Could not save master password to the OS keyring, so fingerprint unlock is unavailable."
+    }
   }
 
   function forgetFingerprintUnlock() {
@@ -965,7 +1022,11 @@ Panel {
     }
 
     // Opting in stores the master password so a finger can stand in for it later.
-    if (fingerprintUnlock && fingerprintAvailable && pendingUnlockPassword && pendingUnlockFrom === "") {
+    // Keep an existing enrolment current after a master password change. It no
+    // longer creates one -- that is what the setup form is for.
+    if (fingerprintUnlock && fingerprintAvailable && fingerprintStored
+        && pendingUnlockPassword && pendingUnlockFrom === "") {
+      masterToStore = pendingUnlockPassword
       keyringStoreMasterProc.running = true
     } else {
       pendingUnlockPassword = ""
@@ -1776,16 +1837,8 @@ Panel {
   Process {
     id: keyringStoreMasterProc
     command: Model.keyringStoreMasterPasswordCommand()
-    environment: root.secretEnv(root.pendingUnlockPassword)
-    onExited: function(exitCode) {
-      root.pendingUnlockPassword = ""
-      root.fingerprintStored = (exitCode === 0)
-      if (exitCode === 0) {
-        root.flashNotification("Fingerprint unlock enabled")
-      } else {
-        root.errorMessage = "Could not save master password to the OS keyring, so fingerprint unlock is unavailable."
-      }
-    }
+    environment: root.secretEnv(root.masterToStore)
+    onExited: function(exitCode) { root.onMasterPasswordStored(exitCode) }
   }
 
   Process {
@@ -2098,7 +2151,8 @@ Panel {
     // catcher, so arrow navigation works on settings and the generator too.
     focusTarget: (root.status === "unlocked"
                   && root.currentScreen !== "edit"
-                  && root.currentScreen !== "pin")
+                  && root.currentScreen !== "pin"
+                  && root.currentScreen !== "fingerprint")
       ? keyCatcher
       : (root.status === "unauthenticated" ? emailField : passField)
     contentWidth: panel.fittedContentWidth(Style.space(450))
@@ -2132,6 +2186,7 @@ Panel {
         || pinField.activeFocus
         || (root.currentScreen === "edit")
         || (root.currentScreen === "pin")
+        || (root.currentScreen === "fingerprint")
 
       onCloseRequested: {
         if (root.openFilterGroup !== "") {
@@ -2140,6 +2195,9 @@ Panel {
         }
         if (root.currentScreen === "generator") {
           root.currentScreen = "main"
+        } else if (root.currentScreen === "fingerprint") {
+          root.fpError = ""
+          root.currentScreen = "settings"
         } else if (root.currentScreen === "pin") {
           root.pinError = ""
           root.currentScreen = "settings"
@@ -2433,6 +2491,113 @@ Panel {
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.Wrap
               width: parent.width - Style.space(24)
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 0e: FINGERPRINT SETUP
+        // -------------------------------------------------------------------
+        Flickable {
+          id: fpFlick
+          visible: root.currentScreen === "fingerprint"
+          width: parent.width
+          height: Math.min(Style.space(520), fpCol.implicitHeight)
+          contentWidth: width
+          contentHeight: fpCol.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Column {
+            id: fpCol
+            width: fpFlick.width
+            spacing: Style.space(12)
+
+            PanelSeparator { width: parent.width }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(4)
+
+              Text {
+                text: "Enable fingerprint unlock"
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.title
+                font.bold: true
+              }
+
+              Text {
+                width: parent.width
+                text: "A fingerprint proves you are present but cannot produce your master password, and bw unlock accepts nothing else. The password is stored in the OS login keyring, and a verified fingerprint is the gate on reading it back."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                width: parent.width
+                text: "Anyone who can read your unlocked login keyring can read the password. A PIN stores it encrypted instead."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text { text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+
+              TextField {
+                id: fpMasterField
+                width: parent.width
+                placeholderText: "Needed once, to store for fingerprint unlock..."
+                password: true
+                text: root.fpSetupMaster
+                onTextChanged: root.fpSetupMaster = text
+                onAccepted: root.submitFingerprintSetup()
+                enabled: !root.fpBusy
+              }
+
+              Text {
+                visible: root.fpError !== ""
+                width: parent.width
+                text: root.fpError
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(8)
+
+                Button {
+                  text: root.fpBusy ? "Saving..." : "Enable"
+                  iconText: root.fpBusy ? "󰑐" : "󰈷"
+                  iconSpinning: root.fpBusy
+                  selected: true
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  enabled: !root.fpBusy
+                  onClicked: root.submitFingerprintSetup()
+                }
+
+                Button {
+                  text: "Cancel"
+                  iconText: "󰅖"
+                  fontFamily: root.fontFamily
+                  enabled: !root.fpBusy
+                  onClicked: { root.fpError = ""; root.currentScreen = "settings" }
+                }
+              }
             }
           }
         }
@@ -3238,6 +3403,11 @@ Panel {
                       else root.beginPinSetup()
                       return
                     }
+                    if (modelData.action === "fingerprint") {
+                      if (checked) root.forgetFingerprintUnlock()
+                      else root.beginFingerprintSetup()
+                      return
+                    }
                     root.writeSetting(modelData.key, !checked, "bool")
                   }
                 }
@@ -3320,7 +3490,7 @@ Panel {
         // SCREEN 1: LOGIN VIEW (When unauthenticated)
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unauthenticated" && root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin"
+          visible: root.status === "unauthenticated" && root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin" && root.currentScreen !== "fingerprint"
           width: parent.width
           spacing: Style.space(12)
 
@@ -3555,7 +3725,7 @@ Panel {
         // -------------------------------------------------------------------
         Column {
           visible: (root.status === "locked" || root.status === "checking")
-            && root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin"
+            && root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin" && root.currentScreen !== "fingerprint"
           width: parent.width
           spacing: Style.space(14)
 

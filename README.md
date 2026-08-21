@@ -38,6 +38,7 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 - **Fingerprint Unlock** (opt-in, `fingerprintUnlock`):
   - Unlock the vault with an enrolled fingerprint instead of retyping your master password.
   - Verifies through the same PAM stack as the Omarchy lock screen (`/etc/pam.d/omarchy-lock-fingerprint`), so it works wherever `omarchy setup security fingerprint` has been run.
+  - Enrolling asks for your master password up front in the settings screen, rather than quietly capturing it on some later unlock.
   - The reader is armed automatically whenever you open the panel on a locked vault; the master password field always stays available as a fallback.
   - See [Fingerprint Unlock](#fingerprint-unlock) below for the security trade-off before enabling it.
 
@@ -298,8 +299,9 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 
 **How it works**
 
-1. Enable the setting, then unlock the vault once with your master password. That unlock stores the password in the login keyring under `service=qs-bitwarden-cli, account=master_password`.
+1. Switch **Unlock with fingerprint** on in the settings screen. It asks for your master password once -- the same way setting a PIN does -- and stores it in the login keyring under `service=qs-bitwarden-cli, account=master_password`.
 2. On every later lock, opening the panel arms the reader. A verified fingerprint releases the stored password to `bw unlock`; the password field remains available as a fallback at all times.
+3. Unlocking with your master password afterwards refreshes the stored copy, so changing your master password does not silently strand the enrolment.
 
 **Security trade-off -- read before enabling**
 
