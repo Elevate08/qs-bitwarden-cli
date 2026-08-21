@@ -128,6 +128,7 @@ Panel {
   Component.onCompleted: {
     root.refreshStatus()
     root.refreshFingerprintAvailability()
+    root.loadAssociations()
   }
 
   readonly property var categories: [
@@ -186,6 +187,42 @@ Panel {
     activeWindowProc.running = true
   }
 
+  function loadAssociations() {
+    if (!associationsReadProc.running) associationsReadProc.running = true
+  }
+
+  function onAssociationsLoaded(raw) {
+    associations = Model.parseAssociations(raw)
+    if (activeWindowData) handleActiveWindowDetected(activeWindowData)
+  }
+
+  function saveAssociations(next) {
+    associations = next
+    pendingAssociationsJson = Model.serializeAssociations(next)
+    associationsWriteProc.running = true
+  }
+
+  // Called whenever the user acts on an item while a window context is active.
+  // Silent by design: teaching happens as a side effect of normal use.
+  function learnFromPick(item) {
+    if (!suggestOnOpen || !item || !item.id || !detectedContext) return
+    if (Model.isAssociated(associations, detectedContext, item.id)) return
+    saveAssociations(Model.recordAssociation(associations, detectedContext, item.id, new Date().toISOString()))
+  }
+
+  // Explicit pin/unpin from the detail view.
+  function toggleAssociation(item) {
+    if (!item || !item.id || !detectedContext) return
+    if (Model.isAssociated(associations, detectedContext, item.id)) {
+      saveAssociations(Model.forgetAssociation(associations, detectedContext, item.id))
+      flashNotification("No longer suggested for " + detectedContext.displayName)
+    } else {
+      saveAssociations(Model.recordAssociation(associations, detectedContext, item.id, new Date().toISOString()))
+      flashNotification("Always suggested for " + detectedContext.displayName)
+    }
+    if (activeWindowData) handleActiveWindowDetected(activeWindowData)
+  }
+
   function handleActiveWindowDetected(data) {
     activeWindowData = data
     if (!suggestOnOpen) {
@@ -197,9 +234,10 @@ Panel {
     if (items.length === 0) {
       return
     }
-    var res = Model.findContextualMatches(items, data)
+    var res = Model.findContextualMatches(items, data, associations)
     detectedContext = res.context
     suggestedItems = res.matches
+    learnedIds = res.learnedIds || ({})
     rebuildFilter()
   }
 
@@ -667,6 +705,7 @@ Panel {
 
   function openDetail(item) {
     if (!item || !item.id) return
+    learnFromPick(item)
     isLoading = true
     errorMessage = ""
     passwordRevealed = false
@@ -928,6 +967,7 @@ Panel {
 
   function copyPassword(item) {
     if (!item) return
+    learnFromPick(item)
     var pass = (detailItem && detailItem.id === item.id && detailPassword) ? detailPassword : (item.password || "")
     if (pass) {
       copyToClipboard(pass, "Password")
@@ -2373,7 +2413,7 @@ Panel {
 
                       Text {
                         visible: Boolean(itemData.isSuggested)
-                        text: "󰌠 Suggested"
+                        text: root.learnedIds[itemData.id] ? "󰐾 Suggested" : "󰌠 Suggested"
                         color: Color.accent
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
@@ -2562,6 +2602,21 @@ Panel {
             }
 
             Item { Layout.fillWidth: true }
+
+            Button {
+              visible: Boolean(root.detectedContext && root.detectedContext.displayName && root.detailItem)
+              readonly property bool pinned: Boolean(root.detailItem
+                && Model.isAssociated(root.associations, root.detectedContext, root.detailItem.id))
+              text: pinned ? "Suggested here" : "Suggest here"
+              iconText: pinned ? "󰐾" : "󰐽"
+              selected: pinned
+              accent: Color.accent
+              tooltipText: (pinned ? "Stop suggesting this for " : "Always suggest this for ")
+                + (root.detectedContext ? root.detectedContext.displayName : "")
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.toggleAssociation(root.detailItem)
+            }
 
             Button {
               text: "Edit"

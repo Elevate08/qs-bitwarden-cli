@@ -594,214 +594,589 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
 }
 
 // -------------------------------------------------------------------------
-// Context-Aware Window & Active Tab Matching (Bitwarden Standard Rules)
+// Context-Aware Window & Active Tab Matching
 // -------------------------------------------------------------------------
+//
+// Hyprland exposes only the window class and title -- browsers do not publish
+// the active tab URL over any interface we can read, so the page title is the
+// only signal available. Everything below is built to squeeze a reliable
+// domain/brand out of a title while refusing to guess when the title says
+// nothing useful.
 
-var STOP_WORDS = {
-  "home": 1, "login": 1, "signin": 1, "sign": 1, "portal": 1, "console": 1,
-  "dashboard": 1, "overview": 1, "welcome": 1, "auth": 1, "authentication": 1,
-  "page": 1, "web": 1, "app": 1, "the": 1, "and": 1, "for": 1, "with": 1, "your": 1,
-  "online": 1, "account": 1, "service": 1, "services": 1
+// Labels that carry no identity. Never matched against a page title, and
+// dropped when tokenising titles and item names.
+var GENERIC_LABELS = {
+  "www": 1, "www2": 1, "web": 1, "app": 1, "apps": 1, "mobile": 1, "my": 1,
+  "secure": 1, "login": 1, "signin": 1, "sign": 1, "logon": 1, "auth": 1,
+  "oauth": 1, "sso": 1, "idp": 1, "account": 1, "accounts": 1, "portal": 1,
+  "admin": 1, "dash": 1, "dashboard": 1, "console": 1, "home": 1, "welcome": 1,
+  "overview": 1, "page": 1, "site": 1, "online": 1, "cloud": 1, "server": 1,
+  "service": 1, "services": 1, "api": 1, "cdn": 1, "static": 1, "assets": 1,
+  "local": 1, "localhost": 1, "localdomain": 1, "internal": 1, "intranet": 1,
+  "lan": 1, "dev": 1, "test": 1, "staging": 1, "prod": 1, "the": 1, "and": 1,
+  "for": 1, "with": 1, "your": 1, "new": 1, "inbox": 1, "settings": 1
+}
+
+// Public suffixes we accept as the tail of a hostname. Deliberately a closed
+// list: it is what stops "config.json" or "v1.2" from being read as a domain.
+var TLDS = {
+  "com": 1, "org": 1, "net": 1, "edu": 1, "gov": 1, "mil": 1, "int": 1,
+  "io": 1, "co": 1, "ai": 1, "app": 1, "dev": 1, "me": 1, "tv": 1, "cc": 1,
+  "info": 1, "biz": 1, "name": 1, "pro": 1, "xyz": 1, "online": 1, "site": 1,
+  "shop": 1, "store": 1, "tech": 1, "cloud": 1, "page": 1, "blog": 1, "wiki": 1,
+  "news": 1, "media": 1, "email": 1, "chat": 1, "social": 1, "games": 1,
+  "software": 1, "systems": 1, "network": 1, "digital": 1, "finance": 1,
+  "bank": 1, "money": 1, "health": 1, "life": 1, "world": 1, "space": 1,
+  "link": 1, "click": 1, "one": 1, "run": 1, "sh": 1, "gg": 1, "fm": 1,
+  "to": 1, "ly": 1, "us": 1, "uk": 1, "ca": 1, "au": 1, "nz": 1, "de": 1,
+  "fr": 1, "es": 1, "it": 1, "nl": 1, "be": 1, "ch": 1, "at": 1, "se": 1,
+  "no": 1, "dk": 1, "fi": 1, "pl": 1, "cz": 1, "pt": 1, "ie": 1, "gr": 1,
+  "ru": 1, "ua": 1, "tr": 1, "il": 1, "in": 1, "jp": 1, "cn": 1, "kr": 1,
+  "hk": 1, "tw": 1, "sg": 1, "my": 1, "id": 1, "th": 1, "vn": 1, "ph": 1,
+  "br": 1, "mx": 1, "ar": 1, "cl": 1, "za": 1, "eu": 1,
+  // Non-public suffixes that still appear on self-hosted LAN services.
+  "local": 1, "lan": 1, "home": 1, "internal": 1, "arpa": 1, "localdomain": 1
+}
+
+// Second-level suffixes: only ever treated as part of the suffix when a third
+// label follows (bbc.co.uk -> bbc, but co.uk alone stays as-is).
+var MULTI_SLD = { "co": 1, "com": 1, "net": 1, "org": 1, "ac": 1, "gov": 1, "edu": 1, "or": 1, "ne": 1 }
+
+// Brands whose sites are commonly titled with a different word than the domain
+// that ends up on the vault item. Conservative on purpose -- each entry maps a
+// title word to the registrable name it should also count as.
+var BRAND_ALIASES = {
+  "gmail": "google", "googlemail": "google", "youtube": "google",
+  "hotmail": "microsoft", "outlook": "microsoft", "live": "microsoft",
+  "onedrive": "microsoft", "office": "microsoft", "microsoft365": "microsoft",
+  "icloud": "apple", "appleid": "apple",
+  "fb": "facebook", "messenger": "facebook", "instagram": "facebook"
+}
+
+var BROWSER_CLASS_RE = /chrome|chromium|firefox|brave|zen|vivaldi|edge|opera|epiphany|qutebrowser|librewolf|floorp|waterfox|thorium|helium/i
+var TERMINAL_CLASS_RE = /foot|alacritty|kitty|ghostty|terminal|konsole|wezterm|xterm|rxvt|tilix|st-256color/i
+var SHELL_CLASS_RE = /^(quickshell|omarchy|omarchy-shell|omarchy-menu)$/i
+
+var BROWSER_BRAND_RE = /\s*[-—–|·•]\s*(Google Chrome|Chromium|Mozilla Firefox|Firefox Developer Edition|Firefox|Brave(?:\s*Browser)?|Zen(?:\s*Browser)?|Vivaldi|Microsoft.​Edge|Microsoft Edge|Edge|Opera(?:\s*GX)?|LibreWolf|Floorp|Waterfox|Thorium|Helium|Epiphany|GNOME Web|qutebrowser)\s*$/i
+
+var TITLE_SEPARATOR_RE = /\s*[|·•—–]\s*|\s+[-]\s+|\s*::\s*/
+
+// Strip anything that is chrome rather than content: unread counters, media
+// indicators, private-window markers, and leading sign-in verbs.
+function stripTitleNoise(title) {
+  var t = String(title || "").trim()
+  t = t.replace(BROWSER_BRAND_RE, "").trim()
+  t = t.replace(/\s*[-—–|]?\s*\((?:Private Browsing|Incognito|Private)\)\s*$/i, "").trim()
+  t = t.replace(/\s*[-—–|]\s*(?:Audio playing|Muted|Playing|Paused)\s*$/i, "").trim()
+  t = t.replace(/^[\s]*[\(\[]\s*\d+\+?\s*[\)\]]\s*/, "").trim()
+  t = t.replace(/^\s*\d+\s*[-—–|·]\s*/, "").trim()
+  t = t.replace(/^(?:Sign in to|Sign into|Sign in|Sign In|Log in to|Log into|Log in|Login to|Login|Welcome to|Welcome back to|Welcome|Authenticate to|Authenticate)\b[\s:·—–|-]*/i, "").trim()
+  t = t.replace(/^[\s:·—–|-]+/, "").replace(/[\s:·—–|-]+$/, "").trim()
+  return t
+}
+
+// Collapse to bare alphanumerics so "Home Assistant" and "homeassistant" compare equal.
+function squash(str) {
+  return String(str || "").toLowerCase().replace(/[^a-z0-9]/g, "")
+}
+
+function splitSegments(title) {
+  var raw = String(title || "").split(TITLE_SEPARATOR_RE)
+  var out = []
+  for (var i = 0; i < raw.length; i++) {
+    var s = raw[i].trim()
+    if (s) out.push(s)
+  }
+  return out
 }
 
 function extractTokens(str) {
   if (!str) return []
-  var clean = String(str).toLowerCase().replace(/[-_/\\^$*+?.()|[\]{}:,;!@#%&=]/g, " ")
+  var clean = String(str).toLowerCase().replace(/[^a-z0-9]+/g, " ")
   var words = clean.split(/\s+/)
   var tokens = []
+  var seen = {}
   for (var i = 0; i < words.length; i++) {
     var w = words[i].trim()
-    if (w.length >= 3 && !STOP_WORDS[w]) {
-      tokens.push(w)
-    }
+    if (w.length < 3) continue
+    if (GENERIC_LABELS[w] || TLDS[w]) continue
+    if (/^\d+$/.test(w)) continue
+    if (seen[w]) continue
+    seen[w] = 1
+    tokens.push(w)
   }
   return tokens
+}
+
+// The registrable names a title implies purely through a brand alias, e.g. a
+// "Gmail" title implies "google". Kept separate from the literal title tokens:
+// only an alias may stand in for a domain the title never actually spelled.
+function aliasesFor(tokens) {
+  var out = []
+  var seen = {}
+  for (var i = 0; i < tokens.length; i++) {
+    var alias = BRAND_ALIASES[tokens[i]]
+    if (alias && tokens.indexOf(alias) === -1 && !seen[alias]) {
+      seen[alias] = 1
+      out.push(alias)
+    }
+  }
+  return out
+}
+
+function isIpAddress(host) {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)
+}
+
+// Split a hostname into { host, baseDomain, rootName }. rootName is the
+// registrable label -- the only part ever compared against a page title.
+function parseHost(host) {
+  var h = String(host || "").toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "")
+  if (!h) return null
+
+  if (isIpAddress(h)) {
+    return { host: h, baseDomain: h, rootName: null, isIp: true }
+  }
+
+  var parts = h.split(".")
+  if (parts.length === 1) {
+    return { host: h, baseDomain: h, rootName: parts[0], isIp: false }
+  }
+
+  var suffixCount = 1
+  if (parts.length >= 3 && MULTI_SLD[parts[parts.length - 2]]) {
+    suffixCount = 2
+  }
+  var rootIdx = parts.length - suffixCount - 1
+  if (rootIdx < 0) rootIdx = 0
+
+  return {
+    host: h,
+    baseDomain: parts.slice(rootIdx).join("."),
+    rootName: parts[rootIdx],
+    isIp: false
+  }
 }
 
 function parseDomain(urlStr) {
   if (!urlStr) return null
   var clean = String(urlStr).trim().toLowerCase()
-  var match = clean.match(/(?:https?:\/\/)?(?:[a-z0-9_.-]+@)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/i)
+  var match = clean.match(/^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^\/@\s]+@)?([a-z0-9._-]+(?::\d+)?)/i)
   if (!match) return null
-  var host = match[1]
-  var parts = host.split(".")
-  var baseDomain = parts.length >= 2 ? parts.slice(-2).join(".") : host
-  var rootName = parts.length >= 2 ? parts[parts.length - 2] : parts[0]
-  return { host: host, baseDomain: baseDomain, rootName: rootName, parts: parts }
+  return parseHost(match[1])
 }
+
+// Pull a hostname out of free text (a page title). Requires a known public
+// suffix so version numbers and filenames are not mistaken for domains.
+function detectDomainInText(text) {
+  var s = String(text || "").toLowerCase()
+  var re = /(?:https?:\/\/)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/g
+  var m
+  while ((m = re.exec(s)) !== null) {
+    var host = m[1].replace(/\.$/, "")
+    var parts = host.split(".")
+    var tld = parts[parts.length - 1]
+    if (!TLDS[tld]) continue
+    var parsed = parseHost(host)
+    if (!parsed || !parsed.rootName) continue
+    if (parsed.rootName.length < 2) continue
+    if (GENERIC_LABELS[parsed.rootName]) continue
+    return parsed
+  }
+  return null
+}
+
+function itemDomains(item) {
+  var out = []
+  if (!item || !Array.isArray(item.uris)) return out
+  for (var i = 0; i < item.uris.length; i++) {
+    var d = parseDomain(item.uris[i])
+    if (d) out.push(d)
+  }
+  return out
+}
+
+function hasWholeWord(haystack, word) {
+  if (!haystack || !word) return false
+  var escaped = String(word).replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")
+  return new RegExp("(?:^|[^a-z0-9])" + escaped + "(?:$|[^a-z0-9])", "i").test(haystack)
+}
+
+// -------------------------------------------------------------------------
 
 function getActiveWindowFromData(windowData) {
   if (!windowData) return null
+
   if (Array.isArray(windowData)) {
-    var clients = windowData.slice().sort(function(a, b) {
-      return (a.focusHistoryID || 0) - (b.focusHistoryID || 0)
+    // hyprctl clients -j: focusHistoryID 0 is the most recently focused window.
+    var clients = windowData.slice().filter(function(c) {
+      return c && c.mapped !== false && String(c.class || c.initialClass || "").trim() !== ""
+    })
+    clients.sort(function(a, b) {
+      return (a.focusHistoryID === undefined ? 999 : a.focusHistoryID) - (b.focusHistoryID === undefined ? 999 : b.focusHistoryID)
     })
     for (var i = 0; i < clients.length; i++) {
-      var c = clients[i]
-      var cls = String(c.class || c.initialClass || "").toLowerCase()
-      if (cls && cls !== "quickshell" && cls !== "omarchy-shell" && cls !== "omarchy") {
-        return c
+      if (!SHELL_CLASS_RE.test(String(clients[i].class || clients[i].initialClass || ""))) {
+        return clients[i]
       }
     }
     return clients[0] || null
   }
+
+  if (!windowData.class && !windowData.initialClass && !windowData.title) return null
+  if (SHELL_CLASS_RE.test(String(windowData.class || windowData.initialClass || ""))) return null
   return windowData
 }
 
 function cleanWindowContext(windowData) {
   var w = getActiveWindowFromData(windowData)
   if (!w) return null
-  var cls = String(w.class || w.initialClass || "").toLowerCase()
+
+  var cls = String(w.class || w.initialClass || "").toLowerCase().trim()
   var title = String(w.title || w.initialTitle || "").trim()
   if (!cls && !title) return null
 
-  var isBrowser = /chrome|chromium|firefox|brave|zen|vivaldi|edge|opera|epiphany|qutebrowser|librewolf|floorp|waterfox/i.test(cls)
-  var isTerminal = /foot|alacritty|kitty|ghostty|terminal|konsole|wezterm|xterm|rxvt/i.test(cls)
+  var isBrowser = BROWSER_CLASS_RE.test(cls)
+  var isTerminal = TERMINAL_CLASS_RE.test(cls)
 
-  var cleanTitle = title
+  var cleanTitle = ""
   var detectedDomain = null
   var displayName = ""
 
   if (isBrowser) {
-    // Strip browser branding
-    cleanTitle = cleanTitle.replace(/\s*[-—|•]\s*(Google Chrome|Chromium|Mozilla Firefox|Firefox|Brave(?:\s*Browser)?|Zen(?:\s*Browser)?|Vivaldi|Microsoft Edge|Edge|Opera|LibreWolf|Floorp|Waterfox)$/i, "").trim()
-    // Strip login and portal navigation noise
-    cleanTitle = cleanTitle.replace(/^(Sign in to|Sign in ·|Sign In -|Log in to|Log in ·|Log In -|Login to|Login ·|Login -|Welcome to|Welcome ·|Welcome -|Authenticate|Dashboard ·|Dashboard -|Overview -|Console -|Portal -|Home ·|Home -|Home \/|Home –)\s*/i, "").trim()
-
-    var domainMatch = cleanTitle.match(/(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/i)
-    if (domainMatch) {
-      detectedDomain = parseDomain(domainMatch[0])
-    }
-    displayName = cleanTitle || (detectedDomain ? detectedDomain.host : cls)
+    cleanTitle = stripTitleNoise(title)
+    detectedDomain = detectDomainInText(cleanTitle)
+    displayName = detectedDomain ? detectedDomain.baseDomain : cleanTitle
   } else if (isTerminal) {
-    // In terminal: only match remote SSH or DB connections, never local shells (e.g. "hostname: dir")
-    var sshMatch = cleanTitle.match(/ssh\s+(?:[a-zA-Z0-9_.-]+@)?([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+)/i)
+    // Only remote sessions are worth suggesting for; a local shell title
+    // ("hostname: ~/dir") describes the machine, not a credential.
+    var sshMatch = title.match(/(?:^|\s)(?:ssh|mosh|sftp)\s+(?:-\S+\s+)*(?:[a-zA-Z0-9_.-]+@)?([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+)/i)
     if (sshMatch) {
-      detectedDomain = parseDomain(sshMatch[1])
+      detectedDomain = parseHost(sshMatch[1])
       cleanTitle = sshMatch[1]
       displayName = "SSH: " + sshMatch[1]
     } else {
-      cleanTitle = ""
-      displayName = ""
+      return null
     }
   } else {
-    // Standalone desktop application (Discord, Slack, Spotify, Steam, etc.)
-    var appTitle = cleanTitle.replace(/\s*[-—|•].*$/, "").trim()
-    displayName = appTitle || cls
-    cleanTitle = appTitle
+    // Native desktop app: the leading segment is the app, the rest is document state.
+    var segs = splitSegments(stripTitleNoise(title))
+    cleanTitle = segs.length > 0 ? segs[0] : ""
+    displayName = cleanTitle || cls
   }
 
-  if (displayName.length > 32) {
-    displayName = displayName.slice(0, 29) + "..."
+  if (!cleanTitle && !cls) return null
+
+  // Words belonging to a hostname printed in the title must not be reusable as
+  // free text, or every item sharing a label ("example") with the current host
+  // would match. Strip the host, then re-seed the one name that does count.
+  var matchText = cleanTitle
+  if (detectedDomain) {
+    matchText = matchText.replace(new RegExp(detectedDomain.host.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&"), "gi"), " ").trim()
+  }
+
+  var rawTokens = extractTokens(matchText)
+  if (detectedDomain && detectedDomain.rootName && !GENERIC_LABELS[detectedDomain.rootName]) {
+    if (rawTokens.indexOf(detectedDomain.rootName) === -1) rawTokens.push(detectedDomain.rootName)
+  }
+  var aliasTokens = aliasesFor(rawTokens)
+  var titleTokens = rawTokens.concat(aliasTokens)
+
+  if (displayName.length > 40) {
+    displayName = displayName.slice(0, 37) + "..."
   }
 
   return {
     cls: cls,
+    clsSquashed: squash(cls),
     title: cleanTitle,
     rawTitle: title,
+    matchText: matchText,
+    squashedTitle: squash(cleanTitle),
+    segments: splitSegments(cleanTitle),
+    titleTokens: titleTokens,
+    aliasTokens: aliasTokens,
     displayName: displayName,
     detectedDomain: detectedDomain,
-    titleTokens: extractTokens(cleanTitle),
     isBrowser: isBrowser,
     isTerminal: isTerminal
   }
 }
 
+// Score one vault item against the active window. 0 means no match; the bands
+// are deliberately spread so a real domain hit always outranks a word hit.
 function matchItem(item, ctx) {
   if (!ctx || !item) return 0
-  if (ctx.isTerminal && !ctx.detectedDomain) {
-    return 0
-  }
+  if (ctx.isTerminal && !ctx.detectedDomain) return 0
 
   var score = 0
-  var itemName = String(item.name || "").toLowerCase().trim()
-  var itemTokens = extractTokens(itemName)
-  var titleLower = ctx.title.toLowerCase()
-  var clsLower = ctx.cls.toLowerCase()
+  var domains = itemDomains(item)
+  var nameSquashed = squash(item.name)
+  var nameTokens = extractTokens(item.name)
+  var d, i
 
-  // 1. URI Domain Match (Bitwarden Base Domain / Host matching)
-  if (item.uris && item.uris.length > 0) {
-    for (var u = 0; u < item.uris.length; u++) {
-      var itemDom = parseDomain(item.uris[u])
-      if (!itemDom) continue
-
-      if (ctx.detectedDomain) {
-        if (ctx.detectedDomain.host === itemDom.host) return 100
-        if (ctx.detectedDomain.baseDomain === itemDom.baseDomain) return 95
-      }
-
-      // Check host parts (e.g. "auth", "example") against title tokens
-      for (var p = 0; p < itemDom.parts.length; p++) {
-        var part = itemDom.parts[p]
-        if (part.length >= 3 && !STOP_WORDS[part]) {
-          var partRegex = new RegExp("(?:^|[^a-z0-9])" + part.replace(/[-]/g, "\\-") + "(?:$|[^a-z0-9])", "i")
-          if (partRegex.test(titleLower)) {
-            score = Math.max(score, 90)
-          }
-        }
-      }
+  // 1. Domain to domain. Only reachable when the title actually spelled a host.
+  if (ctx.detectedDomain) {
+    for (i = 0; i < domains.length; i++) {
+      d = domains[i]
+      if (d.host === ctx.detectedDomain.host) return 100
+      if (d.baseDomain && d.baseDomain === ctx.detectedDomain.baseDomain) score = Math.max(score, 96)
     }
   }
 
-  // 2. Token overlap between Title and Item Name
-  for (var t = 0; t < ctx.titleTokens.length; t++) {
-    var titleTok = ctx.titleTokens[t]
-    if (titleTok.length < 3) continue
+  // 2. The item's registrable name appears in the page title.
+  for (i = 0; i < domains.length; i++) {
+    var root = domains[i].rootName
+    if (!root || root.length < 3 || GENERIC_LABELS[root] || TLDS[root]) continue
 
-    if (itemTokens.indexOf(titleTok) >= 0 || itemName.indexOf(titleTok) >= 0) {
+    if (hasWholeWord(ctx.matchText, root)) {
       score = Math.max(score, 90)
+    } else if (root.length >= 5 && squash(ctx.matchText).indexOf(root) !== -1) {
+      // "Home Assistant" -> homeassistant.local
+      score = Math.max(score, 88)
+    } else if (ctx.aliasTokens.indexOf(root) !== -1) {
+      // Reached only via a brand alias, e.g. a "Gmail" title -> google.com
+      score = Math.max(score, 86)
     }
   }
 
-  // 3. Exact full title or name match
-  if (itemName.length >= 3 && (titleLower === itemName || itemName.indexOf(titleLower) >= 0 || titleLower.indexOf(itemName) >= 0)) {
-    score = Math.max(score, 85)
+  // 3. The item name matches a whole title segment.
+  if (nameSquashed.length >= 3) {
+    for (i = 0; i < ctx.segments.length; i++) {
+      if (squash(ctx.segments[i]) === nameSquashed) {
+        score = Math.max(score, 92)
+        break
+      }
+    }
+    if (nameSquashed.length >= 5 && ctx.squashedTitle.indexOf(nameSquashed) !== -1) {
+      score = Math.max(score, 84)
+    }
   }
 
-  // 4. Desktop Application Class Match (non-browser)
-  if (!ctx.isBrowser && !ctx.isTerminal && clsLower.length >= 3) {
-    if (itemTokens.indexOf(clsLower) >= 0 || itemName.indexOf(clsLower) >= 0) {
-      score = Math.max(score, 85)
+  // 4. Shared significant words between the item name and the title.
+  var overlap = 0
+  for (i = 0; i < nameTokens.length; i++) {
+    if (ctx.titleTokens.indexOf(nameTokens[i]) !== -1) overlap++
+  }
+  if (overlap > 0) {
+    score = Math.max(score, 78 + Math.min(overlap, 3) * 2)
+  }
+
+  // 5. Native app: match the window class against the item.
+  if (!ctx.isBrowser && !ctx.isTerminal && ctx.clsSquashed.length >= 3) {
+    for (i = 0; i < domains.length; i++) {
+      var r = domains[i].rootName
+      if (r && r.length >= 3 && !GENERIC_LABELS[r] && r === ctx.clsSquashed) {
+        score = Math.max(score, 92)
+      }
+    }
+    if (nameSquashed.length >= 3 && (nameSquashed === ctx.clsSquashed
+        || nameSquashed.indexOf(ctx.clsSquashed) !== -1
+        || ctx.clsSquashed.indexOf(nameSquashed) !== -1)) {
+      score = Math.max(score, 88)
     }
   }
 
   return score
 }
 
-function findContextualMatches(items, windowData) {
+var MATCH_THRESHOLD = 80
+var MAX_SUGGESTIONS = 6
+
+function findContextualMatches(items, windowData, associations) {
+  var empty = { matches: [], context: null, learnedIds: {} }
+
   var ctx = cleanWindowContext(windowData)
-  if (!ctx || !Array.isArray(items) || items.length === 0) {
-    return { matches: [], context: null }
+  if (!ctx || !Array.isArray(items) || items.length === 0) return empty
+  if (ctx.isTerminal && !ctx.detectedDomain) return empty
+  if (!ctx.title && !ctx.detectedDomain && !ctx.clsSquashed) return empty
+
+  // What you taught it comes first, and is never filtered out by the score
+  // banding below -- an explicit choice outranks anything inferred.
+  var byId = {}
+  for (var b = 0; b < items.length; b++) {
+    if (items[b] && items[b].id) byId[items[b].id] = items[b]
   }
 
-  // If local terminal without detected SSH domain, no suggestions
-  if (ctx.isTerminal && !ctx.detectedDomain) {
-    return { matches: [], context: null }
+  var learned = []
+  var learnedIds = {}
+  var learnedRanked = learnedMatchIds(associations, ctx)
+  for (var l = 0; l < learnedRanked.length; l++) {
+    var hit = byId[learnedRanked[l].itemId]
+    if (hit) {
+      learned.push(hit)
+      learnedIds[hit.id] = true
+    }
   }
 
   var scored = []
   for (var i = 0; i < items.length; i++) {
-    var item = items[i]
-    if (!item) continue
-    var score = matchItem(item, ctx)
-    if (score >= 80) {
-      scored.push({ item: item, score: score })
+    var score = matchItem(items[i], ctx)
+    if (score >= MATCH_THRESHOLD) {
+      scored.push({ item: items[i], score: score, index: i })
+    }
+  }
+  if (scored.length === 0 && learned.length === 0) return empty
+  if (scored.length === 0) {
+    return { matches: learned.slice(0, MAX_SUGGESTIONS), context: ctx, learnedIds: learnedIds }
+  }
+
+  scored.sort(function(a, b) {
+    if (b.score !== a.score) return b.score - a.score
+    if (a.item.favorite !== b.item.favorite) return a.item.favorite ? -1 : 1
+    return a.index - b.index
+  })
+
+  // Keep only the strongest band. A confirmed domain hit discards everything
+  // weaker (so a second account on the same site survives, but unrelated items
+  // that merely share a word do not).
+  var best = scored[0].score
+  var cutoff = best >= 96 ? 96 : Math.max(MATCH_THRESHOLD, best - 8)
+
+  var matches = learned.slice()
+  for (var m = 0; m < scored.length && matches.length < MAX_SUGGESTIONS; m++) {
+    if (scored[m].score >= cutoff && !learnedIds[scored[m].item.id]) {
+      matches.push(scored[m].item)
     }
   }
 
-  if (scored.length === 0) {
-    return { matches: [], context: null }
+  return { matches: matches.slice(0, MAX_SUGGESTIONS), context: ctx, learnedIds: learnedIds }
+}
+
+// -------------------------------------------------------------------------
+// Learned Associations
+// -------------------------------------------------------------------------
+//
+// Titles are a weak signal and some sites cannot be matched from one at all:
+// a page titled "Home - authentik" served from auth.example.xyz shares no word
+// with the stored credential, so no heuristic will ever connect them. Instead
+// of guessing harder, the panel remembers. Picking an item while a window is
+// active records that window's identifying keys against the item, and the next
+// visit suggests it outright. Learning beats every heuristic tier below it.
+
+var ASSOC_VERSION = 1
+var ASSOC_ENV = "QSBW_ASSOC"
+var ASSOC_FILE = "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli/associations.json"
+
+function associationsEnvVar() {
+  return ASSOC_ENV
+}
+
+function associationsReadCommand() {
+  return ["bash", "-c", "cat \"" + ASSOC_FILE + "\" 2>/dev/null || echo '{}'"]
+}
+
+// Written through the environment for the same reason the keyring stores are:
+// Process.write() cannot deliver EOF, so a shell supplies the payload instead.
+function associationsWriteCommand() {
+  var script = "d=\"$(dirname \"" + ASSOC_FILE + "\")\"; mkdir -p \"$d\" && chmod 700 \"$d\" && "
+    + "umask 077 && printf '%s' \"$" + ASSOC_ENV + "\" > \"" + ASSOC_FILE + "\""
+  return ["bash", "-c", script]
+}
+
+function emptyAssociations() {
+  return { version: ASSOC_VERSION, keys: {} }
+}
+
+function parseAssociations(raw) {
+  var parsed = null
+  try {
+    parsed = JSON.parse(String(raw || "").trim() || "{}")
+  } catch (e) {
+    return emptyAssociations()
+  }
+  if (!parsed || typeof parsed !== "object" || !parsed.keys || typeof parsed.keys !== "object") {
+    return emptyAssociations()
+  }
+  return { version: Number(parsed.version || ASSOC_VERSION), keys: parsed.keys }
+}
+
+function serializeAssociations(assoc) {
+  return JSON.stringify(assoc && assoc.keys ? assoc : emptyAssociations())
+}
+
+// The identifying keys for a window, strongest first. A domain is definitive;
+// an app class is nearly so; individual title words are the weak fallback that
+// makes an untitled-domain site like authentik learnable at all.
+function contextKeys(ctx) {
+  if (!ctx) return []
+  var keys = []
+
+  if (ctx.detectedDomain && ctx.detectedDomain.baseDomain && !ctx.detectedDomain.isIp) {
+    keys.push({ key: "domain:" + ctx.detectedDomain.baseDomain, weight: 3 })
+  }
+  if (!ctx.isBrowser && !ctx.isTerminal && ctx.clsSquashed && ctx.clsSquashed.length >= 3) {
+    keys.push({ key: "app:" + ctx.clsSquashed, weight: 2 })
+  }
+  for (var i = 0; i < ctx.titleTokens.length; i++) {
+    keys.push({ key: "word:" + ctx.titleTokens[i], weight: 1 })
+  }
+  return keys
+}
+
+// Last pick wins: re-recording a key that pointed elsewhere retargets it, so a
+// word learned from the wrong page corrects itself the next time you choose.
+function recordAssociation(assoc, ctx, itemId, timestamp) {
+  var next = { version: ASSOC_VERSION, keys: {} }
+  var k
+  for (k in assoc.keys) next.keys[k] = assoc.keys[k]
+
+  var keys = contextKeys(ctx)
+  if (keys.length === 0 || !itemId) return next
+
+  for (var i = 0; i < keys.length; i++) {
+    var existing = next.keys[keys[i].key]
+    var count = (existing && existing.itemId === itemId) ? Number(existing.count || 0) + 1 : 1
+    next.keys[keys[i].key] = {
+      itemId: String(itemId),
+      weight: keys[i].weight,
+      count: count,
+      updated: String(timestamp || "")
+    }
+  }
+  return next
+}
+
+function forgetAssociation(assoc, ctx, itemId) {
+  var next = { version: ASSOC_VERSION, keys: {} }
+  var keys = contextKeys(ctx)
+  var drop = {}
+  for (var i = 0; i < keys.length; i++) drop[keys[i].key] = 1
+
+  for (var k in assoc.keys) {
+    var entry = assoc.keys[k]
+    if (drop[k] && (!itemId || entry.itemId === itemId)) continue
+    next.keys[k] = entry
+  }
+  return next
+}
+
+// True when this exact item is already what the context resolves to, used to
+// decide whether a pick is worth recording and how to label the pin action.
+function isAssociated(assoc, ctx, itemId) {
+  if (!assoc || !ctx || !itemId) return false
+  var keys = contextKeys(ctx)
+  for (var i = 0; i < keys.length; i++) {
+    var entry = assoc.keys[keys[i].key]
+    if (entry && entry.itemId === itemId) return true
+  }
+  return false
+}
+
+function learnedMatchIds(assoc, ctx) {
+  if (!assoc || !assoc.keys || !ctx) return []
+  var keys = contextKeys(ctx)
+  var best = {}
+
+  for (var i = 0; i < keys.length; i++) {
+    var entry = assoc.keys[keys[i].key]
+    if (!entry || !entry.itemId) continue
+    var rank = keys[i].weight * 1000 + Number(entry.count || 1)
+    if (!best[entry.itemId] || best[entry.itemId] < rank) best[entry.itemId] = rank
   }
 
-  // Sort by score descending
-  scored.sort(function(a, b) { return b.score - a.score })
-  var matchedItems = []
-  for (var m = 0; m < scored.length; m++) {
-    matchedItems.push(scored[m].item)
-  }
-
-  return {
-    matches: matchedItems,
-    context: ctx
-  }
+  var out = []
+  for (var id in best) out.push({ itemId: id, rank: best[id] })
+  out.sort(function(a, b) { return b.rank - a.rank })
+  return out
 }
