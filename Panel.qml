@@ -115,6 +115,11 @@ Panel {
   // secret can be discarded rather than retried forever. "" | "fingerprint" | "pin"
   property string pendingUnlockFrom: ""
 
+  // Generator state (session-scoped, mirroring the browser extension's options)
+  property var genOpts: Model.generatorDefaults()
+  property string genValue: ""
+  property bool genBusy: false
+
   // PIN unlock state
   property bool pinConfigured: false        // ciphertext present in the keyring
   property string pinEntry: ""              // locked-screen input
@@ -490,6 +495,49 @@ Panel {
     var env = {}
     env[Model.keyringSecretEnvVar()] = String(value || "")
     return env
+  }
+
+  // -------------------------------------------------------------------------
+  // Generator
+  // -------------------------------------------------------------------------
+
+  function openGenerator() {
+    screenBeforeSettings = "main"
+    currentScreen = "generator"
+    if (!genValue) regenerate()
+  }
+
+  // Generation is delegated to `bw generate`, so the output comes from
+  // Bitwarden's own generator rather than a local reimplementation of it.
+  function regenerate() {
+    genBusy = true
+    generateProc.command = Model.generateCommand(genOpts)
+    generateProc.running = true
+  }
+
+  function onGenerated(text, exitCode) {
+    genBusy = false
+    var v = String(text || "").trim()
+    if (exitCode !== 0 || !v) {
+      errorMessage = "Could not generate with these options"
+      return
+    }
+    genValue = v
+  }
+
+  // Every control funnels through here, so a change always regenerates --
+  // matching the extension's live behaviour -- and options stay normalised.
+  function setGenOpt(key, value) {
+    var next = {}
+    for (var k in genOpts) next[k] = genOpts[k]
+    next[key] = value
+    genOpts = Model.normalizeGeneratorOptions(next)
+    regenerate()
+  }
+
+  function copyGenerated() {
+    if (!genValue) return
+    copyToClipboard(genValue, genOpts.type === "passphrase" ? "Passphrase" : "Password")
   }
 
   // -------------------------------------------------------------------------
@@ -1391,6 +1439,12 @@ Panel {
 
   // ---- Fingerprint unlock ----
 
+  Process {
+    id: generateProc
+    stdout: StdioCollector { id: generateStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onGenerated(generateStdout.text, exitCode) }
+  }
+
   // ---- PIN unlock ----
   //
   // PIN and master password are handed over in the environment; encrypt-and-store
@@ -1804,7 +1858,9 @@ Panel {
         || (root.currentScreen === "pin")
 
       onCloseRequested: {
-        if (root.currentScreen === "pin") {
+        if (root.currentScreen === "generator") {
+          root.currentScreen = "main"
+        } else if (root.currentScreen === "pin") {
           root.pinError = ""
           root.currentScreen = "settings"
         } else if (root.currentScreen === "settings") {
@@ -1864,6 +1920,8 @@ Panel {
             root.lockVault()
           } else if (lower === "r") {
             root.syncVault()
+          } else if (lower === "g") {
+            root.openGenerator()
           } else if (lower === ",") {
             root.openSettings()
           } else if (lower === "/") {
@@ -1938,6 +1996,15 @@ Panel {
               fontFamily: root.fontFamily
               enabled: !root.isSyncing
               onClicked: root.syncVault()
+            }
+
+            // Generator Button
+            PanelActionButton {
+              visible: root.status === "unlocked" && root.currentScreen !== "generator"
+              iconText: "󰌆"
+              tooltipText: "Password generator (g)"
+              fontFamily: root.fontFamily
+              onClicked: root.openGenerator()
             }
 
             // Settings Button
@@ -2097,6 +2164,358 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0c: PIN SETUP
         // -------------------------------------------------------------------
+        // -------------------------------------------------------------------
+        // SCREEN 0d: GENERATOR
+        // -------------------------------------------------------------------
+        Flickable {
+          id: genFlick
+          visible: root.currentScreen === "generator"
+          width: parent.width
+          height: Math.min(Style.space(520), genCol.implicitHeight)
+          contentWidth: width
+          contentHeight: genCol.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Column {
+            id: genCol
+            width: genFlick.width
+            spacing: Style.space(10)
+
+            PanelSeparator { width: parent.width }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                text: "Back (Esc)"
+                iconText: "󰁍"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.currentScreen = "main"
+              }
+            }
+
+            // Generated value
+            BorderSurface {
+              width: parent.width
+              implicitHeight: Style.space(58)
+              radius: Style.cornerRadius
+              color: Style.hoverFillFor(root.fg, Color.accent)
+              borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+              Row {
+                anchors.fill: parent
+                anchors.leftMargin: Style.space(12)
+                anchors.rightMargin: Style.space(6)
+                spacing: Style.space(4)
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(90)
+                  text: root.genBusy ? "Generating..." : (root.genValue || "-")
+                  color: Color.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.subtitle
+                  font.bold: true
+                  wrapMode: Text.WrapAnywhere
+                  maximumLineCount: 2
+                  elide: Text.ElideRight
+                }
+
+                PanelActionButton {
+                  anchors.verticalCenter: parent.verticalCenter
+                  iconText: "󰑐"
+                  tooltipText: "Regenerate"
+                  fontFamily: root.fontFamily
+                  enabled: !root.genBusy
+                  onClicked: root.regenerate()
+                }
+
+                PanelActionButton {
+                  anchors.verticalCenter: parent.verticalCenter
+                  iconText: "󰆏"
+                  tooltipText: "Copy"
+                  fontFamily: root.fontFamily
+                  enabled: root.genValue !== ""
+                  onClicked: root.copyGenerated()
+                }
+              }
+            }
+
+            // Strength meter
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+
+              readonly property var strength: Model.generatorStrength(root.genOpts)
+
+              Row {
+                width: parent.width
+                Text {
+                  text: parent.parent.strength.label
+                  color: Color.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                Item { width: Style.space(6); height: 1 }
+                Text {
+                  text: "~" + parent.parent.strength.bits + " bits of entropy"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              Rectangle {
+                width: parent.width
+                height: Style.space(4)
+                radius: height / 2
+                color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.15)
+
+                Rectangle {
+                  width: parent.width * parent.parent.strength.fraction
+                  height: parent.height
+                  radius: height / 2
+                  color: Color.accent
+                }
+              }
+            }
+
+            PanelSeparator { width: parent.width }
+
+            // Type
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                text: "Password"
+                iconText: "󰌆"
+                selected: root.genOpts.type === "password"
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.setGenOpt("type", "password")
+              }
+
+              Button {
+                text: "Passphrase"
+                iconText: "󰈚"
+                selected: root.genOpts.type === "passphrase"
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.setGenOpt("type", "passphrase")
+              }
+            }
+
+            // ---- Password options ----
+            Column {
+              visible: root.genOpts.type === "password"
+              width: parent.width
+              spacing: Style.space(8)
+
+              Row {
+                width: parent.width
+                spacing: Style.space(10)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(170)
+                  text: "Length"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                NumberField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  value: root.genOpts.length
+                  from: 5
+                  to: 128
+                  stepSize: 1
+                  foreground: root.fg
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  onModified: function(v) { root.setGenOpt("length", v) }
+                }
+              }
+
+              Flow {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Button {
+                  text: "A-Z"
+                  selected: root.genOpts.uppercase
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.setGenOpt("uppercase", !root.genOpts.uppercase)
+                }
+                Button {
+                  text: "a-z"
+                  selected: root.genOpts.lowercase
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.setGenOpt("lowercase", !root.genOpts.lowercase)
+                }
+                Button {
+                  text: "0-9"
+                  selected: root.genOpts.numbers
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.setGenOpt("numbers", !root.genOpts.numbers)
+                }
+                Button {
+                  text: "!@#$%^&*"
+                  selected: root.genOpts.special
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.setGenOpt("special", !root.genOpts.special)
+                }
+                Button {
+                  text: "Avoid ambiguous"
+                  tooltipText: "Exclude characters that are easy to confuse, such as l, 1, I, O and 0"
+                  selected: root.genOpts.ambiguous
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.setGenOpt("ambiguous", !root.genOpts.ambiguous)
+                }
+              }
+
+              Row {
+                visible: root.genOpts.numbers
+                width: parent.width
+                spacing: Style.space(10)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(170)
+                  text: "Minimum numbers"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                NumberField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  value: root.genOpts.minNumber
+                  from: 0
+                  to: 9
+                  stepSize: 1
+                  foreground: root.fg
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  onModified: function(v) { root.setGenOpt("minNumber", v) }
+                }
+              }
+
+              Row {
+                visible: root.genOpts.special
+                width: parent.width
+                spacing: Style.space(10)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(170)
+                  text: "Minimum special"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                NumberField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  value: root.genOpts.minSpecial
+                  from: 0
+                  to: 9
+                  stepSize: 1
+                  foreground: root.fg
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  onModified: function(v) { root.setGenOpt("minSpecial", v) }
+                }
+              }
+            }
+
+            // ---- Passphrase options ----
+            Column {
+              visible: root.genOpts.type === "passphrase"
+              width: parent.width
+              spacing: Style.space(8)
+
+              Row {
+                width: parent.width
+                spacing: Style.space(10)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(170)
+                  text: "Number of words"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                NumberField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  value: root.genOpts.words
+                  from: 3
+                  to: 20
+                  stepSize: 1
+                  foreground: root.fg
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  onModified: function(v) { root.setGenOpt("words", v) }
+                }
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(10)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(170)
+                  text: "Word separator"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                TextField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(90)
+                  text: root.genOpts.separator
+                  onTextChanged: if (text && text !== root.genOpts.separator) root.setGenOpt("separator", text.charAt(0))
+                }
+              }
+
+              Flow {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Button {
+                  text: "Capitalize"
+                  selected: root.genOpts.capitalize
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.setGenOpt("capitalize", !root.genOpts.capitalize)
+                }
+                Button {
+                  text: "Include number"
+                  selected: root.genOpts.includeNumber
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.setGenOpt("includeNumber", !root.genOpts.includeNumber)
+                }
+              }
+            }
+          }
+        }
+
         // Scrolls rather than overflowing the panel: this screen is taller
         // than the popup's height cap on smaller displays.
         Flickable {
@@ -2289,7 +2708,7 @@ Panel {
                 }
 
                 Column {
-                  width: parent.width - Style.space(120)
+                  width: parent.width - Style.space(170)
                   spacing: Style.space(2)
 
                   Row {

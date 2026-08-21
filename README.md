@@ -61,7 +61,7 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 
 - **Full Add, Edit & Delete (CRUD) Operations**:
   - **Create Items (`n` key or `+` button)**: Add new **Logins** (`󰌋`) or **Secure Notes** (`󰈐`).
-  - **Password Generator**: Built-in 1-click strong password generator (20-character uppercase, lowercase, numbers, special characters).
+  - **Password Generator**: A full generator screen (<kbd>g</kbd> or the `󰌆` button) mirroring the Bitwarden browser extension's options -- password (length, A-Z, a-z, 0-9, special, minimum numbers, minimum special, avoid ambiguous) or passphrase (word count, separator, capitalise, include number), with a live strength meter. Generation is delegated to `bw generate`, so the output comes from Bitwarden's own generator rather than a reimplementation.
   - **Edit Items (`e` key or Edit button)**: Modify titles, credentials, authenticator keys, URLs, and notes.
   - **Delete Items (`x` key or Delete button)**: Delete items with confirmation protection.
 
@@ -274,6 +274,7 @@ Regression suites, no dependencies beyond Node:
 ```bash
 node tests/context-match.test.js    # window-title matching and learned suggestions
 node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
+node tests/generator.test.js        # generator option clamping and strength
 ```
 
 ---
