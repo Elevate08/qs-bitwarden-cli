@@ -66,6 +66,13 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
   - **Edit Items (`e` key or Edit button)**: Modify titles, credentials, authenticator keys, URLs, and notes.
   - **Delete Items (`x` key or Delete button)**: Delete items with confirmation protection.
 
+- **Bitwarden Send** (<kbd>Shift</kbd>+<kbd>S</kbd> or the `󰒗` button):
+  - Share a secret through a link that expires on its own, so a credential need not live in a chat log.
+  - Create a text Send with a name, hidden-by-default text, a deletion window (1-31 days), a maximum view count, and an optional password. The access link is copied to your clipboard the moment it is created.
+  - Lists your existing Sends with how long each has left (`in 3 days`, `expired`), views used against the maximum, and whether a password is set. Copy a link or delete a Send from the row.
+  - Keyboard: <kbd>n</kbd> new, <kbd>r</kbd> refresh, <kbd>x</kbd> delete the highlighted Send, <kbd>Enter</kbd> copy its link, <kbd>Esc</kbd> back.
+  - The Send payload -- which carries the Send password -- is passed to `bw` through the environment, never on the command line, since `/proc/<pid>/cmdline` is world-readable.
+
 - **Folders**:
   - Filter by folder from the bottom filter bar: **All Folders**, **No Folder**, or any specific folder.
   - Items show their folder inline (`󰉋 Name`) when no folder filter is active.
@@ -320,6 +327,7 @@ node tests/context-match.test.js    # window-title matching and learned suggesti
 node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
 node tests/generator.test.js        # generator option clamping and strength
 node tests/folders.test.js          # folder parsing, filtering and assignment
+node tests/sends.test.js            # Send payloads, parsing, and argv-safety
 ```
 
 ---

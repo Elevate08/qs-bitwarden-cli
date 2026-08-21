@@ -151,16 +151,25 @@ function lockCommand(session) {
 // CRUD Commands (Create, Edit, Delete)
 // -------------------------------------------------------------------------
 
+// The item JSON contains the password, so it travels in the environment. An
+// inlined `printf %s '<json>'` would put it in /proc/<pid>/cmdline, which is
+// world-readable here (no hidepid).
+var ITEM_ENV = "QSBW_ITEM"
+
+function itemEnvVar() {
+  return ITEM_ENV
+}
+
 function createItemCommand(itemData, session) {
-  var jsonStr = JSON.stringify(itemData)
   var orgArg = (itemData && itemData.organizationId) ? (" --organizationid " + shellQuote(itemData.organizationId)) : ""
-  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create item" + orgArg + " --session " + shellQuote(session)
+  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw create item" + orgArg
+    + " --session " + shellQuote(session)
   return ["bash", "-c", script]
 }
 
-function editItemCommand(itemId, itemData, session) {
-  var jsonStr = JSON.stringify(itemData)
-  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw edit item " + shellQuote(itemId) + " --session " + shellQuote(session)
+function editItemCommand(itemId, session) {
+  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item " + shellQuote(itemId)
+    + " --session " + shellQuote(session)
   return ["bash", "-c", script]
 }
 
@@ -1590,4 +1599,137 @@ function generatorStrength(opts) {
   else if (bits >= 40) label = "Fair"
 
   return { bits: Math.round(bits), label: label, fraction: Math.max(0, Math.min(1, bits / 128)) }
+}
+
+// -------------------------------------------------------------------------
+// Bitwarden Send
+// -------------------------------------------------------------------------
+//
+// Field names below are taken from a real `bw send --fullObject` response
+// rather than guessed: accessUrl carries the shareable link, passwordSet is a
+// boolean rather than the password itself, and type is 0 for text, 1 for file.
+
+var SEND_TYPE_TEXT = 0
+var SEND_TYPE_FILE = 1
+
+function listSendsCommand(session) {
+  return buildCommand(["send", "list"], session, true)
+}
+
+function deleteSendCommand(sendId, session) {
+  return buildCommand(["send", "delete", String(sendId)], session, true)
+}
+
+function removeSendPasswordCommand(sendId, session) {
+  return buildCommand(["send", "remove-password", String(sendId)], session, true)
+}
+
+// The payload travels in the environment, not argv. Both the flag form's
+// --password and an inlined `printf %s '<json>'` would land the Send password
+// in /proc/<pid>/cmdline, which other users can read.
+var SEND_ENV = "QSBW_SEND"
+
+function sendEnvVar() {
+  return SEND_ENV
+}
+
+function createSendCommand(session) {
+  var script = "printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create --session " + shellQuote(session)
+  return ["bash", "-c", script]
+}
+
+// A file Send cannot go through stdin JSON -- bw wants the path on the command
+// line -- but a path is not a secret, unlike a password.
+function createFileSendCommand(filePath, name, deleteInDays, maxAccessCount, session) {
+  var args = ["send", "--file", String(filePath)]
+  if (name) args = args.concat(["--name", String(name)])
+  args = args.concat(["-d", String(deleteInDays || 7)])
+  if (maxAccessCount) args = args.concat(["-a", String(maxAccessCount)])
+  args.push("--fullObject")
+  return buildCommand(args, session, true)
+}
+
+function buildSendPayload(name, text, hidden, deleteInDays, maxAccessCount, password, notes) {
+  var days = Math.max(1, Math.min(31, Number(deleteInDays) || 7))
+  var deletion = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
+
+  var max = Number(maxAccessCount)
+  var payload = {
+    object: "send",
+    name: String(name || "").trim() || "Untitled Send",
+    notes: notes && String(notes).trim() ? String(notes).trim() : null,
+    type: SEND_TYPE_TEXT,
+    text: { text: String(text || ""), hidden: Boolean(hidden) },
+    file: null,
+    maxAccessCount: (max > 0) ? max : null,
+    deletionDate: deletion,
+    expirationDate: null,
+    password: password && String(password).length ? String(password) : null,
+    emails: null,
+    disabled: false,
+    hideEmail: false
+  }
+  return payload
+}
+
+function parseSends(raw) {
+  var arr = null
+  try {
+    arr = JSON.parse(raw)
+  } catch (e) {
+    return []
+  }
+  if (!Array.isArray(arr)) return []
+
+  var out = []
+  for (var i = 0; i < arr.length; i++) {
+    var s = arr[i]
+    if (!s || typeof s !== "object") continue
+    out.push({
+      id: String(s.id || ""),
+      name: String(s.name || "Untitled Send"),
+      type: Number(s.type || 0),
+      isFile: Number(s.type) === SEND_TYPE_FILE,
+      accessUrl: String(s.accessUrl || ""),
+      accessCount: Number(s.accessCount || 0),
+      maxAccessCount: (s.maxAccessCount === null || s.maxAccessCount === undefined) ? null : Number(s.maxAccessCount),
+      deletionDate: String(s.deletionDate || ""),
+      expirationDate: s.expirationDate ? String(s.expirationDate) : "",
+      passwordSet: Boolean(s.passwordSet),
+      disabled: Boolean(s.disabled),
+      notes: s.notes ? String(s.notes) : "",
+      textPreview: (s.text && s.text.text) ? String(s.text.text) : "",
+      textHidden: Boolean(s.text && s.text.hidden),
+      fileName: (s.file && s.file.fileName) ? String(s.file.fileName) : ""
+    })
+  }
+
+  out.sort(function(a, b) {
+    return String(a.deletionDate).localeCompare(String(b.deletionDate))
+  })
+  return out
+}
+
+// "in 3 days" / "in 5 hours" / "expired" -- a Send's whole point is that it
+// goes away, so the countdown matters more than the timestamp.
+function sendExpiryLabel(send, now) {
+  if (!send || !send.deletionDate) return ""
+  var target = Date.parse(send.deletionDate)
+  if (isNaN(target)) return ""
+
+  var ms = target - (now || Date.now())
+  if (ms <= 0) return "expired"
+
+  var mins = Math.floor(ms / 60000)
+  if (mins < 60) return "in " + mins + (mins === 1 ? " minute" : " minutes")
+  var hours = Math.floor(mins / 60)
+  if (hours < 24) return "in " + hours + (hours === 1 ? " hour" : " hours")
+  var days = Math.floor(hours / 24)
+  return "in " + days + (days === 1 ? " day" : " days")
+}
+
+function sendAccessLabel(send) {
+  if (!send) return ""
+  if (send.maxAccessCount === null) return send.accessCount + " views"
+  return send.accessCount + " of " + send.maxAccessCount + " views"
 }

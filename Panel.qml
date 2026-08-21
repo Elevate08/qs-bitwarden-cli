@@ -134,6 +134,9 @@ Panel {
   // The value the keyring store process reads. Set from whichever path is
   // storing: the explicit setup form, or the automatic refresh after unlock.
   property string masterToStore: ""
+  // Item JSON on its way to `bw encode`. Held here so the create/edit processes
+  // can pass it in the environment instead of on the command line.
+  property string itemPayloadJson: ""
   property bool fpSetupActive: false
   property string fpSetupMaster: ""
   property string fpError: ""
@@ -141,6 +144,21 @@ Panel {
   // Which credential source drove the in-flight unlock, so a stale stored
   // secret can be discarded rather than retried forever. "" | "fingerprint" | "pin"
   property string pendingUnlockFrom: ""
+
+  // Send state
+  property var sends: []
+  property bool sendsLoading: false
+  property string sendMode: "list"      // "list" | "create"
+  property string sendPayloadJson: ""
+  property bool sendBusy: false
+  property string sendError: ""
+  property string sendFormName: ""
+  property string sendFormText: ""
+  property bool sendFormHidden: false
+  property int sendFormDays: 7
+  property int sendFormMaxAccess: 0
+  property string sendFormPassword: ""
+  property int sendIndex: 0
 
   // Generator state (session-scoped, mirroring the browser extension's options)
   property var genOpts: Model.generatorDefaults()
@@ -511,6 +529,18 @@ Panel {
     return env
   }
 
+  function itemEnv() {
+    var env = {}
+    env[Model.itemEnvVar()] = String(itemPayloadJson || "")
+    return env
+  }
+
+  function sendEnv(json) {
+    var env = {}
+    env[Model.sendEnvVar()] = String(json || "")
+    return env
+  }
+
   function pinEnv(pin, secret) {
     var env = {}
     env[Model.pinEnvVar()] = String(pin || "")
@@ -522,6 +552,108 @@ Panel {
     var env = {}
     env[Model.keyringSecretEnvVar()] = String(value || "")
     return env
+  }
+
+  // -------------------------------------------------------------------------
+  // Bitwarden Send
+  // -------------------------------------------------------------------------
+
+  function openSends() {
+    closeFilterGroup()
+    sendMode = "list"
+    sendError = ""
+    sendIndex = 0
+    currentScreen = "sends"
+    loadSends()
+  }
+
+  function loadSends() {
+    if (!session) return
+    sendsLoading = true
+    listSendsProc.command = Model.listSendsCommand(session)
+    listSendsProc.running = true
+  }
+
+  function onSendsLoaded(raw) {
+    sendsLoading = false
+    sends = Model.parseSends(raw)
+    if (sendIndex >= sends.length) sendIndex = Math.max(0, sends.length - 1)
+  }
+
+  function beginCreateSend() {
+    sendFormName = ""
+    sendFormText = ""
+    sendFormHidden = false
+    sendFormDays = 7
+    sendFormMaxAccess = 0
+    sendFormPassword = ""
+    sendError = ""
+    sendMode = "create"
+    Qt.callLater(function() { sendNameField.forceActiveFocus() })
+  }
+
+  function submitCreateSend() {
+    if (!String(sendFormText || "").trim()) {
+      sendError = "Nothing to send -- enter some text"
+      return
+    }
+    sendError = ""
+    sendBusy = true
+    sendPayloadJson = JSON.stringify(Model.buildSendPayload(
+      sendFormName, sendFormText, sendFormHidden,
+      sendFormDays, sendFormMaxAccess, sendFormPassword, ""))
+    createSendProc.command = Model.createSendCommand(session)
+    createSendProc.running = true
+  }
+
+  function onSendCreated(exitCode, stdoutText, stderrText) {
+    sendBusy = false
+    sendPayloadJson = ""
+    if (exitCode !== 0) {
+      sendError = String(stderrText || "").trim() || "Could not create the Send"
+      return
+    }
+    // bw prints the access URL; put it straight on the clipboard, since a Send
+    // is useless until the link reaches someone.
+    var created = null
+    try { created = JSON.parse(stdoutText) } catch (e) { created = null }
+    var url = created && created.accessUrl ? String(created.accessUrl) : String(stdoutText || "").trim()
+    if (url) {
+      copyToClipboard(url, "Send link")
+    } else {
+      flashNotification("Send created")
+    }
+    sendFormText = ""
+    sendFormPassword = ""
+    sendMode = "list"
+    loadSends()
+  }
+
+  function copySendLink(send) {
+    if (!send || !send.accessUrl) return
+    copyToClipboard(send.accessUrl, "Send link")
+  }
+
+  function deleteSend(send) {
+    if (!send || !send.id) return
+    sendBusy = true
+    deleteSendProc.command = Model.deleteSendCommand(send.id, session)
+    deleteSendProc.running = true
+  }
+
+  function onSendDeleted(exitCode) {
+    sendBusy = false
+    if (exitCode !== 0) {
+      sendError = "Could not delete the Send"
+      return
+    }
+    flashNotification("Send deleted")
+    loadSends()
+  }
+
+  function moveSendCursor(delta) {
+    if (sends.length === 0) return
+    sendIndex = Math.max(0, Math.min(sends.length - 1, sendIndex + delta))
   }
 
   // -------------------------------------------------------------------------
@@ -1376,10 +1508,12 @@ Panel {
 
     if (formIsEditing) {
       var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId)
-      editItemProc.command = Model.editItemCommand(formItemId, editPayload, session)
+      itemPayloadJson = JSON.stringify(editPayload)
+      editItemProc.command = Model.editItemCommand(formItemId, session)
       editItemProc.running = true
     } else {
       var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId)
+      itemPayloadJson = JSON.stringify(createPayload)
       createItemProc.command = Model.createItemCommand(createPayload, session)
       createItemProc.running = true
     }
@@ -1756,6 +1890,30 @@ Panel {
   }
 
   Process {
+    id: listSendsProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onSendsLoaded(text)
+    }
+    onExited: function(exitCode) { if (exitCode !== 0) root.sendsLoading = false }
+  }
+
+  Process {
+    id: createSendProc
+    environment: root.sendEnv(root.sendPayloadJson)
+    stdout: StdioCollector { id: createSendStdout; waitForEnd: true }
+    stderr: StdioCollector { id: createSendStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.onSendCreated(exitCode, createSendStdout.text, createSendStderr.text)
+    }
+  }
+
+  Process {
+    id: deleteSendProc
+    onExited: function(exitCode) { root.onSendDeleted(exitCode) }
+  }
+
+  Process {
     id: generateProc
     stdout: StdioCollector { id: generateStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onGenerated(generateStdout.text, exitCode) }
@@ -2001,18 +2159,22 @@ Panel {
 
   Process {
     id: createItemProc
+    environment: root.itemEnv()
     stdout: StdioCollector { id: createItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: createItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      root.itemPayloadJson = ""
       root.onSaveItemFinished(exitCode, createItemStdout.text, createItemStderr.text)
     }
   }
 
   Process {
     id: editItemProc
+    environment: root.itemEnv()
     stdout: StdioCollector { id: editItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: editItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      root.itemPayloadJson = ""
       root.onSaveItemFinished(exitCode, editItemStdout.text, editItemStderr.text)
     }
   }
@@ -2187,13 +2349,17 @@ Panel {
         || (root.currentScreen === "edit")
         || (root.currentScreen === "pin")
         || (root.currentScreen === "fingerprint")
+        || (root.currentScreen === "sends" && root.sendMode === "create")
 
       onCloseRequested: {
         if (root.openFilterGroup !== "") {
           root.closeFilterGroup()
           return
         }
-        if (root.currentScreen === "generator") {
+        if (root.currentScreen === "sends") {
+          if (root.sendMode === "create") { root.sendError = ""; root.sendMode = "list" }
+          else root.currentScreen = "main"
+        } else if (root.currentScreen === "generator") {
           root.currentScreen = "main"
         } else if (root.currentScreen === "fingerprint") {
           root.fpError = ""
@@ -2221,6 +2387,10 @@ Panel {
         }
       }
       onMoveRequested: function(dx, dy) {
+        if (root.currentScreen === "sends" && root.sendMode === "list") {
+          if (dy !== 0) root.moveSendCursor(dy)
+          return
+        }
         if (root.currentScreen === "settings") {
           if (dy !== 0) root.moveSettingsCursor(dy)
           else if (dx !== 0) root.adjustSetting(dx)
@@ -2241,6 +2411,10 @@ Panel {
         }
       }
       onActivateRequested: {
+        if (root.currentScreen === "sends" && root.sendMode === "list") {
+          if (root.sendIndex < root.sends.length) root.copySendLink(root.sends[root.sendIndex])
+          return
+        }
         if (root.currentScreen === "settings") {
           root.activateSettingRow()
           return
@@ -2258,6 +2432,17 @@ Panel {
       }
       onTextKey: function(key) {
         var lower = String(key).toLowerCase()
+        // Shift+S opens Sends; plain s is Settings.
+        if (String(key) === "S" && root.currentScreen === "main") {
+          root.openSends()
+          return
+        }
+        if (root.currentScreen === "sends" && root.sendMode === "list") {
+          if (lower === "n") root.beginCreateSend()
+          else if (lower === "r") root.loadSends()
+          else if (lower === "x" && root.sendIndex < root.sends.length) root.deleteSend(root.sends[root.sendIndex])
+          return
+        }
         if (root.currentScreen === "main") {
           if (lower === "/") searchField.forceActiveFocus()
           else root.runShortcut(lower)
@@ -2330,6 +2515,15 @@ Panel {
               fontFamily: root.fontFamily
               enabled: !root.isSyncing
               onClicked: root.syncVault()
+            }
+
+            // Send Button
+            PanelActionButton {
+              visible: root.status === "unlocked" && root.currentScreen !== "sends"
+              iconText: "󰒗"
+              tooltipText: "Bitwarden Send (Shift+S)"
+              fontFamily: root.fontFamily
+              onClicked: root.openSends()
             }
 
             // Generator Button
@@ -2491,6 +2685,320 @@ Panel {
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.Wrap
               width: parent.width - Style.space(24)
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 0f: BITWARDEN SEND
+        // -------------------------------------------------------------------
+        Flickable {
+          id: sendFlick
+          visible: root.currentScreen === "sends"
+          width: parent.width
+          height: Math.min(Style.space(520), sendCol.implicitHeight)
+          contentWidth: width
+          contentHeight: sendCol.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Column {
+            id: sendCol
+            width: sendFlick.width
+            spacing: Style.space(10)
+
+            PanelSeparator { width: parent.width }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                text: root.sendMode === "create" ? "Back to Sends" : "Back (Esc)"
+                iconText: "󰁍"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: {
+                  if (root.sendMode === "create") { root.sendError = ""; root.sendMode = "list" }
+                  else root.currentScreen = "main"
+                }
+              }
+
+              Button {
+                visible: root.sendMode === "list"
+                text: "New Send"
+                iconText: "󰐕"
+                selected: true
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.beginCreateSend()
+              }
+
+              Button {
+                visible: root.sendMode === "list"
+                text: "Refresh"
+                iconText: "󰑐"
+                iconSpinning: root.sendsLoading
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.loadSends()
+              }
+            }
+
+            Text {
+              visible: root.sendError !== ""
+              width: parent.width
+              text: root.sendError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            // ---------------- list ----------------
+            Column {
+              visible: root.sendMode === "list"
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text {
+                visible: !root.sendsLoading && root.sends.length === 0
+                width: parent.width
+                text: "No Sends yet. A Send shares a secret through a link that expires on its own -- useful for handing someone a credential without it living in a chat log."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                visible: root.sendsLoading
+                text: "Loading Sends..."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Repeater {
+                model: root.sends
+
+                delegate: BorderSurface {
+                  required property var modelData
+                  required property int index
+                  width: parent.width
+                  implicitHeight: sendRowCol.implicitHeight + Style.space(16)
+                  radius: Style.cornerRadius
+                  readonly property bool cursored: index === root.sendIndex
+                  color: cursored ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
+                  borderSpec: Border.surfaceSpec("menu", "border",
+                    cursored ? Color.accent : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.18), 1)
+
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onEntered: root.sendIndex = index
+                  }
+
+                  Row {
+                    anchors.fill: parent
+                    anchors.margins: Style.space(8)
+                    spacing: Style.space(8)
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: modelData.isFile ? "󰈤" : "󰈙"
+                      color: Color.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.subtitle
+                    }
+
+                    Column {
+                      id: sendRowCol
+                      width: parent.width - Style.space(110)
+                      spacing: Style.space(2)
+
+                      Text {
+                        width: parent.width
+                        text: modelData.name
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        font.bold: true
+                        elide: Text.ElideRight
+                      }
+
+                      Row {
+                        spacing: Style.space(6)
+
+                        Text {
+                          text: Model.sendExpiryLabel(modelData, Date.now())
+                          color: Model.sendExpiryLabel(modelData, Date.now()) === "expired" ? root.urgent : root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+                        Text {
+                          text: "\u00b7 " + Model.sendAccessLabel(modelData)
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+                        Text {
+                          visible: modelData.passwordSet
+                          text: "\u00b7 󰌾 password"
+                          color: Color.accent
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+                      }
+                    }
+
+                    PanelActionButton {
+                      anchors.verticalCenter: parent.verticalCenter
+                      iconText: "󰆏"
+                      tooltipText: "Copy Send link"
+                      fontFamily: root.fontFamily
+                      onClicked: root.copySendLink(modelData)
+                    }
+
+                    PanelActionButton {
+                      anchors.verticalCenter: parent.verticalCenter
+                      iconText: "󰆴"
+                      tooltipText: "Delete this Send"
+                      fontFamily: root.fontFamily
+                      enabled: !root.sendBusy
+                      onClicked: root.deleteSend(modelData)
+                    }
+                  }
+                }
+              }
+            }
+
+            // ---------------- create ----------------
+            Column {
+              visible: root.sendMode === "create"
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text { text: "NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              TextField {
+                id: sendNameField
+                width: parent.width
+                placeholderText: "What is this? (optional)"
+                text: root.sendFormName
+                onTextChanged: root.sendFormName = text
+                enabled: !root.sendBusy
+              }
+
+              Text { text: "TEXT TO SEND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              TextField {
+                width: parent.width
+                placeholderText: "The secret to share..."
+                text: root.sendFormText
+                onTextChanged: root.sendFormText = text
+                enabled: !root.sendBusy
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Button {
+                  text: "Hide text by default"
+                  tooltipText: "The recipient must click to reveal it"
+                  selected: root.sendFormHidden
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.sendFormHidden = !root.sendFormHidden
+                }
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(10)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(170)
+                  text: "Delete after"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "days"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                NumberField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  value: root.sendFormDays
+                  from: 1
+                  to: 31
+                  stepSize: 1
+                  foreground: root.fg
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  onModified: function(v) { root.sendFormDays = v }
+                }
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(10)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(170)
+                  text: "Maximum views"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.sendFormMaxAccess === 0 ? "unlimited" : ""
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                NumberField {
+                  anchors.verticalCenter: parent.verticalCenter
+                  value: root.sendFormMaxAccess
+                  from: 0
+                  to: 100
+                  stepSize: 1
+                  foreground: root.fg
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  onModified: function(v) { root.sendFormMaxAccess = v }
+                }
+              }
+
+              Text { text: "PASSWORD (OPTIONAL)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              TextField {
+                width: parent.width
+                placeholderText: "Recipient must enter this to open the Send..."
+                password: true
+                text: root.sendFormPassword
+                onTextChanged: root.sendFormPassword = text
+                enabled: !root.sendBusy
+              }
+
+              Button {
+                width: parent.width
+                text: root.sendBusy ? "Creating..." : "Create Send & Copy Link"
+                iconText: root.sendBusy ? "󰑐" : "󰒗"
+                iconSpinning: root.sendBusy
+                selected: true
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                enabled: !root.sendBusy
+                onClicked: root.submitCreateSend()
+              }
             }
           }
         }
