@@ -69,6 +69,16 @@ Panel {
   // Which bottom filter group is open: "" | "folders" | "organizations" | "types".
   // Only one at a time, so the panel grows by one list at most.
   property string openFilterGroup: ""
+  property int filterOptionIndex: 0
+
+  readonly property int filterRowHeight: Style.space(30)
+  readonly property int filterVisibleRows: 5
+  readonly property var currentFilterOptions: openFilterGroup === "" ? [] : filterOptions(openFilterGroup)
+  // The drawer's own height. The panel adds this to its cap so the window
+  // opens downward like a drawer instead of squeezing the item list.
+  readonly property int filterDrawerHeight: openFilterGroup === ""
+    ? 0
+    : Style.space(30) + Math.min(filterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
   property string formFolderId: ""
   property string newFolderName: ""
   property bool creatingFolder: false
@@ -510,6 +520,7 @@ Panel {
   // -------------------------------------------------------------------------
 
   function openGenerator() {
+    closeFilterGroup()
     screenBeforeSettings = "main"
     currentScreen = "generator"
     if (!genValue) regenerate()
@@ -707,6 +718,7 @@ Panel {
   }
 
   function openSettings() {
+    closeFilterGroup()
     if (currentScreen !== "settings") screenBeforeSettings = currentScreen
     settingsFlash = ""
     checkDependencies()
@@ -921,6 +933,7 @@ Panel {
   }
 
   function lockVault() {
+    closeFilterGroup()
     if (session) {
       lockProc.command = Model.lockCommand(session)
       lockProc.running = true
@@ -1011,7 +1024,36 @@ Panel {
   }
 
   function toggleFilterGroup(group) {
-    openFilterGroup = (openFilterGroup === group) ? "" : group
+    if (openFilterGroup === group) {
+      openFilterGroup = ""
+      return
+    }
+    openFilterGroup = group
+    // Start on whichever option is currently active, so Enter is a no-op
+    // rather than a surprise.
+    var opts = filterOptions(group)
+    filterOptionIndex = 0
+    for (var i = 0; i < opts.length; i++) {
+      if (opts[i].active) { filterOptionIndex = i; break }
+    }
+  }
+
+  // Any action that is not part of the drawer closes it, so it never lingers
+  // over the results the user just filtered down to.
+  function closeFilterGroup() {
+    if (openFilterGroup !== "") openFilterGroup = ""
+  }
+
+  function moveFilterCursor(delta) {
+    var n = currentFilterOptions.length
+    if (n === 0) return
+    filterOptionIndex = Math.max(0, Math.min(n - 1, filterOptionIndex + delta))
+  }
+
+  function activateFilterOption() {
+    var opts = currentFilterOptions
+    if (filterOptionIndex < 0 || filterOptionIndex >= opts.length) return
+    applyFilterOption(openFilterGroup, opts[filterOptionIndex].id)
   }
 
   // Labels for the collapsed buttons, so the current filter is readable
@@ -1094,6 +1136,7 @@ Panel {
   }
 
   function syncVault() {
+    closeFilterGroup()
     if (!session) return
     isSyncing = true
     syncProc.command = Model.syncCommand(session)
@@ -1113,6 +1156,7 @@ Panel {
   }
 
   function openDetail(item) {
+    closeFilterGroup()
     if (!item || !item.id) return
     learnFromPick(item)
     isLoading = true
@@ -1162,6 +1206,7 @@ Panel {
   // -------------------------------------------------------------------------
 
   function startAddNewItem() {
+    closeFilterGroup()
     formIsEditing = false
     formItemId = ""
     formTypeCode = 1
@@ -1383,6 +1428,7 @@ Panel {
   }
 
   function copyPassword(item) {
+    closeFilterGroup()
     if (!item) return
     learnFromPick(item)
     var pass = (detailItem && detailItem.id === item.id && detailPassword) ? detailPassword : (item.password || "")
@@ -1400,11 +1446,13 @@ Panel {
   }
 
   function copyUsername(item) {
+    closeFilterGroup()
     if (!item || !item.username) return
     copyToClipboard(item.username, "Username")
   }
 
   function copyTotpCode(item) {
+    closeFilterGroup()
     if (!item) return
     if (liveTotp && item.id === (detailItem ? detailItem.id : "")) {
       copyToClipboard(liveTotp, "TOTP code")
@@ -1976,7 +2024,7 @@ Panel {
       ? keyCatcher
       : (root.status === "unauthenticated" ? emailField : passField)
     contentWidth: panel.fittedContentWidth(Style.space(450))
-    contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640))
+    contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.filterDrawerHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -1991,6 +2039,10 @@ Panel {
         || (root.currentScreen === "pin")
 
       onCloseRequested: {
+        if (root.openFilterGroup !== "") {
+          root.closeFilterGroup()
+          return
+        }
         if (root.currentScreen === "generator") {
           root.currentScreen = "main"
         } else if (root.currentScreen === "pin") {
@@ -2016,6 +2068,11 @@ Panel {
         }
       }
       onMoveRequested: function(dx, dy) {
+        // While a filter drawer is open the arrows drive it, not the item list.
+        if (root.openFilterGroup !== "" && root.currentScreen === "main") {
+          if (dy !== 0) root.moveFilterCursor(dy)
+          return
+        }
         if (!root.cursorActive) {
           root.cursorActive = true
           return
@@ -2026,6 +2083,10 @@ Panel {
         }
       }
       onActivateRequested: {
+        if (root.openFilterGroup !== "" && root.currentScreen === "main") {
+          root.activateFilterOption()
+          return
+        }
         if (root.currentScreen === "main") {
           var item = root.getSelectedItem()
           if (item) {
@@ -2057,6 +2118,8 @@ Panel {
             root.toggleFilterGroup("folders")
           } else if (lower === "v") {
             root.toggleFilterGroup("organizations")
+          } else if (lower === "i") {
+            root.toggleFilterGroup("types")
           } else if (lower === "g") {
             root.openGenerator()
           } else if (lower === ",") {
@@ -3633,6 +3696,7 @@ Panel {
               onTextChanged: {
                 root.searchQuery = text
                 root.selectedIndex = 0
+                root.closeFilterGroup()
                 searchDebounceTimer.restart()
               }
               Keys.onDownPressed: {
@@ -3715,8 +3779,7 @@ Panel {
           // Item List View (Fast Virtualized ListView with Delegate Recycling)
           Item {
             width: parent.width
-            height: Math.max(Style.space(140), Style.space(320) - filterOptionsList.height)
-            Behavior on height { NumberAnimation { duration: 110; easing.type: Easing.OutQuad } }
+            height: Style.space(320)
 
             ListView {
               id: itemsListView
@@ -3946,82 +4009,146 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          // The open group's options. Capped at five rows, scrolling past that.
-          Flickable {
-            id: filterOptionsList
-            readonly property int rowHeight: Style.space(30)
-            readonly property int visibleRows: Math.min(5, filterOptionsCol.children.length)
-
+          // The open group's options: a pinned header naming the group, then up
+          // to five rows with the rest scrolling underneath it.
+          Column {
+            id: filterDrawer
             width: parent.width
-            height: root.openFilterGroup === "" ? 0 : (visibleRows * rowHeight + Style.space(6))
+            height: root.filterDrawerHeight
             visible: height > 0
-            contentWidth: width
-            contentHeight: filterOptionsCol.implicitHeight
             clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.VerticalFlick
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            spacing: 0
 
-            Behavior on height { NumberAnimation { duration: 110; easing.type: Easing.OutQuad } }
+            Behavior on height { NumberAnimation { duration: 130; easing.type: Easing.OutQuad } }
 
-            Column {
-              id: filterOptionsCol
-              width: filterOptionsList.width
-              spacing: Style.space(2)
+            // Pinned header -- stays put while the options scroll.
+            Row {
+              width: parent.width
+              height: Style.space(30)
+              spacing: Style.space(8)
 
-              Repeater {
-                model: root.openFilterGroup === "" ? [] : root.filterOptions(root.openFilterGroup)
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.openFilterGroup === "folders" ? "󰉋"
+                    : root.openFilterGroup === "organizations" ? "󰦑"
+                    : "󰀻"
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
 
-                delegate: BorderSurface {
-                  required property var modelData
-                  width: filterOptionsCol.width
-                  implicitHeight: filterOptionsList.rowHeight
-                  radius: Style.cornerRadius
-                  color: modelData.active ? Style.selectedFillFor(root.fg, Color.accent)
-                                          : (optionMouse.containsMouse ? Style.hoverFillFor(root.fg, Color.accent) : "transparent")
-                  borderSpec: Border.surfaceSpec("menu", "border",
-                    modelData.active ? Color.accent : "transparent", modelData.active ? 1 : 0)
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.openFilterGroup === "folders" ? "FOLDERS"
+                    : root.openFilterGroup === "organizations" ? "ORGANIZATIONS"
+                    : "TYPES"
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
 
-                  MouseArea {
-                    id: optionMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.applyFilterOption(root.openFilterGroup, modelData.id)
-                  }
+              Item { width: parent.width - Style.space(190); height: 1 }
 
-                  Row {
-                    anchors.fill: parent
-                    anchors.leftMargin: Style.space(10)
-                    anchors.rightMargin: Style.space(10)
-                    spacing: Style.space(8)
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.currentFilterOptions.length > root.filterVisibleRows
+                text: root.currentFilterOptions.length + " total"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
 
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: modelData.icon
-                      color: modelData.active ? Color.accent : root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
+            Flickable {
+              id: filterOptionsList
+              width: parent.width
+              height: Math.min(root.filterVisibleRows, root.currentFilterOptions.length) * root.filterRowHeight
+              contentWidth: width
+              contentHeight: filterOptionsCol.implicitHeight
+              clip: true
+              boundsBehavior: Flickable.StopAtBounds
+              flickableDirection: Flickable.VerticalFlick
+              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+              // Keep the keyboard cursor in view when it runs past the fold.
+              function revealCursor() {
+                var y = root.filterOptionIndex * root.filterRowHeight
+                if (y < contentY) contentY = y
+                else if (y + root.filterRowHeight > contentY + height) {
+                  contentY = y + root.filterRowHeight - height
+                }
+              }
+
+              Connections {
+                target: root
+                function onFilterOptionIndexChanged() { filterOptionsList.revealCursor() }
+              }
+
+              Column {
+                id: filterOptionsCol
+                width: filterOptionsList.width
+                spacing: 0
+
+                Repeater {
+                  model: root.currentFilterOptions
+
+                  delegate: BorderSurface {
+                    required property var modelData
+                    required property int index
+                    width: filterOptionsCol.width
+                    implicitHeight: root.filterRowHeight
+                    radius: Style.cornerRadius
+                    readonly property bool cursored: index === root.filterOptionIndex
+                    color: modelData.active ? Style.selectedFillFor(root.fg, Color.accent)
+                         : (cursored || optionMouse.containsMouse) ? Style.hoverFillFor(root.fg, Color.accent)
+                         : "transparent"
+                    borderSpec: Border.surfaceSpec("menu", "border",
+                      (modelData.active || cursored) ? Color.accent : "transparent",
+                      (modelData.active || cursored) ? 1 : 0)
+
+                    MouseArea {
+                      id: optionMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onEntered: root.filterOptionIndex = index
+                      onClicked: root.applyFilterOption(root.openFilterGroup, modelData.id)
                     }
 
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      width: parent.width - Style.space(50)
-                      text: modelData.label
-                      color: modelData.active ? Color.accent : root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.bodySmall
-                      font.bold: modelData.active
-                      elide: Text.ElideRight
-                    }
+                    Row {
+                      anchors.fill: parent
+                      anchors.leftMargin: Style.space(10)
+                      anchors.rightMargin: Style.space(10)
+                      spacing: Style.space(8)
 
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      visible: modelData.active
-                      text: "󰄬"
-                      color: Color.accent
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.bodySmall
+                      Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.icon
+                        color: modelData.active ? Color.accent : root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                      }
+
+                      Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width - Style.space(50)
+                        text: modelData.label
+                        color: modelData.active ? Color.accent : root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        font.bold: modelData.active
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: modelData.active
+                        text: "󰄬"
+                        color: Color.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                      }
                     }
                   }
                 }

@@ -72,10 +72,10 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 
 - **Unified Bottom Filter Bar**:
   - Three identical buttons centred at the bottom -- **Folders**, **Organizations**, **Types** -- each showing its current selection, so the active filters are readable at a glance without opening anything.
-  - Clicking one expands a vertical list in place. Only one opens at a time, and the item list gives back exactly the height the open list takes, so the panel does not jump.
-  - Lists show up to five rows and scroll beyond that; shorter lists size to their content.
-  - Selecting an item collapses whichever list is open, so it never sits over the results.
-  - Keyboard: <kbd>f</kbd> for folders, <kbd>v</kbd> for organizations, <kbd>Tab</kbd> still cycles types.
+  - Opening one drops the window down like a drawer rather than squeezing the item list, with a pinned header naming the group (and its total when it overflows).
+  - Five options are visible at a time and the rest scroll underneath the pinned header.
+  - Any action outside the drawer closes it -- selecting an item, searching, copying, syncing, locking or opening another screen -- so it never sits over the results.
+  - Fully keyboard driven: <kbd>f</kbd> folders, <kbd>v</kbd> organizations, <kbd>i</kbd> types; <kbd>↑</kbd>/<kbd>↓</kbd> move through the options, <kbd>Enter</kbd> applies, <kbd>Esc</kbd> closes. The cursor starts on the option already active, so <kbd>Enter</kbd> changes nothing by accident.
 
 - **Multi-Organization & Vault Filtering**:
   - Automatically queries and displays organizations you belong to.
