@@ -173,7 +173,7 @@ omarchy restart shell
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy Password (and arm TOTP follow-up) |
 | <kbd>Enter</kbd> *(again)* | Copy TOTP code during follow-up window |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | Navigate items, or the open filter drawer |
+| <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Navigate items, or the open filter drawer |
 | <kbd>/</kbd> | Focus the search input field |
 | <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle through types without opening the drawer |
 | <kbd>p</kbd> / <kbd>y</kbd> | Copy **p**assword to clipboard |
@@ -207,6 +207,17 @@ The panel opens with the list focused, so the single-letter shortcuts work strai
 | <kbd>e</kbd> | Edit this item |
 | <kbd>x</kbd> | Delete this item (opens confirmation) |
 | <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Return to main list view |
+
+### Settings Screen
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Move between settings |
+| <kbd>←</kbd> / <kbd>→</kbd> | Decrease / increase a number by its step, or switch a toggle off / on |
+| <kbd>Enter</kbd> | Flip the highlighted toggle, or open the PIN form |
+| <kbd>Esc</kbd> | Back |
+
+A bar in the gutter marks the highlighted setting, and the view scrolls to follow it.
 
 ### Filter drawer
 

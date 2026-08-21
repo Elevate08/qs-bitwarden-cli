@@ -54,6 +54,8 @@ Panel {
   property bool depsChecked: false
   property bool setupDismissed: false
   property string settingsFlash: ""
+  property int settingsIndex: 0
+  readonly property var settingsEntries: Model.groupedSettings()
 
   // Vault data
   property var items: []
@@ -717,10 +719,59 @@ Panel {
     flashNotification("Fingerprint setup opened in a terminal")
   }
 
+  // A setting whose dependency is missing is inert; the cursor may sit on it,
+  // but changing it would silently do nothing.
+  function settingBlocked(entry) {
+    if (!entry || !entry.requires) return false
+    for (var i = 0; i < dependencies.items.length; i++) {
+      if (dependencies.items[i].key === entry.requires) return !dependencies.items[i].ready
+    }
+    return false
+  }
+
+  function moveSettingsCursor(delta) {
+    var n = settingsEntries.length
+    if (n === 0) return
+    settingsIndex = Math.max(0, Math.min(n - 1, settingsIndex + delta))
+  }
+
+  // Left/right nudge a value: numbers by their step, switches off and on.
+  function adjustSetting(direction) {
+    var e = settingsEntries[settingsIndex]
+    if (!e || settingBlocked(e)) return
+
+    if (e.type === "int") {
+      var cur = Number(settingValue(e))
+      var step = e.step || 1
+      var next = Math.max(e.min || 0, Math.min(e.max || 100, cur + direction * step))
+      if (next !== cur) writeSetting(e.key, next, "int")
+      return
+    }
+
+    if (e.type === "bool") {
+      var want = direction > 0
+      if (Boolean(settingValue(e)) !== want) activateSettingRow()
+    }
+  }
+
+  function activateSettingRow() {
+    var e = settingsEntries[settingsIndex]
+    if (!e || settingBlocked(e)) return
+
+    // The PIN switch opens a form rather than flipping a value.
+    if (e.action === "pin") {
+      if (pinConfigured) disablePinUnlock()
+      else beginPinSetup()
+      return
+    }
+    if (e.type === "bool") writeSetting(e.key, !settingValue(e), "bool")
+  }
+
   function openSettings() {
     closeFilterGroup()
     if (currentScreen !== "settings") screenBeforeSettings = currentScreen
     settingsFlash = ""
+    settingsIndex = 0
     checkDependencies()
     currentScreen = "settings"
   }
@@ -2043,15 +2094,36 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: (root.status === "unlocked" && root.currentScreen === "main")
+    // Every unlocked screen except the two that are text entry drives the key
+    // catcher, so arrow navigation works on settings and the generator too.
+    focusTarget: (root.status === "unlocked"
+                  && root.currentScreen !== "edit"
+                  && root.currentScreen !== "pin")
       ? keyCatcher
       : (root.status === "unauthenticated" ? emailField : passField)
     contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.filterDrawerHeight)
 
+    // PanelKeyCatcher maps h/j/k/l to arrow navigation and consumes them before
+    // its textKey signal fires, which silently swallowed the l (lock) shortcut.
+    // Forwarding here first gives our letter bindings the first look; anything
+    // we do not accept falls through to the catcher's own navigation.
+    Item {
+      id: shortcutInterceptor
+      Keys.onPressed: function(event) {
+        if (event.modifiers & ~Qt.KeypadModifier) return
+        if (!event.text || root.currentScreen !== "main") return
+        if (root.openFilterGroup !== "") return
+        var t = String(event.text).toLowerCase()
+        if (t !== "h" && t !== "j" && t !== "k" && t !== "l") return
+        if (root.runShortcut(t)) event.accepted = true
+      }
+    }
+
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      Keys.forwardTo: [shortcutInterceptor]
       blocked: searchField.activeFocus
         || emailField.activeFocus
         || loginPassField.activeFocus
@@ -2091,6 +2163,11 @@ Panel {
         }
       }
       onMoveRequested: function(dx, dy) {
+        if (root.currentScreen === "settings") {
+          if (dy !== 0) root.moveSettingsCursor(dy)
+          else if (dx !== 0) root.adjustSetting(dx)
+          return
+        }
         // While a filter drawer is open the arrows drive it, not the item list.
         if (root.openFilterGroup !== "" && root.currentScreen === "main") {
           if (dy !== 0) root.moveFilterCursor(dy)
@@ -2106,6 +2183,10 @@ Panel {
         }
       }
       onActivateRequested: {
+        if (root.currentScreen === "settings") {
+          root.activateSettingRow()
+          return
+        }
         if (root.openFilterGroup !== "" && root.currentScreen === "main") {
           root.activateFilterOption()
           return
@@ -3059,13 +3140,31 @@ Panel {
             }
           }
 
+          Connections {
+            target: root
+            function onSettingsIndexChanged() {
+              var row = settingsRepeater.itemAt(root.settingsIndex)
+              if (!row) return
+              if (row.y < settingsFlick.contentY) {
+                settingsFlick.contentY = Math.max(0, row.y - Style.space(8))
+              } else if (row.y + row.height > settingsFlick.contentY + settingsFlick.height) {
+                settingsFlick.contentY = Math.min(
+                  Math.max(0, settingsFlick.contentHeight - settingsFlick.height),
+                  row.y + row.height - settingsFlick.height + Style.space(8))
+              }
+            }
+          }
+
           Repeater {
-            model: Model.groupedSettings()
+            id: settingsRepeater
+            model: root.settingsEntries
 
             delegate: Column {
               required property var modelData
+              required property int index
               width: parent.width
               spacing: Style.space(4)
+              readonly property bool cursored: index === root.settingsIndex
 
               // One header per group, drawn by the first entry in it.
               Item {
@@ -3083,19 +3182,22 @@ Panel {
 
               // A setting whose dependency is missing is shown but inert, with
               // the reason stated rather than the control silently doing nothing.
-              readonly property bool blocked: {
-                if (!modelData.requires) return false
-                for (var i = 0; i < root.dependencies.items.length; i++) {
-                  if (root.dependencies.items[i].key === modelData.requires) {
-                    return !root.dependencies.items[i].ready
-                  }
-                }
-                return false
-              }
+              readonly property bool blocked: root.settingBlocked(modelData)
 
               Row {
                 width: parent.width
                 spacing: Style.space(10)
+
+                // Keyboard cursor: a bar in the gutter, so the row it marks is
+                // unmistakable without recolouring the whole row.
+                Rectangle {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(3)
+                  height: parent.height - Style.space(6)
+                  radius: width / 2
+                  color: Color.accent
+                  visible: cursored
+                }
 
                 Column {
                   width: parent.width - Style.space(modelData.type === "int" ? 200 : 130)
