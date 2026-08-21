@@ -173,30 +173,45 @@ omarchy restart shell
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy Password (and arm TOTP follow-up) |
 | <kbd>Enter</kbd> *(again)* | Copy TOTP code during follow-up window |
-| <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Navigate through items in list |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Navigate items, or the open filter drawer |
 | <kbd>/</kbd> | Focus the search input field |
-| <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle through categories (All, Logins, Notes, Cards, Identities, Favorites) |
-| <kbd>y</kbd> / <kbd>p</kbd> | Copy password to clipboard |
-| <kbd>u</kbd> / <kbd>c</kbd> | Copy username / email to clipboard |
-| <kbd>t</kbd> | Copy TOTP 2FA code to clipboard |
-| <kbd>o</kbd> | Open website URL in default browser |
-| <kbd>n</kbd> | Create a new vault item |
-| <kbd>e</kbd> | Open detail inspector / Edit item |
-| <kbd>r</kbd> | Synchronize vault with Bitwarden cloud |
-| <kbd>l</kbd> | Lock the vault |
-| <kbd>Esc</kbd> | Clear search query or close panel |
+| <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle through types without opening the drawer |
+| <kbd>p</kbd> / <kbd>y</kbd> | Copy **p**assword to clipboard |
+| <kbd>u</kbd> / <kbd>c</kbd> | Copy **u**sername / email to clipboard |
+| <kbd>m</kbd> | Copy TOTP **m**ulti-factor code to clipboard |
+| <kbd>w</kbd> | Open **w**ebsite URL in default browser |
+| <kbd>f</kbd> | **F**olders filter |
+| <kbd>o</kbd> | **O**rganizations filter |
+| <kbd>t</kbd> | **T**ypes filter |
+| <kbd>g</kbd> | **G**enerator |
+| <kbd>n</kbd> | **N**ew vault item |
+| <kbd>s</kbd> | **S**ettings |
+| <kbd>r</kbd> | Sync (**r**efresh) vault with Bitwarden |
+| <kbd>l</kbd> | **L**ock the vault |
+| <kbd>e</kbd> | Open detail inspector / **e**dit item |
+| <kbd>Esc</kbd> | Close the filter drawer, clear search, or close the panel |
 
 ### Detail Inspector View
 
 | Shortcut | Action |
 | :--- | :--- |
-| <kbd>y</kbd> / <kbd>p</kbd> | Copy password to clipboard |
+| <kbd>p</kbd> / <kbd>y</kbd> | Copy password to clipboard |
 | <kbd>u</kbd> / <kbd>c</kbd> | Copy username to clipboard |
-| <kbd>t</kbd> | Copy TOTP code to clipboard |
-| <kbd>v</kbd> | Toggle reveal / mask password |
+| <kbd>m</kbd> | Copy TOTP code to clipboard |
+| <kbd>w</kbd> | Open in browser |
+| <kbd>v</kbd> | Toggle re**v**eal / mask password |
 | <kbd>e</kbd> | Edit this item |
 | <kbd>x</kbd> | Delete this item (opens confirmation) |
 | <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Return to main list view |
+
+### Filter drawer
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>f</kbd> / <kbd>o</kbd> / <kbd>t</kbd> | Open (or close) that drawer |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Move through the options |
+| <kbd>Enter</kbd> | Apply the highlighted option |
+| <kbd>Esc</kbd> | Close without changing anything |
 
 ---
 

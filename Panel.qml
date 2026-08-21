@@ -2102,9 +2102,9 @@ Panel {
             if (item) root.copyPassword(item)
           } else if (lower === "u" || lower === "c") {
             if (item) root.copyUsername(item)
-          } else if (lower === "t") {
+          } else if (lower === "m") {
             if (item && item.hasTotp) root.copyTotpCode(item)
-          } else if (lower === "o") {
+          } else if (lower === "w") {
             if (item && item.uris && item.uris.length > 0) root.openUrl(item.uris[0])
           } else if (lower === "n") {
             root.startAddNewItem()
@@ -2116,13 +2116,13 @@ Panel {
             root.syncVault()
           } else if (lower === "f") {
             root.toggleFilterGroup("folders")
-          } else if (lower === "v") {
+          } else if (lower === "o") {
             root.toggleFilterGroup("organizations")
-          } else if (lower === "i") {
+          } else if (lower === "t") {
             root.toggleFilterGroup("types")
           } else if (lower === "g") {
             root.openGenerator()
-          } else if (lower === ",") {
+          } else if (lower === "s") {
             root.openSettings()
           } else if (lower === "/") {
             searchField.forceActiveFocus()
@@ -2132,7 +2132,7 @@ Panel {
             if (root.detailPassword) root.copyToClipboard(root.detailPassword, "Password")
           } else if (lower === "u" || lower === "c") {
             if (root.detailItem && root.detailItem.username) root.copyToClipboard(root.detailItem.username, "Username")
-          } else if (lower === "t") {
+          } else if (lower === "m") {
             if (root.liveTotp) root.copyToClipboard(root.liveTotp, "TOTP")
           } else if (lower === "e") {
             if (root.detailItem) root.startEditItem(root.detailItem)
@@ -2211,7 +2211,7 @@ Panel {
             PanelActionButton {
               visible: root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin"
               iconText: "󰒓"
-              tooltipText: "Settings (,)"
+              tooltipText: "Settings (s)"
               fontFamily: root.fontFamily
               onClicked: root.openSettings()
             }
@@ -3934,7 +3934,7 @@ Panel {
                     PanelActionButton {
                       visible: itemData.hasTotp
                       iconText: "󰥔"
-                      tooltipText: "Copy TOTP code (t)"
+                      tooltipText: "Copy TOTP code (m)"
                       fontFamily: root.fontFamily
                       onClicked: root.copyTotpCode(itemData)
                     }
@@ -3949,7 +3949,7 @@ Panel {
                     PanelActionButton {
                       visible: itemData.uris && itemData.uris.length > 0
                       iconText: "󰖟"
-                      tooltipText: "Open URL (o)"
+                      tooltipText: "Open URL (w)"
                       fontFamily: root.fontFamily
                       onClicked: root.openUrl(itemData.uris[0])
                     }
@@ -4178,7 +4178,9 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 horizontalPadding: Style.space(10)
-                tooltipText: modelData.name + " filter"
+                tooltipText: modelData.name + " filter ("
+                  + (modelData.group === "folders" ? "f"
+                     : modelData.group === "organizations" ? "o" : "t") + ")"
                 onClicked: root.toggleFilterGroup(modelData.group)
               }
             }
@@ -4520,7 +4522,7 @@ Panel {
                       id: copyTotpBtn
                       anchors.verticalCenter: parent.verticalCenter
                       iconText: "󰥔"
-                      tooltipText: "Copy TOTP code (t)"
+                      tooltipText: "Copy TOTP code (m)"
                       fontFamily: root.fontFamily
                       enabled: root.liveTotp !== ""
                       onClicked: root.copyToClipboard(root.liveTotp, "TOTP code")
@@ -4565,7 +4567,7 @@ Panel {
                         id: openUriBtn
                         anchors.verticalCenter: parent.verticalCenter
                         iconText: "󰖟"
-                        tooltipText: "Open in browser (o)"
+                        tooltipText: "Open in browser (w)"
                         fontFamily: root.fontFamily
                         onClicked: root.openUrl(modelData)
                       }
