@@ -7,7 +7,20 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI](https://img.shields.io/badge/requires-bw%20CLI-175ddc.svg)](https://bitwarden.com/help/cli/)
 
-![Status Bar Integration](https://raw.githubusercontent.com/bitwarden/brand/main/icons/icon.png)
+---
+
+## Screenshots
+
+Every screenshot below is captured against a **fixture vault** of made-up entries, never a real one -- see [Screenshots](#screenshots-1) under Development for how, and how to regenerate them.
+
+| Vault list | Filter drawer |
+| :---: | :---: |
+| ![Vault list](docs/screenshots/01-vault-list.png) | ![Folder drawer](docs/screenshots/02-folder-drawer.png) |
+| Folders, organizations, favourites and TOTP at a glance | Folders, Organizations and Types open as a drawer |
+
+| Generator | Bitwarden Send | Settings |
+| :---: | :---: | :---: |
+| ![Generator](docs/screenshots/03-generator.png) | ![Sends](docs/screenshots/04-sends.png) | ![Settings](docs/screenshots/05-settings.png) |
 
 ---
 
@@ -175,60 +188,51 @@ omarchy restart shell
 
 ## Usage & Keyboard Shortcuts
 
+The panel opens with the item list focused, so single-letter shortcuts work straight away. Press <kbd>/</kbd> to type a search.
+
+**While the search box has focus** every letter is search text -- as a text field should behave. Hold <kbd>Alt</kbd> to reach the same shortcuts without leaving the box or disturbing your query; <kbd>↓</kbd> also hands focus back to the list.
+
 ### Vault List View (Main Screen)
 
 | Shortcut | Action |
 | :--- | :--- |
-| <kbd>Enter</kbd> | Copy Password (and arm TOTP follow-up) |
-| <kbd>Enter</kbd> *(again)* | Copy TOTP code during follow-up window |
-| <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Navigate items, or the open filter drawer |
-| <kbd>/</kbd> | Focus the search input field |
-| <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle through types without opening the drawer |
-| <kbd>p</kbd> / <kbd>y</kbd> | Copy **p**assword to clipboard |
-| <kbd>u</kbd> / <kbd>c</kbd> | Copy **u**sername / email to clipboard |
-| <kbd>m</kbd> | Copy TOTP **m**ulti-factor code to clipboard |
-| <kbd>w</kbd> | Open **w**ebsite URL in default browser |
+| <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up) |
+| <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
+| <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
+| <kbd>/</kbd> | Focus the search box |
+| <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle types without opening the drawer |
+| <kbd>p</kbd> *(or <kbd>y</kbd>)* | Copy **p**assword |
+| <kbd>u</kbd> *(or <kbd>c</kbd>)* | Copy **u**sername / email |
+| <kbd>m</kbd> | Copy TOTP **m**ulti-factor code |
+| <kbd>w</kbd> | Open the **w**ebsite in your browser |
+| <kbd>e</kbd> | Open the detail inspector / **e**dit |
 | <kbd>f</kbd> | **F**olders filter |
 | <kbd>o</kbd> | **O**rganizations filter |
 | <kbd>t</kbd> | **T**ypes filter |
 | <kbd>g</kbd> | **G**enerator |
 | <kbd>n</kbd> | **N**ew vault item |
 | <kbd>s</kbd> | **S**ettings |
-| <kbd>r</kbd> | Sync (**r**efresh) vault with Bitwarden |
+| <kbd>r</kbd> | Sync (**r**efresh) |
 | <kbd>l</kbd> | **L**ock the vault |
-| <kbd>e</kbd> | Open detail inspector / **e**dit item |
-| <kbd>Alt</kbd>+<kbd>S</kbd> | Bitwarden **S**end |
-| <kbd>Esc</kbd> | Close the filter drawer, clear search, or close the panel |
+| <kbd>Alt</kbd>+<kbd>s</kbd> | Bitwarden **S**end |
+| <kbd>Alt</kbd>+<kbd>,</kbd> | Settings |
+| <kbd>Esc</kbd> | Close the filter drawer, clear the search, or close the panel |
 
-The panel opens with the list focused, so the single-letter shortcuts work straight away; press <kbd>/</kbd> to start typing a search.
+`Alt` + any letter above runs the same action from inside the search box. Two are `Alt`-only: <kbd>Alt</kbd>+<kbd>s</kbd> opens **Send** (which has no bare letter, since <kbd>s</kbd> is Settings), and <kbd>Alt</kbd>+<kbd>,</kbd> opens **Settings**, so Settings is still reachable while searching.
 
-**While the search box has focus**, letters are search text -- that is what a text field should do. Hold <kbd>Alt</kbd> to reach the same shortcuts without leaving the box: <kbd>Alt</kbd>+<kbd>t</kbd> opens the types drawer with your query intact, <kbd>Alt</kbd>+<kbd>p</kbd> copies the highlighted item's password, and so on. The one exception is <kbd>Alt</kbd>+<kbd>s</kbd>, which opens Send rather than Settings -- Send has no bare letter of its own, and <kbd>s</kbd> already means Settings. <kbd>↓</kbd> also returns focus to the list.
-
-### Detail Inspector View
+### Detail Inspector
 
 | Shortcut | Action |
 | :--- | :--- |
-| <kbd>p</kbd> / <kbd>y</kbd> | Copy password to clipboard |
-| <kbd>u</kbd> / <kbd>c</kbd> | Copy username to clipboard |
-| <kbd>m</kbd> | Copy TOTP code to clipboard |
-| <kbd>w</kbd> | Open in browser |
+| <kbd>p</kbd> / <kbd>y</kbd> | Copy password |
+| <kbd>u</kbd> / <kbd>c</kbd> | Copy username |
+| <kbd>m</kbd> | Copy TOTP code |
 | <kbd>v</kbd> | Toggle re**v**eal / mask password |
 | <kbd>e</kbd> | Edit this item |
-| <kbd>x</kbd> | Delete this item (opens confirmation) |
-| <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Return to main list view |
+| <kbd>x</kbd> | Delete this item (asks first) |
+| <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Back to the list |
 
-### Settings Screen
-
-| Shortcut | Action |
-| :--- | :--- |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | Move between settings |
-| <kbd>←</kbd> / <kbd>→</kbd> | Decrease / increase a number by its step, or switch a toggle off / on |
-| <kbd>Enter</kbd> | Flip the highlighted toggle, or open the PIN form |
-| <kbd>Esc</kbd> | Back |
-
-A bar in the gutter marks the highlighted setting, and the view scrolls to follow it.
-
-### Filter drawer
+### Filter Drawer (Folders / Organizations / Types)
 
 | Shortcut | Action |
 | :--- | :--- |
@@ -236,6 +240,28 @@ A bar in the gutter marks the highlighted setting, and the view scrolls to follo
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Move through the options |
 | <kbd>Enter</kbd> | Apply the highlighted option |
 | <kbd>Esc</kbd> | Close without changing anything |
+
+The cursor starts on the option already in effect, so <kbd>Enter</kbd> never changes a filter by accident.
+
+### Settings Screen
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Move between settings |
+| <kbd>←</kbd> / <kbd>→</kbd> | Decrease / increase a number by its step, or switch a toggle off / on |
+| <kbd>Enter</kbd> | Flip the highlighted toggle, or open the PIN / fingerprint form |
+| <kbd>Esc</kbd> | Back |
+
+### Send Screen
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>Alt</kbd>+<kbd>s</kbd> | Open Sends |
+| <kbd>n</kbd> | New Send |
+| <kbd>r</kbd> | Refresh the list |
+| <kbd>x</kbd> | Delete the highlighted Send |
+| <kbd>Enter</kbd> | Copy the highlighted Send's link |
+| <kbd>Esc</kbd> | Back |
 
 ---
 
@@ -316,6 +342,22 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 PAM can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. Fingerprint unlock therefore keeps your master password in the OS login keyring and treats a verified fingerprint as the gate on reading it back. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock, and it means **anyone who can read your unlocked login keyring can read your master password**. It is off by default and worth leaving off on a shared or unattended machine.
 
 The stored password is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, log out of the account, or when the vault rejects it (for example after a master password change, which then prompts you for the new one).
+
+---
+
+## Screenshots
+
+The screenshots in this README are generated, not hand-cropped, and never show a real vault:
+
+```bash
+./demo/capture.sh            # writes docs/screenshots/*.png
+```
+
+`demo/bin/bw` is a stand-in for the Bitwarden CLI that answers from `demo/fixtures.json`. The script restarts the Omarchy shell with `demo/bin` ahead of it on `PATH`, so the plugin resolves `bw` to the shim and renders a vault of invented entries -- `demo@example.com`, `Acme Corp`, a card numbered `4111 1111 1111 1111`. Nothing in that path reads your keyring, touches the network, or runs the real `bw`, and the real shell is restored on exit, including if the script is interrupted.
+
+`demo/find_panel.py` crops each image to the panel by locating its accent-coloured border. That matters for privacy as much as tidiness: a fixed crop leaves a margin of whatever is behind the panel -- windows, filenames, terminal scrollback -- in the published image.
+
+To change what the screenshots show, edit `demo/fixtures.json` and re-run the script.
 
 ---
 

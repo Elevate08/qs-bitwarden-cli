@@ -1621,7 +1621,10 @@ Panel {
   // Alt+letter. Same table as the bare letters, except Alt+s opens Sends --
   // Send has no bare letter of its own, and plain s is already Settings.
   function runAltShortcut(lower) {
+    // Alt+s is Send, which has no bare letter of its own, so Settings keeps
+    // its own Alt binding on the comma rather than losing one.
     if (lower === "s") { openSends(); return true }
+    if (lower === ",") { openSettings(); return true }
     return runShortcut(lower)
   }
 

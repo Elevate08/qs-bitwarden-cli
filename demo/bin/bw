@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# A stand-in for the Bitwarden CLI, used only to capture screenshots.
+#
+# The plugin resolves `bw` from PATH, so putting this earlier on PATH points it
+# at a fixture vault instead of a real one. Nothing here talks to Bitwarden,
+# reads a keyring, or touches the network -- which is the point: the README
+# screenshots can show a populated vault without showing anyone's credentials.
+set -uo pipefail
+
+FIXTURES="$(dirname "$(readlink -f "$0")")/../fixtures.json"
+j() { python3 -c "
+import json,sys
+d=json.load(open('$FIXTURES'))
+sys.stdout.write(json.dumps(d[sys.argv[1]]))" "$1"; }
+
+case "${1:-}" in
+  --version) echo "2026.2.0-demo" ;;
+  status)    j status ;;
+  sync)      echo "Syncing complete." ;;
+  lock)      echo "Your vault is locked." ;;
+  unlock)    echo "demo-session-token-not-real" ;;
+  generate)
+    # Roughly honour --passphrase so the generator screenshot looks right.
+    if [[ " $* " == *" --passphrase "* ]]; then echo "Correct-Horse-Battery-Staple"
+    else echo "Xq7X2mFk9TbW4e"; fi ;;
+  list)
+    case "${2:-}" in
+      items)         j items ;;
+      folders)       j folders ;;
+      organizations) j organizations ;;
+      *)             echo "[]" ;;
+    esac ;;
+  get)
+    case "${2:-}" in
+      totp)     echo "418 623" | tr -d ' ' ;;
+      password) echo "placeholder" ;;
+      item)     python3 -c "
+import json,sys
+d=json.load(open('$FIXTURES'))
+want=sys.argv[1]
+for it in d['items']:
+    if it['id']==want: print(json.dumps(it)); break
+else: print(json.dumps(d['items'][0]))" "${3:-i1}" ;;
+      *) echo "{}" ;;
+    esac ;;
+  send)
+    case "${2:-}" in
+      list)   j sends ;;
+      create) echo '{"object":"send","id":"s3","name":"New Send","type":0,"accessUrl":"https://vault.bitwarden.com/#/send/demo3","accessCount":0,"maxAccessCount":null,"deletionDate":"2026-08-28T10:00:00.000Z","passwordSet":false,"disabled":false,"text":{"text":"placeholder","hidden":false}}' ;;
+      delete) echo "Send deleted." ;;
+      *)      echo "[]" ;;
+    esac ;;
+  encode)  cat ;;
+  create|edit|delete) echo '{"object":"item","id":"new"}' ;;
+  *) echo "{}" ;;
+esac
