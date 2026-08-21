@@ -38,12 +38,18 @@ function shellQuote(value) {
   return "'" + String(value || "").replace(/'/g, "'\\''") + "'"
 }
 
-function buildCommand(args, session, useSession) {
-  var cmd = ["bw"].concat(args || [])
-  if (useSession && session) {
-    cmd.push("--session", String(session).trim())
-  }
-  return cmd
+// The session token is never put on a command line. /proc/<pid>/cmdline is
+// world-readable on a default Linux install, and the token grants full access
+// to the unlocked vault. It travels in BW_SESSION instead, which bw reads
+// natively; see sessionEnvVar() and the callers that set it.
+const SESSION_ENV = "BW_SESSION"
+
+function sessionEnvVar() {
+  return SESSION_ENV
+}
+
+function buildCommand(args) {
+  return ["bw"].concat(args || [])
 }
 
 function extractSessionToken(raw) {
@@ -67,7 +73,7 @@ function extractSessionToken(raw) {
 // -------------------------------------------------------------------------
 
 function statusCommand(session) {
-  return buildCommand(["status"], session, Boolean(session))
+  return buildCommand(["status"])
 }
 
 function unlockCommand(password) {
@@ -110,41 +116,41 @@ function logoutCommand() {
 }
 
 function listCommand(session) {
-  return buildCommand(["list", "items"], session, true)
+  return buildCommand(["list", "items"])
 }
 
 function listOrganizationsCommand(session) {
-  return buildCommand(["list", "organizations"], session, true)
+  return buildCommand(["list", "organizations"])
 }
 
 function listFoldersCommand(session) {
-  return buildCommand(["list", "folders"], session, true)
+  return buildCommand(["list", "folders"])
 }
 
 function createFolderCommand(name, session) {
   var jsonStr = JSON.stringify({ name: String(name || "").trim() })
-  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder --session " + shellQuote(session)
+  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder"
   return ["bash", "-c", script]
 }
 
-function deleteFolderCommand(folderId, session) {
-  return ["bw", "delete", "folder", String(folderId), "--session", String(session).trim()]
+function deleteFolderCommand(folderId) {
+  return ["bw", "delete", "folder", String(folderId)]
 }
 
 function getItemCommand(id, session) {
-  return buildCommand(["get", "item", String(id)], session, true)
+  return buildCommand(["get", "item", String(id)])
 }
 
 function getTotpCommand(id, session) {
-  return buildCommand(["get", "totp", String(id), "--raw"], session, true)
+  return buildCommand(["get", "totp", String(id), "--raw"])
 }
 
 function syncCommand(session) {
-  return buildCommand(["sync"], session, true)
+  return buildCommand(["sync"])
 }
 
 function lockCommand(session) {
-  return buildCommand(["lock"], session, Boolean(session))
+  return buildCommand(["lock"])
 }
 
 // -------------------------------------------------------------------------
@@ -163,18 +169,16 @@ function itemEnvVar() {
 function createItemCommand(itemData, session) {
   var orgArg = (itemData && itemData.organizationId) ? (" --organizationid " + shellQuote(itemData.organizationId)) : ""
   var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw create item" + orgArg
-    + " --session " + shellQuote(session)
   return ["bash", "-c", script]
 }
 
 function editItemCommand(itemId, session) {
   var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item " + shellQuote(itemId)
-    + " --session " + shellQuote(session)
   return ["bash", "-c", script]
 }
 
-function deleteItemCommand(itemId, session) {
-  return ["bw", "delete", "item", String(itemId), "--session", String(session).trim()]
+function deleteItemCommand(itemId) {
+  return ["bw", "delete", "item", String(itemId)]
 }
 
 // -------------------------------------------------------------------------
@@ -1613,15 +1617,15 @@ var SEND_TYPE_TEXT = 0
 var SEND_TYPE_FILE = 1
 
 function listSendsCommand(session) {
-  return buildCommand(["send", "list"], session, true)
+  return buildCommand(["send", "list"])
 }
 
 function deleteSendCommand(sendId, session) {
-  return buildCommand(["send", "delete", String(sendId)], session, true)
+  return buildCommand(["send", "delete", String(sendId)])
 }
 
 function removeSendPasswordCommand(sendId, session) {
-  return buildCommand(["send", "remove-password", String(sendId)], session, true)
+  return buildCommand(["send", "remove-password", String(sendId)])
 }
 
 // The payload travels in the environment, not argv. Both the flag form's
@@ -1634,7 +1638,7 @@ function sendEnvVar() {
 }
 
 function createSendCommand(session) {
-  var script = "printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create --session " + shellQuote(session)
+  var script = "printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create"
   return ["bash", "-c", script]
 }
 

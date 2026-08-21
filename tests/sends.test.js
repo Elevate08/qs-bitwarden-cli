@@ -18,6 +18,18 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.deleteSendCommand = deleteSendCommand
   exports.createItemCommand = createItemCommand
   exports.editItemCommand = editItemCommand
+  exports.sessionEnvVar = sessionEnvVar
+  exports.statusCommand = statusCommand
+  exports.listCommand = listCommand
+  exports.syncCommand = syncCommand
+  exports.getItemCommand = getItemCommand
+  exports.getTotpCommand = getTotpCommand
+  exports.lockCommand = lockCommand
+  exports.deleteItemCommand = deleteItemCommand
+  exports.createFolderCommand = createFolderCommand
+  exports.listFoldersCommand = listFoldersCommand
+  exports.listOrganizationsCommand = listOrganizationsCommand
+  exports.deleteFolderCommand = deleteFolderCommand
 `)(Model)
 
 let pass = 0
@@ -89,6 +101,36 @@ check("unlimited access omits the maximum",
   Model.sendAccessLabel({ accessCount: 2, maxAccessCount: null }) === "2 views", "expected '2 views'")
 check("a capped Send shows the maximum",
   Model.sendAccessLabel({ accessCount: 2, maxAccessCount: 5 }) === "2 of 5 views", "expected '2 of 5 views'")
+
+
+// --- no bw command may carry the session token in argv ----------------------
+// /proc/<pid>/cmdline is world-readable on a default Linux install, and the
+// token grants full access to the unlocked vault. It goes in BW_SESSION.
+check("the session env var is BW_SESSION, which bw reads natively",
+  Model.sessionEnvVar() === "BW_SESSION", Model.sessionEnvVar())
+
+const builders = [
+  ["statusCommand", () => Model.statusCommand()],
+  ["listCommand", () => Model.listCommand()],
+  ["listFoldersCommand", () => Model.listFoldersCommand()],
+  ["listOrganizationsCommand", () => Model.listOrganizationsCommand()],
+  ["listSendsCommand", () => Model.listSendsCommand()],
+  ["syncCommand", () => Model.syncCommand()],
+  ["lockCommand", () => Model.lockCommand()],
+  ["getItemCommand", () => Model.getItemCommand("id")],
+  ["getTotpCommand", () => Model.getTotpCommand("id")],
+  ["deleteItemCommand", () => Model.deleteItemCommand("id")],
+  ["deleteFolderCommand", () => Model.deleteFolderCommand("id")],
+  ["deleteSendCommand", () => Model.deleteSendCommand("id")],
+  ["createFolderCommand", () => Model.createFolderCommand("f")],
+  ["createItemCommand", () => Model.createItemCommand({ organizationId: null })],
+  ["editItemCommand", () => Model.editItemCommand("id")],
+  ["createSendCommand", () => Model.createSendCommand()],
+]
+for (const [name, build] of builders) {
+  const argv = build().join(" ")
+  check(`${name} passes no --session flag`, !argv.includes("--session"), argv)
+}
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

@@ -66,12 +66,12 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
   - **Edit Items (`e` key or Edit button)**: Modify titles, credentials, authenticator keys, URLs, and notes.
   - **Delete Items (`x` key or Delete button)**: Delete items with confirmation protection.
 
-- **Bitwarden Send** (<kbd>Shift</kbd>+<kbd>S</kbd> or the `󰒗` button):
+- **Bitwarden Send** (<kbd>Alt</kbd>+<kbd>S</kbd> or the `󰒗` button):
   - Share a secret through a link that expires on its own, so a credential need not live in a chat log.
   - Create a text Send with a name, hidden-by-default text, a deletion window (1-31 days), a maximum view count, and an optional password. The access link is copied to your clipboard the moment it is created.
   - Lists your existing Sends with how long each has left (`in 3 days`, `expired`), views used against the maximum, and whether a password is set. Copy a link or delete a Send from the row.
   - Keyboard: <kbd>n</kbd> new, <kbd>r</kbd> refresh, <kbd>x</kbd> delete the highlighted Send, <kbd>Enter</kbd> copy its link, <kbd>Esc</kbd> back.
-  - The Send payload -- which carries the Send password -- is passed to `bw` through the environment, never on the command line, since `/proc/<pid>/cmdline` is world-readable.
+  - The Send payload -- which carries the Send password -- is passed to `bw` through the environment, never on the command line.
 
 - **Folders**:
   - Filter by folder from the bottom filter bar: **All Folders**, **No Folder**, or any specific folder.
@@ -101,7 +101,7 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 - **Hardware-Accelerated Performance & Security**:
   - Virtualized `ListView` with component delegate recycling for instant rendering of large vaults.
   - Asynchronous search debouncing (50ms) for responsive 0ms typing latency.
-  - Master password passed exclusively through environment variables (`--passwordenv`), never command-line arguments.
+  - **Nothing secret ever reaches a command line.** `/proc/<pid>/cmdline` is world-readable on a default Linux install, so the session token travels in `BW_SESSION`, item and Send payloads in their own environment variables, copied secrets in `QSBW_CLIP` on the way to `wl-copy`, and the master password through `--passwordenv`. A test asserts no command builder emits `--session`.
   - Automatic clipboard clearing (`wl-copy --clear`) after a configurable timeout (default: 30s).
   - Optional session token caching in Linux Secret Service (`secret-tool` / libsecret).
 
@@ -197,11 +197,12 @@ omarchy restart shell
 | <kbd>r</kbd> | Sync (**r**efresh) vault with Bitwarden |
 | <kbd>l</kbd> | **L**ock the vault |
 | <kbd>e</kbd> | Open detail inspector / **e**dit item |
+| <kbd>Alt</kbd>+<kbd>S</kbd> | Bitwarden **S**end |
 | <kbd>Esc</kbd> | Close the filter drawer, clear search, or close the panel |
 
 The panel opens with the list focused, so the single-letter shortcuts work straight away; press <kbd>/</kbd> to start typing a search.
 
-**While the search box has focus**, letters are search text -- that is what a text field should do. Hold <kbd>Alt</kbd> to reach the same shortcuts without leaving the box: <kbd>Alt</kbd>+<kbd>t</kbd> opens the types drawer with your query intact, <kbd>Alt</kbd>+<kbd>p</kbd> copies the highlighted item's password, and so on. <kbd>↓</kbd> also returns focus to the list.
+**While the search box has focus**, letters are search text -- that is what a text field should do. Hold <kbd>Alt</kbd> to reach the same shortcuts without leaving the box: <kbd>Alt</kbd>+<kbd>t</kbd> opens the types drawer with your query intact, <kbd>Alt</kbd>+<kbd>p</kbd> copies the highlighted item's password, and so on. The one exception is <kbd>Alt</kbd>+<kbd>s</kbd>, which opens Send rather than Settings -- Send has no bare letter of its own, and <kbd>s</kbd> already means Settings. <kbd>↓</kbd> also returns focus to the list.
 
 ### Detail Inspector View
 

@@ -359,12 +359,12 @@ Panel {
     if (status === "locked" && !session) return
     errorMessage = ""
     if (session) {
-      statusProc.command = Model.statusCommand(session)
+      statusProc.command = Model.statusCommand()
       statusProc.running = true
     } else if (rememberSession && status !== "locked") {
       keyringLookupProc.running = true
     } else {
-      statusProc.command = Model.statusCommand("")
+      statusProc.command = Model.statusCommand()
       statusProc.running = true
     }
   }
@@ -373,16 +373,16 @@ Panel {
     var token = String(rawToken || "").trim()
     if (token) {
       session = token
-      statusProc.command = Model.statusCommand(session)
+      statusProc.command = Model.statusCommand()
       statusProc.running = true
     } else {
-      statusProc.command = Model.statusCommand("")
+      statusProc.command = Model.statusCommand()
       statusProc.running = true
     }
   }
 
   function onKeyringLookupFailed() {
-    statusProc.command = Model.statusCommand("")
+    statusProc.command = Model.statusCommand()
     statusProc.running = true
   }
 
@@ -529,16 +529,25 @@ Panel {
     return env
   }
 
-  function itemEnv() {
+  // BW_SESSION rather than --session: bw reads it natively, and it keeps the
+  // token out of /proc/<pid>/cmdline, which any local user can read.
+  function bwEnv(extra) {
     var env = {}
-    env[Model.itemEnvVar()] = String(itemPayloadJson || "")
+    if (session) env[Model.sessionEnvVar()] = String(session)
+    if (extra) for (var k in extra) env[k] = extra[k]
     return env
   }
 
+  function itemEnv() {
+    var e = {}
+    e[Model.itemEnvVar()] = String(itemPayloadJson || "")
+    return bwEnv(e)
+  }
+
   function sendEnv(json) {
-    var env = {}
-    env[Model.sendEnvVar()] = String(json || "")
-    return env
+    var e = {}
+    e[Model.sendEnvVar()] = String(json || "")
+    return bwEnv(e)
   }
 
   function pinEnv(pin, secret) {
@@ -570,7 +579,7 @@ Panel {
   function loadSends() {
     if (!session) return
     sendsLoading = true
-    listSendsProc.command = Model.listSendsCommand(session)
+    listSendsProc.command = Model.listSendsCommand()
     listSendsProc.running = true
   }
 
@@ -602,7 +611,7 @@ Panel {
     sendPayloadJson = JSON.stringify(Model.buildSendPayload(
       sendFormName, sendFormText, sendFormHidden,
       sendFormDays, sendFormMaxAccess, sendFormPassword, ""))
-    createSendProc.command = Model.createSendCommand(session)
+    createSendProc.command = Model.createSendCommand()
     createSendProc.running = true
   }
 
@@ -637,7 +646,7 @@ Panel {
   function deleteSend(send) {
     if (!send || !send.id) return
     sendBusy = true
-    deleteSendProc.command = Model.deleteSendCommand(send.id, session)
+    deleteSendProc.command = Model.deleteSendCommand(send.id)
     deleteSendProc.running = true
   }
 
@@ -1179,7 +1188,7 @@ Panel {
   function lockVault() {
     closeFilterGroup()
     if (session) {
-      lockProc.command = Model.lockCommand(session)
+      lockProc.command = Model.lockCommand()
       lockProc.running = true
     }
     if (rememberSession) {
@@ -1225,7 +1234,7 @@ Panel {
   function loadItems() {
     if (!session) return
     isLoading = true
-    listProc.command = Model.listCommand(session)
+    listProc.command = Model.listCommand()
     listProc.running = true
   }
 
@@ -1242,7 +1251,7 @@ Panel {
 
   function loadOrganizations() {
     if (!session) return
-    listOrgsProc.command = Model.listOrganizationsCommand(session)
+    listOrgsProc.command = Model.listOrganizationsCommand()
     listOrgsProc.running = true
   }
 
@@ -1252,7 +1261,7 @@ Panel {
 
   function loadFolders() {
     if (!session) return
-    listFoldersProc.command = Model.listFoldersCommand(session)
+    listFoldersProc.command = Model.listFoldersCommand()
     listFoldersProc.running = true
   }
 
@@ -1359,7 +1368,7 @@ Panel {
     var name = String(newFolderName || "").trim()
     if (!name) return
     creatingFolder = true
-    createFolderProc.command = Model.createFolderCommand(name, session)
+    createFolderProc.command = Model.createFolderCommand(name)
     createFolderProc.running = true
   }
 
@@ -1383,7 +1392,7 @@ Panel {
     closeFilterGroup()
     if (!session) return
     isSyncing = true
-    syncProc.command = Model.syncCommand(session)
+    syncProc.command = Model.syncCommand()
     syncProc.running = true
   }
 
@@ -1412,7 +1421,7 @@ Panel {
     liveTotp = ""
     currentScreen = "detail"
 
-    getItemProc.command = Model.getItemCommand(item.id, session)
+    getItemProc.command = Model.getItemCommand(item.id)
     getItemProc.running = true
 
     if (item.hasTotp) {
@@ -1433,7 +1442,7 @@ Panel {
 
   function fetchTotp(itemId) {
     if (!session || !itemId) return
-    getTotpProc.command = Model.getTotpCommand(itemId, session)
+    getTotpProc.command = Model.getTotpCommand(itemId)
     getTotpProc.running = true
   }
 
@@ -1509,12 +1518,12 @@ Panel {
     if (formIsEditing) {
       var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId)
       itemPayloadJson = JSON.stringify(editPayload)
-      editItemProc.command = Model.editItemCommand(formItemId, session)
+      editItemProc.command = Model.editItemCommand(formItemId)
       editItemProc.running = true
     } else {
       var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId)
       itemPayloadJson = JSON.stringify(createPayload)
-      createItemProc.command = Model.createItemCommand(createPayload, session)
+      createItemProc.command = Model.createItemCommand(createPayload)
       createItemProc.running = true
     }
   }
@@ -1533,7 +1542,7 @@ Panel {
   function deleteCurrentItem() {
     if (!detailItem || !detailItem.id) return
     isLoading = true
-    deleteItemProc.command = Model.deleteItemCommand(detailItem.id, session)
+    deleteItemProc.command = Model.deleteItemCommand(detailItem.id)
     deleteItemProc.running = true
   }
 
@@ -1609,6 +1618,13 @@ Panel {
   // Every main-screen shortcut in one place. Reached two ways: bare letters
   // when the list has focus, and Alt+letter from inside the search box, where
   // a bare letter is search text and must stay that way.
+  // Alt+letter. Same table as the bare letters, except Alt+s opens Sends --
+  // Send has no bare letter of its own, and plain s is already Settings.
+  function runAltShortcut(lower) {
+    if (lower === "s") { openSends(); return true }
+    return runShortcut(lower)
+  }
+
   function runShortcut(lower) {
     var item = getSelectedItem()
     switch (lower) {
@@ -1654,7 +1670,12 @@ Panel {
   function copyToClipboard(text, label) {
     if (!text) return
     resetAutoLockTimer()
-    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy --sensitive"])
+    // The value goes through the environment: `printf %s '<secret>'` would put
+    // the password or TOTP code straight into /proc/<pid>/cmdline.
+    Quickshell.execDetached({
+      command: ["bash", "-c", "printf '%s' \"$QSBW_CLIP\" | wl-copy --sensitive"],
+      environment: { "QSBW_CLIP": String(text) }
+    })
     flashNotification(label + " copied!")
 
     if (clearClipboardSec > 0) {
@@ -1706,7 +1727,10 @@ Panel {
       return
     }
     if (session) {
-      Quickshell.execDetached(["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy --sensitive"])
+      Quickshell.execDetached({
+        command: ["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --raw | wl-copy --sensitive"],
+        environment: root.bwEnv()
+      })
       flashNotification("Password copied!")
       if (clearClipboardSec > 0) clipboardClearTimer.restart()
     } else {
@@ -1727,7 +1751,10 @@ Panel {
       copyToClipboard(liveTotp, "TOTP code")
       return
     }
-    Quickshell.execDetached(["bash", "-c", "bw get totp " + Util.shellQuote(item.id) + " --session " + Util.shellQuote(session) + " --raw | wl-copy --sensitive"])
+    Quickshell.execDetached({
+      command: ["bash", "-c", "bw get totp " + Util.shellQuote(item.id) + " --raw | wl-copy --sensitive"],
+      environment: root.bwEnv()
+    })
     flashNotification("TOTP code copied!")
     if (clearClipboardSec > 0) clipboardClearTimer.restart()
   }
@@ -1834,6 +1861,7 @@ Panel {
 
   Process {
     id: statusProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onStatusFinished(text)
@@ -1877,6 +1905,7 @@ Panel {
 
   Process {
     id: listFoldersProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onListFoldersFinished(text)
@@ -1885,12 +1914,14 @@ Panel {
 
   Process {
     id: createFolderProc
+    environment: root.bwEnv()
     stdout: StdioCollector { id: createFolderStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onFolderCreated(exitCode, createFolderStdout.text) }
   }
 
   Process {
     id: listSendsProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onSendsLoaded(text)
@@ -1910,11 +1941,13 @@ Panel {
 
   Process {
     id: deleteSendProc
+    environment: root.bwEnv()
     onExited: function(exitCode) { root.onSendDeleted(exitCode) }
   }
 
   Process {
     id: generateProc
+    environment: root.bwEnv()
     stdout: StdioCollector { id: generateStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onGenerated(generateStdout.text, exitCode) }
   }
@@ -2059,6 +2092,7 @@ Panel {
 
   Process {
     id: loginProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       id: loginStdout
       waitForEnd: true
@@ -2074,6 +2108,7 @@ Panel {
 
   Process {
     id: unlockProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       id: unlockStdout
       waitForEnd: true
@@ -2089,10 +2124,12 @@ Panel {
 
   Process {
     id: logoutProc
+    environment: root.bwEnv()
   }
 
   Process {
     id: listProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onListFinished(text)
@@ -2110,6 +2147,7 @@ Panel {
 
   Process {
     id: listOrgsProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onListOrgsFinished(text)
@@ -2118,6 +2156,7 @@ Panel {
 
   Process {
     id: getItemProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onDetailFinished(text)
@@ -2132,6 +2171,7 @@ Panel {
 
   Process {
     id: getTotpProc
+    environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onTotpFinished(text)
@@ -2181,6 +2221,7 @@ Panel {
 
   Process {
     id: deleteItemProc
+    environment: root.bwEnv()
     stdout: StdioCollector { id: deleteItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: deleteItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
@@ -2190,6 +2231,7 @@ Panel {
 
   Process {
     id: syncProc
+    environment: root.bwEnv()
     onExited: function(exitCode) {
       root.onSyncFinished(exitCode)
     }
@@ -2197,6 +2239,7 @@ Panel {
 
   Process {
     id: lockProc
+    environment: root.bwEnv()
   }
 
   // -------------------------------------------------------------------------
@@ -2327,10 +2370,21 @@ Panel {
     Item {
       id: shortcutInterceptor
       Keys.onPressed: function(event) {
+        // Alt may arrive with no text depending on the keymap, so fall back to
+        // the key code for A-Z.
+        var t = event.text ? String(event.text).toLowerCase() : ""
+        if (!t && event.key >= Qt.Key_A && event.key <= Qt.Key_Z) {
+          t = String.fromCharCode(event.key).toLowerCase()
+        }
+
+        if (event.modifiers & Qt.AltModifier) {
+          if (t && root.status === "unlocked" && root.runAltShortcut(t)) event.accepted = true
+          return
+        }
+
         if (event.modifiers & ~Qt.KeypadModifier) return
-        if (!event.text || root.currentScreen !== "main") return
+        if (!t || root.currentScreen !== "main") return
         if (root.openFilterGroup !== "") return
-        var t = String(event.text).toLowerCase()
         if (t !== "h" && t !== "j" && t !== "k" && t !== "l") return
         if (root.runShortcut(t)) event.accepted = true
       }
@@ -2432,11 +2486,6 @@ Panel {
       }
       onTextKey: function(key) {
         var lower = String(key).toLowerCase()
-        // Shift+S opens Sends; plain s is Settings.
-        if (String(key) === "S" && root.currentScreen === "main") {
-          root.openSends()
-          return
-        }
         if (root.currentScreen === "sends" && root.sendMode === "list") {
           if (lower === "n") root.beginCreateSend()
           else if (lower === "r") root.loadSends()
@@ -2521,7 +2570,7 @@ Panel {
             PanelActionButton {
               visible: root.status === "unlocked" && root.currentScreen !== "sends"
               iconText: "󰒗"
-              tooltipText: "Bitwarden Send (Shift+S)"
+              tooltipText: "Bitwarden Send (Alt+S)"
               fontFamily: root.fontFamily
               onClicked: root.openSends()
             }
@@ -4478,7 +4527,7 @@ Panel {
               Keys.onPressed: function(event) {
                 if (!(event.modifiers & Qt.AltModifier)) return
                 if (!event.text) return
-                if (root.runShortcut(String(event.text).toLowerCase())) {
+                if (root.runAltShortcut(String(event.text).toLowerCase())) {
                   event.accepted = true
                 }
               }

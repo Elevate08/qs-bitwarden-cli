@@ -81,12 +81,14 @@ check("edit can clear an existing folder assignment",
   Model.buildEditPayload(existing, "x", "", "", "", "", "", false, null, "").folderId === null, "expected null")
 
 // --- commands ---
-check("list folders passes the session",
-  Model.listFoldersCommand("sess").join(" ") === "bw list folders --session sess",
-  Model.listFoldersCommand("sess").join(" "))
+// The session goes in BW_SESSION, never argv -- /proc/<pid>/cmdline is
+// world-readable and the token unlocks the vault.
+check("list folders carries no session on the command line",
+  Model.listFoldersCommand().join(" ") === "bw list folders",
+  Model.listFoldersCommand().join(" "))
 check("folder names with quotes are shell-quoted, not interpolated",
-  Model.createFolderCommand("it's \"fine\"", "sess")[2].includes("'\\''"),
-  Model.createFolderCommand("it's \"fine\"", "sess")[2])
+  Model.createFolderCommand("it's \"fine\"")[2].includes("'\\''"),
+  Model.createFolderCommand("it's \"fine\"")[2])
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
