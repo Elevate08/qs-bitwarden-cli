@@ -111,6 +111,46 @@ function apiKeyLoginCommand(clientId, clientSecret, password, serverUrl) {
   return ["bash", "-c", script]
 }
 
+// -------------------------------------------------------------------------
+// Terminal login handoff
+// -------------------------------------------------------------------------
+//
+// `bw login` in a terminal covers what the in-panel form cannot -- SSO, Duo, a
+// hardware key -- but it used to leave the panel none the wiser, so a
+// successful terminal login was immediately followed by unlocking all over
+// again. The terminal now writes its session key to a file the panel reads
+// once and deletes.
+//
+// The key is a secret at rest, so it goes to XDG_RUNTIME_DIR: user-only tmpfs,
+// never written to disk, and cleared when the session ends. `--raw` prints only
+// the key on stdout while bw's prompts stay on stderr, so redirecting it keeps
+// the login interactive.
+
+var HANDOFF_DIR = "${XDG_RUNTIME_DIR:-/tmp}/qs-bitwarden-cli"
+var HANDOFF_FILE = HANDOFF_DIR + "/session-handoff"
+
+function terminalLoginCommand() {
+  var inner = "set -u; d=\"" + HANDOFF_DIR + "\"; mkdir -p \"$d\"; chmod 700 \"$d\"; umask 077; "
+    + "st=$(bw status 2>/dev/null | sed -n 's/.*\"status\":\"\\([a-z]*\\)\".*/\\1/p'); "
+    // Log in when logged out, unlock when merely locked: either way the panel
+    // gets a usable session instead of asking for the password again.
+    + "if [ \"$st\" = unauthenticated ] || [ -z \"$st\" ]; then bw login --raw > \"" + HANDOFF_FILE + "\"; "
+    + "else bw unlock --raw > \"" + HANDOFF_FILE + "\"; fi; "
+    + "if [ -s \"" + HANDOFF_FILE + "\" ]; then echo; echo 'Done. The Bitwarden panel will pick up this session.'; "
+    + "else rm -f \"" + HANDOFF_FILE + "\"; echo; echo 'Not completed -- nothing was handed to the panel.'; fi; "
+    + "read -p 'Press enter to close...'"
+  var script = "omarchy launch terminal -e bash -c " + shellQuote(inner)
+    + " || alacritty -e bash -c " + shellQuote(inner)
+  return ["bash", "-c", script]
+}
+
+// Read-once: the key is consumed by the panel and the file removed, so it does
+// not linger for the next process that goes looking.
+function sessionHandoffReadCommand() {
+  var script = "f=\"" + HANDOFF_FILE + "\"; if [ -s \"$f\" ]; then cat \"$f\"; rm -f \"$f\"; fi"
+  return ["bash", "-c", script]
+}
+
 function logoutCommand() {
   return ["bw", "logout"]
 }

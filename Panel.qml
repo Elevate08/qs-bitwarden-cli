@@ -345,6 +345,9 @@ Panel {
       currentScreen = "main"
       ensureItemsFresh()
     } else if (status === "locked") {
+      // Still check for a handed-over session: a terminal login leaves the
+      // panel locked, which is precisely when the handoff matters.
+      refreshStatus()
       startFingerprintUnlock()
     } else {
       refreshStatus()
@@ -356,8 +359,26 @@ Panel {
   // -------------------------------------------------------------------------
 
   function refreshStatus() {
-    if (status === "locked" && !session) return
     errorMessage = ""
+    // A terminal login may have left a session waiting. Check before anything
+    // else, including the locked-with-no-session short circuit below, since
+    // that is exactly the state a terminal login leaves the panel in.
+    if (!sessionHandoffProc.running) sessionHandoffProc.running = true
+  }
+
+  function onSessionHandoff(raw) {
+    var handed = Model.extractSessionToken(String(raw || "").trim())
+    if (handed) {
+      session = handed
+      if (rememberSession) keyringStoreProc.running = true
+      statusProc.command = Model.statusCommand()
+      statusProc.running = true
+      flashNotification("Signed in from the terminal")
+      return
+    }
+
+    if (status === "locked" && !session) return
+
     if (session) {
       statusProc.command = Model.statusCommand()
       statusProc.running = true
@@ -499,7 +520,7 @@ Panel {
 
   function launchTerminalLogin() {
     close()
-    Quickshell.execDetached(["bash", "-c", "omarchy launch terminal -e bash -c 'bw login; read -p \"Login complete. Press enter to close...\"' || alacritty -e bash -c 'bw login; read -p \"Login complete. Press enter to close...\"'"])
+    Quickshell.execDetached(Model.terminalLoginCommand())
   }
 
   function logoutAccount() {
@@ -1871,6 +1892,15 @@ Panel {
     }
     stderr: StdioCollector {
       waitForEnd: true
+    }
+  }
+
+  Process {
+    id: sessionHandoffProc
+    command: Model.sessionHandoffReadCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onSessionHandoff(text)
     }
   }
 

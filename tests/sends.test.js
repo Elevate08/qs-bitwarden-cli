@@ -30,6 +30,9 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.listFoldersCommand = listFoldersCommand
   exports.listOrganizationsCommand = listOrganizationsCommand
   exports.deleteFolderCommand = deleteFolderCommand
+  exports.terminalLoginCommand = terminalLoginCommand
+  exports.sessionHandoffReadCommand = sessionHandoffReadCommand
+  exports.extractSessionToken = extractSessionToken
 `)(Model)
 
 let pass = 0
@@ -131,6 +134,40 @@ for (const [name, build] of builders) {
   const argv = build().join(" ")
   check(`${name} passes no --session flag`, !argv.includes("--session"), argv)
 }
+
+
+// --- terminal login handoff -------------------------------------------------
+const login = Model.terminalLoginCommand()[2]
+check("terminal login runs in a terminal", login.includes("omarchy launch terminal"), login.slice(0, 80))
+check("it falls back to a second terminal if the first is unavailable",
+  login.includes("alacritty"), login.slice(0, 80))
+// --raw prints only the session key on stdout while prompts stay on stderr,
+// which is what lets the key be captured without breaking the interactive login.
+check("it captures the key with --raw", login.includes("--raw"), login.slice(0, 120))
+check("it logs in when logged out and unlocks when merely locked",
+  login.includes("bw login --raw") && login.includes("bw unlock --raw"), login.slice(0, 200))
+// The key is a secret at rest: tmpfs, user-only, gone when the session ends.
+check("the handoff lives in XDG_RUNTIME_DIR, not on disk",
+  login.includes("XDG_RUNTIME_DIR"), login.slice(0, 120))
+check("the handoff is created with a restrictive umask",
+  login.includes("umask 077") && login.includes("chmod 700"), login.slice(0, 200))
+check("an incomplete login leaves nothing behind",
+  login.includes('rm -f'), login.slice(0, 300))
+
+const read = Model.sessionHandoffReadCommand()[2]
+check("the handoff is read once and removed",
+  read.includes("cat") && read.includes("rm -f"), read)
+check("an absent or empty handoff yields nothing",
+  read.includes("-s "), read)
+
+// The panel parses whatever the file holds through the same extractor it uses
+// for unlock output, so a stray newline or an `export BW_SESSION=` line is fine.
+check("a bare key is extracted intact",
+  Model.extractSessionToken("abcdefghijklmnopqrstuvwxyz0123456789==") === "abcdefghijklmnopqrstuvwxyz0123456789==",
+  Model.extractSessionToken("abcdefghijklmnopqrstuvwxyz0123456789=="))
+check("an export line is unwrapped",
+  Model.extractSessionToken('export BW_SESSION="tok3n-value-that-is-long-enough=="') === "tok3n-value-that-is-long-enough==",
+  Model.extractSessionToken('export BW_SESSION="tok3n-value-that-is-long-enough=="'))
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
