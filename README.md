@@ -66,9 +66,15 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
   - **Delete Items (`x` key or Delete button)**: Delete items with confirmation protection.
 
 - **Folders**:
-  - Folder filter bar alongside the vault filter: **All Folders**, **No Folder**, or any specific folder.
+  - Filter by folder from the bottom filter bar: **All Folders**, **No Folder**, or any specific folder.
   - Items show their folder inline (`󰉋 Name`) when no folder filter is active.
   - Assign a folder when creating or editing an item, including clearing an existing assignment, and create a new folder inline from the item form without leaving it.
+
+- **Unified Bottom Filter Bar**:
+  - Three identical buttons -- **Folders**, **Vaults**, **Types** -- each showing its current selection, so the active filters are readable at a glance without opening anything.
+  - Clicking one expands a vertical list in place. Only one opens at a time, and the item list gives back exactly the height the open list takes, so the panel does not jump.
+  - Lists show up to five rows and scroll beyond that; shorter lists size to their content.
+  - Keyboard: <kbd>f</kbd> for folders, <kbd>v</kbd> for vaults, <kbd>Tab</kbd> still cycles types.
 
 - **Multi-Organization & Vault Filtering**:
   - Automatically queries and displays organizations you belong to.

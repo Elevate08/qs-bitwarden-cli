@@ -66,6 +66,9 @@ Panel {
   property string selectedOrg: "all" // "all" | "personal" | orgId
   property var folders: []
   property string selectedFolder: "all" // "all" | "none" | folderId
+  // Which bottom filter group is open: "" | "folders" | "vaults" | "types".
+  // Only one at a time, so the panel grows by one list at most.
+  property string openFilterGroup: ""
   property string formFolderId: ""
   property string newFolderName: ""
   property bool creatingFolder: false
@@ -1003,7 +1006,67 @@ Panel {
   function selectFolder(folderId) {
     selectedFolder = folderId
     selectedIndex = 0
+    openFilterGroup = ""
     rebuildFilter()
+  }
+
+  function toggleFilterGroup(group) {
+    openFilterGroup = (openFilterGroup === group) ? "" : group
+  }
+
+  // Labels for the collapsed buttons, so the current filter is readable
+  // without opening anything.
+  function folderFilterLabel() {
+    if (selectedFolder === "all") return "All"
+    if (selectedFolder === "none") return "Unfiled"
+    return Model.folderName(folders, selectedFolder) || "Folder"
+  }
+
+  function vaultFilterLabel() {
+    if (selectedOrg === "all") return "All"
+    if (selectedOrg === "personal") return "Personal"
+    for (var i = 0; i < organizations.length; i++) {
+      if (organizations[i].id === selectedOrg) return organizations[i].name
+    }
+    return "Vault"
+  }
+
+  function typeFilterLabel() {
+    for (var i = 0; i < categories.length; i++) {
+      if (categories[i].id === selectedCategory) return categories[i].label
+    }
+    return "All"
+  }
+
+  // Option rows for whichever group is open, in one shape so the three lists
+  // render identically.
+  function filterOptions(group) {
+    var out = []
+    var i
+    if (group === "folders") {
+      out.push({ id: "all", label: "All Folders", icon: "󰉋", active: selectedFolder === "all" })
+      out.push({ id: "none", label: "No Folder", icon: "󰉖", active: selectedFolder === "none" })
+      for (i = 0; i < folders.length; i++) {
+        out.push({ id: folders[i].id, label: folders[i].name, icon: "󰉋", active: selectedFolder === folders[i].id })
+      }
+    } else if (group === "vaults") {
+      out.push({ id: "all", label: "All Vaults", icon: "󰞀", active: selectedOrg === "all" })
+      out.push({ id: "personal", label: "My Vault", icon: "", active: selectedOrg === "personal" })
+      for (i = 0; i < organizations.length; i++) {
+        out.push({ id: organizations[i].id, label: organizations[i].name, icon: "󰓹", active: selectedOrg === organizations[i].id })
+      }
+    } else if (group === "types") {
+      for (i = 0; i < categories.length; i++) {
+        out.push({ id: categories[i].id, label: categories[i].label, icon: categories[i].icon, active: selectedCategory === categories[i].id })
+      }
+    }
+    return out
+  }
+
+  function applyFilterOption(group, id) {
+    if (group === "folders") selectFolder(id)
+    else if (group === "vaults") { selectOrganization(id); openFilterGroup = "" }
+    else if (group === "types") { selectCategory(id); openFilterGroup = "" }
   }
 
   function submitNewFolder() {
@@ -1986,6 +2049,10 @@ Panel {
             root.lockVault()
           } else if (lower === "r") {
             root.syncVault()
+          } else if (lower === "f") {
+            root.toggleFilterGroup("folders")
+          } else if (lower === "v") {
+            root.toggleFilterGroup("vaults")
           } else if (lower === "g") {
             root.openGenerator()
           } else if (lower === ",") {
@@ -3588,136 +3655,6 @@ Panel {
             }
           }
 
-          // Folder Selector Bar (shown once any folder exists)
-          Flickable {
-            visible: root.folders.length > 0
-            width: parent.width
-            height: Style.space(26)
-            contentWidth: folderRow.implicitWidth
-            flickableDirection: Flickable.HorizontalFlick
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-
-            Row {
-              id: folderRow
-              spacing: Style.space(6)
-
-              Button {
-                text: "All Folders"
-                iconText: "󰉋"
-                selected: root.selectedFolder === "all"
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                horizontalPadding: Style.space(8)
-                onClicked: root.selectFolder("all")
-              }
-
-              Button {
-                text: "No Folder"
-                iconText: "󰉖"
-                selected: root.selectedFolder === "none"
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                horizontalPadding: Style.space(8)
-                onClicked: root.selectFolder("none")
-              }
-
-              Repeater {
-                model: root.folders
-                delegate: Button {
-                  required property var modelData
-                  text: modelData.name
-                  iconText: "󰉋"
-                  selected: root.selectedFolder === modelData.id
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  horizontalPadding: Style.space(8)
-                  onClicked: root.selectFolder(modelData.id)
-                }
-              }
-            }
-          }
-
-          // Organization / Vault Selector Bar (Shown if organizations exist)
-          Flickable {
-            visible: root.organizations.length > 0
-            width: parent.width
-            height: Style.space(26)
-            contentWidth: orgRow.implicitWidth
-            flickableDirection: Flickable.HorizontalFlick
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-
-            Row {
-              id: orgRow
-              spacing: Style.space(6)
-
-              Button {
-                text: "All Vaults"
-                iconText: "󰞀"
-                selected: root.selectedOrg === "all"
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                horizontalPadding: Style.space(8)
-                verticalPadding: Style.space(2)
-                onClicked: root.selectOrganization("all")
-              }
-
-              Button {
-                text: "My Vault"
-                iconText: ""
-                selected: root.selectedOrg === "personal"
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                horizontalPadding: Style.space(8)
-                verticalPadding: Style.space(2)
-                onClicked: root.selectOrganization("personal")
-              }
-
-              Repeater {
-                model: root.organizations
-                delegate: Button {
-                  text: modelData.name
-                  iconText: "󰓹"
-                  selected: root.selectedOrg === modelData.id
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  horizontalPadding: Style.space(8)
-                  verticalPadding: Style.space(2)
-                  onClicked: root.selectOrganization(modelData.id)
-                }
-              }
-            }
-          }
-
-          // Category Pills
-          Flickable {
-            width: parent.width
-            height: Style.space(28)
-            contentWidth: categoryRow.implicitWidth
-            flickableDirection: Flickable.HorizontalFlick
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-
-            Row {
-              id: categoryRow
-              spacing: Style.space(6)
-
-              Repeater {
-                model: root.categories
-                delegate: Button {
-                  text: modelData.label
-                  selected: root.selectedCategory === modelData.id
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  horizontalPadding: Style.space(8)
-                  verticalPadding: Style.space(3)
-                  onClicked: root.selectCategory(modelData.id)
-                }
-              }
-            }
-          }
-
           // Contextual Suggestion Banner
           BorderSurface {
             visible: Boolean(root.suggestedItems.length > 0 && !root.suggestionsDismissed && root.searchQuery.trim() === "" && root.detectedContext && root.detectedContext.displayName)
@@ -3774,7 +3711,8 @@ Panel {
           // Item List View (Fast Virtualized ListView with Delegate Recycling)
           Item {
             width: parent.width
-            height: Style.space(320)
+            height: Math.max(Style.space(140), Style.space(320) - filterOptionsList.height)
+            Behavior on height { NumberAnimation { duration: 110; easing.type: Easing.OutQuad } }
 
             ListView {
               id: itemsListView
@@ -3989,6 +3927,129 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                 }
+              }
+            }
+          }
+
+          // -----------------------------------------------------------------
+          // Bottom filter bar: Folders / Vaults / Types
+          // -----------------------------------------------------------------
+          // Three horizontally scrolling strips were easy to miss and awkward
+          // to reach. One collapsed row instead, each opening a vertical list
+          // in place; the item list gives back exactly the height the open
+          // list takes, so the panel does not jump.
+
+          PanelSeparator { width: parent.width }
+
+          // The open group's options. Capped at five rows, scrolling past that.
+          Flickable {
+            id: filterOptionsList
+            readonly property int rowHeight: Style.space(30)
+            readonly property int visibleRows: Math.min(5, filterOptionsCol.children.length)
+
+            width: parent.width
+            height: root.openFilterGroup === "" ? 0 : (visibleRows * rowHeight + Style.space(6))
+            visible: height > 0
+            contentWidth: width
+            contentHeight: filterOptionsCol.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            Behavior on height { NumberAnimation { duration: 110; easing.type: Easing.OutQuad } }
+
+            Column {
+              id: filterOptionsCol
+              width: filterOptionsList.width
+              spacing: Style.space(2)
+
+              Repeater {
+                model: root.openFilterGroup === "" ? [] : root.filterOptions(root.openFilterGroup)
+
+                delegate: BorderSurface {
+                  required property var modelData
+                  width: filterOptionsCol.width
+                  implicitHeight: filterOptionsList.rowHeight
+                  radius: Style.cornerRadius
+                  color: modelData.active ? Style.selectedFillFor(root.fg, Color.accent)
+                                          : (optionMouse.containsMouse ? Style.hoverFillFor(root.fg, Color.accent) : "transparent")
+                  borderSpec: Border.surfaceSpec("menu", "border",
+                    modelData.active ? Color.accent : "transparent", modelData.active ? 1 : 0)
+
+                  MouseArea {
+                    id: optionMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.applyFilterOption(root.openFilterGroup, modelData.id)
+                  }
+
+                  Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: Style.space(10)
+                    anchors.rightMargin: Style.space(10)
+                    spacing: Style.space(8)
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: modelData.icon
+                      color: modelData.active ? Color.accent : root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: parent.width - Style.space(50)
+                      text: modelData.label
+                      color: modelData.active ? Color.accent : root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      font.bold: modelData.active
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      visible: modelData.active
+                      text: "󰄬"
+                      color: Color.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // The three collapsed buttons. Identical shape, so none reads as a
+          // different kind of control from the others.
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: [
+                { group: "folders", icon: "󰉋", name: "Folders", value: root.folderFilterLabel() },
+                { group: "vaults",  icon: "󰞀", name: "Vaults",  value: root.vaultFilterLabel() },
+                { group: "types",   icon: "󰀻", name: "Types",   value: root.typeFilterLabel() }
+              ]
+
+              delegate: Button {
+                required property var modelData
+                width: (parent.width - Style.space(12)) / 3
+                text: modelData.name + ": " + modelData.value
+                iconText: root.openFilterGroup === modelData.group ? "󰅀" : modelData.icon
+                selected: root.openFilterGroup === modelData.group
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(6)
+                leftAlign: true
+                tooltipText: modelData.name + " filter"
+                onClicked: root.toggleFilterGroup(modelData.group)
               }
             }
           }
