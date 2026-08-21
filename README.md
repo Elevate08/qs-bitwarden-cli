@@ -126,6 +126,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - **Credentials do not reach a command line.** `/proc/<pid>/cmdline` is world-readable on a default Linux install while `/proc/<pid>/environ` is not, so every secret travels in the environment: the session token in `BW_SESSION`, the master password in `BW_PASSWORD` (named to `bw` by `--passwordenv`), API key credentials in `BW_CLIENTID` / `BW_CLIENTSECRET`, item and Send payloads and copied secrets in their own variables. None of them is interpolated into a command or a shell script. The one exception is the two-step login code: `bw` offers no environment option for it, so `--code` puts it in `bw`'s own argv for the length of the login — it is carried in `QSBW_CODE` and expanded there, which at least keeps it out of the wrapping shell. Tests assert that no builder emits `--session` and that none of the auth commands carries a password, client secret or client ID.
   - Automatic clipboard clearing (`wl-copy --clear`) after a configurable timeout (default: 30s).
   - Optional session token caching in Linux Secret Service (`secret-tool` / libsecret).
+  - **A remembered session does not survive a reboot.** The login keyring is a file on disk that PAM unlocks again at the next login, so a machine powered off with an unlocked vault used to come back unlocked. Two things stop that. The token is written to libsecret's `session` collection, which the secret service holds in memory and destroys with the login session, so there is nothing on disk to come back; and it is stamped with the kernel's boot id, so a token that does survive -- a secret service with no session collection, a keyring restored from a backup -- no longer matches the running boot and is refused and cleared instead of used. Restarting the shell still keeps you unlocked. Powering the machine off does not.
 
 ---
 
@@ -367,7 +368,7 @@ The following settings are read from the plugin's own entry in the
 | :--- | :--- | :--- | :--- |
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). |
 | `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). |
-| `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. |
+| `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. |
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
@@ -469,6 +470,7 @@ node tests/collections.test.js      # organization collections and item ownershi
 node tests/items.test.js            # item parsing, and that a list entry can build the detail view
 node tests/handoff-urls.test.js     # session-handoff file path, and which URI schemes may be opened
 node tests/rich-text.test.js        # vault text is drawn as text, never parsed as markup
+node tests/session-boot.test.js     # a remembered session dies with the boot that minted it
 ```
 
 Two suites need Qt rather than Node -- which any machine running the plugin

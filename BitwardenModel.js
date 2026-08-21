@@ -385,12 +385,65 @@ function deleteItemCommand(itemId) {
 // Keyring (libsecret / secret-tool) Commands
 // -------------------------------------------------------------------------
 
+// -------------------------------------------------------------------------
+// The remembered session dies with the boot that minted it
+// -------------------------------------------------------------------------
+//
+// A session token used to outlive its machine. The login keyring is a file on
+// disk and PAM unlocks it again at the next login, so rebooting with an
+// unlocked vault brought the vault back unlocked -- the panel found the token
+// waiting and never asked for anything. Locking the screen is not what the
+// user did; powering the machine off is, and that has to mean something.
+//
+// Two independent things stop it now, because one of them depends on the
+// secret service and the other does not.
+//
+// The token goes into libsecret's `session` collection, which the secret
+// service holds in memory and destroys when the login session ends, so on a
+// well-behaved service there is nothing on disk to come back. Not every
+// implementation offers that collection, so the store falls back to the
+// default one rather than failing to remember the session at all.
+//
+// And the token is written behind the kernel's boot id, which is regenerated
+// on every boot. A token that did survive -- fallback collection, a keyring
+// restored from a backup, a service that ignores the session semantics -- no
+// longer matches the running boot and is refused. That check is the guarantee;
+// the collection is what keeps the token off the disk in the first place.
+//
+// Fail closed at every step: a missing boot id, an unreadable keyring or a
+// stale entry all report no token, which lands the panel on `bw status` and
+// the lock screen. A stale entry is cleared on the way out so it cannot be
+// found again.
+const KEYRING_SESSION_COLLECTION = "session"
+const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
+
+function bootIdPath() {
+  return BOOT_ID_PATH
+}
+
 function keyringStoreCommand() {
-  return ["bash", "-c", keyringStoreScript("Bitwarden Vault Session", KEYRING_ACCOUNT)]
+  var attrs = " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_ACCOUNT)
+  // The secret still travels in the environment (see keyringStoreScript); only
+  // the boot id, which is not a secret, is read inside the script.
+  var script = "store() { printf '%s %s' \"$(cat " + shellQuote(BOOT_ID_PATH) + ")\" \"$"
+    + KEYRING_SECRET_ENV + "\" | secret-tool store \"$@\" --label="
+    + shellQuote("Bitwarden Vault Session") + attrs + "; }; "
+    + "store --collection=" + shellQuote(KEYRING_SESSION_COLLECTION) + " 2>/dev/null || store"
+  return ["bash", "-c", script]
 }
 
 function keyringLookupCommand() {
-  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
+  var attrs = " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_ACCOUNT)
+  var script = "boot=$(cat " + shellQuote(BOOT_ID_PATH) + " 2>/dev/null) || exit 0; "
+    + "[ -n \"$boot\" ] || exit 0; "
+    + "stored=$(secret-tool lookup" + attrs + " 2>/dev/null) || exit 0; "
+    + "case \"$stored\" in "
+    + "\"$boot \"?*) printf '%s' \"${stored#* }\" ;; "
+    // Anything else is from another boot, or from before the boot id was
+    // written at all. Drop it so the next lookup does not have to think.
+    + "*) [ -n \"$stored\" ] && secret-tool clear" + attrs + " >/dev/null 2>&1 ;; "
+    + "esac; exit 0"
+  return ["bash", "-c", script]
 }
 
 function keyringClearCommand() {

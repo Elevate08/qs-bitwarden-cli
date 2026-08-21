@@ -53,7 +53,7 @@
         "key": "rememberSession",
         "type": "boolean",
         "label": "Remember session in OS keyring",
-        "description": "Store session key in libsecret OS keyring while unlocked",
+        "description": "Keep the session key in the OS keyring while unlocked, so restarting the shell does not ask for your password again. The key is held in the keyring's memory-only session collection and stamped with the current boot, so a reboot always comes back locked.",
         "defaultValue": true
       },
       {
