@@ -9,6 +9,23 @@ const KEYRING_CLIENT_ID = "client_id"
 const KEYRING_CLIENT_SECRET = "client_secret"
 const KEYRING_EMAIL = "user_email"
 
+// `secret-tool store` reads its secret from stdin until EOF, and Quickshell's
+// Process.write() cannot close stdin -- writing a value alone leaves the process
+// hanging forever and nothing is ever stored. So the secret is handed over in
+// the environment (readable only by this user, same exposure as the BW_PASSWORD
+// env var already used for `bw unlock`) and piped in by a shell that supplies
+// the EOF. Never pass secrets in argv: that is world-readable in /proc.
+const KEYRING_SECRET_ENV = "QSBW_SECRET"
+
+function keyringSecretEnvVar() {
+  return KEYRING_SECRET_ENV
+}
+
+function keyringStoreScript(label, account) {
+  return "printf '%s' \"$" + KEYRING_SECRET_ENV + "\" | secret-tool store --label=" + shellQuote(label)
+    + " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(account)
+}
+
 function shellQuote(value) {
   return "'" + String(value || "").replace(/'/g, "'\\''") + "'"
 }
@@ -134,7 +151,7 @@ function deleteItemCommand(itemId, session) {
 // -------------------------------------------------------------------------
 
 function keyringStoreCommand() {
-  return ["secret-tool", "store", "--label=Bitwarden Vault Session", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
+  return ["bash", "-c", keyringStoreScript("Bitwarden Vault Session", KEYRING_ACCOUNT)]
 }
 
 function keyringLookupCommand() {
@@ -146,7 +163,7 @@ function keyringClearCommand() {
 }
 
 function keyringStoreApiKeyIdCommand() {
-  return ["secret-tool", "store", "--label=Bitwarden API Client ID", "service", KEYRING_SERVICE, "account", KEYRING_CLIENT_ID]
+  return ["bash", "-c", keyringStoreScript("Bitwarden API Client ID", KEYRING_CLIENT_ID)]
 }
 
 function keyringLookupApiKeyIdCommand() {
@@ -154,7 +171,7 @@ function keyringLookupApiKeyIdCommand() {
 }
 
 function keyringStoreApiKeySecretCommand() {
-  return ["secret-tool", "store", "--label=Bitwarden API Client Secret", "service", KEYRING_SERVICE, "account", KEYRING_CLIENT_SECRET]
+  return ["bash", "-c", keyringStoreScript("Bitwarden API Client Secret", KEYRING_CLIENT_SECRET)]
 }
 
 function keyringLookupApiKeySecretCommand() {
@@ -162,7 +179,7 @@ function keyringLookupApiKeySecretCommand() {
 }
 
 function keyringStoreEmailCommand() {
-  return ["secret-tool", "store", "--label=Bitwarden User Email", "service", KEYRING_SERVICE, "account", KEYRING_EMAIL]
+  return ["bash", "-c", keyringStoreScript("Bitwarden User Email", KEYRING_EMAIL)]
 }
 
 function keyringLookupEmailCommand() {

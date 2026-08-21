@@ -209,6 +209,14 @@ Panel {
   // Status & Keyring Handlers
   // -------------------------------------------------------------------------
 
+  // Secrets go to secret-tool through the environment, never argv. See
+  // keyringStoreScript() in BitwardenModel.js for why stdin is not usable.
+  function secretEnv(value) {
+    var env = {}
+    env[Model.keyringSecretEnvVar()] = String(value || "")
+    return env
+  }
+
   function refreshStatus() {
     if (status === "locked" && !session) return
     errorMessage = ""
@@ -924,9 +932,11 @@ Panel {
   Process {
     id: keyringStoreProc
     command: Model.keyringStoreCommand()
-    stdinEnabled: true
-    onStarted: {
-      write(String(root.session || "") + "\n")
+    environment: root.secretEnv(root.session)
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        console.warn("qs-bitwarden-cli: could not store session in keyring (exit " + exitCode + ")")
+      }
     }
   }
 
