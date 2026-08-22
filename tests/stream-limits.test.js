@@ -4,7 +4,8 @@
 
 const fs = require("fs")
 const path = require("path")
-const { execFileSync } = require("child_process")
+const os = require("os")
+const { execFileSync, spawnSync } = require("child_process")
 
 const Model = {}
 const code = fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
@@ -37,6 +38,9 @@ new Function("exports", code + `
   exports.dependencyCheckCommand = dependencyCheckCommand
   exports.buildCappedCommand = buildCappedCommand
   exports.buildCommand = buildCommand
+  exports.syncCommand = syncCommand
+  exports.deleteSendCommand = deleteSendCommand
+  exports.settingWriteCommand = settingWriteCommand
 `)(Model)
 
 let pass = 0
@@ -173,6 +177,73 @@ const proc = execFileSync("bash", ["-c", stderrScript], { encoding: "utf8", stdi
 check("capped stderr does not leak into stdout",
   proc.trim() === "stdout data",
   `stdout was: ${JSON.stringify(proc)}`)
+
+// 16. A cap must not swallow the producer's exit status. `head -c` closes the
+// pipe and exits 0, so without `pipefail` every failing bw command would reach
+// the panel as a success and the UI would report "Item deleted" for a delete
+// that never happened.
+const cappedBuilders = [
+  ["listCommand", Model.listCommand()],
+  ["getItemCommand", Model.getItemCommand("x")],
+  ["deleteItemCommand", Model.deleteItemCommand("x")],
+  ["deleteSendCommand", Model.deleteSendCommand("x")],
+  ["syncCommand", Model.syncCommand()],
+  ["createItemCommand", Model.createItemCommand({})],
+  ["editItemCommand", Model.editItemCommand("x")],
+  ["createSendCommand", Model.createSendCommand()],
+  ["createFolderCommand", Model.createFolderCommand("x")],
+  ["settingWriteCommand", Model.settingWriteCommand("autoLockMinutes", 5, "int")],
+]
+for (const [name, cmd] of cappedBuilders) {
+  check(`${name} restores the producer's exit status with pipefail`,
+    flat(cmd).includes("set -o pipefail"), flat(cmd))
+  check(`${name} does not report truncation (SIGPIPE 141) as a failure`,
+    flat(cmd).includes('case "$__rc" in 141) __rc=0 ;; esac'), flat(cmd))
+}
+
+// 17. Live execution check, with a stub `bw`: a failing command must exit
+// non-zero through the cap, and a stream large enough to hit the cap must not
+// be mistaken for a failure.
+const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-stream-"))
+fs.writeFileSync(path.join(stubDir, "bw"), [
+  "#!/bin/bash",
+  'case "$*" in',
+  '  *boom*) echo "error: bad request" >&2; exit 1 ;;',
+  "  *big*) yes '{\"x\":\"aaaaaaaaaaaaaaaaaaaa\"}' ;;",
+  "  *) echo '{\"ok\":true}' ;;",
+  "esac",
+  "",
+].join("\n"))
+fs.chmodSync(path.join(stubDir, "bw"), 0o755)
+const stubEnv = Object.assign({}, process.env, { PATH: stubDir + path.delimiter + process.env.PATH })
+
+const runScript = (script) => {
+  const r = spawnSync("bash", ["-c", script], {
+    env: stubEnv, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+  })
+  return { code: r.status, stdout: r.stdout || "", stderr: r.stderr || "" }
+}
+
+const failRun = runScript(Model.deleteItemCommand("boom")[2])
+check("a failing bw command exits non-zero through the cap",
+  failRun.code === 1, `exit ${failRun.code}, stderr ${JSON.stringify(failRun.stderr)}`)
+check("a failing bw command still delivers its stderr to the panel",
+  failRun.stderr.includes("bad request"), JSON.stringify(failRun.stderr))
+
+const okRun = runScript(Model.deleteItemCommand("fine")[2])
+check("a succeeding bw command exits zero through the cap",
+  okRun.code === 0, `exit ${okRun.code}`)
+
+// `bw big` never stops printing: only the cap ends it, and the SIGPIPE that
+// follows must not be reported as a failed vault read.
+const truncRun = runScript(Model.getItemCommand("big")[2])
+check("hitting the cap is not reported as a failure",
+  truncRun.code === 0, `exit ${truncRun.code}`)
+check("hitting the cap truncates at exactly the limit",
+  Buffer.byteLength(truncRun.stdout, "utf8") === 4 * 1024 * 1024,
+  `got ${Buffer.byteLength(truncRun.stdout, "utf8")} bytes`)
+
+fs.rmSync(stubDir, { recursive: true, force: true })
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) {

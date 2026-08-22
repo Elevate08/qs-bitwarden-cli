@@ -78,18 +78,29 @@ for (const [label, raw] of [["empty", ""], ["garbage", "???\n=\nbw\n"]]) {
 // --- settings writer --------------------------------------------------------
 // Values must reach shell.json as real JSON types, not strings, or `setting()`
 // hands the panel a string where it expects a number or a bool.
+// The writer runs through bash so its diagnostic stderr can be capped, so the
+// assertions read the script rather than an argv list.
+const writeScript = (k, v, t) => Model.settingWriteCommand(k, v, t)[2]
+
 check("int setting is written with --json",
-  JSON.stringify(Model.settingWriteCommand("autoLockMinutes", 15, "int"))
-    === JSON.stringify(["omarchy","bar","set","io.github.elevate08.qs-bitwarden-cli","autoLockMinutes","15","--json"]),
-  JSON.stringify(Model.settingWriteCommand("autoLockMinutes", 15, "int")))
+  writeScript("autoLockMinutes", 15, "int")
+    .includes("omarchy bar set io.github.elevate08.qs-bitwarden-cli 'autoLockMinutes' '15' --json"),
+  writeScript("autoLockMinutes", 15, "int"))
 
 for (const [v, want] of [[true, "true"], [false, "false"]]) {
-  const cmd = Model.settingWriteCommand("closeOnCopy", v, "bool")
-  check(`bool ${v} is written as ${want}`, cmd[5] === want, `got ${cmd[5]}`)
+  const script = writeScript("closeOnCopy", v, "bool")
+  check(`bool ${v} is written as ${want}`,
+    script.includes(`'closeOnCopy' '${want}' --json`), `got ${script}`)
 }
 check("a zero int is written as 0, not dropped",
-  Model.settingWriteCommand("autoLockMinutes", 0, "int")[5] === "0",
-  Model.settingWriteCommand("autoLockMinutes", 0, "int")[5])
+  writeScript("autoLockMinutes", 0, "int").includes("'autoLockMinutes' '0' --json"),
+  writeScript("autoLockMinutes", 0, "int"))
+
+// stderr from `omarchy bar set` is collected by the panel, so it needs the same
+// producer-side cap as every other stream the long-lived shell buffers.
+check("setting writer caps its diagnostic stderr",
+  writeScript("autoLockMinutes", 15, "int").includes("exec 2> >(head -c 8192 >&2)"),
+  writeScript("autoLockMinutes", 15, "int"))
 
 // Every schema key must exist in the manifest, or the settings screen would
 // write a key the plugin never reads.

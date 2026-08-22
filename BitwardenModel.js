@@ -113,6 +113,24 @@ var MAX_ASSOC_BYTES = 1024 * 1024           // 1 MB: learned associations file
 var MAX_STDERR_BYTES = 8192                 // 8 KB: diagnostic stderr output
 var MAX_MISC_BYTES = 64 * 1024              // 64 KB: create/edit/delete responses
 
+// `head -c` closes the pipe the moment the cap is reached, so a capped pipeline
+// exits with head's status -- success -- and every bw failure behind it would be
+// reported to the panel as a success. `pipefail` puts the producer's status back.
+// The one status it must not forward is 141: that is the SIGPIPE the cap itself
+// delivers when it truncates an oversized but otherwise healthy stream, which is
+// the limit doing its job rather than the command failing.
+function cappedScript(script, maxStderrBytes) {
+  var out = ""
+  if (maxStderrBytes) {
+    out += "exec 2> >(head -c " + Number(maxStderrBytes) + " >&2); "
+  }
+  out += "set -o pipefail; " + script
+  // `case` rather than `[ ... ] && ...`, which reports failure on no match and
+  // would trip `set -e` in the scripts that use it.
+  out += "\n__rc=$?\ncase \"$__rc\" in 141) __rc=0 ;; esac\nexit \"$__rc\""
+  return out
+}
+
 function buildCappedCommand(args, maxStdoutBytes, maxStderrBytes) {
   var inner = "bw"
   if (args && args.length > 0) {
@@ -128,12 +146,7 @@ function buildCappedCommand(args, maxStdoutBytes, maxStderrBytes) {
   if (maxStdoutBytes) {
     inner += " | head -c " + Number(maxStdoutBytes)
   }
-  var script = ""
-  if (maxStderrBytes) {
-    script += "exec 2> >(head -c " + Number(maxStderrBytes) + " >&2); "
-  }
-  script += inner
-  return ["bash", "-c", script]
+  return ["bash", "-c", cappedScript(inner, maxStderrBytes)]
 }
 
 function buildCommand(args) {
@@ -190,7 +203,7 @@ function unlockCommand() {
 // `hasCode` rather than the code itself -- only whether the flag is present
 // shapes the command; the value comes from the environment.
 function emailLoginCommand(email, hasCode, serverUrl) {
-  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); "
+  var script = ""
 
   if (serverUrl && serverUrl.trim()) {
     script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
@@ -200,13 +213,13 @@ function emailLoginCommand(email, hasCode, serverUrl) {
   if (hasCode) script += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
   script += " --raw | head -c " + MAX_TOKEN_BYTES
 
-  return ["bash", "-c", script]
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 // `login --apikey` authenticates but does not unlock, so the master password
 // is still needed for the second step. Both come from the environment.
 function apiKeyLoginCommand(serverUrl) {
-  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); "
+  var script = ""
 
   if (serverUrl && serverUrl.trim()) {
     script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
@@ -214,7 +227,7 @@ function apiKeyLoginCommand(serverUrl) {
 
   script += "bw login --apikey >/dev/null 2>&1 && "
   script += "bw unlock --passwordenv " + PASSWORD_ENV + " --raw | head -c " + MAX_TOKEN_BYTES
-  return ["bash", "-c", script]
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 // -------------------------------------------------------------------------
@@ -366,8 +379,8 @@ function collectionName(collections, id) {
 
 function createFolderCommand(name, session) {
   var jsonStr = JSON.stringify({ name: String(name || "").trim() })
-  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder | head -c " + MAX_MISC_BYTES
-  return ["bash", "-c", script]
+  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder | head -c " + MAX_MISC_BYTES
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 function deleteFolderCommand(folderId) {
@@ -405,13 +418,13 @@ function itemEnvVar() {
 
 function createItemCommand(itemData, session) {
   var orgArg = (itemData && itemData.organizationId) ? (" --organizationid " + shellQuote(itemData.organizationId)) : ""
-  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw create item" + orgArg + " | head -c " + MAX_MISC_BYTES
-  return ["bash", "-c", script]
+  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw create item" + orgArg + " | head -c " + MAX_MISC_BYTES
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 function editItemCommand(itemId, session) {
-  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
-  return ["bash", "-c", script]
+  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 function deleteItemCommand(itemId) {
@@ -480,7 +493,7 @@ function keyringLookupCommand() {
     // written at all. Drop it so the next lookup does not have to think.
     + "*) [ -n \"$stored\" ] && secret-tool clear" + attrs + " >/dev/null 2>&1 ;; "
     + "esac; exit 0"
-  return ["bash", "-c", script]
+  return ["bash", "-c", cappedScript(script)]
 }
 
 function keyringClearCommand() {
@@ -492,7 +505,8 @@ function keyringStoreApiKeyIdCommand() {
 }
 
 function keyringLookupApiKeyIdCommand() {
-  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_CLIENT_ID]
+  return ["bash", "-c", cappedScript("secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
+    + " account " + shellQuote(KEYRING_CLIENT_ID) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES)]
 }
 
 function keyringStoreApiKeySecretCommand() {
@@ -500,7 +514,8 @@ function keyringStoreApiKeySecretCommand() {
 }
 
 function keyringLookupApiKeySecretCommand() {
-  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_CLIENT_SECRET]
+  return ["bash", "-c", cappedScript("secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
+    + " account " + shellQuote(KEYRING_CLIENT_SECRET) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES)]
 }
 
 function keyringStoreEmailCommand() {
@@ -508,7 +523,8 @@ function keyringStoreEmailCommand() {
 }
 
 function keyringLookupEmailCommand() {
-  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_EMAIL]
+  return ["bash", "-c", cappedScript("secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
+    + " account " + shellQuote(KEYRING_EMAIL) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES)]
 }
 
 // -------------------------------------------------------------------------
@@ -526,7 +542,8 @@ function keyringStoreMasterPasswordCommand() {
 }
 
 function keyringLookupMasterPasswordCommand() {
-  return ["bash", "-c", "secret-tool lookup service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_MASTER) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES]
+  return ["bash", "-c", cappedScript("secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
+    + " account " + shellQuote(KEYRING_MASTER) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES)]
 }
 
 function keyringClearMasterPasswordCommand() {
@@ -599,11 +616,11 @@ function pinStoreCommand() {
 // Non-zero exit means the PIN was wrong (or the blob is gone). stdout carries
 // the master password only on success.
 function pinUnlockCommand() {
-  var script = "set -o pipefail; secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
+  var script = "secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
     + " account " + shellQuote(KEYRING_PIN) + " 2>/dev/null | head -c 8192"
     + " | openssl enc -d -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
     + " -pass env:" + PIN_ENV + " -base64 -A | head -c " + MAX_TOKEN_BYTES
-  return ["bash", "-c", script]
+  return ["bash", "-c", cappedScript(script)]
 }
 
 function keyringClearPinCommand() {
@@ -1842,7 +1859,7 @@ function dependencyCheckCommand() {
   parts.push("if [ -f /etc/pam.d/omarchy-lock-fingerprint ] && command -v fprintd-list >/dev/null 2>&1 "
     + "&& fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo fingerprint_ready=1; else echo fingerprint_ready=0; fi")
   parts.push("if command -v omarchy >/dev/null 2>&1; then echo omarchy=1; else echo omarchy=0; fi")
-  return ["bash", "-c", parts.join("; ") + " | head -c 4096"]
+  return ["bash", "-c", cappedScript("{ " + parts.join("; ") + "; } | head -c 4096")]
 }
 
 function parseDependencies(raw) {
@@ -1961,7 +1978,9 @@ function settingWriteCommand(key, value, type) {
   var raw
   if (type === "bool") raw = value ? "true" : "false"
   else raw = String(Number(value) || 0)
-  return ["omarchy", "bar", "set", "io.github.elevate08.qs-bitwarden-cli", String(key), raw, "--json"]
+  var script = "omarchy bar set io.github.elevate08.qs-bitwarden-cli "
+    + shellQuote(String(key)) + " " + shellQuote(raw) + " --json | head -c " + MAX_MISC_BYTES
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 // -------------------------------------------------------------------------
@@ -2179,8 +2198,8 @@ function sendEnvVar() {
 }
 
 function createSendCommand(session) {
-  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create | head -c " + MAX_MISC_BYTES
-  return ["bash", "-c", script]
+  var script = "printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create | head -c " + MAX_MISC_BYTES
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 // A file Send cannot go through stdin JSON -- bw wants the path on the command
