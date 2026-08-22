@@ -13,6 +13,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.parseItems = parseItems
   exports.parseItemDetail = parseItemDetail
   exports.itemDetailFromObject = itemDetailFromObject
+  exports.itemTypeGlyph = itemTypeGlyph
 `)(Model)
 
 let pass = 0
@@ -93,6 +94,36 @@ check("so does a non-object", Model.itemDetailFromObject("nope") === null,
   String(Model.itemDetailFromObject("nope")))
 check("unparseable JSON still yields null from the string form",
   Model.parseItemDetail("{not json") === null, String(Model.parseItemDetail("{not json")))
+
+// --- the type glyphs -------------------------------------------------------
+//
+// Pinned by codepoint, because a wrong one is invisible in review: the glyph
+// renders as a small picture in the editor and the name is nowhere in the
+// source. Two of these were wrong for exactly that reason -- Secure Note drew
+// md-fan (a ceiling fan) and Card drew md-close_octagon_outline (a stop sign),
+// both under comments claiming otherwise. The values below are the same ones
+// the type filter chips in Panel.qml use, which is the point: a row and the
+// chip that selects it should not disagree.
+
+const glyphs = [
+  [1, 0xF030B, "md-key_variant", "Login"],
+  [2, 0xF0219, "md-file_document", "Secure Note"],
+  [3, 0xF0FEF, "md-credit_card", "Card"],
+  [4, 0x0F007, "fa-user", "Identity"]
+]
+for (const [typeCode, cp, name, label] of glyphs) {
+  const got = Model.itemTypeGlyph(typeCode)
+  check(`${label} draws ${name}`, got.codePointAt(0) === cp,
+    `U+${got.codePointAt(0).toString(16).toUpperCase()}`)
+  check(`${label} is one glyph, not a sequence`, [...got].length === 1, JSON.stringify(got))
+}
+// itemTypeName() already answers "login" for anything it does not recognise,
+// so a cipher type Bitwarden adds later renders as a login rather than as
+// nothing. That also means itemTypeGlyph's own `default:` shield can never be
+// reached -- pinned here so the next reader does not go looking for it.
+check("an unrecognised type is drawn as a login, not as the unreachable shield",
+  Model.itemTypeGlyph(99).codePointAt(0) === 0xF030B,
+  Model.itemTypeGlyph(99).codePointAt(0).toString(16))
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

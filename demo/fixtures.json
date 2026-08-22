@@ -20,13 +20,20 @@
     { "object": "item", "id": "i2", "organizationId": null, "folderId": "f-social", "type": 1, "name": "Reddit", "favorite": false,
       "login": { "username": "demo-user", "password": "placeholder", "totp": null, "uris": [{ "uri": "https://reddit.com" }] } },
     { "object": "item", "id": "i3", "organizationId": "org-acme", "folderId": "f-infra", "type": 1, "name": "Acme VPN", "favorite": false,
-      "login": { "username": "d.demo@example.com", "password": "placeholder", "totp": "otpauth://totp/demo", "uris": [{ "uri": "https://vpn.acme.example" }] } },
+      "login": { "username": "d.demo@example.com", "password": "placeholder", "totp": "otpauth://totp/demo", "uris": [{ "uri": "https://vpn.acme.example" }] },
+      "attachments": [
+        { "object": "attachment", "id": "a3", "fileName": "acme-vpn.ovpn", "size": "8192", "sizeName": "8 KB", "url": "https://example.invalid/a3" }
+      ] },
     { "object": "item", "id": "i4", "organizationId": null, "folderId": "f-infra", "type": 1, "name": "Home Assistant", "favorite": true,
       "login": { "username": "admin", "password": "placeholder", "totp": null, "uris": [{ "uri": "https://homeassistant.local:8123" }] } },
     { "object": "item", "id": "i5", "organizationId": null, "folderId": "f-fin", "type": 1, "name": "Example Bank", "favorite": false,
       "login": { "username": "demo-user", "password": "placeholder", "totp": "otpauth://totp/demo", "uris": [{ "uri": "https://bank.example.com" }] } },
     { "object": "item", "id": "i6", "organizationId": null, "folderId": null, "type": 2, "name": "Recovery Codes", "favorite": false,
-      "notes": "Placeholder note. No real data here.", "secureNote": { "type": 0 } },
+      "notes": "Placeholder note. No real data here.", "secureNote": { "type": 0 },
+      "attachments": [
+        { "object": "attachment", "id": "a1", "fileName": "recovery-codes.txt", "size": "412", "sizeName": "412 B", "url": "https://example.invalid/a1" },
+        { "object": "attachment", "id": "a2", "fileName": "backup-key.pem", "size": "3204", "sizeName": "3.13 KB", "url": "https://example.invalid/a2" }
+      ] },
     { "object": "item", "id": "i7", "organizationId": null, "folderId": "f-fin", "type": 3, "name": "Demo Card", "favorite": false,
       "card": { "cardholderName": "D. Demo", "brand": "Visa", "number": "4111111111111111", "expMonth": "12", "expYear": "2030", "code": "123" } },
     { "object": "item", "id": "i8", "organizationId": "org-acme", "folderId": "f-infra", "type": 1, "name": "Acme Grafana", "favorite": false,

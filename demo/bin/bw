@@ -47,6 +47,17 @@ sys.stdout.write(json.dumps(st))" "$DEMO_STATUS" ;;
     case "${2:-}" in
       totp)     echo "418 623" | tr -d ' ' ;;
       password) echo "placeholder" ;;
+      # Attachment bytes never come from the fixture file -- the panel only
+      # needs a file to appear where it asked for one.
+      attachment)
+        out=""
+        while [ $# -gt 0 ]; do
+          if [ "$1" = "--output" ]; then out="${2:-}"; fi
+          shift
+        done
+        [ -n "$out" ] || exit 1
+        printf 'placeholder attachment, not real vault data\n' > "$out"
+        echo "Saved $out" ;;
       item)     python3 -c "
 import json,sys
 d=json.load(open('$FIXTURES'))

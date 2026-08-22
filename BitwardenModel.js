@@ -675,14 +675,18 @@ function itemTypeName(type) {
   return ITEM_TYPES[String(type)] || "login"
 }
 
+// The same glyphs the type filter chips use, so an item row and the chip
+// that selects it agree. Two of these used to be neither: the comments said
+// "note icon" and "credit card icon", but the codepoints were md-fan and
+// md-close_octagon_outline -- a ceiling fan and a stop sign.
 function itemTypeGlyph(type) {
   var t = itemTypeName(type)
   switch (t) {
-    case "login": return "󰌋"      // key icon
-    case "secureNote": return "󰈐" // note icon
-    case "card": return "󰅝"       // credit card icon
-    case "identity": return ""   // person icon
-    default: return "󰞀"           // shield icon
+    case "login": return "󰌋"      // md-key_variant
+    case "secureNote": return "󰈙" // md-file_document
+    case "card": return "󰿯"       // md-credit_card
+    case "identity": return ""   // fa-user
+    default: return "󰞀"           // md-shield_half_full
   }
 }
 
@@ -695,6 +699,141 @@ function itemTypeLabel(type) {
     case "identity": return "Identity"
     default: return "Item"
   }
+}
+
+// -------------------------------------------------------------------------
+// Attachments
+// -------------------------------------------------------------------------
+//
+// `bw list items` carries the attachment metadata with the cipher -- id, file
+// name and size -- so the panel can list an item's files without asking the
+// CLI anything. Only the bytes need a round trip, and those are fetched on
+// demand by attachmentDownloadCommand().
+
+// -------------------------------------------------------------------------
+// Array.isArray is not safe on anything that came back out of QML
+// -------------------------------------------------------------------------
+//
+// `bw`'s JSON parses into real arrays, and every check below used to say
+// Array.isArray(). That holds right up until the parsed cipher is stored in a
+// QML `var` property -- root.items -- and read back out to build the detail
+// view. Qt converts the nested arrays on that round trip into array-like
+// objects: `typeof` is "object", `.length` is right, indexing works, and
+// Array.isArray() returns false. So the check passes in Node and fails in the
+// panel, silently, yielding an empty list rather than an error.
+//
+// That is exactly how an item the list had already marked as having twelve
+// attachments opened with no attachments section at all -- and, it turns out,
+// why the detail view's WEBSITE section has been empty for logins that
+// plainly have a URI.
+//
+// Duck-type instead: anything with a sane numeric length is a list.
+function toList(value) {
+  if (Array.isArray(value)) return value
+  if (!value || typeof value !== "object") return []
+  var n = value.length
+  if (typeof n !== "number" || n < 0 || n !== Math.floor(n)) return []
+  var out = []
+  for (var i = 0; i < n; i++) out.push(value[i])
+  return out
+}
+
+function parseAttachments(raw) {
+  var out = []
+  var list = toList(raw)
+  for (var i = 0; i < list.length; i++) {
+    var a = list[i]
+    if (!a || !a.id) continue
+    out.push({
+      id: String(a.id),
+      fileName: String(a.fileName || "") || "attachment",
+      size: String(a.size || ""),
+      sizeName: String(a.sizeName || "") || formatAttachmentSize(a.size)
+    })
+  }
+  return out
+}
+
+var ATTACHMENT_UNITS = ["B", "KB", "MB", "GB", "TB"]
+
+// bw normally supplies its own `sizeName`, so this is the fallback for the
+// attachments that arrive with only a byte count.
+function formatAttachmentSize(bytes) {
+  // Nothing at all is no size text; zero bytes is a size, and a real one.
+  if (bytes === null || bytes === undefined || String(bytes).trim() === "") return ""
+  var n = Number(bytes)
+  if (!isFinite(n) || n < 0) return ""
+  var unit = 0
+  while (n >= 1024 && unit < ATTACHMENT_UNITS.length - 1) {
+    n = n / 1024
+    unit++
+  }
+  var value = unit === 0
+    ? String(Math.round(n))
+    : (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, "")
+  return value + " " + ATTACHMENT_UNITS[unit]
+}
+
+// A file name out of the vault is attacker-controlled text, and it is about to
+// become part of a path we create. "../../.bashrc", an embedded newline or a
+// NUL all have to come out as an inert basename: path separators and control
+// characters are replaced rather than stripped, so nothing can be spliced back
+// together into a traversal, and a leading dot or dash cannot turn the result
+// into a hidden file or into something that reads as a flag.
+function safeAttachmentFileName(raw) {
+  var name = String(raw || "")
+  name = name.replace(/^.*[\\/]/, "")               // best-effort basename
+  name = name.replace(/[\x00-\x1f\x7f\\/]/g, "_")   // the part that guarantees it
+  name = name.replace(/^[\s.\-]+/, "").replace(/\s+$/, "")
+  if (name.length > 128) {
+    var ext = ""
+    var dot = name.lastIndexOf(".")
+    if (dot > 0 && name.length - dot <= 12) ext = name.slice(dot)
+    name = name.slice(0, 128 - ext.length) + ext
+  }
+  return name || "attachment"
+}
+
+function parentDirectory(path) {
+  var p = String(path || "")
+  var cut = p.lastIndexOf("/")
+  if (cut < 0) return ""
+  return cut === 0 ? "/" : p.slice(0, cut)
+}
+
+function baseName(path) {
+  var p = String(path || "")
+  var cut = p.lastIndexOf("/")
+  return cut < 0 ? p : p.slice(cut + 1)
+}
+
+// Saves one attachment into the user's download directory and prints the path
+// it landed on -- which is the only way the panel learns where that was, since
+// the directory is resolved at run time. An existing file of the same name is
+// never overwritten: " (1)", " (2)" and so on go before the extension until
+// the name is free.
+//
+// The attachment id, the item id and the file name all come out of the vault,
+// so all three are quoted rather than interpolated bare, and the file name has
+// been through safeAttachmentFileName() before it gets here.
+function attachmentDownloadCommand(attachmentId, itemId, fileName) {
+  var script = [
+    "set -e",
+    "name=" + shellQuote(safeAttachmentFileName(fileName)),
+    "dir=\"$(xdg-user-dir DOWNLOAD 2>/dev/null || true)\"",
+    // xdg-user-dir answers $HOME for a directory it does not know about, and
+    // $HOME is not somewhere to drop files.
+    "if [ -z \"$dir\" ] || [ \"$dir\" = \"$HOME\" ]; then dir=\"$HOME/Downloads\"; fi",
+    "mkdir -p -- \"$dir\"",
+    "stem=\"$name\"; ext=\"\"",
+    "case \"$name\" in *.*) stem=\"${name%.*}\"; ext=\".${name##*.}\";; esac",
+    "out=\"$dir/$name\"; n=1",
+    "while [ -e \"$out\" ]; do out=\"$dir/$stem ($n)$ext\"; n=$((n+1)); done",
+    "bw get attachment " + shellQuote(attachmentId)
+      + " --itemid " + shellQuote(itemId) + " --output \"$out\" >/dev/null",
+    "printf %s \"$out\""
+  ].join("\n")
+  return ["bash", "-c", script]
 }
 
 function parseItems(raw) {
@@ -719,6 +858,8 @@ function parseItems(raw) {
         if (u && u.uri) uris.push(String(u.uri))
       }
     }
+
+    var attachments = parseAttachments(it.attachments)
 
     var card = it.card || null
     var cardSubtitle = ""
@@ -753,6 +894,8 @@ function parseItems(raw) {
       hasTotp: Boolean(login.totp),
       totpKey: String(login.totp || ""),
       uris: uris,
+      attachments: attachments,
+      hasAttachments: attachments.length > 0,
       subtitle: subtitle,
       notes: String(it.notes || ""),
       rawObject: it
@@ -791,11 +934,10 @@ function itemDetailFromObject(it) {
 
   var login = it.login || {}
   var uris = []
-  if (Array.isArray(login.uris)) {
-    for (var j = 0; j < login.uris.length; j++) {
-      var u = login.uris[j]
-      if (u && u.uri) uris.push(String(u.uri))
-    }
+  var rawUris = toList(login.uris)
+  for (var j = 0; j < rawUris.length; j++) {
+    var u = rawUris[j]
+    if (u && u.uri) uris.push(String(u.uri))
   }
 
   var card = null
@@ -826,17 +968,18 @@ function itemDetailFromObject(it) {
     }
   }
 
+  var attachments = parseAttachments(it.attachments)
+
   var customFields = []
-  if (Array.isArray(it.fields)) {
-    for (var k = 0; k < it.fields.length; k++) {
-      var f = it.fields[k]
-      if (f && f.name) {
-        customFields.push({
-          name: String(f.name || ""),
-          value: String(f.value || ""),
-          type: Number(f.type || 0) // 0: text, 1: hidden, 2: boolean, 3: linked
-        })
-      }
+  var rawFields = toList(it.fields)
+  for (var k = 0; k < rawFields.length; k++) {
+    var f = rawFields[k]
+    if (f && f.name) {
+      customFields.push({
+        name: String(f.name || ""),
+        value: String(f.value || ""),
+        type: Number(f.type || 0) // 0: text, 1: hidden, 2: boolean, 3: linked
+      })
     }
   }
 
@@ -854,6 +997,8 @@ function itemDetailFromObject(it) {
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
+    attachments: attachments,
+    hasAttachments: attachments.length > 0,
     card: card,
     identity: identity,
     fields: customFields,

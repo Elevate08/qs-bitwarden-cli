@@ -104,6 +104,15 @@ Panel {
   property string liveTotp: ""
   property int totpSecRemaining: 30
 
+  // Attachment downloads. One `bw get attachment` runs at a time and the rest
+  // wait in the queue, so "Save all" on an item with six files does not fire
+  // six CLI bootstraps at once. `attachmentSaved` maps an attachment id to the
+  // path it landed on, which is what turns the row's Download button into Open
+  // and Show in folder; it is cleared whenever a different item is opened.
+  property var attachmentQueue: []
+  property string attachmentBusyId: ""
+  property var attachmentSaved: ({})
+
   // Follow-up TOTP sequential copy state (Enter -> Password -> Enter -> TOTP)
   property var totpFollowupItem: null
   property string totpFollowupCode: ""
@@ -1766,6 +1775,9 @@ Panel {
     detailItem = null
     detailPassword = ""
     liveTotp = ""
+    // Another item's downloads say nothing about this one's.
+    attachmentQueue = []
+    attachmentSaved = ({})
     currentScreen = "detail"
 
     // The list already fetched the whole item, so render from that rather than
@@ -1797,6 +1809,96 @@ Panel {
     } else {
       errorMessage = "Could not load item details"
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Attachments
+  // -------------------------------------------------------------------------
+
+  function queueAttachment(att) {
+    if (!detailItem || !att || !att.id) return
+    if (attachmentBusyId === att.id) return
+    for (var i = 0; i < attachmentQueue.length; i++) {
+      if (attachmentQueue[i].id === att.id) return
+    }
+    resetAutoLockTimer()
+    errorMessage = ""
+    var next = attachmentQueue.slice()
+    next.push({ id: att.id, fileName: att.fileName, itemId: detailItem.id })
+    attachmentQueue = next
+    pumpAttachmentQueue()
+  }
+
+  function saveAllAttachments() {
+    if (!detailItem || !detailItem.attachments) return
+    for (var i = 0; i < detailItem.attachments.length; i++) {
+      queueAttachment(detailItem.attachments[i])
+    }
+  }
+
+  function pumpAttachmentQueue() {
+    if (attachmentBusyId !== "" || attachmentQueue.length === 0) return
+    if (!session) {
+      attachmentQueue = []
+      errorMessage = "Vault is locked or session expired. Please unlock your vault."
+      return
+    }
+    var next = attachmentQueue.slice()
+    var job = next.shift()
+    attachmentQueue = next
+    attachmentBusyId = job.id
+    attachmentProc.command = Model.attachmentDownloadCommand(job.id, job.itemId, job.fileName)
+    attachmentProc.running = true
+  }
+
+  function onAttachmentDownloaded(exitCode, savedPath, stderrText) {
+    var id = attachmentBusyId
+    attachmentBusyId = ""
+    var path = String(savedPath || "").trim()
+
+    if (exitCode !== 0 || !path) {
+      // bw's own message is the useful one -- "Not found." for an attachment
+      // that has since been deleted, or a permission error on the directory.
+      var err = String(stderrText || "").trim().split("\n")[0]
+      errorMessage = err ? ("Could not save the attachment: " + err)
+                         : "Could not save the attachment"
+      attachmentQueue = []
+      return
+    }
+
+    var saved = {}
+    for (var k in attachmentSaved) saved[k] = attachmentSaved[k]
+    saved[id] = path
+    attachmentSaved = saved
+    flashNotification("Saved " + Model.baseName(path))
+    pumpAttachmentQueue()
+  }
+
+  function attachmentSavedPath(id) {
+    return (attachmentSaved && attachmentSaved[id]) ? String(attachmentSaved[id]) : ""
+  }
+
+  function isAttachmentQueued(id) {
+    for (var i = 0; i < attachmentQueue.length; i++) {
+      if (attachmentQueue[i].id === id) return true
+    }
+    return false
+  }
+
+  function openSavedAttachment(id) {
+    var path = attachmentSaved[id]
+    if (!path) return
+    resetAutoLockTimer()
+    Quickshell.execDetached(["xdg-open", path])
+  }
+
+  function revealSavedAttachment(id) {
+    var path = attachmentSaved[id]
+    if (!path) return
+    var dir = Model.parentDirectory(path)
+    if (!dir) return
+    resetAutoLockTimer()
+    Quickshell.execDetached(["xdg-open", dir])
   }
 
   function fetchTotp(itemId) {
@@ -2309,6 +2411,16 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector { id: createFolderStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onFolderCreated(exitCode, createFolderStdout.text) }
+  }
+
+  Process {
+    id: attachmentProc
+    environment: root.bwEnv()
+    stdout: StdioCollector { id: attachmentStdout; waitForEnd: true }
+    stderr: StdioCollector { id: attachmentStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.onAttachmentDownloaded(exitCode, attachmentStdout.text, attachmentStderr.text)
+    }
   }
 
   Process {
@@ -2932,6 +3044,8 @@ Panel {
             root.showDeleteConfirm = true
           } else if (lower === "v") {
             root.passwordRevealed = !root.passwordRevealed
+          } else if (lower === "a") {
+            root.saveAllAttachments()
           } else if (lower === "b" || lower === "q") {
             root.currentScreen = "main"
           }
@@ -5214,7 +5328,9 @@ Panel {
                         font.pixelSize: Style.font.body
                         font.bold: true
                         elide: Text.ElideRight
-                        width: Math.min(implicitWidth, parent.width - (itemData.favorite ? Style.space(16) : 0))
+                        width: Math.min(implicitWidth, parent.width
+                          - (itemData.favorite ? Style.space(16) : 0)
+                          - (itemData.hasAttachments ? Style.space(18) : 0))
                       }
 
                       Text {
@@ -5222,6 +5338,18 @@ Panel {
                         visible: itemData.favorite
                         text: "★"
                         color: Color.accent
+                        font.pixelSize: Style.font.bodySmall
+                        anchors.verticalCenter: parent.verticalCenter
+                      }
+
+                      // A paperclip is the whole badge: the file names live in
+                      // the detail view, and the row only has to say they exist.
+                      Text {
+                        textFormat: Text.PlainText
+                        visible: Boolean(itemData.hasAttachments)
+                        text: "󰏢"
+                        color: root.dim
+                        font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                         anchors.verticalCenter: parent.verticalCenter
                       }
@@ -5975,6 +6103,128 @@ Panel {
                 }
               }
 
+              // FIELD: Attachments
+              //
+              // The metadata came down with the item, so the list is here the
+              // moment the detail view opens; only the bytes cost a CLI call,
+              // and only for the file the user actually asks for.
+              //
+              // Above NOTES on purpose. Notes is the one section with no height
+              // of its own -- it grows with the text -- and this Flickable is
+              // capped, so anything after it starts below the fold on exactly
+              // the items whose note is long. A secure note with a file
+              // attached is that case, and the files were the thing being
+              // pushed out of sight.
+              Column {
+                visible: Boolean(root.detailItem && root.detailItem.hasAttachments)
+                width: parent.width
+                spacing: Style.space(4)
+
+                Row {
+                  width: parent.width
+                  spacing: Style.space(6)
+                  PanelSectionHeader { text: "ATTACHMENTS" }
+                  Item { Layout.fillWidth: true }
+                  PanelActionButton {
+                    visible: Boolean(root.detailItem && root.detailItem.attachments
+                      && root.detailItem.attachments.length > 1)
+                    iconText: "󰇚"
+                    tooltipText: "Save all attachments (a)"
+                    size: Style.space(20)
+                    fontFamily: root.fontFamily
+                    onClicked: root.saveAllAttachments()
+                  }
+                }
+
+                Repeater {
+                  model: root.detailItem ? root.detailItem.attachments : []
+                  delegate: BorderSurface {
+                    readonly property string savedPath: root.attachmentSavedPath(modelData.id)
+                    readonly property bool busy: root.attachmentBusyId === modelData.id
+                    readonly property bool queued: root.isAttachmentQueued(modelData.id)
+
+                    width: detailContentColumn.width
+                    implicitHeight: Style.space(34)
+                    radius: Style.cornerRadius
+                    color: Style.hoverFillFor(root.fg, Color.accent)
+                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                    Row {
+                      anchors.fill: parent
+                      anchors.leftMargin: Style.space(10)
+                      anchors.rightMargin: Style.space(6)
+                      spacing: Style.space(6)
+
+                      Text {
+                        textFormat: Text.PlainText
+                        id: attachmentGlyph
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "󰈔"
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                      }
+
+                      // The file name is vault text, so it is drawn as text.
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.fileName
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        elide: Text.ElideRight
+                        width: Math.max(0, parent.width - attachmentGlyph.width
+                          - attachmentStatus.width - attachmentActions.width - Style.space(34))
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        id: attachmentStatus
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: busy ? "Saving..." : queued ? "Queued" : modelData.sizeName
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Row {
+                        id: attachmentActions
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(2)
+
+                        PanelActionButton {
+                          visible: savedPath === ""
+                          enabled: !busy && !queued
+                          iconText: "󰇚"
+                          tooltipText: "Save to your download folder"
+                          fontFamily: root.fontFamily
+                          onClicked: root.queueAttachment(modelData)
+                        }
+
+                        PanelActionButton {
+                          visible: savedPath !== ""
+                          iconText: "󰏌"
+                          tooltipText: "Open the saved file"
+                          fontFamily: root.fontFamily
+                          onClicked: root.openSavedAttachment(modelData.id)
+                        }
+
+                        PanelActionButton {
+                          visible: savedPath !== ""
+                          iconText: "󰝰"
+                          // The path is ours -- a download directory plus a
+                          // sanitised name -- but it is still drawn as text.
+                          tooltipText: Model.plainLabel("Show in " + Model.parentDirectory(savedPath))
+                          fontFamily: root.fontFamily
+                          onClicked: root.revealSavedAttachment(modelData.id)
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
               // FIELD: Notes
               Column {
                 visible: Boolean(root.detailItem && root.detailItem.notes !== "")
@@ -5986,7 +6236,7 @@ Panel {
                   PanelSectionHeader { text: "NOTES" }
                   Item { Layout.fillWidth: true }
                   PanelActionButton {
-                    iconText: "󰈐"
+                    iconText: "󰈙"
                     tooltipText: "Copy notes"
                     size: Style.space(20)
                     fontFamily: root.fontFamily
@@ -6087,7 +6337,7 @@ Panel {
 
                 Button {
                   text: "Secure Note"
-                  iconText: "󰈐"
+                  iconText: "󰈙"
                   selected: root.formTypeCode === 2
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption

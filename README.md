@@ -3,7 +3,7 @@
 A modern, fast, and feature-rich Bitwarden password manager plugin for the **Omarchy** shell environment and **Hyprland** desktop.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.1.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI](https://img.shields.io/badge/requires-bw%20CLI-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -89,6 +89,13 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Lists your existing Sends with how long each has left (`in 3 days`, `expired`), views used against the maximum, and whether a password is set. Copy a link or delete a Send from the row.
   - Keyboard: <kbd>n</kbd> new, <kbd>r</kbd> refresh, <kbd>x</kbd> delete the highlighted Send, <kbd>Enter</kbd> copy its link, <kbd>Esc</kbd> back.
   - The Send payload -- which carries the Send password -- is passed to `bw` through the environment, never on the command line.
+
+- **Attachments**:
+  - Items that carry files are marked with a `󰏢` paperclip in the list, and the detail view lists each attachment with its name and size.
+  - The list costs nothing: `bw list items` already returns the attachment metadata with the cipher, so the files are on screen the moment the item opens. Only the bytes need the CLI, and only for the file you ask for.
+  - **Save** puts a file in your download directory (`xdg-user-dir DOWNLOAD`, falling back to `~/Downloads`), then offers **Open** and **Show in folder** for it. <kbd>a</kbd> saves every attachment on the item; they are fetched one at a time rather than starting a `bw` per file.
+  - An existing file of the same name is never overwritten -- ` (1)`, ` (2)` and so on go before the extension until the name is free.
+  - **A file name out of the vault is treated as hostile.** It is decrypted content that is about to become part of a path, so path separators and control characters are replaced rather than stripped, a leading dot or dash is dropped, and the result is quoted on top of that: `../../.bashrc` saves as `bashrc` in your download directory and nowhere else. Tests run the real script against a stub `bw` to prove it.
 
 - **Folders**:
   - Filter by folder from the bottom filter bar: **All Folders**, **No Folder**, or any specific folder.
@@ -278,6 +285,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>u</kbd> / <kbd>c</kbd> | Copy username |
 | <kbd>m</kbd> | Copy TOTP code |
 | <kbd>v</kbd> | Toggle re**v**eal / mask password |
+| <kbd>a</kbd> | Save every **a**ttachment on this item |
 | <kbd>e</kbd> | Edit this item |
 | <kbd>x</kbd> | Delete this item (asks first) |
 | <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Back to the list |
@@ -468,6 +476,7 @@ node tests/folders.test.js          # folder parsing, filtering and assignment
 node tests/sends.test.js            # Send payloads, parsing, and argv-safety
 node tests/collections.test.js      # organization collections and item ownership
 node tests/items.test.js            # item parsing, and that a list entry can build the detail view
+node tests/attachments.test.js      # attachment metadata, and that a vault file name cannot escape ~/Downloads
 node tests/handoff-urls.test.js     # session-handoff file path, and which URI schemes may be opened
 node tests/rich-text.test.js        # vault text is drawn as text, never parsed as markup
 node tests/session-boot.test.js     # a remembered session dies with the boot that minted it
