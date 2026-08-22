@@ -176,8 +176,8 @@ check("an incomplete login leaves nothing behind",
   login.includes('rm -f'), login.slice(0, 300))
 
 const read = Model.sessionHandoffReadCommand()[2]
-check("the handoff is read once and removed",
-  read.includes("cat") && read.includes("rm -f"), read)
+check("the handoff is read once and removed with a byte limit",
+  read.includes("head -c") && read.includes("rm -f"), read)
 check("an absent or empty handoff yields nothing",
   read.includes("-s "), read)
 

@@ -25,8 +25,9 @@ const failures = []
 const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
 
 // --- command ---
-check("collections are listed per organization",
-  Model.listOrgCollectionsCommand("o1").join(" ") === "bw list org-collections --organizationid o1",
+check("collections are listed per organization with a producer-side byte limit",
+  Model.listOrgCollectionsCommand("o1").join(" ").includes("bw list org-collections --organizationid o1")
+    && Model.listOrgCollectionsCommand("o1").join(" ").includes("head -c"),
   Model.listOrgCollectionsCommand("o1").join(" "))
 check("the session is not on the command line",
   !Model.listOrgCollectionsCommand("o1").join(" ").includes("--session"), "expected no --session")

@@ -83,8 +83,10 @@ check("edit can clear an existing folder assignment",
 // --- commands ---
 // The session goes in BW_SESSION, never argv -- /proc/<pid>/cmdline is
 // world-readable and the token unlocks the vault.
-check("list folders carries no session on the command line",
-  Model.listFoldersCommand().join(" ") === "bw list folders",
+check("list folders carries no session on the command line and caps output",
+  Model.listFoldersCommand().join(" ").includes("bw list folders")
+    && Model.listFoldersCommand().join(" ").includes("head -c")
+    && !Model.listFoldersCommand().join(" ").includes("--session"),
   Model.listFoldersCommand().join(" "))
 check("folder names with quotes are shell-quoted, not interpolated",
   Model.createFolderCommand("it's \"fine\"")[2].includes("'\\''"),

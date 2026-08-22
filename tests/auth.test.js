@@ -46,8 +46,8 @@ check("unlock takes no password argument at all",
   Model.unlockCommand.length === 0, `arity ${Model.unlockCommand.length}`)
 check("unlock names the password env var rather than carrying a password",
   flat(unlock).includes("--passwordenv " + Model.passwordEnvVar()), flat(unlock))
-check("unlock needs no shell",
-  unlock[0] === "bw" && !flat(unlock).includes("bash"), flat(unlock))
+check("unlock caps output and diagnostic stderr on the producer side",
+  flat(unlock).includes("head -c") && flat(unlock).includes("exec 2>"), flat(unlock))
 
 // The builders are called the way Panel.qml calls them: with what shapes the
 // command, never with the secret itself.
@@ -115,7 +115,7 @@ check("no --code flag at all when no code was entered",
 check("email login passes the email address, which is not a secret",
   flat(emailPlain).includes("bw login 'john@example.com'"), flat(emailPlain))
 check("a custom server is configured before logging in",
-  emailFull[2].startsWith("bw config server '" + SERVER + "'")
+  emailFull[2].includes("bw config server '" + SERVER + "'")
     && emailFull[2].includes("&& bw login"), flat(emailFull))
 check("no server config step when the default server is used",
   !flat(emailPlain).includes("bw config server"), flat(emailPlain))
@@ -123,7 +123,7 @@ check("api key login authenticates and then unlocks, since --apikey does not unl
   flat(apiKey).includes("bw login --apikey")
     && flat(apiKey).includes("bw unlock --passwordenv " + Model.passwordEnvVar()), flat(apiKey))
 check("api key login honours a custom server too",
-  flat(apiKeyServer).startsWith("bash -c bw config server '" + SERVER + "'"), flat(apiKeyServer))
+  flat(apiKeyServer).includes("bw config server '" + SERVER + "'"), flat(apiKeyServer))
 
 // Single quotes in a server URL or email must not break out of the script.
 const injected = Model.emailLoginCommand("a'; touch /tmp/pwned; '@b.c", false,

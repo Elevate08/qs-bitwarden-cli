@@ -296,7 +296,7 @@ Panel {
 
   function detectActiveWindowContext() {
     if (!suggestOnOpen) return
-    activeWindowProc.command = ["sh", "-c", "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' && hyprctl activewindow -j || hyprctl clients -j 2>/dev/null"]
+    activeWindowProc.command = ["sh", "-c", "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' && (hyprctl activewindow -j 2>/dev/null | head -c 65536) || (hyprctl clients -j 2>/dev/null | head -c 1048576)"]
     activeWindowProc.running = true
   }
 
@@ -2197,7 +2197,7 @@ Panel {
     }
     if (session) {
       Quickshell.execDetached({
-        command: ["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --raw | wl-copy --sensitive"],
+        command: ["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --raw | head -c 4096 | wl-copy --sensitive"],
         environment: root.bwEnv()
       })
       flashNotification("Password copied!")
@@ -2221,7 +2221,7 @@ Panel {
       return
     }
     Quickshell.execDetached({
-      command: ["bash", "-c", "bw get totp " + Util.shellQuote(item.id) + " --raw | wl-copy --sensitive"],
+      command: ["bash", "-c", "bw get totp " + Util.shellQuote(item.id) + " --raw | head -c 1024 | wl-copy --sensitive"],
       environment: root.bwEnv()
     })
     flashNotification("TOTP code copied!")
@@ -2340,9 +2340,6 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onStatusFinished(text)
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
     }
   }
 
@@ -2723,7 +2720,7 @@ Panel {
 
   Process {
     id: activeWindowProc
-    command: ["sh", "-c", "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' && hyprctl activewindow -j || hyprctl clients -j 2>/dev/null"]
+    command: ["sh", "-c", "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' && (hyprctl activewindow -j 2>/dev/null | head -c 65536) || (hyprctl clients -j 2>/dev/null | head -c 1048576)"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -4529,13 +4526,14 @@ Panel {
               // the reason stated rather than the control silently doing nothing.
               readonly property bool blocked: root.settingBlocked(modelData)
 
-              Row {
+              Item {
                 width: parent.width
-                spacing: Style.space(10)
+                implicitHeight: Math.max(settingTextCol.implicitHeight, settingControlRow.implicitHeight, Style.space(32))
 
                 // Keyboard cursor: a bar in the gutter, so the row it marks is
                 // unmistakable without recolouring the whole row.
                 Rectangle {
+                  anchors.left: parent.left
                   anchors.verticalCenter: parent.verticalCenter
                   width: Style.space(3)
                   height: parent.height - Style.space(6)
@@ -4545,11 +4543,17 @@ Panel {
                 }
 
                 Column {
-                  width: parent.width - Style.space(modelData.type === "int" ? 200 : 130)
+                  id: settingTextCol
+                  anchors.left: parent.left
+                  anchors.leftMargin: cursored ? Style.space(10) : 0
+                  anchors.right: settingControlRow.left
+                  anchors.rightMargin: Style.space(12)
+                  anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(2)
 
                   Text {
                     textFormat: Text.PlainText
+                    width: parent.width
                     text: modelData.label
                     color: blocked ? root.dim : root.fg
                     font.family: root.fontFamily
@@ -4569,52 +4573,59 @@ Panel {
                   }
                 }
 
-                ToggleSwitch {
+                Row {
+                  id: settingControlRow
+                  anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
-                  visible: modelData.type === "bool"
-                  checked: modelData.type === "bool" && root.settingValue(modelData)
-                  interactive: !blocked
-                  foreground: root.fg
-                  accent: Color.accent
-                  onToggled: {
-                    if (blocked) return
-                    // A PIN cannot simply be switched on: it has to be chosen,
-                    // and encrypting it needs the master password.
-                    if (modelData.action === "pin") {
-                      if (checked) root.disablePinUnlock()
-                      else root.beginPinSetup()
-                      return
+                  spacing: Style.space(8)
+
+                  ToggleSwitch {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: modelData.type === "bool"
+                    checked: modelData.type === "bool" && root.settingValue(modelData)
+                    interactive: !blocked
+                    foreground: root.fg
+                    accent: Color.accent
+                    onToggled: {
+                      if (blocked) return
+                      // A PIN cannot simply be switched on: it has to be chosen,
+                      // and encrypting it needs the master password.
+                      if (modelData.action === "pin") {
+                        if (checked) root.disablePinUnlock()
+                        else root.beginPinSetup()
+                        return
+                      }
+                      if (modelData.action === "fingerprint") {
+                        if (checked) root.forgetFingerprintUnlock()
+                        else root.beginFingerprintSetup()
+                        return
+                      }
+                      root.writeSetting(modelData.key, !checked, "bool")
                     }
-                    if (modelData.action === "fingerprint") {
-                      if (checked) root.forgetFingerprintUnlock()
-                      else root.beginFingerprintSetup()
-                      return
-                    }
-                    root.writeSetting(modelData.key, !checked, "bool")
                   }
-                }
 
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  visible: modelData.type === "int" && !!modelData.unit
-                  text: modelData.unit || ""
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: modelData.type === "int" && !!modelData.unit
+                    text: modelData.unit || ""
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
 
-                NumberField {
-                  anchors.verticalCenter: parent.verticalCenter
-                  visible: modelData.type === "int"
-                  value: modelData.type === "int" ? root.settingValue(modelData) : 0
-                  from: modelData.min || 0
-                  to: modelData.max || 100
-                  stepSize: modelData.step || 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.writeSetting(modelData.key, v, "int") }
+                  NumberField {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: modelData.type === "int"
+                    value: modelData.type === "int" ? root.settingValue(modelData) : 0
+                    from: modelData.min || 0
+                    to: modelData.max || 100
+                    stepSize: modelData.step || 1
+                    foreground: root.fg
+                    accent: Color.accent
+                    fontFamily: root.fontFamily
+                    onModified: function(v) { root.writeSetting(modelData.key, v, "int") }
+                  }
                 }
               }
 

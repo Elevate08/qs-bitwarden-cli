@@ -98,8 +98,46 @@ function noInteractionEnvVar() {
   return NOINTERACTION_ENV
 }
 
+// Limits on stdout and stderr streams collected into the shell's memory space.
+// Producer-side caps (via `head -c`) prevent unbounded buffering in QML StdioCollector.
+var MAX_ITEMS_BYTES = 16 * 1024 * 1024       // 16 MB: large vault item list
+var MAX_DETAIL_BYTES = 4 * 1024 * 1024      // 4 MB: single item with custom fields & notes
+var MAX_SENDS_BYTES = 8 * 1024 * 1024       // 8 MB: send list
+var MAX_COLLECTIONS_BYTES = 2 * 1024 * 1024 // 2 MB: org collections
+var MAX_FOLDERS_BYTES = 2 * 1024 * 1024     // 2 MB: folder list
+var MAX_ORGS_BYTES = 2 * 1024 * 1024        // 2 MB: organizations list
+var MAX_STATUS_BYTES = 64 * 1024            // 64 KB: status json
+var MAX_TOKEN_BYTES = 4096                  // 4 KB: session token / password / TOTP
+var MAX_HANDOFF_BYTES = 4096                // 4 KB: session handoff file
+var MAX_ASSOC_BYTES = 1024 * 1024           // 1 MB: learned associations file
+var MAX_STDERR_BYTES = 8192                 // 8 KB: diagnostic stderr output
+var MAX_MISC_BYTES = 64 * 1024              // 64 KB: create/edit/delete responses
+
+function buildCappedCommand(args, maxStdoutBytes, maxStderrBytes) {
+  var inner = "bw"
+  if (args && args.length > 0) {
+    for (var i = 0; i < args.length; i++) {
+      var arg = String(args[i])
+      if (/^[a-zA-Z0-9_\-\.\/]+$/.test(arg)) {
+        inner += " " + arg
+      } else {
+        inner += " " + shellQuote(arg)
+      }
+    }
+  }
+  if (maxStdoutBytes) {
+    inner += " | head -c " + Number(maxStdoutBytes)
+  }
+  var script = ""
+  if (maxStderrBytes) {
+    script += "exec 2> >(head -c " + Number(maxStderrBytes) + " >&2); "
+  }
+  script += inner
+  return ["bash", "-c", script]
+}
+
 function buildCommand(args) {
-  return ["bw"].concat(args || [])
+  return buildCappedCommand(args, MAX_MISC_BYTES)
 }
 
 // A bw session key is base64: 88 characters for the 64 bytes bw mints. Only
@@ -141,19 +179,18 @@ function extractSessionToken(raw) {
 // -------------------------------------------------------------------------
 
 function statusCommand(session) {
-  return buildCommand(["status"])
+  return buildCappedCommand(["status"], MAX_STATUS_BYTES)
 }
 
-// No shell at all: the password is already in the environment, so there is
-// nothing to interpolate and nothing to quote.
+// Password is in the environment; output is capped to session token size.
 function unlockCommand() {
-  return buildCommand(["unlock", "--passwordenv", PASSWORD_ENV, "--raw"])
+  return buildCappedCommand(["unlock", "--passwordenv", PASSWORD_ENV, "--raw"], MAX_TOKEN_BYTES, MAX_STDERR_BYTES)
 }
 
 // `hasCode` rather than the code itself -- only whether the flag is present
 // shapes the command; the value comes from the environment.
 function emailLoginCommand(email, hasCode, serverUrl) {
-  var script = ""
+  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); "
 
   if (serverUrl && serverUrl.trim()) {
     script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
@@ -161,7 +198,7 @@ function emailLoginCommand(email, hasCode, serverUrl) {
 
   script += "bw login " + shellQuote(email) + " --passwordenv " + PASSWORD_ENV
   if (hasCode) script += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
-  script += " --raw"
+  script += " --raw | head -c " + MAX_TOKEN_BYTES
 
   return ["bash", "-c", script]
 }
@@ -169,14 +206,14 @@ function emailLoginCommand(email, hasCode, serverUrl) {
 // `login --apikey` authenticates but does not unlock, so the master password
 // is still needed for the second step. Both come from the environment.
 function apiKeyLoginCommand(serverUrl) {
-  var script = ""
+  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); "
 
   if (serverUrl && serverUrl.trim()) {
     script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
   }
 
   script += "bw login --apikey >/dev/null 2>&1 && "
-  script += "bw unlock --passwordenv " + PASSWORD_ENV + " --raw"
+  script += "bw unlock --passwordenv " + PASSWORD_ENV + " --raw | head -c " + MAX_TOKEN_BYTES
   return ["bash", "-c", script]
 }
 
@@ -237,7 +274,7 @@ function terminalLoginCommand(mode) {
 function sessionHandoffReadCommand() {
   var script = "d=\"${XDG_RUNTIME_DIR:-}\"; [ -n \"$d\" ] || exit 0; "
     + "f=\"$d/" + HANDOFF_SUBDIR + "/" + HANDOFF_BASENAME + "\"; "
-    + "if [ -s \"$f\" ]; then cat \"$f\"; rm -f \"$f\"; fi"
+    + "if [ -s \"$f\" ]; then head -c " + MAX_HANDOFF_BYTES + " \"$f\"; rm -f \"$f\"; fi"
   return ["bash", "-c", script]
 }
 
@@ -276,22 +313,22 @@ function logoutCommand() {
 }
 
 function listCommand(session) {
-  return buildCommand(["list", "items"])
+  return buildCappedCommand(["list", "items"], MAX_ITEMS_BYTES, MAX_STDERR_BYTES)
 }
 
 function listOrganizationsCommand(session) {
-  return buildCommand(["list", "organizations"])
+  return buildCappedCommand(["list", "organizations"], MAX_ORGS_BYTES)
 }
 
 function listFoldersCommand(session) {
-  return buildCommand(["list", "folders"])
+  return buildCappedCommand(["list", "folders"], MAX_FOLDERS_BYTES)
 }
 
 // An organization's collections. Bitwarden files org-owned items into
 // collections rather than folders, and refuses to create one without at least
 // one collection, so the form has to offer them.
 function listOrgCollectionsCommand(organizationId) {
-  return buildCommand(["list", "org-collections", "--organizationid", String(organizationId)])
+  return buildCappedCommand(["list", "org-collections", "--organizationid", String(organizationId)], MAX_COLLECTIONS_BYTES)
 }
 
 function parseCollections(raw) {
@@ -329,28 +366,28 @@ function collectionName(collections, id) {
 
 function createFolderCommand(name, session) {
   var jsonStr = JSON.stringify({ name: String(name || "").trim() })
-  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder"
+  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", script]
 }
 
 function deleteFolderCommand(folderId) {
-  return ["bw", "delete", "folder", String(folderId)]
+  return buildCappedCommand(["delete", "folder", String(folderId)], MAX_MISC_BYTES)
 }
 
 function getItemCommand(id, session) {
-  return buildCommand(["get", "item", String(id)])
+  return buildCappedCommand(["get", "item", String(id)], MAX_DETAIL_BYTES, MAX_STDERR_BYTES)
 }
 
 function getTotpCommand(id, session) {
-  return buildCommand(["get", "totp", String(id), "--raw"])
+  return buildCappedCommand(["get", "totp", String(id), "--raw"], MAX_TOKEN_BYTES)
 }
 
 function syncCommand(session) {
-  return buildCommand(["sync"])
+  return buildCappedCommand(["sync"], MAX_MISC_BYTES)
 }
 
 function lockCommand(session) {
-  return buildCommand(["lock"])
+  return buildCappedCommand(["lock"], MAX_MISC_BYTES)
 }
 
 // -------------------------------------------------------------------------
@@ -368,17 +405,17 @@ function itemEnvVar() {
 
 function createItemCommand(itemData, session) {
   var orgArg = (itemData && itemData.organizationId) ? (" --organizationid " + shellQuote(itemData.organizationId)) : ""
-  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw create item" + orgArg
+  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw create item" + orgArg + " | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", script]
 }
 
 function editItemCommand(itemId, session) {
-  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item " + shellQuote(itemId)
+  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", script]
 }
 
 function deleteItemCommand(itemId) {
-  return ["bw", "delete", "item", String(itemId)]
+  return buildCappedCommand(["delete", "item", String(itemId)], MAX_MISC_BYTES, MAX_STDERR_BYTES)
 }
 
 // -------------------------------------------------------------------------
@@ -434,9 +471,9 @@ function keyringStoreCommand() {
 
 function keyringLookupCommand() {
   var attrs = " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_ACCOUNT)
-  var script = "boot=$(cat " + shellQuote(BOOT_ID_PATH) + " 2>/dev/null) || exit 0; "
+  var script = "boot=$(cat " + shellQuote(BOOT_ID_PATH) + " 2>/dev/null | head -c 128) || exit 0; "
     + "[ -n \"$boot\" ] || exit 0; "
-    + "stored=$(secret-tool lookup" + attrs + " 2>/dev/null) || exit 0; "
+    + "stored=$(secret-tool lookup" + attrs + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ") || exit 0; "
     + "case \"$stored\" in "
     + "\"$boot \"?*) printf '%s' \"${stored#* }\" ;; "
     // Anything else is from another boot, or from before the boot id was
@@ -489,7 +526,7 @@ function keyringStoreMasterPasswordCommand() {
 }
 
 function keyringLookupMasterPasswordCommand() {
-  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_MASTER]
+  return ["bash", "-c", "secret-tool lookup service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_MASTER) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES]
 }
 
 function keyringClearMasterPasswordCommand() {
@@ -563,9 +600,9 @@ function pinStoreCommand() {
 // the master password only on success.
 function pinUnlockCommand() {
   var script = "set -o pipefail; secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
-    + " account " + shellQuote(KEYRING_PIN)
+    + " account " + shellQuote(KEYRING_PIN) + " 2>/dev/null | head -c 8192"
     + " | openssl enc -d -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
-    + " -pass env:" + PIN_ENV + " -base64 -A"
+    + " -pass env:" + PIN_ENV + " -base64 -A | head -c " + MAX_TOKEN_BYTES
   return ["bash", "-c", script]
 }
 
@@ -820,6 +857,7 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName) {
   var script = [
     "set -e",
     "name=" + shellQuote(safeAttachmentFileName(fileName)),
+    "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2)",
     "dir=\"$(xdg-user-dir DOWNLOAD 2>/dev/null || true)\"",
     // xdg-user-dir answers $HOME for a directory it does not know about, and
     // $HOME is not somewhere to drop files.
@@ -831,7 +869,7 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName) {
     "while [ -e \"$out\" ]; do out=\"$dir/$stem ($n)$ext\"; n=$((n+1)); done",
     "bw get attachment " + shellQuote(attachmentId)
       + " --itemid " + shellQuote(itemId) + " --output \"$out\" >/dev/null",
-    "printf %s \"$out\""
+    "printf %s \"$out\" | head -c 4096"
   ].join("\n")
   return ["bash", "-c", script]
 }
@@ -1638,7 +1676,7 @@ function associationsEnvVar() {
 }
 
 function associationsReadCommand() {
-  return ["bash", "-c", "cat \"" + ASSOC_FILE + "\" 2>/dev/null || echo '{}'"]
+  return ["bash", "-c", "head -c " + MAX_ASSOC_BYTES + " \"" + ASSOC_FILE + "\" 2>/dev/null || echo '{}'"]
 }
 
 // Written through the environment for the same reason the keyring stores are:
@@ -1804,7 +1842,7 @@ function dependencyCheckCommand() {
   parts.push("if [ -f /etc/pam.d/omarchy-lock-fingerprint ] && command -v fprintd-list >/dev/null 2>&1 "
     + "&& fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo fingerprint_ready=1; else echo fingerprint_ready=0; fi")
   parts.push("if command -v omarchy >/dev/null 2>&1; then echo omarchy=1; else echo omarchy=0; fi")
-  return ["bash", "-c", parts.join("; ")]
+  return ["bash", "-c", parts.join("; ") + " | head -c 4096"]
 }
 
 function parseDependencies(raw) {
@@ -2065,7 +2103,7 @@ function generateCommand(opts) {
     args.push("--passphrase", "--words", String(o.words), "--separator", String(o.separator))
     if (o.capitalize) args.push("--capitalize")
     if (o.includeNumber) args.push("--includeNumber")
-    return ["bw"].concat(args)
+    return buildCappedCommand(args, MAX_TOKEN_BYTES)
   }
 
   if (o.uppercase) args.push("--uppercase")
@@ -2077,7 +2115,7 @@ function generateCommand(opts) {
   if (o.special) args.push("--minSpecial", String(o.minSpecial))
   if (o.ambiguous) args.push("--ambiguous")
 
-  return ["bw"].concat(args)
+  return buildCappedCommand(args, MAX_TOKEN_BYTES)
 }
 
 // Rough strength read for the meter. Deliberately simple: it describes the
@@ -2120,15 +2158,15 @@ var SEND_TYPE_TEXT = 0
 var SEND_TYPE_FILE = 1
 
 function listSendsCommand(session) {
-  return buildCommand(["send", "list"])
+  return buildCappedCommand(["send", "list"], MAX_SENDS_BYTES)
 }
 
 function deleteSendCommand(sendId, session) {
-  return buildCommand(["send", "delete", String(sendId)])
+  return buildCappedCommand(["send", "delete", String(sendId)], MAX_MISC_BYTES)
 }
 
 function removeSendPasswordCommand(sendId, session) {
-  return buildCommand(["send", "remove-password", String(sendId)])
+  return buildCappedCommand(["send", "remove-password", String(sendId)], MAX_MISC_BYTES)
 }
 
 // The payload travels in the environment, not argv. Both the flag form's
@@ -2141,7 +2179,7 @@ function sendEnvVar() {
 }
 
 function createSendCommand(session) {
-  var script = "printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create"
+  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", script]
 }
 
@@ -2153,7 +2191,7 @@ function createFileSendCommand(filePath, name, deleteInDays, maxAccessCount, ses
   args = args.concat(["-d", String(deleteInDays || 7)])
   if (maxAccessCount) args = args.concat(["-a", String(maxAccessCount)])
   args.push("--fullObject")
-  return buildCommand(args, session, true)
+  return buildCappedCommand(args, MAX_MISC_BYTES, MAX_STDERR_BYTES)
 }
 
 function buildSendPayload(name, text, hidden, deleteInDays, maxAccessCount, password, notes) {
