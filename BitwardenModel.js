@@ -113,6 +113,13 @@ var MAX_ASSOC_BYTES = 1024 * 1024           // 1 MB: learned associations file
 var MAX_STDERR_BYTES = 8192                 // 8 KB: diagnostic stderr output
 var MAX_MISC_BYTES = 64 * 1024              // 64 KB: create/edit/delete responses
 
+// Attachment bytes go to disk rather than into the shell's memory, so the
+// ceilings that matter there are the size of the file itself, how long the
+// transfer may run, and leaving the disk with room to spare afterwards.
+var MAX_ATTACHMENT_BYTES = 512 * 1024 * 1024        // 512 MB: Bitwarden's own per-file ceiling
+var ATTACHMENT_TIMEOUT_SECS = 900                   // 15 min: a stalled transfer must not hold the queue
+var ATTACHMENT_FREE_SLACK_BYTES = 64 * 1024 * 1024  // 64 MB: never fill the disk to the last byte
+
 // `head -c` closes the pipe the moment the cap is reached, so a capped pipeline
 // exits with head's status -- success -- and every bw failure behind it would be
 // reported to the panel as a success. `pipefail` puts the producer's status back.
@@ -870,22 +877,111 @@ function baseName(path) {
 // The attachment id, the item id and the file name all come out of the vault,
 // so all three are quoted rather than interpolated bare, and the file name has
 // been through safeAttachmentFileName() before it gets here.
-function attachmentDownloadCommand(attachmentId, itemId, fileName) {
+//
+// Two things this must not do, neither of which a `[ -e ]` test can prevent.
+//
+// It must not write *through* whatever happens to sit at the chosen path. `-e`
+// follows symlinks, so a dangling one reads as a free name and bw would then
+// create the file the link points at; and even a correct test is only true for
+// as long as it takes to return, so a link dropped in afterwards still wins.
+// The bytes therefore land in a freshly made private directory first, and the
+// finished file claims its name with link(), which never follows the last
+// component of the new path and fails outright if anything is already there.
+// That single call is the existence test and the creation at once, so there is
+// no window between them to race, and nothing to redirect.
+//
+// It must not accept an unbounded transfer. The size the vault reports is the
+// server's word rather than proof, so it only buys an early, readable refusal;
+// RLIMIT_FSIZE, a timeout, and a free-space check are the limits that hold when
+// it lies.
+function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize) {
+  var want = Math.floor(Number(declaredSize))
+  if (!isFinite(want) || want < 0) want = 0
+
+  var maxBytes = MAX_ATTACHMENT_BYTES
+  var maxMb = Math.round(maxBytes / (1024 * 1024))
+  var maxBlocks = Math.ceil(maxBytes / 1024)          // ulimit -f counts 1 KB blocks
+  var needKb = Math.ceil((want + ATTACHMENT_FREE_SLACK_BYTES) / 1024)
+
   var script = [
     "set -e",
-    "name=" + shellQuote(safeAttachmentFileName(fileName)),
+    // A decrypted attachment must not be readable by anyone else while it sits
+    // in the staging directory, nor after it lands.
+    "umask 077",
     "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2)",
+    "name=" + shellQuote(safeAttachmentFileName(fileName)),
+    "max=" + maxBytes,
+    "want=" + want,
     "dir=\"$(xdg-user-dir DOWNLOAD 2>/dev/null || true)\"",
     // xdg-user-dir answers $HOME for a directory it does not know about, and
     // $HOME is not somewhere to drop files.
     "if [ -z \"$dir\" ] || [ \"$dir\" = \"$HOME\" ]; then dir=\"$HOME/Downloads\"; fi",
     "mkdir -p -- \"$dir\"",
+
+    "if [ \"$want\" -gt \"$max\" ]; then",
+    "  echo 'Attachment is larger than the " + maxMb + " MB download limit.' >&2; exit 1",
+    "fi",
+
+    // A download that fits the limit can still be the one that fills the disk.
+    "avail=$(df -Pk -- \"$dir\" 2>/dev/null | awk 'NR==2 {print $4}')",
+    "case \"$avail\" in ''|*[!0-9]*) avail='' ;; esac",
+    "if [ -n \"$avail\" ] && [ \"$avail\" -lt " + needKb + " ]; then",
+    "  echo 'Not enough free space in the download folder.' >&2; exit 1",
+    "fi",
+
+    // Staged inside the destination directory, so the finished file can be
+    // linked into place without crossing a filesystem boundary.
+    "work=$(mktemp -d -- \"$dir/.qsbw-XXXXXXXX\")",
+    "trap 'rm -rf -- \"$work\"' EXIT HUP INT TERM",
+    "tmp=\"$work/part\"",
+
+    // RLIMIT_FSIZE stops the write itself, so an oversized attachment dies
+    // mid-transfer instead of on a check that trusted the declared size.
+    "tmo=''",
+    "if command -v timeout >/dev/null 2>&1; then tmo=\"timeout " + ATTACHMENT_TIMEOUT_SECS + "\"; fi",
+    "rc=0",
+    "( ulimit -f " + maxBlocks + "; exec $tmo bw get attachment " + shellQuote(attachmentId)
+      + " --itemid " + shellQuote(itemId) + " --output \"$tmp\" >/dev/null ) || rc=$?",
+    "if [ \"$rc\" -ne 0 ]; then",
+    "  case \"$rc\" in",
+    "    124) echo 'Download timed out.' >&2 ;;",
+    "    153) echo 'Attachment exceeded the " + maxMb + " MB download limit.' >&2 ;;",
+    "  esac",
+    "  exit 1",
+    "fi",
+
+    // Belt and braces: the limit above is the kernel's, this one holds even
+    // where it was not applied.
+    "got=$(wc -c < \"$tmp\" 2>/dev/null || echo 0)",
+    "if [ \"$got\" -gt \"$max\" ]; then",
+    "  echo 'Attachment exceeded the " + maxMb + " MB download limit.' >&2; exit 1",
+    "fi",
+
+    // Asked once, rather than inferred from a failure that could equally mean
+    // the name was taken.
+    "hardlink=1",
+    ": > \"$work/probe\"",
+    "ln -- \"$work/probe\" \"$work/probe2\" 2>/dev/null || hardlink=0",
+    "rm -f -- \"$work/probe\" \"$work/probe2\"",
+
     "stem=\"$name\"; ext=\"\"",
     "case \"$name\" in *.*) stem=\"${name%.*}\"; ext=\".${name##*.}\";; esac",
-    "out=\"$dir/$name\"; n=1",
-    "while [ -e \"$out\" ]; do out=\"$dir/$stem ($n)$ext\"; n=$((n+1)); done",
-    "bw get attachment " + shellQuote(attachmentId)
-      + " --itemid " + shellQuote(itemId) + " --output \"$out\" >/dev/null",
+    "out=''; n=0",
+    "while [ \"$n\" -le 999 ]; do",
+    "  if [ \"$n\" -eq 0 ]; then cand=\"$dir/$name\"; else cand=\"$dir/$stem ($n)$ext\"; fi",
+    "  if [ \"$hardlink\" = 1 ]; then",
+    "    if ln -- \"$tmp\" \"$cand\" 2>/dev/null; then out=\"$cand\"; break; fi",
+    // A filesystem with no hard links (FAT, exFAT, most phone mounts) has no
+    // symlinks either, so on those there is nothing left to redirect a write
+    // through and a plain no-clobber move is enough.
+    "  elif [ ! -e \"$cand\" ] && [ ! -L \"$cand\" ] && mv -- \"$tmp\" \"$cand\" 2>/dev/null; then",
+    "    out=\"$cand\"; break",
+    "  fi",
+    "  n=$((n+1))",
+    "done",
+    "if [ -z \"$out\" ]; then",
+    "  echo 'Could not find a free name in the download folder.' >&2; exit 1",
+    "fi",
     "printf %s \"$out\" | head -c 4096"
   ].join("\n")
   return ["bash", "-c", script]

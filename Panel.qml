@@ -1824,7 +1824,9 @@ Panel {
     resetAutoLockTimer()
     errorMessage = ""
     var next = attachmentQueue.slice()
-    next.push({ id: att.id, fileName: att.fileName, itemId: detailItem.id })
+    // The declared size travels with the job so the saver can refuse an
+    // oversized attachment before it starts, and check the disk has room.
+    next.push({ id: att.id, fileName: att.fileName, itemId: detailItem.id, size: att.size })
     attachmentQueue = next
     pumpAttachmentQueue()
   }
@@ -1847,7 +1849,7 @@ Panel {
     var job = next.shift()
     attachmentQueue = next
     attachmentBusyId = job.id
-    attachmentProc.command = Model.attachmentDownloadCommand(job.id, job.itemId, job.fileName)
+    attachmentProc.command = Model.attachmentDownloadCommand(job.id, job.itemId, job.fileName, job.size)
     attachmentProc.running = true
   }
 

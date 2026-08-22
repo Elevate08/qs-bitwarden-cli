@@ -148,8 +148,36 @@ check("the attachment id and item id are quoted, never interpolated bare",
 check("the file name is quoted too", script.indexOf("name='codes.txt'") !== -1, script)
 check("it prints where the file landed, which is how the panel learns the path",
   /printf %s "\$out"/.test(script), script)
-check("it never overwrites an existing file",
-  script.indexOf("while [ -e \"$out\" ]") !== -1, script)
+check("it claims the name with link(), which is the existence test and the creation at once",
+  script.indexOf('ln -- "$tmp" "$cand"') !== -1, script)
+check("it no longer decides the name with a test a symlink can answer for",
+  script.indexOf('while [ -e "$out" ]') === -1, script)
+check("the bytes are staged in a private directory before they are placed",
+  script.indexOf('mktemp -d -- "$dir/.qsbw-XXXXXXXX"') !== -1
+    && script.indexOf('--output "$tmp"') !== -1, script)
+check("the staging directory is removed however the script leaves",
+  script.indexOf(`trap 'rm -rf -- "$work"' EXIT`) !== -1, script)
+check("a decrypted attachment is not left readable by anyone else",
+  script.split("\n").indexOf("umask 077") !== -1, script)
+
+// --- the ceilings ------------------------------------------------------------
+check("the transfer is bounded in bytes by RLIMIT_FSIZE",
+  /ulimit -f \d+/.test(script), script)
+check("the transfer is bounded in time",
+  /timeout \d+/.test(script), script)
+check("the disk is not filled to the last byte",
+  script.indexOf("df -Pk") !== -1, script)
+check("the size the vault declares buys an early refusal",
+  script.indexOf('if [ "$want" -gt "$max" ]') !== -1, script)
+check("the size on disk is checked even where the kernel limit was not applied",
+  script.indexOf('wc -c < "$tmp"') !== -1, script)
+
+const withSize = Model.attachmentDownloadCommand("a1", "item-id", "codes.txt", "4096")
+check("the declared size reaches the script", withSize[2].indexOf("want=4096") !== -1, withSize[2])
+check("a missing or nonsense declared size is treated as unknown, not as a refusal",
+  Model.attachmentDownloadCommand("a1", "i", "f.txt")[2].indexOf("want=0") !== -1
+    && Model.attachmentDownloadCommand("a1", "i", "f.txt", "nope")[2].indexOf("want=0") !== -1,
+  Model.attachmentDownloadCommand("a1", "i", "f.txt", "nope")[2])
 check("it refuses to treat $HOME as the download directory",
   script.indexOf("\"$dir\" = \"$HOME\"") !== -1, script)
 check("it stops at the first failure rather than printing a path for a file it did not write",

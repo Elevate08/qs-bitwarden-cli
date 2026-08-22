@@ -94,6 +94,8 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Items that carry files are marked with a `󰏢` paperclip in the list, and the detail view lists each attachment with its name and size.
   - The list costs nothing: `bw list items` already returns the attachment metadata with the cipher, so the files are on screen the moment the item opens. Only the bytes need the CLI, and only for the file you ask for.
   - **Save** puts a file in your download directory (`xdg-user-dir DOWNLOAD`, falling back to `~/Downloads`), then offers **Open** and **Show in folder** for it. <kbd>a</kbd> saves every attachment on the item; they are fetched one at a time rather than starting a `bw` per file.
+  - Nothing is ever written through whatever already sits at the chosen path: the bytes land in a private staging directory first and the finished file claims its name atomically, so a symlink left in the download folder is stepped around rather than followed, and an existing file is never overwritten -- " (1)", " (2)" and so on go before the extension until the name is free.
+  - A download is bounded before it starts and while it runs: 512 MB per file, 15 minutes, and a check that the disk has room. A transfer that breaks a limit leaves nothing behind.
   - An existing file of the same name is never overwritten -- ` (1)`, ` (2)` and so on go before the extension until the name is free.
   - **A file name out of the vault is treated as hostile.** It is decrypted content that is about to become part of a path, so path separators and control characters are replaced rather than stripped, a leading dot or dash is dropped, and the result is quoted on top of that: `../../.bashrc` saves as `bashrc` in your download directory and nowhere else. Tests run the real script against a stub `bw` to prove it.
 
@@ -476,7 +478,8 @@ node tests/folders.test.js          # folder parsing, filtering and assignment
 node tests/sends.test.js            # Send payloads, parsing, and argv-safety
 node tests/collections.test.js      # organization collections and item ownership
 node tests/items.test.js            # item parsing, and that a list entry can build the detail view
-node tests/attachments.test.js      # attachment metadata, and that a vault file name cannot escape ~/Downloads
+node tests/attachments.test.js      # attachment metadata, that a vault file name cannot escape ~/Downloads,
+                                    # that a symlink cannot redirect a download, and the transfer ceilings
 node tests/handoff-urls.test.js     # session-handoff file path, and which URI schemes may be opened
 node tests/rich-text.test.js        # vault text is drawn as text, never parsed as markup
 node tests/session-boot.test.js     # a remembered session dies with the boot that minted it
