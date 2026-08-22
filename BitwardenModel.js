@@ -789,11 +789,24 @@ function itemTypeLabel(type) {
 // plainly have a URI.
 //
 // Duck-type instead: anything with a sane numeric length is a list.
+//
+// Bounded, because duck-typing takes the server's word for how long the list
+// is. `{"attachments":{"length":200000000}}` is forty bytes of JSON that asked
+// for a two-hundred-million-element array, and the process that dies of it is
+// the whole shell -- bar, panel and all. The item-list byte cap is no defence
+// here: the lie costs the server nothing to tell. No item carries thousands of
+// URIs, attachments or custom fields, so past the ceiling there is no list
+// worth building.
+var MAX_LIST_ENTRIES = 4096
+
 function toList(value) {
-  if (Array.isArray(value)) return value
+  if (Array.isArray(value)) {
+    return value.length > MAX_LIST_ENTRIES ? value.slice(0, MAX_LIST_ENTRIES) : value
+  }
   if (!value || typeof value !== "object") return []
   var n = value.length
   if (typeof n !== "number" || n < 0 || n !== Math.floor(n)) return []
+  if (n > MAX_LIST_ENTRIES) n = MAX_LIST_ENTRIES
   var out = []
   for (var i = 0; i < n; i++) out.push(value[i])
   return out
@@ -895,12 +908,26 @@ function baseName(path) {
 // RLIMIT_FSIZE, a timeout, and a free-space check are the limits that hold when
 // it lies.
 function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize) {
-  var want = Math.floor(Number(declaredSize))
-  if (!isFinite(want) || want < 0) want = 0
-
   var maxBytes = MAX_ATTACHMENT_BYTES
   var maxMb = Math.round(maxBytes / (1024 * 1024))
   var maxBlocks = Math.ceil(maxBytes / 1024)          // ulimit -f counts 1 KB blocks
+
+  // The declared size is the only thing out of the vault that reaches the
+  // script as a bare word rather than a quoted one, and JavaScript prints a
+  // large enough number in exponential notation. "1e+30" is not an integer to
+  // `[ ]`, so a server that declares an absurd size made both comparisons
+  // below fail as errors rather than as answers -- and a check that errors
+  // inside an `if` is simply skipped, which left the download running with no
+  // declared-size ceiling and no free-space check at all, silently.
+  //
+  // Nothing above the limit needs an exact figure, since it is refused either
+  // way, so anything larger is clamped to one byte over it. That keeps every
+  // number written into the script a plain decimal integer and turns the lie
+  // into the refusal it was always meant to be.
+  var want = Math.floor(Number(declaredSize))
+  if (!isFinite(want) || want < 0) want = 0
+  if (want > maxBytes) want = maxBytes + 1
+
   var needKb = Math.ceil((want + ATTACHMENT_FREE_SLACK_BYTES) / 1024)
 
   var script = [

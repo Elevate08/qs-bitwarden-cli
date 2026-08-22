@@ -271,6 +271,47 @@ check("an object with a junk length is not a list",
     && Model.parseAttachments({ length: 1.5 }).length === 0
     && Model.parseAttachments({ length: "2" }).length === 0, "accepted a junk length")
 
+// Duck-typing takes the server's word for how long a list is, and the word is
+// free to be a lie: {"length": 200000000} is forty bytes that asked for a
+// two-hundred-million-element array. The byte cap on the item list cannot see
+// it coming. So the length is a ceiling, not an instruction.
+const manyUris = { length: 5000 }
+for (let i = 0; i < 5000; i++) manyUris[i] = { uri: "https://example" + i + ".com" }
+check("a list longer than any real item stops at the ceiling",
+  Model.itemDetailFromObject({ id: "i", type: 1, login: { uris: manyUris } }).uris.length === 4096,
+  String(Model.itemDetailFromObject({ id: "i", type: 1, login: { uris: manyUris } }).uris.length))
+
+const manyReal = []
+for (let i = 0; i < 5000; i++) manyReal.push({ id: "a" + i, fileName: "f" + i, size: "1" })
+check("and a real array is held to the same ceiling",
+  Model.parseAttachments(manyReal).length === 4096, String(Model.parseAttachments(manyReal).length))
+
+// Run in a child with a small heap: with the ceiling this finishes instantly,
+// and without it the parse takes the whole process down with it -- which, in
+// the panel, is the shell.
+const lengthLie = `
+  const fs = require("fs")
+  const M = {}
+  new Function("exports", fs.readFileSync(${JSON.stringify(path.join(__dirname, "..", "BitwardenModel.js"))}, "utf8")
+    .replace(/^\\.pragma library\\s*$/m, "") + "\\nexports.parseItems = parseItems")(M)
+  M.parseItems(JSON.stringify([{
+    object: "item", id: "x", type: 1, name: "n",
+    attachments: { length: 200000000 },
+    login: { uris: { length: 200000000 } },
+    fields: { length: 200000000 }
+  }]))
+`
+let survived = true
+try {
+  require("child_process").execFileSync(process.execPath,
+    ["--max-old-space-size=256", "-e", lengthLie],
+    { stdio: ["ignore", "pipe", "pipe"], timeout: 30000 })
+} catch (e) {
+  survived = false
+}
+check("a declared length of two hundred million does not take the shell process with it",
+  survived, "the parse exhausted the heap")
+
 // --- and the script actually run ---------------------------------------------
 //
 // String-matching the script only says what we wrote. What matters is what
@@ -295,8 +336,8 @@ echo "Saved $out"
 fs.chmodSync(path.join(bin, "bw"), 0o755)
 
 const env = { PATH: bin + ":/usr/bin:/bin", HOME: home }
-const run = (fileName, extra) => {
-  const cmd = Model.attachmentDownloadCommand("att-id", "item-id", fileName)
+const run = (fileName, extra, declaredSize) => {
+  const cmd = Model.attachmentDownloadCommand("att-id", "item-id", fileName, declaredSize)
   return execFileSync(cmd[0], cmd.slice(1), {
     env: Object.assign({}, env, extra || {}),
     encoding: "utf8",
@@ -327,6 +368,39 @@ let failed = null
 try { run("codes.txt", { QSBW_TEST_FAIL: "1" }) } catch (e) { failed = e }
 check("a failing bw exits non-zero rather than reporting a path for a file it never wrote",
   failed !== null && String(failed.stdout || "") === "", String(failed && failed.stdout))
+
+// --- the size the server declares ---------------------------------------------
+//
+// The size is the one value out of the vault that reaches the script as a bare
+// word, and a big enough number is spelled "1e+30" in JavaScript. Bash reads
+// that as a non-integer, so `[ "$want" -gt "$max" ]` and the free-space test
+// both failed as errors rather than answering, and a failing test inside an
+// `if` is simply skipped -- the download then ran with neither ceiling and
+// said nothing about it. A hostile server picks this number, so it is checked
+// by running the script, not by reading it.
+
+for (const absurd of ["1e21", "1e30", "1e40", "999999999999999999999999"]) {
+  let refused = null
+  try { run(`huge-${absurd}.bin`, {}, absurd) } catch (e) { refused = e }
+  check(`a declared size of ${absurd} is refused instead of skipping both ceilings`,
+    refused !== null && String(refused.stderr || "").indexOf("download limit") !== -1,
+    refused ? String(refused.stderr) : "the download went ahead")
+  check(`and nothing lands in the download folder for ${absurd}`,
+    !fs.existsSync(path.join(downloads, `huge-${absurd}.bin`)), "a file was written")
+  check(`and no raw bash error is what the panel would show for ${absurd}`,
+    refused !== null && String(refused.stderr || "").indexOf("integer expected") === -1,
+    refused ? String(refused.stderr) : "")
+}
+
+check("a size within the limit still downloads",
+  run("sized.txt", {}, "4096") === path.join(downloads, "sized.txt"), "refused a legitimate size")
+
+// Whatever the server says, nothing exponential may be written into the script.
+for (const absurd of ["1e21", "1e30", "1e40", String(Number.MAX_SAFE_INTEGER * 512)]) {
+  const generated = Model.attachmentDownloadCommand("a", "i", "f.bin", absurd)[2]
+  check(`every number in the script stays a plain integer for ${absurd}`,
+    !/[0-9]e[+-][0-9]/.test(generated), generated.split("\n").filter(l => /e[+-][0-9]/.test(l)).join(" | "))
+}
 
 fs.rmSync(home, { recursive: true, force: true })
 
