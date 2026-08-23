@@ -224,6 +224,74 @@ function vaultReadIsStale(startedEpoch, currentEpoch, hasSession) {
 }
 
 // -------------------------------------------------------------------------
+// Collector scrubbing
+// -------------------------------------------------------------------------
+//
+// Refusing a stale answer is not the same as forgetting it. A StdioCollector
+// keeps whatever its process last printed for as long as that process is not
+// started again -- `text` is read-only, there is no clear(), and nothing in
+// Quickshell drops the buffer when the panel stops reading it. So every secret
+// that has ever come back through a pipe is still in the shell process after
+// the vault locks: the session key from the handoff file and from the keyring,
+// the master password from the PIN and fingerprint lookups, both halves of a
+// login or unlock, the whole item list with each login's password in its raw
+// object, an item detail, a live TOTP. dropVaultSecrets() empties the QML
+// properties those values were copied into and leaves the originals sitting
+// behind them, which for a shell that lives as long as the desktop session is
+// the residue it exists to prevent.
+//
+// The buffer IS replaced when the process next starts, so the way to empty one
+// is to run something through it that prints nothing. That command doubles as
+// the marker for the run: a handler that finds it on its own process knows the
+// empty string it just received is a scrub rather than an answer, so nothing
+// needs a flag whose lifetime someone has to get right.
+var SCRUB_COMMAND = ["bash", "-c", ""]
+
+function scrubCommand() {
+  return SCRUB_COMMAND.slice()
+}
+
+function isScrubCommand(cmd) {
+  if (!cmd || Number(cmd.length) !== SCRUB_COMMAND.length) return false
+  for (var i = 0; i < SCRUB_COMMAND.length; i++) {
+    if (String(cmd[i]) !== SCRUB_COMMAND[i]) return false
+  }
+  return true
+}
+
+// How long the panel keeps coming back for a process that was still running
+// when the vault locked. Its buffer cannot be scrubbed while it is being
+// written; a `bw` that has not finished inside this is one whose own next run
+// will replace the buffer anyway.
+var SCRUB_RETRY_MS = 1000
+var SCRUB_RETRY_LIMIT = 120
+
+function scrubRetryMs() { return SCRUB_RETRY_MS }
+function scrubRetryLimit() { return SCRUB_RETRY_LIMIT }
+
+// One pass over the scrub queue. Returns what to do with each process and what
+// is left to come back for, so the walk itself can be tested without a running
+// shell: `start` is scrubbed now, `waiting` is asked again next tick, and
+// anything in neither is done and drops out of the queue.
+//
+// A process that is running is left alone -- stomping its command mid-flight
+// would abandon a read the panel is still waiting on -- and one already
+// carrying the scrub command has been scrubbed and needs nothing further.
+function scrubPass(procs) {
+  var start = []
+  var waiting = []
+  for (var i = 0; i < (procs || []).length; i++) {
+    var p = procs[i]
+    if (!p) continue
+    if (p.running) { waiting.push(p); continue }
+    if (isScrubCommand(p.command)) continue
+    start.push(p)
+    waiting.push(p)
+  }
+  return { start: start, waiting: waiting }
+}
+
+// -------------------------------------------------------------------------
 // CLI Commands
 // -------------------------------------------------------------------------
 
@@ -2675,6 +2743,48 @@ function generateServeCommand() {
 // and a "generated password" from a stranger's server is a password they know.
 function generatorPortIsForeign(status) {
   return Number(status) !== 0
+}
+
+// -------------------------------------------------------------------------
+// Generator request bounds
+// -------------------------------------------------------------------------
+//
+// Refusing to trust a squatter's password is only half of it. The port is
+// loopback, unauthenticated and first-come, and QML's XMLHttpRequest has no
+// timeout of its own -- no `timeout` property, no `ontimeout`, both simply
+// absent -- so a process holding 8087 that accepts the connection and answers
+// nothing leaves the probe in readyState OPENED for as long as it cares to,
+// and the generator waits on a reply that is never coming. The same squatter
+// can answer with a body that never ends: responseText grows inside the shell
+// at loopback speed, and nothing in the panel was watching it.
+//
+// So each request carries a deadline the panel enforces itself, with a Timer
+// and abort(), and a ceiling on what it will hold. A /generate answer is a
+// short JSON object; anything orders of magnitude past that is not one.
+var GENERATE_RESPONSE_CAP = 64 * 1024
+var GENERATE_REQUEST_TIMEOUT_MS = 2000
+
+function generatorResponseCap() { return GENERATE_RESPONSE_CAP }
+function generatorRequestTimeoutMs() { return GENERATE_REQUEST_TIMEOUT_MS }
+
+// Both the declared length and what has actually arrived are checked. A
+// chunked response declares nothing at all, and a declared length is the
+// sender's word for it either way.
+function generatorResponseTooLarge(contentLength, received) {
+  var declared = Number(contentLength)
+  if (isFinite(declared) && declared > GENERATE_RESPONSE_CAP) return true
+  return Number(received) > GENERATE_RESPONSE_CAP
+}
+
+// What a finished probe means once the panel can cut a request short. Status 0
+// is a refused connection, the one answer that leaves the port free for our
+// own server -- but an aborted request also finishes with status 0, and it was
+// aborted precisely because something was there and would not behave. Reading
+// that as "free" would start `bw serve` against a port already held and hand
+// the squatter the very trust the probe exists to withhold.
+function generatorProbeIsForeign(status, aborted) {
+  if (aborted) return true
+  return generatorPortIsForeign(status)
 }
 
 // What to do when our own `bw serve` exits.

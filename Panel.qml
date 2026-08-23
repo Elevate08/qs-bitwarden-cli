@@ -154,6 +154,11 @@ Panel {
   property int vaultEpoch: 0
   property var readEpochs: ({})
 
+  // Processes whose collectors still have to be emptied after a lock. Anything
+  // that was running at the time stays here until it finishes. See
+  // scrubSecretBuffers().
+  property var scrubPending: []
+
   // Status & indicators
   property bool isLoading: false
   property bool isUnlocking: false
@@ -334,7 +339,9 @@ Panel {
   }
 
   function loadAssociations() {
-    if (!associationsReadProc.running) associationsReadProc.running = true
+    if (associationsReadProc.running) return
+    associationsReadProc.command = Model.associationsReadCommand()
+    associationsReadProc.running = true
   }
 
   function onAssociationsLoaded(raw) {
@@ -478,6 +485,7 @@ Panel {
       statusProc.command = Model.statusCommand()
       statusProc.running = true
     } else if (rememberSession && status !== "locked") {
+      keyringLookupProc.command = Model.keyringLookupCommand()
       keyringLookupProc.running = true
     } else {
       statusProc.command = Model.statusCommand()
@@ -936,11 +944,75 @@ Panel {
     probeGeneratorPort()
   }
 
-  function probeGeneratorPort() {
+  // Every request to the generator port goes through here, because none of
+  // them may be left in the hands of whatever answered. QML's XMLHttpRequest
+  // has no timeout and no ontimeout, so the deadline is a Timer the panel owns
+  // and abort() is how it is enforced; the size ceiling is checked as the body
+  // arrives rather than after it, since after it is the problem. See the
+  // generator request bounds in BitwardenModel.js.
+  //
+  // `done` is called exactly once, and is handed a plain result rather than
+  // the request: `status` and `responseText` are read off an aborted
+  // XMLHttpRequest by faulting inside Qt, which takes the whole shell down
+  // with it, so the only safe rule is that nothing downstream ever holds the
+  // object. An abort reports status 0 and an empty body -- the same shape as a
+  // refused connection, which is why `aborted` is reported alongside it and
+  // never inferred from the status.
+  function generatorRequest(done) {
     var req = new XMLHttpRequest()
+    var settled = false
+    var deadline = requestDeadlineComp.createObject(root, {
+      interval: Model.generatorRequestTimeoutMs()
+    })
+
+    function settle(aborted) {
+      if (settled) return
+      settled = true
+      if (deadline) {
+        deadline.stop()
+        deadline.destroy()
+        deadline = null
+      }
+      // Read before the abort, for the reason above.
+      var result = {
+        aborted: aborted,
+        status: aborted ? 0 : req.status,
+        body: aborted ? "" : req.responseText
+      }
+      // Deferred, and not for tidiness: abort() called from inside the
+      // readyState handler that decided to abort takes the shell down with it
+      // when the decision was made on the headers, which is exactly where an
+      // oversized Content-Length is caught. Off the stack it is safe, and the
+      // readyState changes it raises in the meantime find settled already true.
+      if (aborted) Qt.callLater(function() { req.abort() })
+      done(result)
+    }
+
+    deadline.triggered.connect(function() { settle(true) })
+
     req.onreadystatechange = function() {
+      if (settled) return
+      if (req.readyState === XMLHttpRequest.HEADERS_RECEIVED
+          || req.readyState === XMLHttpRequest.LOADING) {
+        var received = 0
+        try { received = req.responseText.length } catch (e) { received = 0 }
+        if (Model.generatorResponseTooLarge(req.getResponseHeader("Content-Length"), received)) {
+          settle(true)
+        }
+        return
+      }
       if (req.readyState !== XMLHttpRequest.DONE) return
-      if (Model.generatorPortIsForeign(req.status)) {
+      settle(false)
+    }
+
+    req.open("GET", Model.generateServeUrl(root.genOpts))
+    req.send()
+    deadline.start()
+  }
+
+  function probeGeneratorPort() {
+    generatorRequest(function(res) {
+      if (Model.generatorProbeIsForeign(res.status, res.aborted)) {
         root.generateServeStarting = false
         root.generateServeFailed = true
         if (root.genBusy) root.regenerateViaCli()
@@ -955,9 +1027,7 @@ Panel {
       generateServeProc.running = true
       generateServePoll.attempts = 0
       generateServePoll.restart()
-    }
-    req.open("GET", Model.generateServeUrl(root.genOpts))
-    req.send()
+    })
   }
 
   function stopGeneratorServe() {
@@ -977,35 +1047,29 @@ Panel {
   // delay: bw takes a couple of seconds to bind, and the first generator open
   // should not sit behind a guess.
   function pollGeneratorServe() {
-    var req = new XMLHttpRequest()
-    req.onreadystatechange = function() {
-      if (req.readyState !== XMLHttpRequest.DONE) return
-      if (req.status === 200 && Model.parseServeGenerated(req.responseText)) {
-        generateServeStarting = false
-        generateServeReady = true
-        generateServePoll.stop()
-        onGenerated(Model.parseServeGenerated(req.responseText), 0)
-      }
-    }
-    req.open("GET", Model.generateServeUrl(genOpts))
-    req.send()
+    generatorRequest(function(res) {
+      if (res.status !== 200) return
+      var value = Model.parseServeGenerated(res.body)
+      if (!value) return
+      root.generateServeStarting = false
+      root.generateServeReady = true
+      generateServePoll.stop()
+      root.onGenerated(value, 0)
+    })
   }
 
   function requestGeneratedValue() {
-    var req = new XMLHttpRequest()
-    req.onreadystatechange = function() {
-      if (req.readyState !== XMLHttpRequest.DONE) return
-      var value = req.status === 200 ? Model.parseServeGenerated(req.responseText) : ""
+    generatorRequest(function(res) {
+      var value = res.status === 200 ? Model.parseServeGenerated(res.body) : ""
       if (value) {
-        onGenerated(value, 0)
+        root.onGenerated(value, 0)
         return
       }
-      // The server went away mid-session; fall back and stop trusting it.
+      // The server went away mid-session, or stopped behaving like one; fall
+      // back and stop trusting it.
       root.generateServeReady = false
       root.regenerateViaCli()
-    }
-    req.open("GET", Model.generateServeUrl(genOpts))
-    req.send()
+    })
   }
 
   function onGenerated(text, exitCode) {
@@ -1091,6 +1155,7 @@ Panel {
     }
     pinError = ""
     pinBusy = true
+    pinUnlockProc.command = Model.pinUnlockCommand()
     pinUnlockProc.running = true
   }
 
@@ -1324,7 +1389,10 @@ Panel {
 
     if (result === PamResult.Success) {
       fingerprintMessage = "󰈷  Fingerprint verified, unlocking..."
-      if (!keyringLookupMasterProc.running) keyringLookupMasterProc.running = true
+      if (!keyringLookupMasterProc.running) {
+        keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
+        keyringLookupMasterProc.running = true
+      }
     } else if (result === PamResult.MaxTries) {
       fingerprintMessage = "Too many fingerprint attempts. Use your master password."
     } else {
@@ -1433,6 +1501,7 @@ Panel {
     // unlockProc reads it as the BW_PASSWORD binding, so it must be set before
     // the process starts.
     pendingUnlockPassword = p
+    unlockProc.command = Model.unlockCommand()
     unlockProc.running = true
   }
 
@@ -1580,6 +1649,54 @@ Panel {
     pinSetupMaster = ""
     fpSetupMaster = ""
     masterToStore = ""
+    scrubSecretBuffers()
+  }
+
+  // Emptying those properties leaves the values they were copied out of still
+  // sitting in the collectors that read them, which is the same residue one
+  // step upstream. See the collector-scrubbing note in BitwardenModel.js for
+  // why running a command that prints nothing is the way to clear one.
+  //
+  // Built on demand rather than held as a property: these ids are declared
+  // below this point, and a list bound at creation time would be a list of
+  // undefineds.
+  function secretProcesses() {
+    return [
+      sessionHandoffProc, keyringLookupProc, pinUnlockProc, keyringLookupMasterProc,
+      loginProc, unlockProc, listProc, listOrgsProc, listFoldersProc, orgCollectionsProc,
+      getItemProc, getTotpProc, generateProc, listSendsProc, createSendProc,
+      createItemProc, editItemProc, deleteItemProc, createFolderProc, attachmentProc,
+      associationsReadProc
+    ]
+  }
+
+  function scrubSecretBuffers() {
+    scrubPending = secretProcesses()
+    scrubRetry.ticks = 0
+    scrubStep()
+    if (scrubPending.length) scrubRetry.restart()
+  }
+
+  // A process still running when the vault locked cannot be scrubbed yet --
+  // its buffer is in the middle of being written, and taking its command away
+  // would abandon a read someone is still waiting on. It stays in the queue
+  // and the retry comes back for it.
+  function scrubStep() {
+    var pass = Model.scrubPass(scrubPending)
+    for (var i = 0; i < pass.start.length; i++) {
+      pass.start[i].command = Model.scrubCommand()
+      pass.start[i].running = true
+    }
+    scrubPending = pass.waiting
+  }
+
+  // True while the given process is carrying a scrub rather than an answer.
+  // Every handler on a scrubbed process asks this first: what arrives from a
+  // scrub is an empty string and an exit status of zero, which reads as a
+  // successful login, an empty vault or a saved item depending on where it
+  // lands.
+  function isScrubRun(proc) {
+    return Model.isScrubCommand(proc.command)
   }
 
   // -------------------------------------------------------------------------
@@ -2607,6 +2724,21 @@ Panel {
     }
   }
 
+  // Comes back for the processes that were mid-read when the vault locked.
+  // Stops as soon as the queue empties, which is the same tick for everything
+  // that was already idle.
+  Timer {
+    id: scrubRetry
+    property int ticks: 0
+    interval: Model.scrubRetryMs()
+    repeat: true
+    onTriggered: {
+      ticks++
+      root.scrubStep()
+      if (!root.scrubPending.length || ticks > Model.scrubRetryLimit()) stop()
+    }
+  }
+
   Process {
     id: screenLockStateProc
     command: Model.screenLockStateCommand()
@@ -2664,11 +2796,16 @@ Panel {
     id: sessionHandoffProc
     // Set by refreshStatus(), which decides whether this is a read or a
     // discard. Defaults to the discard form so a run that somehow starts
-    // without going through there cannot adopt a key.
+    // without going through there cannot adopt a key -- and a scrub, which
+    // replaces this command with one that reads nothing at all, only makes
+    // that stricter.
     command: Model.sessionHandoffReadCommand(false)
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onSessionHandoff(text)
+      onStreamFinished: {
+        if (root.isScrubRun(sessionHandoffProc)) return
+        root.onSessionHandoff(text)
+      }
     }
   }
 
@@ -2677,9 +2814,13 @@ Panel {
     command: Model.keyringLookupCommand()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onKeyringLookupFinished(text)
+      onStreamFinished: {
+        if (root.isScrubRun(keyringLookupProc)) return
+        root.onKeyringLookupFinished(text)
+      }
     }
     onExited: function(exitCode) {
+      if (root.isScrubRun(keyringLookupProc)) return
       if (exitCode !== 0) {
         root.onKeyringLookupFailed()
       }
@@ -2709,7 +2850,10 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onListFoldersFinished(text)
+      onStreamFinished: {
+        if (root.isScrubRun(listFoldersProc)) return
+        root.onListFoldersFinished(text)
+      }
     }
   }
 
@@ -2718,16 +2862,25 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onOrgCollectionsLoaded(text)
+      onStreamFinished: {
+        if (root.isScrubRun(orgCollectionsProc)) return
+        root.onOrgCollectionsLoaded(text)
+      }
     }
-    onExited: function(exitCode) { if (exitCode !== 0) root.formCollectionsLoading = false }
+    onExited: function(exitCode) {
+      if (root.isScrubRun(orgCollectionsProc)) return
+      if (exitCode !== 0) root.formCollectionsLoading = false
+    }
   }
 
   Process {
     id: createFolderProc
     environment: root.bwEnv()
     stdout: StdioCollector { id: createFolderStdout; waitForEnd: true }
-    onExited: function(exitCode) { root.onFolderCreated(exitCode, createFolderStdout.text) }
+    onExited: function(exitCode) {
+      if (root.isScrubRun(createFolderProc)) return
+      root.onFolderCreated(exitCode, createFolderStdout.text)
+    }
   }
 
   Process {
@@ -2736,6 +2889,7 @@ Panel {
     stdout: StdioCollector { id: attachmentStdout; waitForEnd: true }
     stderr: StdioCollector { id: attachmentStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (root.isScrubRun(attachmentProc)) return
       root.onAttachmentDownloaded(exitCode, attachmentStdout.text, attachmentStderr.text)
     }
   }
@@ -2745,9 +2899,15 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onSendsLoaded(text)
+      onStreamFinished: {
+        if (root.isScrubRun(listSendsProc)) return
+        root.onSendsLoaded(text)
+      }
     }
-    onExited: function(exitCode) { if (exitCode !== 0) root.sendsLoading = false }
+    onExited: function(exitCode) {
+      if (root.isScrubRun(listSendsProc)) return
+      if (exitCode !== 0) root.sendsLoading = false
+    }
   }
 
   Process {
@@ -2756,6 +2916,7 @@ Panel {
     stdout: StdioCollector { id: createSendStdout; waitForEnd: true }
     stderr: StdioCollector { id: createSendStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (root.isScrubRun(createSendProc)) return
       root.onSendCreated(exitCode, createSendStdout.text, createSendStderr.text)
     }
   }
@@ -2770,7 +2931,10 @@ Panel {
     id: generateProc
     environment: root.bwEnv()
     stdout: StdioCollector { id: generateStdout; waitForEnd: true }
-    onExited: function(exitCode) { root.onGenerated(generateStdout.text, exitCode) }
+    onExited: function(exitCode) {
+      if (root.isScrubRun(generateProc)) return
+      root.onGenerated(generateStdout.text, exitCode)
+    }
   }
 
   // The generator server. A managed Process rather than execDetached, so it
@@ -2794,6 +2958,11 @@ Panel {
       if (act.dropValue) root.genValue = ""
       if (act.useCli) root.regenerateViaCli()
     }
+  }
+
+  Component {
+    id: requestDeadlineComp
+    Timer { repeat: false }
   }
 
   Timer {
@@ -2832,7 +3001,10 @@ Panel {
     command: Model.pinUnlockCommand()
     environment: root.pinEnv(root.pinEntry, "")
     stdout: StdioCollector { id: pinUnlockStdout; waitForEnd: true }
-    onExited: function(exitCode) { root.onPinUnlockResult(exitCode, pinUnlockStdout.text) }
+    onExited: function(exitCode) {
+      if (root.isScrubRun(pinUnlockProc)) return
+      root.onPinUnlockResult(exitCode, pinUnlockStdout.text)
+    }
   }
 
   Process {
@@ -2899,9 +3071,13 @@ Panel {
     command: Model.keyringLookupMasterPasswordCommand()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onFingerprintPasswordRetrieved(text)
+      onStreamFinished: {
+        if (root.isScrubRun(keyringLookupMasterProc)) return
+        root.onFingerprintPasswordRetrieved(text)
+      }
     }
     onExited: function(exitCode) {
+      if (root.isScrubRun(keyringLookupMasterProc)) return
       if (exitCode !== 0) {
         root.fingerprintStored = false
         root.fingerprintMessage = "Stored master password unavailable. Use your password."
@@ -2927,7 +3103,10 @@ Panel {
     command: Model.associationsReadCommand()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onAssociationsLoaded(text)
+      onStreamFinished: {
+        if (root.isScrubRun(associationsReadProc)) return
+        root.onAssociationsLoaded(text)
+      }
     }
   }
 
@@ -2978,6 +3157,7 @@ Panel {
       waitForEnd: true
     }
     onExited: function(exitCode) {
+      if (root.isScrubRun(loginProc)) return
       root.onLoginOutput(loginStdout.text, loginStderr.text, exitCode)
     }
   }
@@ -2995,6 +3175,7 @@ Panel {
       waitForEnd: true
     }
     onExited: function(exitCode) {
+      if (root.isScrubRun(unlockProc)) return
       root.onUnlockOutput(unlockStdout.text, unlockStderr.text, exitCode)
     }
   }
@@ -3009,11 +3190,15 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onListFinished(text)
+      onStreamFinished: {
+        if (root.isScrubRun(listProc)) return
+        root.onListFinished(text)
+      }
     }
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (root.isScrubRun(listProc)) return
         if (text && text.trim()) {
           root.errorMessage = text.trim()
           root.isLoading = false
@@ -3027,7 +3212,10 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onListOrgsFinished(text)
+      onStreamFinished: {
+        if (root.isScrubRun(listOrgsProc)) return
+        root.onListOrgsFinished(text)
+      }
     }
   }
 
@@ -3036,11 +3224,15 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onDetailFinished(text)
+      onStreamFinished: {
+        if (root.isScrubRun(getItemProc)) return
+        root.onDetailFinished(text)
+      }
     }
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (root.isScrubRun(getItemProc)) return
         if (text && text.trim()) root.errorMessage = text.trim()
       }
     }
@@ -3051,7 +3243,10 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onTotpFinished(text)
+      onStreamFinished: {
+        if (root.isScrubRun(getTotpProc)) return
+        root.onTotpFinished(text)
+      }
     }
   }
 
@@ -3080,6 +3275,7 @@ Panel {
     stdout: StdioCollector { id: createItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: createItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (root.isScrubRun(createItemProc)) return
       root.itemPayloadJson = ""
       root.onSaveItemFinished(exitCode, createItemStdout.text, createItemStderr.text)
     }
@@ -3091,6 +3287,7 @@ Panel {
     stdout: StdioCollector { id: editItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: editItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (root.isScrubRun(editItemProc)) return
       root.itemPayloadJson = ""
       root.onSaveItemFinished(exitCode, editItemStdout.text, editItemStderr.text)
     }
@@ -3102,6 +3299,7 @@ Panel {
     stdout: StdioCollector { id: deleteItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: deleteItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (root.isScrubRun(deleteItemProc)) return
       root.onDeleteItemFinished(exitCode, deleteItemStdout.text, deleteItemStderr.text)
     }
   }
