@@ -640,6 +640,40 @@ function keyringHasPinCommand() {
   return ["bash", "-c", script]
 }
 
+// -------------------------------------------------------------------------
+// Everything the keyring holds, gone in one go
+// -------------------------------------------------------------------------
+//
+// Logging out is the moment the plugin should be holding nothing for this
+// account. The session token is the least of it: two of the three entries are
+// the master password itself -- once in the clear behind fingerprint unlock,
+// once encrypted under a four-to-six digit PIN -- and both live in the default
+// collection, which is a file on disk that PAM unlocks at every login. Neither
+// is any use to an account that is no longer signed in, and both outlive a
+// reboot by design, so neither may outlive the logout.
+//
+// One command that names every account rather than three calls the panel
+// decides between, because the deciding was the bug: those decisions were made
+// from the panel's own flags, and a flag describes what the settings screen
+// last saw rather than what is in the keyring. `fingerprintStored` goes false
+// the moment a reader is unplugged or fprintd is uninstalled -- the master
+// password does not go anywhere. `secret-tool clear` on an entry that is not
+// there is not an error, so asking for all of them unconditionally costs
+// nothing and is the only version that cannot be talked out of running.
+var KEYRING_ALL_ACCOUNTS = [KEYRING_ACCOUNT, KEYRING_MASTER, KEYRING_PIN]
+
+function keyringClearAllCommand() {
+  var script = ""
+  for (var i = 0; i < KEYRING_ALL_ACCOUNTS.length; i++) {
+    script += "secret-tool clear service " + shellQuote(KEYRING_SERVICE)
+      + " account " + shellQuote(KEYRING_ALL_ACCOUNTS[i]) + " >/dev/null 2>&1; "
+  }
+  // A missing entry exits non-zero, and that is the ordinary case rather than
+  // a failure worth reporting, so the script always succeeds.
+  script += "exit 0"
+  return ["bash", "-c", script]
+}
+
 // Reports "yes" only when every piece is in place: the Omarchy PAM stack, a
 // reader, and at least one enrolled finger. Mirrors the omarchy lock screen.
 function fingerprintAvailableCommand() {

@@ -288,6 +288,14 @@ Panel {
     totpFollowupActive = false
     isUnlocking = false
     pendingUnlockPassword = ""
+    // A half-typed PIN and either setup form's master password are abandoned
+    // by closing the panel just as surely as by cancelling, and reopening
+    // never lands back on those screens.
+    pinEntry = ""
+    pinSetupPin = ""
+    pinSetupConfirm = ""
+    pinSetupMaster = ""
+    fpSetupMaster = ""
     cancelFingerprintUnlock()
     stopGeneratorServe()
     root.controller.hide()
@@ -584,10 +592,7 @@ Panel {
 
   function logoutAccount() {
     lockVault()
-    if (fingerprintStored) {
-      keyringClearMasterProc.running = true
-      fingerprintStored = false
-    }
+    forgetStoredCredentials()
     pendingUnlockPassword = ""
     logoutProc.command = Model.logoutCommand()
     logoutProc.running = true
@@ -595,6 +600,30 @@ Panel {
     currentScreen = "login"
     userEmail = ""
     flashNotification("Logged out")
+  }
+
+  // Logging out takes the keyring with it. Two of the entries there are the
+  // master password -- fingerprint unlock keeps it as it is, PIN unlock keeps
+  // it encrypted -- and both are written to the default collection so they
+  // survive a reboot, which is exactly why a logout has to be the end of them.
+  //
+  // Nothing here asks whether we think an entry exists. `fingerprintStored`
+  // and `pinConfigured` describe what the settings screen last saw, and both
+  // go false for reasons that leave the keyring untouched: an unplugged
+  // reader, an uninstalled fprintd, a dependency probe that has not answered
+  // yet. Gating the clear on them is how a master password came to outlive the
+  // account it belonged to. See keyringClearAllCommand() for why asking
+  // unconditionally is free.
+  function forgetStoredCredentials() {
+    keyringClearAllProc.running = true
+    cancelFingerprintUnlock()
+    fingerprintStored = false
+    fingerprintMessage = ""
+    pinConfigured = false
+    pinEntry = ""
+    pinAttempts = 0
+    pinError = ""
+    if (pinUnlock) writeSetting("pinUnlock", false, "bool")
   }
 
   // -------------------------------------------------------------------------
@@ -1311,7 +1340,11 @@ Panel {
     if (!fingerprintUnlock) {
       cancelFingerprintUnlock()
       fingerprintMessage = ""
-      if (fingerprintStored) forgetFingerprintUnlock()
+      // Not `if (fingerprintStored)`. That flag is false whenever the reader
+      // or fprintd is missing, which says nothing about whether the master
+      // password is still sitting in the keyring -- and turning the feature
+      // off is precisely when it must not be.
+      forgetFingerprintUnlock()
     } else {
       refreshFingerprintAvailability()
     }
@@ -1428,9 +1461,11 @@ Panel {
       lockProc.command = Model.lockCommand()
       lockProc.running = true
     }
-    if (rememberSession) {
-      keyringClearProc.running = true
-    }
+    // Not `if (rememberSession)`. The setting says whether to write a token,
+    // not whether one is there: turning it off after a session was remembered
+    // used to mean the lock skipped the erase and left the token behind.
+    // Clearing an entry that was never written is a no-op nobody reads.
+    keyringClearProc.running = true
 
     session = ""
     masterPassword = ""
@@ -1443,15 +1478,45 @@ Panel {
     filteredItems = []
     organizations = []
     detailItem = null
-    detailPassword = ""
-    liveTotp = ""
     totpFollowupActive = false
     isUnlocking = false
     pendingUnlockPassword = ""
     fingerprintMessage = ""
+    dropVaultSecrets()
     flashNotification("Vault locked")
     focusAppropriateField()
     if (opened) startFingerprintUnlock()
+  }
+
+  // A locked vault means the panel is holding nothing out of it, and nothing
+  // that would open it again. detailPassword and liveTotp were always dropped
+  // here; the rest were not, and each of them is the same kind of thing -- a
+  // generated password nobody copied, an item or Send form left mid-compose,
+  // the payload JSON on its way to bw, the master password typed into whichever
+  // setup form was open. The vault relocks after fifteen idle minutes and the
+  // shell process lives for the whole desktop session, so a property that
+  // survives a lock survives everything.
+  function dropVaultSecrets() {
+    detailPassword = ""
+    liveTotp = ""
+    totpFollowupItem = null
+    totpFollowupCode = ""
+    genValue = ""
+    formPassword = ""
+    formTotp = ""
+    itemPayloadJson = ""
+    sends = []
+    sendPayloadJson = ""
+    sendFormText = ""
+    sendFormPassword = ""
+    loginPassword = ""
+    loginClientSecret = ""
+    pinEntry = ""
+    pinSetupPin = ""
+    pinSetupConfirm = ""
+    pinSetupMaster = ""
+    fpSetupMaster = ""
+    masterToStore = ""
   }
 
   // -------------------------------------------------------------------------
@@ -1693,6 +1758,16 @@ Panel {
     // id whether the vault is locked or not. Holding that open for hours to
     // save a second on a screen visited for a few is the wrong trade.
     if (currentScreen !== "generator") stopGeneratorServe()
+    // Both setup forms ask for the master password, and both used to keep it
+    // for the rest of the shell's life: Cancel and Escape only reset the error
+    // line. Leaving the form is the answer either way, so the clearing lives
+    // here rather than at each of the ways out.
+    if (currentScreen !== "pin") {
+      pinSetupPin = ""
+      pinSetupConfirm = ""
+      pinSetupMaster = ""
+    }
+    if (currentScreen !== "fingerprint") fpSetupMaster = ""
     restoreScreenFocus()
   }
 
@@ -2052,6 +2127,10 @@ Panel {
 
   function onSaveItemFinished(exitCode, stdoutText, stderrText) {
     isLoading = false
+    // The payload carries the item's password in the clear, the same way a
+    // Send payload does, so it goes the same way the Send one does: as soon as
+    // the process that needed it has exited.
+    itemPayloadJson = ""
     if (exitCode === 0) {
       flashNotification(formIsEditing ? "Item updated successfully!" : "Item created successfully!")
       currentScreen = "main"
@@ -2648,6 +2727,12 @@ Panel {
   Process {
     id: keyringClearMasterProc
     command: Model.keyringClearMasterPasswordCommand()
+  }
+
+  // Logout's clean sweep; see forgetStoredCredentials().
+  Process {
+    id: keyringClearAllProc
+    command: Model.keyringClearAllCommand()
   }
 
   // ---- Learned associations ----

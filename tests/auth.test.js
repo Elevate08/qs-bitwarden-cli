@@ -8,7 +8,10 @@
 //   node tests/auth.test.js
 
 const fs = require("fs")
+const os = require("os")
 const path = require("path")
+const { execFileSync } = require("child_process")
+
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "") + `
@@ -23,6 +26,10 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.sessionEnvVar = sessionEnvVar
   exports.extractSessionToken = extractSessionToken
   exports.isSessionToken = isSessionToken
+  exports.keyringClearAllCommand = keyringClearAllCommand
+  exports.keyringStoreMasterPasswordCommand = keyringStoreMasterPasswordCommand
+  exports.pinStoreCommand = pinStoreCommand
+  exports.keyringSecretEnvVar = keyringSecretEnvVar
 `)(Model)
 
 let pass = 0
@@ -166,6 +173,133 @@ for (const [label, input] of notKeys) {
 check("a BW_SESSION line carrying junk is rejected rather than unwrapped",
   Model.extractSessionToken('BW_SESSION="not a key"') === "",
   Model.extractSessionToken('BW_SESSION="not a key"'))
+
+// --- logging out has to take the keyring with it ----------------------------
+//
+// Two of the three entries this plugin writes are the master password: once in
+// the clear for fingerprint unlock, once encrypted under a short PIN. Both go
+// to the default collection, which is a file on disk that PAM unlocks at every
+// login, so both survive a reboot on purpose. Logging out used to leave the
+// PIN blob there forever, and to clear the fingerprint copy only when the
+// panel's own `fingerprintStored` flag happened to be true -- a flag that goes
+// false when a reader is unplugged, when fprintd is uninstalled, and for the
+// first moments of every shell start. Run against a stand-in secret-tool so
+// what is checked is that the entries are gone, not that a string looks right.
+
+const keyringStub = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-logout-"))
+fs.writeFileSync(path.join(keyringStub, "secret-tool"), `#!/usr/bin/env bash
+set -uo pipefail
+cmd="\${1:-}"; shift || true
+account=""
+while [ $# -gt 0 ]; do
+  case "$1" in account) account="\${2:-}"; shift 2 ;; *) shift ;; esac
+done
+f="$STUB/entry-$account"
+case "$cmd" in
+  store)  cat > "$f"; exit 0 ;;
+  lookup) [ -s "$f" ] || exit 1; cat "$f"; exit 0 ;;
+  clear)  [ -e "$f" ] || exit 1; rm -f "$f"; exit 0 ;;
+esac
+exit 1
+`)
+fs.chmodSync(path.join(keyringStub, "secret-tool"), 0o755)
+
+const keyringRun = (command, extraEnv) => execFileSync(command[0], command.slice(1), {
+  env: Object.assign({}, process.env,
+    { PATH: `${keyringStub}:${process.env.PATH}`, STUB: keyringStub }, extraEnv || {}),
+  encoding: "utf8"
+})
+const keyringEntries = () => fs.readdirSync(keyringStub)
+  .filter(f => f.startsWith("entry-")).map(f => f.slice("entry-".length)).sort()
+
+// The three accounts as the panel actually writes them, rather than a list
+// copied into the test: a fourth secret added later must not slip past this.
+keyringRun(["bash", "-c", "printf '%s' \"$QSBW_SECRET\" | secret-tool store --label=x"
+  + " service 'qs-bitwarden-cli' account 'session'"], { QSBW_SECRET: "boot-id " + REAL_KEY })
+keyringRun(Model.keyringStoreMasterPasswordCommand(), { [Model.keyringSecretEnvVar()]: MASTER })
+keyringRun(Model.pinStoreCommand(), { [Model.keyringSecretEnvVar()]: MASTER, QSBW_PIN: "123456" })
+check("the fixture leaves all three secrets in the keyring",
+  keyringEntries().join(",") === "master_password,pin_blob,session", keyringEntries().join(","))
+
+keyringRun(Model.keyringClearAllCommand())
+check("logging out clears every secret the plugin ever stored",
+  keyringEntries().length === 0, keyringEntries().join(","))
+
+// Nothing stored is the ordinary case -- the user never enabled either
+// feature -- and it must not read as a failure the panel then reports.
+check("clearing an empty keyring succeeds",
+  keyringRun(Model.keyringClearAllCommand()) === "", "expected silence and exit 0")
+check("no secret reaches the clear command's argv",
+  !Model.keyringClearAllCommand().join(" ").includes(MASTER),
+  Model.keyringClearAllCommand().join(" "))
+
+fs.rmSync(keyringStub, { recursive: true, force: true })
+
+// The command is only half of it: the panel has to run it, and run it without
+// first asking a flag for permission. Both gates below were the bug.
+const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const bodyOf = (name) => {
+  const start = panelSrc.indexOf(`function ${name}(`)
+  if (start === -1) return ""
+  let depth = 0
+  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
+    if (panelSrc[i] === "{") depth++
+    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
+  }
+  return ""
+}
+
+const logout = bodyOf("logoutAccount")
+const forget = bodyOf("forgetStoredCredentials")
+check("logging out forgets the stored credentials",
+  /forgetStoredCredentials\(\)/.test(logout), logout)
+check("the clear-all command is what it runs",
+  /keyringClearAllProc\.running\s*=\s*true/.test(forget), forget)
+check("it does not ask fingerprintStored or pinConfigured for permission first",
+  forget !== "" && !/\bif\s*\(\s*(fingerprintStored|pinConfigured)\b/.test(forget), forget)
+check("the panel declares a process for the clear-all command",
+  /id:\s*keyringClearAllProc[\s\S]{0,120}Model\.keyringClearAllCommand\(\)/.test(panelSrc),
+  "expected a keyringClearAllProc bound to Model.keyringClearAllCommand()")
+
+// Turning fingerprint unlock off is the other place a flag used to decide
+// whether the master password stayed behind.
+const fpOff = panelSrc.slice(panelSrc.indexOf("onFingerprintUnlockChanged:"),
+  panelSrc.indexOf("onFingerprintUnlockChanged:") + 700)
+check("disabling fingerprint unlock clears the keyring unconditionally",
+  /forgetFingerprintUnlock\(\)/.test(fpOff) && !/if\s*\(fingerprintStored\)\s*forgetFingerprintUnlock/.test(fpOff),
+  fpOff)
+
+check("locking erases the remembered session whatever the setting now says",
+  /keyringClearProc\.running\s*=\s*true/.test(bodyOf("lockVault"))
+    && !/if\s*\(rememberSession\)\s*\{\s*\n\s*keyringClearProc/.test(bodyOf("lockVault")),
+  bodyOf("lockVault"))
+
+// --- and nothing the vault gave us outlives the lock ------------------------
+// Every one of these is a secret that used to sit in the panel object until
+// the shell exited: a generated password, a form left mid-compose, the payload
+// JSON on its way to bw, the master password typed into a setup form.
+const dropped = bodyOf("dropVaultSecrets")
+check("locking drops the vault secrets",
+  /dropVaultSecrets\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
+for (const prop of ["detailPassword", "liveTotp", "totpFollowupCode", "genValue",
+                    "formPassword", "formTotp", "itemPayloadJson", "sendPayloadJson",
+                    "sendFormText", "sendFormPassword", "loginPassword", "loginClientSecret",
+                    "pinEntry", "pinSetupPin", "pinSetupMaster", "fpSetupMaster",
+                    "masterToStore"]) {
+  check(`locking clears ${prop}`,
+    new RegExp(`\\b${prop}\\s*=\\s*""`).test(dropped), dropped)
+}
+check("the item payload is dropped once bw has taken it, as the Send one is",
+  /itemPayloadJson\s*=\s*""/.test(bodyOf("onSaveItemFinished")), bodyOf("onSaveItemFinished"))
+
+// Cancel and Escape leave a setup form the same way, so the clearing sits on
+// the screen change rather than on each of the ways out.
+const screenChanged = panelSrc.slice(panelSrc.indexOf("onCurrentScreenChanged:"),
+  panelSrc.indexOf("onCurrentScreenChanged:") + 1200)
+check("leaving the PIN form drops the master password it asked for",
+  /currentScreen !== "pin"[\s\S]{0,160}pinSetupMaster\s*=\s*""/.test(screenChanged), screenChanged)
+check("leaving the fingerprint form drops the master password it asked for",
+  /currentScreen !== "fingerprint"[\s\S]{0,80}fpSetupMaster\s*=\s*""/.test(screenChanged), screenChanged)
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
