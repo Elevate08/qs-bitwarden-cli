@@ -200,6 +200,30 @@ function extractSessionToken(raw) {
 }
 
 // -------------------------------------------------------------------------
+// Vault generation
+// -------------------------------------------------------------------------
+//
+// Nothing cancels a `bw` that is already running. By the time the panel locks
+// the vault, a `bw list items` started a second earlier is long past the point
+// where the session mattered: it will finish, print the whole vault, and the
+// completion handler will put it back into a panel that has just thrown it
+// away. The list carries each login's password in its raw object, so the
+// contents of a vault the user had just locked went on living in the shell for
+// the rest of the desktop session -- and a logout followed by a login to a
+// second account showed the first account's items until the new list landed,
+// close enough to copy from.
+//
+// So every reader records the vault generation it started under, and the
+// generation moves on whenever the vault changes hands: locked, logged out of,
+// unlocked again. A result from a previous generation is discarded rather than
+// rendered. Exit status is no help here -- the command genuinely succeeded;
+// the vault it succeeded against is the thing that is gone.
+function vaultReadIsStale(startedEpoch, currentEpoch, hasSession) {
+  if (!hasSession) return true
+  return Number(startedEpoch) !== Number(currentEpoch)
+}
+
+// -------------------------------------------------------------------------
 // CLI Commands
 // -------------------------------------------------------------------------
 
@@ -2169,10 +2193,10 @@ var SETTINGS_GROUPS = [
 
 var SETTINGS_SCHEMA = [
   { key: "autoLockMinutes", group: "security", type: "int", label: "Auto-lock after", unit: "minutes",
-    min: 0, max: 1440, step: 5, zeroLabel: "Never",
+    min: 0, max: 1440, step: 5, zeroLabel: "Never", defaultValue: 15,
     description: "Lock the vault after this long without activity." },
   { key: "clearClipboardSec", group: "security", type: "int", label: "Clear clipboard after", unit: "seconds",
-    min: 0, max: 300, step: 5, zeroLabel: "Never",
+    min: 0, max: 300, step: 5, zeroLabel: "Never", defaultValue: 30,
     description: "Wipe a copied password or code from the clipboard." },
   { key: "rememberSession", group: "security", type: "bool", label: "Remember session in keyring",
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
@@ -2186,7 +2210,7 @@ var SETTINGS_SCHEMA = [
   { key: "closeOnCopy", group: "behavior", type: "bool", label: "Close panel on copy",
     description: "Return focus to your app as soon as Enter copies a credential." },
   { key: "autoCopyTotpSec", group: "behavior", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
-    min: 0, max: 30, step: 1, zeroLabel: "Off",
+    min: 0, max: 30, step: 1, zeroLabel: "Off", defaultValue: 3,
     description: "Replace the clipboard with the 2FA code this long after the password." },
 
   { key: "suggestOnOpen", group: "suggestions", type: "bool", label: "Suggest for active window",
@@ -2212,6 +2236,44 @@ function groupedSettings() {
   return out
 }
 
+function settingSchemaEntry(key) {
+  for (var i = 0; i < SETTINGS_SCHEMA.length; i++) {
+    if (SETTINGS_SCHEMA[i].key === key) return SETTINGS_SCHEMA[i]
+  }
+  return null
+}
+
+// Every integer setting is read straight back out of shell.json, and nothing
+// validates what goes in there. `omarchy bar set` stores whatever value it is
+// handed -- a bare word becomes a JSON string, `--json` stores any number at
+// all -- and the README documents editing the file by hand as well. The
+// settings screen clamps to the schema on the way out; this is the same clamp
+// on the way in, which is the direction that was missing.
+//
+// It matters most for the auto-lock, because QML turns a bad minute count into
+// a dangerous one rather than an obvious one. `Number("fifteen")` is NaN, and
+// NaN assigned to an `int` property is 0 -- which is exactly how "never lock"
+// is spelled. A count past the schema's ceiling fails the same way from the
+// other end: 999999 minutes is 59,999,940,000 ms, which overflows the `int`
+// behind Timer.interval and lands negative, and a Timer with a negative
+// interval never fires. Both readings leave a vault that never locks itself,
+// silently, so an unreadable value falls back to the schema's default rather
+// than to zero.
+function intSetting(key, raw) {
+  // Number() is too generous to be the whole test here: it reads null, "" and
+  // false as 0, and 0 is a meaningful setting rather than a missing one. Only
+  // something that was written as a number, or as the decimal string that
+  // `omarchy bar set` writes without --json, counts as a value at all.
+  var n = (typeof raw === "number" || (typeof raw === "string" && String(raw).trim() !== ""))
+    ? Math.floor(Number(raw))
+    : NaN
+  var entry = settingSchemaEntry(key)
+  if (!entry || entry.type !== "int") return isFinite(n) ? n : 0
+  if (!isFinite(n)) n = Math.floor(Number(entry.defaultValue))
+  if (!isFinite(n)) n = entry.min
+  return Math.max(entry.min, Math.min(entry.max, n))
+}
+
 function settingWriteCommand(key, value, type) {
   var raw
   if (type === "bool") raw = value ? "true" : "false"
@@ -2219,6 +2281,46 @@ function settingWriteCommand(key, value, type) {
   var script = "omarchy bar set io.github.elevate08.qs-bitwarden-cli "
     + shellQuote(String(key)) + " " + shellQuote(raw) + " --json | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// -------------------------------------------------------------------------
+// Auto-lock
+// -------------------------------------------------------------------------
+//
+// Qt schedules every Timer on CLOCK_MONOTONIC, and Linux stops that clock
+// while the machine is suspended -- CLOCK_BOOTTIME on a laptop that has slept
+// overnight runs hours ahead of it. So a fifteen-minute auto-lock armed just
+// before the lid closed still had its full fifteen minutes to run when the lid
+// opened, and a vault left unattended all night came back to the desk exactly
+// as open as it was left. The countdown was only ever measuring the time the
+// shell was awake for, which is not the time the vault was exposed for.
+//
+// Only the wall clock knows about the part in between, so the deadline is kept
+// in wall-clock terms as well and polled. The monotonic Timer stays: it is the
+// one that is immune to the clock being stepped, and between the two it is
+// whichever notices first that does the locking.
+var AUTO_LOCK_POLL_MS = 30000
+
+// Poll often enough that waking a suspended machine locks the vault in seconds
+// rather than minutes, but never longer than the window itself -- a one-minute
+// auto-lock must not be checked every thirty seconds and nothing shorter than
+// a second is worth waking up for.
+function autoLockPollMs(minutes) {
+  var m = Math.floor(Number(minutes))
+  if (!isFinite(m) || m <= 0) return AUTO_LOCK_POLL_MS
+  return Math.max(1000, Math.min(m * 60 * 1000, AUTO_LOCK_POLL_MS))
+}
+
+// `armedAt` and `now` are both Date.now(). Zero minutes is the user asking for
+// no auto-lock at all, and an unarmed window has no deadline to have passed,
+// so both answer false rather than "lock immediately".
+function autoLockExpired(armedAt, minutes, now) {
+  var m = Math.floor(Number(minutes))
+  if (!isFinite(m) || m <= 0) return false
+  var start = Number(armedAt)
+  var at = Number(now)
+  if (!isFinite(start) || start <= 0 || !isFinite(at)) return false
+  return (at - start) >= m * 60 * 1000
 }
 
 // -------------------------------------------------------------------------

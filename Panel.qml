@@ -17,11 +17,14 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  // Configuration settings from shell.json
-  readonly property int autoLockMinutes: Number(setting("autoLockMinutes", 15))
-  readonly property int clearClipboardSec: Number(setting("clearClipboardSec", 30))
+  // Configuration settings from shell.json. The numbers go through the schema
+  // on the way in as well as on the way out -- nothing validates shell.json,
+  // and a bad minute count does not fail loudly, it just stops the vault ever
+  // locking itself. See intSetting() in BitwardenModel.js.
+  readonly property int autoLockMinutes: Model.intSetting("autoLockMinutes", setting("autoLockMinutes"))
+  readonly property int clearClipboardSec: Model.intSetting("clearClipboardSec", setting("clearClipboardSec"))
   readonly property bool rememberSession: Boolean(setting("rememberSession", true))
-  readonly property int autoCopyTotpSec: Number(setting("autoCopyTotpSec", 3))
+  readonly property int autoCopyTotpSec: Model.intSetting("autoCopyTotpSec", setting("autoCopyTotpSec"))
   readonly property bool closeOnCopy: Boolean(setting("closeOnCopy", true))
   readonly property bool suggestOnOpen: Boolean(setting("suggestOnOpen", true))
   readonly property bool fingerprintUnlock: Boolean(setting("fingerprintUnlock", false))
@@ -132,6 +135,17 @@ Panel {
   property string formOrgId: ""
   property bool formPasswordRevealed: false
   property bool showDeleteConfirm: false
+
+  // When the current auto-lock window started, in wall-clock terms, so a
+  // suspend cannot hide from the countdown. See the autoLockWatchdog Timer.
+  property double autoLockArmedAt: 0
+
+  // The vault generation. Moves on whenever the vault changes hands -- locked,
+  // logged out of, unlocked again -- and every `bw` reader records the one it
+  // started under, so an answer from a vault that is no longer open can be
+  // recognised as such when it arrives. See vaultReadIsStale().
+  property int vaultEpoch: 0
+  property var readEpochs: ({})
 
   // Status & indicators
   property bool isLoading: false
@@ -418,6 +432,7 @@ Panel {
     var handed = Model.extractSessionToken(String(raw || "").trim())
     if (handed) {
       session = handed
+      vaultEpoch += 1
       if (rememberSession) keyringStoreProc.running = true
 
       // bw minted this key moments ago, so trust it and start loading rather
@@ -455,6 +470,7 @@ Panel {
     var token = String(rawToken || "").trim()
     if (token) {
       session = token
+      vaultEpoch += 1
       statusProc.command = Model.statusCommand()
       statusProc.running = true
     } else {
@@ -708,12 +724,14 @@ Panel {
   function loadSends() {
     if (!session) return
     sendsLoading = true
+    beginVaultRead("sends")
     listSendsProc.command = Model.listSendsCommand()
     listSendsProc.running = true
   }
 
   function onSendsLoaded(raw) {
     sendsLoading = false
+    if (vaultReadIsStale("sends")) return
     sends = Model.parseSends(raw)
     if (sendIndex >= sends.length) sendIndex = Math.max(0, sends.length - 1)
   }
@@ -1424,6 +1442,7 @@ Panel {
     }
 
     session = s
+    vaultEpoch += 1
     status = "unlocked"
     currentScreen = "main"
     flashNotification("Vault unlocked successfully!")
@@ -1468,6 +1487,7 @@ Panel {
     keyringClearProc.running = true
 
     session = ""
+    vaultEpoch += 1
     masterPassword = ""
     itemsLoadedAt = 0
     orgsLoadedAt = 0
@@ -1523,6 +1543,20 @@ Panel {
   // Vault Data Operations
   // -------------------------------------------------------------------------
 
+  // Stamped on a reader as it starts, and checked again where its answer
+  // arrives. A `bw` already in flight when the vault locks cannot be called
+  // back -- it is past the point where the session mattered -- so the only
+  // place left to refuse its answer is the completion handler. See the Vault
+  // generation section of BitwardenModel.js for what that answer costs when
+  // nobody refuses it.
+  function beginVaultRead(name) {
+    readEpochs[name] = vaultEpoch
+  }
+
+  function vaultReadIsStale(name) {
+    return Model.vaultReadIsStale(readEpochs[name], vaultEpoch, !!session)
+  }
+
   // Open-time load: skip the CLI entirely when the cached vault is still fresh.
   // Stale-while-revalidate. `bw list items` is a CLI bootstrap plus a full
   // vault decrypt, so blocking the panel on it means a spinner on every open
@@ -1551,12 +1585,14 @@ Panel {
   function loadItems(showSpinner) {
     if (!session) return
     if (showSpinner !== false) isLoading = true
+    beginVaultRead("items")
     listProc.command = Model.listCommand()
     listProc.running = true
   }
 
   function onListFinished(rawJson) {
     isLoading = false
+    if (vaultReadIsStale("items")) return
     items = Model.parseItems(rawJson)
     itemsLoadedAt = Date.now()
     if (activeWindowData) {
@@ -1572,11 +1608,13 @@ Panel {
   function loadOrganizations(force) {
     if (!session) return
     if (!force && organizations.length > 0 && (Date.now() - orgsLoadedAt) < metaFreshMs) return
+    beginVaultRead("organizations")
     listOrgsProc.command = Model.listOrganizationsCommand()
     listOrgsProc.running = true
   }
 
   function onListOrgsFinished(rawJson) {
+    if (vaultReadIsStale("organizations")) return
     organizations = Model.parseOrganizations(rawJson)
     orgsLoadedAt = Date.now()
   }
@@ -1584,11 +1622,13 @@ Panel {
   function loadFolders(force) {
     if (!session) return
     if (!force && folders.length > 0 && (Date.now() - foldersLoadedAt) < metaFreshMs) return
+    beginVaultRead("folders")
     listFoldersProc.command = Model.listFoldersCommand()
     listFoldersProc.running = true
   }
 
   function onListFoldersFinished(rawJson) {
+    if (vaultReadIsStale("folders")) return
     folders = Model.parseFolders(rawJson)
     foldersLoadedAt = Date.now()
   }
@@ -1804,12 +1844,14 @@ Panel {
   function loadOrgCollections(orgId) {
     if (!session || !orgId) return
     formCollectionsLoading = true
+    beginVaultRead("collections")
     orgCollectionsProc.command = Model.listOrgCollectionsCommand(orgId)
     orgCollectionsProc.running = true
   }
 
   function onOrgCollectionsLoaded(raw) {
     formCollectionsLoading = false
+    if (vaultReadIsStale("collections")) return
     formCollections = Model.parseCollections(raw)
     // A single collection is not a choice; pre-select it.
     if (formCollections.length === 1 && formCollectionIds.length === 0) {
@@ -1918,6 +1960,7 @@ Panel {
       detailItem = detail
       detailPassword = detail.password
     } else {
+      beginVaultRead("detail")
       getItemProc.command = Model.getItemCommand(item.id)
       getItemProc.running = true
     }
@@ -1931,6 +1974,7 @@ Panel {
 
   function onDetailFinished(rawJson) {
     isLoading = false
+    if (vaultReadIsStale("detail")) return
     var parsed = Model.parseItemDetail(rawJson)
     if (parsed) {
       detailItem = parsed
@@ -2034,11 +2078,13 @@ Panel {
 
   function fetchTotp(itemId) {
     if (!session || !itemId) return
+    beginVaultRead("totp")
     getTotpProc.command = Model.getTotpCommand(itemId)
     getTotpProc.running = true
   }
 
   function onTotpFinished(code) {
+    if (vaultReadIsStale("totp")) return
     var c = String(code || "").trim()
     liveTotp = c
     if (totpFollowupActive && totpFollowupItem) {
@@ -2383,6 +2429,9 @@ Panel {
   }
 
   function resetAutoLockTimer() {
+    // Recorded even when auto-lock is off, so turning it back on mid-session
+    // starts counting from the last thing the user did rather than from zero.
+    autoLockArmedAt = Date.now()
     if (autoLockMinutes > 0) {
       autoLockTimer.interval = autoLockMinutes * 60 * 1000
       autoLockTimer.restart()
@@ -2442,6 +2491,31 @@ Panel {
     running: root.status === "unlocked" && root.autoLockMinutes > 0
     onTriggered: {
       if (root.status === "unlocked") {
+        root.lockVault()
+      }
+    }
+  }
+
+  // The timer above measures the time the shell was awake for, which on a
+  // laptop is not the time the vault was exposed for: Qt schedules on
+  // CLOCK_MONOTONIC and Linux stops that clock across a suspend, so a lock
+  // armed before the lid closed still had its full countdown left when the lid
+  // opened. This is the wall-clock half of the same deadline; see the
+  // Auto-lock section of BitwardenModel.js.
+  Timer {
+    id: autoLockWatchdog
+    interval: Model.autoLockPollMs(root.autoLockMinutes)
+    repeat: true
+    running: root.status === "unlocked" && root.autoLockMinutes > 0
+    onTriggered: {
+      if (root.status !== "unlocked") return
+      // An unlock that somehow reached us without arming the window starts it
+      // here rather than reading a deadline of "1970 plus fifteen minutes".
+      if (root.autoLockArmedAt <= 0) {
+        root.autoLockArmedAt = Date.now()
+        return
+      }
+      if (Model.autoLockExpired(root.autoLockArmedAt, root.autoLockMinutes, Date.now())) {
         root.lockVault()
       }
     }
