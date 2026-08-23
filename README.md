@@ -236,14 +236,21 @@ lives inside that folder, so clear the rest yourself if you want it gone:
 secret-tool clear service qs-bitwarden-cli
 
 # Learned window-title -> vault item suggestions
-rm -rf ~/.local/state/qs-bitwarden-cli
+rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
 
 # Settings block, if you edited shell.json by hand
 # -> delete the "io.github.elevate08.qs-bitwarden-cli" key under "plugins"
 ```
 
-The plugin never writes outside these paths and your `shell.json` entry, and it
-never modifies your Bitwarden vault on removal. Your vault is untouched -- log
+Two more paths are written but need no cleaning up, because neither outlives
+the moment it is used: the session handoff file under `$XDG_RUNTIME_DIR`, which
+is read once and deleted and is on a tmpfs that goes with the login session,
+and a `.qsbw-` staging directory inside your download folder, which exists only
+for the length of an attachment download and is removed however that download
+ends. Saved attachments themselves stay where you saved them, mode `600`.
+
+Beyond those, the plugin writes nothing outside the paths above and your
+`shell.json` entry, and it never modifies your Bitwarden vault on removal. Your vault is untouched -- log
 out of the `bw` CLI separately with `bw logout` if you also want that cleared.
 
 ---
@@ -486,6 +493,10 @@ node tests/attachments.test.js      # attachment metadata, that a vault file nam
 node tests/handoff-urls.test.js     # session-handoff file path, and which URI schemes may be opened
 node tests/rich-text.test.js        # vault text is drawn as text, never parsed as markup
 node tests/session-boot.test.js     # a remembered session dies with the boot that minted it
+node tests/stream-limits.test.js    # every stream the shell reads is capped by its producer
+node tests/lock-state.test.js       # the auto-lock survives a suspend, the timings are clamped
+                                    # on the way in, and a read of a vault that has since closed
+                                    # is refused rather than rendered
 ```
 
 Two suites need Qt rather than Node -- which any machine running the plugin

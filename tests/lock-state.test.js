@@ -94,12 +94,20 @@ for (const [key, raw, want, why] of [
   ["autoLockMinutes", true,      15,   "a boolean falls back to the default"],
   ["autoLockMinutes", 999999,    1440, "a count that would overflow Timer.interval is capped"],
   ["autoLockMinutes", 1e30,      1440, "so is one written in exponential notation"],
-  ["autoLockMinutes", -5,        0,    "a negative count clamps to the floor"],
+  // The floor of every integer setting here doubles as its "off" sentinel, so
+  // clamping a negative up to it is the silent never-lock this clamp exists to
+  // refuse, reached from the other side. Below the range is a bad value, not a
+  // request for zero.
+  ["autoLockMinutes", -5,        15,   "a negative count is the default, NOT 0/never"],
+  ["autoLockMinutes", "-1",      15,   "including the string form"],
+  ["autoLockMinutes", -Infinity, 15,   "and the one that arrives as -Infinity"],
   ["autoLockMinutes", 15.9,      15,   "a fraction truncates rather than reaching the Timer"],
   ["clearClipboardSec", 100000,  300,  "the clipboard timeout has its own ceiling"],
   ["clearClipboardSec", "soon",  30,   "and its own default"],
+  ["clearClipboardSec", -1,      30,   "and a negative there is not 'never clear' either"],
   ["autoCopyTotpSec", 999,       30,   "so does the TOTP delay"],
   ["autoCopyTotpSec", "off",     3,    "and its default is not 0 either"],
+  ["autoCopyTotpSec", -3,        3,    "and a negative is its default too"],
 ]) {
   const got = Model.intSetting(key, raw)
   check(`intSetting(${key}, ${JSON.stringify(raw)}) -> ${want}: ${why}`, got === want, `got ${got}`)

@@ -2269,7 +2269,14 @@ function intSetting(key, raw) {
     : NaN
   var entry = settingSchemaEntry(key)
   if (!entry || entry.type !== "int") return isFinite(n) ? n : 0
-  if (!isFinite(n)) n = Math.floor(Number(entry.defaultValue))
+  // Below the floor is treated as unreadable rather than clamped up to it,
+  // because on every integer setting here the floor is also the sentinel for
+  // "off": clamping -1 minutes to 0 spells "never lock" and clamping -1
+  // seconds to 0 spells "never clear the clipboard". That is the same silent
+  // failure this function exists to refuse, arrived at from the other side.
+  // Past the ceiling still clamps down, since that direction only ever locks
+  // sooner than asked.
+  if (!isFinite(n) || n < entry.min) n = Math.floor(Number(entry.defaultValue))
   if (!isFinite(n)) n = entry.min
   return Math.max(entry.min, Math.min(entry.max, n))
 }
