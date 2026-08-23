@@ -67,7 +67,7 @@ check("listCommand caps diagnostic stderr stream",
 // 2. Vault item detail stream is capped
 const getItemCmd = Model.getItemCommand("12345-abc")
 check("getItemCommand caps item detail output to 4MB",
-  flat(getItemCmd).includes("bw get item 12345-abc") && flat(getItemCmd).includes("head -c 4194304"),
+  flat(getItemCmd).includes("bw get item -- 12345-abc") && flat(getItemCmd).includes("head -c 4194304"),
   flat(getItemCmd))
 check("getItemCommand caps stderr stream",
   flat(getItemCmd).includes("exec 2> >(head -c 8192 >&2)"),
@@ -111,7 +111,7 @@ check("unlockCommand caps session token output to 4KB",
 // 8. TOTP code stream is capped
 const totpCmd = Model.getTotpCommand("item-55")
 check("getTotpCommand caps totp output to 4KB",
-  flat(totpCmd).includes("bw get totp item-55 --raw") && flat(totpCmd).includes("head -c 4096"),
+  flat(totpCmd).includes("bw get totp --raw -- item-55") && flat(totpCmd).includes("head -c 4096"),
   flat(totpCmd))
 
 // 9. Session handoff file reader is size-bounded

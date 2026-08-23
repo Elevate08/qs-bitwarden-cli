@@ -20,8 +20,17 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.formatAttachmentSize = formatAttachmentSize
   exports.safeAttachmentFileName = safeAttachmentFileName
   exports.attachmentDownloadCommand = attachmentDownloadCommand
+  exports.editItemCommand = editItemCommand
+  exports.deleteSendCommand = deleteSendCommand
+  exports.deleteFolderCommand = deleteFolderCommand
+  exports.deleteItemCommand = deleteItemCommand
+  exports.getTotpCommand = getTotpCommand
+  exports.getItemCommand = getItemCommand
   exports.parentDirectory = parentDirectory
   exports.baseName = baseName
+  exports.filterItems = filterItems
+  exports.findContextualMatches = findContextualMatches
+  exports.itemDomains = itemDomains
 `)(Model)
 
 let pass = 0
@@ -144,7 +153,8 @@ check("it runs through bash, because the download directory is resolved at run t
 
 const script = cmd[2]
 check("the attachment id and item id are quoted, never interpolated bare",
-  script.indexOf("bw get attachment 'a1' --itemid 'item-id'") !== -1, script)
+  script.indexOf("bw get attachment --itemid 'item-id'") !== -1
+    && script.indexOf("-- 'a1'") !== -1, script)
 check("the file name is quoted too", script.indexOf("name='codes.txt'") !== -1, script)
 check("it prints where the file landed, which is how the panel learns the path",
   /printf %s "\$out"/.test(script), script)
@@ -186,7 +196,8 @@ check("it stops at the first failure rather than printing a path for a file it d
 // A hostile name reaches the script already defanged, and quoted on top.
 const hostile = Model.attachmentDownloadCommand("a'1", "i'd", "../../.bashrc")
 check("a quote in the attachment id cannot break out of its quoting",
-  hostile[2].indexOf("bw get attachment 'a'\\''1' --itemid 'i'\\''d'") !== -1, hostile[2])
+  hostile[2].indexOf("bw get attachment --itemid 'i'\\''d'") !== -1
+    && hostile[2].indexOf("-- 'a'\\''1'") !== -1, hostile[2])
 check("a traversing name is sanitised before it is ever quoted",
   hostile[2].indexOf("name='.bashrc'") === -1 && hostile[2].indexOf("name='bashrc'") !== -1,
   hostile[2].split("\n")[1])
@@ -262,6 +273,33 @@ check("URIs survive it too -- the WEBSITE section was empty for every login",
 check("and so do custom fields",
   rtLogin.fields.length === 1 && rtLogin.fields[0].name === "recovery",
   JSON.stringify(rtLogin.fields))
+
+// itemDetailFromObject was taught the lesson; the two readers that run over
+// root.items on every keystroke and every panel open were not. Searching by
+// URL and matching an item to the focused site both read login.uris straight
+// off a round-tripped cipher.
+const rtListItem = Model.parseItems(JSON.stringify([login])).map(qmlish_obj)
+check("searching by URL still finds the item after the round trip",
+  Model.filterItems(rtListItem, "github.com", "all", "all", "all").length === 1,
+  `matched ${Model.filterItems(rtListItem, "github.com", "all", "all", "all").length} items`)
+check("and the site's own domain still identifies it",
+  Model.itemDomains(rtListItem[0]).length === 1
+    && Model.itemDomains(rtListItem[0])[0].baseDomain === "github.com",
+  JSON.stringify(Model.itemDomains(rtListItem[0])))
+check("so the focused tab still suggests it",
+  Model.findContextualMatches(rtListItem,
+    { class: "chromium", title: "Pulls - github.com - Chromium", mapped: true })
+    .matches.length === 1,
+  "expected the item back on a domain match")
+
+// The list parser held the same ceiling as the detail parser everywhere except
+// here, where the URI array is real and was copied out entry for entry. A
+// single item is free to carry as many as the byte cap allows.
+const floodUris = []
+for (let i = 0; i < 5000; i++) floodUris.push({ uri: "https://example" + i + ".com" })
+check("a flooded URI list is held to the ceiling on the list path too",
+  Model.parseItems(JSON.stringify([{ id: "i", type: 1, login: { uris: floodUris } }]))[0].uris.length === 4096,
+  String(Model.parseItems(JSON.stringify([{ id: "i", type: 1, login: { uris: floodUris } }]))[0].uris.length))
 
 // toList must not mistake a string, or anything else with a length, for a list.
 check("a string is not a list of characters",
@@ -403,6 +441,31 @@ for (const absurd of ["1e21", "1e30", "1e40", String(Number.MAX_SAFE_INTEGER * 5
 }
 
 fs.rmSync(home, { recursive: true, force: true })
+
+// --- a server-chosen id cannot become an option to bw ------------------------
+//
+// Quoting defends against the shell, not against bw's own parser: `bw get item
+// --help` prints help rather than looking anything up, and every id here is the
+// server's to choose. `--` ends the options, and our own flags go before it.
+
+const optionish = "--help"
+const guarded = [
+  ["getItemCommand", Model.getItemCommand(optionish), "bw get item -- --help"],
+  ["getTotpCommand", Model.getTotpCommand(optionish), "bw get totp --raw -- --help"],
+  ["deleteItemCommand", Model.deleteItemCommand(optionish), "bw delete item -- --help"],
+  ["deleteFolderCommand", Model.deleteFolderCommand(optionish), "bw delete folder -- --help"],
+  ["deleteSendCommand", Model.deleteSendCommand(optionish), "bw send delete -- --help"],
+]
+for (const [name, cmd, want] of guarded) {
+  check(`${name} ends the options before the id`, cmd[2].indexOf(want) !== -1, cmd[2])
+}
+check("editItemCommand ends the options before the id",
+  Model.editItemCommand(optionish)[2].indexOf("bw edit item -- '--help'") !== -1,
+  Model.editItemCommand(optionish)[2])
+check("the attachment id goes last, after our own flags and the separator",
+  Model.attachmentDownloadCommand(optionish, "i", "f.txt")[2]
+    .indexOf(`--output "$tmp" -- '--help'`) !== -1,
+  Model.attachmentDownloadCommand(optionish, "i", "f.txt")[2])
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

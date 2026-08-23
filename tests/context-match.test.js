@@ -22,6 +22,8 @@ new Function("exports", src.replace(/^\.pragma library\s*$/m, "") + `
   exports.forgetAssociation = forgetAssociation
   exports.isAssociated = isAssociated
   exports.emptyAssociations = emptyAssociations
+  exports.MAX_TITLE_CHARS = MAX_TITLE_CHARS
+  exports.MAX_ASSOC_BYTES = MAX_ASSOC_BYTES
 `)(Model)
 
 const items = [
@@ -218,6 +220,79 @@ check("undefined associations are safe",
   Model.findContextualMatches(items, { class: "chromium", title: "Netflix - Chromium", mapped: true })
     .matches.map(m => m.name).join() === "Netflix",
   "expected heuristics to work without a store")
+
+
+// ---------------------------------------------------------------------------
+// A window title is written by the page, not by the user
+// ---------------------------------------------------------------------------
+//
+// Everything below is about one input: document.title, chosen by whatever the
+// browser is pointed at, arriving here through hyprctl. It is read on every
+// panel open, on the GUI thread, with the whole vault to compare it against.
+
+// The title reaches the matcher clipped, so the per-item work the matcher does
+// over it cannot be scaled up by the page.
+const longTitle = "verylongword".repeat(6000)
+const clippedCtx = Model.cleanWindowContext({ class: "chromium", title: longTitle, mapped: true })
+check("a page-chosen title is clipped before matching",
+  clippedCtx.matchText.length <= Model.MAX_TITLE_CHARS
+    && clippedCtx.rawTitle.length <= Model.MAX_TITLE_CHARS,
+  `matchText=${clippedCtx.matchText.length} rawTitle=${clippedCtx.rawTitle.length}`)
+
+// The host scanner used to be a single unanchored regex, and a long run of
+// letters with no dot in it drove it into quadratic backtracking: ~2.5s of
+// frozen shell for a 63 kB title, growing with the square of the length.
+// hyprctl hands over as much as a megabyte, so this is the honest size.
+const hostileTitle = "a".repeat(100000) + " - Chromium"
+const hostileWindow = { class: "chromium", title: hostileTitle, mapped: true }
+const bigVault = []
+for (let i = 0; i < 2000; i++) {
+  bigVault.push({ id: `big-${i}`, name: `Account ${i}`, uris: [`https://site${i}example.com`] })
+}
+const started = Date.now()
+Model.findContextualMatches(bigVault, hostileWindow, Model.emptyAssociations())
+const elapsed = Date.now() - started
+check("a hostile window title does not stall the matcher", elapsed < 2000,
+  `matching a 100 kB title against 2000 items took ${elapsed}ms`)
+
+// Splitting replaced the regex, so prove it still reads the same hosts out.
+for (const [text, expected] of [
+  ["Files - Nextcloud - cloud.example.org", "example.org"],
+  ["https://sub.example.co.uk/path", "example.co.uk"],
+  ["see .example.com now", "example.com"],
+  ["a..b.example.com", "example.com"],
+  ["config.json is not a host", null],
+  ["version 1.2.3.4 released", null],
+  ["nothing here at all", null],
+]) {
+  const got = Model.cleanWindowContext({ class: "chromium", title: text, mapped: true })
+  const base = got && got.detectedDomain ? got.detectedDomain.baseDomain : null
+  check(`host detection in ${JSON.stringify(text)}`, base === expected,
+    `expected ${expected}, got ${base}`)
+}
+
+// Every word of a title becomes a stored key, and the store is read back
+// through a byte cap that turns an oversized file into no file at all. The
+// write side has to stay under that cap on its own.
+let grown = Model.emptyAssociations()
+for (let p = 0; p < 300; p++) {
+  const words = []
+  for (let w = 0; w < 80; w++) words.push(`tok${p}x${w}zz`)
+  grown = Model.recordAssociation(grown,
+    Model.cleanWindowContext({ class: "chromium", title: words.join(" "), mapped: true }),
+    "auth-1", `2026-08-${String((p % 28) + 1).padStart(2, "0")}T00:00:00Z`)
+}
+const grownBytes = Model.serializeAssociations(grown).length
+check("the association store stays inside the cap it is read back through",
+  grownBytes < Model.MAX_ASSOC_BYTES,
+  `store grew to ${grownBytes} bytes against a ${Model.MAX_ASSOC_BYTES} byte read cap`)
+
+// Trimming must not cost the most recent lesson.
+const recentCtx = Model.cleanWindowContext(authentikWindow)
+const stillLearned = Model.recordAssociation(grown, recentCtx, "auth-1", "2026-12-31T00:00:00Z")
+check("the newest lesson survives trimming",
+  Model.findContextualMatches(withAuthentik, authentikWindow, stillLearned).matches.map(m => m.id).join() === "auth-1",
+  "expected the just-learned item to still be suggested")
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) {

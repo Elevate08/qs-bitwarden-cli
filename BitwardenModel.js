@@ -138,6 +138,11 @@ function cappedScript(script, maxStderrBytes) {
   return out
 }
 
+// Every id below is the server's to choose, and quoting it defends against the
+// shell rather than against bw's own option parser -- `bw get item --help`
+// prints help rather than looking anything up. `--` ends the options, so an id
+// shaped like a flag is read as the id it is. Flags that belong to us go before
+// it, since everything after it is a positional.
 function buildCappedCommand(args, maxStdoutBytes, maxStderrBytes) {
   var inner = "bw"
   if (args && args.length > 0) {
@@ -391,15 +396,15 @@ function createFolderCommand(name, session) {
 }
 
 function deleteFolderCommand(folderId) {
-  return buildCappedCommand(["delete", "folder", String(folderId)], MAX_MISC_BYTES)
+  return buildCappedCommand(["delete", "folder", "--", String(folderId)], MAX_MISC_BYTES)
 }
 
 function getItemCommand(id, session) {
-  return buildCappedCommand(["get", "item", String(id)], MAX_DETAIL_BYTES, MAX_STDERR_BYTES)
+  return buildCappedCommand(["get", "item", "--", String(id)], MAX_DETAIL_BYTES, MAX_STDERR_BYTES)
 }
 
 function getTotpCommand(id, session) {
-  return buildCappedCommand(["get", "totp", String(id), "--raw"], MAX_TOKEN_BYTES)
+  return buildCappedCommand(["get", "totp", "--raw", "--", String(id)], MAX_TOKEN_BYTES)
 }
 
 function syncCommand(session) {
@@ -430,12 +435,12 @@ function createItemCommand(itemData, session) {
 }
 
 function editItemCommand(itemId, session) {
-  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
+  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item -- " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 function deleteItemCommand(itemId) {
-  return buildCappedCommand(["delete", "item", String(itemId)], MAX_MISC_BYTES, MAX_STDERR_BYTES)
+  return buildCappedCommand(["delete", "item", "--", String(itemId)], MAX_MISC_BYTES, MAX_STDERR_BYTES)
 }
 
 // -------------------------------------------------------------------------
@@ -1001,8 +1006,8 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     "tmo=''",
     "if command -v timeout >/dev/null 2>&1; then tmo=\"timeout " + ATTACHMENT_TIMEOUT_SECS + "\"; fi",
     "rc=0",
-    "( ulimit -f " + maxBlocks + "; exec $tmo bw get attachment " + shellQuote(attachmentId)
-      + " --itemid " + shellQuote(itemId) + " --output \"$tmp\" >/dev/null ) || rc=$?",
+    "( ulimit -f " + maxBlocks + "; exec $tmo bw get attachment --itemid " + shellQuote(itemId)
+      + " --output \"$tmp\" -- " + shellQuote(attachmentId) + " >/dev/null ) || rc=$?",
     "if [ \"$rc\" -ne 0 ]; then",
     "  case \"$rc\" in",
     "    124) echo 'Download timed out.' >&2 ;;",
@@ -1064,11 +1069,10 @@ function parseItems(raw) {
 
     var login = it.login || {}
     var uris = []
-    if (Array.isArray(login.uris)) {
-      for (var j = 0; j < login.uris.length; j++) {
-        var u = login.uris[j]
-        if (u && u.uri) uris.push(String(u.uri))
-      }
+    var rawUris = toList(login.uris)
+    for (var j = 0; j < rawUris.length; j++) {
+      var u = rawUris[j]
+      if (u && u.uri) uris.push(String(u.uri))
     }
 
     var attachments = parseAttachments(it.attachments)
@@ -1231,10 +1235,13 @@ function matchesQuery(item, query) {
   if (String(item.username).toLowerCase().indexOf(q) !== -1) return true
   if (String(item.notes).toLowerCase().indexOf(q) !== -1) return true
 
-  if (Array.isArray(item.uris)) {
-    for (var i = 0; i < item.uris.length; i++) {
-      if (String(item.uris[i]).toLowerCase().indexOf(q) !== -1) return true
-    }
+  // toList, not Array.isArray: this item came back out of a QML `var`
+  // property, and the array nested inside it did not survive that trip as one.
+  // The check that reads right is the check that quietly turned URL search off
+  // in the panel while every test here went on passing.
+  var uris = toList(item.uris)
+  for (var i = 0; i < uris.length; i++) {
+    if (String(uris[i]).toLowerCase().indexOf(q) !== -1) return true
   }
   return false
 }
@@ -1448,6 +1455,13 @@ var BROWSER_BRAND_RE = /\s*[-—–|·•]\s*(Google Chrome|Chromium|Mozilla Fir
 
 var TITLE_SEPARATOR_RE = /\s*[|·•—–]\s*|\s+[-]\s+|\s*::\s*/
 
+// How much of a window title is ever looked at. A page writes its own title
+// and nothing obliges it to be short, while every part of the match runs over
+// the whole of it once per vault item -- so a title long enough is a vault
+// large enough away from a visible freeze of the shell. Nothing past a couple
+// of hundred characters identifies a site anyway; the rest is prose.
+var MAX_TITLE_CHARS = 512
+
 // Strip anything that is chrome rather than content: unread counters, media
 // indicators, private-window markers, and leading sign-in verbs.
 function stripTitleNoise(title) {
@@ -1555,29 +1569,56 @@ function parseDomain(urlStr) {
 
 // Pull a hostname out of free text (a page title). Requires a known public
 // suffix so version numbers and filenames are not mistaken for domains.
+//
+// Scanned by splitting rather than by one pass of a host-shaped regex, because
+// that regex was quadratic on exactly the input this function exists to read.
+// `[a-z0-9-]+(?:\.[a-z0-9-]+)+` against a long run of letters with no dot in
+// it makes the engine swallow the whole run, discover the dot is missing, give
+// a character back, fail again, and so on to the end of the run -- and then do
+// it all over from the next offset. A page decides its own title, so a title of
+// 60 kB of one word is a page's to send, and it cost ~2.5 s of the GUI thread
+// per scan: the whole shell, bar included, frozen every time the panel opened
+// over that tab. Splitting on the characters a host cannot contain and then
+// walking the labels between the dots reads the same hosts out in the same
+// order, in one linear pass.
 function detectDomainInText(text) {
   var s = String(text || "").toLowerCase()
-  var re = /(?:https?:\/\/)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/g
-  var m
-  while ((m = re.exec(s)) !== null) {
-    var host = m[1].replace(/\.$/, "")
-    var parts = host.split(".")
-    var tld = parts[parts.length - 1]
-    if (!TLDS[tld]) continue
-    var parsed = parseHost(host)
-    if (!parsed || !parsed.rootName) continue
-    if (parsed.rootName.length < 2) continue
-    if (GENERIC_LABELS[parsed.rootName]) continue
-    return parsed
+  var runs = s.split(/[^a-z0-9.\-]+/)
+  for (var r = 0; r < runs.length; r++) {
+    var labels = runs[r].split(".")
+    var group = []
+    // One past the end, so a group that reaches the end of the run is closed
+    // by the same branch that closes one interrupted by an empty label.
+    for (var i = 0; i <= labels.length; i++) {
+      if (i < labels.length && labels[i]) {
+        group.push(labels[i])
+        continue
+      }
+      if (group.length >= 2) {
+        var host = group.join(".")
+        var tld = group[group.length - 1]
+        group = []
+        if (!TLDS[tld]) continue
+        var parsed = parseHost(host)
+        if (!parsed || !parsed.rootName) continue
+        if (parsed.rootName.length < 2) continue
+        if (GENERIC_LABELS[parsed.rootName]) continue
+        return parsed
+      }
+      group = []
+    }
   }
   return null
 }
 
 function itemDomains(item) {
   var out = []
-  if (!item || !Array.isArray(item.uris)) return out
-  for (var i = 0; i < item.uris.length; i++) {
-    var d = parseDomain(item.uris[i])
+  if (!item) return out
+  // Same round trip, same reason as matchesQuery: an Array.isArray here is a
+  // domain match that works in Node and never fires in the panel.
+  var uris = toList(item.uris)
+  for (var i = 0; i < uris.length; i++) {
+    var d = parseDomain(uris[i])
     if (d) out.push(d)
   }
   return out
@@ -1619,8 +1660,8 @@ function cleanWindowContext(windowData) {
   var w = getActiveWindowFromData(windowData)
   if (!w) return null
 
-  var cls = String(w.class || w.initialClass || "").toLowerCase().trim()
-  var title = String(w.title || w.initialTitle || "").trim()
+  var cls = String(w.class || w.initialClass || "").toLowerCase().trim().slice(0, MAX_TITLE_CHARS)
+  var title = String(w.title || w.initialTitle || "").trim().slice(0, MAX_TITLE_CHARS)
   if (!cls && !title) return null
 
   var isBrowser = BROWSER_CLASS_RE.test(cls)
@@ -1680,6 +1721,7 @@ function cleanWindowContext(windowData) {
     rawTitle: title,
     matchText: matchText,
     squashedTitle: squash(cleanTitle),
+    squashedMatchText: squash(matchText),
     segments: splitSegments(cleanTitle),
     titleTokens: titleTokens,
     aliasTokens: aliasTokens,
@@ -1718,7 +1760,7 @@ function matchItem(item, ctx) {
 
     if (hasWholeWord(ctx.matchText, root)) {
       score = Math.max(score, 90)
-    } else if (root.length >= 5 && squash(ctx.matchText).indexOf(root) !== -1) {
+    } else if (root.length >= 5 && ctx.squashedMatchText.indexOf(root) !== -1) {
       // "Home Assistant" -> homeassistant.local
       score = Math.max(score, 88)
     } else if (ctx.aliasTokens.indexOf(root) !== -1) {
@@ -1901,6 +1943,15 @@ function contextKeys(ctx) {
   return keys
 }
 
+// How large the store may get on the way out. It only ever grew, and it is
+// read back through a `head -c` cap: the first read past that cap returns a
+// truncated object, which does not parse, which is indistinguishable here from
+// no store at all -- so the next pick overwrites everything the user ever
+// taught it with a fresh empty file. Since a title's words each become a key
+// and a page picks its own title, that erasure is something a page can drive.
+// Half the reader's cap, so the estimate below has room to be wrong.
+var MAX_ASSOC_WRITE_BYTES = MAX_ASSOC_BYTES / 2
+
 // Last pick wins: re-recording a key that pointed elsewhere retargets it, so a
 // word learned from the wrong page corrects itself the next time you choose.
 function recordAssociation(assoc, ctx, itemId, timestamp) {
@@ -1921,7 +1972,37 @@ function recordAssociation(assoc, ctx, itemId, timestamp) {
       updated: String(timestamp || "")
     }
   }
-  return next
+
+  return trimAssociations(next)
+}
+
+// Newest kept first, by the ISO timestamp each entry carries, until the budget
+// is spent. An entry with no timestamp predates the field, so it sorts oldest
+// and is the first to go.
+function trimAssociations(assoc) {
+  var all = []
+  var k
+  for (k in assoc.keys) all.push(k)
+
+  all.sort(function(a, b) {
+    var ua = String((assoc.keys[a] && assoc.keys[a].updated) || "")
+    var ub = String((assoc.keys[b] && assoc.keys[b].updated) || "")
+    if (ua !== ub) return ua < ub ? 1 : -1
+    return a < b ? 1 : -1
+  })
+
+  var used = 0
+  var kept = []
+  for (var i = 0; i < all.length; i++) {
+    used += all[i].length + String(JSON.stringify(assoc.keys[all[i]])).length + 4
+    if (used > MAX_ASSOC_WRITE_BYTES) break
+    kept.push(all[i])
+  }
+  if (kept.length === all.length) return assoc
+
+  var trimmed = { version: assoc.version, keys: {} }
+  for (var j = 0; j < kept.length; j++) trimmed.keys[kept[j]] = assoc.keys[kept[j]]
+  return trimmed
 }
 
 function forgetAssociation(assoc, ctx, itemId) {
@@ -2366,11 +2447,11 @@ function listSendsCommand(session) {
 }
 
 function deleteSendCommand(sendId, session) {
-  return buildCappedCommand(["send", "delete", String(sendId)], MAX_MISC_BYTES)
+  return buildCappedCommand(["send", "delete", "--", String(sendId)], MAX_MISC_BYTES)
 }
 
 function removeSendPasswordCommand(sendId, session) {
-  return buildCappedCommand(["send", "remove-password", String(sendId)], MAX_MISC_BYTES)
+  return buildCappedCommand(["send", "remove-password", "--", String(sendId)], MAX_MISC_BYTES)
 }
 
 // The payload travels in the environment, not argv. Both the flag form's
