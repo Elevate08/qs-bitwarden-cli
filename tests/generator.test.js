@@ -16,6 +16,8 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.normalizeGeneratorOptions = normalizeGeneratorOptions
   exports.generatorDefaults = generatorDefaults
   exports.generatorStrength = generatorStrength
+  exports.generatorPortIsForeign = generatorPortIsForeign
+  exports.generatorServeExitAction = generatorServeExitAction
 `)(Model)
 
 let pass = 0
@@ -128,6 +130,55 @@ check("a failed response yields nothing, so the caller falls back",
 check("garbage yields nothing rather than throwing",
   Model.parseServeGenerated("<html>not json</html>") === "", "expected empty")
 check("an empty body yields nothing", Model.parseServeGenerated("") === "", "expected empty")
+
+
+// --- the loopback server is not trusted just because it answers --------------
+//
+// `bw serve` has no authentication and a loopback port is reachable by every
+// account on the machine, so an HTTP 200 is not evidence that the process which
+// sent it is ours. The only answer that leaves the port free for our own server
+// is a refused connection.
+
+check("a refused connection is the one answer that frees the port",
+  Model.generatorPortIsForeign(0) === false, "status 0 was treated as occupied")
+for (const status of [200, 404, 500, 401, 302]) {
+  check(`an HTTP ${status} means someone else is already bound`,
+    Model.generatorPortIsForeign(status) === true, `status ${status} was trusted`)
+}
+check("a status arriving as a string is still not mistaken for silence",
+  Model.generatorPortIsForeign("200") === true, "string status was trusted")
+
+// --- what our own server exiting means ---------------------------------------
+
+const stopped = Model.generatorServeExitAction({ stopping: true, wasReady: true, busy: false,
+  onGeneratorScreen: false })
+check("a shutdown we asked for is not a bind failure",
+  stopped.giveUp === false && stopped.dropValue === false && stopped.useCli === false,
+  JSON.stringify(stopped))
+
+// Our bind failing is what a squatted port looks like from here, so a value the
+// ready-poll already accepted cannot be left on screen to be copied.
+const stranded = Model.generatorServeExitAction({ stopping: false, wasReady: true, busy: false,
+  onGeneratorScreen: true })
+check("a value delivered before our server died is dropped, not left to be copied",
+  stranded.dropValue === true && stranded.giveUp === true && stranded.useCli === true,
+  JSON.stringify(stranded))
+
+const neverBound = Model.generatorServeExitAction({ stopping: false, wasReady: false, busy: true,
+  onGeneratorScreen: true })
+check("a server that never bound gives up the port and falls back to the CLI",
+  neverBound.giveUp === true && neverBound.dropValue === false && neverBound.useCli === true,
+  JSON.stringify(neverBound))
+
+const offScreen = Model.generatorServeExitAction({ stopping: false, wasReady: true, busy: false,
+  onGeneratorScreen: false })
+check("nothing is regenerated for a screen the user has already left",
+  offScreen.useCli === false && offScreen.dropValue === true, JSON.stringify(offScreen))
+
+const idle = Model.generatorServeExitAction({ stopping: false, wasReady: false, busy: false,
+  onGeneratorScreen: true })
+check("an idle failure gives up the port without generating anything",
+  idle.giveUp === true && idle.useCli === false, JSON.stringify(idle))
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

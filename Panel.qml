@@ -190,6 +190,9 @@ Panel {
   property bool generateServeReady: false
   property bool generateServeStarting: false
   property bool generateServeFailed: false
+  // Set while we are the ones shutting the server down, so its exit is not
+  // mistaken for the bind failure that gives up on the port.
+  property bool generateServeStopping: false
   // Where Back and Esc go, and whether the generator can hand its value
   // somewhere. Opened from the item form it fills the password field in and
   // returns; opened on its own it is just the generator. One screen either
@@ -286,6 +289,7 @@ Panel {
     isUnlocking = false
     pendingUnlockPassword = ""
     cancelFingerprintUnlock()
+    stopGeneratorServe()
     root.controller.hide()
   }
 
@@ -831,12 +835,54 @@ Panel {
     return env
   }
 
+  // Nothing about an HTTP 200 proves the process that sent it is ours. Another
+  // account can bind the port first and answer /generate with passwords it
+  // already knows, and the panel would show one as freshly generated. There is
+  // no handshake to lean on -- `bw serve` prints no banner and offers no
+  // authentication -- so the evidence has to be that the port was silent before
+  // our own server took it. Anything already answering means the serve path is
+  // not available, and the CLI carries the feature instead.
   function startGeneratorServe() {
     if (generateServeReady || generateServeStarting || generateServeFailed) return
     generateServeStarting = true
-    generateServeProc.running = true
-    generateServePoll.attempts = 0
-    generateServePoll.restart()
+    probeGeneratorPort()
+  }
+
+  function probeGeneratorPort() {
+    var req = new XMLHttpRequest()
+    req.onreadystatechange = function() {
+      if (req.readyState !== XMLHttpRequest.DONE) return
+      if (Model.generatorPortIsForeign(req.status)) {
+        root.generateServeStarting = false
+        root.generateServeFailed = true
+        if (root.genBusy) root.regenerateViaCli()
+        return
+      }
+      // The screen can close while a probe is in flight, and starting a server
+      // for a screen nobody is looking at is the exposure this all avoids.
+      if (root.currentScreen !== "generator") {
+        root.generateServeStarting = false
+        return
+      }
+      generateServeProc.running = true
+      generateServePoll.attempts = 0
+      generateServePoll.restart()
+    }
+    req.open("GET", Model.generateServeUrl(root.genOpts))
+    req.send()
+  }
+
+  function stopGeneratorServe() {
+    generateServePoll.stop()
+    generateServeStarting = false
+    generateServeReady = false
+    // A deliberate shutdown is not the permanent bind failure, so the next
+    // visit is free to start a server again.
+    generateServeFailed = false
+    if (generateServeProc.running) {
+      generateServeStopping = true
+      generateServeProc.running = false
+    }
   }
 
   // The server is up when it answers. Polling rather than trusting a fixed
@@ -1640,7 +1686,15 @@ Panel {
   // whatever replaced it -- which is how Escape on the item form reached the
   // search box and closed the panel. Re-home focus whenever the screen
   // changes, and the stale owner goes with it.
-  onCurrentScreenChanged: restoreScreenFocus()
+  onCurrentScreenChanged: {
+    // The server lives as long as the screen that needs it and no longer. A
+    // loopback port has no authentication and every account on the machine can
+    // reach it, and `bw serve` answers /status with the account email and user
+    // id whether the vault is locked or not. Holding that open for hours to
+    // save a second on a screen visited for a few is the wrong trade.
+    if (currentScreen !== "generator") stopGeneratorServe()
+    restoreScreenFocus()
+  }
 
   function restoreScreenFocus() {
     Qt.callLater(function() {
@@ -2462,13 +2516,19 @@ Panel {
     command: Model.generateServeCommand()
     environment: root.generatorServeEnv()
     onExited: function(exitCode) {
-      // Exiting means it never bound -- almost always because the port is
-      // taken. Whatever is on that port is not ours, so stop reaching for it.
+      generateServePoll.stop()
+      var act = Model.generatorServeExitAction({
+        stopping: root.generateServeStopping,
+        wasReady: root.generateServeReady,
+        busy: root.genBusy,
+        onGeneratorScreen: root.currentScreen === "generator"
+      })
       root.generateServeStarting = false
       root.generateServeReady = false
-      root.generateServeFailed = true
-      generateServePoll.stop()
-      if (root.genBusy) root.regenerateViaCli()
+      root.generateServeStopping = false
+      if (act.giveUp) root.generateServeFailed = true
+      if (act.dropValue) root.genValue = ""
+      if (act.useCli) root.regenerateViaCli()
     }
   }
 

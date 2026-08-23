@@ -2200,6 +2200,34 @@ function generateServeCommand() {
   return ["bw", "serve", "--hostname", GENERATE_HOST, "--port", String(GENERATE_PORT)]
 }
 
+// Whether whatever answered the generator port is someone else's server.
+//
+// A refused connection arrives as status 0, and that is the only answer that
+// leaves the port free for ours. Any HTTP status at all -- including the error
+// codes a careless squatter returns -- came from a process already bound to it,
+// and a "generated password" from a stranger's server is a password they know.
+function generatorPortIsForeign(status) {
+  return Number(status) !== 0
+}
+
+// What to do when our own `bw serve` exits.
+//
+// The distinction that matters is between a shutdown we asked for and one we
+// did not. A server that dies on its own never bound, or died trying, and our
+// bind failing is exactly what a squatted port looks like from here -- so a
+// value the ready-poll already accepted may never have come from us at all and
+// cannot be left on screen to be copied into the vault.
+function generatorServeExitAction(state) {
+  var st = state || {}
+  if (st.stopping) return { giveUp: false, dropValue: false, useCli: false }
+  var strandedValue = !!st.wasReady
+  return {
+    giveUp: true,
+    dropValue: strandedValue,
+    useCli: (strandedValue || !!st.busy) && !!st.onGeneratorScreen
+  }
+}
+
 // The serve API takes the same options as the CLI flags, as query parameters.
 function generateServeUrl(opts) {
   var o = normalizeGeneratorOptions(opts)
