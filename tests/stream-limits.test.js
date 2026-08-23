@@ -22,6 +22,7 @@ new Function("exports", code + `
   exports.statusCommand = statusCommand
   exports.unlockCommand = unlockCommand
   exports.generateCommand = generateCommand
+  exports.generateServeRequestCommand = generateServeRequestCommand
   exports.createSendCommand = createSendCommand
   exports.createFileSendCommand = createFileSendCommand
   exports.createItemCommand = createItemCommand
@@ -142,6 +143,12 @@ const genPassCmd = Model.generateCommand({ length: 32 })
 check("generateCommand caps password output to 4KB",
   flat(genPassCmd).includes("bw generate") && flat(genPassCmd).includes("head -c 4096"),
   flat(genPassCmd))
+
+// 12b. Generator serve request stream is capped on the producer side
+const serveReqCmd = Model.generateServeRequestCommand({ length: 24 })
+check("generateServeRequestCommand bounds loopback response stream with head -c 65536",
+  flat(serveReqCmd).includes("curl -s -S") && flat(serveReqCmd).includes("head -c 65536"),
+  flat(serveReqCmd))
 
 // 13. Create/Edit/Delete commands are capped
 const createFolderCmd = Model.createFolderCommand("test")

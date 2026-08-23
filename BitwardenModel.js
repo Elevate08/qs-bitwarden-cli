@@ -2750,22 +2750,31 @@ function generatorPortIsForeign(status) {
 // -------------------------------------------------------------------------
 //
 // Refusing to trust a squatter's password is only half of it. The port is
-// loopback, unauthenticated and first-come, and QML's XMLHttpRequest has no
-// timeout of its own -- no `timeout` property, no `ontimeout`, both simply
-// absent -- so a process holding 8087 that accepts the connection and answers
-// nothing leaves the probe in readyState OPENED for as long as it cares to,
-// and the generator waits on a reply that is never coming. The same squatter
-// can answer with a body that never ends: responseText grows inside the shell
-// at loopback speed, and nothing in the panel was watching it.
+// loopback, unauthenticated and first-come. A process holding 8087 that accepts
+// the connection and answers nothing could stall indefinitely, and a squatter
+// could stream an endless body at loopback speeds.
 //
-// So each request carries a deadline the panel enforces itself, with a Timer
-// and abort(), and a ceiling on what it will hold. A /generate answer is a
-// short JSON object; anything orders of magnitude past that is not one.
+// To enforce hard limits on both duration and volume, every request to bw serve
+// is executed via a managed curl child process whose output is bounded on the
+// producer side with `| head -c` and `--max-time`. This avoids Qt/QML's
+// XMLHttpRequest, which buffers responses directly into the shared shell
+// process memory before JavaScript can inspect or abort them.
 var GENERATE_RESPONSE_CAP = 64 * 1024
 var GENERATE_REQUEST_TIMEOUT_MS = 2000
 
 function generatorResponseCap() { return GENERATE_RESPONSE_CAP }
 function generatorRequestTimeoutMs() { return GENERATE_REQUEST_TIMEOUT_MS }
+
+// Builds a producer-bounded command to query the generator server.
+// Output is capped via `head -c` so no more than GENERATE_RESPONSE_CAP bytes
+// can pass through the pipe into the shell process heap.
+function generateServeRequestCommand(opts) {
+  var url = generateServeUrl(opts)
+  var timeoutSecs = Math.max(1, Math.round(GENERATE_REQUEST_TIMEOUT_MS / 1000))
+  var script = "curl -s -S --max-time " + timeoutSecs + " --connect-timeout " + timeoutSecs
+    + " " + shellQuote(url) + " | head -c " + Number(GENERATE_RESPONSE_CAP)
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
 
 // Both the declared length and what has actually arrived are checked. A
 // chunked response declares nothing at all, and a declared length is the
@@ -2776,15 +2785,25 @@ function generatorResponseTooLarge(contentLength, received) {
   return Number(received) > GENERATE_RESPONSE_CAP
 }
 
-// What a finished probe means once the panel can cut a request short. Status 0
-// is a refused connection, the one answer that leaves the port free for our
-// own server -- but an aborted request also finishes with status 0, and it was
-// aborted precisely because something was there and would not behave. Reading
-// that as "free" would start `bw serve` against a port already held and hand
-// the squatter the very trust the probe exists to withhold.
-function generatorProbeIsForeign(status, aborted) {
-  if (aborted) return true
-  return generatorPortIsForeign(status)
+// What a finished probe means.
+//
+// When checking via a curl process: exit code 7 (CURLE_COULDNT_CONNECT) with
+// empty output is the only outcome that proves the port was silent and free
+// for our own server. Exit code 0 means another server answered; exit code 28
+// means a connection timed out; exit code 23/141 means an oversized stream was
+// cut short. All of those mean another process was bound to the port.
+//
+// When called with (status, aborted): status 0 is a refused connection (free),
+// while non-zero status or an aborted request means the port is occupied.
+function generatorProbeIsForeign(statusOrExitCode, abortedOrStdout) {
+  if (typeof abortedOrStdout === "boolean") {
+    if (abortedOrStdout) return true
+    return generatorPortIsForeign(statusOrExitCode)
+  }
+  var code = Number(statusOrExitCode)
+  var out = String(abortedOrStdout || "").trim()
+  if (code === 7 && out === "") return false
+  return true
 }
 
 // What to do when our own `bw serve` exits.

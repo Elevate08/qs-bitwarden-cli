@@ -27,6 +27,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.scrubRetryLimit = scrubRetryLimit
   exports.generatorResponseCap = generatorResponseCap
   exports.generatorRequestTimeoutMs = generatorRequestTimeoutMs
+  exports.generateServeRequestCommand = generateServeRequestCommand
   exports.generatorResponseTooLarge = generatorResponseTooLarge
   exports.generatorPortIsForeign = generatorPortIsForeign
   exports.generatorProbeIsForeign = generatorProbeIsForeign
@@ -201,6 +202,25 @@ check("a request we had to cut short means someone is already bound",
 
 check("even one that answered before stalling",
   Model.generatorProbeIsForeign(200, true) === true, "an aborted probe read as free")
+
+// Process-based probe checks (curl exit codes)
+check("curl CURLE_COULDNT_CONNECT (exit 7) with empty stdout indicates a free port",
+  Model.generatorProbeIsForeign(7, "") === false, "curl exit 7 was read as occupied")
+
+check("curl exit 0 with HTTP response indicates an occupied port",
+  Model.generatorProbeIsForeign(0, '{"success":true}') === true, "curl exit 0 was read as free")
+
+check("curl timeout (exit 28) indicates an occupied (stalling) port",
+  Model.generatorProbeIsForeign(28, "") === true, "curl timeout was read as free")
+
+check("curl write error / truncation (exit 23) indicates an occupied (flooding) port",
+  Model.generatorProbeIsForeign(23, "") === true, "curl exit 23 was read as free")
+
+// Producer-side bounding of generateServeRequestCommand
+const serveReqCmd = Model.generateServeRequestCommand({ length: 16 })
+check("generateServeRequestCommand uses curl with timeout and head -c byte cap",
+  serveReqCmd[2].includes("curl -s -S") && serveReqCmd[2].includes("--max-time 2") && serveReqCmd[2].includes(`head -c ${cap}`),
+  serveReqCmd[2])
 
 // ---------------------------------------------------------------------------
 

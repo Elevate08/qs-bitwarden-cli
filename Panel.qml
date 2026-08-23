@@ -944,75 +944,26 @@ Panel {
     probeGeneratorPort()
   }
 
-  // Every request to the generator port goes through here, because none of
-  // them may be left in the hands of whatever answered. QML's XMLHttpRequest
-  // has no timeout and no ontimeout, so the deadline is a Timer the panel owns
-  // and abort() is how it is enforced; the size ceiling is checked as the body
-  // arrives rather than after it, since after it is the problem. See the
-  // generator request bounds in BitwardenModel.js.
+  // Every request to the generator port goes through a bounded child process
+  // rather than QML's XMLHttpRequest. XMLHttpRequest buffers responses in
+  // shared shell process memory before JavaScript can inspect or abort them,
+  // leaving the shell vulnerable to unbounded allocations from a rogue local
+  // port responder. The child process bounds both duration (--max-time) and
+  // payload volume (| head -c 65536) on the producer side, ensuring no more
+  // than 64KB ever enters the shell process.
   //
-  // `done` is called exactly once, and is handed a plain result rather than
-  // the request: `status` and `responseText` are read off an aborted
-  // XMLHttpRequest by faulting inside Qt, which takes the whole shell down
-  // with it, so the only safe rule is that nothing downstream ever holds the
-  // object. An abort reports status 0 and an empty body -- the same shape as a
-  // refused connection, which is why `aborted` is reported alongside it and
-  // never inferred from the status.
-  function generatorRequest(done) {
-    var req = new XMLHttpRequest()
-    var settled = false
-    var deadline = requestDeadlineComp.createObject(root, {
-      interval: Model.generatorRequestTimeoutMs()
-    })
+  // `done` is called with (exitCode, stdout, stderr).
+  property var generateServeRequestCallback: null
 
-    function settle(aborted) {
-      if (settled) return
-      settled = true
-      if (deadline) {
-        deadline.stop()
-        deadline.destroy()
-        deadline = null
-      }
-      // Read before the abort, for the reason above.
-      var result = {
-        aborted: aborted,
-        status: aborted ? 0 : req.status,
-        body: aborted ? "" : req.responseText
-      }
-      // Deferred, and not for tidiness: abort() called from inside the
-      // readyState handler that decided to abort takes the shell down with it
-      // when the decision was made on the headers, which is exactly where an
-      // oversized Content-Length is caught. Off the stack it is safe, and the
-      // readyState changes it raises in the meantime find settled already true.
-      if (aborted) Qt.callLater(function() { req.abort() })
-      done(result)
-    }
-
-    deadline.triggered.connect(function() { settle(true) })
-
-    req.onreadystatechange = function() {
-      if (settled) return
-      if (req.readyState === XMLHttpRequest.HEADERS_RECEIVED
-          || req.readyState === XMLHttpRequest.LOADING) {
-        var received = 0
-        try { received = req.responseText.length } catch (e) { received = 0 }
-        if (Model.generatorResponseTooLarge(req.getResponseHeader("Content-Length"), received)) {
-          settle(true)
-        }
-        return
-      }
-      if (req.readyState !== XMLHttpRequest.DONE) return
-      settle(false)
-    }
-
-    req.open("GET", Model.generateServeUrl(root.genOpts))
-    req.send()
-    deadline.start()
+  function generatorRequest(opts, done) {
+    generateServeRequestCallback = done
+    generateServeRequestProc.command = Model.generateServeRequestCommand(opts)
+    generateServeRequestProc.running = true
   }
 
   function probeGeneratorPort() {
-    generatorRequest(function(res) {
-      if (Model.generatorProbeIsForeign(res.status, res.aborted)) {
+    generatorRequest(null, function(exitCode, stdout, stderr) {
+      if (Model.generatorProbeIsForeign(exitCode, stdout)) {
         root.generateServeStarting = false
         root.generateServeFailed = true
         if (root.genBusy) root.regenerateViaCli()
@@ -1037,6 +988,10 @@ Panel {
     // A deliberate shutdown is not the permanent bind failure, so the next
     // visit is free to start a server again.
     generateServeFailed = false
+    if (generateServeRequestProc.running) {
+      generateServeRequestCallback = null
+      generateServeRequestProc.running = false
+    }
     if (generateServeProc.running) {
       generateServeStopping = true
       generateServeProc.running = false
@@ -1047,9 +1002,10 @@ Panel {
   // delay: bw takes a couple of seconds to bind, and the first generator open
   // should not sit behind a guess.
   function pollGeneratorServe() {
-    generatorRequest(function(res) {
-      if (res.status !== 200) return
-      var value = Model.parseServeGenerated(res.body)
+    if (generateServeRequestProc.running) return
+    generatorRequest(root.genOpts, function(exitCode, stdout, stderr) {
+      if (exitCode !== 0) return
+      var value = Model.parseServeGenerated(stdout)
       if (!value) return
       root.generateServeStarting = false
       root.generateServeReady = true
@@ -1059,8 +1015,8 @@ Panel {
   }
 
   function requestGeneratedValue() {
-    generatorRequest(function(res) {
-      var value = res.status === 200 ? Model.parseServeGenerated(res.body) : ""
+    generatorRequest(root.genOpts, function(exitCode, stdout, stderr) {
+      var value = exitCode === 0 ? Model.parseServeGenerated(stdout) : ""
       if (value) {
         root.onGenerated(value, 0)
         return
@@ -1666,7 +1622,7 @@ Panel {
       loginProc, unlockProc, listProc, listOrgsProc, listFoldersProc, orgCollectionsProc,
       getItemProc, getTotpProc, generateProc, listSendsProc, createSendProc,
       createItemProc, editItemProc, deleteItemProc, createFolderProc, attachmentProc,
-      associationsReadProc
+      associationsReadProc, generateServeRequestProc
     ]
   }
 
@@ -2960,9 +2916,16 @@ Panel {
     }
   }
 
-  Component {
-    id: requestDeadlineComp
-    Timer { repeat: false }
+  Process {
+    id: generateServeRequestProc
+    stdout: StdioCollector { id: generateServeRequestStdout; waitForEnd: true }
+    stderr: StdioCollector { id: generateServeRequestStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (root.isScrubRun(generateServeRequestProc)) return
+      var cb = root.generateServeRequestCallback
+      root.generateServeRequestCallback = null
+      if (cb) cb(exitCode, generateServeRequestStdout.text, generateServeRequestStderr.text)
+    }
   }
 
   Timer {

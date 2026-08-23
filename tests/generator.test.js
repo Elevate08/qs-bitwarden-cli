@@ -11,6 +11,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   .replace(/^\.pragma library\s*$/m, "") + `
   exports.generateCommand = generateCommand
   exports.generateServeUrl = generateServeUrl
+  exports.generateServeRequestCommand = generateServeRequestCommand
   exports.parseServeGenerated = parseServeGenerated
   exports.generateServeCommand = generateServeCommand
   exports.normalizeGeneratorOptions = normalizeGeneratorOptions
@@ -121,6 +122,12 @@ check("the serve command binds loopback and names no session",
   JSON.stringify(Model.generateServeCommand()) ===
     JSON.stringify(["bw", "serve", "--hostname", "127.0.0.1", "--port", "8087"]),
   JSON.stringify(Model.generateServeCommand()))
+
+const serveReq = Model.generateServeRequestCommand({ length: 20, special: true })
+check("the serve request command targets the generated url with timeout and stream cap",
+  serveReq[2].includes("curl -s -S") && serveReq[2].includes("http://127.0.0.1:8087/generate")
+    && serveReq[2].includes("--max-time 2") && serveReq[2].includes("head -c 65536"),
+  serveReq[2])
 
 check("a successful response yields the value",
   Model.parseServeGenerated('{"success":true,"data":{"object":"string","data":"abc123"}}') === "abc123",
