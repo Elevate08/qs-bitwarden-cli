@@ -26,7 +26,7 @@ const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
 
 const login = Model.terminalLoginCommand("login")[2]
 const unlock = Model.terminalLoginCommand("unlock")[2]
-const read = Model.sessionHandoffReadCommand()[2]
+const read = Model.sessionHandoffReadCommand(true)[2]
 
 for (const [label, script] of [["terminal login", login], ["terminal unlock", unlock], ["handoff read", read]]) {
   check(`${label} never falls back to /tmp`, !script.includes("/tmp"), script)

@@ -23,6 +23,8 @@ Panel {
   // locking itself. See intSetting() in BitwardenModel.js.
   readonly property int autoLockMinutes: Model.intSetting("autoLockMinutes", setting("autoLockMinutes"))
   readonly property int clearClipboardSec: Model.intSetting("clearClipboardSec", setting("clearClipboardSec"))
+  readonly property bool lockOnScreenLock: Boolean(setting("lockOnScreenLock", true))
+  readonly property bool lockOnSuspend: Boolean(setting("lockOnSuspend", true))
   readonly property bool rememberSession: Boolean(setting("rememberSession", true))
   readonly property int autoCopyTotpSec: Model.intSetting("autoCopyTotpSec", setting("autoCopyTotpSec"))
   readonly property bool closeOnCopy: Boolean(setting("closeOnCopy", true))
@@ -47,6 +49,11 @@ Panel {
   property string loginClientSecret: ""
   property bool show2faField: false
   property bool showServerField: false
+
+  // When the panel last launched a terminal login, as epoch ms, or 0 if it
+  // never did. A session key left in the runtime directory is only adopted in
+  // the minutes after this; see sessionHandoffReadCommand().
+  property double terminalLoginStartedAt: 0
 
   // Screens: "main" | "detail" | "edit" | "locked" | "login" | "settings" | "setup"
   property string currentScreen: "main"
@@ -425,12 +432,24 @@ Panel {
     // A terminal login may have left a session waiting. Check before anything
     // else, including the locked-with-no-session short circuit below, since
     // that is exactly the state a terminal login leaves the panel in.
-    if (!sessionHandoffProc.running) sessionHandoffProc.running = true
+    //
+    // Only a login this panel actually launched, and only for as long as one
+    // could still be in progress. Outside that window the file is removed
+    // rather than read: nobody is expecting a key, so nothing adopts it, and
+    // leaving a live one in the runtime directory is the worse outcome.
+    if (sessionHandoffProc.running) return
+    var expecting = Model.handoffWindowOpen(terminalLoginStartedAt, Date.now())
+    if (!expecting) terminalLoginStartedAt = 0
+    sessionHandoffProc.command = Model.sessionHandoffReadCommand(expecting)
+    sessionHandoffProc.running = true
   }
 
   function onSessionHandoff(raw) {
     var handed = Model.extractSessionToken(String(raw || "").trim())
     if (handed) {
+      // Consumed, so the window shuts behind it rather than staying open for
+      // whatever is written there next.
+      terminalLoginStartedAt = 0
       session = handed
       vaultEpoch += 1
       if (rememberSession) keyringStoreProc.running = true
@@ -527,6 +546,16 @@ Panel {
 
   function submitLogin() {
     errorMessage = ""
+
+    // Checked before either branch, because both send the master password to
+    // whatever this names. See validateServerUrl() for what it refuses.
+    var serverProblem = Model.validateServerUrl(loginServerUrl)
+    if (serverProblem) {
+      errorMessage = serverProblem
+      showServerField = true
+      return
+    }
+
     if (loginMethod === "email") {
       var email = String(loginEmail || "").trim()
       var pass = String(loginPassword || "").trim()
@@ -603,6 +632,9 @@ Panel {
     // does not have to spend a `bw status` round trip working it out.
     var mode = (status === "locked") ? "unlock" : "login"
     close()
+    // Opens the window in which a handed-over session key is accepted. See
+    // refreshStatus().
+    terminalLoginStartedAt = Date.now()
     Quickshell.execDetached(Model.terminalLoginCommand(mode))
   }
 
@@ -632,6 +664,15 @@ Panel {
   // unconditionally is free.
   function forgetStoredCredentials() {
     keyringClearAllProc.running = true
+    // The learned-suggestion store is this account's data too -- which domains
+    // and apps it holds logins for, and when each was last used -- and unlike
+    // everything else here it is a plain file with no expiry. It goes with the
+    // account rather than waiting for the next user of this machine to read it.
+    associationsClearProc.running = true
+    associations = Model.emptyAssociations()
+    suggestedItems = []
+    detectedContext = null
+    activeWindowData = null
     cancelFingerprintUnlock()
     fingerprintStored = false
     fingerprintMessage = ""
@@ -1233,6 +1274,8 @@ Panel {
     switch (entry.key) {
       case "autoLockMinutes": return autoLockMinutes
       case "clearClipboardSec": return clearClipboardSec
+      case "lockOnScreenLock": return lockOnScreenLock
+      case "lockOnSuspend": return lockOnSuspend
       case "autoCopyTotpSec": return autoCopyTotpSec
       case "closeOnCopy": return closeOnCopy
       case "suggestOnOpen": return suggestOnOpen
@@ -2378,7 +2421,7 @@ Panel {
     }
     if (session) {
       Quickshell.execDetached({
-        command: ["bash", "-c", "bw get password " + Util.shellQuote(item.id) + " --raw | head -c 4096 | wl-copy --sensitive"],
+        command: Model.copyPasswordToClipboardCommand(item.id),
         environment: root.bwEnv()
       })
       flashNotification("Password copied!")
@@ -2402,7 +2445,7 @@ Panel {
       return
     }
     Quickshell.execDetached({
-      command: ["bash", "-c", "bw get totp " + Util.shellQuote(item.id) + " --raw | head -c 1024 | wl-copy --sensitive"],
+      command: Model.copyTotpToClipboardCommand(item.id),
       environment: root.bwEnv()
     })
     flashNotification("TOTP code copied!")
@@ -2521,6 +2564,71 @@ Panel {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Locking on screen lock and on suspend
+  // -------------------------------------------------------------------------
+  //
+  // Both are the same conclusion the auto-lock reaches on a timer, arrived at
+  // from evidence instead: the vault is no longer being attended. Neither
+  // replaces the countdown -- a vault left open at an unlocked desk is still
+  // the case only elapsed time can catch.
+
+  function onScreenLockState(raw) {
+    if (!lockOnScreenLock || status !== "unlocked") return
+    if (Model.screenIsLocked(raw)) lockVault()
+  }
+
+  function onSleepSignal(line) {
+    var token = String(line || "").trim()
+    if (token === Model.wakeSignalToken()) {
+      // Coming back is not by itself a reason to do anything -- the watchdog
+      // below already notices a countdown that expired across the suspend --
+      // but the panel should not be showing a vault state from before the lid
+      // closed either.
+      if (opened) refreshStatus()
+      return
+    }
+    if (token !== Model.sleepSignalToken()) return
+    if (!lockOnSuspend || status !== "unlocked") return
+    // Synchronous as far as the session key in this process is concerned; the
+    // keyring clear it spawns is what the inhibitor's held second is for.
+    lockVault()
+  }
+
+  Timer {
+    id: screenLockPoll
+    interval: Model.screenLockPollMs()
+    repeat: true
+    // Nothing to ask while the setting is off or the vault is already locked,
+    // which between them is every state but the one this is for.
+    running: root.lockOnScreenLock && root.status === "unlocked"
+    onTriggered: {
+      if (!screenLockStateProc.running) screenLockStateProc.running = true
+    }
+  }
+
+  Process {
+    id: screenLockStateProc
+    command: Model.screenLockStateCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onScreenLockState(text)
+    }
+  }
+
+  // Long-lived: it holds the sleep inhibitor that makes the lock land before
+  // the machine is frozen, so it runs whenever the setting is on rather than
+  // only while the vault happens to be unlocked -- a suspend announcement is
+  // no use to a panel that started listening after it.
+  Process {
+    id: sleepMonitorProc
+    running: root.lockOnSuspend
+    command: Model.sleepMonitorCommand()
+    stdout: SplitParser {
+      onRead: function(line) { root.onSleepSignal(line) }
+    }
+  }
+
   Timer {
     id: totpCountdownTimer
     interval: 1000
@@ -2554,7 +2662,10 @@ Panel {
 
   Process {
     id: sessionHandoffProc
-    command: Model.sessionHandoffReadCommand()
+    // Set by refreshStatus(), which decides whether this is a read or a
+    // discard. Defaults to the discard form so a run that somehow starts
+    // without going through there cannot adopt a key.
+    command: Model.sessionHandoffReadCommand(false)
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onSessionHandoff(text)
@@ -2830,6 +2941,11 @@ Panel {
         console.warn("qs-bitwarden-cli: could not save learned suggestions (exit " + exitCode + ")")
       }
     }
+  }
+
+  Process {
+    id: associationsClearProc
+    command: Model.associationsClearCommand()
   }
 
   PamContext {

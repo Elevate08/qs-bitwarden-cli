@@ -115,7 +115,7 @@ check("getTotpCommand caps totp output to 4KB",
   flat(totpCmd))
 
 // 9. Session handoff file reader is size-bounded
-const handoffCmd = Model.sessionHandoffReadCommand()
+const handoffCmd = Model.sessionHandoffReadCommand(true)
 check("sessionHandoffReadCommand bounds file reading with head -c 4096",
   flat(handoffCmd).includes("head -c 4096") && !flat(handoffCmd).includes("cat \"$f\""),
   flat(handoffCmd))

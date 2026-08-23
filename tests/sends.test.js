@@ -175,7 +175,7 @@ check("the handoff is created with a restrictive umask",
 check("an incomplete login leaves nothing behind",
   login.includes('rm -f'), login.slice(0, 300))
 
-const read = Model.sessionHandoffReadCommand()[2]
+const read = Model.sessionHandoffReadCommand(true)[2]
 check("the handoff is read once and removed with a byte limit",
   read.includes("head -c") && read.includes("rm -f"), read)
 check("an absent or empty handoff yields nothing",

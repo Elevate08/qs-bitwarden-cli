@@ -1,0 +1,140 @@
+#!/usr/bin/env node
+// Tests for three boundaries that had drifted or were never drawn.
+//
+//   node tests/hardening.test.js
+//
+//  1. Every bw invocation that takes a server-chosen id ends its options with
+//     `--`. Quoting an id defends against the shell, not against bw's own
+//     option parser -- a quoted `--help` is still `--help` by the time bw
+//     sees it.
+//  2. The custom-server field is where the master password is about to be
+//     sent, so it may not name a plaintext http host off this machine.
+//  3. The learned-suggestion store is account data with no expiry of its own,
+//     so logging out has to remove it.
+
+const fs = require("fs")
+const path = require("path")
+
+const Model = {}
+new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
+  .replace(/^\.pragma library\s*$/m, "") + `
+  exports.copyPasswordToClipboardCommand = copyPasswordToClipboardCommand
+  exports.copyTotpToClipboardCommand = copyTotpToClipboardCommand
+  exports.validateServerUrl = validateServerUrl
+  exports.associationsClearCommand = associationsClearCommand
+`)(Model)
+
+let pass = 0
+const failures = []
+const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+
+// -------------------------------------------------------------------------
+// 1. `--` before a server-chosen id
+// -------------------------------------------------------------------------
+
+const HOSTILE_ID = "--help"
+
+for (const [label, build, verb] of [
+  ["password", Model.copyPasswordToClipboardCommand, "get password"],
+  ["totp", Model.copyTotpToClipboardCommand, "get totp"],
+]) {
+  const script = build("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").join(" ")
+
+  check(`copy ${label}: ends bw's options with --`,
+    script.includes(`bw ${verb} --raw -- `),
+    script)
+
+  check(`copy ${label}: the id is quoted`,
+    script.includes("'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'"),
+    script)
+
+  check(`copy ${label}: marks the clipboard sensitive`,
+    script.includes("wl-copy --sensitive"),
+    script)
+
+  // The whole point of `--`: an id shaped like a flag stays an id.
+  const hostile = build(HOSTILE_ID).join(" ")
+  check(`copy ${label}: a flag-shaped id lands after --`,
+    hostile.indexOf(" -- ") < hostile.indexOf("'--help'"),
+    hostile)
+}
+
+// -------------------------------------------------------------------------
+// 2. Custom server URL
+// -------------------------------------------------------------------------
+
+const ACCEPTED = [
+  ["", "empty means the official server"],
+  ["https://vault.example.com", "plain https"],
+  ["https://vault.example.com:8443/path", "https with port and path"],
+  ["HTTPS://VAULT.EXAMPLE.COM", "scheme is case-insensitive"],
+  ["http://localhost:8080", "http to localhost"],
+  ["http://127.0.0.1", "http to 127.0.0.1"],
+  ["http://127.1.2.3:9000", "http anywhere in 127/8"],
+  ["http://[::1]:8000", "http to ::1"],
+  ["  https://vault.example.com  ", "surrounding whitespace"],
+]
+
+for (const [url, why] of ACCEPTED) {
+  const problem = Model.validateServerUrl(url)
+  check(`server URL accepts ${why}`, problem === "", `${JSON.stringify(url)} -> ${problem}`)
+}
+
+const REFUSED = [
+  ["http://vault.example.com", "plaintext http off this machine"],
+  ["http://192.168.1.10", "http to a LAN address is still on a wire"],
+  ["ftp://vault.example.com", "a scheme bw does not speak"],
+  ["file:///etc/passwd", "a scheme that is not a server at all"],
+  ["vault.example.com", "no scheme at all"],
+  ["https://", "no host"],
+  // Anchored, so a host that merely starts or ends with a loopback name is not
+  // mistaken for one.
+  ["http://localhost.evil.com", "a host that only begins with localhost"],
+  ["http://127.0.0.1.evil.com", "a host that only begins with 127.0.0.1"],
+  ["http://evil.com/localhost", "loopback appearing in the path"],
+  // Userinfo is stripped before the host is judged, so it cannot smuggle a
+  // loopback name in front of the real destination.
+  ["http://localhost@evil.com", "loopback smuggled into userinfo"],
+]
+
+for (const [url, why] of REFUSED) {
+  const problem = Model.validateServerUrl(url)
+  check(`server URL refuses ${why}`, problem !== "", JSON.stringify(url))
+}
+
+check("server URL refusal names the host it refused",
+  Model.validateServerUrl("http://vault.example.com").includes("vault.example.com"),
+  Model.validateServerUrl("http://vault.example.com"))
+
+check("server URL refusal for userinfo names the real host, not the userinfo",
+  Model.validateServerUrl("http://localhost@evil.com").includes("evil.com"),
+  Model.validateServerUrl("http://localhost@evil.com"))
+
+// -------------------------------------------------------------------------
+// 3. Logging out removes the learned-suggestion store
+// -------------------------------------------------------------------------
+
+const clear = Model.associationsClearCommand().join(" ")
+
+check("clearing associations removes the store file",
+  /\brm -f --/.test(clear) && clear.includes("associations.json"),
+  clear)
+
+check("clearing associations resolves the same path the writer uses",
+  clear.includes("${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli/"),
+  clear)
+
+// A missing file is the ordinary case on an account that never learned
+// anything, and it must not be reported as a failed logout.
+check("clearing associations succeeds when there is nothing to remove",
+  /exit 0\s*$/.test(clear),
+  clear)
+
+// -------------------------------------------------------------------------
+
+if (failures.length) {
+  console.error(`\n${failures.length} failure(s):\n`)
+  for (const f of failures) console.error(`  ${f}\n`)
+  process.exit(1)
+}
+console.log(`hardening.test.js: ${pass} checks passed`)

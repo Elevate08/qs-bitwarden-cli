@@ -41,7 +41,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Interactive login with Email + Password / 2FA (Authenticator App, Email, Duo, YubiKey) or API Key credentials (`BW_CLIENTID` / `BW_CLIENTSECRET`).
   - **Custom Server Support**: Works seamlessly with official Bitwarden servers and self-hosted Vaultwarden instances.
   - **Terminal login fallback**: when the built-in form cannot cover your login method -- SSO, a Duo push, a hardware key -- the login screen offers **Launch Terminal**, which runs `bw login` in a real terminal so Bitwarden's own prompts handle it.
-  - That terminal hands its session straight back: it captures the key with `bw login --raw` (prompts stay on stderr, so the login is still interactive) and writes it to `$XDG_RUNTIME_DIR/qs-bitwarden-cli/session-handoff`, mode `600`, in a directory created `700` before the file exists. There is no fallback path: if `XDG_RUNTIME_DIR` is somehow unset the login refuses to run rather than putting a session key anywhere a second user could have prepared. The panel reads that file once, deletes it, and comes back unlocked -- no second login just to get in. If the vault was merely locked rather than logged out, the same button unlocks instead.
+  - That terminal hands its session straight back: it captures the key with `bw login --raw` (prompts stay on stderr, so the login is still interactive) and writes it to `$XDG_RUNTIME_DIR/qs-bitwarden-cli/session-handoff`, mode `600`, in a directory created `700` before the file exists. There is no fallback path: if `XDG_RUNTIME_DIR` is somehow unset the login refuses to run rather than putting a session key anywhere a second user could have prepared. The panel reads that file once, deletes it, and comes back unlocked -- no second login just to get in. If the vault was merely locked rather than logged out, the same button unlocks instead. **It only reads it when it is expecting to.** The check runs on every status refresh, and it used to adopt whatever was at that path whether or not the panel had ever asked for a terminal login -- so anything able to write the file could hand the panel a session key at a moment of its own choosing, and the panel would take it and write it to the keyring. The runtime directory is `0700`, so that is one of your own processes rather than a stranger and it was never a privilege boundary; it was a window with no reason to be open. A key is only expected in the ten minutes after the panel itself launched a terminal, so those are the only minutes it is read in. Outside them the file is deleted unread -- not reading it is not a reason to leave a live session key lying in the runtime directory, and a login abandoned halfway leaves exactly that.
   - **The terminal reopens the panel for you** on success, then closes itself; you only have to dismiss it if something went wrong and there is an error worth reading.
   - Two `bw status` calls used to sit on that path, each around three seconds on a real vault: one in the terminal to decide login-versus-unlock, one in the panel to confirm a key `bw` had just minted. Neither is needed -- the panel already knows which state it is in, and the confirming check now runs alongside the item load instead of in front of it.
 
@@ -67,7 +67,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - **It learns.** Opening or copying an item while a window is active records that window against the item, and it is suggested outright next time -- ahead of every heuristic. This is what handles sites a title can never match: a portal on `auth.example.xyz` titled `Home - authentik` shares no word with the stored credential, so pick it once and it sticks. Learned suggestions are marked `󰐾` rather than `󰌠`.
   - **Suggest here / Suggested here** in an item's detail view pins or unpins that item for the current site or app deliberately, without waiting to be taught.
   - Re-picking a different item retargets what was learned, so a bad association corrects itself the next time you choose.
-  - Associations live in `~/.local/state/qs-bitwarden-cli/associations.json` (mode `600`) and hold only vault item IDs and the title words they were learned from -- never credentials.
+  - Associations live in `~/.local/state/qs-bitwarden-cli/associations.json` (mode `600`) and hold only vault item IDs and the title words they were learned from -- never credentials. **Logging out deletes the file.** It holds no secrets, but between them the domains, app names and timestamps are a record of which sites the account has logins for and when each was last used, in the clear and with no expiry of its own -- and the keyring entries are already cleared on logout for exactly that reason. This was the one piece of the account's data that stayed behind.
   - **Limitation:** browsers do not publish the active tab URL to Wayland or Hyprland, so the *heuristics* work from the page title. A site whose title mentions neither its name nor its domain (`New Tab`, a bare `Sign in`) cannot be inferred -- teach it once instead.
 
 - **Smart Auto-Copy TOTP Flow on <kbd>Enter</kbd>**:
@@ -133,10 +133,12 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Virtualized `ListView` with component delegate recycling for instant rendering of large vaults.
   - Asynchronous search debouncing (50ms) for responsive 0ms typing latency.
   - **Credentials do not reach a command line.** `/proc/<pid>/cmdline` is world-readable on a default Linux install while `/proc/<pid>/environ` is not, so every secret travels in the environment: the session token in `BW_SESSION`, the master password in `BW_PASSWORD` (named to `bw` by `--passwordenv`), API key credentials in `BW_CLIENTID` / `BW_CLIENTSECRET`, item and Send payloads and copied secrets in their own variables. None of them is interpolated into a command or a shell script. The one exception is the two-step login code: `bw` offers no environment option for it, so `--code` puts it in `bw`'s own argv for the length of the login — it is carried in `QSBW_CODE` and expanded there, which at least keeps it out of the wrapping shell. Tests assert that no builder emits `--session` and that none of the auth commands carries a password, client secret or client ID.
+  - **The custom-server field is checked before the master password is sent to it.** `bw config server` takes whatever it is given, and the next thing down that path is your master password, so a plain `http://` address is refused unless it is loopback -- where there is no wire to listen on, and where a local Vaultwarden or an SSH tunnel to one is a normal way to run this. Any scheme that is not `http` or `https` is refused outright. The loopback exemption is anchored and userinfo is stripped before the host is judged, so `http://localhost.evil.com` and `http://localhost@evil.com` are both refused rather than read as loopback.
   - Automatic clipboard clearing (`wl-copy --clear`) after a configurable timeout (default: 30s).
   - Optional session token caching in Linux Secret Service (`secret-tool` / libsecret).
   - **Locking the vault also discards what was still on its way out of it.** Nothing cancels a `bw` that is already running, and `bw list items` on a large vault takes seconds, so a lock or a logout could be followed a moment later by the whole item list arriving and settling back into the panel -- every login's password rides along in its raw object, so the contents of a vault you had just locked went on living in the shell process for the rest of the desktop session, and after logging in to a second account they were what the list drew until the new account's own items landed. Every reader now records the vault generation it started under, the generation moves on whenever the vault is locked, logged out of or unlocked, and an answer from a generation that has passed is dropped instead of rendered.
   - **Auto-lock counts the time the machine was asleep.** Qt schedules its timers on the monotonic clock, which Linux stops while the machine is suspended, so a fifteen-minute countdown armed just before the lid closed still had fifteen minutes to run when the lid opened -- a vault left overnight came back exactly as open as it was left. The deadline is kept in wall-clock terms as well and polled every thirty seconds, so waking a suspended machine locks the vault rather than resuming the countdown. Between the monotonic timer and the wall clock, whichever notices first does the locking.
+  - **The vault locks when the screen locks and when the machine suspends.** Auto-lock only ever measured elapsed time, and the two moments a vault most obviously stops being attended are not about elapsed time at all -- both used to leave it open for whatever was left of the countdown. `lockOnScreenLock` follows the Omarchy lock screen's own state, so a manual lock and an idle lock both count; it has to ask rather than wait, because the lock screen is `WlSessionLock` (a compositor protocol with no bus presence), so `loginctl` never sees it and logind's `LockedHint` stays `no` the whole time it is up. `lockOnSuspend` waits on logind's `PrepareForSleep`, which covers every path into suspend -- the lid, the menu, `systemctl suspend`, an idle timeout -- and holds a `delay` inhibitor while it does, so the lock actually lands before the machine is frozen rather than racing it: without one, logind announces the sleep and suspends without waiting, and a session key still in the keyring is a session key in the memory image. The inhibitor is released a second after the announcement, well inside logind's own `InhibitDelayMaxSec`, so it costs nothing but that second on the suspends it acts on. Neither setting replaces the countdown; a vault left open at an unlocked desk is still the case only elapsed time catches.
   - **The timing settings are clamped where they are read, not only where they are written.** Nothing validates `shell.json`, and a bad value there fails open rather than loudly: a non-numeric minute count reaches QML as `NaN`, lands in an integer property as `0`, and `0` is how "never lock" is spelled, while a count past the documented ceiling overflows the timer's 32-bit interval into a negative number that never fires. Each numeric setting is therefore held to the range in the table below on the way in, and anything unreadable falls back to its default instead of to zero.
   - **A remembered session does not survive a reboot.** The login keyring is a file on disk that PAM unlocks again at the next login, so a machine powered off with an unlocked vault used to come back unlocked. Two things stop that. The token is written to libsecret's `session` collection, which the secret service holds in memory and destroys with the login session, so there is nothing on disk to come back; and it is stamped with the kernel's boot id, so a token that does survive -- a secret service with no session collection, a keyring restored from a backup -- no longer matches the running boot and is refused and cleared instead of used. Restarting the shell still keeps you unlocked. Powering the machine off does not.
 
@@ -156,6 +158,9 @@ plugin shells out to all of them; none are bundled.
 | `secret-tool` | `libsecret` | no | Storing the session in the OS keyring, and the master password when PIN or fingerprint unlock is on. |
 | `hyprctl` | `hyprland` | no | Identifying the active window so the right login can be suggested. Already present on Omarchy. |
 | `fprintd-list` | `fprintd` | no | Fingerprint unlock. Also needs an enrolled finger via `omarchy setup security fingerprint`. |
+| `gdbus` | `glib2` | no | Hearing logind announce a suspend, for `lockOnSuspend`. Already present on Omarchy. |
+| `systemd-inhibit` | `systemd` | no | Holding the suspend long enough for `lockOnSuspend` to finish locking. Already present. |
+| `openssl` | `openssl` | no | Encrypting the master password under your PIN, for `pinUnlock`. Already present. |
 
 ```bash
 omarchy pkg add bitwarden-cli wl-clipboard libsecret
@@ -198,6 +203,8 @@ not in a separate block:
         {
           "id": "io.github.elevate08.qs-bitwarden-cli",
           "autoLockMinutes": 15,
+          "lockOnScreenLock": true,
+          "lockOnSuspend": true,
           "clearClipboardSec": 30,
           "rememberSession": true,
           "fingerprintUnlock": false
@@ -388,6 +395,8 @@ The following settings are read from the plugin's own entry in the
 | :--- | :--- | :--- | :--- |
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
 | `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
+| `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
+| `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor for about a second so the lock finishes first. Needs `gdbus` (glib2) and `systemd-inhibit`; without them the setting is simply inert. |
 | `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. |
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
@@ -395,7 +404,7 @@ The following settings are read from the plugin's own entry in the
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see below. |
 | `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see below. |
 
-Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned.
+Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
 
 ---
 
@@ -497,6 +506,10 @@ node tests/stream-limits.test.js    # every stream the shell reads is capped by 
 node tests/lock-state.test.js       # the auto-lock survives a suspend, the timings are clamped
                                     # on the way in, and a read of a vault that has since closed
                                     # is refused rather than rendered
+node tests/lock-triggers.test.js    # locking on screen lock and on suspend, and the window in
+                                    # which a terminal login's session key is accepted
+node tests/hardening.test.js        # `--` before every server-chosen id, the custom-server check,
+                                    # and that logging out takes the learned suggestions with it
 ```
 
 Two suites need Qt rather than Node -- which any machine running the plugin

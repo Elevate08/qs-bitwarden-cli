@@ -238,6 +238,53 @@ function unlockCommand() {
 
 // `hasCode` rather than the code itself -- only whether the flag is present
 // shapes the command; the value comes from the environment.
+// The custom-server field is where the master password is about to be sent,
+// and `bw config server` takes whatever it is given. Two things it must not be
+// allowed to be.
+//
+// It must not be a scheme bw will not speak. Anything that is not http or
+// https is a typo at best, and `bw config server` accepting it quietly means
+// the failure surfaces later as an unexplained login error.
+//
+// It must not be plaintext http to somewhere off this machine. That is the
+// master password and every vault secret behind it, in the clear, to whoever
+// is on the path -- and the field is a plausible thing to talk someone into
+// pasting. Loopback is the exception, because there is no path: a Vaultwarden
+// on 127.0.0.1 or an SSH tunnel to one is a normal way to run this.
+//
+// Returns "" for a URL that is fine to use (including an empty one, which
+// means the official server), or the reason it was refused.
+var SERVER_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//
+var LOOPBACK_HOST_RE = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/i
+
+function validateServerUrl(raw) {
+  var url = String(raw || "").trim()
+  if (!url) return ""
+
+  var m = url.match(SERVER_SCHEME_RE)
+  if (!m) return "Server URL must start with https:// (or http:// for localhost)"
+
+  var scheme = m[1].toLowerCase()
+  if (scheme !== "http" && scheme !== "https") {
+    return "Server URL must be http or https, not " + scheme + ":"
+  }
+
+  // Host is everything up to the first /, ? or #, minus any userinfo.
+  var rest = url.slice(m[0].length)
+  var host = rest.split(/[\/?#]/)[0]
+  var at = host.lastIndexOf("@")
+  if (at !== -1) host = host.slice(at + 1)
+  host = host.replace(/:\d*$/, "")
+  if (!host) return "Server URL is missing a host name"
+
+  if (scheme === "http" && !LOOPBACK_HOST_RE.test(host)) {
+    return "Refusing to send your master password over plain http to " + host
+      + ". Use https:// (http is allowed only for localhost)."
+  }
+
+  return ""
+}
+
 function emailLoginCommand(email, hasCode, serverUrl) {
   var script = ""
 
@@ -315,15 +362,172 @@ function terminalLoginCommand(mode) {
   return ["bash", "-c", script]
 }
 
+// How long after launching a terminal login the panel will still accept what
+// that terminal left behind. Long enough for a real login -- a password, a
+// push to a phone, a hardware key tap, and bw's own round trip -- and short
+// enough that the window is not simply always open.
+var HANDOFF_WINDOW_MS = 10 * 60 * 1000
+
+function handoffWindowMs() {
+  return HANDOFF_WINDOW_MS
+}
+
+// Whether a handoff written now would still be accepted. `startedAt` is when
+// the panel launched the terminal, or 0 if it never did.
+function handoffWindowOpen(startedAt, now) {
+  var began = Number(startedAt)
+  if (!isFinite(began) || began <= 0) return false
+  var elapsed = Number(now) - began
+  // A clock stepped backwards leaves a negative elapsed time. That is not
+  // evidence the login was recent; it is evidence the clock moved, so the
+  // window closes rather than reopening for ten minutes.
+  if (!isFinite(elapsed) || elapsed < 0) return false
+  return elapsed <= HANDOFF_WINDOW_MS
+}
+
 // Read-once: the key is consumed by the panel and the file removed, so it does
 // not linger for the next process that goes looking.
-// Runs on every status refresh, so a missing runtime dir means "nothing was
-// handed over" and exits quietly rather than erroring into the shell log the
-// way the write side deliberately does.
-function sessionHandoffReadCommand() {
+//
+// `expecting` is the whole point of this signature. The read runs on every
+// status refresh, and it used to consume whatever was at that path regardless
+// of whether the panel had ever asked for a terminal login -- so anything able
+// to write the file could hand the panel a session key at a moment of its own
+// choosing, and the panel would adopt it and write it to the keyring. The
+// runtime directory is 0700, so that is one of this user's own processes
+// rather than a stranger, and this was never a privilege boundary. It is a
+// window that had no reason to be open: a key is only ever expected in the
+// minutes after *we* launched a terminal, so those are the only minutes it is
+// read in.
+//
+// Unexpected is not the same as ignored. The file is removed either way --
+// leaving a live session key sitting in the runtime directory because nobody
+// was expecting it is the worse of the two outcomes, and a legitimate login
+// the user abandoned halfway leaves exactly that.
+//
+// A missing runtime dir means "nothing was handed over" and exits quietly
+// rather than erroring into the shell log the way the write side deliberately
+// does.
+function sessionHandoffReadCommand(expecting) {
   var script = "d=\"${XDG_RUNTIME_DIR:-}\"; [ -n \"$d\" ] || exit 0; "
     + "f=\"$d/" + HANDOFF_SUBDIR + "/" + HANDOFF_BASENAME + "\"; "
-    + "if [ -s \"$f\" ]; then head -c " + MAX_HANDOFF_BYTES + " \"$f\"; rm -f \"$f\"; fi"
+    + "[ -s \"$f\" ] || exit 0; "
+  if (expecting) {
+    script += "head -c " + MAX_HANDOFF_BYTES + " \"$f\"; "
+  }
+  script += "rm -f \"$f\""
+  return ["bash", "-c", script]
+}
+
+// -------------------------------------------------------------------------
+// Locking on screen lock and on suspend
+// -------------------------------------------------------------------------
+//
+// Auto-lock only ever measured elapsed time, and the two moments a vault most
+// obviously stops being attended are not about elapsed time at all: the screen
+// locking, and the machine going to sleep. Both used to leave the vault open
+// for whatever was left of the countdown. Omarchy already treats the first as
+// a "lock your password manager now" event -- `omarchy-system-lock` locks
+// 1Password -- so this is the same event, read from the same place.
+
+// The screen-lock half has to be asked rather than waited for. The Omarchy
+// lock screen is `WlSessionLock` (ext-session-lock), which is a compositor
+// protocol with no bus presence: it never calls `loginctl lock-session`, so
+// logind's `LockedHint` stays "no" and its `Lock` signal never fires while the
+// screen is locked. The shell's own lock plugin is the only thing that knows,
+// and the only way to ask it is its IPC handler.
+//
+// Only the exact string "true" counts as locked. A shell with the lock plugin
+// disabled answers "Target not found." on stdout and exits non-zero, and that
+// is "no answer" rather than "unlocked" -- but neither may be read as "locked",
+// because a vault that locks itself every few seconds on a machine with no
+// lock screen is a vault nobody can use.
+function screenLockStateCommand() {
+  return ["bash", "-c", "omarchy-shell lock isLocked 2>/dev/null | head -c 16"]
+}
+
+function screenIsLocked(raw) {
+  return String(raw || "").trim() === "true"
+}
+
+// How often to ask. Only ever runs while the setting is on *and* the vault is
+// unlocked, so the default configuration pays nothing and a locked vault stops
+// paying the moment it locks. The call is an IPC round trip to a socket in the
+// runtime directory and measures at ~50ms.
+var SCREEN_LOCK_POLL_MS = 3000
+
+function screenLockPollMs() {
+  return SCREEN_LOCK_POLL_MS
+}
+
+// The suspend half is a real event, so it is waited for rather than polled.
+// logind announces `PrepareForSleep(true)` before sleeping and
+// `PrepareForSleep(false)` on resume, for every path into suspend -- the lid,
+// the menu, `systemctl suspend`, an idle timeout -- which is more than any one
+// of those could be watched individually.
+//
+// The delay inhibitor is what makes the lock mean something. Without one,
+// logind announces the sleep and suspends without waiting, so the vault would
+// be locked by a panel that is about to be frozen mid-way through doing it --
+// and a session key still in the keyring is a session key in the memory image.
+// A delay inhibitor makes logind wait, and it costs nothing until a suspend
+// actually happens: it is held continuously, and released a second after the
+// announcement, which is far inside logind's own InhibitDelayMaxSec (5s by
+// default) and long enough for the panel to drop the key and for the keyring
+// clear it spawns to finish.
+//
+// Held *inside* the loop rather than around it, because an inhibitor is only
+// released by the process holding it exiting. Announce, wait a beat, exit to
+// release, then loop round to take a fresh one for the next suspend.
+//
+// `gdbus monitor` needs `--dest`, and prints a line about the name having no
+// owner rather than exiting if logind is somehow absent, so it keeps waiting
+// instead of spinning the loop. sed does the matching, so only the one word
+// the panel cares about ever crosses the pipe.
+//
+// The monitor is killed by pid rather than left to a broken pipe. sed quits on
+// the match, but a plain `monitor | sed` would then sit in the pipeline until
+// the monitor next wrote something -- and the next thing logind announces
+// after a sleep is the resume, which is on the far side of the suspend this is
+// supposed to be delaying. The inhibitor would still be held, the loop would
+// never come round, and only the very first suspend of the session would ever
+// be noticed. Bash sets $! for a process substitution, so the monitor can be
+// read from an fd and then killed outright.
+var SLEEP_SIGNAL_TOKEN = "sleep"
+var WAKE_SIGNAL_TOKEN = "wake"
+
+function sleepSignalToken() { return SLEEP_SIGNAL_TOKEN }
+function wakeSignalToken() { return WAKE_SIGNAL_TOKEN }
+
+function sleepMonitorCommand() {
+  var monitor = "gdbus monitor --system --dest org.freedesktop.login1"
+    + " --object-path /org/freedesktop/login1 2>/dev/null"
+
+  // -u so the match leaves sed the moment it is read, rather than sitting in a
+  // block buffer until after the machine has already suspended.
+  var match = "sed -une '/PrepareForSleep (true,/{s/.*/" + SLEEP_SIGNAL_TOKEN + "/p;q}'"
+
+  var inner = "exec 3< <(" + monitor + "); g=$!; "
+    + match + " <&3; "
+    + "kill \"$g\" 2>/dev/null; exec 3<&-; "
+    // The beat that makes the inhibitor worth holding: the panel has the token
+    // by now, and this is the time it gets to act on it before logind is told
+    // we are done.
+    + "sleep 1"
+
+  // The loop never exits on its own. Bound to the setting, this process is
+  // started and stopped by the panel and by nothing else, so every path that
+  // could fail waits before trying again instead of returning and inviting a
+  // restart -- a monitor that cannot start must not become a hot loop.
+  var script = "while :; do "
+    + "command -v gdbus >/dev/null 2>&1 || { sleep 300; continue; }; "
+    + "if systemd-inhibit --what=sleep --mode=delay"
+    + " --who=" + shellQuote("Bitwarden")
+    + " --why=" + shellQuote("Locking the vault before sleep")
+    + " bash -c " + shellQuote(inner) + "; then "
+    // Resume. Reported once the inhibitor is gone, since nothing waits on it.
+    + "echo " + shellQuote(WAKE_SIGNAL_TOKEN) + "; "
+    + "else sleep 5; fi; "
+    + "done"
   return ["bash", "-c", script]
 }
 
@@ -429,6 +633,28 @@ function getItemCommand(id, session) {
 
 function getTotpCommand(id, session) {
   return buildCappedCommand(["get", "totp", "--raw", "--", String(id)], MAX_TOKEN_BYTES)
+}
+
+// Fetching a secret straight into the clipboard keeps it out of QML entirely:
+// nothing comes back on stdout, so there is no property holding a password
+// that has to be remembered to clear afterwards.
+//
+// These two were the only bw invocations the panel assembled by hand, and both
+// had drifted from the invariant every builder above keeps: `--` before the
+// id. Quoting an id defends against the shell, not against bw's own option
+// parser -- a quoted `--help` is still `--help` by the time bw sees it -- so
+// `--` is the part that makes an id shaped like a flag read as the id it is.
+function clipboardPipeCommand(producer, maxBytes) {
+  return ["bash", "-c", cappedScript(producer + " | head -c " + Number(maxBytes)
+    + " | wl-copy --sensitive", MAX_STDERR_BYTES)]
+}
+
+function copyPasswordToClipboardCommand(id) {
+  return clipboardPipeCommand("bw get password --raw -- " + shellQuote(String(id)), MAX_TOKEN_BYTES)
+}
+
+function copyTotpToClipboardCommand(id) {
+  return clipboardPipeCommand("bw get totp --raw -- " + shellQuote(String(id)), 1024)
 }
 
 function syncCommand(session) {
@@ -1927,6 +2153,19 @@ function associationsWriteCommand() {
   return ["bash", "-c", script]
 }
 
+// Logging out has to take this with it. The store is a list of the domains,
+// app names and title words the user has credentials for, each stamped with
+// when it was last used -- a browsing-shaped record of the account, in the
+// clear, under an account that is no longer signed in. The keyring entries
+// are already cleared for exactly that reason; this file was the one piece of
+// the account's data left behind, and it has no expiry of its own.
+//
+// The directory stays: it is created 700 on the next write, and removing it
+// would race a write already in flight.
+function associationsClearCommand() {
+  return ["bash", "-c", "rm -f -- \"" + ASSOC_FILE + "\" 2>/dev/null; exit 0"]
+}
+
 function emptyAssociations() {
   return { version: ASSOC_VERSION, keys: {} }
 }
@@ -2198,6 +2437,10 @@ var SETTINGS_SCHEMA = [
   { key: "clearClipboardSec", group: "security", type: "int", label: "Clear clipboard after", unit: "seconds",
     min: 0, max: 300, step: 5, zeroLabel: "Never", defaultValue: 30,
     description: "Wipe a copied password or code from the clipboard." },
+  { key: "lockOnScreenLock", group: "security", type: "bool", label: "Lock when the screen locks",
+    description: "Lock as soon as the screen locks, rather than waiting out the auto-lock." },
+  { key: "lockOnSuspend", group: "security", type: "bool", label: "Lock when the machine suspends",
+    description: "Lock before sleep, so no session key is left in the suspended machine's memory." },
   { key: "rememberSession", group: "security", type: "bool", label: "Remember session in keyring",
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint",

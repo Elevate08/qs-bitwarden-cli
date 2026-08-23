@@ -20,6 +20,8 @@
     "defaultSection": "right",
     "defaults": {
       "autoLockMinutes": 15,
+      "lockOnScreenLock": true,
+      "lockOnSuspend": true,
       "clearClipboardSec": 30,
       "rememberSession": true,
       "autoCopyTotpSec": 3,
@@ -38,6 +40,20 @@
         "max": 1440,
         "step": 5,
         "defaultValue": 15
+      },
+      {
+        "key": "lockOnScreenLock",
+        "type": "boolean",
+        "label": "Lock when the screen locks",
+        "description": "Lock the vault as soon as the screen locks, instead of waiting out the auto-lock timeout. Uses the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike.",
+        "defaultValue": true
+      },
+      {
+        "key": "lockOnSuspend",
+        "type": "boolean",
+        "label": "Lock when the machine suspends",
+        "description": "Lock the vault when the system is going to sleep, so an unlocked session key is not left in the suspended machine's memory. Briefly delays the suspend to finish locking.",
+        "defaultValue": true
       },
       {
         "key": "clearClipboardSec",
