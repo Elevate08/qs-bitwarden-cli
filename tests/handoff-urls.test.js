@@ -37,10 +37,14 @@ check("the write side refuses to run without a runtime dir, rather than defaulti
   /XDG_RUNTIME_DIR:\?/.test(login), login)
 check("mkdir and chmod are both checked, so a directory that is not ours aborts",
   login.includes('mkdir -p "$d" || exit 1') && login.includes('chmod 700 "$d" || exit 1'), login)
+check("the write side refuses a symlinked handoff directory",
+  login.includes('[ ! -L "$d" ]'), login)
 check("umask is set before the directory is created, not after",
   login.indexOf("umask 077") < login.indexOf("mkdir"), login)
 check("the read side exits quietly instead, since it runs on every refresh",
   read.includes('[ -n "$d" ] || exit 0') && !/XDG_RUNTIME_DIR:\?/.test(read), read)
+check("the read side never follows a symlinked directory or handoff file",
+  read.includes('[ ! -L "$d" ]') && read.includes('[ ! -L "$f" ]'), read)
 
 // Actually run the two scripts to prove the behaviour, with `bw` stubbed.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-handoff-"))
@@ -72,10 +76,26 @@ const readNoRuntime = runInner(read, noRuntime)
 check("with no runtime dir the read is silent and successful",
   readNoRuntime.code === 0 && readNoRuntime.out === "", JSON.stringify(readNoRuntime))
 
+// A pre-existing symlink must not redirect either side to a persistent or
+// less-protected directory. XDG_RUNTIME_DIR is private, but refusing the
+// redirect also makes a stale/misconfigured runtime fail closed.
+const handoffDir = path.join(tmp, "qs-bitwarden-cli")
+const redirectedDir = path.join(tmp, "redirected")
+fs.mkdirSync(redirectedDir)
+fs.symlinkSync(redirectedDir, handoffDir)
+const symlinkWrite = runInner(innerLogin.replace(/omarchy-shell[^;]*;/, "true;").replace(/read -p[^;]*;?/, ""), withRuntime)
+check("a symlinked handoff directory makes terminal login fail closed",
+  symlinkWrite.code !== 0 && !fs.existsSync(path.join(redirectedDir, "session-handoff")),
+  `exit ${symlinkWrite.code}`)
+fs.writeFileSync(path.join(redirectedDir, "session-handoff"), "REDIRECTED")
+const symlinkRead = runInner(read, withRuntime)
+check("the panel does not read through a symlinked handoff directory",
+  symlinkRead.out === "", JSON.stringify(symlinkRead))
+fs.unlinkSync(handoffDir)
+
 // With a runtime dir, the round trip works and the directory is private.
 fs.mkdirSync(path.join(tmp, "qs-bitwarden-cli"), { recursive: true, mode: 0o755 })
 runInner(innerLogin.replace(/omarchy-shell[^;]*;/, "true;").replace(/read -p[^;]*;?/, ""), withRuntime)
-const handoffDir = path.join(tmp, "qs-bitwarden-cli")
 check("the handoff directory ends up private to the user",
   (fs.statSync(handoffDir).mode & 0o777) === 0o700,
   "0" + (fs.statSync(handoffDir).mode & 0o777).toString(8))
@@ -123,6 +143,10 @@ check("an empty URI is refused without naming a scheme",
   !opens("").ok && opens("").scheme === "", JSON.stringify(opens("")))
 check("whitespace is trimmed rather than https-ified",
   opens("  https://example.com  ").url === "https://example.com", JSON.stringify(opens("  https://example.com  ")))
+check("an ambiguous backslash web URL is refused instead of parsed differently by the browser",
+  !opens("https://evil.example\\@trusted.example").ok
+    && opens("https://evil.example\\@trusted.example").reason === "ambiguous",
+  JSON.stringify(opens("https://evil.example\\@trusted.example")))
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

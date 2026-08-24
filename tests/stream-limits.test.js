@@ -20,16 +20,13 @@ new Function("exports", code + `
   exports.listOrgCollectionsCommand = listOrgCollectionsCommand
   exports.getTotpCommand = getTotpCommand
   exports.statusCommand = statusCommand
-  exports.unlockCommand = unlockCommand
   exports.generateCommand = generateCommand
   exports.generateServeRequestCommand = generateServeRequestCommand
   exports.createSendCommand = createSendCommand
-  exports.createFileSendCommand = createFileSendCommand
   exports.createItemCommand = createItemCommand
   exports.editItemCommand = editItemCommand
   exports.deleteItemCommand = deleteItemCommand
   exports.createFolderCommand = createFolderCommand
-  exports.deleteFolderCommand = deleteFolderCommand
   exports.attachmentDownloadCommand = attachmentDownloadCommand
   exports.sessionHandoffReadCommand = sessionHandoffReadCommand
   exports.associationsReadCommand = associationsReadCommand
@@ -38,7 +35,6 @@ new Function("exports", code + `
   exports.pinUnlockCommand = pinUnlockCommand
   exports.dependencyCheckCommand = dependencyCheckCommand
   exports.buildCappedCommand = buildCappedCommand
-  exports.buildCommand = buildCommand
   exports.syncCommand = syncCommand
   exports.deleteSendCommand = deleteSendCommand
   exports.settingWriteCommand = settingWriteCommand
@@ -104,11 +100,6 @@ check("statusCommand caps status json output to 64KB",
   flat(statusCmd).includes("bw status") && flat(statusCmd).includes("head -c 65536"),
   flat(statusCmd))
 
-const unlockCmd = Model.unlockCommand()
-check("unlockCommand caps session token output to 4KB",
-  flat(unlockCmd).includes("bw unlock") && flat(unlockCmd).includes("head -c 4096"),
-  flat(unlockCmd))
-
 // 8. TOTP code stream is capped
 const totpCmd = Model.getTotpCommand("item-55")
 check("getTotpCommand caps totp output to 4KB",
@@ -147,7 +138,7 @@ check("generateCommand caps password output to 4KB",
 // 12b. Generator serve request stream is capped on the producer side
 const serveReqCmd = Model.generateServeRequestCommand({ length: 24 })
 check("generateServeRequestCommand bounds loopback response stream with head -c 65536",
-  flat(serveReqCmd).includes("curl -s -S") && flat(serveReqCmd).includes("head -c 65536"),
+  flat(serveReqCmd).includes("curl -q -s -S") && flat(serveReqCmd).includes("head -c 65536"),
   flat(serveReqCmd))
 
 // 13. Create/Edit/Delete commands are capped

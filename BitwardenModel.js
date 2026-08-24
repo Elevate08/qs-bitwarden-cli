@@ -5,9 +5,6 @@
 
 const KEYRING_SERVICE = "qs-bitwarden-cli"
 const KEYRING_ACCOUNT = "session"
-const KEYRING_CLIENT_ID = "client_id"
-const KEYRING_CLIENT_SECRET = "client_secret"
-const KEYRING_EMAIL = "user_email"
 const KEYRING_MASTER = "master_password"
 
 // `secret-tool store` reads its secret from stdin until EOF, and Quickshell's
@@ -36,9 +33,34 @@ function keyringSecretEnvVar() {
   return KEYRING_SECRET_ENV
 }
 
+function keyringAttributes(account) {
+  return " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(account)
+}
+
 function keyringStoreScript(label, account) {
   return "printf '%s' \"$" + KEYRING_SECRET_ENV + "\" | secret-tool store --label=" + shellQuote(label)
-    + " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(account)
+    + keyringAttributes(account)
+}
+
+function keyringLookupEntryCommand(account) {
+  // secret-tool prints a newline after the stored value. Strip only that
+  // transport delimiter: QML's String.trim() would also corrupt legitimate
+  // leading or trailing spaces in a master password or client secret.
+  var script = "stored=$(secret-tool lookup" + keyringAttributes(account)
+    + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + "); "
+    + "__lookup_rc=$?; [ \"$__lookup_rc\" -eq 0 ] || exit \"$__lookup_rc\"; "
+    + "printf '%s' \"$stored\""
+  return ["bash", "-c", cappedScript(script)]
+}
+
+function keyringClearEntryCommand(account) {
+  return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", account]
+}
+
+function keyringHasEntryCommand(account) {
+  var script = "if secret-tool lookup" + keyringAttributes(account)
+    + " >/dev/null 2>&1; then echo yes; else echo no; fi"
+  return ["bash", "-c", script]
 }
 
 function shellQuote(value) {
@@ -161,10 +183,6 @@ function buildCappedCommand(args, maxStdoutBytes, maxStderrBytes) {
   return ["bash", "-c", cappedScript(inner, maxStderrBytes)]
 }
 
-function buildCommand(args) {
-  return buildCappedCommand(args, MAX_MISC_BYTES)
-}
-
 // A bw session key is base64: 88 characters for the 64 bytes bw mints. Only
 // something shaped like one is accepted, and anything else yields "" rather
 // than the raw input.
@@ -259,15 +277,14 @@ function isScrubCommand(cmd) {
   return true
 }
 
-// How long the panel keeps coming back for a process that was still running
-// when the vault locked. Its buffer cannot be scrubbed while it is being
-// written; a `bw` that has not finished inside this is one whose own next run
-// will replace the buffer anyway.
+// How often the panel comes back for a process that was still running when the
+// vault locked. Its buffer cannot be scrubbed while it is being written. There
+// is deliberately no retry limit: a process that exits late can otherwise
+// leave its final output resident until an unrelated future run that may never
+// happen.
 var SCRUB_RETRY_MS = 1000
-var SCRUB_RETRY_LIMIT = 120
 
 function scrubRetryMs() { return SCRUB_RETRY_MS }
-function scrubRetryLimit() { return SCRUB_RETRY_LIMIT }
 
 // One pass over the scrub queue. Returns what to do with each process and what
 // is left to come back for, so the walk itself can be tested without a running
@@ -291,17 +308,142 @@ function scrubPass(procs) {
   return { start: start, waiting: waiting }
 }
 
+// Record completion before a handler is allowed to reuse the Process. The
+// command property describes the newest run, so inspecting it on the next
+// timer tick cannot prove that an earlier scrub finished.
+function finishScrub(procs, finished) {
+  var remaining = []
+  for (var i = 0; i < (procs || []).length; i++) {
+    if (procs[i] && procs[i] !== finished) remaining.push(procs[i])
+  }
+  return remaining
+}
+
 // -------------------------------------------------------------------------
 // CLI Commands
 // -------------------------------------------------------------------------
 
-function statusCommand(session) {
+function statusCommand() {
   return buildCappedCommand(["status"], MAX_STATUS_BYTES)
 }
 
-// Password is in the environment; output is capped to session token size.
-function unlockCommand() {
-  return buildCappedCommand(["unlock", "--passwordenv", PASSWORD_ENV, "--raw"], MAX_TOKEN_BYTES, MAX_STDERR_BYTES)
+// -------------------------------------------------------------------------
+// Authentication prewarming
+// -------------------------------------------------------------------------
+//
+// Starting the bw process is a substantial part of unlock/login latency. A
+// password FIFO lets bw complete that bootstrap while the user is still
+// typing: bw opens the FIFO through --passwordfile and waits there, then the
+// panel writes the password only after explicit submission.
+//
+// The FIFOs live in XDG_RUNTIME_DIR (private tmpfs owned by this login), never
+// in /tmp or the plugin directory. Each command removes its FIFO on every exit
+// path. There is deliberately one fixed FIFO per auth flow: the panel owns one
+// Process for each and never runs two attempts of the same kind concurrently.
+var RUNTIME_SUBDIR = "qs-bitwarden-cli"
+
+function authPasswordFifoName(channel) {
+  if (channel === "unlock") return "unlock-password.fifo"
+  if (channel === "login") return "login-password.fifo"
+  return ""
+}
+
+function supervisedProcessPrelude(cleanupCommand) {
+  var script = "__auth_job=''; "
+  script += "__auth_cleanup() { trap - EXIT HUP INT TERM; "
+  script += "if [ -n \"${__auth_job:-}\" ]; then "
+  script += "kill -TERM -- \"-$__auth_job\" 2>/dev/null || true; "
+  script += "wait \"$__auth_job\" 2>/dev/null || true; fi; "
+  if (cleanupCommand) script += cleanupCommand + "; "
+  script += "}; "
+  script += "trap '__auth_cleanup' EXIT; "
+  script += "trap '__auth_cleanup; exit 143' HUP INT TERM; "
+  return script
+}
+
+function authFifoPrelude(channel) {
+  var fifoName = authPasswordFifoName(channel)
+  if (!fifoName) return ""
+
+  // Check an existing directory before using it so a symlink cannot redirect
+  // the FIFO outside the per-login runtime directory. XDG_RUNTIME_DIR itself is
+  // supplied and protected by the login manager; absence is a hard failure.
+  var script = "test -n \"${XDG_RUNTIME_DIR:-}\" || exit 1; "
+  script += "__auth_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
+  script += "if [ -e \"$__auth_dir\" ]; then "
+  script += "[ -d \"$__auth_dir\" ] && [ ! -L \"$__auth_dir\" ] || exit 1; "
+  script += "else (umask 077 && mkdir -- \"$__auth_dir\") || exit 1; fi; "
+  script += "chmod 700 -- \"$__auth_dir\" || exit 1; "
+  script += "__auth_fifo=\"$__auth_dir/" + fifoName + "\"; "
+  script += "rm -f -- \"$__auth_fifo\"; "
+  script += "mkfifo -m 600 -- \"$__auth_fifo\" || exit 1; "
+  // QProcess terminates only this wrapper. Run bw and its output cap as a
+  // separate process group so a cancelled panel can stop the FIFO-blocked
+  // child immediately instead of leaving it orphaned behind the shell.
+  script += supervisedProcessPrelude("rm -f -- \"$__auth_fifo\"")
+  return script
+}
+
+function supervisedProcessCommand(command) {
+  var script = supervisedProcessPrelude("")
+  script += supervisedProcessRun(command)
+  return ["bash", "-c", script]
+}
+
+function supervisedProcessRun(command) {
+  // Disarm the EXIT cleanup after a normal wait. Otherwise the trap sends a
+  // redundant signal to a process-group ID that has already been reaped and
+  // could, in the tiny gap before shell exit, have been reused.
+  var script = "set -m; (" + cappedScript(command, MAX_STDERR_BYTES) + ") & "
+  script += "__auth_job=$!; wait \"$__auth_job\"; __auth_rc=$?; "
+  script += "__auth_job=''; exit \"$__auth_rc\""
+  return script
+}
+
+function supervisedAuthCommand(channel, command) {
+  var script = authFifoPrelude(channel)
+  // `set -m` gives the background subshell its own process group. The wrapper
+  // then waits with bash's interruptible `wait` builtin, allowing the signal
+  // traps above to run immediately even while bw is blocked opening the FIFO.
+  script += supervisedProcessRun(command)
+  return ["bash", "-c", script]
+}
+
+function unlockPrewarmCommand() {
+  var command = "bw unlock --passwordfile \"$__auth_fifo\" --raw | head -c " + MAX_TOKEN_BYTES
+  return supervisedAuthCommand("unlock", command)
+}
+
+function emailLoginPrewarmCommand(email, hasCode, serverUrl) {
+  var command = ""
+
+  if (serverUrl && serverUrl.trim()) {
+    command += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
+  }
+
+  command += "bw login " + shellQuote(email) + " --passwordfile \"$__auth_fifo\""
+  if (hasCode) command += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
+  command += " --raw | head -c " + MAX_TOKEN_BYTES
+  return supervisedAuthCommand("login", command)
+}
+
+// The password remains in BW_PASSWORD, inherited only by this short-lived
+// writer. The nested shell script is a literal in argv (it contains the
+// variable name, not its value), and timeout prevents a dead reader from
+// leaving the writer blocked forever between the FIFO check and open.
+function authPasswordWriteCommand(channel) {
+  var fifoName = authPasswordFifoName(channel)
+  if (!fifoName) return []
+
+  var script = "test -n \"${XDG_RUNTIME_DIR:-}\" || exit 1; "
+  script += "__auth_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
+  script += "[ -d \"$__auth_dir\" ] && [ ! -L \"$__auth_dir\" ] || exit 1; "
+  script += "__auth_fifo=\"$__auth_dir/" + fifoName + "\"; "
+  script += "for __auth_wait in {1..200}; do "
+  script += "if [ -p \"$__auth_fifo\" ] && [ ! -L \"$__auth_fifo\" ]; then "
+  script += "exec timeout 10s bash -c 'printf \"%s\" \"$" + PASSWORD_ENV + "\" > \"$1\"' _ \"$__auth_fifo\"; "
+  script += "fi; sleep 0.01; done; exit 1"
+  return ["bash", "-c", script]
 }
 
 // `hasCode` rather than the code itself -- only whether the flag is present
@@ -329,6 +471,13 @@ function validateServerUrl(raw) {
   var url = String(raw || "").trim()
   if (!url) return ""
 
+  // Node's WHATWG URL parser (used by bw) treats backslashes as path
+  // separators for http(s), while the small parser below would leave one in
+  // the authority. That disagreement can turn
+  // `http://evil.example\@localhost` into "localhost" here but evil.example
+  // on the wire, bypassing the plaintext-password protection.
+  if (url.indexOf("\\") !== -1) return "Server URL must not contain backslashes"
+
   var m = url.match(SERVER_SCHEME_RE)
   if (!m) return "Server URL must start with https:// (or http:// for localhost)"
 
@@ -353,20 +502,6 @@ function validateServerUrl(raw) {
   return ""
 }
 
-function emailLoginCommand(email, hasCode, serverUrl) {
-  var script = ""
-
-  if (serverUrl && serverUrl.trim()) {
-    script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
-  }
-
-  script += "bw login " + shellQuote(email) + " --passwordenv " + PASSWORD_ENV
-  if (hasCode) script += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
-  script += " --raw | head -c " + MAX_TOKEN_BYTES
-
-  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
-}
-
 // `login --apikey` authenticates but does not unlock, so the master password
 // is still needed for the second step. Both come from the environment.
 function apiKeyLoginCommand(serverUrl) {
@@ -378,7 +513,7 @@ function apiKeyLoginCommand(serverUrl) {
 
   script += "bw login --apikey >/dev/null 2>&1 && "
   script += "bw unlock --passwordenv " + PASSWORD_ENV + " --raw | head -c " + MAX_TOKEN_BYTES
-  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+  return supervisedProcessCommand(script)
 }
 
 // -------------------------------------------------------------------------
@@ -402,7 +537,6 @@ function apiKeyLoginCommand(serverUrl) {
 // and a `${XDG_RUNTIME_DIR:-/tmp}` default would quietly turn that impossible
 // case into "write the session key somewhere world-writable", where another
 // user could have pre-created the directory. Fail closed instead.
-var HANDOFF_SUBDIR = "qs-bitwarden-cli"
 var HANDOFF_BASENAME = "session-handoff"
 
 // `mode` is "login" when logged out and "unlock" when merely locked. The panel
@@ -412,12 +546,17 @@ function terminalLoginCommand(mode) {
   var verb = (mode === "unlock") ? "unlock" : "login"
   var inner = "set -u; "
     + "d=\"${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR -- refusing to write a session key}/"
-    + HANDOFF_SUBDIR + "\"; f=\"$d/" + HANDOFF_BASENAME + "\"; "
+    + RUNTIME_SUBDIR + "\"; f=\"$d/" + HANDOFF_BASENAME + "\"; "
     // umask before mkdir, so the directory is born 700 rather than created
     // world-readable and narrowed a moment later. The chmod then covers a
     // directory that already existed, and both are checked: a chmod that
     // fails means the directory is not ours, which is not a place for a key.
-    + "umask 077; mkdir -p \"$d\" || exit 1; chmod 700 \"$d\" || exit 1; "
+    + "umask 077; if [ -e \"$d\" ]; then "
+    + "[ -d \"$d\" ] && [ ! -L \"$d\" ] || exit 1; "
+    + "else mkdir -p \"$d\" || exit 1; fi; chmod 700 \"$d\" || exit 1; "
+    // Remove a stale entry before opening the output path, so a pre-created
+    // symlink is unlinked rather than followed by shell redirection.
+    + "rm -f -- \"$f\" || exit 1; "
     + "if bw " + verb + " --raw > \"$f\" && [ -s \"$f\" ]; then "
     // Bring the panel back itself rather than making the user find it again.
     // Only the method name crosses this boundary; the key never does.
@@ -477,8 +616,10 @@ function handoffWindowOpen(startedAt, now) {
 // does.
 function sessionHandoffReadCommand(expecting) {
   var script = "d=\"${XDG_RUNTIME_DIR:-}\"; [ -n \"$d\" ] || exit 0; "
-    + "f=\"$d/" + HANDOFF_SUBDIR + "/" + HANDOFF_BASENAME + "\"; "
-    + "[ -s \"$f\" ] || exit 0; "
+    + "d=\"$d/" + RUNTIME_SUBDIR + "\"; "
+    + "[ -d \"$d\" ] && [ ! -L \"$d\" ] || exit 0; "
+    + "f=\"$d/" + HANDOFF_BASENAME + "\"; "
+    + "[ -s \"$f\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ] || exit 0; "
   if (expecting) {
     script += "head -c " + MAX_HANDOFF_BYTES + " \"$f\"; "
   }
@@ -599,6 +740,13 @@ function sleepMonitorCommand() {
   return ["bash", "-c", script]
 }
 
+function activeWindowCommand() {
+  var script = "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' "
+    + "&& (hyprctl activewindow -j 2>/dev/null | head -c 65536) "
+    + "|| (hyprctl clients -j 2>/dev/null | head -c 1048576)"
+  return ["sh", "-c", script]
+}
+
 // -------------------------------------------------------------------------
 // Opening an item's URI
 // -------------------------------------------------------------------------
@@ -619,6 +767,10 @@ var URL_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):(?!\d)/
 function normalizeOpenableUrl(raw) {
   var target = String(raw || "").trim()
   if (!target) return { ok: false, scheme: "" }
+  // Browsers parse backslashes as slashes in http(s) authorities. Refuse the
+  // ambiguous spelling rather than displaying one apparent host and opening
+  // another (for example `https://evil.example\@trusted.example`).
+  if (target.indexOf("\\") !== -1) return { ok: false, scheme: "", reason: "ambiguous" }
 
   if (HTTP_URL_RE.test(target)) return { ok: true, url: target }
 
@@ -633,15 +785,15 @@ function logoutCommand() {
   return ["bw", "logout"]
 }
 
-function listCommand(session) {
+function listCommand() {
   return buildCappedCommand(["list", "items"], MAX_ITEMS_BYTES, MAX_STDERR_BYTES)
 }
 
-function listOrganizationsCommand(session) {
+function listOrganizationsCommand() {
   return buildCappedCommand(["list", "organizations"], MAX_ORGS_BYTES)
 }
 
-function listFoldersCommand(session) {
+function listFoldersCommand() {
   return buildCappedCommand(["list", "folders"], MAX_FOLDERS_BYTES)
 }
 
@@ -652,15 +804,29 @@ function listOrgCollectionsCommand(organizationId) {
   return buildCappedCommand(["list", "org-collections", "--organizationid", String(organizationId)], MAX_COLLECTIONS_BYTES)
 }
 
-function parseCollections(raw) {
-  var arr = null
+function parseJsonArray(raw) {
   try {
-    arr = JSON.parse(raw)
+    var parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
   } catch (e) {
     return []
   }
-  if (!Array.isArray(arr)) return []
+}
 
+function compareNames(a, b) {
+  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+}
+
+function nameById(entries, id) {
+  if (!id || !Array.isArray(entries)) return ""
+  for (var i = 0; i < entries.length; i++) {
+    if (entries[i].id === id) return entries[i].name
+  }
+  return ""
+}
+
+function parseCollections(raw) {
+  var arr = parseJsonArray(raw)
   var out = []
   for (var i = 0; i < arr.length; i++) {
     var c = arr[i]
@@ -671,65 +837,46 @@ function parseCollections(raw) {
       organizationId: c.organizationId ? String(c.organizationId) : ""
     })
   }
-  out.sort(function(a, b) {
-    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-  })
+  out.sort(compareNames)
   return out
 }
 
 function collectionName(collections, id) {
-  if (!id || !Array.isArray(collections)) return ""
-  for (var i = 0; i < collections.length; i++) {
-    if (collections[i].id === id) return collections[i].name
-  }
-  return ""
+  return nameById(collections, id)
 }
 
-function createFolderCommand(name, session) {
-  var jsonStr = JSON.stringify({ name: String(name || "").trim() })
-  var script = "printf %s " + shellQuote(jsonStr) + " | bw encode | bw create folder | head -c " + MAX_MISC_BYTES
+var FOLDER_ENV = "QSBW_FOLDER"
+
+function folderEnvVar() {
+  return FOLDER_ENV
+}
+
+function folderPayload(name) {
+  return JSON.stringify({ name: String(name || "").trim() })
+}
+
+function createFolderCommand() {
+  var script = "printf '%s' \"$" + FOLDER_ENV + "\" | bw encode | bw create folder | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-function deleteFolderCommand(folderId) {
-  return buildCappedCommand(["delete", "folder", "--", String(folderId)], MAX_MISC_BYTES)
-}
-
-function getItemCommand(id, session) {
+function getItemCommand(id) {
   return buildCappedCommand(["get", "item", "--", String(id)], MAX_DETAIL_BYTES, MAX_STDERR_BYTES)
 }
 
-function getTotpCommand(id, session) {
+function getPasswordCommand(id) {
+  return buildCappedCommand(["get", "password", "--raw", "--", String(id)], MAX_TOKEN_BYTES, MAX_STDERR_BYTES)
+}
+
+function getTotpCommand(id) {
   return buildCappedCommand(["get", "totp", "--raw", "--", String(id)], MAX_TOKEN_BYTES)
 }
 
-// Fetching a secret straight into the clipboard keeps it out of QML entirely:
-// nothing comes back on stdout, so there is no property holding a password
-// that has to be remembered to clear afterwards.
-//
-// These two were the only bw invocations the panel assembled by hand, and both
-// had drifted from the invariant every builder above keeps: `--` before the
-// id. Quoting an id defends against the shell, not against bw's own option
-// parser -- a quoted `--help` is still `--help` by the time bw sees it -- so
-// `--` is the part that makes an id shaped like a flag read as the id it is.
-function clipboardPipeCommand(producer, maxBytes) {
-  return ["bash", "-c", cappedScript(producer + " | head -c " + Number(maxBytes)
-    + " | wl-copy --sensitive", MAX_STDERR_BYTES)]
-}
-
-function copyPasswordToClipboardCommand(id) {
-  return clipboardPipeCommand("bw get password --raw -- " + shellQuote(String(id)), MAX_TOKEN_BYTES)
-}
-
-function copyTotpToClipboardCommand(id) {
-  return clipboardPipeCommand("bw get totp --raw -- " + shellQuote(String(id)), 1024)
-}
-
-function syncCommand(session) {
+function syncCommand() {
   return buildCappedCommand(["sync"], MAX_MISC_BYTES)
 }
 
-function lockCommand(session) {
+function lockCommand() {
   return buildCappedCommand(["lock"], MAX_MISC_BYTES)
 }
 
@@ -746,13 +893,13 @@ function itemEnvVar() {
   return ITEM_ENV
 }
 
-function createItemCommand(itemData, session) {
+function createItemCommand(itemData) {
   var orgArg = (itemData && itemData.organizationId) ? (" --organizationid " + shellQuote(itemData.organizationId)) : ""
   var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw create item" + orgArg + " | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-function editItemCommand(itemId, session) {
+function editItemCommand(itemId) {
   var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item -- " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
@@ -802,7 +949,7 @@ function bootIdPath() {
 }
 
 function keyringStoreCommand() {
-  var attrs = " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_ACCOUNT)
+  var attrs = keyringAttributes(KEYRING_ACCOUNT)
   // The secret still travels in the environment (see keyringStoreScript); only
   // the boot id, which is not a secret, is read inside the script.
   var script = "store() { printf '%s %s' \"$(cat " + shellQuote(BOOT_ID_PATH) + ")\" \"$"
@@ -813,7 +960,7 @@ function keyringStoreCommand() {
 }
 
 function keyringLookupCommand() {
-  var attrs = " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_ACCOUNT)
+  var attrs = keyringAttributes(KEYRING_ACCOUNT)
   var script = "boot=$(cat " + shellQuote(BOOT_ID_PATH) + " 2>/dev/null | head -c 128) || exit 0; "
     + "[ -n \"$boot\" ] || exit 0; "
     + "stored=$(secret-tool lookup" + attrs + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ") || exit 0; "
@@ -827,34 +974,7 @@ function keyringLookupCommand() {
 }
 
 function keyringClearCommand() {
-  return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
-}
-
-function keyringStoreApiKeyIdCommand() {
-  return ["bash", "-c", keyringStoreScript("Bitwarden API Client ID", KEYRING_CLIENT_ID)]
-}
-
-function keyringLookupApiKeyIdCommand() {
-  return ["bash", "-c", cappedScript("secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
-    + " account " + shellQuote(KEYRING_CLIENT_ID) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES)]
-}
-
-function keyringStoreApiKeySecretCommand() {
-  return ["bash", "-c", keyringStoreScript("Bitwarden API Client Secret", KEYRING_CLIENT_SECRET)]
-}
-
-function keyringLookupApiKeySecretCommand() {
-  return ["bash", "-c", cappedScript("secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
-    + " account " + shellQuote(KEYRING_CLIENT_SECRET) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES)]
-}
-
-function keyringStoreEmailCommand() {
-  return ["bash", "-c", keyringStoreScript("Bitwarden User Email", KEYRING_EMAIL)]
-}
-
-function keyringLookupEmailCommand() {
-  return ["bash", "-c", cappedScript("secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
-    + " account " + shellQuote(KEYRING_EMAIL) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES)]
+  return keyringClearEntryCommand(KEYRING_ACCOUNT)
 }
 
 // -------------------------------------------------------------------------
@@ -872,20 +992,17 @@ function keyringStoreMasterPasswordCommand() {
 }
 
 function keyringLookupMasterPasswordCommand() {
-  return ["bash", "-c", cappedScript("secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
-    + " account " + shellQuote(KEYRING_MASTER) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES)]
+  return keyringLookupEntryCommand(KEYRING_MASTER)
 }
 
 function keyringClearMasterPasswordCommand() {
-  return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", KEYRING_MASTER]
+  return keyringClearEntryCommand(KEYRING_MASTER)
 }
 
 // Presence check that never puts the secret on stdout, so the panel can show
 // the right prompt without reading the password until a finger is verified.
 function keyringHasMasterPasswordCommand() {
-  var script = "if secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
-    + " account " + shellQuote(KEYRING_MASTER) + " >/dev/null 2>&1; then echo yes; else echo no; fi"
-  return ["bash", "-c", script]
+  return keyringHasEntryCommand(KEYRING_MASTER)
 }
 
 // -------------------------------------------------------------------------
@@ -937,30 +1054,27 @@ function isPinWeak(pin) {
 function pinStoreCommand() {
   var script = "printf '%s' \"$" + KEYRING_SECRET_ENV + "\""
     + " | openssl enc -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
-    + " -salt -pass env:" + PIN_ENV + " -base64 -A"
+    + " -md sha256 -salt -pass env:" + PIN_ENV + " -base64 -A"
     + " | secret-tool store --label=" + shellQuote("Bitwarden Master Password (PIN unlock)")
     + " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_PIN)
-  return ["bash", "-c", script]
+  return ["bash", "-c", cappedScript(script)]
 }
 
 // Non-zero exit means the PIN was wrong (or the blob is gone). stdout carries
 // the master password only on success.
 function pinUnlockCommand() {
-  var script = "secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
-    + " account " + shellQuote(KEYRING_PIN) + " 2>/dev/null | head -c 8192"
+  var script = "secret-tool lookup" + keyringAttributes(KEYRING_PIN) + " 2>/dev/null | head -c 8192"
     + " | openssl enc -d -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
-    + " -pass env:" + PIN_ENV + " -base64 -A | head -c " + MAX_TOKEN_BYTES
+    + " -md sha256 -pass env:" + PIN_ENV + " -base64 -A | head -c " + MAX_TOKEN_BYTES
   return ["bash", "-c", cappedScript(script)]
 }
 
 function keyringClearPinCommand() {
-  return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", KEYRING_PIN]
+  return keyringClearEntryCommand(KEYRING_PIN)
 }
 
 function keyringHasPinCommand() {
-  var script = "if secret-tool lookup service " + shellQuote(KEYRING_SERVICE)
-    + " account " + shellQuote(KEYRING_PIN) + " >/dev/null 2>&1; then echo yes; else echo no; fi"
-  return ["bash", "-c", script]
+  return keyringHasEntryCommand(KEYRING_PIN)
 }
 
 // -------------------------------------------------------------------------
@@ -981,26 +1095,41 @@ function keyringHasPinCommand() {
 // last saw rather than what is in the keyring. `fingerprintStored` goes false
 // the moment a reader is unplugged or fprintd is uninstalled -- the master
 // password does not go anywhere. `secret-tool clear` on an entry that is not
-// there is not an error, so asking for all of them unconditionally costs
-// nothing and is the only version that cannot be talked out of running.
+// there returns 1 without printing an error. Worse, `clear` only removes
+// unlocked matches, so that result alone cannot distinguish absence from a
+// credential hidden in a locked collection. Search first, request unlock of
+// every match, clear, then search again. Logout succeeds only when that final
+// search proves no matching item remains.
 var KEYRING_ALL_ACCOUNTS = [KEYRING_ACCOUNT, KEYRING_MASTER, KEYRING_PIN]
 
-function keyringClearAllCommand() {
-  var script = ""
-  for (var i = 0; i < KEYRING_ALL_ACCOUNTS.length; i++) {
-    script += "secret-tool clear service " + shellQuote(KEYRING_SERVICE)
-      + " account " + shellQuote(KEYRING_ALL_ACCOUNTS[i]) + " >/dev/null 2>&1; "
-  }
-  // A missing entry exits non-zero, and that is the ordinary case rather than
-  // a failure worth reporting, so the script always succeeds.
-  script += "exit 0"
-  return ["bash", "-c", script]
+function keyringSearchStateScript(account, resultVar) {
+  // Consume the complete search output with wc instead of capturing it: for an
+  // unlocked item secret-tool includes the secret in that stream. Only its
+  // byte count and the producer exit code are retained by the shell.
+  var attrs = keyringAttributes(account)
+  return resultVar + "=$(secret-tool search --all" + attrs
+    + " 2>/dev/null | wc -c | tr -d '[:space:]'; "
+    + "__keyring_pipe=(\"${PIPESTATUS[@]}\"); "
+    + "printf ':%s' \"${__keyring_pipe[0]}\"); "
 }
 
-// Reports "yes" only when every piece is in place: the Omarchy PAM stack, a
-// reader, and at least one enrolled finger. Mirrors the omarchy lock screen.
-function fingerprintAvailableCommand() {
-  var script = "if [[ -f /etc/pam.d/omarchy-lock-fingerprint ]] && command -v fprintd-list >/dev/null 2>&1 && fprintd-list \"$USER\" 2>/dev/null | grep -qi 'finger'; then echo yes; else echo no; fi"
+function keyringClearAllCommand() {
+  var script = "rc=0; "
+  for (var i = 0; i < KEYRING_ALL_ACCOUNTS.length; i++) {
+    var attrs = keyringAttributes(KEYRING_ALL_ACCOUNTS[i])
+    script += keyringSearchStateScript(KEYRING_ALL_ACCOUNTS[i], "__keyring_before")
+    script += "__keyring_count=${__keyring_before%%:*}; "
+      + "__keyring_search_rc=${__keyring_before##*:}; "
+      + "if [ \"$__keyring_search_rc\" -ne 0 ]; then rc=1; "
+      + "elif [ \"$__keyring_count\" -gt 0 ]; then "
+      + "secret-tool search --all --unlock" + attrs + " >/dev/null 2>&1 || true; "
+      + "secret-tool clear" + attrs + " >/dev/null 2>&1 || true; "
+    script += keyringSearchStateScript(KEYRING_ALL_ACCOUNTS[i], "__keyring_after")
+    script += "__keyring_count=${__keyring_after%%:*}; "
+      + "__keyring_search_rc=${__keyring_after##*:}; "
+      + "if [ \"$__keyring_search_rc\" -ne 0 ] || [ \"$__keyring_count\" -ne 0 ]; then rc=1; fi; fi; "
+  }
+  script += "exit \"$rc\""
   return ["bash", "-c", script]
 }
 
@@ -1028,14 +1157,7 @@ function parseStatus(raw) {
 }
 
 function parseOrganizations(raw) {
-  var arr = null
-  try {
-    arr = JSON.parse(raw)
-  } catch (e) {
-    return []
-  }
-  if (!Array.isArray(arr)) return []
-
+  var arr = parseJsonArray(raw)
   var out = []
   for (var i = 0; i < arr.length; i++) {
     var o = arr[i]
@@ -1050,14 +1172,7 @@ function parseOrganizations(raw) {
 }
 
 function parseFolders(raw) {
-  var arr = null
-  try {
-    arr = JSON.parse(raw)
-  } catch (e) {
-    return []
-  }
-  if (!Array.isArray(arr)) return []
-
+  var arr = parseJsonArray(raw)
   var out = []
   for (var i = 0; i < arr.length; i++) {
     var f = arr[i]
@@ -1068,18 +1183,12 @@ function parseFolders(raw) {
     out.push({ id: String(f.id), name: String(f.name || "Folder") })
   }
 
-  out.sort(function(a, b) {
-    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-  })
+  out.sort(compareNames)
   return out
 }
 
 function folderName(folders, folderId) {
-  if (!folderId || !Array.isArray(folders)) return ""
-  for (var i = 0; i < folders.length; i++) {
-    if (folders[i].id === folderId) return folders[i].name
-  }
-  return ""
+  return nameById(folders, folderId)
 }
 
 var ITEM_TYPES = {
@@ -1281,11 +1390,17 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
   // way, so anything larger is clamped to one byte over it. That keeps every
   // number written into the script a plain decimal integer and turns the lie
   // into the refusal it was always meant to be.
-  var want = Math.floor(Number(declaredSize))
-  if (!isFinite(want) || want < 0) want = 0
+  var numericSize = Number(declaredSize)
+  var sizeKnown = declaredSize !== undefined && declaredSize !== null
+    && String(declaredSize).trim() !== "" && isFinite(numericSize) && numericSize >= 0
+  var want = sizeKnown ? Math.floor(numericSize) : 0
   if (want > maxBytes) want = maxBytes + 1
 
-  var needKb = Math.ceil((want + ATTACHMENT_FREE_SLACK_BYTES) / 1024)
+  // When metadata omits the size, reserve for the largest transfer the kernel
+  // limit permits. Treating unknown as zero let a bounded 512 MB download start
+  // on a nearly full disk after checking for only the 64 MB safety margin.
+  var reserveBytes = sizeKnown ? want : maxBytes
+  var needKb = Math.ceil((reserveBytes + ATTACHMENT_FREE_SLACK_BYTES) / 1024)
 
   var script = [
     "set -e",
@@ -1321,10 +1436,8 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
 
     // RLIMIT_FSIZE stops the write itself, so an oversized attachment dies
     // mid-transfer instead of on a check that trusted the declared size.
-    "tmo=''",
-    "if command -v timeout >/dev/null 2>&1; then tmo=\"timeout " + ATTACHMENT_TIMEOUT_SECS + "\"; fi",
     "rc=0",
-    "( ulimit -f " + maxBlocks + "; exec $tmo bw get attachment --itemid " + shellQuote(itemId)
+    "( ulimit -f " + maxBlocks + "; exec timeout " + ATTACHMENT_TIMEOUT_SECS + "s bw get attachment --itemid " + shellQuote(itemId)
       + " --output \"$tmp\" -- " + shellQuote(attachmentId) + " >/dev/null ) || rc=$?",
     "if [ \"$rc\" -ne 0 ]; then",
     "  case \"$rc\" in",
@@ -1355,10 +1468,10 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     "  if [ \"$n\" -eq 0 ]; then cand=\"$dir/$name\"; else cand=\"$dir/$stem ($n)$ext\"; fi",
     "  if [ \"$hardlink\" = 1 ]; then",
     "    if ln -- \"$tmp\" \"$cand\" 2>/dev/null; then out=\"$cand\"; break; fi",
-    // A filesystem with no hard links (FAT, exFAT, most phone mounts) has no
-    // symlinks either, so on those there is nothing left to redirect a write
-    // through and a plain no-clobber move is enough.
-    "  elif [ ! -e \"$cand\" ] && [ ! -L \"$cand\" ] && mv -- \"$tmp\" \"$cand\" 2>/dev/null; then",
+    // Some removable and FUSE filesystems do not support hard links. Keep the
+    // same no-overwrite contract there with mv -n after rejecting both an
+    // existing entry and a dangling symlink.
+    "  elif [ ! -e \"$cand\" ] && [ ! -L \"$cand\" ] && mv -n -- \"$tmp\" \"$cand\" 2>/dev/null; then",
     "    out=\"$cand\"; break",
     "  fi",
     "  n=$((n+1))",
@@ -1368,31 +1481,73 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     "fi",
     "printf %s \"$out\" | head -c 4096"
   ].join("\n")
-  return ["bash", "-c", script]
+  // The panel cancels this Process on lock/logout. Supervision gives the
+  // attachment shell and every child a private process group, so SIGTERM
+  // reaches timeout, bw, and the staging cleanup rather than only the wrapper.
+  return supervisedProcessCommand(script)
+}
+
+function loginUris(login) {
+  var uris = []
+  var rawUris = toList(login.uris)
+  for (var i = 0; i < rawUris.length; i++) {
+    if (rawUris[i] && rawUris[i].uri) uris.push(String(rawUris[i].uri))
+  }
+  return uris
+}
+
+function cardDetail(card) {
+  if (!card) return null
+  return {
+    cardholderName: String(card.cardholderName || ""),
+    brand: String(card.brand || ""),
+    number: String(card.number || ""),
+    expMonth: String(card.expMonth || ""),
+    expYear: String(card.expYear || ""),
+    code: String(card.code || "")
+  }
+}
+
+function identityDetail(identity) {
+  if (!identity) return null
+  return {
+    title: String(identity.title || ""),
+    firstName: String(identity.firstName || ""),
+    lastName: String(identity.lastName || ""),
+    email: String(identity.email || ""),
+    phone: String(identity.phone || ""),
+    address1: String(identity.address1 || ""),
+    city: String(identity.city || ""),
+    state: String(identity.state || ""),
+    postalCode: String(identity.postalCode || ""),
+    country: String(identity.country || "")
+  }
+}
+
+function itemCustomFields(fields) {
+  var customFields = []
+  var rawFields = toList(fields)
+  for (var i = 0; i < rawFields.length; i++) {
+    var field = rawFields[i]
+    if (!field || !field.name) continue
+    customFields.push({
+      name: String(field.name || ""),
+      value: String(field.value || ""),
+      type: Number(field.type || 0) // 0: text, 1: hidden, 2: boolean, 3: linked
+    })
+  }
+  return customFields
 }
 
 function parseItems(raw) {
-  var arr = null
-  try {
-    arr = JSON.parse(raw)
-  } catch (e) {
-    return []
-  }
-  if (!Array.isArray(arr)) return []
-
+  var arr = parseJsonArray(raw)
   var out = []
   for (var i = 0; i < arr.length; i++) {
     var it = arr[i]
     if (!it || typeof it !== "object") continue
 
     var login = it.login || {}
-    var uris = []
-    var rawUris = toList(login.uris)
-    for (var j = 0; j < rawUris.length; j++) {
-      var u = rawUris[j]
-      if (u && u.uri) uris.push(String(u.uri))
-    }
-
+    var uris = loginUris(login)
     var attachments = parseAttachments(it.attachments)
 
     var card = it.card || null
@@ -1441,7 +1596,7 @@ function parseItems(raw) {
     if (a.favorite !== b.favorite) {
       return a.favorite ? -1 : 1
     }
-    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+    return compareNames(a, b)
   })
 
   return out
@@ -1467,55 +1622,8 @@ function itemDetailFromObject(it) {
   if (!it || typeof it !== "object") return null
 
   var login = it.login || {}
-  var uris = []
-  var rawUris = toList(login.uris)
-  for (var j = 0; j < rawUris.length; j++) {
-    var u = rawUris[j]
-    if (u && u.uri) uris.push(String(u.uri))
-  }
-
-  var card = null
-  if (it.card) {
-    card = {
-      cardholderName: String(it.card.cardholderName || ""),
-      brand: String(it.card.brand || ""),
-      number: String(it.card.number || ""),
-      expMonth: String(it.card.expMonth || ""),
-      expYear: String(it.card.expYear || ""),
-      code: String(it.card.code || "")
-    }
-  }
-
-  var identity = null
-  if (it.identity) {
-    identity = {
-      title: String(it.identity.title || ""),
-      firstName: String(it.identity.firstName || ""),
-      lastName: String(it.identity.lastName || ""),
-      email: String(it.identity.email || ""),
-      phone: String(it.identity.phone || ""),
-      address1: String(it.identity.address1 || ""),
-      city: String(it.identity.city || ""),
-      state: String(it.identity.state || ""),
-      postalCode: String(it.identity.postalCode || ""),
-      country: String(it.identity.country || "")
-    }
-  }
-
+  var uris = loginUris(login)
   var attachments = parseAttachments(it.attachments)
-
-  var customFields = []
-  var rawFields = toList(it.fields)
-  for (var k = 0; k < rawFields.length; k++) {
-    var f = rawFields[k]
-    if (f && f.name) {
-      customFields.push({
-        name: String(f.name || ""),
-        value: String(f.value || ""),
-        type: Number(f.type || 0) // 0: text, 1: hidden, 2: boolean, 3: linked
-      })
-    }
-  }
 
   return {
     id: String(it.id || ""),
@@ -1533,9 +1641,9 @@ function itemDetailFromObject(it) {
     uris: uris,
     attachments: attachments,
     hasAttachments: attachments.length > 0,
-    card: card,
-    identity: identity,
-    fields: customFields,
+    card: cardDetail(it.card),
+    identity: identityDetail(it.identity),
+    fields: itemCustomFields(it.fields),
     rawObject: it
   }
 }
@@ -1564,6 +1672,21 @@ function matchesQuery(item, query) {
   return false
 }
 
+function matchesOrganizationFilter(item, organization) {
+  if (organization === "personal") return !item.organizationId
+  return organization === "all" || item.organizationId === organization
+}
+
+function matchesFolderFilter(item, folder) {
+  if (folder === "none") return !item.folderId
+  return folder === "all" || item.folderId === folder
+}
+
+function matchesCategoryFilter(item, category) {
+  if (category === "favorite") return Boolean(item.favorite)
+  return category === "all" || item.type === category
+}
+
 function filterItems(items, query, category, selectedOrg, selectedFolder) {
   if (!Array.isArray(items)) return []
   var q = String(query || "").toLowerCase().trim()
@@ -1574,33 +1697,10 @@ function filterItems(items, query, category, selectedOrg, selectedFolder) {
   var out = []
   for (var i = 0; i < items.length; i++) {
     var it = items[i]
-
-    // Organization filter
-    if (org === "personal") {
-      if (it.organizationId) continue
-    } else if (org !== "all") {
-      if (it.organizationId !== org) continue
-    }
-
-    // Folder filter: "all" | "none" (unfiled) | folder id
-    if (folder === "none") {
-      if (it.folderId) continue
-    } else if (folder !== "all") {
-      if (it.folderId !== folder) continue
-    }
-
-    // Category filter
-    if (cat === "favorite") {
-      if (!it.favorite) continue
-    } else if (cat !== "all" && it.type !== cat) {
-      continue
-    }
-
-    // Search query match
-    if (q && !matchesQuery(it, q)) {
-      continue
-    }
-
+    if (!matchesOrganizationFilter(it, org)) continue
+    if (!matchesFolderFilter(it, folder)) continue
+    if (!matchesCategoryFilter(it, cat)) continue
+    if (q && !matchesQuery(it, q)) continue
     out.push(it)
   }
   return out
@@ -1632,35 +1732,49 @@ function maskString(str) {
 // Payload Builders for Create & Edit
 // -------------------------------------------------------------------------
 
+function selectedOrganizationId(organizationId) {
+  if (!organizationId || organizationId === "personal" || organizationId === "all") return null
+  return String(organizationId)
+}
+
+function selectedFolderId(folderId) {
+  if (!folderId || folderId === "all" || folderId === "none") return null
+  return String(folderId)
+}
+
+function selectedCollectionIds(collectionIds) {
+  if (!Array.isArray(collectionIds) || collectionIds.length === 0) return null
+  return collectionIds.slice()
+}
+
+function updateLoginFields(login, username, password, totp) {
+  login.username = String(username || "").trim()
+  login.password = String(password || "").trim()
+  login.totp = totp && totp.trim() ? totp.trim() : null
+}
+
 function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
   var payload = {
     type: Number(typeCode || 1),
     name: String(name || "Untitled").trim(),
     notes: String(notes || "").trim(),
     favorite: Boolean(favorite),
-    organizationId: organizationId && organizationId !== "personal" && organizationId !== "all" ? String(organizationId) : null,
-    folderId: folderId && folderId !== "all" && folderId !== "none" ? String(folderId) : null
+    organizationId: selectedOrganizationId(organizationId),
+    folderId: selectedFolderId(folderId)
   }
 
   // Only org-owned items carry collections, and such an item must be in at
   // least one -- Bitwarden rejects it otherwise. Omit the key entirely when
   // none were chosen rather than sending an empty array, which would change
   // what existing callers send.
-  if (payload.organizationId && Array.isArray(collectionIds) && collectionIds.length) {
-    payload.collectionIds = collectionIds.slice()
-  }
+  var collections = selectedCollectionIds(collectionIds)
+  if (payload.organizationId && collections) payload.collectionIds = collections
 
   if (Number(typeCode) === 1) { // Login
-    var uris = []
-    if (uri && uri.trim()) {
-      uris.push({ match: null, uri: uri.trim() })
-    }
-    payload.login = {
-      username: String(username || "").trim(),
-      password: String(password || "").trim(),
-      totp: totp && totp.trim() ? totp.trim() : null,
-      uris: uris
-    }
+    var login = {}
+    updateLoginFields(login, username, password, totp)
+    login.uris = uri && uri.trim() ? [{ match: null, uri: uri.trim() }] : []
+    payload.login = login
   } else if (Number(typeCode) === 2) { // Secure Note
     payload.secureNote = { type: 0 }
   }
@@ -1676,27 +1790,20 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
   // Set *and* clear. Only assigning meant picking "My Vault" for an item that
   // belonged to an organization left it in the organization, so the form said
   // one thing and the vault kept another.
-  if (organizationId && organizationId !== "personal" && organizationId !== "all") {
-    payload.organizationId = String(organizationId)
-  } else {
-    payload.organizationId = null
-  }
+  payload.organizationId = selectedOrganizationId(organizationId)
   // An explicit empty selection means "no folder", so this must be able to
   // clear an existing assignment, not only set one.
-  payload.folderId = folderId && folderId !== "all" && folderId !== "none" ? String(folderId) : null
+  payload.folderId = selectedFolderId(folderId)
 
   if (payload.organizationId) {
-    payload.collectionIds = Array.isArray(collectionIds) && collectionIds.length
-      ? collectionIds.slice() : (payload.collectionIds || [])
+    payload.collectionIds = selectedCollectionIds(collectionIds) || payload.collectionIds || []
   } else {
     delete payload.collectionIds
   }
 
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}
-    payload.login.username = String(username || "").trim()
-    payload.login.password = String(password || "").trim()
-    payload.login.totp = totp && totp.trim() ? totp.trim() : null
+    updateLoginFields(payload.login, username, password, totp)
     if (uri && uri.trim()) {
       payload.login.uris = [{ match: null, uri: uri.trim() }]
     }
@@ -1768,6 +1875,7 @@ var BRAND_ALIASES = {
 var BROWSER_CLASS_RE = /chrome|chromium|firefox|brave|zen|vivaldi|edge|opera|epiphany|qutebrowser|librewolf|floorp|waterfox|thorium|helium/i
 var TERMINAL_CLASS_RE = /foot|alacritty|kitty|ghostty|terminal|konsole|wezterm|xterm|rxvt|tilix|st-256color/i
 var SHELL_CLASS_RE = /^(quickshell|omarchy|omarchy-shell|omarchy-menu)$/i
+var REMOTE_SESSION_RE = /(?:^|\s)(?:ssh|mosh|sftp)\s+(?:-\S+\s+)*(?:[a-zA-Z0-9_.-]+@)?([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+)/i
 
 var BROWSER_BRAND_RE = /\s*[-—–|·•]\s*(Google Chrome|Chromium|Mozilla Firefox|Firefox Developer Edition|Firefox|Brave(?:\s*Browser)?|Zen(?:\s*Browser)?|Vivaldi|Microsoft.​Edge|Microsoft Edge|Edge|Opera(?:\s*GX)?|LibreWolf|Floorp|Waterfox|Thorium|Helium|Epiphany|GNOME Web|qutebrowser)\s*$/i
 
@@ -1974,6 +2082,48 @@ function getActiveWindowFromData(windowData) {
   return windowData
 }
 
+function windowIdentity(cls, title) {
+  var isBrowser = BROWSER_CLASS_RE.test(cls)
+  var isTerminal = TERMINAL_CLASS_RE.test(cls)
+
+  if (isBrowser) {
+    var browserTitle = stripTitleNoise(title)
+    var browserDomain = detectDomainInText(browserTitle)
+    return {
+      cleanTitle: browserTitle,
+      detectedDomain: browserDomain,
+      displayName: browserDomain ? browserDomain.baseDomain : browserTitle,
+      isBrowser: isBrowser,
+      isTerminal: isTerminal
+    }
+  }
+
+  if (isTerminal) {
+    // Only remote sessions are worth suggesting for; a local shell title
+    // ("hostname: ~/dir") describes the machine, not a credential.
+    var remoteSession = title.match(REMOTE_SESSION_RE)
+    if (!remoteSession) return null
+    return {
+      cleanTitle: remoteSession[1],
+      detectedDomain: parseHost(remoteSession[1]),
+      displayName: "SSH: " + remoteSession[1],
+      isBrowser: isBrowser,
+      isTerminal: isTerminal
+    }
+  }
+
+  // Native desktop app: the leading segment is the app, the rest is document state.
+  var segments = splitSegments(stripTitleNoise(title))
+  var appTitle = segments.length > 0 ? segments[0] : ""
+  return {
+    cleanTitle: appTitle,
+    detectedDomain: null,
+    displayName: appTitle || cls,
+    isBrowser: isBrowser,
+    isTerminal: isTerminal
+  }
+}
+
 function cleanWindowContext(windowData) {
   var w = getActiveWindowFromData(windowData)
   if (!w) return null
@@ -1982,34 +2132,11 @@ function cleanWindowContext(windowData) {
   var title = String(w.title || w.initialTitle || "").trim().slice(0, MAX_TITLE_CHARS)
   if (!cls && !title) return null
 
-  var isBrowser = BROWSER_CLASS_RE.test(cls)
-  var isTerminal = TERMINAL_CLASS_RE.test(cls)
-
-  var cleanTitle = ""
-  var detectedDomain = null
-  var displayName = ""
-
-  if (isBrowser) {
-    cleanTitle = stripTitleNoise(title)
-    detectedDomain = detectDomainInText(cleanTitle)
-    displayName = detectedDomain ? detectedDomain.baseDomain : cleanTitle
-  } else if (isTerminal) {
-    // Only remote sessions are worth suggesting for; a local shell title
-    // ("hostname: ~/dir") describes the machine, not a credential.
-    var sshMatch = title.match(/(?:^|\s)(?:ssh|mosh|sftp)\s+(?:-\S+\s+)*(?:[a-zA-Z0-9_.-]+@)?([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+)/i)
-    if (sshMatch) {
-      detectedDomain = parseHost(sshMatch[1])
-      cleanTitle = sshMatch[1]
-      displayName = "SSH: " + sshMatch[1]
-    } else {
-      return null
-    }
-  } else {
-    // Native desktop app: the leading segment is the app, the rest is document state.
-    var segs = splitSegments(stripTitleNoise(title))
-    cleanTitle = segs.length > 0 ? segs[0] : ""
-    displayName = cleanTitle || cls
-  }
+  var identity = windowIdentity(cls, title)
+  if (!identity) return null
+  var cleanTitle = identity.cleanTitle
+  var detectedDomain = identity.detectedDomain
+  var displayName = identity.displayName
 
   if (!cleanTitle && !cls) return null
 
@@ -2045,34 +2172,27 @@ function cleanWindowContext(windowData) {
     aliasTokens: aliasTokens,
     displayName: displayName,
     detectedDomain: detectedDomain,
-    isBrowser: isBrowser,
-    isTerminal: isTerminal
+    isBrowser: identity.isBrowser,
+    isTerminal: identity.isTerminal
   }
 }
 
-// Score one vault item against the active window. 0 means no match; the bands
-// are deliberately spread so a real domain hit always outranks a word hit.
-function matchItem(item, ctx) {
-  if (!ctx || !item) return 0
-  if (ctx.isTerminal && !ctx.detectedDomain) return 0
-
+// Domain to domain. Only reachable when the title actually spelled a host.
+function directDomainScore(domains, detectedDomain) {
+  if (!detectedDomain) return 0
   var score = 0
-  var domains = itemDomains(item)
-  var nameSquashed = squash(item.name)
-  var nameTokens = extractTokens(item.name)
-  var d, i
-
-  // 1. Domain to domain. Only reachable when the title actually spelled a host.
-  if (ctx.detectedDomain) {
-    for (i = 0; i < domains.length; i++) {
-      d = domains[i]
-      if (d.host === ctx.detectedDomain.host) return 100
-      if (d.baseDomain && d.baseDomain === ctx.detectedDomain.baseDomain) score = Math.max(score, 96)
-    }
+  for (var i = 0; i < domains.length; i++) {
+    var domain = domains[i]
+    if (domain.host === detectedDomain.host) return 100
+    if (domain.baseDomain && domain.baseDomain === detectedDomain.baseDomain) score = Math.max(score, 96)
   }
+  return score
+}
 
-  // 2. The item's registrable name appears in the page title.
-  for (i = 0; i < domains.length; i++) {
+// The item's registrable name appears in the page title.
+function domainTitleScore(domains, ctx) {
+  var score = 0
+  for (var i = 0; i < domains.length; i++) {
     var root = domains[i].rootName
     if (!root || root.length < 3 || GENERIC_LABELS[root] || TLDS[root]) continue
 
@@ -2086,49 +2206,112 @@ function matchItem(item, ctx) {
       score = Math.max(score, 86)
     }
   }
+  return score
+}
 
-  // 3. The item name matches a whole title segment.
-  if (nameSquashed.length >= 3) {
-    for (i = 0; i < ctx.segments.length; i++) {
-      if (squash(ctx.segments[i]) === nameSquashed) {
-        score = Math.max(score, 92)
-        break
-      }
-    }
-    if (nameSquashed.length >= 5 && ctx.squashedTitle.indexOf(nameSquashed) !== -1) {
-      score = Math.max(score, 84)
+// The item name matches a whole title segment.
+function itemNameTitleScore(nameSquashed, ctx) {
+  if (nameSquashed.length < 3) return 0
+  var score = 0
+  for (var i = 0; i < ctx.segments.length; i++) {
+    if (squash(ctx.segments[i]) === nameSquashed) {
+      score = 92
+      break
     }
   }
+  if (nameSquashed.length >= 5 && ctx.squashedTitle.indexOf(nameSquashed) !== -1) {
+    score = Math.max(score, 84)
+  }
+  return score
+}
 
-  // 4. Shared significant words between the item name and the title.
+// Shared significant words between the item name and the title.
+function sharedTitleTokenScore(nameTokens, titleTokens) {
   var overlap = 0
-  for (i = 0; i < nameTokens.length; i++) {
-    if (ctx.titleTokens.indexOf(nameTokens[i]) !== -1) overlap++
+  for (var i = 0; i < nameTokens.length; i++) {
+    if (titleTokens.indexOf(nameTokens[i]) !== -1) overlap++
   }
-  if (overlap > 0) {
-    score = Math.max(score, 78 + Math.min(overlap, 3) * 2)
-  }
+  return overlap > 0 ? 78 + Math.min(overlap, 3) * 2 : 0
+}
 
-  // 5. Native app: match the window class against the item.
-  if (!ctx.isBrowser && !ctx.isTerminal && ctx.clsSquashed.length >= 3) {
-    for (i = 0; i < domains.length; i++) {
-      var r = domains[i].rootName
-      if (r && r.length >= 3 && !GENERIC_LABELS[r] && r === ctx.clsSquashed) {
-        score = Math.max(score, 92)
-      }
-    }
-    if (nameSquashed.length >= 3 && (nameSquashed === ctx.clsSquashed
-        || nameSquashed.indexOf(ctx.clsSquashed) !== -1
-        || ctx.clsSquashed.indexOf(nameSquashed) !== -1)) {
-      score = Math.max(score, 88)
+// Native app: match the window class against the item.
+function nativeAppScore(domains, nameSquashed, ctx) {
+  if (ctx.isBrowser || ctx.isTerminal || ctx.clsSquashed.length < 3) return 0
+  var score = 0
+  for (var i = 0; i < domains.length; i++) {
+    var root = domains[i].rootName
+    if (root && root.length >= 3 && !GENERIC_LABELS[root] && root === ctx.clsSquashed) {
+      score = 92
     }
   }
+  if (nameSquashed.length >= 3 && (nameSquashed === ctx.clsSquashed
+      || nameSquashed.indexOf(ctx.clsSquashed) !== -1
+      || ctx.clsSquashed.indexOf(nameSquashed) !== -1)) {
+    score = Math.max(score, 88)
+  }
+  return score
+}
+
+// Score one vault item against the active window. 0 means no match; the bands
+// are deliberately spread so a real domain hit always outranks a word hit.
+function matchItem(item, ctx) {
+  if (!ctx || !item) return 0
+  if (ctx.isTerminal && !ctx.detectedDomain) return 0
+
+  var domains = itemDomains(item)
+  var nameSquashed = squash(item.name)
+  var nameTokens = extractTokens(item.name)
+
+  var score = directDomainScore(domains, ctx.detectedDomain)
+  if (score === 100) return score
+  score = Math.max(score, domainTitleScore(domains, ctx))
+  score = Math.max(score, itemNameTitleScore(nameSquashed, ctx))
+  score = Math.max(score, sharedTitleTokenScore(nameTokens, ctx.titleTokens))
+  score = Math.max(score, nativeAppScore(domains, nameSquashed, ctx))
 
   return score
 }
 
 var MATCH_THRESHOLD = 80
 var MAX_SUGGESTIONS = 6
+
+function resolveLearnedMatches(items, associations, ctx) {
+  // What you taught it comes first, and is never filtered out by the score
+  // banding -- an explicit choice outranks anything inferred.
+  var byId = {}
+  for (var i = 0; i < items.length; i++) {
+    if (items[i] && items[i].id) byId[items[i].id] = items[i]
+  }
+
+  var matches = []
+  var ids = {}
+  var learnedRanked = learnedMatchIds(associations, ctx)
+  for (var j = 0; j < learnedRanked.length; j++) {
+    var hit = byId[learnedRanked[j].itemId]
+    if (hit) {
+      matches.push(hit)
+      ids[hit.id] = true
+    }
+  }
+  return { matches: matches, ids: ids }
+}
+
+function scoreContextualMatches(items, ctx) {
+  var scored = []
+  for (var i = 0; i < items.length; i++) {
+    var score = matchItem(items[i], ctx)
+    if (score >= MATCH_THRESHOLD) {
+      scored.push({ item: items[i], score: score, index: i })
+    }
+  }
+  return scored
+}
+
+function compareContextualMatches(a, b) {
+  if (b.score !== a.score) return b.score - a.score
+  if (a.item.favorite !== b.item.favorite) return a.item.favorite ? -1 : 1
+  return a.index - b.index
+}
 
 function findContextualMatches(items, windowData, associations) {
   var empty = { matches: [], context: null, learnedIds: {} }
@@ -2138,41 +2321,14 @@ function findContextualMatches(items, windowData, associations) {
   if (ctx.isTerminal && !ctx.detectedDomain) return empty
   if (!ctx.title && !ctx.detectedDomain && !ctx.clsSquashed) return empty
 
-  // What you taught it comes first, and is never filtered out by the score
-  // banding below -- an explicit choice outranks anything inferred.
-  var byId = {}
-  for (var b = 0; b < items.length; b++) {
-    if (items[b] && items[b].id) byId[items[b].id] = items[b]
-  }
-
-  var learned = []
-  var learnedIds = {}
-  var learnedRanked = learnedMatchIds(associations, ctx)
-  for (var l = 0; l < learnedRanked.length; l++) {
-    var hit = byId[learnedRanked[l].itemId]
-    if (hit) {
-      learned.push(hit)
-      learnedIds[hit.id] = true
-    }
-  }
-
-  var scored = []
-  for (var i = 0; i < items.length; i++) {
-    var score = matchItem(items[i], ctx)
-    if (score >= MATCH_THRESHOLD) {
-      scored.push({ item: items[i], score: score, index: i })
-    }
-  }
-  if (scored.length === 0 && learned.length === 0) return empty
+  var learned = resolveLearnedMatches(items, associations, ctx)
+  var scored = scoreContextualMatches(items, ctx)
+  if (scored.length === 0 && learned.matches.length === 0) return empty
   if (scored.length === 0) {
-    return { matches: learned.slice(0, MAX_SUGGESTIONS), context: ctx, learnedIds: learnedIds }
+    return { matches: learned.matches.slice(0, MAX_SUGGESTIONS), context: ctx, learnedIds: learned.ids }
   }
 
-  scored.sort(function(a, b) {
-    if (b.score !== a.score) return b.score - a.score
-    if (a.item.favorite !== b.item.favorite) return a.item.favorite ? -1 : 1
-    return a.index - b.index
-  })
+  scored.sort(compareContextualMatches)
 
   // Keep only the strongest band. A confirmed domain hit discards everything
   // weaker (so a second account on the same site survives, but unrelated items
@@ -2180,14 +2336,14 @@ function findContextualMatches(items, windowData, associations) {
   var best = scored[0].score
   var cutoff = best >= 96 ? 96 : Math.max(MATCH_THRESHOLD, best - 8)
 
-  var matches = learned.slice()
+  var matches = learned.matches.slice()
   for (var m = 0; m < scored.length && matches.length < MAX_SUGGESTIONS; m++) {
-    if (scored[m].score >= cutoff && !learnedIds[scored[m].item.id]) {
+    if (scored[m].score >= cutoff && !learned.ids[scored[m].item.id]) {
       matches.push(scored[m].item)
     }
   }
 
-  return { matches: matches.slice(0, MAX_SUGGESTIONS), context: ctx, learnedIds: learnedIds }
+  return { matches: matches.slice(0, MAX_SUGGESTIONS), context: ctx, learnedIds: learned.ids }
 }
 
 // -------------------------------------------------------------------------
@@ -2203,21 +2359,33 @@ function findContextualMatches(items, windowData, associations) {
 
 var ASSOC_VERSION = 1
 var ASSOC_ENV = "QSBW_ASSOC"
-var ASSOC_FILE = "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli/associations.json"
+var ASSOC_DIR = "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
 
 function associationsEnvVar() {
   return ASSOC_ENV
 }
 
 function associationsReadCommand() {
-  return ["bash", "-c", "head -c " + MAX_ASSOC_BYTES + " \"" + ASSOC_FILE + "\" 2>/dev/null || echo '{}'"]
+  var script = "d=\"" + ASSOC_DIR + "\"; f=\"$d/associations.json\"; "
+    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
+    + "head -c " + MAX_ASSOC_BYTES + " \"$f\" 2>/dev/null || printf '{}'; else printf '{}'; fi"
+  return ["bash", "-c", script]
 }
 
 // Written through the environment for the same reason the keyring stores are:
 // Process.write() cannot deliver EOF, so a shell supplies the payload instead.
 function associationsWriteCommand() {
-  var script = "d=\"$(dirname \"" + ASSOC_FILE + "\")\"; mkdir -p \"$d\" && chmod 700 \"$d\" && "
-    + "umask 077 && printf '%s' \"$" + ASSOC_ENV + "\" > \"" + ASSOC_FILE + "\""
+  // Replace atomically from a private temporary file. Redirection straight to
+  // the destination would follow a symlink and would preserve an old 0644
+  // mode; rename replaces the directory entry itself and the fresh file is
+  // born 0600 under this umask.
+  var script = "set -e; d=\"" + ASSOC_DIR + "\"; "
+    + "if [ -e \"$d\" ]; then [ -d \"$d\" ] && [ ! -L \"$d\" ] || exit 1; "
+    + "else (umask 077 && mkdir -p \"$d\") || exit 1; fi; chmod 700 \"$d\"; "
+    + "umask 077; tmp=$(mktemp -- \"$d/.associations.XXXXXXXX\"); "
+    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
+    + "printf '%s' \"$" + ASSOC_ENV + "\" > \"$tmp\"; chmod 600 \"$tmp\"; "
+    + "mv -fT -- \"$tmp\" \"$d/associations.json\"; trap - EXIT HUP INT TERM"
   return ["bash", "-c", script]
 }
 
@@ -2228,14 +2396,44 @@ function associationsWriteCommand() {
 // are already cleared for exactly that reason; this file was the one piece of
 // the account's data left behind, and it has no expiry of its own.
 //
-// The directory stays: it is created 700 on the next write, and removing it
-// would race a write already in flight.
+// The directory stays: it is created 700 on the next write. The panel waits
+// for an in-flight atomic writer to exit before it runs this clear, so logout
+// cannot be followed by that writer resurrecting the file.
 function associationsClearCommand() {
-  return ["bash", "-c", "rm -f -- \"" + ASSOC_FILE + "\" 2>/dev/null; exit 0"]
+  var script = "d=\"" + ASSOC_DIR + "\"; "
+    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ]; then rm -f -- \"$d/associations.json\" 2>/dev/null; fi; exit 0"
+  return ["bash", "-c", script]
 }
 
 function emptyAssociations() {
   return { version: ASSOC_VERSION, keys: {} }
+}
+
+function associationKeyWeight(key) {
+  var value = String(key || "")
+  if (value.length > MAX_TITLE_CHARS + 16) return 0
+  if (/^domain:[a-z0-9][a-z0-9.-]*$/.test(value)) return 3
+  if (/^app:[a-z0-9]+$/.test(value)) return 2
+  if (/^word:[a-z0-9]+$/.test(value)) return 1
+  return 0
+}
+
+function cleanAssociationEntry(key, entry) {
+  var weight = associationKeyWeight(key)
+  if (!weight || !entry || typeof entry !== "object" || Array.isArray(entry)) return null
+
+  if (typeof entry.itemId !== "string"
+      || entry.itemId.length === 0 || entry.itemId.length > 256
+      || /[\x00-\x1f\x7f]/.test(entry.itemId)) return null
+
+  var count = Number(entry.count)
+  if (!isFinite(count) || count < 1) count = 1
+  count = Math.min(1000000, Math.floor(count))
+
+  var updated = typeof entry.updated === "string" ? entry.updated : ""
+  if (updated.length > 64 || /[\x00-\x1f\x7f]/.test(updated)) updated = ""
+
+  return { itemId: entry.itemId, weight: weight, count: count, updated: updated }
 }
 
 function parseAssociations(raw) {
@@ -2245,10 +2443,20 @@ function parseAssociations(raw) {
   } catch (e) {
     return emptyAssociations()
   }
-  if (!parsed || typeof parsed !== "object" || !parsed.keys || typeof parsed.keys !== "object") {
+  var version = Number(parsed && parsed.version === undefined ? ASSOC_VERSION : parsed.version)
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || version !== ASSOC_VERSION || !parsed.keys
+      || typeof parsed.keys !== "object" || Array.isArray(parsed.keys)) {
     return emptyAssociations()
   }
-  return { version: Number(parsed.version || ASSOC_VERSION), keys: parsed.keys }
+
+  var clean = emptyAssociations()
+  for (var key in parsed.keys) {
+    if (!Object.prototype.hasOwnProperty.call(parsed.keys, key)) continue
+    var entry = cleanAssociationEntry(key, parsed.keys[key])
+    if (entry) clean.keys[key] = entry
+  }
+  return clean
 }
 
 function serializeAssociations(assoc) {
@@ -2384,35 +2592,37 @@ function learnedMatchIds(assoc, ctx) {
 // Dependency Checks (Setup Wizard)
 // -------------------------------------------------------------------------
 //
-// Everything the plugin shells out to, checked in one process rather than one
-// per tool. Each entry reports present/absent plus the package that provides
-// it, so the wizard can offer an exact install command instead of advice.
-
+// What the wizard asks the user to install, checked in one process rather than
+// one per tool. Each entry reports present/absent plus the package that
+// provides it, so the wizard can offer an exact install command instead of
+// advice.
+//
+// Only tools Omarchy does not already ship belong here. `wl-clipboard`,
+// `libsecret` and `hyprland` are in omarchy-base.packages, and `glib2`,
+// `systemd` and `openssl` come with the system, so listing them turned a
+// first-run screen into a checklist of rows that are green on every machine
+// this plugin can run on -- noise in front of the one row that is not. The
+// plugin still shells out to all of them; they are simply not a decision the
+// user has to make. Anything added here must be something an Omarchy install
+// can genuinely lack.
 var DEPENDENCIES = [
   {
     key: "bw", label: "Bitwarden CLI", binary: "bw", pkg: "bitwarden-cli", aur: false,
     required: true,
-    purpose: "Reads and writes your vault. Nothing works without it."
+    purpose: "Reads and writes your vault. The panel installs it for you on first run."
   },
   {
-    key: "wlcopy", label: "wl-clipboard", binary: "wl-copy", pkg: "wl-clipboard", aur: false,
-    required: true,
-    purpose: "Copies passwords and TOTP codes to the Wayland clipboard."
-  },
-  {
-    key: "hyprctl", label: "Hyprland", binary: "hyprctl", pkg: "hyprland", aur: false,
-    required: false,
-    purpose: "Identifies the active window so the right login can be suggested."
-  },
-  {
-    key: "secrettool", label: "libsecret", binary: "secret-tool", pkg: "libsecret", aur: false,
-    required: false,
-    purpose: "Stores the session in the OS keyring, and the master password when fingerprint unlock is on."
-  },
-  {
-    key: "fprintd", label: "fprintd", binary: "fprintd-list", pkg: "fprintd", aur: false,
-    required: false,
-    purpose: "Fingerprint unlock. Also needs an enrolled finger via 'omarchy setup security fingerprint'."
+    // Not an `omarchy pkg add` row. Installing fprintd on its own gets nobody
+    // anywhere: `ready` also wants an enrolled finger and the PAM stack at
+    // /etc/pam.d/omarchy-lock-fingerprint, and a package install produces
+    // neither -- the row would stay red however many times it was pressed.
+    // `omarchy setup security fingerprint` is the whole job in one command
+    // (reader detection, libfprint/fprintd/usbutils, enrolment, verification,
+    // then the PAM stacks), so it owns this row outright.
+    key: "fprintd", label: "Fingerprint unlock", binary: "fprintd-list", pkg: "fprintd", aur: false,
+    required: false, setup: true,
+    // Only shown on a machine with a reader; see `applicable` below.
+    purpose: "Unlock the vault with your finger. Omarchy installs the reader stack and enrols you in one step."
   }
 ]
 
@@ -2427,6 +2637,13 @@ function dependencyCheckCommand() {
   }
   parts.push("if [ -f /etc/pam.d/omarchy-lock-fingerprint ] && command -v fprintd-list >/dev/null 2>&1 "
     + "&& fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo fingerprint_ready=1; else echo fingerprint_ready=0; fi")
+  // Omarchy's own reader detection, which reads sysfs rather than asking
+  // fprintd -- so it answers before anything is installed, which is exactly
+  // when the wizard needs to know whether to offer the row at all. A desktop
+  // with no reader should not be shown a fingerprint option it can never
+  // satisfy.
+  parts.push("if command -v omarchy-hw-fingerprint >/dev/null 2>&1 && omarchy-hw-fingerprint >/dev/null 2>&1; "
+    + "then echo fingerprint_hw=1; else echo fingerprint_hw=0; fi")
   parts.push("if command -v omarchy >/dev/null 2>&1; then echo omarchy=1; else echo omarchy=0; fi")
   return ["bash", "-c", cappedScript("{ " + parts.join("; ") + "; } | head -c 4096")]
 }
@@ -2449,12 +2666,35 @@ function parseDependencies(raw) {
       pkg: dep.pkg,
       required: dep.required,
       purpose: dep.purpose,
+      // Omarchy owns this one end to end, so the wizard offers its setup
+      // command rather than a package install. See DEPENDENCIES.
+      setup: Boolean(dep.setup),
+      // Whether this machine can satisfy the row at all. Hardware the box does
+      // not have is not a missing dependency, and listing it as one is how a
+      // setup screen grows rows nobody can ever turn green.
+      applicable: dep.key === "fprintd" ? Boolean(found["fingerprint_hw"]) : true,
       installed: Boolean(found[dep.key]),
       // fprintd on PATH is not the same as a usable reader with an enrolled finger.
       ready: dep.key === "fprintd" ? Boolean(found["fingerprint_ready"]) : Boolean(found[dep.key])
     })
   }
-  return { items: out, hasOmarchy: Boolean(found["omarchy"]) }
+  return {
+    items: out,
+    hasOmarchy: Boolean(found["omarchy"]),
+    hasFingerprintReader: Boolean(found["fingerprint_hw"])
+  }
+}
+
+// What the setup screen actually draws: the rows this machine can do something
+// about. Everything else stays in `items`, where the settings screen and the
+// fingerprint wiring still look tools up by key.
+function applicableDependencies(deps) {
+  var out = []
+  if (!deps || !deps.items) return out
+  for (var i = 0; i < deps.items.length; i++) {
+    if (deps.items[i].applicable) out.push(deps.items[i])
+  }
+  return out
 }
 
 function missingRequired(deps) {
@@ -2466,20 +2706,94 @@ function missingRequired(deps) {
   return missing
 }
 
-// Installs run in a terminal: they need a password prompt and the user should
-// see what is being installed rather than have it happen silently.
-function installPackagesCommand(pkgs) {
-  if (!pkgs || pkgs.length === 0) return null
-  var list = []
-  for (var i = 0; i < pkgs.length; i++) list.push(shellQuote(pkgs[i]))
-  var inner = "omarchy pkg add " + list.join(" ")
-    + "; echo; read -p 'Done. Press enter to close...'"
-  return ["bash", "-c", "omarchy launch terminal -e bash -c " + shellQuote(inner)]
+// Whether the panel should be sitting on the setup screen instead of talking
+// to `bw`. The plugin is installed and enabled before the CLI it drives
+// necessarily exists -- `omarchy plugin add` does not install anything else --
+// so a fresh install has to lead with "here is what is missing, install it"
+// rather than a status probe. Without `bw` that probe can only ever come back
+// "not logged in", and the login form it lands on is a dead end until the CLI
+// is there.
+//
+// The gate closes on three conditions rather than one: nothing is decided
+// until the probe has actually run (`checked`), it only holds while a required
+// tool is genuinely absent, and the user can always step past it (`dismissed`)
+// to reach the login screen anyway.
+function setupGateActive(deps, checked, dismissed) {
+  if (!checked || dismissed) return false
+  return missingRequired(deps).length > 0
 }
 
+// What a finished dependency probe should do next. The panel has exactly three
+// reactions available and choosing the wrong one is what a fresh install
+// experiences as breakage, so the decision sits here in the open rather than
+// inside a signal handler where nothing can reach it.
+//
+//   "setup" -- a required tool is absent and the user has not waved setup
+//              away: show it, and ask `bw` nothing.
+//   "probe" -- the required tools are all present, and either this session has
+//              never looked at the vault or an install just arrived and the
+//              panel has been waiting on it. Either way, go ask.
+//   "idle"  -- nothing to do. The ordinary case on a machine already set up,
+//              and also the case where a required tool is still missing but
+//              the user chose to carry on regardless.
+//
+// `wasGated` is the caller's memory of having seen a required tool missing. It
+// is what makes an install finishing in a terminal we do not own -- no exit
+// code, no signal, nothing to wait on -- turn into a panel that moves on.
+function dependencyProbeOutcome(deps, dismissed, probeStarted, wasGated) {
+  if (missingRequired(deps).length > 0) return dismissed ? "idle" : "setup"
+  if (!probeStarted || wasGated) return "probe"
+  return "idle"
+}
+
+// The packages a first-run install should ask for: everything absent, required
+// or not, so one trip through the terminal leaves the whole feature set
+// working instead of the bare minimum.
+function missingPackages(deps) {
+  var pkgs = []
+  if (!deps || !deps.items) return pkgs
+  for (var i = 0; i < deps.items.length; i++) {
+    var d = deps.items[i]
+    // A row this machine cannot use, or one Omarchy sets up through its own
+    // command, is not something to hand to `pkg add`.
+    if (!d.applicable || d.setup || d.installed) continue
+    if (pkgs.indexOf(d.pkg) === -1) pkgs.push(d.pkg)
+  }
+  return pkgs
+}
+
+// Package names reach the installer through an unquoted shell expansion
+// (omarchy-install-app runs `omarchy-pkg-add ${packages}`, where the splitting
+// is the point). Everything here comes from the DEPENDENCIES constant above,
+// so this guards a constant rather than user input -- but the guard is what
+// keeps that true if a package name ever starts coming from somewhere else.
+function isPlainPackageName(name) {
+  return typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(name)
+}
+
+// Installs are surfaced through Omarchy's own installer: a floating, centred,
+// themed terminal with the Omarchy logo, the package output, and a "press any
+// key to close" at the end. Same window every other app install on the system
+// opens, and it means we neither pick a terminal nor invent our own wait-for-
+// keypress. A password prompt has somewhere to be answered.
+function installPackagesCommand(pkgs, displayName) {
+  if (!pkgs || pkgs.length === 0) return null
+  for (var i = 0; i < pkgs.length; i++) {
+    if (!isPlainPackageName(pkgs[i])) return null
+  }
+  var name = displayName || (pkgs.length === 1 ? pkgs[0] : "Bitwarden plugin dependencies")
+  return ["omarchy", "install", "app", name, pkgs.join(" ")]
+}
+
+// Fingerprint is Omarchy's to set up, not ours: `omarchy setup security
+// fingerprint` detects the reader, installs libfprint/fprintd/usbutils,
+// enrols a finger, verifies it, and only then writes the PAM stacks -- the
+// last of which is what this plugin's `ready` check is actually looking for.
+// It runs in the same floating terminal as an install, since it is interactive
+// (sudo, then "keep moving the finger around on the sensor").
 function fingerprintSetupCommand() {
-  var inner = "omarchy setup security fingerprint; echo; read -p 'Done. Press enter to close...'"
-  return ["bash", "-c", "omarchy launch terminal -e bash -c " + shellQuote(inner)]
+  return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
+    "omarchy setup security fingerprint"]
 }
 
 // -------------------------------------------------------------------------
@@ -2505,26 +2819,26 @@ var SETTINGS_SCHEMA = [
   { key: "clearClipboardSec", group: "security", type: "int", label: "Clear clipboard after", unit: "seconds",
     min: 0, max: 300, step: 5, zeroLabel: "Never", defaultValue: 30,
     description: "Wipe a copied password or code from the clipboard." },
-  { key: "lockOnScreenLock", group: "security", type: "bool", label: "Lock when the screen locks",
+  { key: "lockOnScreenLock", group: "security", type: "bool", label: "Lock when the screen locks", defaultValue: true,
     description: "Lock as soon as the screen locks, rather than waiting out the auto-lock." },
-  { key: "lockOnSuspend", group: "security", type: "bool", label: "Lock when the machine suspends",
+  { key: "lockOnSuspend", group: "security", type: "bool", label: "Lock when the machine suspends", defaultValue: true,
     description: "Lock before sleep, so no session key is left in the suspended machine's memory." },
-  { key: "rememberSession", group: "security", type: "bool", label: "Remember session in keyring",
+  { key: "rememberSession", group: "security", type: "bool", label: "Remember session in keyring", defaultValue: true,
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
-  { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint",
+  { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint", defaultValue: false,
     requires: "fprintd", action: "fingerprint",
     description: "Store the master password in the OS keyring, gated behind a fingerprint." },
-  { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN",
+  { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "Encrypt the master password with a key derived from a PIN. Use 6 digits or more; 4 is the floor and is flagged as weak." },
 
-  { key: "closeOnCopy", group: "behavior", type: "bool", label: "Close panel on copy",
+  { key: "closeOnCopy", group: "behavior", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
   { key: "autoCopyTotpSec", group: "behavior", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
     min: 0, max: 30, step: 1, zeroLabel: "Off", defaultValue: 3,
     description: "Replace the clipboard with the 2FA code this long after the password." },
 
-  { key: "suggestOnOpen", group: "suggestions", type: "bool", label: "Suggest for active window",
+  { key: "suggestOnOpen", group: "suggestions", type: "bool", label: "Suggest for active window", defaultValue: true,
     description: "Match the focused window or browser tab against your vault." }
 ]
 
@@ -2590,6 +2904,16 @@ function intSetting(key, raw) {
   if (!isFinite(n) || n < entry.min) n = Math.floor(Number(entry.defaultValue))
   if (!isFinite(n)) n = entry.min
   return Math.max(entry.min, Math.min(entry.max, n))
+}
+
+// shell.json is external input. Only a JSON boolean may enable a boolean
+// setting; strings such as "false" are truthy in JavaScript and previously
+// enabled opt-in PIN/fingerprint storage when the file was malformed.
+function boolSetting(key, raw) {
+  if (typeof raw === "boolean") return raw
+  var entry = settingSchemaEntry(key)
+  if (!entry || entry.type !== "bool") return false
+  return entry.defaultValue === true
 }
 
 function settingWriteCommand(key, value, type) {
@@ -2726,9 +3050,6 @@ function normalizeGeneratorOptions(opts) {
 var GENERATE_HOST = "127.0.0.1"
 var GENERATE_PORT = 8087
 
-function generateServeHost() { return GENERATE_HOST }
-function generateServePort() { return GENERATE_PORT }
-
 // Started as a managed child so it dies with the shell rather than lingering.
 // BW_SESSION is cleared by the caller; see generatorServeEnv() in Panel.qml.
 function generateServeCommand() {
@@ -2771,7 +3092,9 @@ function generatorRequestTimeoutMs() { return GENERATE_REQUEST_TIMEOUT_MS }
 function generateServeRequestCommand(opts) {
   var url = generateServeUrl(opts)
   var timeoutSecs = Math.max(1, Math.round(GENERATE_REQUEST_TIMEOUT_MS / 1000))
-  var script = "curl -s -S --max-time " + timeoutSecs + " --connect-timeout " + timeoutSecs
+  // -q must be curl's first option to suppress ~/.curlrc. --noproxy makes the
+  // loopback guarantee independent of HTTP_PROXY/ALL_PROXY in the shell.
+  var script = "curl -q -s -S --noproxy '*' --max-time " + timeoutSecs + " --connect-timeout " + timeoutSecs
     + " " + shellQuote(url) + " | head -c " + Number(GENERATE_RESPONSE_CAP)
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
@@ -2884,32 +3207,38 @@ function generateCommand(opts) {
   return buildCappedCommand(args, MAX_TOKEN_BYTES)
 }
 
+function generatorEntropyBits(options) {
+  if (options.type === "passphrase") {
+    // EFF-style wordlist, ~12.9 bits per word.
+    return options.words * 12.9 + (options.includeNumber ? 3.3 : 0)
+  }
+
+  var pool = 0
+  if (options.uppercase) pool += 26
+  if (options.lowercase) pool += 26
+  if (options.numbers) pool += 10
+  if (options.special) pool += 26
+  if (options.ambiguous) pool -= 6
+  return options.length * (Math.log(Math.max(pool, 2)) / Math.log(2))
+}
+
+function generatorStrengthLabel(bits) {
+  if (bits >= 120) return "Excellent"
+  if (bits >= 90) return "Strong"
+  if (bits >= 60) return "Good"
+  if (bits >= 40) return "Fair"
+  return "Weak"
+}
+
 // Rough strength read for the meter. Deliberately simple: it describes the
 // search space the options imply, not the specific string produced.
 function generatorStrength(opts) {
-  var o = normalizeGeneratorOptions(opts)
-  var bits
-
-  if (o.type === "passphrase") {
-    // EFF-style wordlist, ~12.9 bits per word.
-    bits = o.words * 12.9 + (o.includeNumber ? 3.3 : 0)
-  } else {
-    var pool = 0
-    if (o.uppercase) pool += 26
-    if (o.lowercase) pool += 26
-    if (o.numbers) pool += 10
-    if (o.special) pool += 26
-    if (o.ambiguous) pool -= 6
-    bits = o.length * (Math.log(Math.max(pool, 2)) / Math.log(2))
+  var bits = generatorEntropyBits(normalizeGeneratorOptions(opts))
+  return {
+    bits: Math.round(bits),
+    label: generatorStrengthLabel(bits),
+    fraction: Math.max(0, Math.min(1, bits / 128))
   }
-
-  var label = "Weak"
-  if (bits >= 120) label = "Excellent"
-  else if (bits >= 90) label = "Strong"
-  else if (bits >= 60) label = "Good"
-  else if (bits >= 40) label = "Fair"
-
-  return { bits: Math.round(bits), label: label, fraction: Math.max(0, Math.min(1, bits / 128)) }
 }
 
 // -------------------------------------------------------------------------
@@ -2923,16 +3252,12 @@ function generatorStrength(opts) {
 var SEND_TYPE_TEXT = 0
 var SEND_TYPE_FILE = 1
 
-function listSendsCommand(session) {
+function listSendsCommand() {
   return buildCappedCommand(["send", "list"], MAX_SENDS_BYTES)
 }
 
-function deleteSendCommand(sendId, session) {
+function deleteSendCommand(sendId) {
   return buildCappedCommand(["send", "delete", "--", String(sendId)], MAX_MISC_BYTES)
-}
-
-function removeSendPasswordCommand(sendId, session) {
-  return buildCappedCommand(["send", "remove-password", "--", String(sendId)], MAX_MISC_BYTES)
 }
 
 // The payload travels in the environment, not argv. Both the flag form's
@@ -2944,20 +3269,9 @@ function sendEnvVar() {
   return SEND_ENV
 }
 
-function createSendCommand(session) {
+function createSendCommand() {
   var script = "printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
-}
-
-// A file Send cannot go through stdin JSON -- bw wants the path on the command
-// line -- but a path is not a secret, unlike a password.
-function createFileSendCommand(filePath, name, deleteInDays, maxAccessCount, session) {
-  var args = ["send", "--file", String(filePath)]
-  if (name) args = args.concat(["--name", String(name)])
-  args = args.concat(["-d", String(deleteInDays || 7)])
-  if (maxAccessCount) args = args.concat(["-a", String(maxAccessCount)])
-  args.push("--fullObject")
-  return buildCappedCommand(args, MAX_MISC_BYTES, MAX_STDERR_BYTES)
 }
 
 function buildSendPayload(name, text, hidden, deleteInDays, maxAccessCount, password, notes) {
@@ -2984,14 +3298,7 @@ function buildSendPayload(name, text, hidden, deleteInDays, maxAccessCount, pass
 }
 
 function parseSends(raw) {
-  var arr = null
-  try {
-    arr = JSON.parse(raw)
-  } catch (e) {
-    return []
-  }
-  if (!Array.isArray(arr)) return []
-
+  var arr = parseJsonArray(raw)
   var out = []
   for (var i = 0; i < arr.length; i++) {
     var s = arr[i]

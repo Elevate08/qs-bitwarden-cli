@@ -245,7 +245,7 @@ for (const [name, starter, handler] of [
   ["folders",       "loadFolders",        "onListFoldersFinished"],
   ["collections",   "loadOrgCollections", "onOrgCollectionsLoaded"],
   ["detail",        "openDetail",         "onDetailFinished"],
-  ["totp",          "fetchTotp",          "onTotpFinished"],
+  ["totp",          "startTotpFetch",     "onTotpFinished"],
   ["sends",         "loadSends",          "onSendsLoaded"],
 ]) {
   check(`${starter}() records the vault generation`,
@@ -254,7 +254,140 @@ for (const [name, starter, handler] of [
     new RegExp(`if \\(vaultReadIsStale\\("${name}"\\)\\) return`).test(bodyOf(handler)), bodyOf(handler))
 }
 
-for (const fn of ["lockVault", "onUnlockSuccess", "onSessionHandoff", "onKeyringLookupFinished"]) {
+// Writers and generated values can outlive a lock too. Their server-side
+// effect may already have happened, but no completion may repopulate the
+// locked panel, copy a newly created Send URL, or navigate back to main.
+for (const [name, starter, handler] of [
+  ["sendCreate",  "submitCreateSend",   "onSendCreated"],
+  ["sendDelete",  "deleteSend",         "onSendDeleted"],
+  ["generator",   "regenerate",         "onGenerated"],
+  ["folderCreate", "submitNewFolder",    "onFolderCreated"],
+  ["sync",        "syncVault",          "onSyncFinished"],
+  ["itemSave",    "saveItemForm",       "onSaveItemFinished"],
+  ["itemDelete",  "deleteCurrentItem",  "onDeleteItemFinished"],
+  ["attachment",  "pumpAttachmentQueue", "onAttachmentDownloaded"],
+]) {
+  check(`${starter}() stamps the vault operation`,
+    new RegExp(`beginVaultRead\\("${name}"\\)`).test(bodyOf(starter)), bodyOf(starter))
+  check(`${handler}() drops a completion from a vault that has closed`,
+    new RegExp(`if \\(vaultReadIsStale\\("${name}"\\)\\)[\\s\\S]{0,140}return`).test(bodyOf(handler)), bodyOf(handler))
+}
+
+const droppedState = bodyOf("dropVaultState")
+check("a queued TOTP request is pinned to the vault generation that queued it",
+  /totpQueuedEpoch\s*=\s*vaultEpoch/.test(bodyOf("fetchTotp"))
+    && /queuedEpoch\s*===\s*root\.vaultEpoch/.test(bodyOf("continueTotpQueue")),
+  bodyOf("fetchTotp") + "\n" + bodyOf("continueTotpQueue"))
+check("every status request records the current vault generation",
+  /beginEpochOperation\("status"\)/.test(bodyOf("runStatusCheck")), bodyOf("runStatusCheck"))
+check("status completion refuses a result from an earlier vault generation",
+  /if \(epochOperationIsStale\("status"\)\) return/.test(bodyOf("onStatusFinished")),
+  bodyOf("onStatusFinished"))
+check("status requests use the generation-stamped launcher",
+  (panelSrc.match(/statusProc\.running\s*=\s*true/g) || []).length === 1
+    && /statusProc\.running\s*=\s*true/.test(bodyOf("runStatusCheck")),
+  `direct starts: ${(panelSrc.match(/statusProc\.running\s*=\s*true/g) || []).length}`)
+check("session handoff reads record and verify their vault generation",
+  /beginEpochOperation\("sessionHandoff"\)/.test(bodyOf("refreshStatus"))
+    && /if \(epochOperationIsStale\("sessionHandoff"\)\) return/.test(bodyOf("onSessionHandoff")),
+  bodyOf("refreshStatus") + "\n" + bodyOf("onSessionHandoff"))
+check("remembered-session lookups record and verify their vault generation",
+  /beginEpochOperation\("keyringLookup"\)/.test(bodyOf("onSessionHandoff"))
+    && /if \(epochOperationIsStale\("keyringLookup"\)\) return/.test(bodyOf("onKeyringLookupFinished")),
+  bodyOf("onSessionHandoff") + "\n" + bodyOf("onKeyringLookupFinished"))
+check("logout closes any terminal handoff acceptance window",
+  /terminalLoginStartedAt\s*=\s*0/.test(bodyOf("logoutAccount")), bodyOf("logoutAccount"))
+const abandonedAuth = bodyOf("abandonAuthSecrets")
+check("abandoning authentication clears every typed or staged auth secret",
+  ["masterPassword", "loginPassword", "loginClientId", "loginClientSecret", "login2faCode",
+    "pendingUnlockPassword", "authPasswordWriteValue", "pinEntry"].every(prop =>
+      new RegExp(`\\b${prop}\\s*=\\s*""`).test(abandonedAuth)),
+  abandonedAuth)
+check("handoff, external unlock, and panel hide purge abandoned auth secrets",
+  /cancelAuthPrewarm\(\)[\s\S]{0,100}abandonAuthSecrets\(\)/.test(bodyOf("onSessionHandoff"))
+    && /if\s*\(st\.unlocked\)[\s\S]{0,120}abandonAuthSecrets\(\)/.test(bodyOf("onStatusFinished"))
+    && /onOpenedChanged:[\s\S]{0,180}else[\s\S]{0,120}abandonAuthSecrets\(\)/.test(panelSrc),
+  bodyOf("onSessionHandoff") + "\n" + bodyOf("onStatusFinished"))
+check("closing the panel invalidates PIN and fingerprint unlock completions",
+  /abandonAuthSecrets\(\)/.test(bodyOf("close"))
+    && /pinUnlockSubmitted\s*=\s*false/.test(abandonedAuth)
+    && /cancelFingerprintUnlock\(\)/.test(bodyOf("close")), bodyOf("close"))
+check("closing the panel cancels authentication-method setup writes",
+  /abandonPinSetup\(\)/.test(bodyOf("close"))
+    && /abandonFingerprintSetup\(\)/.test(bodyOf("close")), bodyOf("close"))
+check("leaving either authentication setup form cancels its in-flight write",
+  /currentScreen\s*!==\s*"pin"[\s\S]*abandonPinSetup\(\)/.test(panelSrc)
+    && /currentScreen\s*!==\s*"fingerprint"[\s\S]*abandonFingerprintSetup\(\)/.test(panelSrc)
+    && /invalidateEpochOperation\("pinStore"\)/.test(bodyOf("abandonPinSetup"))
+    && /invalidateEpochOperation\("masterStore"\)/.test(bodyOf("abandonFingerprintSetup")),
+  bodyOf("abandonPinSetup") + "\n" + bodyOf("abandonFingerprintSetup"))
+check("PIN completion requires a still-open submitted unlock",
+  /pinUnlockSubmitted\s*&&\s*opened\s*&&\s*status\s*===\s*"locked"/.test(bodyOf("onPinUnlockResult")),
+  bodyOf("onPinUnlockResult"))
+check("fingerprint password retrieval requires a live verified attempt",
+  /fingerprintAuthorized/.test(bodyOf("onFingerprintPasswordRetrieved"))
+    && /opened/.test(bodyOf("onFingerprintPasswordRetrieved"))
+    && /status\s*!==\s*"locked"/.test(bodyOf("onFingerprintPasswordRetrieved")),
+  bodyOf("onFingerprintPasswordRetrieved"))
+check("remembered-session stores are generation-stamped and stale stores are cleared",
+  /beginEpochOperation\("sessionStore"\)/.test(bodyOf("storeCurrentSession"))
+    && /epochOperationIsStale\("sessionStore"\)/.test(bodyOf("onSessionStored"))
+    && /requestSessionCredentialClear\(\)/.test(bodyOf("onSessionStored")),
+  bodyOf("storeCurrentSession") + "\n" + bodyOf("onSessionStored"))
+check("a newer session waits for an old store and its cleanup before being remembered",
+  /keyringStoreProc\.running\s*\|\|\s*keyringClearProc\.running/.test(bodyOf("storeCurrentSession"))
+    && /sessionStorePending\s*=\s*true/.test(bodyOf("storeCurrentSession"))
+    && /sessionStorePending\s*=\s*rememberSession\s*&&\s*status\s*===\s*"unlocked"\s*&&\s*!!session/.test(bodyOf("onSessionStored"))
+    && /sessionStorePending[\s\S]{0,100}storeCurrentSession/.test(panelSrc.slice(
+      panelSrc.indexOf("id: keyringClearProc"), panelSrc.indexOf("id: listFoldersProc"))),
+  bodyOf("storeCurrentSession") + "\n" + bodyOf("onSessionStored"))
+check("PIN stores cannot recreate a credential after the vault generation changes",
+  /beginEpochOperation\("pinStore"\)/.test(bodyOf("submitPinSetup"))
+    && /epochOperationIsStale\("pinStore"\)/.test(bodyOf("onPinStored"))
+    && /requestPinCredentialClear\(\)/.test(bodyOf("onPinStored")),
+  bodyOf("submitPinSetup") + "\n" + bodyOf("onPinStored"))
+check("master-password stores cannot recreate a credential after lock or logout",
+  /beginEpochOperation\("masterStore"\)/.test(bodyOf("submitFingerprintSetup"))
+    && /epochOperationIsStale\("masterStore"\)/.test(bodyOf("onMasterPasswordStored"))
+    && /requestMasterCredentialClear\(\)/.test(bodyOf("onMasterPasswordStored")),
+  bodyOf("submitFingerprintSetup") + "\n" + bodyOf("onMasterPasswordStored"))
+check("a learned-association read cannot repopulate account metadata after logout",
+  /associationsReadEpoch\s*=\s*associationsEpoch/.test(bodyOf("loadAssociations"))
+    && /associationsReadEpoch\s*!==\s*associationsEpoch/.test(bodyOf("onAssociationsLoaded"))
+    && /associationsEpoch\s*\+=\s*1/.test(bodyOf("forgetStoredCredentials")),
+  bodyOf("loadAssociations") + "\n" + bodyOf("onAssociationsLoaded")
+    + "\n" + bodyOf("forgetStoredCredentials"))
+check("credential clears requested during another clear are repeated afterward",
+  /sessionClearPending\s*=\s*true/.test(bodyOf("requestSessionCredentialClear"))
+    && /pinClearPending\s*=\s*true/.test(bodyOf("requestPinCredentialClear"))
+    && /masterClearPending\s*=\s*true/.test(bodyOf("requestMasterCredentialClear"))
+    && /allCredentialsClearPending\s*=\s*true/.test(bodyOf("requestAllCredentialClear")),
+  "one or more keyring clear paths cannot queue a repeat")
+check("locking uses the centralized local vault purge",
+  /dropVaultState\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
+check("unreadable, locked, and logged-out status results purge local vault state",
+  (bodyOf("onStatusFinished").match(/dropVaultState\(\)/g) || []).length >= 3,
+  bodyOf("onStatusFinished"))
+for (const [prop, empty] of [
+  ["session", '""'], ["items", "[]"], ["filteredItems", "[]"],
+  ["organizations", "[]"], ["folders", "[]"], ["detailItem", "null"],
+  ["formCollections", "[]"], ["formCollectionIds", "[]"],
+  ["formUsername", '""'], ["formUri", '""'],
+  ["formNotes", '""'],
+]) {
+  check(`the local vault purge clears ${prop}`,
+    droppedState.includes(`${prop} = ${empty}`),
+    droppedState)
+}
+check("the local vault purge cancels and clears attachment work",
+  /cancelAttachmentDownloads\(\)/.test(droppedState)
+    && /attachmentQueue\s*=\s*\[\]/.test(bodyOf("cancelAttachmentDownloads"))
+    && /attachmentBusyId\s*=\s*""/.test(bodyOf("cancelAttachmentDownloads")),
+  droppedState + "\n" + bodyOf("cancelAttachmentDownloads"))
+check("the local vault purge clears secret fields and collector buffers",
+  /dropVaultSecrets\(\)/.test(droppedState), droppedState)
+
+for (const fn of ["onUnlockSuccess", "onSessionHandoff", "onKeyringLookupFinished"]) {
   check(`${fn}() moves the vault generation on`,
     /vaultEpoch \+= 1/.test(bodyOf(fn)), bodyOf(fn))
 }

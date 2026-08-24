@@ -215,6 +215,27 @@ check("corrupt association file degrades to empty",
   Model.parseAssociations("{{not json").keys && Object.keys(Model.parseAssociations("{{not json").keys).length === 0,
   "expected an empty store")
 
+const hostileAssociations = Model.parseAssociations(
+  '{"version":1,"keys":{"__proto__":{"polluted":true},"arbitrary":{"itemId":"x"},'
+  + '"word:valid":{"itemId":"auth-1","weight":1,"count":2,"updated":"2026-08-24T00:00:00Z"}}}')
+const copiedHostile = Model.recordAssociation(hostileAssociations, ctx, "auth-1", "2026-12-31T00:00:00Z")
+check("association parsing drops keys outside the domain/app/word schema",
+  !Object.prototype.hasOwnProperty.call(hostileAssociations.keys, "__proto__")
+    && !Object.prototype.hasOwnProperty.call(hostileAssociations.keys, "arbitrary")
+    && Object.prototype.hasOwnProperty.call(hostileAssociations.keys, "word:valid"),
+  Object.keys(hostileAssociations.keys).join(","))
+check("hostile association keys cannot become the prototype of a copied store",
+  copiedHostile.keys.polluted === undefined, JSON.stringify(copiedHostile.keys))
+check("association entries without a bounded string item id are dropped",
+  Object.keys(Model.parseAssociations(
+    '{"version":1,"keys":{"word:bad":{"itemId":{}},"word:good":{"itemId":"x"}}}').keys).join()
+    === "word:good",
+  "invalid item id survived")
+check("unknown association schema versions fail closed",
+  Object.keys(Model.parseAssociations(
+    '{"version":999,"keys":{"word:old":{"itemId":"x"}}}').keys).length === 0,
+  "unknown schema was accepted")
+
 // Suggestions must still work with no association store at all.
 check("undefined associations are safe",
   Model.findContextualMatches(items, { class: "chromium", title: "Netflix - Chromium", mapped: true })

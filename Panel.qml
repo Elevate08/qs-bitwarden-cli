@@ -23,14 +23,14 @@ Panel {
   // locking itself. See intSetting() in BitwardenModel.js.
   readonly property int autoLockMinutes: Model.intSetting("autoLockMinutes", setting("autoLockMinutes"))
   readonly property int clearClipboardSec: Model.intSetting("clearClipboardSec", setting("clearClipboardSec"))
-  readonly property bool lockOnScreenLock: Boolean(setting("lockOnScreenLock", true))
-  readonly property bool lockOnSuspend: Boolean(setting("lockOnSuspend", true))
-  readonly property bool rememberSession: Boolean(setting("rememberSession", true))
+  readonly property bool lockOnScreenLock: Model.boolSetting("lockOnScreenLock", setting("lockOnScreenLock", true))
+  readonly property bool lockOnSuspend: Model.boolSetting("lockOnSuspend", setting("lockOnSuspend", true))
+  readonly property bool rememberSession: Model.boolSetting("rememberSession", setting("rememberSession", true))
   readonly property int autoCopyTotpSec: Model.intSetting("autoCopyTotpSec", setting("autoCopyTotpSec"))
-  readonly property bool closeOnCopy: Boolean(setting("closeOnCopy", true))
-  readonly property bool suggestOnOpen: Boolean(setting("suggestOnOpen", true))
-  readonly property bool fingerprintUnlock: Boolean(setting("fingerprintUnlock", false))
-  readonly property bool pinUnlock: Boolean(setting("pinUnlock", false))
+  readonly property bool closeOnCopy: Model.boolSetting("closeOnCopy", setting("closeOnCopy", true))
+  readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
+  readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
+  readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -63,6 +63,17 @@ Panel {
   property var dependencies: ({ items: [], hasOmarchy: true })
   property bool depsChecked: false
   property bool setupDismissed: false
+  // True while the panel should be showing setup rather than probing `bw`.
+  // See setupGateActive() in BitwardenModel.js for why the gate exists.
+  readonly property bool setupGated: Model.setupGateActive(dependencies, depsChecked, setupDismissed)
+  // Whether the first `bw status` has been started. The probe waits behind the
+  // dependency check on a fresh install, so something has to remember that it
+  // still owes the vault a look once the tools arrive.
+  property bool statusProbeStarted: false
+  // Set the moment a required tool is seen missing, cleared once the probe
+  // that follows the install has run. It is what turns "the install finished
+  // in a terminal we do not own" into a panel that moves on by itself.
+  property bool setupWasGated: false
   property string settingsFlash: ""
   property int settingsIndex: 0
   readonly property var settingsEntries: Model.groupedSettings()
@@ -113,6 +124,12 @@ Panel {
   property bool passwordRevealed: false
   property string liveTotp: ""
   property int totpSecRemaining: 30
+  property string totpRequestItemId: ""
+  property string totpQueuedItemId: ""
+  property int totpQueuedEpoch: -1
+  property bool totpRestartPending: false
+  property string totpCopyItemId: ""
+  property string passwordCopyItemId: ""
 
   // Attachment downloads. One `bw get attachment` runs at a time and the rest
   // wait in the queue, so "Save all" on an item with six files does not fire
@@ -163,6 +180,10 @@ Panel {
   property bool isLoading: false
   property bool isUnlocking: false
   property bool isSyncing: false
+  property bool metadataLoadPending: false
+  property bool metadataForceRefresh: false
+  property bool statusRefreshAfterItems: false
+  property bool syncReloadPending: false
   property string errorMessage: ""
   property string flashMessage: ""
   property bool cursorActive: false
@@ -173,8 +194,19 @@ Panel {
   property bool fingerprintAvailable: false   // PAM stack + reader + enrolled finger
   property bool fingerprintStored: false      // master password present in keyring
   property bool fingerprintScanning: false
+  property bool fingerprintAuthorized: false // a live PAM success may consume one keyring lookup
   property string fingerprintMessage: ""
   property string pendingUnlockPassword: ""   // held only until the unlock lands
+  // Authentication processes are started before submission and wait on a
+  // private FIFO. These flags distinguish that harmless waiting state from an
+  // attempt whose password has actually been delivered.
+  property bool unlockSubmitted: false
+  property bool loginSubmitted: false
+  property bool loginSubmitAfterPrewarmStop: false
+  property bool loginPrepareAfterPrewarmStop: false
+  property string loginPrewarmSignature: ""
+  property string authPasswordWriteTarget: ""
+  property string authPasswordWriteValue: ""
   // The value the keyring store process reads. Set from whichever path is
   // storing: the explicit setup form, or the automatic refresh after unlock.
   property string masterToStore: ""
@@ -208,6 +240,8 @@ Panel {
   property var genOpts: Model.generatorDefaults()
   property string genValue: ""
   property bool genBusy: false
+  property bool genRegeneratePending: false
+  property string genRequestSignature: ""
   // `bw serve` state. Ready means the loopback generator answered; failed
   // means we stopped trying and the CLI carries the feature instead -- most
   // likely because something else already holds the port, in which case we
@@ -219,6 +253,11 @@ Panel {
   // Set while we are the ones shutting the server down, so its exit is not
   // mistaken for the bind failure that gives up on the port.
   property bool generateServeStopping: false
+  property bool generateCliStopping: false
+  property bool generateServeRequestStopping: false
+  property bool generateServeRequestPending: false
+  property var generateServeRequestPendingOptions: null
+  property var generateServeRequestPendingCallback: null
   // Where Back and Esc go, and whether the generator can hand its value
   // somewhere. Opened from the item form it fills the password field in and
   // returns; opened on its own it is just the generator. One screen either
@@ -237,6 +276,7 @@ Panel {
   property string pinSetupConfirm: ""
   property string pinSetupMaster: ""
   property bool pinBusy: false
+  property bool pinUnlockSubmitted: false
   readonly property bool pinReady: pinUnlock && pinConfigured
   // Long enough to save, short enough to be a bad idea. Drives the red state
   // on the PIN field during setup; see pinWeakWarning() in BitwardenModel.js.
@@ -252,6 +292,22 @@ Panel {
   property var associations: ({ version: 1, keys: {} })
   property var learnedIds: ({})
   property string pendingAssociationsJson: ""
+  property bool associationsWritePending: false
+  property bool associationsClearPending: false
+  property int associationsEpoch: 0
+  property int associationsReadEpoch: -1
+  property bool sessionStorePending: false
+  property bool sessionClearPending: false
+  property bool pinClearPending: false
+  property bool masterClearPending: false
+  property bool allCredentialsClearPending: false
+  property bool logoutPending: false
+  property bool logoutCliDone: false
+  property bool logoutCredentialsDone: false
+  property int logoutExitCode: 0
+  property int logoutCredentialsExitCode: 0
+  readonly property bool logoutCleanupFailed: logoutPending && logoutCredentialsDone
+    && logoutCredentialsExitCode !== 0
 
   // Visual styles
   readonly property color fg: bar ? bar.foreground : Color.foreground
@@ -267,8 +323,12 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   Component.onCompleted: {
-    root.refreshStatus()
-    root.refreshFingerprintAvailability()
+    // The dependency probe goes first, and the status probe follows from it in
+    // onDependenciesChecked. On a machine that already has `bw` the two are a
+    // few milliseconds apart; on a fresh install the order is the difference
+    // between opening on the setup screen and opening on a login form that
+    // cannot succeed.
+    root.checkDependencies()
     root.loadAssociations()
   }
 
@@ -308,21 +368,17 @@ Panel {
   function close() {
     errorMessage = ""
     passwordRevealed = false
-    masterPassword = ""
-    loginPassword = ""
     showDeleteConfirm = false
     totpFollowupActive = false
     isUnlocking = false
-    pendingUnlockPassword = ""
-    // A half-typed PIN and either setup form's master password are abandoned
-    // by closing the panel just as surely as by cancelling, and reopening
-    // never lands back on those screens.
-    pinEntry = ""
-    pinSetupPin = ""
-    pinSetupConfirm = ""
-    pinSetupMaster = ""
-    fpSetupMaster = ""
+    cancelAuthPrewarm()
+    abandonAuthSecrets()
+    // Closing a setup form is cancellation even if its keyring writer has
+    // already started; its completion handler will clear a stale write.
+    abandonPinSetup()
+    abandonFingerprintSetup()
     cancelFingerprintUnlock()
+    cancelAttachmentDownloads()
     stopGeneratorServe()
     root.controller.hide()
   }
@@ -334,17 +390,19 @@ Panel {
 
   function detectActiveWindowContext() {
     if (!suggestOnOpen) return
-    activeWindowProc.command = ["sh", "-c", "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' && (hyprctl activewindow -j 2>/dev/null | head -c 65536) || (hyprctl clients -j 2>/dev/null | head -c 1048576)"]
+    activeWindowProc.command = Model.activeWindowCommand()
     activeWindowProc.running = true
   }
 
   function loadAssociations() {
     if (associationsReadProc.running) return
+    associationsReadEpoch = associationsEpoch
     associationsReadProc.command = Model.associationsReadCommand()
     associationsReadProc.running = true
   }
 
   function onAssociationsLoaded(raw) {
+    if (associationsReadEpoch !== associationsEpoch) return
     associations = Model.parseAssociations(raw)
     if (activeWindowData) handleActiveWindowDetected(activeWindowData)
   }
@@ -352,6 +410,11 @@ Panel {
   function saveAssociations(next) {
     associations = next
     pendingAssociationsJson = Model.serializeAssociations(next)
+    if (associationsWriteProc.running) {
+      associationsWritePending = true
+      return
+    }
+    associationsWritePending = false
     associationsWriteProc.running = true
   }
 
@@ -396,6 +459,9 @@ Panel {
 
   function focusAppropriateField() {
     Qt.callLater(function() {
+      // Setup has no field to type into, and the ones this would reach for are
+      // on screens that are not showing.
+      if (currentScreen === "setup") return
       if (status === "unlocked" && currentScreen === "main") {
         searchField.forceActiveFocus()
       } else if (status === "locked" || status === "checking") {
@@ -409,7 +475,11 @@ Panel {
 
   onOpenedChanged: {
     if (opened) onPanelOpened()
-    else cancelFingerprintUnlock()
+    else {
+      cancelFingerprintUnlock()
+      cancelAuthPrewarm()
+      abandonAuthSecrets()
+    }
   }
 
   function onPanelOpened() {
@@ -424,6 +494,7 @@ Panel {
       // Still check for a handed-over session: a terminal login leaves the
       // panel locked, which is precisely when the handoff matters.
       refreshStatus()
+      prepareUnlock()
       startFingerprintUnlock()
     } else {
       refreshStatus()
@@ -436,6 +507,27 @@ Panel {
 
   function refreshStatus() {
     errorMessage = ""
+    if (logoutPending) return
+    // The dependency probe owns the first status transition. Opening the
+    // panel before that short probe returns must wait rather than trying to
+    // execute a CLI that a first-run install may not have yet.
+    if (!depsChecked) {
+      checkDependencies()
+      return
+    }
+    // Nothing to ask while a required tool is missing. Every caller reaches
+    // here on some ordinary event -- a panel open, an IPC nudge -- and none of
+    // them should be able to walk the user past setup into a login form that
+    // has no CLI behind it.
+    if (setupGated) {
+      currentScreen = "setup"
+      return
+    }
+    // Past the gate, so the vault has been asked about. Recorded here rather
+    // than at the one call site that waits on the dependency probe, so a panel
+    // opened before that probe reports does not earn a second `bw status` --
+    // three seconds each, and the first open is where they are felt.
+    statusProbeStarted = true
     // A terminal login may have left a session waiting. Check before anything
     // else, including the locked-with-no-session short circuit below, since
     // that is exactly the state a terminal login leaves the panel in.
@@ -447,19 +539,23 @@ Panel {
     if (sessionHandoffProc.running) return
     var expecting = Model.handoffWindowOpen(terminalLoginStartedAt, Date.now())
     if (!expecting) terminalLoginStartedAt = 0
+    beginEpochOperation("sessionHandoff")
     sessionHandoffProc.command = Model.sessionHandoffReadCommand(expecting)
     sessionHandoffProc.running = true
   }
 
   function onSessionHandoff(raw) {
+    if (epochOperationIsStale("sessionHandoff")) return
     var handed = Model.extractSessionToken(String(raw || "").trim())
     if (handed) {
+      cancelAuthPrewarm()
+      abandonAuthSecrets()
       // Consumed, so the window shuts behind it rather than staying open for
       // whatever is written there next.
       terminalLoginStartedAt = 0
       session = handed
       vaultEpoch += 1
-      if (rememberSession) keyringStoreProc.running = true
+      storeCurrentSession()
 
       // bw minted this key moments ago, so trust it and start loading rather
       // than spending another `bw status` (~3.3s) to be told what we know.
@@ -468,13 +564,10 @@ Panel {
       status = "unlocked"
       currentScreen = "main"
       itemsLoadedAt = 0
-      loadItems()
-      loadOrganizations()
-      loadFolders()
+      statusRefreshAfterItems = true
+      beginInitialVaultLoad(true, false)
       resetAutoLockTimer()
       focusAppropriateField()
-      statusProc.command = Model.statusCommand()
-      statusProc.running = true
       flashNotification("Signed in from the terminal")
       return
     }
@@ -482,39 +575,43 @@ Panel {
     if (status === "locked" && !session) return
 
     if (session) {
-      statusProc.command = Model.statusCommand()
-      statusProc.running = true
+      runStatusCheck()
     } else if (rememberSession && status !== "locked") {
+      beginEpochOperation("keyringLookup")
       keyringLookupProc.command = Model.keyringLookupCommand()
       keyringLookupProc.running = true
     } else {
-      statusProc.command = Model.statusCommand()
-      statusProc.running = true
+      runStatusCheck()
     }
   }
 
   function onKeyringLookupFinished(rawToken) {
+    if (epochOperationIsStale("keyringLookup")) return
     var token = String(rawToken || "").trim()
     if (token) {
       session = token
       vaultEpoch += 1
-      statusProc.command = Model.statusCommand()
-      statusProc.running = true
-    } else {
-      statusProc.command = Model.statusCommand()
-      statusProc.running = true
     }
+    runStatusCheck()
   }
 
-  function onKeyringLookupFailed() {
+  function runStatusCheck() {
+    if (statusProc.running) return
+    beginEpochOperation("status")
     statusProc.command = Model.statusCommand()
     statusProc.running = true
   }
 
   function onStatusFinished(rawJson) {
+    if (epochOperationIsStale("status")) return
     isLoading = false
     var st = Model.parseStatus(rawJson)
     if (!st) {
+      cancelAuthPrewarm()
+      if (vaultStatePresent()) {
+        if (session) requestSessionCredentialClear()
+        dropVaultState()
+      }
       status = "unauthenticated"
       currentScreen = "login"
       focusAppropriateField()
@@ -527,23 +624,31 @@ Panel {
     }
 
     if (st.unlocked) {
+      cancelAuthPrewarm()
+      abandonAuthSecrets()
       status = "unlocked"
       currentScreen = "main"
       ensureItemsFresh()
       resetAutoLockTimer()
       focusAppropriateField()
     } else if (st.locked) {
+      if (vaultStatePresent()) {
+        if (session) requestSessionCredentialClear()
+        dropVaultState()
+      }
       status = "locked"
       currentScreen = "locked"
-      items = []
-      filteredItems = []
       focusAppropriateField()
+      if (opened) prepareUnlock()
       if (opened) startFingerprintUnlock()
     } else {
+      cancelAuthPrewarm()
+      if (vaultStatePresent()) {
+        if (session) requestSessionCredentialClear()
+        dropVaultState()
+      }
       status = "unauthenticated"
       currentScreen = "login"
-      items = []
-      filteredItems = []
       focusAppropriateField()
     }
   }
@@ -552,8 +657,114 @@ Panel {
   // In-Plugin Login & Authentication
   // -------------------------------------------------------------------------
 
+  function emailLoginSignature() {
+    return String(loginEmail || "").trim() + "\n"
+      + String(loginServerUrl || "").trim() + "\n"
+      + (String(login2faCode || "").trim() ? "2fa" : "plain")
+  }
+
+  function invalidateEmailLoginPrewarm() {
+    if (loginSubmitted) return
+    if (loginSubmitAfterPrewarmStop) isLoading = false
+    loginSubmitAfterPrewarmStop = false
+    loginPrepareAfterPrewarmStop = false
+    loginPrewarmSignature = ""
+    if (loginProc.running) loginProc.running = false
+  }
+
+  function prepareEmailLogin() {
+    if (logoutPending || !opened || status !== "unauthenticated" || loginMethod !== "email" || isLoading) return
+    var email = String(loginEmail || "").trim()
+    if (!email || Model.validateServerUrl(loginServerUrl)) return
+    // Configuring a custom server changes bw's persistent global state. Do it
+    // only after explicit submission, never merely because the password field
+    // received focus. Default-cloud logins still get the full prewarm win.
+    if (String(loginServerUrl || "").trim()) return
+
+    var signature = emailLoginSignature()
+    if (loginProc.running) {
+      if (loginPrewarmSignature === signature) return
+      loginPrepareAfterPrewarmStop = true
+      loginProc.running = false
+      return
+    }
+
+    loginPrepareAfterPrewarmStop = false
+    loginPrewarmSignature = signature
+    loginSubmitted = false
+    loginProc.command = Model.emailLoginPrewarmCommand(
+      email, String(login2faCode || "").trim().length > 0, String(loginServerUrl || "").trim())
+    loginProc.running = true
+  }
+
+  function prepareUnlock() {
+    if (!opened || status !== "locked" || unlockProc.running) return
+    unlockSubmitted = false
+    unlockProc.command = Model.unlockPrewarmCommand()
+    unlockProc.running = true
+  }
+
+  function cancelAuthPrewarm() {
+    authPasswordWriteTarget = ""
+    authPasswordWriteValue = ""
+    unlockSubmitted = false
+    loginSubmitted = false
+    loginSubmitAfterPrewarmStop = false
+    loginPrepareAfterPrewarmStop = false
+    loginPrewarmSignature = ""
+    if (authPasswordWriterProc.running) authPasswordWriterProc.running = false
+    if (unlockProc.running) unlockProc.running = false
+    if (loginProc.running) loginProc.running = false
+  }
+
+  function abandonAuthSecrets() {
+    masterPassword = ""
+    loginPassword = ""
+    loginClientId = ""
+    loginClientSecret = ""
+    login2faCode = ""
+    pendingUnlockPassword = ""
+    pendingUnlockFrom = ""
+    authPasswordWriteValue = ""
+    pinEntry = ""
+    pinUnlockSubmitted = false
+    fingerprintAuthorized = false
+  }
+
+  function writeAuthPassword(channel, password) {
+    authPasswordWriteTarget = channel
+    authPasswordWriteValue = String(password === undefined || password === null ? "" : password)
+    authPasswordWriterProc.command = Model.authPasswordWriteCommand(channel)
+    authPasswordWriterProc.running = true
+  }
+
+  function onAuthPasswordWriterExited(exitCode) {
+    var target = authPasswordWriteTarget
+    authPasswordWriteTarget = ""
+    authPasswordWriteValue = ""
+    if (exitCode === 0 || !target) return
+
+    if (target === "unlock") {
+      unlockSubmitted = false
+      isUnlocking = false
+      if (unlockProc.running) unlockProc.running = false
+      errorMessage = "Could not deliver the password to Bitwarden. Please try again."
+      Qt.callLater(prepareUnlock)
+    } else if (target === "login") {
+      loginSubmitted = false
+      isLoading = false
+      if (loginProc.running) loginProc.running = false
+      errorMessage = "Could not deliver the password to Bitwarden. Please try again."
+    }
+  }
+
   function submitLogin() {
+    if (loginSubmitted) return
     errorMessage = ""
+    if (logoutPending) {
+      errorMessage = "Finishing logout. Please wait a moment."
+      return
+    }
 
     // Checked before either branch, because both send the master password to
     // whatever this names. See validateServerUrl() for what it refuses.
@@ -566,7 +777,7 @@ Panel {
 
     if (loginMethod === "email") {
       var email = String(loginEmail || "").trim()
-      var pass = String(loginPassword || "").trim()
+      var pass = String(loginPassword === undefined || loginPassword === null ? "" : loginPassword)
       if (!email) {
         errorMessage = "Email address is required"
         return
@@ -577,14 +788,25 @@ Panel {
       }
 
       isLoading = true
-      // The password and the code go to loginProc through the environment;
-      // only whether a code was entered shapes the command itself.
-      loginProc.command = Model.emailLoginCommand(email, login2faCode.trim().length > 0, loginServerUrl.trim())
-      loginProc.running = true
+      var signature = emailLoginSignature()
+      if (loginProc.running && loginPrewarmSignature !== signature) {
+        loginPrepareAfterPrewarmStop = false
+        loginSubmitAfterPrewarmStop = true
+        loginProc.running = false
+        return
+      }
+      if (!loginProc.running) {
+        loginPrewarmSignature = signature
+        loginProc.command = Model.emailLoginPrewarmCommand(
+          email, login2faCode.trim().length > 0, loginServerUrl.trim())
+        loginProc.running = true
+      }
+      loginSubmitted = true
+      writeAuthPassword("login", pass)
     } else {
       var id = String(loginClientId || "").trim()
       var secret = String(loginClientSecret || "").trim()
-      var pass2 = String(loginPassword || "").trim()
+      var pass2 = String(loginPassword === undefined || loginPassword === null ? "" : loginPassword)
 
       if (!id) {
         errorMessage = "API Client ID is required"
@@ -600,7 +822,15 @@ Panel {
       }
 
       isLoading = true
+      if (loginProc.running) {
+        loginPrepareAfterPrewarmStop = false
+        loginSubmitAfterPrewarmStop = true
+        loginProc.running = false
+        return
+      }
       // Client ID, client secret and password all travel in the environment.
+      loginSubmitted = true
+      loginPrewarmSignature = ""
       loginProc.command = Model.apiKeyLoginCommand(loginServerUrl.trim())
       loginProc.running = true
     }
@@ -608,6 +838,7 @@ Panel {
 
   function onLoginOutput(stdoutText, stderrText, exitCode) {
     isLoading = false
+    loginPrewarmSignature = ""
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
 
@@ -636,6 +867,10 @@ Panel {
   }
 
   function launchTerminalLogin() {
+    if (logoutPending) {
+      errorMessage = "Finishing logout. Please wait a moment."
+      return
+    }
     // The panel knows whether this is a login or an unlock, so the terminal
     // does not have to spend a `bw status` round trip working it out.
     var mode = (status === "locked") ? "unlock" : "login"
@@ -647,6 +882,13 @@ Panel {
   }
 
   function logoutAccount() {
+    if (logoutPending) return
+    logoutPending = true
+    logoutCliDone = false
+    logoutCredentialsDone = false
+    logoutExitCode = 0
+    logoutCredentialsExitCode = 0
+    terminalLoginStartedAt = 0
     lockVault()
     forgetStoredCredentials()
     pendingUnlockPassword = ""
@@ -655,7 +897,119 @@ Panel {
     status = "unauthenticated"
     currentScreen = "login"
     userEmail = ""
-    flashNotification("Logged out")
+  }
+
+  function onLogoutCliFinished(exitCode) {
+    if (!logoutPending) return
+    logoutExitCode = exitCode
+    logoutCliDone = true
+    finishLogoutIfReady()
+  }
+
+  function onLogoutCredentialsFinished(exitCode) {
+    if (!logoutPending) return
+    logoutCredentialsExitCode = exitCode
+    logoutCredentialsDone = true
+    finishLogoutIfReady()
+  }
+
+  function finishLogoutIfReady() {
+    if (!logoutPending || !logoutCliDone || !logoutCredentialsDone) return
+    if (logoutCredentialsExitCode !== 0) {
+      errorMessage = "Could not clear stored credentials. Retry logout cleanup before signing in."
+      return
+    }
+    logoutPending = false
+    status = "unauthenticated"
+    currentScreen = "login"
+    if (logoutExitCode === 0) flashNotification("Logged out")
+    else errorMessage = "Bitwarden logout did not complete cleanly. Please try again."
+    focusAppropriateField()
+  }
+
+  function retryLogoutCleanup() {
+    if (!logoutCleanupFailed) return
+    errorMessage = ""
+    logoutCredentialsDone = false
+    logoutCredentialsExitCode = 0
+    requestAllCredentialClear()
+  }
+
+  function storeCurrentSession() {
+    if (logoutPending) {
+      sessionStorePending = false
+      return
+    }
+    if (!rememberSession || !session) {
+      sessionStorePending = false
+      return
+    }
+    if (keyringStoreProc.running || keyringClearProc.running) {
+      sessionStorePending = true
+      return
+    }
+    sessionStorePending = false
+    beginEpochOperation("sessionStore")
+    keyringStoreProc.running = true
+  }
+
+  function onSessionStored(exitCode) {
+    if (epochOperationIsStale("sessionStore") || status !== "unlocked" || !session) {
+      sessionStorePending = rememberSession && status === "unlocked" && !!session
+      requestSessionCredentialClear()
+      return
+    }
+    sessionStorePending = false
+    if (exitCode !== 0) {
+      console.warn("qs-bitwarden-cli: could not store session in keyring (exit " + exitCode + ")")
+    }
+  }
+
+  function requestSessionCredentialClear() {
+    if (keyringClearProc.running) {
+      sessionClearPending = true
+      return
+    }
+    sessionClearPending = false
+    keyringClearProc.running = true
+  }
+
+  function requestPinCredentialClear() {
+    if (keyringClearPinProc.running) {
+      pinClearPending = true
+      return
+    }
+    pinClearPending = false
+    keyringClearPinProc.running = true
+  }
+
+  function requestMasterCredentialClear() {
+    if (keyringClearMasterProc.running) {
+      masterClearPending = true
+      return
+    }
+    masterClearPending = false
+    keyringClearMasterProc.running = true
+  }
+
+  function credentialStoresRunning() {
+    return keyringStoreProc.running || pinStoreProc.running || keyringStoreMasterProc.running
+  }
+
+  function requestAllCredentialClear() {
+    if (keyringClearAllProc.running) {
+      allCredentialsClearPending = true
+      return
+    }
+    // A clear that wins the race against an older store is not cleanup: that
+    // store can recreate the credential immediately afterward. Logout remains
+    // pending until every writer has exited and this final sweep has run.
+    if (credentialStoresRunning()) {
+      allCredentialsClearPending = true
+      return
+    }
+    allCredentialsClearPending = false
+    keyringClearAllProc.running = true
   }
 
   // Logging out takes the keyring with it. Two of the entries there are the
@@ -671,12 +1025,21 @@ Panel {
   // account it belonged to. See keyringClearAllCommand() for why asking
   // unconditionally is free.
   function forgetStoredCredentials() {
-    keyringClearAllProc.running = true
+    requestAllCredentialClear()
     // The learned-suggestion store is this account's data too -- which domains
     // and apps it holds logins for, and when each was last used -- and unlike
     // everything else here it is a plain file with no expiry. It goes with the
     // account rather than waiting for the next user of this machine to read it.
-    associationsClearProc.running = true
+    associationsEpoch += 1
+    pendingAssociationsJson = ""
+    associationsWritePending = false
+    if (associationsWriteProc.running) {
+      associationsClearPending = true
+      associationsWriteProc.running = false
+    } else {
+      associationsClearPending = false
+      associationsClearProc.running = true
+    }
     associations = Model.emptyAssociations()
     suggestedItems = []
     detectedContext = null
@@ -712,10 +1075,11 @@ Panel {
     return env
   }
 
-  // The credentials that unlock the vault, handed to bw the same way the
-  // session token is: through the environment. bw reads BW_PASSWORD (named by
-  // --passwordenv), BW_CLIENTID and BW_CLIENTSECRET natively, so none of them
-  // reaches an argv -- neither bw's nor that of the shell wrapping it.
+  // Authentication credentials enter short-lived processes through the
+  // environment. Direct password flows move BW_PASSWORD from the writer into
+  // bw's private FIFO; API login reads BW_PASSWORD, BW_CLIENTID and
+  // BW_CLIENTSECRET natively. None reaches an argv -- neither bw's nor that of
+  // the shell wrapping it.
   // /proc/<pid>/cmdline is world-readable on a default install; environ is not.
   //
   // Read as a binding by loginProc and unlockProc, so it always reflects the
@@ -732,9 +1096,32 @@ Panel {
     return env
   }
 
+  function loginProcessEnv() {
+    if (loginMethod === "apikey") {
+      // This is a live Process binding. Keep fields out of its retained value
+      // until an actual API login starts, instead of duplicating credentials
+      // into both the form and the process object while the user is typing.
+      if (!loginSubmitted) return authEnv("", "", "", "")
+      return authEnv(loginPassword,
+                     String(loginClientId || "").trim(),
+                     String(loginClientSecret || "").trim(),
+                     String(login2faCode || "").trim())
+    }
+    // Email/password login reads its password from the FIFO writer. Keeping it
+    // out of the long-lived prewarmed process also keeps partial typing out of
+    // that process's environment.
+    return authEnv("", "", "", String(login2faCode || "").trim())
+  }
+
   function itemEnv() {
     var e = {}
     e[Model.itemEnvVar()] = String(itemPayloadJson || "")
+    return bwEnv(e)
+  }
+
+  function folderEnv() {
+    var e = {}
+    e[Model.folderEnvVar()] = Model.folderPayload(newFolderName)
     return bwEnv(e)
   }
 
@@ -807,6 +1194,7 @@ Panel {
     sendPayloadJson = JSON.stringify(Model.buildSendPayload(
       sendFormName, sendFormText, sendFormHidden,
       sendFormDays, sendFormMaxAccess, sendFormPassword, ""))
+    beginVaultRead("sendCreate")
     createSendProc.command = Model.createSendCommand()
     createSendProc.running = true
   }
@@ -814,6 +1202,7 @@ Panel {
   function onSendCreated(exitCode, stdoutText, stderrText) {
     sendBusy = false
     sendPayloadJson = ""
+    if (vaultReadIsStale("sendCreate")) return
     if (exitCode !== 0) {
       sendError = String(stderrText || "").trim() || "Could not create the Send"
       return
@@ -842,12 +1231,14 @@ Panel {
   function deleteSend(send) {
     if (!send || !send.id) return
     sendBusy = true
+    beginVaultRead("sendDelete")
     deleteSendProc.command = Model.deleteSendCommand(send.id)
     deleteSendProc.running = true
   }
 
   function onSendDeleted(exitCode) {
     sendBusy = false
+    if (vaultReadIsStale("sendDelete")) return
     if (exitCode !== 0) {
       sendError = "Could not delete the Send"
       return
@@ -890,7 +1281,7 @@ Panel {
   // The whole point of the round trip: put the value in the field the caller
   // was on, and go back to it.
   function useGeneratedPassword() {
-    if (!generatorFeedsForm || !genValue) return
+    if (!generatorFeedsForm || genBusy || !genValue) return
     formPassword = genValue
     // Show it. A password you cannot read is hard to trust, and it is going
     // into a form you are still filling in rather than straight to the vault.
@@ -903,8 +1294,24 @@ Panel {
   // question is how we reach it. `bw serve` answers in ~2ms against ~2.9s for
   // a fresh `bw generate`, so the server is started on first use and the CLI
   // stays as the fallback for when it cannot be.
+  function generatorOptionsSignature() {
+    return JSON.stringify(Model.normalizeGeneratorOptions(genOpts))
+  }
+
   function regenerate() {
+    if (generateCliStopping) {
+      genBusy = true
+      genRegeneratePending = true
+      return
+    }
+    if (genBusy) {
+      genRegeneratePending = true
+      return
+    }
     genBusy = true
+    genRegeneratePending = false
+    genRequestSignature = generatorOptionsSignature()
+    beginVaultRead("generator")
     if (generateServeReady) {
       requestGeneratedValue()
       return
@@ -917,6 +1324,8 @@ Panel {
 
   function regenerateViaCli() {
     genBusy = true
+    genRegeneratePending = false
+    genRequestSignature = generatorOptionsSignature()
     generateProc.command = Model.generateCommand(genOpts)
     generateProc.running = true
   }
@@ -956,9 +1365,29 @@ Panel {
   property var generateServeRequestCallback: null
 
   function generatorRequest(opts, done) {
+    if (generateServeRequestStopping || generateServeRequestProc.running) {
+      generateServeRequestPending = true
+      generateServeRequestPendingOptions = opts
+      generateServeRequestPendingCallback = done
+      return
+    }
     generateServeRequestCallback = done
     generateServeRequestProc.command = Model.generateServeRequestCommand(opts)
     generateServeRequestProc.running = true
+  }
+
+  function resumePendingGeneratorRequest() {
+    if (!generateServeRequestPending) return false
+    var pendingOptions = generateServeRequestPendingOptions
+    var pendingCallback = generateServeRequestPendingCallback
+    generateServeRequestPending = false
+    generateServeRequestPendingOptions = null
+    generateServeRequestPendingCallback = null
+    Qt.callLater(function() {
+      if (root.opened && root.currentScreen === "generator")
+        root.generatorRequest(pendingOptions, pendingCallback)
+    })
+    return true
   }
 
   function probeGeneratorPort() {
@@ -982,15 +1411,28 @@ Panel {
   }
 
   function stopGeneratorServe() {
+    var cancelCliGeneration = genBusy && generateProc.running
     generateServePoll.stop()
     generateServeStarting = false
     generateServeReady = false
     // A deliberate shutdown is not the permanent bind failure, so the next
     // visit is free to start a server again.
     generateServeFailed = false
-    if (generateServeRequestProc.running) {
+    genBusy = false
+    genRegeneratePending = false
+    genRequestSignature = ""
+    generateServeRequestPending = false
+    generateServeRequestPendingOptions = null
+    generateServeRequestPendingCallback = null
+    if (generateServeRequestProc.running
+        && !Model.isScrubCommand(generateServeRequestProc.command)) {
       generateServeRequestCallback = null
+      generateServeRequestStopping = true
       generateServeRequestProc.running = false
+    }
+    if (cancelCliGeneration) {
+      generateCliStopping = true
+      generateProc.running = false
     }
     if (generateServeProc.running) {
       generateServeStopping = true
@@ -1029,6 +1471,17 @@ Panel {
   }
 
   function onGenerated(text, exitCode) {
+    if (vaultReadIsStale("generator")) {
+      genBusy = false
+      genRegeneratePending = false
+      return
+    }
+    if (genRegeneratePending || genRequestSignature !== generatorOptionsSignature()) {
+      genBusy = false
+      genRegeneratePending = false
+      regenerate()
+      return
+    }
     genBusy = false
     var v = String(text || "").trim()
     if (exitCode !== 0 || !v) {
@@ -1049,7 +1502,7 @@ Panel {
   }
 
   function copyGenerated() {
-    if (!genValue) return
+    if (genBusy || !genValue) return
     copyToClipboard(genValue, genOpts.type === "passphrase" ? "Passphrase" : "Password")
   }
 
@@ -1075,20 +1528,38 @@ Panel {
     Qt.callLater(function() { pinSetupPinField.forceActiveFocus() })
   }
 
+  function abandonPinSetup() {
+    if (pinStoreProc.running) invalidateEpochOperation("pinStore")
+    pinBusy = false
+    pinSetupPin = ""
+    pinSetupConfirm = ""
+    pinSetupMaster = ""
+  }
+
   // Encrypting needs the master password, and the vault does not keep it in
   // memory once unlocked, so setting a PIN has to ask for it.
   function submitPinSetup() {
+    if (pinBusy || pinStoreProc.running) return
     var err = Model.validatePin(pinSetupPin, pinSetupConfirm)
     if (err) { pinError = err; return }
     if (!pinSetupMaster) { pinError = "Master password is required to encrypt the PIN"; return }
 
     pinError = ""
     pinBusy = true
+    beginEpochOperation("pinStore")
     pinStoreProc.running = true
   }
 
   function onPinStored(exitCode) {
     pinBusy = false
+    if (epochOperationIsStale("pinStore")) {
+      pinConfigured = false
+      pinSetupPin = ""
+      pinSetupConfirm = ""
+      pinSetupMaster = ""
+      requestPinCredentialClear()
+      return
+    }
     if (exitCode !== 0) {
       pinError = "Could not save the PIN. Is the OS keyring available?"
       return
@@ -1111,13 +1582,20 @@ Panel {
     }
     pinError = ""
     pinBusy = true
+    pinUnlockSubmitted = true
     pinUnlockProc.command = Model.pinUnlockCommand()
     pinUnlockProc.running = true
   }
 
   function onPinUnlockResult(exitCode, password) {
+    var accepting = pinUnlockSubmitted && opened && status === "locked"
+    pinUnlockSubmitted = false
     pinBusy = false
-    var pw = String(password || "").trim()
+    if (!accepting) {
+      clearProcessCollectorSoon(pinUnlockProc)
+      return
+    }
+    var pw = String(password || "")
 
     if (exitCode !== 0 || !pw) {
       pinAttempts += 1
@@ -1139,7 +1617,7 @@ Panel {
   }
 
   function clearPin() {
-    keyringClearPinProc.running = true
+    requestPinCredentialClear()
     pinConfigured = false
     pinEntry = ""
     pinAttempts = 0
@@ -1181,35 +1659,69 @@ Panel {
     }
 
     // A missing required tool is not something to discover mid-task.
-    if (!setupDismissed && Model.missingRequired(dependencies).length > 0) {
+    if (Model.missingRequired(dependencies).length > 0) setupWasGated = true
+
+    var next = Model.dependencyProbeOutcome(dependencies, setupDismissed, statusProbeStarted, setupWasGated)
+    if (next === "setup") {
       currentScreen = "setup"
+    } else if (next === "probe") {
+      // Either the first look at the vault this session, or the one that
+      // follows an install landing. onStatusFinished puts up whichever screen
+      // the answer calls for, so setup gets left behind without being told to.
+      setupWasGated = false
+      refreshStatus()
     }
   }
 
   readonly property var missingRequired: Model.missingRequired(dependencies)
+  readonly property var installablePackages: Model.missingPackages(dependencies)
+  // Whether anything on the setup screen is still waiting on the user. Covers
+  // the setup rows too, so a fingerprint enrolment running in its own terminal
+  // is watched for the same way an install is.
+  readonly property bool setupActionsPending: {
+    var rows = Model.applicableDependencies(dependencies)
+    for (var i = 0; i < rows.length; i++) {
+      if (!rows[i].ready) return true
+    }
+    return false
+  }
 
   function installMissing() {
-    var pkgs = []
-    for (var i = 0; i < dependencies.items.length; i++) {
-      if (!dependencies.items[i].installed) pkgs.push(dependencies.items[i].pkg)
-    }
-    var cmd = Model.installPackagesCommand(pkgs)
+    var pkgs = Model.missingPackages(dependencies)
+    var cmd = Model.installPackagesCommand(pkgs,
+      pkgs.length === 1 ? "Bitwarden CLI" : "Bitwarden plugin dependencies")
     if (!cmd) return
     Quickshell.execDetached(cmd)
-    flashNotification("Installing in a terminal, then re-check")
+    flashNotification("Installing -- this screen updates itself")
   }
 
   function installOne(dep) {
     if (!dep) return
-    var cmd = Model.installPackagesCommand([dep.pkg])
+    // Omarchy's setup command owns its own rows; `pkg add` on one of those
+    // would install a package and leave the row exactly as red as it was.
+    if (dep.setup) {
+      runFingerprintSetup()
+      return
+    }
+    var cmd = Model.installPackagesCommand([dep.pkg], dep.label)
     if (!cmd) return
     Quickshell.execDetached(cmd)
-    flashNotification("Installing " + dep.pkg + " in a terminal")
+    flashNotification("Installing " + dep.pkg + " -- this screen updates itself")
+  }
+
+  // Stepping past setup. The gate is what was holding the first status probe
+  // back, so opening it has to release that probe as well -- otherwise the
+  // panel would sit on a login screen it never actually asked `bw` about.
+  function dismissSetup() {
+    setupDismissed = true
+    currentScreen = status === "unlocked" ? "main"
+      : (status === "locked" ? "locked" : "login")
+    if (!statusProbeStarted) refreshStatus()
   }
 
   function runFingerprintSetup() {
     Quickshell.execDetached(Model.fingerprintSetupCommand())
-    flashNotification("Fingerprint setup opened in a terminal")
+    flashNotification("Fingerprint setup opened -- this screen updates itself")
   }
 
   // A setting whose dependency is missing is inert; the cursor may sit on it,
@@ -1305,7 +1817,7 @@ Panel {
       // The toggle reflects a PIN actually being set, not just the flag.
       case "pinUnlock": return pinUnlock && pinConfigured
     }
-    return entry.type === "bool" ? Boolean(setting(entry.key, false)) : Number(setting(entry.key, 0))
+    return entry.type === "bool" ? Model.boolSetting(entry.key, setting(entry.key, entry.defaultValue)) : Number(setting(entry.key, 0))
   }
 
   function refreshFingerprintAvailability() {
@@ -1326,6 +1838,7 @@ Panel {
     }
 
     errorMessage = ""
+    fingerprintAuthorized = false
     fingerprintScanning = true
     fingerprintMessage = "󰈷  Touch the fingerprint reader..."
     if (!fingerprintPam.start()) {
@@ -1336,14 +1849,17 @@ Panel {
 
   function cancelFingerprintUnlock() {
     fingerprintScanning = false
+    fingerprintAuthorized = false
     if (fingerprintPam.active) fingerprintPam.abort()
   }
 
   function onFingerprintResult(result) {
+    var accepting = fingerprintScanning && opened && status === "locked"
     fingerprintScanning = false
-    if (status !== "locked") return
+    if (!accepting) return
 
     if (result === PamResult.Success) {
+      fingerprintAuthorized = true
       fingerprintMessage = "󰈷  Fingerprint verified, unlocking..."
       if (!keyringLookupMasterProc.running) {
         keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
@@ -1358,7 +1874,15 @@ Panel {
 
   // Only ever called after PamResult.Success.
   function onFingerprintPasswordRetrieved(raw) {
-    var pw = String(raw || "").trim()
+    if (!fingerprintAuthorized || !opened || status !== "locked") {
+      fingerprintAuthorized = false
+      clearProcessCollectorSoon(keyringLookupMasterProc)
+      return
+    }
+    fingerprintAuthorized = false
+    // The keyring command removes secret-tool's output newline. Do not trim
+    // here: spaces at either end can be part of the actual master password.
+    var pw = String(raw || "")
     if (!pw) {
       fingerprintStored = false
       fingerprintMessage = "No stored master password. Unlock with your password once to enable this."
@@ -1377,7 +1901,17 @@ Panel {
     Qt.callLater(function() { fpMasterField.forceActiveFocus() })
   }
 
+  function abandonFingerprintSetup() {
+    var active = fpSetupActive
+    if (active && keyringStoreMasterProc.running) invalidateEpochOperation("masterStore")
+    fpSetupActive = false
+    fpBusy = false
+    fpSetupMaster = ""
+    if (active) masterToStore = ""
+  }
+
   function submitFingerprintSetup() {
+    if (fpBusy || keyringStoreMasterProc.running) return
     if (!fpSetupMaster) {
       fpError = "Master password is required to enable fingerprint unlock"
       return
@@ -1386,12 +1920,21 @@ Panel {
     fpBusy = true
     fpSetupActive = true
     masterToStore = fpSetupMaster
+    beginEpochOperation("masterStore")
     keyringStoreMasterProc.running = true
   }
 
   function onMasterPasswordStored(exitCode) {
     masterToStore = ""
     pendingUnlockPassword = ""
+    if (epochOperationIsStale("masterStore")) {
+      fpSetupActive = false
+      fpBusy = false
+      fpSetupMaster = ""
+      fingerprintStored = false
+      requestMasterCredentialClear()
+      return
+    }
     fingerprintStored = (exitCode === 0)
 
     if (fpSetupActive) {
@@ -1414,7 +1957,7 @@ Panel {
   }
 
   function forgetFingerprintUnlock() {
-    keyringClearMasterProc.running = true
+    requestMasterCredentialClear()
     fingerprintStored = false
     cancelFingerprintUnlock()
     fingerprintMessage = ""
@@ -1445,7 +1988,7 @@ Panel {
   }
 
   function unlockVaultWithPassword(pass) {
-    var p = String(pass || "").trim()
+    var p = String(pass === undefined || pass === null ? "" : pass)
     if (!p) {
       errorMessage = "Master password required"
       return
@@ -1454,11 +1997,12 @@ Panel {
     errorMessage = ""
     isUnlocking = true
     // Kept only until the unlock result is known; cleared on both paths below.
-    // unlockProc reads it as the BW_PASSWORD binding, so it must be set before
-    // the process starts.
+    // The short-lived FIFO writer reads it as BW_PASSWORD. unlockProc was
+    // already bootstrapping while the user typed and never receives it.
     pendingUnlockPassword = p
-    unlockProc.command = Model.unlockCommand()
-    unlockProc.running = true
+    prepareUnlock()
+    unlockSubmitted = true
+    writeAuthPassword("unlock", p)
   }
 
   function onUnlockOutput(stdoutText, stderrText, exitCode) {
@@ -1474,11 +2018,12 @@ Panel {
       // than fail on every open, and say which one went stale.
       if (pendingUnlockFrom === "fingerprint") {
         pendingUnlockFrom = ""
-        keyringClearMasterProc.running = true
+        requestMasterCredentialClear()
         fingerprintStored = false
         fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
         errorMessage = ""
         focusAppropriateField()
+        Qt.callLater(prepareUnlock)
         return
       }
       if (pendingUnlockFrom === "pin") {
@@ -1487,6 +2032,7 @@ Panel {
         pinError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
         errorMessage = ""
         focusAppropriateField()
+        Qt.callLater(prepareUnlock)
         return
       }
       if (err.indexOf("not logged in") !== -1) {
@@ -1495,6 +2041,7 @@ Panel {
         errorMessage = "You are not logged in. Please log in below."
       } else {
         errorMessage = err || "Unlock failed: invalid master password"
+        Qt.callLater(prepareUnlock)
       }
     }
   }
@@ -1503,7 +2050,11 @@ Panel {
     var s = Model.extractSessionToken(rawSession)
     masterPassword = ""
     loginPassword = ""
+    loginClientId = ""
+    loginClientSecret = ""
+    login2faCode = ""
     isUnlocking = false
+    unlockSubmitted = false
     if (!s) {
       errorMessage = "Unlock did not return a session key"
       return
@@ -1515,16 +2066,16 @@ Panel {
     currentScreen = "main"
     flashNotification("Vault unlocked successfully!")
 
-    if (rememberSession) {
-      keyringStoreProc.running = true
-    }
+    storeCurrentSession()
 
     // Opting in stores the master password so a finger can stand in for it later.
     // Keep an existing enrolment current after a master password change. It no
     // longer creates one -- that is what the setup form is for.
     if (fingerprintUnlock && fingerprintAvailable && fingerprintStored
-        && pendingUnlockPassword && pendingUnlockFrom === "") {
+        && pendingUnlockPassword && pendingUnlockFrom === ""
+        && !keyringStoreMasterProc.running) {
       masterToStore = pendingUnlockPassword
+      beginEpochOperation("masterStore")
       keyringStoreMasterProc.running = true
     } else {
       pendingUnlockPassword = ""
@@ -1535,15 +2086,15 @@ Panel {
     pinError = ""
     fingerprintMessage = ""
 
-    loadItems()
-    loadOrganizations()
-    loadFolders()
+    beginInitialVaultLoad(true, false)
     resetAutoLockTimer()
     focusAppropriateField()
   }
 
   function lockVault() {
     closeFilterGroup()
+    cancelAuthPrewarm()
+    clearClipboard()
     if (session) {
       lockProc.command = Model.lockCommand()
       lockProc.running = true
@@ -1552,28 +2103,81 @@ Panel {
     // not whether one is there: turning it off after a session was remembered
     // used to mean the lock skipped the erase and left the token behind.
     // Clearing an entry that was never written is a no-op nobody reads.
-    keyringClearProc.running = true
+    requestSessionCredentialClear()
 
+    dropVaultState()
+    status = "locked"
+    currentScreen = "locked"
+    fingerprintMessage = ""
+    flashNotification("Vault locked")
+    focusAppropriateField()
+    if (opened) startFingerprintUnlock()
+  }
+
+  function vaultStatePresent() {
+    return !!session || status === "unlocked" || items.length > 0
+      || organizations.length > 0 || folders.length > 0 || detailItem !== null
+      || sends.length > 0 || itemPayloadJson !== "" || sendPayloadJson !== ""
+  }
+
+  // One local purge for every way an open vault stops being usable. Keeping
+  // this separate from the `bw lock` and keyring side effects lets a status
+  // transition fail closed without pretending that a remote/local CLI error
+  // was a successful Bitwarden lock command.
+  function dropVaultState() {
+    pinUnlockSubmitted = false
+    cancelFingerprintUnlock()
+    cancelAttachmentDownloads()
     session = ""
     vaultEpoch += 1
+    readEpochs = ({})
     masterPassword = ""
     itemsLoadedAt = 0
     orgsLoadedAt = 0
     foldersLoadedAt = 0
-    status = "locked"
-    currentScreen = "locked"
     items = []
     filteredItems = []
     organizations = []
+    folders = []
+    selectedOrg = "all"
+    selectedFolder = "all"
+    openFilterGroup = ""
+    searchQuery = ""
+    selectedCategory = "all"
+    selectedIndex = 0
     detailItem = null
+    passwordRevealed = false
+    attachmentSaved = ({})
+    formIsEditing = false
+    formItemId = ""
+    formTypeCode = 1
+    formName = ""
+    formUsername = ""
+    formUri = ""
+    formNotes = ""
+    formFavorite = false
+    formOrgId = ""
+    formFolderId = ""
+    formPicker = ""
+    formCollections = []
+    formCollectionIds = []
+    formCollectionsLoading = false
+    newFolderName = ""
+    creatingFolder = false
     totpFollowupActive = false
+    isLoading = false
     isUnlocking = false
+    isSyncing = false
+    metadataLoadPending = false
+    metadataForceRefresh = false
+    statusRefreshAfterItems = false
+    syncReloadPending = false
+    sendsLoading = false
+    sendBusy = false
+    genBusy = false
     pendingUnlockPassword = ""
-    fingerprintMessage = ""
+    sessionStorePending = false
     dropVaultSecrets()
-    flashNotification("Vault locked")
-    focusAppropriateField()
-    if (opened) startFingerprintUnlock()
   }
 
   // A locked vault means the panel is holding nothing out of it, and nothing
@@ -1587,6 +2191,12 @@ Panel {
   function dropVaultSecrets() {
     detailPassword = ""
     liveTotp = ""
+    totpRequestItemId = ""
+    totpQueuedItemId = ""
+    totpQueuedEpoch = -1
+    totpRestartPending = false
+    totpCopyItemId = ""
+    passwordCopyItemId = ""
     totpFollowupItem = null
     totpFollowupCode = ""
     genValue = ""
@@ -1598,6 +2208,8 @@ Panel {
     sendFormText = ""
     sendFormPassword = ""
     loginPassword = ""
+    login2faCode = ""
+    loginClientId = ""
     loginClientSecret = ""
     pinEntry = ""
     pinSetupPin = ""
@@ -1605,6 +2217,7 @@ Panel {
     pinSetupMaster = ""
     fpSetupMaster = ""
     masterToStore = ""
+    pendingAssociationsJson = ""
     scrubSecretBuffers()
   }
 
@@ -1618,9 +2231,10 @@ Panel {
   // undefineds.
   function secretProcesses() {
     return [
-      sessionHandoffProc, keyringLookupProc, pinUnlockProc, keyringLookupMasterProc,
+      statusProc, sessionHandoffProc, keyringLookupProc, pinUnlockProc, keyringLookupMasterProc,
       loginProc, unlockProc, listProc, listOrgsProc, listFoldersProc, orgCollectionsProc,
       getItemProc, getTotpProc, generateProc, listSendsProc, createSendProc,
+      copyPasswordProc,
       createItemProc, editItemProc, deleteItemProc, createFolderProc, attachmentProc,
       associationsReadProc, generateServeRequestProc
     ]
@@ -1628,7 +2242,6 @@ Panel {
 
   function scrubSecretBuffers() {
     scrubPending = secretProcesses()
-    scrubRetry.ticks = 0
     scrubStep()
     if (scrubPending.length) scrubRetry.restart()
   }
@@ -1646,13 +2259,23 @@ Panel {
     scrubPending = pass.waiting
   }
 
-  // True while the given process is carrying a scrub rather than an answer.
-  // Every handler on a scrubbed process asks this first: what arrives from a
-  // scrub is an empty string and an exit status of zero, which reads as a
-  // successful login, an empty vault or a saved item depending on where it
-  // lands.
-  function isScrubRun(proc) {
-    return Model.isScrubCommand(proc.command)
+  // Complete a scrub before its handler can reuse the same Process. What
+  // arrives from a scrub is an empty string and exit status zero, which reads
+  // as a successful login, empty vault or saved item unless every handler asks
+  // here first.
+  function finishScrubRun(proc) {
+    if (!Model.isScrubCommand(proc.command)) return false
+    scrubPending = Model.finishScrub(scrubPending, proc)
+    if (!scrubPending.length) scrubRetry.stop()
+    return true
+  }
+
+  function clearProcessCollectorSoon(proc) {
+    Qt.callLater(function() {
+      if (proc.running) return
+      proc.command = Model.scrubCommand()
+      proc.running = true
+    })
   }
 
   // -------------------------------------------------------------------------
@@ -1665,15 +2288,36 @@ Panel {
   // place left to refuse its answer is the completion handler. See the Vault
   // generation section of BitwardenModel.js for what that answer costs when
   // nobody refuses it.
-  function beginVaultRead(name) {
+  function beginEpochOperation(name) {
     readEpochs[name] = vaultEpoch
   }
 
-  function vaultReadIsStale(name) {
-    return Model.vaultReadIsStale(readEpochs[name], vaultEpoch, !!session)
+  function epochOperationIsStale(name) {
+    return Number(readEpochs[name]) !== Number(vaultEpoch)
   }
 
-  // Open-time load: skip the CLI entirely when the cached vault is still fresh.
+  function invalidateEpochOperation(name) {
+    readEpochs[name] = vaultEpoch - 1
+  }
+
+  function beginVaultRead(name) {
+    beginEpochOperation(name)
+  }
+
+  function vaultReadIsStale(name) {
+    return epochOperationIsStale(name) || !session
+  }
+
+  // The first post-authentication process is always the item list. Organization
+  // and folder metadata each need another bw bootstrap, so they are scheduled
+  // only after items have reached the model and had time to paint.
+  function beginInitialVaultLoad(showSpinner, forceMetadata) {
+    metadataLoadPending = true
+    metadataForceRefresh = forceMetadata === true
+    loadItems(showSpinner)
+  }
+
+  // Open-time load: skip the CLI entirely when the in-memory vault is fresh.
   // Stale-while-revalidate. `bw list items` is a CLI bootstrap plus a full
   // vault decrypt, so blocking the panel on it means a spinner on every open
   // once the cache ages out. Show what we already have immediately, refresh
@@ -1689,11 +2333,7 @@ Panel {
       if (!stale) return
     }
 
-    loadItems(!haveItems)
-    // Organizations and folders change far less often than items and cost a
-    // separate `bw` each, so they get their own, longer freshness window.
-    loadOrganizations()
-    loadFolders()
+    beginInitialVaultLoad(!haveItems, false)
   }
 
   // `showSpinner` defaults to true, so existing callers are unchanged; a
@@ -1715,6 +2355,33 @@ Panel {
       handleActiveWindowDetected(activeWindowData)
     } else {
       rebuildFilter()
+    }
+    if (syncReloadPending) {
+      syncReloadPending = false
+      isSyncing = false
+      flashNotification("Vault synced with Bitwarden")
+    }
+    if (metadataLoadPending) deferredMetadataTimer.restart()
+  }
+
+  function onListProcessExited(exitCode, rawJson, stderrText) {
+    if (finishScrubRun(listProc)) return
+    if (exitCode === 0) {
+      onListFinished(rawJson)
+      return
+    }
+
+    isLoading = false
+    isSyncing = false
+    syncReloadPending = false
+    metadataLoadPending = false
+    metadataForceRefresh = false
+    if (statusRefreshAfterItems) {
+      statusRefreshAfterItems = false
+      runStatusCheck()
+    }
+    if (!vaultReadIsStale("items")) {
+      errorMessage = String(stderrText || "").trim() || "Could not load vault items"
     }
   }
 
@@ -1887,9 +2554,7 @@ Panel {
     } else if (currentScreen === "settings") {
       closeSettings()
     } else if (currentScreen === "setup") {
-      setupDismissed = true
-      currentScreen = status === "unlocked" ? "main"
-        : (status === "locked" ? "locked" : "login")
+      dismissSetup()
     } else if (currentScreen === "edit") {
       // Editing is abandoned, not saved -- the form is scratch space until
       // Save, and Escape is how you throw it away. Back where the form was
@@ -1918,12 +2583,8 @@ Panel {
     // for the rest of the shell's life: Cancel and Escape only reset the error
     // line. Leaving the form is the answer either way, so the clearing lives
     // here rather than at each of the ways out.
-    if (currentScreen !== "pin") {
-      pinSetupPin = ""
-      pinSetupConfirm = ""
-      pinSetupMaster = ""
-    }
-    if (currentScreen !== "fingerprint") fpSetupMaster = ""
+    if (currentScreen !== "pin") abandonPinSetup()
+    if (currentScreen !== "fingerprint") abandonFingerprintSetup()
     restoreScreenFocus()
   }
 
@@ -2010,12 +2671,14 @@ Panel {
     var name = String(newFolderName || "").trim()
     if (!name) return
     creatingFolder = true
-    createFolderProc.command = Model.createFolderCommand(name)
+    beginVaultRead("folderCreate")
+    createFolderProc.command = Model.createFolderCommand()
     createFolderProc.running = true
   }
 
   function onFolderCreated(exitCode, stdoutText) {
     creatingFolder = false
+    if (vaultReadIsStale("folderCreate")) return
     if (exitCode !== 0) {
       errorMessage = "Could not create folder"
       return
@@ -2034,19 +2697,20 @@ Panel {
     closeFilterGroup()
     if (!session) return
     isSyncing = true
+    beginVaultRead("sync")
     syncProc.command = Model.syncCommand()
     syncProc.running = true
   }
 
   function onSyncFinished(exitCode) {
-    isSyncing = false
+    if (vaultReadIsStale("sync")) return
     if (exitCode === 0) {
-      flashNotification("Vault synced with Bitwarden")
       itemsLoadedAt = 0
-      loadItems()
-      loadOrganizations(true)
-      loadFolders(true)
+      syncReloadPending = true
+      beginInitialVaultLoad(true, true)
     } else {
+      isSyncing = false
+      syncReloadPending = false
       errorMessage = "Sync failed"
     }
   }
@@ -2104,6 +2768,16 @@ Panel {
   // Attachments
   // -------------------------------------------------------------------------
 
+  function cancelAttachmentDownloads() {
+    attachmentQueue = []
+    attachmentBusyId = ""
+    invalidateEpochOperation("attachment")
+    // A download holds decrypted bytes and the session it inherited at start.
+    // The supervised process group removes its private staging directory and
+    // cannot commit a file after the vault or panel has closed.
+    if (attachmentProc.running) attachmentProc.running = false
+  }
+
   function queueAttachment(att) {
     if (!detailItem || !att || !att.id) return
     if (attachmentBusyId === att.id) return
@@ -2138,6 +2812,7 @@ Panel {
     var job = next.shift()
     attachmentQueue = next
     attachmentBusyId = job.id
+    beginVaultRead("attachment")
     attachmentProc.command = Model.attachmentDownloadCommand(job.id, job.itemId, job.fileName, job.size)
     attachmentProc.running = true
   }
@@ -2145,6 +2820,7 @@ Panel {
   function onAttachmentDownloaded(exitCode, savedPath, stderrText) {
     var id = attachmentBusyId
     attachmentBusyId = ""
+    if (vaultReadIsStale("attachment")) return
     var path = String(savedPath || "").trim()
 
     if (exitCode !== 0 || !path) {
@@ -2192,19 +2868,73 @@ Panel {
     Quickshell.execDetached(["xdg-open", dir])
   }
 
-  function fetchTotp(itemId) {
+  function fetchTotp(itemId, copyWhenReady) {
     if (!session || !itemId) return
+    if (copyWhenReady) totpCopyItemId = String(itemId)
+    if (getTotpProc.running || totpRestartPending) {
+      if (totpRequestItemId !== String(itemId)) {
+        totpQueuedItemId = String(itemId)
+        totpQueuedEpoch = vaultEpoch
+      }
+      return
+    }
+    startTotpFetch(String(itemId))
+  }
+
+  function startTotpFetch(itemId) {
+    if (!session || !itemId) return
+    totpRequestItemId = itemId
     beginVaultRead("totp")
     getTotpProc.command = Model.getTotpCommand(itemId)
     getTotpProc.running = true
   }
 
-  function onTotpFinished(code) {
+  function onTotpProcessExited(exitCode, code) {
+    var itemId = totpRequestItemId
+    totpRequestItemId = ""
+    if (exitCode === 0) onTotpFinished(itemId, code)
+    else if (totpCopyItemId === itemId) {
+      totpCopyItemId = ""
+      errorMessage = "Could not read this TOTP code"
+    }
+
+    continueTotpQueue(false)
+  }
+
+  function continueTotpQueue(collectorIsClean) {
+    var queued = totpQueuedItemId
+    var queuedEpoch = totpQueuedEpoch
+    totpQueuedItemId = ""
+    totpQueuedEpoch = -1
+    if (queued) {
+      // Reserve this Process before deferring its restart. Without the flag, a
+      // newer request can start in this one-event-loop gap and then be
+      // overwritten by the older queued request.
+      totpRestartPending = true
+      totpRequestItemId = queued
+      Qt.callLater(function() {
+        root.totpRestartPending = false
+        if (queuedEpoch === root.vaultEpoch && root.session) root.startTotpFetch(queued)
+        else {
+          if (root.totpRequestItemId === queued) root.totpRequestItemId = ""
+          if (!collectorIsClean) root.clearProcessCollectorSoon(getTotpProc)
+        }
+      })
+    }
+    else if (!collectorIsClean) clearProcessCollectorSoon(getTotpProc)
+  }
+
+  function onTotpFinished(itemId, code) {
     if (vaultReadIsStale("totp")) return
     var c = String(code || "").trim()
-    liveTotp = c
-    if (totpFollowupActive && totpFollowupItem) {
+    if (detailItem && detailItem.id === itemId) liveTotp = c
+    if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
       totpFollowupCode = c
+    }
+    if (totpCopyItemId === itemId) {
+      totpCopyItemId = ""
+      if (c) copyToClipboard(c, "TOTP code")
+      else errorMessage = "Could not read this TOTP code"
     }
   }
 
@@ -2273,6 +3003,7 @@ Panel {
 
     errorMessage = ""
     isLoading = true
+    beginVaultRead("itemSave")
 
     if (formIsEditing) {
       var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
@@ -2293,6 +3024,7 @@ Panel {
     // Send payload does, so it goes the same way the Send one does: as soon as
     // the process that needed it has exited.
     itemPayloadJson = ""
+    if (vaultReadIsStale("itemSave")) return
     if (exitCode === 0) {
       flashNotification(formIsEditing ? "Item updated successfully!" : "Item created successfully!")
       currentScreen = "main"
@@ -2305,6 +3037,7 @@ Panel {
   function deleteCurrentItem() {
     if (!detailItem || !detailItem.id) return
     isLoading = true
+    beginVaultRead("itemDelete")
     deleteItemProc.command = Model.deleteItemCommand(detailItem.id)
     deleteItemProc.running = true
   }
@@ -2312,6 +3045,7 @@ Panel {
   function onDeleteItemFinished(exitCode, stdoutText, stderrText) {
     isLoading = false
     showDeleteConfirm = false
+    if (vaultReadIsStale("itemDelete")) return
     if (exitCode === 0) {
       flashNotification("Item deleted")
       currentScreen = "main"
@@ -2437,9 +3171,11 @@ Panel {
     if (!text) return
     resetAutoLockTimer()
     // The value goes through the environment: `printf %s '<secret>'` would put
-    // the password or TOTP code straight into /proc/<pid>/cmdline.
+    // the password or TOTP code straight into /proc/<pid>/cmdline. Remove that
+    // variable before starting wl-copy, whose clipboard owner can outlive this
+    // short shell after it forks into the background.
     Quickshell.execDetached({
-      command: ["bash", "-c", "printf '%s' \"$QSBW_CLIP\" | wl-copy --sensitive"],
+      command: ["bash", "-c", "printf '%s' \"$QSBW_CLIP\" | env -u QSBW_CLIP wl-copy --sensitive"],
       environment: { "QSBW_CLIP": String(text) }
     })
     flashNotification(label + " copied!")
@@ -2447,6 +3183,39 @@ Panel {
     if (clearClipboardSec > 0) {
       clipboardClearTimer.restart()
     }
+  }
+
+  function clearClipboard() {
+    clipboardClearTimer.stop()
+    Quickshell.execDetached(["wl-copy", "--clear"])
+  }
+
+  function requestPasswordCopy(itemId) {
+    if (!session || !itemId) return
+    if (copyPasswordProc.running) {
+      errorMessage = "Another password copy is still loading"
+      return
+    }
+    passwordCopyItemId = String(itemId)
+    beginVaultRead("passwordCopy")
+    copyPasswordProc.command = Model.getPasswordCommand(itemId)
+    copyPasswordProc.running = true
+  }
+
+  function onPasswordCopyFinished(exitCode, text) {
+    var requested = passwordCopyItemId
+    passwordCopyItemId = ""
+    // The clipboard has its own expiry; the pipe buffer needs one too. Once
+    // the value has been handed to wl-copy there is no reason to keep a second
+    // plaintext copy in this long-lived Process object.
+    clearProcessCollectorSoon(copyPasswordProc)
+    if (vaultReadIsStale("passwordCopy")) return
+    var password = String(text || "")
+    if (exitCode === 0 && requested && password) {
+      copyToClipboard(password, "Password")
+      return
+    }
+    errorMessage = "Could not read this password"
   }
 
   // Smart sequential Enter handler: Copies Password, then arms and auto-copies TOTP
@@ -2493,12 +3262,7 @@ Panel {
       return
     }
     if (session) {
-      Quickshell.execDetached({
-        command: Model.copyPasswordToClipboardCommand(item.id),
-        environment: root.bwEnv()
-      })
-      flashNotification("Password copied!")
-      if (clearClipboardSec > 0) clipboardClearTimer.restart()
+      requestPasswordCopy(item.id)
     } else {
       errorMessage = "Vault is locked or session expired. Please unlock your vault."
     }
@@ -2517,12 +3281,11 @@ Panel {
       copyToClipboard(liveTotp, "TOTP code")
       return
     }
-    Quickshell.execDetached({
-      command: Model.copyTotpToClipboardCommand(item.id),
-      environment: root.bwEnv()
-    })
-    flashNotification("TOTP code copied!")
-    if (clearClipboardSec > 0) clipboardClearTimer.restart()
+    if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id && totpFollowupCode) {
+      copyToClipboard(totpFollowupCode, "TOTP code")
+      return
+    }
+    fetchTotp(item.id, true)
   }
 
   function openUrl(url) {
@@ -2530,7 +3293,9 @@ Panel {
     // Only http and https are handed to xdg-open; see normalizeOpenableUrl().
     var resolved = Model.normalizeOpenableUrl(url)
     if (!resolved.ok) {
-      errorMessage = resolved.scheme
+      errorMessage = resolved.reason === "ambiguous"
+        ? "Refusing to open an ambiguous link containing a backslash"
+        : resolved.scheme
         ? ("Refusing to open a " + resolved.scheme + ": link -- only http and https are opened")
         : "That item has no link to open"
       return
@@ -2566,6 +3331,27 @@ Panel {
   }
 
   Timer {
+    id: deferredMetadataTimer
+    // One frame at 60 Hz is ~17 ms. Fifty milliseconds leaves room for the
+    // parsed item model to polish and render before two more bw processes
+    // begin their startup work.
+    interval: 50
+    repeat: false
+    onTriggered: {
+      if (root.status !== "unlocked" || !root.metadataLoadPending) return
+      var force = root.metadataForceRefresh
+      root.metadataLoadPending = false
+      root.metadataForceRefresh = false
+      root.loadOrganizations(force)
+      root.loadFolders(force)
+      if (root.statusRefreshAfterItems) {
+        root.statusRefreshAfterItems = false
+        root.runStatusCheck()
+      }
+    }
+  }
+
+  Timer {
     id: flashTimer
     interval: 2500
     onTriggered: root.flashMessage = ""
@@ -2596,9 +3382,7 @@ Panel {
   Timer {
     id: clipboardClearTimer
     interval: root.clearClipboardSec * 1000
-    onTriggered: {
-      Quickshell.execDetached(["bash", "-c", "wl-copy --clear"])
-    }
+    onTriggered: root.clearClipboard()
   }
 
   Timer {
@@ -2685,13 +3469,11 @@ Panel {
   // that was already idle.
   Timer {
     id: scrubRetry
-    property int ticks: 0
     interval: Model.scrubRetryMs()
     repeat: true
     onTriggered: {
-      ticks++
       root.scrubStep()
-      if (!root.scrubPending.length || ticks > Model.scrubRetryLimit()) stop()
+      if (!root.scrubPending.length) stop()
     }
   }
 
@@ -2743,8 +3525,12 @@ Panel {
     id: statusProc
     environment: root.bwEnv()
     stdout: StdioCollector {
+      id: statusStdout
       waitForEnd: true
-      onStreamFinished: root.onStatusFinished(text)
+    }
+    onExited: function(exitCode) {
+      if (root.finishScrubRun(statusProc)) return
+      root.onStatusFinished(exitCode === 0 ? statusStdout.text : "")
     }
   }
 
@@ -2757,11 +3543,12 @@ Panel {
     // that stricter.
     command: Model.sessionHandoffReadCommand(false)
     stdout: StdioCollector {
+      id: sessionHandoffStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(sessionHandoffProc)) return
-        root.onSessionHandoff(text)
-      }
+    }
+    onExited: function(exitCode) {
+      if (root.finishScrubRun(sessionHandoffProc)) return
+      root.onSessionHandoff(exitCode === 0 ? sessionHandoffStdout.text : "")
     }
   }
 
@@ -2769,17 +3556,12 @@ Panel {
     id: keyringLookupProc
     command: Model.keyringLookupCommand()
     stdout: StdioCollector {
+      id: keyringLookupStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(keyringLookupProc)) return
-        root.onKeyringLookupFinished(text)
-      }
     }
     onExited: function(exitCode) {
-      if (root.isScrubRun(keyringLookupProc)) return
-      if (exitCode !== 0) {
-        root.onKeyringLookupFailed()
-      }
+      if (root.finishScrubRun(keyringLookupProc)) return
+      root.onKeyringLookupFinished(exitCode === 0 ? keyringLookupStdout.text : "")
     }
   }
 
@@ -2788,15 +3570,22 @@ Panel {
     command: Model.keyringStoreCommand()
     environment: root.secretEnv(root.session)
     onExited: function(exitCode) {
-      if (exitCode !== 0) {
-        console.warn("qs-bitwarden-cli: could not store session in keyring (exit " + exitCode + ")")
-      }
+      root.onSessionStored(exitCode)
+      if (root.logoutPending && root.allCredentialsClearPending)
+        Qt.callLater(root.requestAllCredentialClear)
     }
   }
 
   Process {
     id: keyringClearProc
     command: Model.keyringClearCommand()
+    onExited: function(exitCode) {
+      if (root.sessionClearPending) {
+        Qt.callLater(root.requestSessionCredentialClear)
+        return
+      }
+      if (root.sessionStorePending) Qt.callLater(root.storeCurrentSession)
+    }
   }
 
   // ---- Fingerprint unlock ----
@@ -2805,11 +3594,12 @@ Panel {
     id: listFoldersProc
     environment: root.bwEnv()
     stdout: StdioCollector {
+      id: listFoldersStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(listFoldersProc)) return
-        root.onListFoldersFinished(text)
-      }
+    }
+    onExited: function(exitCode) {
+      if (root.finishScrubRun(listFoldersProc)) return
+      if (exitCode === 0) root.onListFoldersFinished(listFoldersStdout.text)
     }
   }
 
@@ -2817,24 +3607,22 @@ Panel {
     id: orgCollectionsProc
     environment: root.bwEnv()
     stdout: StdioCollector {
+      id: orgCollectionsStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(orgCollectionsProc)) return
-        root.onOrgCollectionsLoaded(text)
-      }
     }
     onExited: function(exitCode) {
-      if (root.isScrubRun(orgCollectionsProc)) return
-      if (exitCode !== 0) root.formCollectionsLoading = false
+      if (root.finishScrubRun(orgCollectionsProc)) return
+      if (exitCode === 0) root.onOrgCollectionsLoaded(orgCollectionsStdout.text)
+      else root.formCollectionsLoading = false
     }
   }
 
   Process {
     id: createFolderProc
-    environment: root.bwEnv()
+    environment: root.folderEnv()
     stdout: StdioCollector { id: createFolderStdout; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(createFolderProc)) return
+      if (root.finishScrubRun(createFolderProc)) return
       root.onFolderCreated(exitCode, createFolderStdout.text)
     }
   }
@@ -2845,7 +3633,7 @@ Panel {
     stdout: StdioCollector { id: attachmentStdout; waitForEnd: true }
     stderr: StdioCollector { id: attachmentStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(attachmentProc)) return
+      if (root.finishScrubRun(attachmentProc)) return
       root.onAttachmentDownloaded(exitCode, attachmentStdout.text, attachmentStderr.text)
     }
   }
@@ -2854,15 +3642,13 @@ Panel {
     id: listSendsProc
     environment: root.bwEnv()
     stdout: StdioCollector {
+      id: listSendsStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(listSendsProc)) return
-        root.onSendsLoaded(text)
-      }
     }
     onExited: function(exitCode) {
-      if (root.isScrubRun(listSendsProc)) return
-      if (exitCode !== 0) root.sendsLoading = false
+      if (root.finishScrubRun(listSendsProc)) return
+      if (exitCode === 0) root.onSendsLoaded(listSendsStdout.text)
+      else root.sendsLoading = false
     }
   }
 
@@ -2872,7 +3658,7 @@ Panel {
     stdout: StdioCollector { id: createSendStdout; waitForEnd: true }
     stderr: StdioCollector { id: createSendStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(createSendProc)) return
+      if (root.finishScrubRun(createSendProc)) return
       root.onSendCreated(exitCode, createSendStdout.text, createSendStderr.text)
     }
   }
@@ -2888,7 +3674,15 @@ Panel {
     environment: root.bwEnv()
     stdout: StdioCollector { id: generateStdout; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(generateProc)) return
+      if (root.finishScrubRun(generateProc)) return
+      if (root.generateCliStopping) {
+        root.generateCliStopping = false
+        var restart = root.currentScreen === "generator" && root.genRegeneratePending
+        root.genBusy = false
+        root.genRegeneratePending = false
+        if (restart) Qt.callLater(root.regenerate)
+        return
+      }
       root.onGenerated(generateStdout.text, exitCode)
     }
   }
@@ -2921,9 +3715,16 @@ Panel {
     stdout: StdioCollector { id: generateServeRequestStdout; waitForEnd: true }
     stderr: StdioCollector { id: generateServeRequestStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(generateServeRequestProc)) return
+      if (root.finishScrubRun(generateServeRequestProc)) {
+        root.resumePendingGeneratorRequest()
+        return
+      }
+      var stopped = root.generateServeRequestStopping
+      root.generateServeRequestStopping = false
       var cb = root.generateServeRequestCallback
       root.generateServeRequestCallback = null
+      if (root.resumePendingGeneratorRequest()) return
+      if (stopped) return
       if (cb) cb(exitCode, generateServeRequestStdout.text, generateServeRequestStderr.text)
     }
   }
@@ -2956,7 +3757,11 @@ Panel {
     id: pinStoreProc
     command: Model.pinStoreCommand()
     environment: root.pinEnv(root.pinSetupPin, root.pinSetupMaster)
-    onExited: function(exitCode) { root.onPinStored(exitCode) }
+    onExited: function(exitCode) {
+      root.onPinStored(exitCode)
+      if (root.logoutPending && root.allCredentialsClearPending)
+        Qt.callLater(root.requestAllCredentialClear)
+    }
   }
 
   Process {
@@ -2965,7 +3770,7 @@ Panel {
     environment: root.pinEnv(root.pinEntry, "")
     stdout: StdioCollector { id: pinUnlockStdout; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(pinUnlockProc)) return
+      if (root.finishScrubRun(pinUnlockProc)) return
       root.onPinUnlockResult(exitCode, pinUnlockStdout.text)
     }
   }
@@ -2982,6 +3787,9 @@ Panel {
   Process {
     id: keyringClearPinProc
     command: Model.keyringClearPinCommand()
+    onExited: function(exitCode) {
+      if (root.pinClearPending) Qt.callLater(root.requestPinCredentialClear)
+    }
   }
 
   Process {
@@ -2990,6 +3798,40 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onDependenciesChecked(text)
+    }
+  }
+
+  // An install runs in a terminal this panel does not own, so there is nothing
+  // to wait on and no exit code to hear about. Re-probing while the setup
+  // screen is up is what closes that loop: the moment `bw` lands on PATH the
+  // screen turns green and onDependenciesChecked moves on to the vault, with
+  // no second visit to a Re-check button. Only while the panel is open and
+  // only on that screen, so it costs nothing the rest of the time.
+  Timer {
+    id: setupPollTimer
+    interval: 2500
+    running: root.opened && root.currentScreen === "setup" && root.setupActionsPending
+    repeat: true
+    onTriggered: root.checkDependencies()
+  }
+
+  // The whole first paint now waits behind the dependency probe. If that probe
+  // never reports -- a shell that will not start, a mangled PATH -- the vault
+  // should still be reachable instead of the panel sitting on "checking"
+  // forever, so the status probe goes ahead on its own after a few seconds.
+  Timer {
+    id: statusProbeFallbackTimer
+    interval: 4000
+    running: !root.statusProbeStarted
+    repeat: false
+    onTriggered: {
+      if (root.statusProbeStarted || root.setupGated) return
+      // Four seconds of silence from a probe that takes milliseconds means it
+      // is not coming. Treating that as "checked, nothing missing" is what
+      // gets past refreshStatus()'s own !depsChecked guard -- an unanswered
+      // probe must not be the thing that keeps the vault out of reach.
+      root.depsChecked = true
+      root.refreshStatus()
     }
   }
 
@@ -3026,22 +3868,26 @@ Panel {
     id: keyringStoreMasterProc
     command: Model.keyringStoreMasterPasswordCommand()
     environment: root.secretEnv(root.masterToStore)
-    onExited: function(exitCode) { root.onMasterPasswordStored(exitCode) }
+    onExited: function(exitCode) {
+      root.onMasterPasswordStored(exitCode)
+      if (root.logoutPending && root.allCredentialsClearPending)
+        Qt.callLater(root.requestAllCredentialClear)
+    }
   }
 
   Process {
     id: keyringLookupMasterProc
     command: Model.keyringLookupMasterPasswordCommand()
     stdout: StdioCollector {
+      id: keyringLookupMasterStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(keyringLookupMasterProc)) return
-        root.onFingerprintPasswordRetrieved(text)
-      }
     }
     onExited: function(exitCode) {
-      if (root.isScrubRun(keyringLookupMasterProc)) return
-      if (exitCode !== 0) {
+      if (root.finishScrubRun(keyringLookupMasterProc)) return
+      if (exitCode === 0) {
+        root.onFingerprintPasswordRetrieved(keyringLookupMasterStdout.text)
+      } else {
+        root.fingerprintAuthorized = false
         root.fingerprintStored = false
         root.fingerprintMessage = "Stored master password unavailable. Use your password."
       }
@@ -3051,12 +3897,22 @@ Panel {
   Process {
     id: keyringClearMasterProc
     command: Model.keyringClearMasterPasswordCommand()
+    onExited: function(exitCode) {
+      if (root.masterClearPending) Qt.callLater(root.requestMasterCredentialClear)
+    }
   }
 
   // Logout's clean sweep; see forgetStoredCredentials().
   Process {
     id: keyringClearAllProc
     command: Model.keyringClearAllCommand()
+    onExited: function(exitCode) {
+      if (root.allCredentialsClearPending) {
+        Qt.callLater(root.requestAllCredentialClear)
+        return
+      }
+      root.onLogoutCredentialsFinished(exitCode)
+    }
   }
 
   // ---- Learned associations ----
@@ -3067,7 +3923,7 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        if (root.isScrubRun(associationsReadProc)) return
+        if (root.finishScrubRun(associationsReadProc)) return
         root.onAssociationsLoaded(text)
       }
     }
@@ -3078,10 +3934,22 @@ Panel {
     command: Model.associationsWriteCommand()
     environment: root.associationsEnv()
     onExited: function(exitCode) {
-      root.pendingAssociationsJson = ""
+      if (root.associationsClearPending) {
+        root.associationsClearPending = false
+        root.associationsWritePending = false
+        root.pendingAssociationsJson = ""
+        associationsClearProc.running = true
+        return
+      }
       if (exitCode !== 0) {
         console.warn("qs-bitwarden-cli: could not save learned suggestions (exit " + exitCode + ")")
       }
+      if (root.associationsWritePending) {
+        root.associationsWritePending = false
+        associationsWriteProc.running = true
+        return
+      }
+      root.pendingAssociationsJson = ""
     }
   }
 
@@ -3101,16 +3969,14 @@ Panel {
 
     onError: function(error) {
       root.fingerprintScanning = false
+      root.fingerprintAuthorized = false
       root.fingerprintMessage = "Fingerprint verification unavailable"
     }
   }
 
   Process {
     id: loginProc
-    environment: root.authEnv(root.loginPassword.trim(),
-                              root.loginMethod === "apikey" ? root.loginClientId.trim() : "",
-                              root.loginMethod === "apikey" ? root.loginClientSecret.trim() : "",
-                              root.login2faCode.trim())
+    environment: root.loginProcessEnv()
     stdout: StdioCollector {
       id: loginStdout
       waitForEnd: true
@@ -3120,15 +3986,32 @@ Panel {
       waitForEnd: true
     }
     onExited: function(exitCode) {
-      if (root.isScrubRun(loginProc)) return
+      if (root.finishScrubRun(loginProc)) return
+      if (!root.loginSubmitted) {
+        if (root.loginSubmitAfterPrewarmStop) {
+          root.loginSubmitAfterPrewarmStop = false
+          Qt.callLater(root.submitLogin)
+        } else if (root.loginPrepareAfterPrewarmStop) {
+          root.loginPrepareAfterPrewarmStop = false
+          Qt.callLater(root.prepareEmailLogin)
+        } else root.clearProcessCollectorSoon(loginProc)
+        return
+      }
+      root.loginSubmitted = false
       root.onLoginOutput(loginStdout.text, loginStderr.text, exitCode)
     }
   }
 
   Process {
+    id: authPasswordWriterProc
+    environment: root.authEnv(root.authPasswordWriteValue, "", "", "")
+    onExited: function(exitCode) { root.onAuthPasswordWriterExited(exitCode) }
+  }
+
+  Process {
     id: unlockProc
-    command: Model.unlockCommand()
-    environment: root.authEnv(root.pendingUnlockPassword, "", "", "")
+    command: Model.unlockPrewarmCommand()
+    environment: root.authEnv("", "", "", "")
     stdout: StdioCollector {
       id: unlockStdout
       waitForEnd: true
@@ -3138,7 +4021,15 @@ Panel {
       waitForEnd: true
     }
     onExited: function(exitCode) {
-      if (root.isScrubRun(unlockProc)) return
+      if (root.finishScrubRun(unlockProc)) {
+        if (root.opened && root.status === "locked") Qt.callLater(root.prepareUnlock)
+        return
+      }
+      if (!root.unlockSubmitted) {
+        root.clearProcessCollectorSoon(unlockProc)
+        return
+      }
+      root.unlockSubmitted = false
       root.onUnlockOutput(unlockStdout.text, unlockStderr.text, exitCode)
     }
   }
@@ -3146,27 +4037,22 @@ Panel {
   Process {
     id: logoutProc
     environment: root.bwEnv()
+    onExited: function(exitCode) { root.onLogoutCliFinished(exitCode) }
   }
 
   Process {
     id: listProc
     environment: root.bwEnv()
     stdout: StdioCollector {
+      id: listStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(listProc)) return
-        root.onListFinished(text)
-      }
     }
     stderr: StdioCollector {
+      id: listStderr
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(listProc)) return
-        if (text && text.trim()) {
-          root.errorMessage = text.trim()
-          root.isLoading = false
-        }
-      }
+    }
+    onExited: function(exitCode) {
+      root.onListProcessExited(exitCode, listStdout.text, listStderr.text)
     }
   }
 
@@ -3174,11 +4060,12 @@ Panel {
     id: listOrgsProc
     environment: root.bwEnv()
     stdout: StdioCollector {
+      id: listOrgsStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(listOrgsProc)) return
-        root.onListOrgsFinished(text)
-      }
+    }
+    onExited: function(exitCode) {
+      if (root.finishScrubRun(listOrgsProc)) return
+      if (exitCode === 0) root.onListOrgsFinished(listOrgsStdout.text)
     }
   }
 
@@ -3186,17 +4073,22 @@ Panel {
     id: getItemProc
     environment: root.bwEnv()
     stdout: StdioCollector {
+      id: getItemStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(getItemProc)) return
-        root.onDetailFinished(text)
-      }
     }
     stderr: StdioCollector {
+      id: getItemStderr
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(getItemProc)) return
-        if (text && text.trim()) root.errorMessage = text.trim()
+    }
+    onExited: function(exitCode) {
+      if (root.finishScrubRun(getItemProc)) return
+      if (exitCode === 0) {
+        root.onDetailFinished(getItemStdout.text)
+      } else {
+        root.isLoading = false
+        if (!root.vaultReadIsStale("detail")) {
+          root.errorMessage = String(getItemStderr.text || "").trim() || "Could not load item details"
+        }
       }
     }
   }
@@ -3205,17 +4097,31 @@ Panel {
     id: getTotpProc
     environment: root.bwEnv()
     stdout: StdioCollector {
+      id: getTotpStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (root.isScrubRun(getTotpProc)) return
-        root.onTotpFinished(text)
+    }
+    onExited: function(exitCode) {
+      if (root.finishScrubRun(getTotpProc)) {
+        root.continueTotpQueue(true)
+        return
       }
+      root.onTotpProcessExited(exitCode, getTotpStdout.text)
+    }
+  }
+
+  Process {
+    id: copyPasswordProc
+    environment: root.bwEnv()
+    stdout: StdioCollector { id: copyPasswordStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (root.finishScrubRun(copyPasswordProc)) return
+      root.onPasswordCopyFinished(exitCode, copyPasswordStdout.text)
     }
   }
 
   Process {
     id: activeWindowProc
-    command: ["sh", "-c", "hyprctl activewindow -j 2>/dev/null | grep -q '\"class\": \"[^\"]' && (hyprctl activewindow -j 2>/dev/null | head -c 65536) || (hyprctl clients -j 2>/dev/null | head -c 1048576)"]
+    command: Model.activeWindowCommand()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -3238,7 +4144,7 @@ Panel {
     stdout: StdioCollector { id: createItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: createItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(createItemProc)) return
+      if (root.finishScrubRun(createItemProc)) return
       root.itemPayloadJson = ""
       root.onSaveItemFinished(exitCode, createItemStdout.text, createItemStderr.text)
     }
@@ -3250,7 +4156,7 @@ Panel {
     stdout: StdioCollector { id: editItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: editItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(editItemProc)) return
+      if (root.finishScrubRun(editItemProc)) return
       root.itemPayloadJson = ""
       root.onSaveItemFinished(exitCode, editItemStdout.text, editItemStderr.text)
     }
@@ -3262,7 +4168,7 @@ Panel {
     stdout: StdioCollector { id: deleteItemStdout; waitForEnd: true }
     stderr: StdioCollector { id: deleteItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.isScrubRun(deleteItemProc)) return
+      if (root.finishScrubRun(deleteItemProc)) return
       root.onDeleteItemFinished(exitCode, deleteItemStdout.text, deleteItemStderr.text)
     }
   }
@@ -3321,9 +4227,39 @@ Panel {
         verticalAlignment: Text.AlignVCenter
       }
 
+      // Mini Install Badge in the same corner while a required tool is absent.
+      // A freshly installed widget has to say "click me, there is one step
+      // left" rather than sit there looking like it failed, so this outranks
+      // the padlock: with no `bw` there is no lock state worth reporting.
+      Item {
+        visible: root.missingRequired.length > 0
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: -Style.space(2)
+        anchors.bottomMargin: -Style.space(2)
+        width: Style.space(10)
+        height: Style.space(10)
+
+        Rectangle {
+          anchors.fill: parent
+          radius: width / 2
+          color: bar ? bar.background : Color.background
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          anchors.centerIn: parent
+          text: "󰐕"
+          font.family: root.fontFamily
+          font.pixelSize: Style.space(8)
+          color: bar ? bar.urgent : Color.urgent
+          renderType: Text.NativeRendering
+        }
+      }
+
       // Mini Padlock Badge in Bottom-Right Corner when locked
       Item {
-        visible: root.status === "locked"
+        visible: root.status === "locked" && root.missingRequired.length === 0
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.rightMargin: -Style.space(2)
@@ -3362,6 +4298,11 @@ Panel {
     useActiveColor: false
     dimmed: root.status === "unauthenticated" || root.status === "checking"
     tooltipText: {
+      // Ahead of every status: with a required tool missing, whatever `bw`
+      // last said about the vault is beside the point.
+      if (root.missingRequired.length > 0) {
+        return "Bitwarden (Click to finish setup)"
+      }
       if (root.status === "unlocked") {
         return "Bitwarden (" + (root.items.length > 0 ? root.items.length + " items" : "Unlocked") + ")"
       }
@@ -3394,12 +4335,17 @@ Panel {
     open: root.opened
     // Every unlocked screen except the two that are text entry drives the key
     // catcher, so arrow navigation works on settings and the generator too.
-    focusTarget: (root.status === "unlocked"
-                  && root.currentScreen !== "edit"
-                  && root.currentScreen !== "pin"
-                  && root.currentScreen !== "fingerprint")
+    // Setup is buttons, not text entry, and it is reached with the vault state
+    // still unknown -- so it takes the key catcher outright rather than
+    // handing focus to a password field that is not even on screen.
+    focusTarget: root.currentScreen === "setup"
       ? keyCatcher
-      : (root.status === "unauthenticated" ? emailField : passField)
+      : ((root.status === "unlocked"
+          && root.currentScreen !== "edit"
+          && root.currentScreen !== "pin"
+          && root.currentScreen !== "fingerprint")
+        ? keyCatcher
+        : (root.status === "unauthenticated" ? emailField : passField))
     contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.filterDrawerHeight)
 
@@ -3560,6 +4506,8 @@ Panel {
           title: "Bitwarden"
           meta: {
             if (root.status === "unlocked") {
+              if (root.isSyncing) return "Syncing..."
+              if (root.isLoading && root.items.length === 0) return "Loading items..."
               // The email arrives with `bw status`, which lags the item list on
               // a cold start and after a terminal-login handoff. Fall back to
               // the count so the subtitle is never blank in that gap.
@@ -3596,7 +4544,7 @@ Panel {
             PanelActionButton {
               visible: root.status === "unlocked"
               iconText: "󰑐"
-              tooltipText: "Sync vault (r)"
+              tooltipText: root.isSyncing ? "Syncing..." : "Sync vault (r)"
               fontFamily: root.fontFamily
               enabled: !root.isSyncing
               onClicked: root.syncVault()
@@ -4312,7 +5260,7 @@ Panel {
                   iconText: "󰆏"
                   tooltipText: "Copy"
                   fontFamily: root.fontFamily
-                  enabled: root.genValue !== ""
+                  enabled: !root.genBusy && root.genValue !== ""
                   onClicked: root.copyGenerated()
                 }
               }
@@ -4770,7 +5718,7 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              text: root.missingRequired.length > 0 ? "Setup required" : "All set"
+              text: root.missingRequired.length > 0 ? "One more step" : "All set"
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
@@ -4781,7 +5729,7 @@ Panel {
               textFormat: Text.PlainText
               width: parent.width
               text: root.missingRequired.length > 0
-                ? "The plugin shells out to these tools. The ones marked required must be installed for it to work at all."
+                ? "The plugin drives these tools rather than bundling them. Install the required ones below and the panel picks them up on its own -- no terminal work to come back from."
                 : "Every required tool is installed. Optional ones below unlock extra features."
               color: root.dim
               font.family: root.fontFamily
@@ -4791,7 +5739,9 @@ Panel {
           }
 
           Repeater {
-            model: root.dependencies.items
+            // Only rows this machine can act on. A desktop with no fingerprint
+            // reader is not missing a dependency.
+            model: Model.applicableDependencies(root.dependencies)
 
             delegate: BorderSurface {
               required property var modelData
@@ -4851,12 +5801,15 @@ Panel {
                     wrapMode: Text.WordWrap
                   }
 
-                  // fprintd on PATH still needs an enrolled finger.
+                  // The package being on PATH is not the finish line for a
+                  // setup row: fingerprint unlock also wants an enrolled
+                  // finger and the PAM stack, and only the setup command
+                  // produces those.
                   Text {
                     textFormat: Text.PlainText
-                    visible: modelData.key === "fprintd" && modelData.installed && !modelData.ready
+                    visible: modelData.setup && modelData.installed && !modelData.ready
                     width: parent.width
-                    text: "Installed, but no finger is enrolled yet."
+                    text: "Reader stack is installed, but no finger is enrolled yet."
                     color: root.urgent
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -4864,26 +5817,18 @@ Panel {
                   }
                 }
 
+                // One button per row, whichever door this row goes through.
                 Button {
                   anchors.verticalCenter: parent.verticalCenter
-                  visible: !modelData.installed
-                  text: "Install"
-                  iconText: "󰐕"
-                  tooltipText: "omarchy pkg add " + modelData.pkg
+                  visible: modelData.setup ? !modelData.ready : !modelData.installed
+                  text: modelData.setup ? "Set up" : "Install"
+                  iconText: modelData.setup ? "󰈷" : "󰐕"
+                  tooltipText: modelData.setup
+                    ? "omarchy setup security fingerprint"
+                    : "omarchy install app " + modelData.pkg
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.installOne(modelData)
-                }
-
-                Button {
-                  anchors.verticalCenter: parent.verticalCenter
-                  visible: modelData.key === "fprintd" && modelData.installed && !modelData.ready
-                  text: "Enroll"
-                  iconText: "󰈷"
-                  tooltipText: "omarchy setup security fingerprint"
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  onClicked: root.runFingerprintSetup()
                 }
               }
             }
@@ -4901,12 +5846,16 @@ Panel {
               onClicked: root.checkDependencies()
             }
 
+            // The one button a first run needs. It covers the optional tools
+            // too, so a single trip through the terminal leaves every feature
+            // working rather than only the ones that block startup.
             Button {
-              visible: root.missingRequired.length > 1
-              text: "Install all missing"
+              visible: root.installablePackages.length > 0
+              text: root.installablePackages.length > 1 ? "Install all missing" : "Install"
               iconText: "󰐕"
               selected: true
               accent: Color.accent
+              tooltipText: "omarchy install app " + root.installablePackages.join(" ")
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.installMissing()
@@ -4917,11 +5866,7 @@ Panel {
               iconText: "󰁍"
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
-              onClicked: {
-                root.setupDismissed = true
-                root.currentScreen = root.status === "unlocked" ? "main"
-                  : (root.status === "locked" ? "locked" : "login")
-              }
+              onClicked: root.dismissSetup()
             }
           }
                   }
@@ -5200,7 +6145,10 @@ Panel {
               selected: root.loginMethod === "email"
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
-              onClicked: root.loginMethod = "email"
+              onClicked: {
+                root.invalidateEmailLoginPrewarm()
+                root.loginMethod = "email"
+              }
             }
 
             Button {
@@ -5209,7 +6157,10 @@ Panel {
               selected: root.loginMethod === "apikey"
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
-              onClicked: root.loginMethod = "apikey"
+              onClicked: {
+                root.invalidateEmailLoginPrewarm()
+                root.loginMethod = "apikey"
+              }
             }
           }
 
@@ -5228,7 +6179,10 @@ Panel {
                 width: parent.width
                 placeholderText: "you@example.com"
                 text: root.loginEmail
-                onTextChanged: root.loginEmail = text
+                onTextChanged: {
+                  root.loginEmail = text
+                  root.invalidateEmailLoginPrewarm()
+                }
                 onAccepted: loginPassField.forceActiveFocus()
               }
             }
@@ -5247,6 +6201,9 @@ Panel {
                   password: !eyeBtnLogin.revealed
                   text: root.loginPassword
                   onTextChanged: root.loginPassword = text
+                  onActiveFocusChanged: {
+                    if (activeFocus) root.prepareEmailLogin()
+                  }
                   onAccepted: code2faField.forceActiveFocus()
                 }
                 Button {
@@ -5290,7 +6247,10 @@ Panel {
                 width: parent.width
                 placeholderText: "6-digit Authenticator / Email verification code..."
                 text: root.login2faCode
-                onTextChanged: root.login2faCode = text
+                onTextChanged: {
+                  root.login2faCode = text
+                  root.invalidateEmailLoginPrewarm()
+                }
                 onAccepted: root.submitLogin()
               }
             }
@@ -5322,20 +6282,23 @@ Panel {
                 width: parent.width
                 placeholderText: "https://vault.example.com"
                 text: root.loginServerUrl
-                onTextChanged: root.loginServerUrl = text
+                onTextChanged: {
+                  root.loginServerUrl = text
+                  root.invalidateEmailLoginPrewarm()
+                }
               }
             }
 
             Button {
               width: parent.width
-              text: root.isLoading ? "Logging in..." : "Log In & Unlock"
-              iconText: root.isLoading ? "󰑐" : "󰌋"
-              iconSpinning: root.isLoading
+              text: root.logoutCleanupFailed ? "Retry Logout Cleanup" : (root.logoutPending ? "Finishing logout..." : (root.isLoading ? "Logging in..." : "Log In & Unlock"))
+              iconText: root.logoutCleanupFailed ? "󰑐" : ((root.logoutPending || root.isLoading) ? "󰑐" : "󰌋")
+              iconSpinning: !root.logoutCleanupFailed && (root.logoutPending || root.isLoading)
               selected: true
               accent: Color.accent
               fontFamily: root.fontFamily
-              enabled: !root.isLoading
-              onClicked: root.submitLogin()
+              enabled: root.logoutCleanupFailed || (!root.logoutPending && !root.isLoading)
+              onClicked: root.logoutCleanupFailed ? root.retryLogoutCleanup() : root.submitLogin()
             }
           }
 
@@ -5386,14 +6349,14 @@ Panel {
 
             Button {
               width: parent.width
-              text: root.isLoading ? "Logging in..." : "Log In with API Key"
-              iconText: root.isLoading ? "󰑐" : "󰌋"
-              iconSpinning: root.isLoading
+              text: root.logoutCleanupFailed ? "Retry Logout Cleanup" : (root.logoutPending ? "Finishing logout..." : (root.isLoading ? "Logging in..." : "Log In with API Key"))
+              iconText: root.logoutCleanupFailed ? "󰑐" : ((root.logoutPending || root.isLoading) ? "󰑐" : "󰌋")
+              iconSpinning: !root.logoutCleanupFailed && (root.logoutPending || root.isLoading)
               selected: true
               accent: Color.accent
               fontFamily: root.fontFamily
-              enabled: !root.isLoading
-              onClicked: root.submitLogin()
+              enabled: root.logoutCleanupFailed || (!root.logoutPending && !root.isLoading)
+              onClicked: root.logoutCleanupFailed ? root.retryLogoutCleanup() : root.submitLogin()
             }
           }
 
@@ -5597,6 +6560,9 @@ Panel {
                 password: !eyeBtnUnlock.revealed
                 text: root.masterPassword
                 onTextChanged: root.masterPassword = text
+                onActiveFocusChanged: {
+                  if (activeFocus) root.prepareUnlock()
+                }
                 onAccepted: root.unlockVault()
                 enabled: !root.isUnlocking
               }
@@ -5995,16 +6961,25 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   anchors.horizontalCenter: parent.horizontalCenter
-                  text: root.items.length === 0 ? "󰞀" : "󰍡"
+                  text: root.isLoading && root.items.length === 0 ? "󰑐" : (root.items.length === 0 ? "󰞀" : "󰍡")
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.space(36)
+                  RotationAnimation on rotation {
+                    running: root.isLoading && root.items.length === 0
+                    from: 0
+                    to: 360
+                    duration: 900
+                    loops: Animation.Infinite
+                  }
                 }
 
                 Text {
                   textFormat: Text.PlainText
                   anchors.horizontalCenter: parent.horizontalCenter
-                  text: root.items.length === 0 ? "Vault is empty" : ("No items match '" + root.searchQuery + "'")
+                  text: root.isLoading && root.items.length === 0
+                    ? "Loading items..."
+                    : (root.items.length === 0 ? "Vault is empty" : ("No items match '" + root.searchQuery + "'"))
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body

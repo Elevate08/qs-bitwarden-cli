@@ -10,6 +10,17 @@
 
 const fs = require("fs")
 const path = require("path")
+const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const bodyOf = (name) => {
+  const start = panelSrc.indexOf(`function ${name}(`)
+  if (start === -1) return ""
+  let depth = 0
+  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
+    if (panelSrc[i] === "{") depth++
+    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
+  }
+  return ""
+}
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "") + `
@@ -22,7 +33,6 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.attachmentDownloadCommand = attachmentDownloadCommand
   exports.editItemCommand = editItemCommand
   exports.deleteSendCommand = deleteSendCommand
-  exports.deleteFolderCommand = deleteFolderCommand
   exports.deleteItemCommand = deleteItemCommand
   exports.getTotpCommand = getTotpCommand
   exports.getItemCommand = getItemCommand
@@ -169,14 +179,25 @@ check("the staging directory is removed however the script leaves",
   script.indexOf(`trap 'rm -rf -- "$work"' EXIT`) !== -1, script)
 check("a decrypted attachment is not left readable by anyone else",
   script.split("\n").indexOf("umask 077") !== -1, script)
+check("locking and panel dismissal cancel an attachment that is still decrypting",
+  /cancelAttachmentDownloads\(\)/.test(bodyOf("dropVaultState"))
+    && /cancelAttachmentDownloads\(\)/.test(bodyOf("close"))
+    && /if\s*\(attachmentProc\.running\)\s*attachmentProc\.running\s*=\s*false/.test(bodyOf("cancelAttachmentDownloads"))
+    && /invalidateEpochOperation\("attachment"\)/.test(bodyOf("cancelAttachmentDownloads")),
+  bodyOf("close") + "\n" + bodyOf("dropVaultState") + "\n" + bodyOf("cancelAttachmentDownloads"))
+check("cancellation reaches the complete attachment process group",
+  script.includes("set -m") && script.includes('kill -TERM -- "-$__auth_job"'), script)
 
 // --- the ceilings ------------------------------------------------------------
 check("the transfer is bounded in bytes by RLIMIT_FSIZE",
   /ulimit -f \d+/.test(script), script)
 check("the transfer is bounded in time",
-  /timeout \d+/.test(script), script)
+  /timeout \d+s bw get attachment/.test(script)
+    && !script.includes("command -v timeout"), script)
 check("the disk is not filled to the last byte",
   script.indexOf("df -Pk") !== -1, script)
+check("an unknown declared size reserves room for the full bounded transfer",
+  script.indexOf('[ "$avail" -lt 589824 ]') !== -1, script)
 check("the size the vault declares buys an early refusal",
   script.indexOf('if [ "$want" -gt "$max" ]') !== -1, script)
 check("the size on disk is checked even where the kernel limit was not applied",
@@ -188,10 +209,12 @@ check("a missing or nonsense declared size is treated as unknown, not as a refus
   Model.attachmentDownloadCommand("a1", "i", "f.txt")[2].indexOf("want=0") !== -1
     && Model.attachmentDownloadCommand("a1", "i", "f.txt", "nope")[2].indexOf("want=0") !== -1,
   Model.attachmentDownloadCommand("a1", "i", "f.txt", "nope")[2])
+check("the no-hardlink fallback still refuses to replace a raced destination",
+  script.indexOf('mv -n -- "$tmp" "$cand"') !== -1, script)
 check("it refuses to treat $HOME as the download directory",
   script.indexOf("\"$dir\" = \"$HOME\"") !== -1, script)
 check("it stops at the first failure rather than printing a path for a file it did not write",
-  script.split("\n")[0] === "set -e", script.split("\n")[0])
+  /set -e/.test(script), script.split("\n")[0])
 
 // A hostile name reaches the script already defanged, and quoted on top.
 const hostile = Model.attachmentDownloadCommand("a'1", "i'd", "../../.bashrc")
@@ -453,7 +476,6 @@ const guarded = [
   ["getItemCommand", Model.getItemCommand(optionish), "bw get item -- --help"],
   ["getTotpCommand", Model.getTotpCommand(optionish), "bw get totp --raw -- --help"],
   ["deleteItemCommand", Model.deleteItemCommand(optionish), "bw delete item -- --help"],
-  ["deleteFolderCommand", Model.deleteFolderCommand(optionish), "bw delete folder -- --help"],
   ["deleteSendCommand", Model.deleteSendCommand(optionish), "bw send delete -- --help"],
 ]
 for (const [name, cmd, want] of guarded) {

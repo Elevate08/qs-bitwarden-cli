@@ -3,15 +3,22 @@
 A modern, fast, and feature-rich Bitwarden password manager plugin for the **Omarchy** shell environment and **Hyprland** desktop.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.2.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.3.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI](https://img.shields.io/badge/requires-bw%20CLI-175ddc.svg)](https://bitwarden.com/help/cli/)
+
+![Bitwarden Vault Plugin preview](preview.png)
 
 ---
 
 ## Screenshots
 
 Every screenshot below is captured against a **fixture vault** of made-up entries, never a real one -- see [Regenerating the Screenshots](#regenerating-the-screenshots) for how they are made and how to regenerate them.
+
+| First run |
+| :---: |
+| ![Setup](docs/screenshots/00-setup.png) |
+| The whole install: `omarchy plugin add`, then one button here. The panel watches for it and moves on to your vault by itself |
 
 | Log in | Vault list | Filter drawer |
 | :---: | :---: | :---: |
@@ -43,7 +50,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - **Terminal login fallback**: when the built-in form cannot cover your login method -- SSO, a Duo push, a hardware key -- the login screen offers **Launch Terminal**, which runs `bw login` in a real terminal so Bitwarden's own prompts handle it.
   - That terminal hands its session straight back: it captures the key with `bw login --raw` (prompts stay on stderr, so the login is still interactive) and writes it to `$XDG_RUNTIME_DIR/qs-bitwarden-cli/session-handoff`, mode `600`, in a directory created `700` before the file exists. There is no fallback path: if `XDG_RUNTIME_DIR` is somehow unset the login refuses to run rather than putting a session key anywhere a second user could have prepared. The panel reads that file once, deletes it, and comes back unlocked -- no second login just to get in. If the vault was merely locked rather than logged out, the same button unlocks instead. **It only reads it when it is expecting to.** The check runs on every status refresh, and it used to adopt whatever was at that path whether or not the panel had ever asked for a terminal login -- so anything able to write the file could hand the panel a session key at a moment of its own choosing, and the panel would take it and write it to the keyring. The runtime directory is `0700`, so that is one of your own processes rather than a stranger and it was never a privilege boundary; it was a window with no reason to be open. A key is only expected in the ten minutes after the panel itself launched a terminal, so those are the only minutes it is read in. Outside them the file is deleted unread -- not reading it is not a reason to leave a live session key lying in the runtime directory, and a login abandoned halfway leaves exactly that.
   - **The terminal reopens the panel for you** on success, then closes itself; you only have to dismiss it if something went wrong and there is an error worth reading.
-  - Two `bw status` calls used to sit on that path, each around three seconds on a real vault: one in the terminal to decide login-versus-unlock, one in the panel to confirm a key `bw` had just minted. Neither is needed -- the panel already knows which state it is in, and the confirming check now runs alongside the item load instead of in front of it.
+  - Two `bw status` calls used to sit on that path, each around three seconds on a real vault: one in the terminal to decide login-versus-unlock, one in the panel to confirm a key `bw` had just minted. Neither is needed -- the panel already knows which state it is in, and the confirming check now starts only after the item list has been rendered instead of sitting in front of it.
 
 - **PIN Unlock** (opt-in, `pinUnlock`):
   - Unlock with a numeric PIN instead of typing the master password. **6 digits or more is the recommendation**, 4 is the hard floor, and there is no upper limit. A PIN under 6 digits is accepted but the field turns red and tells you how small the search space you just chose is -- every extra digit multiplies an attacker's work by ten.
@@ -67,7 +74,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - **It learns.** Opening or copying an item while a window is active records that window against the item, and it is suggested outright next time -- ahead of every heuristic. This is what handles sites a title can never match: a portal on `auth.example.xyz` titled `Home - authentik` shares no word with the stored credential, so pick it once and it sticks. Learned suggestions are marked `󰐾` rather than `󰌠`.
   - **Suggest here / Suggested here** in an item's detail view pins or unpins that item for the current site or app deliberately, without waiting to be taught.
   - Re-picking a different item retargets what was learned, so a bad association corrects itself the next time you choose.
-  - Associations live in `~/.local/state/qs-bitwarden-cli/associations.json` (mode `600`) and hold only vault item IDs and the title words they were learned from -- never credentials. **Logging out deletes the file.** It holds no secrets, but between them the domains, app names and timestamps are a record of which sites the account has logins for and when each was last used, in the clear and with no expiry of its own -- and the keyring entries are already cleared on logout for exactly that reason. This was the one piece of the account's data that stayed behind.
+  - Associations live in `~/.local/state/qs-bitwarden-cli/associations.json` (mode `600`) and hold only vault item IDs and the title words they were learned from -- never credentials. Writes replace a private temporary file atomically, never follow a symlink, and narrow an older permissive file back to `600`; reads validate the schema and discard unknown versions, malformed entries, and keys outside the `domain:`, `app:`, and `word:` namespaces. **Logging out deletes the file after any active writer has exited**, so an in-flight update cannot resurrect the previous account's metadata. It holds no secrets, but between them the domains, app names and timestamps are a record of which sites the account has logins for and when each was last used, in the clear and with no expiry of its own.
   - **Limitation:** browsers do not publish the active tab URL to Wayland or Hyprland, so the *heuristics* work from the page title. A site whose title mentions neither its name nor its domain (`New Tab`, a bare `Sign in`) cannot be inferred -- teach it once instead.
 
 - **Smart Auto-Copy TOTP Flow on <kbd>Enter</kbd>**:
@@ -79,7 +86,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 - **Full Add, Edit & Delete (CRUD) Operations**:
   - **Create Items (`n` key or `+` button)**: Add new **Logins** (`󰌋`) or **Secure Notes** (`󰈐`).
   - **Password Generator**: A full generator screen (<kbd>g</kbd> or the `󰌆` button) mirroring the Bitwarden browser extension's options -- password (length, A-Z, a-z, 0-9, special, minimum numbers, minimum special, avoid ambiguous) or passphrase (word count, separator, capitalise, include number), with a live strength meter. Generation comes from Bitwarden's own generator rather than a reimplementation, and the item form's **Generate...** button opens this same screen and fills the password field in on the way back.
-  - **It is fast.** A fresh `bw generate` costs about 2.9 seconds, almost none of it generation: roughly 0.9s is the CLI's Node bootstrap and 2s is Bitwarden's service container starting, and every option toggle paid it again. The panel now starts `bw serve` on loopback the first time you open the generator and asks that, which answers in about **2ms**. The server is deliberately started with **no session**, so it is a locked vault that can generate passwords and nothing else -- a loopback port has no authentication and is reachable by every user on the machine, so it must never hold an unlocked vault. The server is also only up while the generator screen is: `bw serve` answers `/status` with your account email and user id to anyone on the machine who asks, so it goes up with the screen and comes down with it rather than idling on a port for the whole session. And an answer on that port is not taken as proof the server is ours -- there is no authentication to lean on, so the port is probed before we start, and anything already answering means the panel uses `bw generate` for that visit instead of letting a stranger's server pick your password. If our own server later dies, any value it had already supplied is discarded rather than left on screen to be copied. **And no request to that port can hold the panel up or fill it.** Refusing to trust a squatter's password is not the same as bounding the exchange with one: QML's `XMLHttpRequest` has no timeout of its own and buffers responses directly into the shared shell process memory before JavaScript can inspect or abort them, allowing a flooding loopback responder to allocate unbounded memory. Every request to the generator port now runs through a managed child process bounded on the producer side with `curl --max-time 2` and `head -c 64KB`, ensuring that the kernel pipe enforces both duration and payload limits before bytes ever enter the shell process. A request cut short counts as an occupied port, never a free one.
+  - **It is fast.** A fresh `bw generate` costs about 2.9 seconds, almost none of it generation: roughly 0.9s is the CLI's Node bootstrap and 2s is Bitwarden's service container starting, and every option toggle paid it again. The panel now starts `bw serve` on loopback the first time you open the generator and asks that, which answers in about **2ms**. The server is deliberately started with **no session**, so it is a locked vault that can generate passwords and nothing else -- a loopback port has no authentication and is reachable by every user on the machine, so it must never hold an unlocked vault. The server is also only up while the generator screen is: `bw serve` answers `/status` with your account email and user id to anyone on the machine who asks, so it goes up with the screen and comes down with it rather than idling on a port for the whole session. And an answer on that port is not taken as proof the server is ours -- there is no authentication to lean on, so the port is probed before we start, and anything already answering means the panel uses `bw generate` for that visit instead of letting a stranger's server pick your password. If our own server later dies, any value it had already supplied is discarded rather than left on screen to be copied. **And no request to that port can hold the panel up, fill it, or leave loopback.** Every request runs through a managed child process with curl's config disabled, proxies bypassed, a two-second deadline, and a producer-side 64 KB cap. A request cut short counts as an occupied port, never a free one.
   - **Edit Items (`e` key or Edit button)**: Modify titles, credentials, authenticator keys, URLs, and notes.
   - **Delete Items (`x` key or Delete button)**: Delete items with confirmation protection.
 
@@ -95,8 +102,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - The list costs nothing: `bw list items` already returns the attachment metadata with the cipher, so the files are on screen the moment the item opens. Only the bytes need the CLI, and only for the file you ask for.
   - **Save** puts a file in your download directory (`xdg-user-dir DOWNLOAD`, falling back to `~/Downloads`), then offers **Open** and **Show in folder** for it. <kbd>a</kbd> saves every attachment on the item; they are fetched one at a time rather than starting a `bw` per file.
   - Nothing is ever written through whatever already sits at the chosen path: the bytes land in a private staging directory first and the finished file claims its name atomically, so a symlink left in the download folder is stepped around rather than followed, and an existing file is never overwritten -- " (1)", " (2)" and so on go before the extension until the name is free.
-  - A download is bounded before it starts and while it runs: 512 MB per file, 15 minutes, and a check that the disk has room. A transfer that breaks a limit leaves nothing behind.
-  - An existing file of the same name is never overwritten -- ` (1)`, ` (2)` and so on go before the extension until the name is free.
+  - A download is bounded before it starts and while it runs: 512 MB per file, 15 minutes, and a check that the disk has room. If the server omits the size, the preflight reserves for the full 512 MB ceiling rather than treating it as an empty file. A transfer that breaks a limit leaves nothing behind.
   - **A file name out of the vault is treated as hostile.** It is decrypted content that is about to become part of a path, so path separators and control characters are replaced rather than stripped, a leading dot or dash is dropped, and the result is quoted on top of that: `../../.bashrc` saves as `bashrc` in your download directory and nowhere else. Tests run the real script against a stub `bw` to prove it.
 
 - **Folders**:
@@ -122,9 +128,15 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Shared items display a prominent `󰓹 Org` tag in the list and detail views.
   - Choose destination vault (Personal vs. Organization) when creating or editing items.
 
+- **Guided First Run — no prerequisites**:
+  - `omarchy plugin add ... --enable` is the entire install. The widget enables into the bar with nothing else installed, wearing a `+` badge, and opens on its setup screen instead of a login form it cannot service.
+  - The dependency probe runs ahead of anything that touches `bw`, so a machine without the CLI never lands on a dead end.
+  - The setup screen watches for the install it launched and moves on to the vault by itself the moment the tools land — no re-check, no restart.
+
 - **Setup Wizard & In-Panel Settings**:
-  - Checks every external tool the plugin shells out to (`bw`, `wl-copy`, `hyprctl`, `secret-tool`, `fprintd`) in a single probe, marking each required or optional and saying what it is for.
-  - A missing **required** tool opens the wizard automatically; **Install** runs `omarchy pkg add <pkg>` in a terminal so you can see it happen and answer the password prompt. `fprintd` present without an enrolled finger offers **Enroll** (`omarchy setup security fingerprint`).
+  - Checks the tools Omarchy does not already ship (`bw`, plus fingerprint unlock) in a single probe, marking each required or optional and saying what it is for. Everything else the plugin shells out to comes with Omarchy, so the screen stays one short list rather than a wall of rows that are green on every machine.
+  - A missing **required** tool opens the wizard automatically. **Install** hands off to `omarchy install app`, which surfaces the install in Omarchy's own floating, centred terminal -- the same window every other app install on the system opens, with the logo, the package output, a place to answer the sudo prompt, and a keypress to close.
+  - Fingerprint unlock is Omarchy's job end to end: **Set up** runs `omarchy setup security fingerprint`, which detects the reader, installs `libfprint`/`fprintd`/`usbutils`, enrols a finger, verifies it, and writes the PAM stacks. The row is only drawn on a machine with a reader (`omarchy-hw-fingerprint`), and there is no `pkg add fprintd` button, because installing the package alone leaves the row exactly as red as it was.
   - Press <kbd>,</kbd> or the `󰒓` button for settings, grouped into **Security**, **Behavior** and **Suggestions**: auto-lock timeout, clipboard clear delay, TOTP auto-copy delay, and every toggle. A setting whose dependency is missing is shown but inert, with the reason given.
   - Changes are written to the plugin's entry in `~/.config/omarchy/shell.json` through `omarchy bar set`, so Omarchy owns the file and the shell hot-reloads the change. Nothing is stored in a second place.
   - Reachable from a keybind too: `omarchy-shell io.github.elevate08.qs-bitwarden-cli settings` (or `setup`).
@@ -132,57 +144,84 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 - **Hardware-Accelerated Performance & Security**:
   - Virtualized `ListView` with component delegate recycling for instant rendering of large vaults.
   - Asynchronous search debouncing (50ms) for responsive 0ms typing latency.
-  - **Credentials do not reach a command line.** `/proc/<pid>/cmdline` is world-readable on a default Linux install while `/proc/<pid>/environ` is not, so every secret travels in the environment: the session token in `BW_SESSION`, the master password in `BW_PASSWORD` (named to `bw` by `--passwordenv`), API key credentials in `BW_CLIENTID` / `BW_CLIENTSECRET`, item and Send payloads and copied secrets in their own variables. None of them is interpolated into a command or a shell script. The one exception is the two-step login code: `bw` offers no environment option for it, so `--code` puts it in `bw`'s own argv for the length of the login — it is carried in `QSBW_CODE` and expanded there, which at least keeps it out of the wrapping shell. Tests assert that no builder emits `--session` and that none of the auth commands carries a password, client secret or client ID.
-  - **The custom-server field is checked before the master password is sent to it.** `bw config server` takes whatever it is given, and the next thing down that path is your master password, so a plain `http://` address is refused unless it is loopback -- where there is no wire to listen on, and where a local Vaultwarden or an SSH tunnel to one is a normal way to run this. Any scheme that is not `http` or `https` is refused outright. The loopback exemption is anchored and userinfo is stripped before the host is judged, so `http://localhost.evil.com` and `http://localhost@evil.com` are both refused rather than read as loopback.
-  - Automatic clipboard clearing (`wl-copy --clear`) after a configurable timeout (default: 30s).
+  - **Unlock and password-login startup is prewarmed.** Opening the locked screen, or focusing the password field while logged out, starts the Bitwarden CLI and leaves it waiting on a private mode-`600` FIFO. Submitting the form writes the exact password bytes into that pipe, so most of the CLI's Node and service-container startup has already happened. Closing the panel cancels the waiting process and removes the FIFO.
+  - **Items load before secondary metadata.** After authentication, the first command fetches only the item list. Folders, organizations and the confirming status refresh begin after those items have been parsed and rendered. Short `Loading items...` and `Syncing...` status text exposes the work without adding another screen.
+  - **There is no persistent item cache.** Every authenticated cold load is verified through `bw`; decrypted vault items are never written into the plugin directory or another cache. The speedup comes from moving startup off the submit path and removing unrelated commands from the critical item path.
+  - **Credentials do not reach a command line.** `/proc/<pid>/cmdline` is world-readable on a default Linux install while `/proc/<pid>/environ` is not. The session token travels in `BW_SESSION`; direct unlock and email-login passwords move from `BW_PASSWORD` through the private FIFO selected with `--passwordfile`; API key credentials use `BW_CLIENTID` / `BW_CLIENTSECRET`; item, folder, and Send payloads and copied secrets use their own variables. None is interpolated into a command or shell script. The one exception is the two-step login code: `bw` offers no environment option for it, so `--code` puts it in `bw`'s own argv for the length of the login — it is carried in `QSBW_CODE` and expanded there, which at least keeps it out of the wrapping shell. Tests assert that no builder emits `--session` and that no auth command carries a password, client secret or client ID in argv.
+  - **The custom-server field is checked before the master password is sent to it.** `bw config server` takes whatever it is given, and the next thing down that path is your master password, so a plain `http://` address is refused unless it is loopback -- where there is no wire to listen on, and where a local Vaultwarden or an SSH tunnel to one is a normal way to run this. Any scheme that is not `http` or `https` is refused outright. The loopback exemption is anchored and userinfo is stripped before the host is judged, so `http://localhost.evil.com` and `http://localhost@evil.com` are both refused. Backslashes are refused too: WHATWG clients interpret them as path separators, and otherwise `http://evil.example\@localhost` can look local to a lightweight parser while connecting to `evil.example`.
+  - Automatic clipboard clearing (`wl-copy --clear`) after a configurable timeout (default: 30s), and immediately whenever the vault locks. Password and TOTP fallback reads are managed and generation-checked, so a command that finishes after a lock cannot put its result on the clipboard.
   - Optional session token caching in Linux Secret Service (`secret-tool` / libsecret).
-  - **Locking the vault also discards what was still on its way out of it.** Nothing cancels a `bw` that is already running, and `bw list items` on a large vault takes seconds, so a lock or a logout could be followed a moment later by the whole item list arriving and settling back into the panel -- every login's password rides along in its raw object, so the contents of a vault you had just locked went on living in the shell process for the rest of the desktop session, and after logging in to a second account they were what the list drew until the new account's own items landed. Every reader now records the vault generation it started under, the generation moves on whenever the vault is locked, logged out of or unlocked, and an answer from a generation that has passed is dropped instead of rendered.
+  - **Keyring writes cannot race a lock, logout, or cancelled setup.** Session, PIN, and fingerprint-password stores are generation-stamped; a completion from an old vault or an authentication setup form the user left is cleared instead of recreating a credential that was just removed.
+  - **Locking the vault also discards what was still on its way out of it.** Every read and operation records the vault generation it started under, and the generation moves whenever the vault is locked, logged out of, or unlocked. A late item list, generated password, attachment completion, CRUD result, or newly created Send link is dropped instead of repopulating memory, navigating the locked panel, or copying a secret after the lock. Process output is accepted only after its exit status is known.
   - **And a lock forgets it as well as refuses it.** Refusing a stale answer still leaves it in the pipe it came down. Quickshell's `StdioCollector` keeps whatever its process last printed for as long as that process is not started again -- `text` is read-only, there is no `clear()`, and nothing drops the buffer when the panel stops reading it -- so every secret that had ever come back through one was still in the shell after the vault locked: the session key from the handoff file and from the keyring, the master password from the PIN and fingerprint lookups, both halves of a login or unlock, the whole item list with each login's password in its raw object, an item detail, a live TOTP. Clearing the properties those were copied into left the originals sitting behind them. The buffer *is* replaced when the process next starts, so a lock now runs a command that prints nothing through every collector that can hold vault data or a credential; anything still mid-read is come back for once it finishes.
   - **Auto-lock counts the time the machine was asleep.** Qt schedules its timers on the monotonic clock, which Linux stops while the machine is suspended, so a fifteen-minute countdown armed just before the lid closed still had fifteen minutes to run when the lid opened -- a vault left overnight came back exactly as open as it was left. The deadline is kept in wall-clock terms as well and polled every thirty seconds, so waking a suspended machine locks the vault rather than resuming the countdown. Between the monotonic timer and the wall clock, whichever notices first does the locking.
   - **The vault locks when the screen locks and when the machine suspends.** Auto-lock only ever measured elapsed time, and the two moments a vault most obviously stops being attended are not about elapsed time at all -- both used to leave it open for whatever was left of the countdown. `lockOnScreenLock` follows the Omarchy lock screen's own state, so a manual lock and an idle lock both count; it has to ask rather than wait, because the lock screen is `WlSessionLock` (a compositor protocol with no bus presence), so `loginctl` never sees it and logind's `LockedHint` stays `no` the whole time it is up. `lockOnSuspend` waits on logind's `PrepareForSleep`, which covers every path into suspend -- the lid, the menu, `systemctl suspend`, an idle timeout -- and holds a `delay` inhibitor while it does, so the lock actually lands before the machine is frozen rather than racing it: without one, logind announces the sleep and suspends without waiting, and a session key still in the keyring is a session key in the memory image. The inhibitor is released a second after the announcement, well inside logind's own `InhibitDelayMaxSec`, so it costs nothing but that second on the suspends it acts on. Neither setting replaces the countdown; a vault left open at an unlocked desk is still the case only elapsed time catches.
-  - **The timing settings are clamped where they are read, not only where they are written.** Nothing validates `shell.json`, and a bad value there fails open rather than loudly: a non-numeric minute count reaches QML as `NaN`, lands in an integer property as `0`, and `0` is how "never lock" is spelled, while a count past the documented ceiling overflows the timer's 32-bit interval into a negative number that never fires. Each numeric setting is therefore held to the range in the table below on the way in, and anything unreadable falls back to its default instead of to zero.
+  - **Settings are validated where they are read, not only where they are written.** Nothing validates `shell.json`, and a bad value there can fail open rather than loudly: a non-numeric minute count reaches QML as `NaN`, lands in an integer property as `0`, and `0` is how "never lock" is spelled, while a count past the documented ceiling overflows the timer's 32-bit interval into a negative number that never fires. Each numeric setting is held to the range in the table below, and anything unreadable falls back to its default instead of to zero. Boolean settings accept only actual JSON booleans, so strings such as `"false"` cannot become truthy by JavaScript coercion.
   - **A remembered session does not survive a reboot.** The login keyring is a file on disk that PAM unlocks again at the next login, so a machine powered off with an unlocked vault used to come back unlocked. Two things stop that. The token is written to libsecret's `session` collection, which the secret service holds in memory and destroys with the login session, so there is nothing on disk to come back; and it is stamped with the kernel's boot id, so a token that does survive -- a secret service with no session collection, a keyring restored from a backup -- no longer matches the running boot and is refused and cleared instead of used. Restarting the shell still keeps you unlocked. Powering the machine off does not.
 
 ---
 
 ## Installation & Setup
 
-### 1. Requirements
-
-Omarchy with the Quickshell-based shell, plus the external tools below. The
-plugin shells out to all of them; none are bundled.
-
-| Tool | Package | Required | Used for |
-| --- | --- | :---: | --- |
-| `bw` | `bitwarden-cli` | yes | Reading and writing your vault. Nothing works without it. |
-| `wl-copy` | `wl-clipboard` | yes | Copying passwords and TOTP codes to the Wayland clipboard. |
-| `secret-tool` | `libsecret` | no | Storing the session in the OS keyring, and the master password when PIN or fingerprint unlock is on. |
-| `hyprctl` | `hyprland` | no | Identifying the active window so the right login can be suggested. Already present on Omarchy. |
-| `fprintd-list` | `fprintd` | no | Fingerprint unlock. Also needs an enrolled finger via `omarchy setup security fingerprint`. |
-| `gdbus` | `glib2` | no | Hearing logind announce a suspend, for `lockOnSuspend`. Already present on Omarchy. |
-| `systemd-inhibit` | `systemd` | no | Holding the suspend long enough for `lockOnSuspend` to finish locking. Already present. |
-| `openssl` | `openssl` | no | Encrypting the master password under your PIN, for `pinUnlock`. Already present. |
-
-```bash
-omarchy pkg add bitwarden-cli wl-clipboard libsecret
-```
-
-The panel checks these itself and offers an exact install command for anything
-missing -- press <kbd>,</kbd> for settings, or run
-`omarchy-shell io.github.elevate08.qs-bitwarden-cli setup`.
-
-### 2. Install the Plugin
+### 1. Install the Plugin
 
 ```bash
 omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 ```
 
-That clones the plugin into `~/.config/omarchy/plugins/`, enables it, and places
-it in the bar section named by the manifest (`right`). To update it later:
+That is the whole install. It clones the plugin into
+`~/.config/omarchy/plugins/`, enables it, and places it in the bar section named
+by the manifest (`right`). Nothing else has to be installed first. To update it
+later:
 
 ```bash
 omarchy plugin update io.github.elevate08.qs-bitwarden-cli
 ```
+
+### 2. First Run
+
+The widget appears in the bar straight away, with a small `+` badge if anything
+it drives is still missing. Click it and the panel opens on its setup screen:
+on a stock Omarchy install that is the Bitwarden CLI and nothing else, with an
+**Install** button. Pressing it opens Omarchy's own installer window -- floating,
+centred and themed, the same one every other app install on the system uses --
+where you can watch the packages land and answer the sudo prompt.
+
+The panel watches that window's work for you. As soon as the tools land, it
+moves on to the login or unlock screen on its own -- there is nothing to come
+back and re-check, and no command to run first.
+
+You can reopen it any time with <kbd>,</kbd> from the settings screen, or:
+
+```bash
+omarchy-shell io.github.elevate08.qs-bitwarden-cli setup
+```
+
+<details>
+<summary>What the setup screen installs, and why</summary>
+
+The plugin shells out to these rather than bundling them, so they are ordinary
+system packages you can also install by hand:
+
+| Tool | Package | Required | Used for |
+| --- | --- | :---: | --- |
+| `bw` | `bitwarden-cli` | yes | Reading and writing your vault. |
+| `fprintd-list` | (via `omarchy setup security fingerprint`) | no | Fingerprint unlock. Omarchy installs the reader stack, enrols your finger and writes the PAM config in one command; the row only appears if you have a reader. |
+
+The equivalent of what the Install button runs:
+
+```bash
+omarchy install app 'Bitwarden CLI' bitwarden-cli
+```
+
+That is the whole list, and only the first entry holds the panel back. The
+plugin also uses `wl-copy` for the clipboard, `secret-tool` for the keyring,
+`hyprctl` for window detection, and `gdbus`, `systemd-inhibit` and `openssl`
+for suspend handling and PIN encryption -- but Omarchy ships every one of
+those, so the setup screen does not list what it would only ever find already
+there.
+
+</details>
 
 ### 3. Bar Placement & Configuration
 
@@ -428,7 +467,7 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 **Requirements**
 
 - A fingerprint reader with at least one enrolled finger, configured through `omarchy setup security fingerprint`. The plugin verifies all of this itself (`/etc/pam.d/omarchy-lock-fingerprint`, `fprintd-list`) and silently stays hidden when any part is missing.
-- `secret-tool` (libsecret) and a running OS keyring, as used by `rememberSession`.
+- A running, unlocked OS keyring, as used by `rememberSession`. Omarchy ships libsecret itself, so there is nothing to install for this.
 
 **How it works**
 
@@ -491,8 +530,12 @@ Regression suites, no dependencies beyond Node:
 
 ```bash
 node tests/auth.test.js             # unlock/login commands, and that no credential reaches argv
+node tests/auth-prewarm.test.js     # private FIFO lifecycle, byte-exact password delivery, and cancellation
 node tests/context-match.test.js    # window-title matching and learned suggestions
 node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
+node tests/first-run.test.js        # a fresh install with no `bw` yet: the setup gate, the
+                                    # sequence that follows the install, and what the
+                                    # in-panel install button asks for
 node tests/generator.test.js        # generator option clamping and strength
 node tests/folders.test.js          # folder parsing, filtering and assignment
 node tests/sends.test.js            # Send payloads, parsing, and argv-safety
@@ -513,7 +556,22 @@ node tests/hardening.test.js        # `--` before every server-chosen id, the cu
                                     # and that logging out takes the learned suggestions with it
 node tests/buffer-scrub.test.js     # emptying the pipe buffers a lock used to leave full, and the
                                     # deadline and size ceiling on every generator-port request
+node tests/initial-load.test.js     # items render before folders, organizations and status refresh
+node tests/performance.test.js      # deterministic small/typical/large/stress vault guardrails
 ```
+
+The performance suite generates invented 100-item/0.25 MiB, 500-item/1 MiB,
+2,000-item/5 MiB and 5,000-item/14 MiB vaults. It reports p95 JSON parsing,
+filtering and contextual-match times over 20 warm samples and fails on broad
+regressions. It measures only in-process work after `bw` returns, so network,
+server and CLI startup latency should be measured separately on the target
+machine.
+
+The 2026-08-24 auth benchmark used Bitwarden CLI 2026.2.0 and three runs with a
+deliberately invalid password. A normal unlock took 2,641 ms median from submit
+to result; after a three-second prewarm while the password screen was already
+open, it took 1,026 ms -- a 1,615 ms / 61.1% reduction. These figures are a
+same-machine comparison, not a universal latency promise.
 
 Two suites need Qt rather than Node -- which any machine running the plugin
 already has. One checks that Escape reaches the panel from inside a text
@@ -521,7 +579,7 @@ field; the other checks how Qt itself decides to draw a string, which is what
 makes a vault value markup or text:
 
 ```bash
-QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml
+QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml
 ```
 
 ---

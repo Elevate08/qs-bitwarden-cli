@@ -29,7 +29,6 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.createFolderCommand = createFolderCommand
   exports.listFoldersCommand = listFoldersCommand
   exports.listOrganizationsCommand = listOrganizationsCommand
-  exports.deleteFolderCommand = deleteFolderCommand
   exports.terminalLoginCommand = terminalLoginCommand
   exports.sessionHandoffReadCommand = sessionHandoffReadCommand
   exports.extractSessionToken = extractSessionToken
@@ -123,7 +122,6 @@ const builders = [
   ["getItemCommand", () => Model.getItemCommand("id")],
   ["getTotpCommand", () => Model.getTotpCommand("id")],
   ["deleteItemCommand", () => Model.deleteItemCommand("id")],
-  ["deleteFolderCommand", () => Model.deleteFolderCommand("id")],
   ["deleteSendCommand", () => Model.deleteSendCommand("id")],
   ["createFolderCommand", () => Model.createFolderCommand("f")],
   ["createItemCommand", () => Model.createItemCommand({ organizationId: null })],

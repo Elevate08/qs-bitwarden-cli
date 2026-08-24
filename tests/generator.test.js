@@ -6,6 +6,17 @@
 
 const fs = require("fs")
 const path = require("path")
+const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const bodyOf = (name) => {
+  const start = panelSrc.indexOf(`function ${name}(`)
+  if (start === -1) return ""
+  let depth = 0
+  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
+    if (panelSrc[i] === "{") depth++
+    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
+  }
+  return ""
+}
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "") + `
@@ -125,9 +136,11 @@ check("the serve command binds loopback and names no session",
 
 const serveReq = Model.generateServeRequestCommand({ length: 20, special: true })
 check("the serve request command targets the generated url with timeout and stream cap",
-  serveReq[2].includes("curl -s -S") && serveReq[2].includes("http://127.0.0.1:8087/generate")
+  serveReq[2].includes("curl -q -s -S") && serveReq[2].includes("http://127.0.0.1:8087/generate")
     && serveReq[2].includes("--max-time 2") && serveReq[2].includes("head -c 65536"),
   serveReq[2])
+check("loopback generator requests ignore proxy variables and curl config",
+  serveReq[2].includes("curl -q ") && serveReq[2].includes("--noproxy '*'"), serveReq[2])
 
 check("a successful response yields the value",
   Model.parseServeGenerated('{"success":true,"data":{"object":"string","data":"abc123"}}') === "abc123",
@@ -186,6 +199,54 @@ const idle = Model.generatorServeExitAction({ stopping: false, wasReady: false, 
   onGeneratorScreen: true })
 check("an idle failure gives up the port without generating anything",
   idle.giveUp === true && idle.useCli === false, JSON.stringify(idle))
+
+// A process already answering an older option set must not have its callback
+// relabelled as the newest request. Queue one regeneration and discard the old
+// result; the follow-up reads the latest root.genOpts.
+const regenerate = bodyOf("regenerate")
+const generated = bodyOf("onGenerated")
+check("rapid option changes queue behind the active generator operation",
+  /if\s*\(genBusy\)[\s\S]*genRegeneratePending\s*=\s*true/.test(regenerate), regenerate)
+check("a queued regeneration discards the old value before rerunning",
+  /genRegeneratePending[\s\S]*regenerate\(\)/.test(generated)
+    && generated.indexOf("genRegeneratePending") < generated.indexOf("genValue = v"),
+  generated)
+check("a value from the previous option set cannot be copied while regeneration is busy",
+  /if\s*\(genBusy\s*\|\|\s*!genValue\)\s*return/.test(bodyOf("copyGenerated"))
+    && /if\s*\(!generatorFeedsForm\s*\|\|\s*genBusy\s*\|\|\s*!genValue\)\s*return/.test(bodyOf("useGeneratedPassword"))
+    && /enabled:\s*!root\.genBusy\s*&&\s*root\.genValue\s*!==\s*""/.test(panelSrc),
+  bodyOf("copyGenerated") + "\n" + bodyOf("useGeneratedPassword"))
+
+const stopGenerator = bodyOf("stopGeneratorServe")
+check("canceling an in-flight generator request cannot leave generation wedged busy",
+  /genBusy\s*=\s*false/.test(stopGenerator)
+    && /genRegeneratePending\s*=\s*false/.test(stopGenerator)
+    && /genRequestSignature\s*=\s*""/.test(stopGenerator),
+  stopGenerator)
+check("leaving during CLI fallback cancels the late result instead of restarting off-screen",
+  /cancelCliGeneration\s*=\s*genBusy\s*&&\s*generateProc\.running/.test(stopGenerator)
+    && /generateCliStopping\s*=\s*true[\s\S]*generateProc\.running\s*=\s*false/.test(stopGenerator),
+  stopGenerator)
+const generateProcBlock = panelSrc.slice(panelSrc.indexOf("id: generateProc"),
+  panelSrc.indexOf("id: generateServeProc"))
+check("a canceled CLI result is discarded and a quick reopen restarts only after exit",
+  /if\s*\(generateCliStopping\)[\s\S]*genRegeneratePending\s*=\s*true[\s\S]*return/.test(regenerate)
+    && /generateCliStopping[\s\S]*currentScreen\s*===\s*"generator"[\s\S]*Qt\.callLater\(root\.regenerate\)[\s\S]*return/.test(generateProcBlock),
+  regenerate + "\n" + generateProcBlock)
+const serveRequest = bodyOf("generatorRequest")
+const resumeServeRequest = bodyOf("resumePendingGeneratorRequest")
+const serveRequestProcBlock = panelSrc.slice(panelSrc.indexOf("id: generateServeRequestProc"),
+  panelSrc.indexOf("id: generateServePoll"))
+check("a quick reopen cannot attach a new callback to the request being canceled",
+  /generateServeRequestStopping\s*\|\|\s*generateServeRequestProc\.running/.test(serveRequest)
+    && /generateServeRequestPendingCallback\s*=\s*done/.test(serveRequest)
+    && /generateServeRequestStopping\s*=\s*true[\s\S]*generateServeRequestProc\.running\s*=\s*false/.test(stopGenerator)
+    && /resumePendingGeneratorRequest\(\)[\s\S]*return/.test(serveRequestProcBlock),
+  serveRequest + "\n" + stopGenerator + "\n" + serveRequestProcBlock)
+check("a deferred generator request restarts only if the generator is still open",
+  /root\.opened\s*&&\s*root\.currentScreen\s*===\s*"generator"[\s\S]*generatorRequest\(pendingOptions,\s*pendingCallback\)/.test(
+    resumeServeRequest),
+  resumeServeRequest)
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

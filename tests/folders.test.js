@@ -5,6 +5,7 @@
 
 const fs = require("fs")
 const path = require("path")
+const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "") + `
@@ -17,6 +18,8 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.buildEditPayload = buildEditPayload
   exports.listFoldersCommand = listFoldersCommand
   exports.createFolderCommand = createFolderCommand
+  exports.folderPayload = folderPayload
+  exports.folderEnvVar = folderEnvVar
 `)(Model)
 
 let pass = 0
@@ -88,9 +91,18 @@ check("list folders carries no session on the command line and caps output",
     && Model.listFoldersCommand().join(" ").includes("head -c")
     && !Model.listFoldersCommand().join(" ").includes("--session"),
   Model.listFoldersCommand().join(" "))
-check("folder names with quotes are shell-quoted, not interpolated",
-  Model.createFolderCommand("it's \"fine\"")[2].includes("'\\''"),
-  Model.createFolderCommand("it's \"fine\"")[2])
+const folderName = "it's \"private\""
+check("folder names are serialized for the private environment payload",
+  JSON.parse(Model.folderPayload(folderName)).name === folderName,
+  Model.folderPayload(folderName))
+check("folder names never enter the command line",
+  Model.createFolderCommand().join(" ").includes('"$' + Model.folderEnvVar() + '"')
+    && !Model.createFolderCommand().join(" ").includes(folderName),
+  Model.createFolderCommand().join(" "))
+check("the folder writer receives its payload through the private environment binding",
+  /function folderEnv\(\)[\s\S]{0,180}Model\.folderEnvVar\(\)[\s\S]{0,180}Model\.folderPayload\(newFolderName\)/.test(panelSrc)
+    && /id:\s*createFolderProc[\s\S]{0,100}environment:\s*root\.folderEnv\(\)/.test(panelSrc),
+  "createFolderProc is not bound to folderEnv()")
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

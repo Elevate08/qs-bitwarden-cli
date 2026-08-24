@@ -13,14 +13,19 @@
 //     so logging out has to remove it.
 
 const fs = require("fs")
+const os = require("os")
 const path = require("path")
+const { execFileSync } = require("child_process")
 
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "") + `
-  exports.copyPasswordToClipboardCommand = copyPasswordToClipboardCommand
-  exports.copyTotpToClipboardCommand = copyTotpToClipboardCommand
+  exports.getPasswordCommand = getPasswordCommand
+  exports.getTotpCommand = getTotpCommand
   exports.validateServerUrl = validateServerUrl
+  exports.associationsEnvVar = associationsEnvVar
+  exports.associationsReadCommand = associationsReadCommand
+  exports.associationsWriteCommand = associationsWriteCommand
   exports.associationsClearCommand = associationsClearCommand
 `)(Model)
 
@@ -35,8 +40,8 @@ const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
 const HOSTILE_ID = "--help"
 
 for (const [label, build, verb] of [
-  ["password", Model.copyPasswordToClipboardCommand, "get password"],
-  ["totp", Model.copyTotpToClipboardCommand, "get totp"],
+  ["password", Model.getPasswordCommand, "get password"],
+  ["totp", Model.getTotpCommand, "get totp"],
 ]) {
   const script = build("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").join(" ")
 
@@ -44,18 +49,18 @@ for (const [label, build, verb] of [
     script.includes(`bw ${verb} --raw -- `),
     script)
 
-  check(`copy ${label}: the id is quoted`,
-    script.includes("'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'"),
+  check(`fetch ${label}: preserves the id as one shell word`,
+    script.includes("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
     script)
 
-  check(`copy ${label}: marks the clipboard sensitive`,
-    script.includes("wl-copy --sensitive"),
+  check(`fetch ${label}: bounds the secret before it reaches QML`,
+    script.includes("head -c"),
     script)
 
   // The whole point of `--`: an id shaped like a flag stays an id.
   const hostile = build(HOSTILE_ID).join(" ")
-  check(`copy ${label}: a flag-shaped id lands after --`,
-    hostile.indexOf(" -- ") < hostile.indexOf("'--help'"),
+  check(`fetch ${label}: a flag-shaped id lands after --`,
+    hostile.includes(`bw ${verb} --raw -- --help`),
     hostile)
 }
 
@@ -95,6 +100,11 @@ const REFUSED = [
   // Userinfo is stripped before the host is judged, so it cannot smuggle a
   // loopback name in front of the real destination.
   ["http://localhost@evil.com", "loopback smuggled into userinfo"],
+  // WHATWG URL parsers treat a backslash like a slash for http(s). Without an
+  // explicit refusal, our lightweight host parser sees localhost after the @
+  // while Bitwarden's Node runtime connects to evil.example before the slash.
+  ["http://evil.example\\@localhost", "a loopback host smuggled after a backslash"],
+  ["https://evil.example\\@vault.example.com", "an ambiguous HTTPS backslash destination"],
 ]
 
 for (const [url, why] of REFUSED) {
@@ -121,7 +131,8 @@ check("clearing associations removes the store file",
   clear)
 
 check("clearing associations resolves the same path the writer uses",
-  clear.includes("${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli/"),
+  clear.includes("${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli")
+    && clear.includes("associations.json"),
   clear)
 
 // A missing file is the ordinary case on an account that never learned
@@ -129,6 +140,90 @@ check("clearing associations resolves the same path the writer uses",
 check("clearing associations succeeds when there is nothing to remove",
   /exit 0\s*$/.test(clear),
   clear)
+
+const assocTmp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-assoc-"))
+const assocDir = path.join(assocTmp, "qs-bitwarden-cli")
+const assocFile = path.join(assocDir, "associations.json")
+const assocEnv = value => Object.assign({}, process.env, {
+  XDG_STATE_HOME: assocTmp,
+  [Model.associationsEnvVar()]: value,
+})
+const writeAssociations = value => execFileSync(
+  Model.associationsWriteCommand()[0], Model.associationsWriteCommand().slice(1),
+  { env: assocEnv(value), encoding: "utf8" })
+
+try {
+  fs.mkdirSync(assocDir, { recursive: true })
+  fs.writeFileSync(assocFile, "old", { mode: 0o644 })
+  writeAssociations('{"version":1,"keys":{}}')
+  check("association replacement narrows an existing public file to mode 600",
+    (fs.statSync(assocFile).mode & 0o777) === 0o600,
+    "0" + (fs.statSync(assocFile).mode & 0o777).toString(8))
+
+  const redirect = path.join(assocTmp, "must-not-change")
+  fs.writeFileSync(redirect, "sentinel")
+  fs.unlinkSync(assocFile)
+  fs.symlinkSync(redirect, assocFile)
+  writeAssociations('{"version":1,"keys":{"safe":[]}}')
+  check("association writes replace a symlink instead of following it",
+    !fs.lstatSync(assocFile).isSymbolicLink()
+      && fs.readFileSync(redirect, "utf8") === "sentinel"
+      && fs.readFileSync(assocFile, "utf8").includes('"safe"'),
+    `target=${fs.readFileSync(redirect, "utf8")}`)
+  check("atomic association writes leave no temporary files behind",
+    fs.readdirSync(assocDir).join(",") === "associations.json",
+    fs.readdirSync(assocDir).join(","))
+
+  fs.unlinkSync(assocFile)
+  fs.writeFileSync(redirect, '{"private":"redirected"}')
+  fs.symlinkSync(redirect, assocFile)
+  const readThroughLink = execFileSync(
+    Model.associationsReadCommand()[0], Model.associationsReadCommand().slice(1),
+    { env: assocEnv(""), encoding: "utf8" })
+  check("association reads refuse a symlinked store",
+    readThroughLink.trim() === "{}", JSON.stringify(readThroughLink))
+} finally {
+  fs.rmSync(assocTmp, { recursive: true, force: true })
+}
+
+const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const bodyOf = name => {
+  const start = panelSrc.indexOf(`function ${name}(`)
+  if (start === -1) return ""
+  let depth = 0
+  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
+    if (panelSrc[i] === "{") depth++
+    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
+  }
+  return ""
+}
+const forget = bodyOf("forgetStoredCredentials")
+const assocWriter = panelSrc.slice(panelSrc.indexOf("id: associationsWriteProc"),
+  panelSrc.indexOf("id: associationsClearProc"))
+check("logout waits for an active association writer before clearing",
+  /associationsWriteProc\.running[\s\S]*associationsClearPending\s*=\s*true/.test(forget), forget)
+check("the association writer exit services a queued logout clear",
+  /associationsClearPending[\s\S]*associationsClearProc\.running\s*=\s*true/.test(assocWriter), assocWriter)
+check("association updates made during a write are persisted by a follow-up write",
+  /associationsWriteProc\.running[\s\S]*associationsWritePending\s*=\s*true/.test(bodyOf("saveAssociations"))
+    && /associationsWritePending[\s\S]*associationsWriteProc\.running\s*=\s*true/.test(assocWriter),
+  bodyOf("saveAssociations") + "\n" + assocWriter)
+check("logout discards a queued association write before clearing account metadata",
+  /associationsWritePending\s*=\s*false/.test(forget), forget)
+
+const copyToClipboard = bodyOf("copyToClipboard")
+check("the long-lived clipboard owner does not inherit the copied secret variable",
+  /env -u QSBW_CLIP wl-copy --sensitive/.test(copyToClipboard), copyToClipboard)
+check("locking clears any credential already on the clipboard",
+  /clearClipboard\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
+check("a password missing from the in-memory item uses a managed generation-stamped fetch",
+  /requestPasswordCopy\(item\.id\)/.test(bodyOf("copyPassword"))
+    && /beginVaultRead\("passwordCopy"\)/.test(bodyOf("requestPasswordCopy"))
+    && /vaultReadIsStale\("passwordCopy"\)/.test(bodyOf("onPasswordCopyFinished")),
+  bodyOf("copyPassword") + "\n" + bodyOf("requestPasswordCopy") + "\n" + bodyOf("onPasswordCopyFinished"))
+check("TOTP copy reuses the managed TOTP reader instead of a detached bw process",
+  /fetchTotp\(item\.id,\s*true\)/.test(bodyOf("copyTotpCode"))
+    && !/execDetached/.test(bodyOf("copyTotpCode")), bodyOf("copyTotpCode"))
 
 // -------------------------------------------------------------------------
 

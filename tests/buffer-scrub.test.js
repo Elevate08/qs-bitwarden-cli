@@ -11,11 +11,23 @@
 //     run of it, and which processes a pass over the queue touches.
 //  2. The generator port is loopback and first-come, and QML's
 //     XMLHttpRequest has no timeout of its own. What bounds a request to a
-//     squatter is checked here; what happens to one is checked in
-//     tests/qml/tst_collector_scrub.qml, which needs Qt.
+//     squatter is checked here; its cancellation and restart lifecycle is
+//     checked in tests/generator.test.js.
 
 const fs = require("fs")
 const path = require("path")
+
+const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelBodyOf = (name) => {
+  const start = panelSource.indexOf(`function ${name}(`)
+  if (start === -1) return ""
+  let depth = 0
+  for (let i = panelSource.indexOf("{", start); i < panelSource.length; i++) {
+    if (panelSource[i] === "{") depth++
+    else if (panelSource[i] === "}" && --depth === 0) return panelSource.slice(start, i + 1)
+  }
+  return ""
+}
 
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
@@ -23,8 +35,8 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.scrubCommand = scrubCommand
   exports.isScrubCommand = isScrubCommand
   exports.scrubPass = scrubPass
+  exports.finishScrub = finishScrub
   exports.scrubRetryMs = scrubRetryMs
-  exports.scrubRetryLimit = scrubRetryLimit
   exports.generatorResponseCap = generatorResponseCap
   exports.generatorRequestTimeoutMs = generatorRequestTimeoutMs
   exports.generateServeRequestCommand = generateServeRequestCommand
@@ -144,13 +156,72 @@ check("a hole in the process list is skipped rather than thrown on",
   Model.scrubPass([null, idle(["bw", "sync"])]).start.length === 1,
   "a null entry stopped the pass")
 
-// The retry exists for processes that were mid-read; it has to give up rather
-// than poll for the rest of the session.
+// The retry exists for processes that were mid-read. It must keep the process
+// queued until the empty scrub run finishes, even if a completion handler
+// immediately reuses that same Process for another command.
 check("the retry is spaced in seconds, not milliseconds",
   Model.scrubRetryMs() >= 250, `retry every ${Model.scrubRetryMs()}ms`)
-check("and gives up eventually",
-  Model.scrubRetryLimit() > 0 && Model.scrubRetryLimit() * Model.scrubRetryMs() <= 10 * 60 * 1000,
-  `limit ${Model.scrubRetryLimit()} ticks of ${Model.scrubRetryMs()}ms`)
+check("the retry never abandons a collector that is still being written",
+  /if\s*\(!root\.scrubPending\.length\)\s*stop\(\)/.test(panelSource)
+    && !/scrubRetryLimit/.test(panelSource),
+  "the scrub timer can stop with a process still in its queue")
+
+{
+  const late = busy(["bw", "unlock"])
+  let p = Model.scrubPass([late])
+  late.running = false
+  p = Model.scrubPass(p.waiting)
+  late.command = Model.scrubCommand()
+  late.running = false
+  const queue = Model.finishScrub(p.waiting, late)
+
+  // unlockProc does this from its scrub completion handler: the collector is
+  // clean, then prewarming immediately reuses the Process. Queue completion
+  // must not depend on observing its command afterward.
+  late.command = ["bw", "unlock", "--passwordfile", "fifo"]
+  late.running = true
+  check("a completed scrub drains before its Process is immediately reused",
+    p.start.length === 1 && queue.length === 0,
+    `started=${p.start.length} remaining=${queue.length}`)
+}
+
+check("Panel completion handlers dequeue scrubbed processes explicitly",
+  /function\s+finishScrubRun\s*\(proc\)/.test(panelSource)
+    && /scrubPending\s*=\s*Model\.finishScrub\(scrubPending,\s*proc\)/.test(panelSource),
+  "Panel does not record scrub completion independently of Process reuse")
+
+check("a one-shot password copy scrubs its collector immediately after use",
+  /clearProcessCollectorSoon\(copyPasswordProc\)/.test(panelBodyOf("onPasswordCopyFinished")),
+  panelBodyOf("onPasswordCopyFinished"))
+check("a TOTP read also scrubs its collector after copying the value into active state",
+  /continueTotpQueue\(false\)/.test(panelBodyOf("onTotpProcessExited"))
+    && /!collectorIsClean[\s\S]*clearProcessCollectorSoon\(getTotpProc\)/.test(
+      panelBodyOf("continueTotpQueue")),
+  panelBodyOf("onTotpProcessExited") + "\n" + panelBodyOf("continueTotpQueue"))
+const totpProcBlock = panelSource.slice(panelSource.indexOf("id: getTotpProc"),
+  panelSource.indexOf("id: copyPasswordProc"))
+const totpScrubCheck = totpProcBlock.indexOf("finishScrubRun(getTotpProc)")
+const totpScrubResume = totpProcBlock.indexOf("continueTotpQueue(true)")
+const totpScrubReturn = totpProcBlock.indexOf("return", totpScrubResume)
+const totpNormalExit = totpProcBlock.indexOf("onTotpProcessExited")
+check("a TOTP scrub exits without recursively scheduling another scrub",
+  totpScrubCheck !== -1 && totpScrubCheck < totpScrubResume
+    && totpScrubResume < totpScrubReturn && totpScrubReturn < totpNormalExit,
+  totpProcBlock)
+check("a queued real TOTP request replaces the collector instead of racing an empty scrub",
+  /if\s*\(queued\)[\s\S]*startTotpFetch\(queued\)[\s\S]*!collectorIsClean[\s\S]*clearProcessCollectorSoon\(getTotpProc\)/.test(
+    panelBodyOf("continueTotpQueue")),
+  panelBodyOf("continueTotpQueue"))
+check("a request queued during a TOTP scrub is resumed after that scrub exits",
+  /getTotpProc\.running[\s\S]*totpQueuedItemId\s*=/.test(panelBodyOf("fetchTotp"))
+    && /finishScrubRun\(getTotpProc\)[\s\S]*continueTotpQueue\(true\)/.test(totpProcBlock),
+  panelBodyOf("fetchTotp") + "\n" + totpProcBlock)
+check("the deferred TOTP restart reserves the Process against a newer direct start",
+  /getTotpProc\.running\s*\|\|\s*totpRestartPending/.test(panelBodyOf("fetchTotp"))
+    && /totpRestartPending\s*=\s*true[\s\S]*totpRequestItemId\s*=\s*queued[\s\S]*Qt\.callLater/.test(
+      panelBodyOf("continueTotpQueue"))
+    && /totpRestartPending\s*=\s*false/.test(panelBodyOf("dropVaultSecrets")),
+  panelBodyOf("fetchTotp") + "\n" + panelBodyOf("continueTotpQueue"))
 
 // ---------------------------------------------------------------------------
 // Generator request bounds
@@ -219,7 +290,7 @@ check("curl write error / truncation (exit 23) indicates an occupied (flooding) 
 // Producer-side bounding of generateServeRequestCommand
 const serveReqCmd = Model.generateServeRequestCommand({ length: 16 })
 check("generateServeRequestCommand uses curl with timeout and head -c byte cap",
-  serveReqCmd[2].includes("curl -s -S") && serveReqCmd[2].includes("--max-time 2") && serveReqCmd[2].includes(`head -c ${cap}`),
+  serveReqCmd[2].includes("curl -q -s -S") && serveReqCmd[2].includes("--max-time 2") && serveReqCmd[2].includes(`head -c ${cap}`),
   serveReqCmd[2])
 
 // ---------------------------------------------------------------------------

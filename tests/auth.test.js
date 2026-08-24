@@ -10,13 +10,13 @@
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
-const { execFileSync } = require("child_process")
+const { execFileSync, spawnSync } = require("child_process")
 
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "") + `
-  exports.unlockCommand = unlockCommand
-  exports.emailLoginCommand = emailLoginCommand
+  exports.unlockPrewarmCommand = unlockPrewarmCommand
+  exports.emailLoginPrewarmCommand = emailLoginPrewarmCommand
   exports.apiKeyLoginCommand = apiKeyLoginCommand
   exports.passwordEnvVar = passwordEnvVar
   exports.clientIdEnvVar = clientIdEnvVar
@@ -28,6 +28,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.isSessionToken = isSessionToken
   exports.keyringClearAllCommand = keyringClearAllCommand
   exports.keyringStoreMasterPasswordCommand = keyringStoreMasterPasswordCommand
+  exports.keyringLookupMasterPasswordCommand = keyringLookupMasterPasswordCommand
   exports.pinStoreCommand = pinStoreCommand
   exports.keyringSecretEnvVar = keyringSecretEnvVar
 `)(Model)
@@ -48,18 +49,18 @@ const flat = (cmd) => cmd.join(" ")
 
 // --- no credential may reach any argv ---------------------------------------
 
-const unlock = Model.unlockCommand()
+const unlock = Model.unlockPrewarmCommand()
 check("unlock takes no password argument at all",
-  Model.unlockCommand.length === 0, `arity ${Model.unlockCommand.length}`)
-check("unlock names the password env var rather than carrying a password",
-  flat(unlock).includes("--passwordenv " + Model.passwordEnvVar()), flat(unlock))
+  Model.unlockPrewarmCommand.length === 0, `arity ${Model.unlockPrewarmCommand.length}`)
+check("unlock reads the submitted password from its private FIFO",
+  flat(unlock).includes("--passwordfile") && !flat(unlock).includes("--passwordenv"), flat(unlock))
 check("unlock caps output and diagnostic stderr on the producer side",
   flat(unlock).includes("head -c") && flat(unlock).includes("exec 2>"), flat(unlock))
 
 // The builders are called the way Panel.qml calls them: with what shapes the
 // command, never with the secret itself.
-const emailPlain = Model.emailLoginCommand("john@example.com", false, "")
-const emailFull = Model.emailLoginCommand("john@example.com", true, SERVER)
+const emailPlain = Model.emailLoginPrewarmCommand("john@example.com", false, "")
+const emailFull = Model.emailLoginPrewarmCommand("john@example.com", true, SERVER)
 const apiKey = Model.apiKeyLoginCommand("")
 const apiKeyServer = Model.apiKeyLoginCommand(SERVER)
 
@@ -84,13 +85,13 @@ for (const [label, cmd] of everyCommand) {
 
 // The builders cannot leak what they are never given, so also assert they no
 // longer accept a secret -- a caller passing one would be silently ignored.
-check("emailLoginCommand takes (email, hasCode, serverUrl), not a password",
-  Model.emailLoginCommand.length === 3, `arity ${Model.emailLoginCommand.length}`)
+check("emailLoginPrewarmCommand takes (email, hasCode, serverUrl), not a password",
+  Model.emailLoginPrewarmCommand.length === 3, `arity ${Model.emailLoginPrewarmCommand.length}`)
 check("apiKeyLoginCommand takes only a server URL",
   Model.apiKeyLoginCommand.length === 1, `arity ${Model.apiKeyLoginCommand.length}`)
 
 // A stray password argument must not find its way into the command anyway.
-const emailWithStrayArgs = Model.emailLoginCommand("john@example.com", MASTER, SERVER)
+const emailWithStrayArgs = Model.emailLoginPrewarmCommand("john@example.com", MASTER, SERVER)
 check("a password passed where hasCode belongs is never interpolated",
   !flat(emailWithStrayArgs).includes(MASTER), flat(emailWithStrayArgs))
 
@@ -133,7 +134,7 @@ check("api key login honours a custom server too",
   flat(apiKeyServer).includes("bw config server '" + SERVER + "'"), flat(apiKeyServer))
 
 // Single quotes in a server URL or email must not break out of the script.
-const injected = Model.emailLoginCommand("a'; touch /tmp/pwned; '@b.c", false,
+const injected = Model.emailLoginPrewarmCommand("a'; touch /tmp/pwned; '@b.c", false,
   "https://x'; touch /tmp/pwned; '.com")
 check("shell metacharacters in the email and server URL stay quoted",
   !flat(injected).includes("; touch /tmp/pwned; ")
@@ -191,14 +192,46 @@ fs.writeFileSync(path.join(keyringStub, "secret-tool"), `#!/usr/bin/env bash
 set -uo pipefail
 cmd="\${1:-}"; shift || true
 account=""
+unlock=false
 while [ $# -gt 0 ]; do
-  case "$1" in account) account="\${2:-}"; shift 2 ;; *) shift ;; esac
+  case "$1" in
+    account) account="\${2:-}"; shift 2 ;;
+    --unlock) unlock=true; shift ;;
+    *) shift ;;
+  esac
 done
 f="$STUB/entry-$account"
+unlocked="$STUB/unlocked-$account"
 case "$cmd" in
-  store)  cat > "$f"; exit 0 ;;
-  lookup) [ -s "$f" ] || exit 1; cat "$f"; exit 0 ;;
-  clear)  [ -e "$f" ] || exit 1; rm -f "$f"; exit 0 ;;
+  store)  rm -f -- "$unlocked"; cat > "$f"; exit 0 ;;
+  lookup) [ -s "$f" ] || exit 1; cat "$f"; printf '\n'; exit 0 ;;
+  search)
+    if [ "\${FAIL_SEARCH_ACCOUNT:-}" = "$account" ] \
+        || { [ "\${FAIL_SEARCH_WHEN_MISSING_ACCOUNT:-}" = "$account" ] && [ ! -e "$f" ]; }; then
+      printf '%s\n' 'keyring search unavailable' >&2
+      exit 3
+    fi
+    [ -e "$f" ] || exit 0
+    if $unlock && [ "\${LOCK_ACCOUNT:-}" = "$account" ] \
+        && [ "\${DENY_UNLOCK_ACCOUNT:-}" != "$account" ]; then
+      : > "$unlocked"
+    fi
+    printf '[stub-item]\nlabel = stub\n'
+    if [ "\${LOCK_ACCOUNT:-}" != "$account" ] || [ -e "$unlocked" ]; then
+      printf 'secret = '; cat "$f"; printf '\n'
+    fi
+    exit 0
+    ;;
+  clear)
+    if [ "\${FAIL_CLEAR_ACCOUNT:-}" = "$account" ]; then
+      printf '%s\n' 'keyring service unavailable' >&2
+      exit 2
+    fi
+    [ -e "$f" ] || exit 1
+    [ "\${LOCK_ACCOUNT:-}" != "$account" ] || [ -e "$unlocked" ] || exit 1
+    rm -f -- "$f" "$unlocked"
+    exit 0
+    ;;
 esac
 exit 1
 `)
@@ -211,6 +244,17 @@ const keyringRun = (command, extraEnv) => execFileSync(command[0], command.slice
 })
 const keyringEntries = () => fs.readdirSync(keyringStub)
   .filter(f => f.startsWith("entry-")).map(f => f.slice("entry-".length)).sort()
+
+// secret-tool terminates lookup output with a newline. The lookup wrapper must
+// remove that transport delimiter without trimming spaces that are actually
+// part of the master password.
+const SPACED_MASTER = "  exact master password  "
+keyringRun(Model.keyringStoreMasterPasswordCommand(), {
+  [Model.keyringSecretEnvVar()]: SPACED_MASTER
+})
+check("fingerprint keyring lookup preserves leading and trailing password spaces",
+  keyringRun(Model.keyringLookupMasterPasswordCommand()) === SPACED_MASTER,
+  JSON.stringify(keyringRun(Model.keyringLookupMasterPasswordCommand())))
 
 // The three accounts as the panel actually writes them, rather than a list
 // copied into the test: a fourth secret added later must not slip past this.
@@ -233,6 +277,57 @@ check("no secret reaches the clear command's argv",
   !Model.keyringClearAllCommand().join(" ").includes(MASTER),
   Model.keyringClearAllCommand().join(" "))
 
+keyringRun(["bash", "-c", "printf '%s' \"$QSBW_SECRET\" | secret-tool store --label=x"
+  + " service 'qs-bitwarden-cli' account 'session'"], { QSBW_SECRET: "stale session" })
+const failedClear = spawnSync(Model.keyringClearAllCommand()[0], Model.keyringClearAllCommand().slice(1), {
+  env: Object.assign({}, process.env,
+    { PATH: `${keyringStub}:${process.env.PATH}`, STUB: keyringStub, FAIL_CLEAR_ACCOUNT: "session" }),
+  encoding: "utf8"
+})
+check("a real keyring deletion failure propagates out of the clear-all command",
+  failedClear.status !== 0 && keyringEntries().includes("session"),
+  `status ${failedClear.status}; entries ${keyringEntries().join(",")}`)
+keyringRun(Model.keyringClearAllCommand())
+
+keyringRun(["bash", "-c", "printf '%s' \"$QSBW_SECRET\" | secret-tool store --label=x"
+  + " service 'qs-bitwarden-cli' account 'session'"], { QSBW_SECRET: "locked session" })
+const lockedClear = spawnSync(Model.keyringClearAllCommand()[0], Model.keyringClearAllCommand().slice(1), {
+  env: Object.assign({}, process.env,
+    { PATH: `${keyringStub}:${process.env.PATH}`, STUB: keyringStub,
+      LOCK_ACCOUNT: "session", DENY_UNLOCK_ACCOUNT: "session" }),
+  encoding: "utf8"
+})
+check("a matching credential in a locked collection cannot be mistaken for absence",
+  lockedClear.status !== 0 && keyringEntries().includes("session"),
+  `status ${lockedClear.status}; entries ${keyringEntries().join(",")}`)
+keyringRun(Model.keyringClearAllCommand())
+
+keyringRun(["bash", "-c", "printf '%s' \"$QSBW_SECRET\" | secret-tool store --label=x"
+  + " service 'qs-bitwarden-cli' account 'session'"], { QSBW_SECRET: "unlockable session" })
+keyringRun(Model.keyringClearAllCommand(), { LOCK_ACCOUNT: "session" })
+check("clear-all unlocks and removes a matching credential from a locked collection",
+  !keyringEntries().includes("session"), keyringEntries().join(","))
+
+const failedSearch = spawnSync(Model.keyringClearAllCommand()[0], Model.keyringClearAllCommand().slice(1), {
+  env: Object.assign({}, process.env,
+    { PATH: `${keyringStub}:${process.env.PATH}`, STUB: keyringStub, FAIL_SEARCH_ACCOUNT: "session" }),
+  encoding: "utf8"
+})
+check("a pre-clear keyring search failure blocks logout cleanup",
+  failedSearch.status !== 0, `status ${failedSearch.status}`)
+
+keyringRun(["bash", "-c", "printf '%s' \"$QSBW_SECRET\" | secret-tool store --label=x"
+  + " service 'qs-bitwarden-cli' account 'session'"], { QSBW_SECRET: "post-search session" })
+const failedPostSearch = spawnSync(Model.keyringClearAllCommand()[0], Model.keyringClearAllCommand().slice(1), {
+  env: Object.assign({}, process.env,
+    { PATH: `${keyringStub}:${process.env.PATH}`, STUB: keyringStub,
+      FAIL_SEARCH_WHEN_MISSING_ACCOUNT: "session" }),
+  encoding: "utf8"
+})
+check("a post-clear verification failure cannot be reported as successful cleanup",
+  failedPostSearch.status !== 0 && !keyringEntries().includes("session"),
+  `status ${failedPostSearch.status}; entries ${keyringEntries().join(",")}`)
+
 fs.rmSync(keyringStub, { recursive: true, force: true })
 
 // The command is only half of it: the panel has to run it, and run it without
@@ -251,15 +346,71 @@ const bodyOf = (name) => {
 
 const logout = bodyOf("logoutAccount")
 const forget = bodyOf("forgetStoredCredentials")
+const credentialStores = bodyOf("credentialStoresRunning")
+const allCredentialClear = bodyOf("requestAllCredentialClear")
+const loginEnv = bodyOf("loginProcessEnv")
+const unlockSuccess = bodyOf("onUnlockSuccess")
+const pinResult = bodyOf("onPinUnlockResult")
+const fingerprintResult = bodyOf("onFingerprintPasswordRetrieved")
+
+check("API credentials are not materialized in the process environment before submission",
+  /if\s*\(\s*!loginSubmitted\s*\)\s*return\s+authEnv\(\s*""\s*,\s*""\s*,\s*""\s*,\s*""\s*\)/.test(loginEnv)
+    && loginEnv.indexOf("!loginSubmitted") < loginEnv.indexOf("loginClientSecret"),
+  loginEnv)
+for (const prop of ["loginClientId", "loginClientSecret", "login2faCode"]) {
+  check(`successful authentication clears ${prop}`,
+    new RegExp(`\\b${prop}\\s*=\\s*""`).test(unlockSuccess), unlockSuccess)
+}
+check("PIN unlock preserves significant master-password whitespace",
+  pinResult !== "" && !/String\(password[^\n]+\)\.trim\(\)/.test(pinResult), pinResult)
+check("fingerprint unlock preserves significant master-password whitespace",
+  fingerprintResult !== "" && !/String\(raw[^\n]+\)\.trim\(\)/.test(fingerprintResult), fingerprintResult)
+
 check("logging out forgets the stored credentials",
   /forgetStoredCredentials\(\)/.test(logout), logout)
 check("the clear-all command is what it runs",
-  /keyringClearAllProc\.running\s*=\s*true/.test(forget), forget)
+  /requestAllCredentialClear\(\)/.test(forget)
+    && /keyringClearAllProc\.running\s*=\s*true/.test(bodyOf("requestAllCredentialClear")), forget)
 check("it does not ask fingerprintStored or pinConfigured for permission first",
   forget !== "" && !/\bif\s*\(\s*(fingerprintStored|pinConfigured)\b/.test(forget), forget)
 check("the panel declares a process for the clear-all command",
   /id:\s*keyringClearAllProc[\s\S]{0,120}Model\.keyringClearAllCommand\(\)/.test(panelSrc),
   "expected a keyringClearAllProc bound to Model.keyringClearAllCommand()")
+
+check("logout keeps new authentication blocked until CLI and keyring cleanup both finish",
+  /logoutPending\s*=\s*true/.test(logout)
+    && /logoutCliDone\s*=\s*false/.test(logout)
+    && /logoutCredentialsDone\s*=\s*false/.test(logout)
+    && /logoutPending/.test(bodyOf("submitLogin"))
+    && /logoutPending/.test(bodyOf("prepareEmailLogin"))
+    && /logoutPending/.test(bodyOf("launchTerminalLogin")),
+  logout + "\n" + bodyOf("submitLogin") + "\n" + bodyOf("prepareEmailLogin")
+    + "\n" + bodyOf("launchTerminalLogin"))
+check("logout completion is acknowledged by both asynchronous processes",
+  /onLogoutCredentialsFinished\(exitCode\)/.test(panelSrc.slice(panelSrc.indexOf("id: keyringClearAllProc"),
+    panelSrc.indexOf("id: keyringClearAllProc") + 420))
+    && /onLogoutCliFinished\(exitCode\)/.test(panelSrc.slice(panelSrc.indexOf("id: logoutProc"),
+      panelSrc.indexOf("id: logoutProc") + 240)),
+  "logout cleanup processes are not serialized")
+check("failed keyring cleanup keeps authentication blocked until an explicit retry succeeds",
+  /logoutCredentialsExitCode\s*=\s*exitCode/.test(bodyOf("onLogoutCredentialsFinished"))
+    && /if\s*\(logoutCredentialsExitCode\s*!==\s*0\)[\s\S]*return/.test(bodyOf("finishLogoutIfReady"))
+    && /requestAllCredentialClear\(\)/.test(bodyOf("retryLogoutCleanup"))
+    && /logoutCleanupFailed\s*\?\s*root\.retryLogoutCleanup\(\)/.test(panelSrc),
+  bodyOf("onLogoutCredentialsFinished") + "\n" + bodyOf("finishLogoutIfReady")
+    + "\n" + bodyOf("retryLogoutCleanup"))
+check("logout's final keyring sweep waits for every credential writer",
+  ["keyringStoreProc", "pinStoreProc", "keyringStoreMasterProc"].every(id =>
+    new RegExp(`\\b${id}\\.running`).test(credentialStores))
+    && /credentialStoresRunning\(\)[\s\S]*allCredentialsClearPending\s*=\s*true[\s\S]*return/.test(allCredentialClear),
+  credentialStores + "\n" + allCredentialClear)
+for (const id of ["keyringStoreProc", "pinStoreProc", "keyringStoreMasterProc"]) {
+  const start = panelSrc.indexOf(`id: ${id}`)
+  const processBlock = panelSrc.slice(start, start + 520)
+  check(`${id} resumes the deferred logout sweep after its write exits`,
+    /logoutPending[\s\S]*allCredentialsClearPending[\s\S]*requestAllCredentialClear/.test(processBlock),
+    processBlock)
+}
 
 // Turning fingerprint unlock off is the other place a flag used to decide
 // whether the master password stayed behind.
@@ -270,8 +421,9 @@ check("disabling fingerprint unlock clears the keyring unconditionally",
   fpOff)
 
 check("locking erases the remembered session whatever the setting now says",
-  /keyringClearProc\.running\s*=\s*true/.test(bodyOf("lockVault"))
-    && !/if\s*\(rememberSession\)\s*\{\s*\n\s*keyringClearProc/.test(bodyOf("lockVault")),
+  /requestSessionCredentialClear\(\)/.test(bodyOf("lockVault"))
+    && /keyringClearProc\.running\s*=\s*true/.test(bodyOf("requestSessionCredentialClear"))
+    && !/if\s*\(rememberSession\)\s*\{\s*\n\s*requestSessionCredentialClear/.test(bodyOf("lockVault")),
   bodyOf("lockVault"))
 
 // --- and nothing the vault gave us outlives the lock ------------------------
@@ -280,7 +432,8 @@ check("locking erases the remembered session whatever the setting now says",
 // JSON on its way to bw, the master password typed into a setup form.
 const dropped = bodyOf("dropVaultSecrets")
 check("locking drops the vault secrets",
-  /dropVaultSecrets\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
+  /dropVaultState\(\)/.test(bodyOf("lockVault")) && /dropVaultSecrets\(\)/.test(bodyOf("dropVaultState")),
+  bodyOf("lockVault") + "\n" + bodyOf("dropVaultState"))
 for (const prop of ["detailPassword", "liveTotp", "totpFollowupCode", "genValue",
                     "formPassword", "formTotp", "itemPayloadJson", "sendPayloadJson",
                     "sendFormText", "sendFormPassword", "loginPassword", "loginClientSecret",
@@ -297,9 +450,11 @@ check("the item payload is dropped once bw has taken it, as the Send one is",
 const screenChanged = panelSrc.slice(panelSrc.indexOf("onCurrentScreenChanged:"),
   panelSrc.indexOf("onCurrentScreenChanged:") + 1200)
 check("leaving the PIN form drops the master password it asked for",
-  /currentScreen !== "pin"[\s\S]{0,160}pinSetupMaster\s*=\s*""/.test(screenChanged), screenChanged)
+  /currentScreen !== "pin"[\s\S]{0,80}abandonPinSetup\(\)/.test(screenChanged)
+    && /pinSetupMaster\s*=\s*""/.test(bodyOf("abandonPinSetup")), screenChanged)
 check("leaving the fingerprint form drops the master password it asked for",
-  /currentScreen !== "fingerprint"[\s\S]{0,80}fpSetupMaster\s*=\s*""/.test(screenChanged), screenChanged)
+  /currentScreen !== "fingerprint"[\s\S]{0,80}abandonFingerprintSetup\(\)/.test(screenChanged)
+    && /fpSetupMaster\s*=\s*""/.test(bodyOf("abandonFingerprintSetup")), screenChanged)
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

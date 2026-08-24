@@ -17,6 +17,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.missingRequired = missingRequired
   exports.dependencyCheckCommand = dependencyCheckCommand
   exports.settingWriteCommand = settingWriteCommand
+  exports.boolSetting = boolSetting
   exports.installPackagesCommand = installPackagesCommand
   exports.SETTINGS_SCHEMA = SETTINGS_SCHEMA
   exports.DEPENDENCIES = DEPENDENCIES
@@ -82,6 +83,19 @@ for (const [label, raw] of [["empty", ""], ["garbage", "???\n=\nbw\n"]]) {
 // assertions read the script rather than an argv list.
 const writeScript = (k, v, t) => Model.settingWriteCommand(k, v, t)[2]
 
+check("boolean settings accept actual JSON booleans",
+  Model.boolSetting("fingerprintUnlock", true) === true
+    && Model.boolSetting("fingerprintUnlock", false) === false,
+  "actual booleans were not preserved")
+check("malformed strings cannot enable opt-in credential storage",
+  Model.boolSetting("fingerprintUnlock", "false") === false
+    && Model.boolSetting("pinUnlock", "true") === false,
+  "a string enabled an opt-in unlock method")
+check("malformed lock settings fail back to their secure defaults",
+  Model.boolSetting("lockOnScreenLock", "false") === true
+    && Model.boolSetting("lockOnSuspend", 0) === true,
+  "a malformed setting disabled locking")
+
 check("int setting is written with --json",
   writeScript("autoLockMinutes", 15, "int")
     .includes("omarchy bar set io.github.elevate08.qs-bitwarden-cli 'autoLockMinutes' '15' --json"),
@@ -114,9 +128,15 @@ for (const entry of Model.SETTINGS_SCHEMA) {
 // --- install command --------------------------------------------------------
 check("no packages yields no command", Model.installPackagesCommand([]) === null, "expected null")
 const inst = Model.installPackagesCommand(["bitwarden-cli", "wl-clipboard"])
-check("install runs in a terminal and quotes each package",
-  inst[2].includes("omarchy launch terminal") && inst[2].includes("'bitwarden-cli'") && inst[2].includes("'wl-clipboard'"),
-  inst[2])
+check("install goes through Omarchy's own floating-terminal installer",
+  inst.slice(0, 3).join(" ") === "omarchy install app" && inst[4] === "bitwarden-cli wl-clipboard",
+  inst.join(" "))
+
+// The package list lands in an unquoted expansion inside omarchy-install-app,
+// so anything that is not a plain package name must not reach it.
+check("install refuses a package name that is not one",
+  Model.installPackagesCommand(["bitwarden-cli; rm -rf /"]) === null,
+  JSON.stringify(Model.installPackagesCommand(["bitwarden-cli; rm -rf /"])))
 
 // The probe must be a single process, not one per tool.
 check("dependency probe is one shell invocation",
@@ -188,7 +208,11 @@ check("store derives a key from the PIN rather than saving it",
   store.includes("openssl enc") && store.includes("-pbkdf2") && store.includes("env:QSBW_PIN"), store)
 check("store uses a high iteration count",
   /-iter\s+(\d+)/.test(store) && Number(store.match(/-iter\s+(\d+)/)[1]) >= 600000, store)
+check("store pins PBKDF2 to SHA-256 instead of relying on an OpenSSL default",
+  store.includes("-md sha256"), store)
 check("store salts the ciphertext", store.includes("-salt"), store)
+check("store reports encryption failures instead of saving an empty blob",
+  store.includes("set -o pipefail"), store)
 check("store pipes straight into the keyring, never through argv",
   store.includes("secret-tool store") && !store.includes("$QSBW_SECRET\" secret-tool"), store)
 check("neither PIN nor secret appears as a literal argument",
@@ -202,6 +226,8 @@ check("unlock fails loudly when the lookup fails (pipefail)",
 check("unlock iteration count matches store",
   unlock.match(/-iter\s+(\d+)/)[1] === store.match(/-iter\s+(\d+)/)[1],
   `${unlock.match(/-iter\s+(\d+)/)[1]} vs ${store.match(/-iter\s+(\d+)/)[1]}`)
+check("unlock uses the same explicit PBKDF2 digest as store",
+  unlock.includes("-md sha256"), unlock)
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
