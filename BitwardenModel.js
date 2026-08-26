@@ -427,6 +427,12 @@ function emailLoginPrewarmCommand(email, hasCode, serverUrl) {
   return supervisedAuthCommand("login", command)
 }
 
+function loginNeedsSecondFactor(stdoutText, stderrText) {
+  var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
+  return /(?:two[ _-]?(?:step|factor)|2fa|verification[ _-]?code)/.test(combined)
+    || /(?:^|[\r\n])\s*code\s+is\s+required[.!]?\s*(?=$|[\r\n])/.test(combined)
+}
+
 // The password remains in BW_PASSWORD, inherited only by this short-lived
 // writer. The nested shell script is a literal in argv (it contains the
 // variable name, not its value), and timeout prevents a dead reader from

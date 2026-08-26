@@ -3,7 +3,7 @@
 A modern, fast, and feature-rich Bitwarden password manager plugin for the **Omarchy** shell environment and **Hyprland** desktop.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.3.0-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.3.1-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI](https://img.shields.io/badge/requires-bw%20CLI-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -23,7 +23,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 | Log in | Vault list | Filter drawer |
 | :---: | :---: | :---: |
 | ![Login](docs/screenshots/06-login.png) | ![Vault list](docs/screenshots/01-vault-list.png) | ![Folder drawer](docs/screenshots/02-folder-drawer.png) |
-| Email + password or API key, 2FA, custom server, or hand off to a terminal | Folders, organizations, favourites and TOTP at a glance | Folders, Organizations and Types open as a drawer |
+| Email + password first, then 2FA only when Bitwarden requests it; API key, custom server, and terminal handoff are also available | Folders, organizations, favourites and TOTP at a glance | Folders, Organizations and Types open as a drawer |
 
 | Generator | Bitwarden Send | Settings |
 | :---: | :---: | :---: |
@@ -45,7 +45,7 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 
 - **Authentication & Secure Keyring Storage**:
   - Direct Master Password unlock.
-  - Interactive login with Email + Password / 2FA (Authenticator App, Email, Duo, YubiKey) or API Key credentials (`BW_CLIENTID` / `BW_CLIENTSECRET`).
+  - Interactive login starts with Email + Password and reveals the 2FA prompt only when Bitwarden requires it (Authenticator App or Email); API Key credentials (`BW_CLIENTID` / `BW_CLIENTSECRET`) remain available as a separate method.
   - **Custom Server Support**: Works seamlessly with official Bitwarden servers and self-hosted Vaultwarden instances.
   - **Terminal login fallback**: when the built-in form cannot cover your login method -- SSO, a Duo push, a hardware key -- the login screen offers **Launch Terminal**, which runs `bw login` in a real terminal so Bitwarden's own prompts handle it.
   - That terminal hands its session straight back: it captures the key with `bw login --raw` (prompts stay on stderr, so the login is still interactive) and writes it to `$XDG_RUNTIME_DIR/qs-bitwarden-cli/session-handoff`, mode `600`, in a directory created `700` before the file exists. There is no fallback path: if `XDG_RUNTIME_DIR` is somehow unset the login refuses to run rather than putting a session key anywhere a second user could have prepared. The panel reads that file once, deletes it, and comes back unlocked -- no second login just to get in. If the vault was merely locked rather than logged out, the same button unlocks instead. **It only reads it when it is expecting to.** The check runs on every status refresh, and it used to adopt whatever was at that path whether or not the panel had ever asked for a terminal login -- so anything able to write the file could hand the panel a session key at a moment of its own choosing, and the panel would take it and write it to the keyring. The runtime directory is `0700`, so that is one of your own processes rather than a stranger and it was never a privilege boundary; it was a window with no reason to be open. A key is only expected in the ten minutes after the panel itself launched a terminal, so those are the only minutes it is read in. Outside them the file is deleted unread -- not reading it is not a reason to leave a live session key lying in the runtime directory, and a login abandoned halfway leaves exactly that.

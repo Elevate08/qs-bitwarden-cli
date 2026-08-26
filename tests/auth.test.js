@@ -22,6 +22,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.clientIdEnvVar = clientIdEnvVar
   exports.clientSecretEnvVar = clientSecretEnvVar
   exports.twoFactorCodeEnvVar = twoFactorCodeEnvVar
+  exports.loginNeedsSecondFactor = typeof loginNeedsSecondFactor === "function" ? loginNeedsSecondFactor : null
   exports.noInteractionEnvVar = noInteractionEnvVar
   exports.sessionEnvVar = sessionEnvVar
   exports.extractSessionToken = extractSessionToken
@@ -43,6 +44,18 @@ const CLIENT_ID = "user.11111111-2222-3333-4444-555555555555"
 const CLIENT_SECRET = "sEcReTcLiEnTsTrInG"
 const CODE = "249213"
 const SERVER = "https://vault.example.com"
+
+check("only explicit Bitwarden second-factor challenges reveal the follow-up prompt",
+  Model.loginNeedsSecondFactor
+    && Model.loginNeedsSecondFactor("", "Two factor required.")
+    && Model.loginNeedsSecondFactor("", "Two-step token is invalid. Try again.")
+    && Model.loginNeedsSecondFactor("", "Verification code required")
+    && !Model.loginNeedsSecondFactor("", "Response status code does not indicate success: 401")
+    && !Model.loginNeedsSecondFactor("", "invalid_grant"),
+  "generic status codes or invalid_grant must not be treated as MFA")
+check("Bitwarden CLI 2026.2.0's standalone required-code error reveals the follow-up prompt",
+  Model.loginNeedsSecondFactor && Model.loginNeedsSecondFactor("", "Code is required."),
+  "Code is required. must be treated as a login verification challenge")
 
 // Everything a builder could conceivably interpolate, flattened to one string.
 const flat = (cmd) => cmd.join(" ")
@@ -352,6 +365,43 @@ const loginEnv = bodyOf("loginProcessEnv")
 const unlockSuccess = bodyOf("onUnlockSuccess")
 const pinResult = bodyOf("onPinUnlockResult")
 const fingerprintResult = bodyOf("onFingerprintPasswordRetrieved")
+const submitLogin = bodyOf("submitLogin")
+const loginOutput = bodyOf("onLoginOutput")
+const abandonAuth = bodyOf("abandonAuthSecrets")
+const resetSecondFactor = bodyOf("resetEmailLoginSecondFactor")
+const emailLoginUi = panelSrc.slice(panelSrc.indexOf("// METHOD A: Email & Password"),
+  panelSrc.indexOf("// METHOD B: API Key"))
+
+// Email/password login is deliberately two-stage. Asking every user for a
+// second factor up front makes an optional challenge look mandatory and
+// collects a code before Bitwarden has said it needs one.
+check("the email login initially hides the second-factor prompt",
+  /Column\s*\{\s*visible:\s*root\.show2faField[\s\S]{0,420}TWO-STEP VERIFICATION CODE/.test(emailLoginUi),
+  emailLoginUi)
+check("the second-factor stage replaces the credential controls instead of overflowing below them",
+  (emailLoginUi.match(/visible:\s*!root\.show2faField/g) || []).length >= 3,
+  emailLoginUi)
+check("only deliberate credential edits can return MFA login to the first stage",
+  /id:\s*emailField[\s\S]{0,700}onTextEdited:[\s\S]{0,300}resetEmailLoginSecondFactor\(\)/.test(emailLoginUi)
+    && /id:\s*loginPassField[\s\S]{0,900}onTextEdited:\s*\{[\s\S]{0,180}if\s*\(root\.show2faField\)[\s\S]{0,180}resetEmailLoginSecondFactor\(\)/.test(emailLoginUi)
+    && /id:\s*loginPassField[\s\S]{0,500}onTextChanged:\s*root\.loginPassword\s*=\s*text/.test(emailLoginUi),
+  emailLoginUi)
+check("Enter on the password submits the first stage, then advances to the revealed code field",
+  /id:\s*loginPassField[\s\S]{0,1200}onAccepted:\s*root\.show2faField\s*\?\s*code2faField\.forceActiveFocus\(\)\s*:\s*root\.submitLogin\(\)/.test(emailLoginUi),
+  emailLoginUi)
+check("the second stage cannot resubmit without a verification code",
+  /show2faField[\s\S]{0,180}login2faCode[\s\S]{0,220}code2faField\.forceActiveFocus\(\)[\s\S]{0,80}return/.test(submitLogin),
+  submitLogin)
+check("a Bitwarden second-factor challenge reveals and focuses the code field",
+  /show2faField\s*=\s*true/.test(loginOutput)
+    && /code2faField\.forceActiveFocus\(\)/.test(loginOutput),
+  loginOutput)
+check("restarting email login clears both the second-factor stage and its code",
+  /show2faField\s*=\s*false/.test(resetSecondFactor)
+    && /login2faCode\s*=\s*""/.test(resetSecondFactor),
+  resetSecondFactor)
+check("abandoning credentials returns the next login to its first stage",
+  /show2faField\s*=\s*false/.test(abandonAuth), abandonAuth)
 
 check("API credentials are not materialized in the process environment before submission",
   /if\s*\(\s*!loginSubmitted\s*\)\s*return\s+authEnv\(\s*""\s*,\s*""\s*,\s*""\s*,\s*""\s*\)/.test(loginEnv)
