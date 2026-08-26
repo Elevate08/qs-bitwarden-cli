@@ -672,6 +672,18 @@ Panel {
     if (loginProc.running) loginProc.running = false
   }
 
+  function resetEmailLoginSecondFactor() {
+    show2faField = false
+    login2faCode = ""
+  }
+
+  function emailLoginButtonText() {
+    if (logoutCleanupFailed) return "Retry Logout Cleanup"
+    if (logoutPending) return "Finishing logout..."
+    if (isLoading) return show2faField ? "Verifying..." : "Logging in..."
+    return show2faField ? "Verify & Unlock" : "Log In & Unlock"
+  }
+
   function prepareEmailLogin() {
     if (logoutPending || !opened || status !== "unauthenticated" || loginMethod !== "email" || isLoading) return
     var email = String(loginEmail || "").trim()
@@ -723,6 +735,7 @@ Panel {
     loginClientId = ""
     loginClientSecret = ""
     login2faCode = ""
+    show2faField = false
     pendingUnlockPassword = ""
     pendingUnlockFrom = ""
     authPasswordWriteValue = ""
@@ -786,6 +799,11 @@ Panel {
         errorMessage = "Master password is required"
         return
       }
+      if (show2faField && !String(login2faCode || "").trim()) {
+        errorMessage = "Two-step verification code is required"
+        Qt.callLater(function() { code2faField.forceActiveFocus() })
+        return
+      }
 
       isLoading = true
       var signature = emailLoginSignature()
@@ -842,10 +860,12 @@ Panel {
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
 
-    var combined = (err + " " + out).toLowerCase()
-    if (combined.indexOf("two-step") !== -1 || combined.indexOf("verification") !== -1 || combined.indexOf("twofactor") !== -1 || combined.indexOf("2fa") !== -1 || combined.indexOf("invalid_grant") !== -1 || combined.indexOf("code") !== -1) {
+    if (Model.loginNeedsSecondFactor(out, err)) {
+      var secondFactorWasVisible = show2faField
       show2faField = true
-      errorMessage = "Two-step verification code required or incorrect. Please enter your 6-digit code below."
+      errorMessage = secondFactorWasVisible
+        ? "That two-step verification code was not accepted. Please try again."
+        : "Two-step verification is required. Enter your code to continue."
       Qt.callLater(function() { code2faField.forceActiveFocus() })
       return
     }
@@ -2053,6 +2073,7 @@ Panel {
     loginClientId = ""
     loginClientSecret = ""
     login2faCode = ""
+    show2faField = false
     isUnlocking = false
     unlockSubmitted = false
     if (!s) {
@@ -2209,6 +2230,7 @@ Panel {
     sendFormPassword = ""
     loginPassword = ""
     login2faCode = ""
+    show2faField = false
     loginClientId = ""
     loginClientSecret = ""
     pinEntry = ""
@@ -4345,7 +4367,9 @@ Panel {
           && root.currentScreen !== "pin"
           && root.currentScreen !== "fingerprint")
         ? keyCatcher
-        : (root.status === "unauthenticated" ? emailField : passField))
+        : (root.status === "unauthenticated"
+          ? (root.show2faField ? code2faField : emailField)
+          : passField))
     contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.filterDrawerHeight)
 
@@ -6147,6 +6171,7 @@ Panel {
               fontSize: Style.font.caption
               onClicked: {
                 root.invalidateEmailLoginPrewarm()
+                root.resetEmailLoginSecondFactor()
                 root.loginMethod = "email"
               }
             }
@@ -6159,6 +6184,7 @@ Panel {
               fontSize: Style.font.caption
               onClicked: {
                 root.invalidateEmailLoginPrewarm()
+                root.resetEmailLoginSecondFactor()
                 root.loginMethod = "apikey"
               }
             }
@@ -6171,6 +6197,7 @@ Panel {
             spacing: Style.space(10)
 
             Column {
+              visible: !root.show2faField
               width: parent.width
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "EMAIL ADDRESS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -6179,8 +6206,10 @@ Panel {
                 width: parent.width
                 placeholderText: "you@example.com"
                 text: root.loginEmail
-                onTextChanged: {
+                onTextChanged: root.loginEmail = text
+                onTextEdited: {
                   root.loginEmail = text
+                  root.resetEmailLoginSecondFactor()
                   root.invalidateEmailLoginPrewarm()
                 }
                 onAccepted: loginPassField.forceActiveFocus()
@@ -6188,6 +6217,7 @@ Panel {
             }
 
             Column {
+              visible: !root.show2faField
               width: parent.width
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -6201,10 +6231,17 @@ Panel {
                   password: !eyeBtnLogin.revealed
                   text: root.loginPassword
                   onTextChanged: root.loginPassword = text
+                  onTextEdited: {
+                    root.loginPassword = text
+                    if (root.show2faField) {
+                      root.resetEmailLoginSecondFactor()
+                      root.invalidateEmailLoginPrewarm()
+                    }
+                  }
                   onActiveFocusChanged: {
                     if (activeFocus) root.prepareEmailLogin()
                   }
-                  onAccepted: code2faField.forceActiveFocus()
+                  onAccepted: root.show2faField ? code2faField.forceActiveFocus() : root.submitLogin()
                 }
                 Button {
                   id: eyeBtnLogin
@@ -6217,29 +6254,19 @@ Panel {
               }
             }
 
-            // 2FA Field (Always visible)
+            // Bitwarden tells us whether this account needs a second factor.
             Column {
+              visible: root.show2faField
               width: parent.width
               spacing: Style.space(3)
 
-              Row {
-                width: parent.width
-                Text {
-                  textFormat: Text.PlainText
-                  text: "TWO-STEP VERIFICATION CODE (2FA)"
-                  color: root.show2faField ? Color.accent : root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
-                Item { Layout.fillWidth: true }
-                Text {
-                  textFormat: Text.PlainText
-                  text: "Optional if not enabled"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
+              Text {
+                textFormat: Text.PlainText
+                text: "TWO-STEP VERIFICATION CODE (2FA)"
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
               }
 
               TextField {
@@ -6253,10 +6280,24 @@ Panel {
                 }
                 onAccepted: root.submitLogin()
               }
+
+              Button {
+                text: "Back to credentials"
+                iconText: "󰁍"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: {
+                  root.errorMessage = ""
+                  root.resetEmailLoginSecondFactor()
+                  root.invalidateEmailLoginPrewarm()
+                  Qt.callLater(function() { loginPassField.forceActiveFocus() })
+                }
+              }
             }
 
             // Custom Server URL (collapsible)
             Column {
+              visible: !root.show2faField
               width: parent.width
               spacing: Style.space(4)
 
@@ -6282,8 +6323,10 @@ Panel {
                 width: parent.width
                 placeholderText: "https://vault.example.com"
                 text: root.loginServerUrl
-                onTextChanged: {
+                onTextChanged: root.loginServerUrl = text
+                onTextEdited: {
                   root.loginServerUrl = text
+                  root.resetEmailLoginSecondFactor()
                   root.invalidateEmailLoginPrewarm()
                 }
               }
@@ -6291,7 +6334,7 @@ Panel {
 
             Button {
               width: parent.width
-              text: root.logoutCleanupFailed ? "Retry Logout Cleanup" : (root.logoutPending ? "Finishing logout..." : (root.isLoading ? "Logging in..." : "Log In & Unlock"))
+              text: root.emailLoginButtonText()
               iconText: root.logoutCleanupFailed ? "󰑐" : ((root.logoutPending || root.isLoading) ? "󰑐" : "󰌋")
               iconSpinning: !root.logoutCleanupFailed && (root.logoutPending || root.isLoading)
               selected: true

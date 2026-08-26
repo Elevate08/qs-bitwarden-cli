@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1] - 2026-08-26
+
+### Fixed
+
+- Fixes #2: ask for a verification code only after Bitwarden requires one, including Bitwarden CLI 2026.2.0's standalone `Code is required.` challenge.
+
 ## [1.3.0] - 2026-08-24
 
 ### Added
