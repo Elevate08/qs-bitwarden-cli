@@ -63,6 +63,8 @@ Panel {
   property var dependencies: ({ items: [], hasOmarchy: true })
   property bool depsChecked: false
   property bool setupDismissed: false
+  property string listReadMode: "sanitized"
+  property var sshCapability: Model.defaultSshCapability()
   // True while the panel should be showing setup rather than probing `bw`.
   // See setupGateActive() in BitwardenModel.js for why the gate exists.
   readonly property bool setupGated: Model.setupGateActive(dependencies, depsChecked, setupDismissed)
@@ -101,11 +103,12 @@ Panel {
   readonly property int filterRowHeight: Style.space(30)
   readonly property int filterVisibleRows: 5
   readonly property var currentFilterOptions: openFilterGroup === "" ? [] : filterOptions(openFilterGroup)
+  readonly property int currentFilterVisibleRows: openFilterGroup === "types" ? currentFilterOptions.length : filterVisibleRows
   // The drawer's own height. The panel adds this to its cap so the window
   // opens downward like a drawer instead of squeezing the item list.
   readonly property int filterDrawerHeight: openFilterGroup === ""
     ? 0
-    : Style.space(30) + Math.min(filterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
+    : Style.space(30) + Math.min(currentFilterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
   property string formFolderId: ""
   property string newFolderName: ""
   // Which picker in the item form is expanded: "" | "folder" | "organization"
@@ -183,6 +186,7 @@ Panel {
   property bool metadataLoadPending: false
   property bool metadataForceRefresh: false
   property bool statusRefreshAfterItems: false
+  property bool statusCheckAuthoritative: true
   property bool syncReloadPending: false
   property string errorMessage: ""
   property string flashMessage: ""
@@ -338,8 +342,16 @@ Panel {
     { id: "secureNote", label: "Notes", icon: "󰈙" },
     { id: "card", label: "Cards", icon: "󰿯" },
     { id: "identity", label: "Identities", icon: "" },
+    { id: "sshKey", label: "SSH Keys", icon: "󰣀" },
     { id: "favorite", label: "Favorites", icon: "󰓒" }
   ]
+
+  // SSH keys need a CLI that can decrypt them. Until the probe confirms one,
+  // the type filter that can only ever come back empty is not offered.
+  readonly property bool sshUiAvailable: Model.sshUiAvailable(dependencies, depsChecked)
+  readonly property var visibleCategories: sshUiAvailable
+    ? categories
+    : categories.filter(function(category) { return category.id !== "sshKey" })
 
   // -------------------------------------------------------------------------
   // Lifecycle & Open / Close
@@ -421,14 +433,14 @@ Panel {
   // Called whenever the user acts on an item while a window context is active.
   // Silent by design: teaching happens as a side effect of normal use.
   function learnFromPick(item) {
-    if (!suggestOnOpen || !item || !item.id || !detectedContext) return
+    if (!suggestOnOpen || !item || !item.id || !detectedContext || !Model.isLoginItem(item)) return
     if (Model.isAssociated(associations, detectedContext, item.id)) return
     saveAssociations(Model.recordAssociation(associations, detectedContext, item.id, new Date().toISOString()))
   }
 
   // Explicit pin/unpin from the detail view.
   function toggleAssociation(item) {
-    if (!item || !item.id || !detectedContext) return
+    if (!item || !item.id || !detectedContext || !Model.isLoginItem(item)) return
     if (Model.isAssociated(associations, detectedContext, item.id)) {
       saveAssociations(Model.forgetAssociation(associations, detectedContext, item.id))
       flashNotification("No longer suggested for " + detectedContext.displayName)
@@ -595,8 +607,9 @@ Panel {
     runStatusCheck()
   }
 
-  function runStatusCheck() {
+  function runStatusCheck(authoritative) {
     if (statusProc.running) return
+    statusCheckAuthoritative = authoritative !== false
     beginEpochOperation("status")
     statusProc.command = Model.statusCommand()
     statusProc.running = true
@@ -605,7 +618,16 @@ Panel {
   function onStatusFinished(rawJson) {
     if (epochOperationIsStale("status")) return
     isLoading = false
+    var authoritative = statusCheckAuthoritative
+    statusCheckAuthoritative = true
     var st = Model.parseStatus(rawJson)
+    if (!authoritative) {
+      if (st && st.userEmail) {
+        userEmail = st.userEmail
+        if (!loginEmail) loginEmail = st.userEmail
+      }
+      return
+    }
     if (!st) {
       cancelAuthPrewarm()
       if (vaultStatePresent()) {
@@ -2364,14 +2386,21 @@ Panel {
     if (!session) return
     if (showSpinner !== false) isLoading = true
     beginVaultRead("items")
-    listProc.command = Model.listCommand()
+    listReadMode = Model.vaultListMode(dependencies)
+    if (listReadMode === "blocked") {
+      isLoading = false
+      if (!vaultReadIsStale("items")) errorMessage = Model.vaultListBlockedMessage(dependencies)
+      return
+    }
+    listProc.command = Model.sanitizedListCommand()
     listProc.running = true
   }
 
   function onListFinished(rawJson) {
     isLoading = false
     if (vaultReadIsStale("items")) return
-    items = Model.parseItems(rawJson)
+    sshCapability = Model.inspectSanitizedVault(rawJson)
+    items = Model.parseSanitizedItems(rawJson)
     itemsLoadedAt = Date.now()
     if (activeWindowData) {
       handleActiveWindowDetected(activeWindowData)
@@ -2400,10 +2429,9 @@ Panel {
     metadataForceRefresh = false
     if (statusRefreshAfterItems) {
       statusRefreshAfterItems = false
-      runStatusCheck()
     }
     if (!vaultReadIsStale("items")) {
-      errorMessage = String(stderrText || "").trim() || "Could not load vault items"
+      errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
     }
   }
 
@@ -2520,8 +2548,8 @@ Panel {
         out.push({ id: organizations[i].id, label: organizations[i].name, icon: "󰓹", active: selectedOrg === organizations[i].id })
       }
     } else if (group === "types") {
-      for (i = 0; i < categories.length; i++) {
-        out.push({ id: categories[i].id, label: categories[i].label, icon: categories[i].icon, active: selectedCategory === categories[i].id })
+      for (i = 0; i < visibleCategories.length; i++) {
+        out.push({ id: visibleCategories[i].id, label: visibleCategories[i].label, icon: visibleCategories[i].icon, active: selectedCategory === visibleCategories[i].id })
       }
     }
     return out
@@ -2763,7 +2791,13 @@ Panel {
       detailPassword = detail.password
     } else {
       beginVaultRead("detail")
-      getItemProc.command = Model.getItemCommand(item.id)
+      if (item.typeCode === 5) {
+        isLoading = false
+        errorMessage = "SSH keys are read-only public records"
+        currentScreen = "main"
+        return
+      }
+      getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
       getItemProc.running = true
     }
 
@@ -2989,7 +3023,10 @@ Panel {
   }
 
   function startEditItem(item) {
-    if (!item) return
+    if (!item || item.typeCode === 5) {
+      if (item && item.typeCode === 5) errorMessage = "SSH keys are read-only public records"
+      return
+    }
     formIsEditing = true
     formItemId = item.id
     formTypeCode = item.typeCode || 1
@@ -3029,11 +3066,13 @@ Panel {
 
     if (formIsEditing) {
       var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
+      if (!editPayload) { isLoading = false; errorMessage = "This item is read-only"; return }
       itemPayloadJson = JSON.stringify(editPayload)
-      editItemProc.command = Model.editItemCommand(formItemId)
+      editItemProc.command = Model.editItemCommand(formItemId, formTypeCode)
       editItemProc.running = true
     } else {
       var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
+      if (!createPayload) { isLoading = false; errorMessage = "This item type is read-only"; return }
       itemPayloadJson = JSON.stringify(createPayload)
       createItemProc.command = Model.createItemCommand(createPayload)
       createItemProc.running = true
@@ -3057,10 +3096,10 @@ Panel {
   }
 
   function deleteCurrentItem() {
-    if (!detailItem || !detailItem.id) return
+    if (!detailItem || !detailItem.id || detailItem.typeCode === 5) return
     isLoading = true
     beginVaultRead("itemDelete")
-    deleteItemProc.command = Model.deleteItemCommand(detailItem.id)
+    deleteItemProc.command = Model.deleteItemCommand(detailItem.id, detailItem.typeCode)
     deleteItemProc.running = true
   }
 
@@ -3110,8 +3149,20 @@ Panel {
     }
   }
 
+  // What the list says when it has nothing to show. The SSH filter gets its own
+  // answer: a vault that returned no SSH keys is not the same as a server that
+  // never confirmed it can store them, and only the first is worth waiting on.
+  function emptyListMessage() {
+    if (selectedCategory === "sshKey" && filteredItems.length === 0 && sshCapability
+        && sshCapability.state === "unconfirmed") {
+      return sshCapability.message
+    }
+    if (items.length === 0) return "Vault is empty"
+    return "No items match '" + searchQuery + "'"
+  }
+
   function selectCategory(catId) {
-    selectedCategory = catId
+    selectedCategory = catId === "sshKey" && !sshUiAvailable ? "all" : catId
     selectedIndex = 0
     rebuildFilter()
   }
@@ -3124,14 +3175,14 @@ Panel {
 
   function cycleCategory(delta) {
     var currentIndex = 0
-    for (var i = 0; i < categories.length; i++) {
-      if (categories[i].id === selectedCategory) {
+    for (var i = 0; i < visibleCategories.length; i++) {
+      if (visibleCategories[i].id === selectedCategory) {
         currentIndex = i
         break
       }
     }
-    var nextIndex = (currentIndex + delta + categories.length) % categories.length
-    selectCategory(categories[nextIndex].id)
+    var nextIndex = (currentIndex + delta + visibleCategories.length) % visibleCategories.length
+    selectCategory(visibleCategories[nextIndex].id)
   }
 
   // Every main-screen shortcut in one place. Reached two ways: bare letters
@@ -3212,7 +3263,7 @@ Panel {
     Quickshell.execDetached(["wl-copy", "--clear"])
   }
 
-  function requestPasswordCopy(itemId) {
+  function requestPasswordCopy(itemId, typeCode) {
     if (!session || !itemId) return
     if (copyPasswordProc.running) {
       errorMessage = "Another password copy is still loading"
@@ -3220,7 +3271,7 @@ Panel {
     }
     passwordCopyItemId = String(itemId)
     beginVaultRead("passwordCopy")
-    copyPasswordProc.command = Model.getPasswordCommand(itemId)
+    copyPasswordProc.command = Model.getPasswordCommand(itemId, typeCode)
     copyPasswordProc.running = true
   }
 
@@ -3243,7 +3294,7 @@ Panel {
   // Smart sequential Enter handler: Copies Password, then arms and auto-copies TOTP
   function handleSmartEnter(item) {
     openFilterGroup = ""
-    if (!item) return
+    if (!item || !Model.isLoginItem(item)) return
 
     // If already in active TOTP follow-up mode for this item, copy TOTP now!
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id) {
@@ -3276,7 +3327,7 @@ Panel {
 
   function copyPassword(item) {
     closeFilterGroup()
-    if (!item) return
+    if (!item || !Model.isLoginItem(item)) return
     learnFromPick(item)
     var pass = (detailItem && detailItem.id === item.id && detailPassword) ? detailPassword : (item.password || "")
     if (pass) {
@@ -3284,7 +3335,7 @@ Panel {
       return
     }
     if (session) {
-      requestPasswordCopy(item.id)
+      requestPasswordCopy(item.id, item.typeCode)
     } else {
       errorMessage = "Vault is locked or session expired. Please unlock your vault."
     }
@@ -3298,7 +3349,7 @@ Panel {
 
   function copyTotpCode(item) {
     closeFilterGroup()
-    if (!item) return
+    if (!item || !Model.isLoginItem(item)) return
     if (liveTotp && item.id === (detailItem ? detailItem.id : "")) {
       copyToClipboard(liveTotp, "TOTP code")
       return
@@ -3368,7 +3419,7 @@ Panel {
       root.loadFolders(force)
       if (root.statusRefreshAfterItems) {
         root.statusRefreshAfterItems = false
-        root.runStatusCheck()
+        root.runStatusCheck(false)
       }
     }
   }
@@ -4506,7 +4557,7 @@ Panel {
           } else if (lower === "e") {
             if (root.detailItem) root.startEditItem(root.detailItem)
           } else if (lower === "x") {
-            root.showDeleteConfirm = true
+            if (root.detailItem && root.detailItem.typeCode !== 5) root.showDeleteConfirm = true
           } else if (lower === "v") {
             root.passwordRevealed = !root.passwordRevealed
           } else if (lower === "a") {
@@ -5825,6 +5876,17 @@ Panel {
                     wrapMode: Text.WordWrap
                   }
 
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: !!modelData.note
+                    width: parent.width
+                    text: modelData.note
+                    color: root.urgent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+
                   // The package being on PATH is not the finish line for a
                   // setup row: fingerprint unlock also wants an enrolled
                   // finger and the PAM stack, and only the setup command
@@ -6673,7 +6735,7 @@ Panel {
             TextField {
               id: searchField
               width: parent.width - (root.searchQuery ? clearSearchBtn.width + Style.space(6) : 0)
-              placeholderText: "Search items, usernames, URLs..."
+              placeholderText: "Search items, usernames, URLs, public keys, fingerprints..."
               text: root.searchQuery
               onTextChanged: {
                 root.searchQuery = text
@@ -6937,7 +6999,7 @@ Panel {
                     visible: isSelected || isHovered
 
                     PanelActionButton {
-                      visible: itemData.hasPassword
+                      visible: itemData.typeCode !== 5 && itemData.hasPassword
                       iconText: "󰌆"
                       tooltipText: "Copy password (Enter / y)"
                       fontFamily: root.fontFamily
@@ -6945,7 +7007,7 @@ Panel {
                     }
 
                     PanelActionButton {
-                      visible: itemData.username !== ""
+                      visible: itemData.typeCode !== 5 && itemData.username !== ""
                       iconText: ""
                       tooltipText: "Copy username (u)"
                       fontFamily: root.fontFamily
@@ -6953,7 +7015,7 @@ Panel {
                     }
 
                     PanelActionButton {
-                      visible: itemData.hasTotp
+                      visible: itemData.typeCode !== 5 && itemData.hasTotp
                       iconText: "󰥔"
                       tooltipText: "Copy TOTP code (m)"
                       fontFamily: root.fontFamily
@@ -6962,13 +7024,13 @@ Panel {
 
                     PanelActionButton {
                       iconText: "󰏫"
-                      tooltipText: "View / Edit item (e)"
+                      tooltipText: itemData.typeCode === 5 ? "View public key" : "View / Edit item (e)"
                       fontFamily: root.fontFamily
                       onClicked: root.openDetail(itemData)
                     }
 
                     PanelActionButton {
-                      visible: itemData.uris && itemData.uris.length > 0
+                      visible: itemData.typeCode !== 5 && itemData.uris && itemData.uris.length > 0
                       iconText: "󰖟"
                       tooltipText: "Open URL (w)"
                       fontFamily: root.fontFamily
@@ -7022,7 +7084,7 @@ Panel {
                   anchors.horizontalCenter: parent.horizontalCenter
                   text: root.isLoading && root.items.length === 0
                     ? "Loading items..."
-                    : (root.items.length === 0 ? "Vault is empty" : ("No items match '" + root.searchQuery + "'"))
+                    : root.emptyListMessage()
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -7087,7 +7149,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.currentFilterOptions.length > root.filterVisibleRows
+                visible: root.currentFilterOptions.length > root.currentFilterVisibleRows
                 text: root.currentFilterOptions.length + " total"
                 color: root.dim
                 font.family: root.fontFamily
@@ -7098,7 +7160,7 @@ Panel {
             Flickable {
               id: filterOptionsList
               width: parent.width
-              height: Math.min(root.filterVisibleRows, root.currentFilterOptions.length) * root.filterRowHeight
+              height: Math.min(root.currentFilterVisibleRows, root.currentFilterOptions.length) * root.filterRowHeight
               contentWidth: width
               contentHeight: filterOptionsCol.implicitHeight
               clip: true
@@ -7252,7 +7314,7 @@ Panel {
             Item { Layout.fillWidth: true }
 
             Button {
-              visible: Boolean(root.detectedContext && root.detectedContext.displayName && root.detailItem)
+              visible: Boolean(root.detectedContext && root.detectedContext.displayName && root.detailItem && root.detailItem.typeCode !== 5)
               readonly property bool pinned: Boolean(root.detailItem
                 && Model.isAssociated(root.associations, root.detectedContext, root.detailItem.id))
               text: pinned ? "Suggested here" : "Suggest here"
@@ -7269,6 +7331,7 @@ Panel {
             }
 
             Button {
+              visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5)
               text: "Edit"
               iconText: "󰏫"
               fontFamily: root.fontFamily
@@ -7277,6 +7340,7 @@ Panel {
             }
 
             Button {
+              visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5)
               text: "Delete"
               iconText: "󰆴"
               accent: Color.urgent
@@ -7420,9 +7484,44 @@ Panel {
                 }
               }
 
+              // FIELD: Public SSH key (type 5 is deliberately read-only)
+              Column {
+                visible: Boolean(root.detailItem && root.detailItem.typeCode === 5)
+                width: parent.width
+                spacing: Style.space(4)
+                PanelSectionHeader { text: "PUBLIC KEY" }
+                BorderSurface {
+                  width: parent.width
+                  implicitHeight: Math.max(Style.space(54), sshPublicKeyText.implicitHeight + Style.space(20))
+                  radius: Style.cornerRadius
+                  color: Style.hoverFillFor(root.fg, Color.accent)
+                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+                  Text {
+                    textFormat: Text.PlainText
+                    id: sshPublicKeyText
+                    anchors.fill: parent
+                    anchors.margins: Style.space(10)
+                    text: root.detailItem ? (root.detailItem.publicKey || "No public key") : ""
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WrapAnywhere
+                  }
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  visible: Boolean(root.detailItem && root.detailItem.fingerprint)
+                  text: "Fingerprint: " + (root.detailItem ? root.detailItem.fingerprint : "")
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WrapAnywhere
+                }
+              }
+
               // FIELD: Username
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.username !== "")
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.username !== "")
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -7465,7 +7564,7 @@ Panel {
 
               // FIELD: Password
               Column {
-                visible: Boolean(root.detailItem && (root.detailPassword !== "" || root.detailItem.hasPassword))
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && (root.detailPassword !== "" || root.detailItem.hasPassword))
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -7519,7 +7618,7 @@ Panel {
 
               // FIELD: TOTP (2FA Code)
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.hasTotp)
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.hasTotp)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -7586,7 +7685,7 @@ Panel {
 
               // FIELD: Website / URIs
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.uris && root.detailItem.uris.length > 0)
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.uris && root.detailItem.uris.length > 0)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -7643,7 +7742,7 @@ Panel {
               // attached is that case, and the files were the thing being
               // pushed out of sight.
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.hasAttachments)
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.hasAttachments)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -7754,7 +7853,7 @@ Panel {
 
               // FIELD: Notes
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.notes !== "")
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.notes !== "")
                 width: parent.width
                 spacing: Style.space(4)
 

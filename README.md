@@ -5,7 +5,7 @@ A modern, fast, and feature-rich Bitwarden password manager plugin for the **Oma
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.3.1-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
-[![Requires: Bitwarden CLI](https://img.shields.io/badge/requires-bw%20CLI-175ddc.svg)](https://bitwarden.com/help/cli/)
+[![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
 ![Bitwarden Vault Plugin preview](preview.png)
 
@@ -205,12 +205,13 @@ system packages you can also install by hand:
 | Tool | Package | Required | Used for |
 | --- | --- | :---: | --- |
 | `bw` | `bitwarden-cli` | yes | Reading and writing your vault. |
+| `jq` | `jq` | yes | Safe SSH-aware vault sanitization before QML reads item data. SSH support requires Bitwarden `2025.1.2+`. |
 | `fprintd-list` | (via `omarchy setup security fingerprint`) | no | Fingerprint unlock. Omarchy installs the reader stack, enrols your finger and writes the PAM config in one command; the row only appears if you have a reader. |
 
 The equivalent of what the Install button runs:
 
 ```bash
-omarchy install app 'Bitwarden CLI' bitwarden-cli
+omarchy install app 'Bitwarden plugin dependencies' 'bitwarden-cli jq'
 ```
 
 That is the whole list, and only the first entry holds the panel back. The
@@ -525,13 +526,14 @@ omarchy plugin validate .
 
 ## Tests
 
-Regression suites, no dependencies beyond Node:
+Regression suites require Node; the SSH-items boundary suite also exercises jq:
 
 ```bash
 node tests/auth.test.js             # unlock/login commands, and that no credential reaches argv
 node tests/auth-prewarm.test.js     # private FIFO lifecycle, byte-exact password delivery, and cancellation
 node tests/context-match.test.js    # window-title matching and learned suggestions
 node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
+node tests/ssh-items.test.js         # bounded out-of-process vault sanitization and SSH private-key exclusion
 node tests/first-run.test.js        # a fresh install with no `bw` yet: the setup gate, the
                                     # sequence that follows the install, and what the
                                     # in-panel install button asks for

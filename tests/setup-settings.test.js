@@ -16,6 +16,12 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.parseDependencies = parseDependencies
   exports.missingRequired = missingRequired
   exports.dependencyCheckCommand = dependencyCheckCommand
+  exports.vaultListMode = vaultListMode
+  exports.vaultListBlockedMessage = vaultListBlockedMessage
+  exports.vaultListFailureMessage = vaultListFailureMessage
+  exports.sshCliMinVersion = sshCliMinVersion
+  exports.sshCliSupport = typeof sshCliSupport === "function" ? sshCliSupport : null
+  exports.sshUiAvailable = sshUiAvailable
   exports.settingWriteCommand = settingWriteCommand
   exports.boolSetting = boolSetting
   exports.installPackagesCommand = installPackagesCommand
@@ -36,37 +42,146 @@ let pass = 0
 const failures = []
 const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
 const byKey = (deps, k) => deps.items.find(d => d.key === k)
+const dependencyProbe = Model.dependencyCheckCommand()[2]
+const sshCliSupport = (version) => typeof Model.sshCliSupport === "function"
+  ? Model.sshCliSupport(version)
+  : "__missing__"
 
 // --- everything present -----------------------------------------------------
 const all = Model.parseDependencies(
-  "bw=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
+  "bw=1\nbw_version=2025.1.2\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
 check("all present: nothing required is missing",
   Model.missingRequired(all).length === 0,
   `got [${Model.missingRequired(all).map(d => d.key)}]`)
 check("all present: fprintd reported ready", byKey(all, "fprintd").ready === true, "expected ready")
+check("jq is a required dependency alongside bw",
+  byKey(all, "jq") && byKey(all, "jq").required === true && byKey(all, "jq").pkg === "jq",
+  JSON.stringify(byKey(all, "jq")))
+check("the dependency probe checks for jq before vault reads",
+  dependencyProbe.includes("command -v jq"),
+  dependencyProbe)
+check("the dependency probe captures the bw CLI version for SSH gating",
+  /bw\s+--version|bw\s+-v/.test(dependencyProbe),
+  dependencyProbe)
+check("sshCliMinVersion reports the verified floor",
+  Model.sshCliMinVersion() === "2025.1.2",
+  String(Model.sshCliMinVersion()))
+check("sshCliSupport marks 2025.1.2 as supported",
+  sshCliSupport("2025.1.2") === "supported",
+  JSON.stringify(sshCliSupport("2025.1.2")))
+check("sshCliSupport marks 2025.1.1 as unsupported",
+  sshCliSupport("2025.1.1") === "unsupported",
+  JSON.stringify(sshCliSupport("2025.1.1")))
+check("sshCliSupport treats malformed versions as unknown",
+  sshCliSupport("development-build") === "unknown",
+  JSON.stringify(sshCliSupport("development-build")))
+check("sshCliSupport treats a missing version as unknown",
+  sshCliSupport("") === "unknown",
+  JSON.stringify(sshCliSupport("")))
+check("SSH surfaces stay hidden until the probe confirms a supported CLI",
+  Model.sshUiAvailable(all, true) === true
+    && Model.sshUiAvailable(all, false) === false,
+  JSON.stringify({ checked: Model.sshUiAvailable(all, true), unchecked: Model.sshUiAvailable(all, false) }))
+const oldCli = Model.parseDependencies(
+  "bw=1\nbw_version=2025.1.1\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
+check("an unsupported CLI hides SSH but still reports why on the bw row",
+  Model.sshUiAvailable(oldCli, true) === false
+    && byKey(oldCli, "bw").note.includes("2025.1.2")
+    && byKey(oldCli, "bw").note.includes("2025.1.1"),
+  JSON.stringify(byKey(oldCli, "bw")))
+const unreadableCli = Model.parseDependencies(
+  "bw=1\nbw_version=development-build\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
+check("an unreadable CLI version hides SSH rather than assuming support",
+  Model.sshUiAvailable(unreadableCli, true) === false
+    && unreadableCli.sshCliStatus === "unknown"
+    && byKey(unreadableCli, "bw").note !== "",
+  JSON.stringify({ status: unreadableCli.sshCliStatus, bw: byKey(unreadableCli, "bw") }))
+
+check("bw version metadata is preserved for feature gating",
+  byKey(all, "bw") && byKey(all, "bw").version === "2025.1.2" && all.sshCliStatus === "supported",
+  JSON.stringify({ bw: byKey(all, "bw"), sshCliStatus: all.sshCliStatus }))
 
 // --- the case that matters: a required tool is absent -----------------------
 const noBw = Model.parseDependencies(
-  "bw=0\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
+  "bw=0\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
 const missing = Model.missingRequired(noBw)
 check("missing bw is reported as required",
   missing.length === 1 && missing[0].key === "bw" && missing[0].pkg === "bitwarden-cli",
   `got [${missing.map(d => d.key + ":" + d.pkg)}]`)
 check("missing bw is not marked installed", byKey(noBw, "bw").installed === false, "expected false")
+const noJq = Model.parseDependencies(
+  "bw=1\nbw_version=2025.1.2\njq=0\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
+const missingNoJq = Model.missingRequired(noJq)
+check("missing jq is reported as required",
+  missingNoJq.length === 1 && missingNoJq[0].key === "jq" && missingNoJq[0].pkg === "jq",
+  `got [${missingNoJq.map(d => d.key + ":" + d.pkg)}]`)
+check("missing jq does not alter optional dependency semantics",
+  byKey(noJq, "fprintd").required === false,
+  JSON.stringify(byKey(noJq, "fprintd")))
+check("supported bw without jq blocks the vault list until setup finishes",
+  Model.vaultListMode(noJq) === "blocked"
+    && Model.vaultListBlockedMessage(noJq).includes("jq"),
+  `${Model.vaultListMode(noJq)} / ${Model.vaultListBlockedMessage(noJq)}`)
+
+// A whole-list failure on a CLI that predates the malformed-SSH-item fix is the
+// one case where the panel can say something useful about a read it cannot
+// repair. The attribution comes from the probed version, never from the failed
+// read's own output, which can quote decrypted vault material.
+const rawCliFailure = "TypeError: Cannot read properties of null (reading 'keyFingerprint') for item work-ssh"
+check("a list failure on a pre-2026.8.0 CLI names the release that fixes it",
+  Model.vaultListFailureMessage(rawCliFailure, all, "sanitized").includes("2026.8.0"),
+  Model.vaultListFailureMessage(rawCliFailure, all, "sanitized"))
+check("the failure message never echoes raw CLI output",
+  !Model.vaultListFailureMessage(rawCliFailure, all, "sanitized").includes("keyFingerprint")
+    && !Model.vaultListFailureMessage(rawCliFailure, all, "sanitized").includes("TypeError")
+    && !Model.vaultListFailureMessage(rawCliFailure, all, "sanitized").includes("work-ssh"),
+  Model.vaultListFailureMessage(rawCliFailure, all, "sanitized"))
+const fixedCli = Model.parseDependencies(
+  "bw=1\nbw_version=2026.8.0\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
+check("a list failure on a fixed CLI does not blame the SSH-item bug",
+  !Model.vaultListFailureMessage(rawCliFailure, fixedCli, "sanitized").includes("2026.8.0"),
+  Model.vaultListFailureMessage(rawCliFailure, fixedCli, "sanitized"))
+check("a blocked list reports the missing tool instead of the SSH hint",
+  Model.vaultListFailureMessage(rawCliFailure, noJq, "blocked").includes("jq")
+    && !Model.vaultListFailureMessage(rawCliFailure, noJq, "blocked").includes("2026.8.0"),
+  Model.vaultListFailureMessage(rawCliFailure, noJq, "blocked"))
 
 // An optional tool going missing must not trigger the blocking wizard.
 const noFprintd = Model.parseDependencies(
-  "bw=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=0\nfingerprint_ready=0\nomarchy=1")
+  "bw=1\nbw_version=2025.1.2\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=0\nfingerprint_ready=0\nomarchy=1")
 check("missing optional tool does not block setup",
   Model.missingRequired(noFprintd).length === 0,
   `got [${Model.missingRequired(noFprintd).map(d => d.key)}]`)
 
 // --- fprintd installed but no finger enrolled -------------------------------
 const noFinger = Model.parseDependencies(
-  "bw=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=0\nomarchy=1")
+  "bw=1\nbw_version=2025.1.2\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=0\nomarchy=1")
 check("fprintd on PATH without an enrolled finger is installed-but-not-ready",
   byKey(noFinger, "fprintd").installed === true && byKey(noFinger, "fprintd").ready === false,
   `installed=${byKey(noFinger, "fprintd").installed} ready=${byKey(noFinger, "fprintd").ready}`)
+
+const oldBw = Model.parseDependencies(
+  "bw=1\nbw_version=2025.1.1\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
+check("older bw versions remain installed but are marked unsupported for SSH",
+  byKey(oldBw, "bw").installed === true
+    && byKey(oldBw, "bw").version === "2025.1.1"
+    && oldBw.sshCliStatus === "unsupported"
+    && byKey(oldBw, "bw").note.includes(Model.sshCliMinVersion()),
+  JSON.stringify({ bw: byKey(oldBw, "bw"), sshCliStatus: oldBw.sshCliStatus }))
+check("older bw with jq still uses the sanitized list path for ordinary items",
+  Model.vaultListMode(oldBw) === "sanitized",
+  JSON.stringify({ mode: Model.vaultListMode(oldBw), deps: oldBw }))
+
+const unknownBw = Model.parseDependencies(
+  "bw=1\nbw_version=development-build\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
+check("unknown bw versions are reported separately from unsupported ones",
+  byKey(unknownBw, "bw").installed === true
+    && byKey(unknownBw, "bw").version === ""
+    && unknownBw.sshCliStatus === "unknown",
+  JSON.stringify({ bw: byKey(unknownBw, "bw"), sshCliStatus: unknownBw.sshCliStatus }))
+check("unknown bw with jq still uses the sanitized list path and never falls back to a raw legacy read",
+  Model.vaultListMode(unknownBw) === "sanitized",
+  JSON.stringify({ mode: Model.vaultListMode(unknownBw), deps: unknownBw }))
 
 // --- malformed / empty probe output -----------------------------------------
 for (const [label, raw] of [["empty", ""], ["garbage", "???\n=\nbw\n"]]) {

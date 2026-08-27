@@ -105,6 +105,13 @@ function check(label, ok, detail) {
   if (ok) { pass++ } else { failures.push(label + "\n    " + detail) }
 }
 
+const sshLike = { id: "ssh-public", name: "GitHub deploy key", typeCode: 5,
+  uris: ["https://github.com"], publicKey: "ssh-ed25519 AAAA" }
+check("context suggestions exclude SSH public records",
+  Model.findContextualMatches(items.concat([sshLike]),
+    { class: "chromium", title: "GitHub - Chromium", mapped: true }).matches.every(m => m.id !== "ssh-public"),
+  "SSH key leaked into contextual suggestions")
+
 for (const [cls, title, expected] of cases) {
   const got = Model.findContextualMatches(items, { class: cls, title, mapped: true })
     .matches.map(m => m.name).sort()

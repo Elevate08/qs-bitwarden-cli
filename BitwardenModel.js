@@ -95,6 +95,15 @@ const TWOFACTOR_CODE_ENV = "QSBW_CODE"
 // bw prompts on a tty it does not have here, so every auth command runs with
 // interaction disabled and fails fast instead of hanging.
 const NOINTERACTION_ENV = "BW_NOINTERACTION"
+// Bitwarden's SSH documentation names 2025.1.2 as the first supported
+// release. Keep the ordinary vault usable on older CLI builds, but do not
+// advertise SSH support from them.
+const SSH_CLI_MIN_VERSION = "2025.1.2"
+// Bitwarden CLI releases before this one throw on SSH key items whose
+// decrypted public fields are absent, and the throw takes the whole
+// `bw list items` read with it. The panel cannot repair that, but it can name
+// the release that fixes it instead of leaving the user with a bare failure.
+const SSH_MALFORMED_ITEM_FIX_VERSION = "2026.8.0"
 
 function sessionEnvVar() {
   return SESSION_ENV
@@ -118,6 +127,10 @@ function twoFactorCodeEnvVar() {
 
 function noInteractionEnvVar() {
   return NOINTERACTION_ENV
+}
+
+function sshCliMinVersion() {
+  return SSH_CLI_MIN_VERSION
 }
 
 // Limits on stdout and stderr streams collected into the shell's memory space.
@@ -795,6 +808,105 @@ function listCommand() {
   return buildCappedCommand(["list", "items"], MAX_ITEMS_BYTES, MAX_STDERR_BYTES)
 }
 
+// `bw list items` returns complete decrypted ciphers. In particular, an SSH
+// item carries its private key, and cipher types added after this panel was
+// written otherwise fall through as ordinary logins. Keep that stream out of
+// QML by allowlisting supported types in a short-lived jq process. Types 1-4
+// remain complete because their existing edit/detail paths need rawObject. A
+// malformed cross-typed ordinary item with an sshKey subtree therefore fails
+// the whole read instead of being mutated or allowed to smuggle private-key
+// material through that branch. Type 5 is reduced to public metadata, and
+// every other type is omitted.
+//
+// This command is introduced separately from listCommand() so the process
+// boundary can be proved before the panel adopts its new output contract.
+var SANITIZED_ITEMS_FILTER = [
+  "def string_or_empty: if type == \"string\" then . else \"\" end;",
+  "def string_or_null: if type == \"string\" then . else null end;",
+  "def bool_or_false: if type == \"boolean\" then . else false end;",
+  "def reprompt_or_zero: if . == 0 or . == 1 then . else 0 end;",
+  "def item_type: try (.type | tonumber) catch null;",
+  "def ordinary_type: item_type as $t | ($t == 1 or $t == 2 or $t == 3 or $t == 4);",
+  "def ssh_type: item_type == 5;",
+  "if type != \"array\" then",
+  "  error(\"expected one item array\")",
+  "elif any(.[] | objects | select(ordinary_type); has(\"sshKey\")) then",
+  "  error(\"ordinary item carries an SSH key subtree\")",
+  "else",
+  "  {",
+  "    sshCapability: (if any(.[] | objects; ssh_type) then \"confirmed\" else \"unconfirmed\" end),",
+  "    items: [.[] | objects | select(ordinary_type)],",
+  "    sshKeys: [.[] | objects | select(ssh_type) | {",
+  "      id: (.id | string_or_empty),",
+  "      name: (.name | string_or_empty),",
+  "      type: 5,",
+  "      organizationId: (.organizationId | string_or_null),",
+  "      folderId: (.folderId | string_or_null),",
+  "      favorite: (.favorite | bool_or_false),",
+  "      reprompt: (.reprompt | reprompt_or_zero),",
+  "      publicKey: ((try (.sshKey.publicKey // .publicKey) catch null) | string_or_empty),",
+  "      fingerprint: ((try (.sshKey.fingerprint // .sshKey.keyFingerprint // .fingerprint // .keyFingerprint) catch null) | string_or_empty)",
+  "    }]",
+  "  }",
+  "end"
+].join("\n")
+
+// jq deliberately accepts several non-JSON extensions and replaces malformed
+// UTF-8 before a filter can measure it. Validate and count the bounded raw byte
+// stream first with the Node runtime that `bw` itself requires. Nothing is
+// written until the entire input is valid strict JSON, so parse failures cannot
+// leak a partial vault or an exception containing source material.
+var STRICT_JSON_PASSTHROUGH = [
+  "const maxBytes = Number(process.argv[1]);",
+  "const chunks = [];",
+  "let byteLength = 0;",
+  "process.stdin.on(\"data\", function (chunk) {",
+  "  byteLength += chunk.length;",
+  "  chunks.push(chunk);",
+  "});",
+  "process.stdin.on(\"end\", function () {",
+  "  if (byteLength > maxBytes) process.exit(1);",
+  "  const raw = Buffer.concat(chunks, byteLength);",
+  "  try {",
+  "    const decoder = new (require(\"util\").TextDecoder)(\"utf-8\", { fatal: true });",
+  "    const parsed = JSON.parse(decoder.decode(raw));",
+  "    if (!Array.isArray(parsed)) process.exit(1);",
+  "  } catch (error) {",
+  "    process.exit(1);",
+  "  }",
+  "  process.stdout.write(raw);",
+  "});"
+].join("\n")
+
+var SANITIZED_LIST_ERROR = "Could not safely read vault items."
+var SANITIZED_LIST_SSH_FIX_HINT = " Bitwarden CLI before " + SSH_MALFORMED_ITEM_FIX_VERSION
+  + " can fail on malformed SSH key items. Upgrading to " + SSH_MALFORMED_ITEM_FIX_VERSION
+  + " or newer may fix this."
+
+function sanitizedListCommand() {
+  // The validator receives at most one byte beyond the raw ceiling and counts
+  // bytes before UTF-8 decoding. The second cap and command substitution keep
+  // partial sanitized JSON out of QML-facing stdout. All pipeline diagnostics
+  // are suppressed because bw and jq may quote decrypted source material; the
+  // only error exposed to QML is the fixed message below. Blaming a failure on
+  // the pre-2026.8.0 malformed-SSH-item bug is left to vaultListFailureMessage(),
+  // which reads the already-probed CLI version instead of the failure text --
+  // nothing here has to look at what the producer printed.
+  var maxPlusOne = MAX_ITEMS_BYTES + 1
+  var script = "export LC_ALL=C BW_NOINTERACTION=true; set -o pipefail; "
+  script += "__qsbw_items=$({ bw list items | head -c " + maxPlusOne
+    + " | node -e " + shellQuote(STRICT_JSON_PASSTHROUGH) + " " + MAX_ITEMS_BYTES
+    + " | jq -c " + shellQuote(SANITIZED_ITEMS_FILTER)
+    + " | head -c " + maxPlusOne + "; } 2>/dev/null)\n"
+  script += "__rc=$?\n"
+  script += "if [ \"$__rc\" -ne 0 ] || [ \"${#__qsbw_items}\" -gt " + MAX_ITEMS_BYTES + " ]; then\n"
+  script += "  printf '%s\\n' " + shellQuote(SANITIZED_LIST_ERROR) + " >&2\n"
+  script += "  exit 1\n"
+  script += "fi\n"
+  script += "printf '%s' \"$__qsbw_items\""
+  return ["bash", "-c", script]
+}
+
 function listOrganizationsCommand() {
   return buildCappedCommand(["list", "organizations"], MAX_ORGS_BYTES)
 }
@@ -866,15 +978,18 @@ function createFolderCommand() {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-function getItemCommand(id) {
+function getItemCommand(id, typeCode) {
+  if (Number(typeCode) === 5) return []
   return buildCappedCommand(["get", "item", "--", String(id)], MAX_DETAIL_BYTES, MAX_STDERR_BYTES)
 }
 
-function getPasswordCommand(id) {
+function getPasswordCommand(id, typeCode) {
+  if (Number(typeCode) === 5) return []
   return buildCappedCommand(["get", "password", "--raw", "--", String(id)], MAX_TOKEN_BYTES, MAX_STDERR_BYTES)
 }
 
-function getTotpCommand(id) {
+function getTotpCommand(id, typeCode) {
+  if (Number(typeCode) === 5) return []
   return buildCappedCommand(["get", "totp", "--raw", "--", String(id)], MAX_TOKEN_BYTES)
 }
 
@@ -905,12 +1020,14 @@ function createItemCommand(itemData) {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-function editItemCommand(itemId) {
+function editItemCommand(itemId, typeCode) {
+  if (Number(typeCode) === 5) return []
   var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item -- " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-function deleteItemCommand(itemId) {
+function deleteItemCommand(itemId, typeCode) {
+  if (Number(typeCode) === 5) return []
   return buildCappedCommand(["delete", "item", "--", String(itemId)], MAX_MISC_BYTES, MAX_STDERR_BYTES)
 }
 
@@ -1201,7 +1318,8 @@ var ITEM_TYPES = {
   "1": "login",
   "2": "secureNote",
   "3": "card",
-  "4": "identity"
+  "4": "identity",
+  "5": "sshKey"
 }
 
 function itemTypeName(type) {
@@ -1219,6 +1337,7 @@ function itemTypeGlyph(type) {
     case "secureNote": return "󰈙" // md-file_document
     case "card": return "󰿯"       // md-credit_card
     case "identity": return ""   // fa-user
+    case "sshKey": return "󰣀"     // md-ssh
     default: return "󰞀"           // md-shield_half_full
   }
 }
@@ -1230,6 +1349,7 @@ function itemTypeLabel(type) {
     case "secureNote": return "Secure Note"
     case "card": return "Card"
     case "identity": return "Identity"
+    case "sshKey": return "SSH Key"
     default: return "Item"
   }
 }
@@ -1608,6 +1728,62 @@ function parseItems(raw) {
   return out
 }
 
+function parseSshKeys(keys) {
+  var arr = Array.isArray(keys) ? keys : []
+  var out = []
+  for (var i = 0; i < arr.length; i++) {
+    var it = arr[i]
+    if (!it || typeof it !== "object" || !it.id) continue
+    var key = it.sshKey || {}
+    var publicKey = String(key.publicKey || it.publicKey || "")
+    var fingerprint = String(key.fingerprint || key.keyFingerprint || it.fingerprint || it.keyFingerprint || "")
+    var raw = {
+      id: String(it.id), name: String(it.name || "Untitled"), type: 5,
+      organizationId: it.organizationId ? String(it.organizationId) : null,
+      folderId: it.folderId ? String(it.folderId) : null,
+      favorite: Boolean(it.favorite), reprompt: Number(it.reprompt || 0),
+      sshKey: { publicKey: publicKey, fingerprint: fingerprint }
+    }
+    out.push({ id: String(it.id), organizationId: raw.organizationId, folderId: raw.folderId,
+      name: raw.name, type: "sshKey", typeCode: 5, favorite: raw.favorite,
+      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "",
+      uris: [], attachments: [], hasAttachments: false,
+      subtitle: fingerprint || publicKey || "SSH Key", notes: "",
+      publicKey: publicKey, fingerprint: fingerprint, rawObject: raw })
+  }
+  out.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  return out
+}
+
+function parseSanitizedEnvelope(raw) {
+  var envelope = null
+  try { envelope = JSON.parse(raw) } catch (e) { return null }
+  if (!envelope || typeof envelope !== "object" || !Array.isArray(envelope.items) || !Array.isArray(envelope.sshKeys)) return null
+  // The capability flag is derived from the key list, so the envelope is read
+  // without it. A flag that contradicts the list means the document was not
+  // produced by this filter, and the whole read fails closed.
+  var expectedCapability = envelope.sshKeys.length > 0 ? "confirmed" : "unconfirmed"
+  if (envelope.sshCapability !== undefined && envelope.sshCapability !== expectedCapability) return null
+  var sshKeys = parseSshKeys(envelope.sshKeys)
+  var items = parseItems(JSON.stringify(envelope.items)).concat(sshKeys)
+  items.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  return {
+    items: items,
+    sshKeys: sshKeys,
+    sshCapability: expectedCapability
+  }
+}
+
+function parseSanitizedItems(raw) {
+  var envelope = parseSanitizedEnvelope(raw)
+  return envelope ? envelope.items : []
+}
+
+function parseSanitizedCapability(raw) {
+  var envelope = parseSanitizedEnvelope(raw)
+  return envelope ? envelope.sshCapability : "unconfirmed"
+}
+
 function parseItemDetail(raw) {
   var it = null
   try {
@@ -1626,6 +1802,17 @@ function parseItemDetail(raw) {
 // CLI bootstrap (~0.9s) plus service init (~2s) before it decrypts anything.
 function itemDetailFromObject(it) {
   if (!it || typeof it !== "object") return null
+
+  if (Number(it.type) === 5) {
+    var sshKey = it.sshKey || {}
+    return { id: String(it.id || ""), organizationId: it.organizationId ? String(it.organizationId) : null,
+      folderId: it.folderId ? String(it.folderId) : null, name: String(it.name || "Untitled"),
+      type: "sshKey", typeCode: 5, favorite: Boolean(it.favorite), notes: "",
+      username: "", password: "", hasTotp: false, totpKey: "", uris: [], attachments: [],
+      hasAttachments: false, card: null, identity: null, fields: [],
+      publicKey: String(sshKey.publicKey || it.publicKey || ""),
+      fingerprint: String(sshKey.fingerprint || sshKey.keyFingerprint || it.fingerprint || it.keyFingerprint || ""), rawObject: it }
+  }
 
   var login = it.login || {}
   var uris = loginUris(login)
@@ -1666,6 +1853,8 @@ function matchesQuery(item, query) {
   if (String(item.name).toLowerCase().indexOf(q) !== -1) return true
   if (String(item.username).toLowerCase().indexOf(q) !== -1) return true
   if (String(item.notes).toLowerCase().indexOf(q) !== -1) return true
+  if (String(item.publicKey || "").toLowerCase().indexOf(q) !== -1) return true
+  if (String(item.fingerprint || "").toLowerCase().indexOf(q) !== -1) return true
 
   // toList, not Array.isArray: this item came back out of a QML `var`
   // property, and the array nested inside it did not survive that trip as one.
@@ -1690,7 +1879,7 @@ function matchesFolderFilter(item, folder) {
 
 function matchesCategoryFilter(item, category) {
   if (category === "favorite") return Boolean(item.favorite)
-  return category === "all" || item.type === category
+  return category === "all" || String(item.type || "").toLowerCase() === String(category || "").toLowerCase()
 }
 
 function filterItems(items, query, category, selectedOrg, selectedFolder) {
@@ -1760,6 +1949,7 @@ function updateLoginFields(login, username, password, totp) {
 }
 
 function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
+  if (Number(typeCode) === 5) return null
   var payload = {
     type: Number(typeCode || 1),
     name: String(name || "Untitled").trim(),
@@ -1789,6 +1979,8 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
 }
 
 function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
+  if (existingItem && (Number(existingItem.typeCode || existingItem.type) === 5
+      || (existingItem.rawObject && Number(existingItem.rawObject.type) === 5))) return null
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
   payload.name = String(name || "Untitled").trim()
   payload.notes = String(notes || "").trim()
@@ -2294,7 +2486,7 @@ function resolveLearnedMatches(items, associations, ctx) {
   var learnedRanked = learnedMatchIds(associations, ctx)
   for (var j = 0; j < learnedRanked.length; j++) {
     var hit = byId[learnedRanked[j].itemId]
-    if (hit) {
+    if (hit && isLoginItem(hit)) {
       matches.push(hit)
       ids[hit.id] = true
     }
@@ -2305,12 +2497,18 @@ function resolveLearnedMatches(items, associations, ctx) {
 function scoreContextualMatches(items, ctx) {
   var scored = []
   for (var i = 0; i < items.length; i++) {
+    if (!isLoginItem(items[i])) continue
     var score = matchItem(items[i], ctx)
     if (score >= MATCH_THRESHOLD) {
       scored.push({ item: items[i], score: score, index: i })
     }
   }
   return scored
+}
+
+function isLoginItem(item) {
+  return Boolean(item && (Number(item.typeCode) === 1 || item.type === "login"
+    || (item.typeCode === undefined && item.type === undefined)))
 }
 
 function compareContextualMatches(a, b) {
@@ -2618,6 +2816,11 @@ var DEPENDENCIES = [
     purpose: "Reads and writes your vault. The panel installs it for you on first run."
   },
   {
+    key: "jq", label: "jq", binary: "jq", pkg: "jq", aur: false,
+    required: true,
+    purpose: "Safely strips SSH private keys before the panel reads your vault."
+  },
+  {
     // Not an `omarchy pkg add` row. Installing fprintd on its own gets nobody
     // anywhere: `ready` also wants an enrolled finger and the PAM stack at
     // /etc/pam.d/omarchy-lock-fingerprint, and a package install produces
@@ -2638,9 +2841,16 @@ function dependencyCheckCommand() {
   var parts = []
   for (var i = 0; i < DEPENDENCIES.length; i++) {
     var d = DEPENDENCIES[i]
-    parts.push("if command -v " + shellQuote(d.binary) + " >/dev/null 2>&1; then echo "
+    parts.push("if command -v " + d.binary + " >/dev/null 2>&1; then echo "
       + shellQuote(d.key + "=1") + "; else echo " + shellQuote(d.key + "=0") + "; fi")
   }
+  // Never forward arbitrary version output into QML. The CLI gets 64 bytes,
+  // and only a strict calendar-version token survives the producer boundary.
+  parts.push("if command -v bw >/dev/null 2>&1; then "
+    + "__qsbw_bw_version=$(bw -v 2>/dev/null | head -c 64); "
+    + "if [[ \"$__qsbw_bw_version\" =~ ^v?[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,6}$ ]]; then "
+    + "printf 'bw_version=%s\\n' \"$__qsbw_bw_version\"; else echo bw_version=; fi; "
+    + "else echo bw_version=; fi")
   parts.push("if [ -f /etc/pam.d/omarchy-lock-fingerprint ] && command -v fprintd-list >/dev/null 2>&1 "
     + "&& fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo fingerprint_ready=1; else echo fingerprint_ready=0; fi")
   // Omarchy's own reader detection, which reads sysfs rather than asking
@@ -2658,13 +2868,31 @@ function parseDependencies(raw) {
   var found = {}
   var lines = String(raw || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
-    var kv = lines[i].trim().split("=")
-    if (kv.length === 2) found[kv[0]] = kv[1] === "1"
+    var line = lines[i].trim()
+    var cut = line.indexOf("=")
+    if (cut <= 0) continue
+    found[line.slice(0, cut)] = line.slice(cut + 1)
   }
+
+  var bwVersionRaw = String(found["bw_version"] || "").trim()
+  var bwVersion = normalizeReleaseVersion(bwVersionRaw)
+  var sshCliStatus = "missing"
+  if (found["bw"] === "1") sshCliStatus = sshCliSupport(bwVersion)
 
   var out = []
   for (var d = 0; d < DEPENDENCIES.length; d++) {
     var dep = DEPENDENCIES[d]
+    var installed = found[dep.key] === "1"
+    var ready = dep.key === "fprintd" ? found["fingerprint_ready"] === "1" : installed
+    var note = ""
+    if (dep.key === "bw" && installed) {
+      if (sshCliStatus === "unsupported") {
+        note = "SSH keys need Bitwarden CLI " + SSH_CLI_MIN_VERSION + " or newer"
+          + (bwVersion ? "; found " + bwVersion + "." : ".")
+      } else if (sshCliStatus === "unknown") {
+        note = "Could not read the Bitwarden CLI version. SSH support stays unconfirmed until that is fixed."
+      }
+    }
     out.push({
       key: dep.key,
       label: dep.label,
@@ -2678,16 +2906,21 @@ function parseDependencies(raw) {
       // Whether this machine can satisfy the row at all. Hardware the box does
       // not have is not a missing dependency, and listing it as one is how a
       // setup screen grows rows nobody can ever turn green.
-      applicable: dep.key === "fprintd" ? Boolean(found["fingerprint_hw"]) : true,
-      installed: Boolean(found[dep.key]),
+      applicable: dep.key === "fprintd" ? found["fingerprint_hw"] === "1" : true,
+      installed: installed,
       // fprintd on PATH is not the same as a usable reader with an enrolled finger.
-      ready: dep.key === "fprintd" ? Boolean(found["fingerprint_ready"]) : Boolean(found[dep.key])
+      ready: ready,
+      version: dep.key === "bw" ? bwVersion : "",
+      note: note
     })
   }
   return {
     items: out,
-    hasOmarchy: Boolean(found["omarchy"]),
-    hasFingerprintReader: Boolean(found["fingerprint_hw"])
+    hasOmarchy: found["omarchy"] === "1",
+    hasFingerprintReader: found["fingerprint_hw"] === "1",
+    bwVersion: bwVersion,
+    sshCliMinVersion: SSH_CLI_MIN_VERSION,
+    sshCliStatus: sshCliStatus
   }
 }
 
@@ -2710,6 +2943,109 @@ function missingRequired(deps) {
     if (deps.items[i].required && !deps.items[i].installed) missing.push(deps.items[i])
   }
   return missing
+}
+
+function normalizeReleaseVersion(raw) {
+  var match = String(raw || "").trim().match(/^v?(\d{4})\.(\d{1,2})\.(\d{1,6})$/)
+  if (!match) return ""
+  return Number(match[1]) + "." + Number(match[2]) + "." + Number(match[3])
+}
+
+function compareReleaseVersions(a, b) {
+  var left = normalizeReleaseVersion(a)
+  var right = normalizeReleaseVersion(b)
+  if (!left || !right) return null
+  var la = left.split(".")
+  var ra = right.split(".")
+  for (var i = 0; i < 3; i++) {
+    var lv = Number(la[i] || 0)
+    var rv = Number(ra[i] || 0)
+    if (lv < rv) return -1
+    if (lv > rv) return 1
+  }
+  return 0
+}
+
+function dependencyByKey(deps, key) {
+  if (!deps || !Array.isArray(deps.items)) return null
+  for (var i = 0; i < deps.items.length; i++) {
+    if (deps.items[i].key === key) return deps.items[i]
+  }
+  return null
+}
+
+function dependencyInstalled(deps, key) {
+  var dep = dependencyByKey(deps, key)
+  return Boolean(dep && dep.installed)
+}
+
+function vaultListMode(deps) {
+  return dependencyInstalled(deps, "bw") && dependencyInstalled(deps, "jq") ? "sanitized" : "blocked"
+}
+
+function vaultListBlockedMessage(deps) {
+  if (!dependencyInstalled(deps, "bw")) return "Bitwarden CLI is not installed yet."
+  if (!dependencyInstalled(deps, "jq")) {
+    return "jq is required to safely read vault items. Finish setup to continue."
+  }
+  return "Could not determine how to safely read vault items."
+}
+
+// The SSH filter -- and later the agent's setup -- appear only once the
+// dependency probe has confirmed a CLI that can decrypt SSH key items. An
+// unreadable version counts as unsupported: hiding the SSH surface costs a
+// user on an unknown build nothing, while showing it promises a read the CLI
+// may not be able to perform.
+function sshUiAvailable(deps, checked) {
+  return Boolean(checked) && Boolean(deps) && deps.sshCliStatus === "supported"
+}
+
+function defaultSshCapability() {
+  return {
+    state: "unknown",
+    keyCount: 0,
+    message: "SSH key availability has not been checked yet."
+  }
+}
+
+function inspectSanitizedVault(raw) {
+  var parsed = parseSanitizedEnvelope(raw)
+  if (!parsed) return defaultSshCapability()
+  if (parsed.sshCapability === "confirmed") {
+    return {
+      state: "confirmed",
+      keyCount: parsed.sshKeys.length,
+      message: parsed.sshKeys.length === 1
+        ? "1 SSH key found."
+        : parsed.sshKeys.length + " SSH keys found."
+    }
+  }
+  return {
+    state: "unconfirmed",
+    keyCount: 0,
+    message: "No SSH keys were returned. Server support remains unconfirmed."
+  }
+}
+
+// "supported" | "unsupported" | "unknown" for one probed `bw --version`
+// string. Anything the probe could not read stays "unknown": SSH stays hidden,
+// while ordinary vault items keep working.
+function sshCliSupport(version) {
+  var normalized = normalizeReleaseVersion(version)
+  if (!normalized) return "unknown"
+  return compareReleaseVersions(normalized, SSH_CLI_MIN_VERSION) < 0 ? "unsupported" : "supported"
+}
+
+function vaultListFailureMessage(stderrText, deps, mode) {
+  if (mode === "blocked") return vaultListBlockedMessage(deps)
+  // Never pass producer diagnostics through: bw and jq can quote decrypted
+  // values in failures. The only detail added here comes from the version the
+  // dependency probe already read, never from what the failed read printed.
+  var version = deps && deps.bwVersion ? deps.bwVersion : ""
+  if (version && compareReleaseVersions(version, SSH_MALFORMED_ITEM_FIX_VERSION) < 0) {
+    return SANITIZED_LIST_ERROR + SANITIZED_LIST_SSH_FIX_HINT
+  }
+  return SANITIZED_LIST_ERROR
 }
 
 // Whether the panel should be sitting on the setup screen instead of talking
