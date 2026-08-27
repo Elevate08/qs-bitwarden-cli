@@ -133,17 +133,17 @@ public-key export ownership and documents rejected/deprecated alternatives.
 
 **Acceptance criteria:**
 
-- [ ] Current primary sources confirm maintenance status, required Ed25519/RSA
+- [x] Current primary sources confirm maintenance status, required Ed25519/RSA
       support, peer credentials, licenses, audit surface, and protocol hooks.
-- [ ] The decision identifies how parsed private components are zeroized or
+- [x] The decision identifies how parsed private components are zeroized or
       explicitly stops the project if credible lock-time erasure is impossible.
-- [ ] `cargo test --locked` builds a minimal headless crate on
+- [x] `cargo test --locked` builds a minimal headless crate on
       `x86_64-unknown-linux-gnu` with no vault/network dependency.
 
 **Verification:**
 
-- [ ] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked`
-- [ ] Build succeeds: `cargo build --manifest-path agent/Cargo.toml --locked`
+- [x] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked`
+- [x] Build succeeds: `cargo build --manifest-path agent/Cargo.toml --locked`
 - [ ] Manual check: security review the ADR, dependency tree, licenses, enabled
       features, and public-export ownership decision.
 
@@ -537,6 +537,10 @@ private plugin data directory, using deterministic hostile-name handling and
 collision-safe filenames. Keep the projection across vault lock, refresh it
 atomically per epoch, and clear it on logout, account change, or disable.
 
+The panel writes the files from the validated public set the companion reports;
+the companion stays out of the filesystem. See
+`docs/decisions/0001-ssh-agent-dependencies.md`.
+
 **Acceptance criteria:**
 
 - [ ] One mode-0600 `.pub` file per advertised key exists inside a mode-0700
@@ -549,8 +553,7 @@ atomically per epoch, and clear it on logout, account change, or disable.
 
 **Verification:**
 
-- [ ] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test public_export`
-- [ ] Integration tests pass: `node tests/ssh-agent-export.test.js`
+- [ ] Tests pass: `node tests/ssh-agent-export.test.js`
 - [ ] Manual check: inspect modes/content/lifecycle and sign/verify a commit with
       `gpg.format=ssh` and a generated allowed-signers file.
 
@@ -558,13 +561,12 @@ atomically per epoch, and clear it on logout, account change, or disable.
 
 **Files likely touched:**
 
-- `agent/src/public_export.rs`
+- `BitwardenModel.js`
+- `Panel.qml`
 - `agent/src/control.rs`
-- `agent/src/main.rs`
-- `agent/tests/public_export.rs`
 - `tests/ssh-agent-export.test.js`
 
-**Estimated scope:** Medium: 5 files
+**Estimated scope:** Medium: 4 files
 
 ## Checkpoint: End-to-End Feature (Tasks 13–15)
 

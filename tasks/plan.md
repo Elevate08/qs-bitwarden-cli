@@ -121,7 +121,7 @@ Tasks 3 + 11 + 14 + 15 + 19
 
 ### Phase 2: Prove the Headless Agent Core
 
-- [ ] Task 4: Pin the Rust security foundation
+- [x] Task 4: Pin the Rust security foundation
 - [ ] Task 5: Implement bounded SSH protocol signing
 - [ ] Task 6: Implement the vault-epoch keystore
 
