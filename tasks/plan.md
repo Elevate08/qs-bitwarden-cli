@@ -131,9 +131,9 @@ Tasks 3 + 11 + 14 + 15 + 19
 - [x] Lock, malformed input, mismatch, and limit paths fail closed.
 - [x] The dependency/zeroization decision is recorded and reviewed.
 
-- [ ] Task 7: Implement nonce-framed FIFO loading
-- [ ] Task 8: Authorize signatures with bounded grants
-- [ ] Task 9: Complete the supervised companion lifecycle
+- [x] Task 7: Implement nonce-framed FIFO loading
+- [x] Task 8: Authorize signatures with bounded grants
+- [x] Task 9: Complete the supervised companion lifecycle
 
 ### Checkpoint: Headless Companion
 

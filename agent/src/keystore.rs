@@ -253,6 +253,11 @@ impl KeyStore {
         self.state.state()
     }
 
+    /// Current vault epoch for final authorization correlation.
+    pub fn epoch(&self) -> u64 {
+        self.state.epoch()
+    }
+
     pub fn public_identities(&self) -> &[PublicIdentity] {
         &self.public
     }

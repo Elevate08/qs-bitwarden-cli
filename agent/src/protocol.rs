@@ -18,6 +18,18 @@ const IDENTITIES_ANSWER: u8 = 12;
 const SIGN_REQUEST: u8 = 13;
 const SIGN_RESPONSE: u8 = 14;
 
+/// Parsed allowlisted request. It contains public key selection and the
+/// payload to be signed, but never private material.
+#[derive(Debug, Eq, PartialEq)]
+pub enum AgentRequest {
+    Identities,
+    Sign {
+        public_blob: Vec<u8>,
+        message: Vec<u8>,
+        flags: u32,
+    },
+}
+
 /// A private identity and the bounded public values advertised for it.
 pub struct Identity {
     key: PrivateKey,
@@ -78,6 +90,17 @@ pub fn handle_frame(frame: &[u8], identities: &[Identity]) -> Vec<u8> {
 }
 
 fn handle(frame: &[u8], identities: &[Identity]) -> Option<Vec<u8>> {
+    match decode_request(frame)? {
+        AgentRequest::Identities => identities_answer(identities),
+        AgentRequest::Sign {
+            public_blob,
+            message,
+            flags,
+        } => sign_response_fields(&public_blob, &message, flags, identities),
+    }
+}
+
+pub fn decode_request(frame: &[u8]) -> Option<AgentRequest> {
     let header: [u8; 4] = frame.get(..4)?.try_into().ok()?;
     let declared = usize::try_from(u32::from_be_bytes(header)).ok()?;
     if declared == 0 || declared > MAX_FRAME_LEN || frame.len() != declared.checked_add(4)? {
@@ -86,8 +109,8 @@ fn handle(frame: &[u8], identities: &[Identity]) -> Option<Vec<u8>> {
 
     let payload = &frame[4..];
     match payload.first().copied()? {
-        REQUEST_IDENTITIES if payload.len() == 1 => identities_answer(identities),
-        SIGN_REQUEST => sign_response(&payload[1..], identities),
+        REQUEST_IDENTITIES if payload.len() == 1 => Some(AgentRequest::Identities),
+        SIGN_REQUEST => decode_sign_request(&payload[1..]),
         _ => None,
     }
 }
@@ -108,21 +131,65 @@ fn identities_answer(identities: &[Identity]) -> Option<Vec<u8>> {
     Some(payload)
 }
 
-fn sign_response(mut fields: &[u8], identities: &[Identity]) -> Option<Vec<u8>> {
+fn decode_sign_request(mut fields: &[u8]) -> Option<AgentRequest> {
     let key_blob = Vec::<u8>::decode(&mut fields).ok()?;
     let message = Vec::<u8>::decode(&mut fields).ok()?;
     let flags = u32::decode(&mut fields).ok()?;
     if !fields.is_empty() {
         return None;
     }
+    Some(AgentRequest::Sign {
+        public_blob: key_blob,
+        message,
+        flags,
+    })
+}
+
+fn sign_response_fields(
+    key_blob: &[u8],
+    message: &[u8],
+    flags: u32,
+    identities: &[Identity],
+) -> Option<Vec<u8>> {
     let identity = identities
         .iter()
         .find(|identity| identity.public_blob == key_blob)?;
-    let signature = signing::sign(&identity.key, &message, flags)?;
+    let signature = signing::sign(&identity.key, message, flags)?;
+    signature_payload(signature)
+}
+
+pub fn signature_response(signature: ssh_key::Signature) -> Option<Vec<u8>> {
+    signature_payload(signature).map(response)
+}
+
+fn signature_payload(signature: ssh_key::Signature) -> Option<Vec<u8>> {
     let signature_bytes = Vec::<u8>::try_from(signature).ok()?;
     let mut payload = vec![SIGN_RESPONSE];
     signature_bytes.encode(&mut payload).ok()?;
     (payload.len() <= MAX_FRAME_LEN).then_some(payload)
+}
+
+pub fn identities_response(public: &[(&[u8], &str)]) -> Vec<u8> {
+    let mut payload = vec![IDENTITIES_ANSWER];
+    let Some(count) = u32::try_from(public.len()).ok() else {
+        return failure_response();
+    };
+    if count.encode(&mut payload).is_err() {
+        return failure_response();
+    }
+    for (blob, comment) in public {
+        if blob.encode(&mut payload).is_err()
+            || comment.encode(&mut payload).is_err()
+            || payload.len() > MAX_FRAME_LEN
+        {
+            return failure_response();
+        }
+    }
+    response(payload)
+}
+
+pub fn failure_response() -> Vec<u8> {
+    response(failure_payload())
 }
 
 fn failure_payload() -> Vec<u8> {

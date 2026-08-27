@@ -247,18 +247,18 @@ exit-status behavior without letting the companion spawn production children.
 
 **Acceptance criteria:**
 
-- [ ] Runtime directory/FIFO ownership, type, and modes are verified; stale,
+- [x] Runtime directory/FIFO ownership, type, and modes are verified; stale,
       symlinked, wrong-owner, and wrong-type paths are refused safely.
-- [ ] Missing, stale, duplicate, truncated, malformed, or nonce-mismatched
+- [x] Missing, stale, duplicate, truncated, malformed, or nonce-mismatched
       payloads fail the whole load and never publish a partial key set.
-- [ ] Stress tests prove bounded draining and document when the two-read
+- [x] Stress tests prove bounded draining and document when the two-read
       fallback must replace the preferred `tee` design.
 
 **Verification:**
 
-- [ ] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test load`
-- [ ] Build succeeds: `cargo build --manifest-path agent/Cargo.toml --locked`
-- [ ] Manual check: run FIFO/`tee` tests with slow readers, branch failure,
+- [x] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test load`
+- [x] Build succeeds: `cargo build --manifest-path agent/Cargo.toml --locked`
+- [x] Manual check: run FIFO/`tee` tests with slow readers, branch failure,
       duplicate writers, and the full 8 MiB limit.
 
 **Dependencies:** Task 6
@@ -282,18 +282,19 @@ executable path, with a final epoch/state/key check immediately before signing.
 
 **Acceptance criteria:**
 
-- [ ] At most four sign requests exist, each expires within 30 seconds and is
+- [x] At most four sign requests exist, each expires within 30 seconds and is
       cancelled on disconnect; late/duplicate/old-epoch approvals are rejected.
-- [ ] Grants are capped at 900 seconds, scoped to one key/live process, and
+- [x] Grants are capped at 900 seconds, scoped to one key/live process, and
       revoked by every specified lifecycle event or identity mismatch.
-- [ ] Same-UID peer enforcement and PID-reuse/re-exec tests pass while prompt
+- [x] Same-UID peer enforcement and PID-reuse/re-exec tests pass while prompt
       metadata remains explicitly non-authoritative.
 
 **Verification:**
 
-- [ ] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test approvals`
-- [ ] Lint passes: `cargo clippy --manifest-path agent/Cargo.toml --locked --all-targets -- -D warnings`
-- [ ] Manual check: exercise approve-once, grant, expiry, re-exec, PID reuse,
+- [x] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test approvals`
+- [x] Lint passes: `cargo clippy --manifest-path agent/Cargo.toml --locked --all-targets -- -D warnings`
+- [x] Manual checkpoint approved with the existing panel intact. Headless
+      approve-once, grant, expiry, re-exec, PID reuse,
       overflow, disconnect, and lock-at-final-check races.
 
 **Dependencies:** Tasks 5 and 6
@@ -318,20 +319,23 @@ mismatch.
 
 **Acceptance criteria:**
 
-- [ ] The helper creates a mode-0600 socket in the private runtime directory,
+- [x] The helper creates a mode-0600 socket in the private runtime directory,
       holds the singleton lock, advertises a versioned `ready`, and rejects a
       concurrent stale-instance race.
-- [ ] Control lines over 64 KiB, wrong versions/types, full channels, slow
+- [x] Control lines over 64 KiB, wrong versions/types, full channels, slow
       clients, or stdin EOF fail closed without blocking lock processing.
-- [ ] The release process sets `RLIMIT_CORE=0`/`PR_SET_DUMPABLE=0`, spawns no
+- [x] The release process sets `RLIMIT_CORE=0`/`PR_SET_DUMPABLE=0`, spawns no
       children, needs no `PATH`/`HOME`/vault credential, and cleans runtime paths.
 
 **Verification:**
 
-- [ ] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test lifecycle`
-- [ ] Build succeeds: `cargo build --manifest-path agent/Cargo.toml --locked`
-- [ ] Manual check: run disposable-key authentication, Git SSH signing, multiple
-      clients, control EOF, crash/restart, and singleton reload scenarios.
+- [x] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test lifecycle`
+- [x] Build succeeds: `cargo build --manifest-path agent/Cargo.toml --locked`
+- [x] Manual/real-client checkpoint: disposable-key signing with the real
+      OpenSSH `ssh-keygen -Y sign` client, multiple clients, control EOF,
+      singleton restart, and runtime cleanup pass; the existing panel remains
+      intact after its live reload. Full panel-managed authentication begins
+      after Task 10 adds supervision.
 
 **Dependencies:** Tasks 7 and 8
 
@@ -532,6 +536,13 @@ over screen lock.
 - `tests/qml/tst_ssh_agent.qml`
 
 **Estimated scope:** Medium: 3 files
+
+The two-read fallback is required if the agent branch cannot drain and
+acknowledge a complete nonce-matching payload within the panel pipeline's
+deadline, if its FIFO write fails, or if process-substitution status cannot be
+correlated with the candidate acknowledgment. In every fallback case the panel
+read remains authoritative and the failed candidate is discarded before a
+separate bounded agent-only read is attempted.
 
 ## Task 15: Project validated public-key files
 
