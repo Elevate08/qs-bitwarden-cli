@@ -102,7 +102,7 @@ Ordinary non-SSH vault behavior must remain usable whenever possible.
 
 - [x] Tests pass: `node tests/setup-settings.test.js && node tests/ssh-items.test.js`
 - [x] Plugin validates: `omarchy plugin validate .`
-- [ ] Manual check: exercise missing `jq`, old `bw`, empty supported vault, and
+- [x] Manual check: exercise missing `jq`, old `bw`, empty supported vault, and
       malformed-item fixture diagnostics.
 
 **Dependencies:** Task 2
@@ -144,7 +144,7 @@ public-key export ownership and documents rejected/deprecated alternatives.
 
 - [x] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked`
 - [x] Build succeeds: `cargo build --manifest-path agent/Cargo.toml --locked`
-- [ ] Manual check: security review the ADR, dependency tree, licenses, enabled
+- [x] Manual check: security review the ADR, dependency tree, licenses, enabled
       features, and public-export ownership decision.
 
 **Dependencies:** Task 3
