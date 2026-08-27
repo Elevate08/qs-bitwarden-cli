@@ -14,6 +14,11 @@
 
 use zeroize::ZeroizeOnDrop;
 
+pub mod keystore;
+pub mod protocol;
+mod signing;
+pub mod state;
+
 /// Compile-time proof that a private-key representation wipes its own memory
 /// when dropped.
 ///

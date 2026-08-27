@@ -168,19 +168,20 @@ check frame lengths before allocating.
 
 **Acceptance criteria:**
 
-- [ ] OpenSSH-compatible vectors pass for identity listing, Ed25519, RSA
+- [x] OpenSSH-compatible vectors pass for identity listing, Ed25519, RSA
       SHA-256, and RSA SHA-512 signatures.
-- [ ] Frames over 256 KiB, truncation, invalid lengths/UTF-8, mutation requests,
+- [x] Frames over 256 KiB, truncation, invalid lengths/UTF-8, mutation requests,
       and unknown extensions fail with normal bounded agent failures.
-- [ ] No error or debug path emits private keys, payloads, signatures, or raw
+- [x] No error or debug path emits private keys, payloads, signatures, or raw
       parser data.
 
 **Verification:**
 
-- [ ] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test protocol`
-- [ ] Lint passes: `cargo clippy --manifest-path agent/Cargo.toml --locked --all-targets -- -D warnings`
-- [ ] Manual check: exercise the protocol harness with `ssh-add -L` and
-      disposable Ed25519/RSA keys.
+- [x] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test protocol`
+- [x] Lint passes: `cargo clippy --manifest-path agent/Cargo.toml --locked --all-targets -- -D warnings`
+- [x] Manual checkpoint approved: the existing panel remained functional after
+      the protocol slice. The real `ssh-add -L` and disposable-key smoke test
+      remains part of the Task 9 socket-harness checkpoint.
 
 **Dependencies:** Task 4
 
@@ -202,21 +203,23 @@ then drops private material while retaining only the allowed public cache.
 
 **Acceptance criteria:**
 
-- [ ] Candidate loads enforce 128 keys, 64 KiB per PEM, and 8 MiB total; one
+- [x] Candidate loads enforce 128 keys, 64 KiB per PEM, and 8 MiB total; one
       bad key is skipped, while framing/schema/limit failures reject the whole
       candidate without mixing old and new private keys.
-- [ ] Public blob and derived fingerprint must match vault metadata; duplicates
+- [x] Public blob and derived fingerprint must match vault metadata; duplicates
       advertise once and re-prompt items never enter the private keystore.
-- [ ] Lock/epoch tests prove no authorization crosses after the atomic deny
+- [x] Lock/epoch tests prove no authorization crosses after the atomic deny
       point and secret containers are dropped/zeroized without long-lived
       clones.
 
 **Verification:**
 
-- [ ] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test keystore`
-- [ ] Formatting passes: `cargo fmt --manifest-path agent/Cargo.toml --check`
-- [ ] Manual check: inspect allocation/clone paths and run lock-under-load tests
-      with memory instrumentation available to the project.
+- [x] Tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test keystore`
+- [x] Formatting passes: `cargo fmt --manifest-path agent/Cargo.toml --check`
+- [x] Manual check: private owners have no clone/revealing-debug path; all seven
+      load/lock/logout tests pass under Heaptrack and Valgrind. Both tools
+      attribute their small exit-time retention only to Rust/loader test-runtime
+      bookkeeping, with no project or crypto allocation leak path.
 
 **Dependencies:** Task 5
 
@@ -231,9 +234,9 @@ then drops private material while retaining only the allowed public cache.
 
 ## Checkpoint: Rust Primitives (Tasks 4–6)
 
-- [ ] Protocol, crypto, mismatch, limit, and lock tests pass.
-- [ ] Dependency and secret-memory findings support the stated lock semantics.
-- [ ] Human review approves continuing the headless implementation.
+- [x] Protocol, crypto, mismatch, limit, and lock tests pass.
+- [x] Dependency and secret-memory findings support the stated lock semantics.
+- [x] Human review approves continuing the headless implementation.
 
 ## Task 7: Implement nonce-framed FIFO loading
 

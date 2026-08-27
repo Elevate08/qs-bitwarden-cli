@@ -122,14 +122,14 @@ Tasks 3 + 11 + 14 + 15 + 19
 ### Phase 2: Prove the Headless Agent Core
 
 - [x] Task 4: Pin the Rust security foundation
-- [ ] Task 5: Implement bounded SSH protocol signing
-- [ ] Task 6: Implement the vault-epoch keystore
+- [x] Task 5: Implement bounded SSH protocol signing
+- [x] Task 6: Implement the vault-epoch keystore
 
 ### Checkpoint: Rust Primitives
 
-- [ ] Ed25519 and both RSA SHA-2 modes pass protocol-vector tests.
-- [ ] Lock, malformed input, mismatch, and limit paths fail closed.
-- [ ] The dependency/zeroization decision is recorded and reviewed.
+- [x] Ed25519 and both RSA SHA-2 modes pass protocol-vector tests.
+- [x] Lock, malformed input, mismatch, and limit paths fail closed.
+- [x] The dependency/zeroization decision is recorded and reviewed.
 
 - [ ] Task 7: Implement nonce-framed FIFO loading
 - [ ] Task 8: Authorize signatures with bounded grants
