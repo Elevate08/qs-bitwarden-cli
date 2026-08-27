@@ -70,6 +70,15 @@ visible in this crate's source, it is asserted at compile time —
 test. Removing the dalek dependency does not weaken the build quietly; it
 stops it.
 
+Declaring a dependency to enable one of its features is a normal use of Cargo's
+feature unification: it changes configuration, not code. Bitwarden's desktop
+agent solves the same problem far more heavily, with a `secure_memory` crate
+that keeps key material in `memsec` locked allocations, encrypted under AES-GCM
+with the key held in the Linux kernel keyring (DPAPI on Windows) and decrypted
+only for use. That is a stronger guarantee and a much larger surface; it is
+worth revisiting at Task 6 if the keystore review finds zeroize-on-drop
+insufficient, not before.
+
 ### `ssh-key` 0.6.7 cannot sign with RSA at all
 
 `ssh-key` 0.6.7's `TryFrom<&RsaKeypair> for rsa::RsaPrivateKey` passes
@@ -93,6 +102,35 @@ that bug: `ssh-key`'s `Signer` impl for RSA hardcodes SHA-512, while
 flags on the sign request. Answering with the wrong one is a failed
 authentication, not a fallback.
 
+Nothing here is a modified, forked, vendored, or pre-release dependency. Both
+crates are current stable releases from crates.io, and `rsa_keys::private_key`
+is ordinary code in this crate calling `rsa::RsaPrivateKey::from_components` —
+the same public API `ssh-key` calls internally, with `q` where `ssh-key`
+repeats `p`.
+
+#### Why not let ssh-key build the key, as Bitwarden does
+
+Bitwarden's own desktop agent (`apps/desktop/desktop_native/ssh_agent`, the v2
+rebuild that replaced the deprecated `bitwarden-russh` fork) reaches the same
+two conclusions this decision does: it pins `ssh-key` at exactly 0.6.7 with no
+`[patch]` section, implements the agent protocol itself rather than taking a
+protocol crate, and depends on `rsa` directly to build the SHA-256 signing key
+`ssh-key` cannot produce.
+
+Where it differs is that it lets `ssh-key` perform the keypair conversion, and
+that works only because its lockfile pins `rsa` **0.9.6**. In 0.9.6,
+`from_components` validates only when it had to recover the primes itself, so a
+key with `p` supplied twice is accepted. Verified against both releases: on
+0.9.6 the resulting key holds two identical primes, CRT precomputation fails
+silently, `validate()` returns `InvalidModulus`, and signatures still verify
+because signing falls back to the plain `d`/`n` path. From 0.9.7 onward
+validation is unconditional and the same call returns an error — which in
+Bitwarden's `sign_rsa` is an `.expect()`.
+
+So the alternative to `rsa_keys` is to pin an older `rsa` and sign with a
+private key that fails its own `validate()`. This crate would rather hold a
+correct key on the current release.
+
 ### The agent protocol is implemented here, not taken from a crate
 
 `ssh-agent-lib` 0.6.0 (May 2026) is maintained and well used, and it was the
@@ -114,8 +152,9 @@ this project would have been in a year ago. `ssh-agent-lib` remains a useful
 cross-check for message encoding during Task 5.
 
 `bitwarden-russh` is confirmed deprecated by its own README, and Bitwarden's
-v2 agent is an in-progress rebuild. Neither is a dependency here. Nothing in
-this decision depends on when v2 lands.
+v2 agent is an in-progress rebuild that has itself moved to upstream crates
+plus a hand-written protocol layer. Neither is a dependency here, and nothing
+in this decision depends on when v2 lands.
 
 ### RSA timing: RUSTSEC-2023-0071 is present and unpatched
 
@@ -199,4 +238,5 @@ cargo clippy --manifest-path agent/Cargo.toml --locked --all-targets -- -D warni
 - [wiktor-k/ssh-agent-lib `src/codec.rs`](https://github.com/wiktor-k/ssh-agent-lib/blob/main/src/codec.rs)
 - [RFC 9987: Secure Shell (SSH) Agent Protocol](https://www.rfc-editor.org/rfc/rfc9987.html)
 - [bitwarden/bitwarden-russh](https://github.com/bitwarden/bitwarden-russh) — deprecation notice
+- [bitwarden/clients `apps/desktop/desktop_native/ssh_agent`](https://github.com/bitwarden/clients/tree/main/apps/desktop/desktop_native/ssh_agent), and the `rsa` 0.9.6 pin in its `Cargo.lock`
 - [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html), [RUSTSEC-2024-0344](https://rustsec.org/advisories/RUSTSEC-2024-0344.html), [RUSTSEC-2022-0093](https://rustsec.org/advisories/RUSTSEC-2022-0093.html), [RUSTSEC-2025-0023](https://rustsec.org/advisories/RUSTSEC-2025-0023.html)
