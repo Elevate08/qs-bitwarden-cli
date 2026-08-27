@@ -152,11 +152,11 @@ Tasks 3 + 11 + 14 + 15 + 19
 
 ### Checkpoint: Optional Data Plane
 
-- [ ] Disabled mode starts no helper and creates no socket, FIFO, or private-key
+- [x] Disabled mode starts no helper and creates no socket, FIFO, or private-key
       branch.
-- [ ] Enabled mode loads keys from the same vault read without delaying or
+- [x] Enabled mode loads keys from the same vault read without delaying or
       breaking the ordinary list on helper failure.
-- [ ] QML remains responsive during blocked SSH clients and helper events.
+- [x] QML remains responsive during blocked SSH clients and helper events.
 
 - [ ] Task 13: Enforce vault lifecycle transitions
 - [ ] Task 14: Deliver signing authorization UX

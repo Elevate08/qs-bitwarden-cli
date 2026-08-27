@@ -3800,7 +3800,11 @@ function sshAgentReduce(state, event) {
         next.fifoPath = parsed.message.fifoPath
         next.agentVersion = parsed.message.agentVersion
         next.readyAtMs = nowMs
-        next.failures = 0
+        // Deliberately not resetting `failures` here. A handshake proves the
+        // helper started, not that it works: a helper that answers hello and
+        // dies a second later, every time, is exactly the crash loop this
+        // bound exists to stop. Only a run that actually lasted clears the
+        // history, and that is decided at exit against SSH_AGENT_HEALTHY_MS.
         next.errorCode = ""
         next.errorMessage = ""
         return { state: next, action: action }

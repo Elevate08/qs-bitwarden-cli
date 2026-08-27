@@ -273,6 +273,35 @@ eq("a failed supervisor stays failed", failedIgnores.state.phase, "failed")
 check("a failed supervisor starts nothing", failedIgnores.actions.every(a => !a.start),
   JSON.stringify(failedIgnores.actions))
 
+// The loop that actually happens in practice: the helper starts fine, answers
+// the handshake, serves briefly, and dies -- over and over. Completing a
+// handshake must not wipe the failure history, or a helper that crashes a
+// second after every start is restarted forever.
+{
+  let crashy = Model.sshAgentInitialState()
+  let scheduled = 0
+  let t = 0
+  crashy = Model.sshAgentReduce(crashy, { kind: "enabled", value: true, nowMs: t }).state
+  for (let i = 0; i < Model.sshAgentMaxRestarts() + 3; i++) {
+    t += 10
+    crashy = Model.sshAgentReduce(crashy, { kind: "started", nowMs: t }).state
+    t += 10
+    crashy = Model.sshAgentReduce(crashy, { kind: "line", line: readyLine, nowMs: t }).state
+    // Serves for well under the healthy threshold, then dies.
+    t += 1500
+    const step = Model.sshAgentReduce(crashy, { kind: "exited", exitCode: 137, nowMs: t })
+    crashy = step.state
+    if (step.action.restartInMs >= 0) scheduled++
+    if (crashy.phase !== "backoff") break
+    t += 10
+    crashy = Model.sshAgentReduce(crashy, { kind: "restartTimer", nowMs: t }).state
+  }
+  eq("a helper that handshakes then dies still trips the bound", crashy.phase, "failed")
+  eq("that loop is reported as a crash loop", crashy.errorCode, "CRASH_LOOP")
+  eq("that loop is bounded by the same restart cap", scheduled, Model.sshAgentMaxRestarts())
+  check("that loop leaves the gate closed", crashy.gateOpen === false, JSON.stringify(crashy))
+}
+
 // A helper that ran healthily for a long time is not a crash loop.
 const healthy = drive(reachReady(0).state, [{ kind: "exited", exitCode: 0, nowMs: 10 * 60 * 1000 }])
 eq("a long healthy run resets the backoff", healthy.last.restartInMs, Model.sshAgentRestartDelayMs(1))

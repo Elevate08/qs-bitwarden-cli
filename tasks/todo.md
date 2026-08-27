@@ -485,9 +485,9 @@ optional load can never break the ordinary item list.
 
 ## Checkpoint: Optional Data Plane (Tasks 10–12)
 
-- [ ] Disabled mode is inert and core panel regressions pass.
-- [ ] Enabled mode loads from one read with bounded fallback behavior.
-- [ ] QML responsiveness is verified under blocked clients and failed helpers.
+- [x] Disabled mode is inert and core panel regressions pass.
+- [x] Enabled mode loads from one read with bounded fallback behavior.
+- [x] QML responsiveness is verified under blocked clients and failed helpers.
 - [ ] Human review approves the opt-in and data-minimization behavior.
 
 ## Task 13: Enforce vault lifecycle transitions
