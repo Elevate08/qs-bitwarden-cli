@@ -67,7 +67,7 @@ to generic detail fetching, creation, editing, or cloning.
 
 - [x] Tests pass: `node tests/ssh-items.test.js && node tests/items.test.js`
 - [x] QML tests pass: `QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml`
-- [ ] Manual check: open a fixture vault containing types 1–8 and inspect list,
+- [x] Manual check: open a fixture vault containing types 1–8 and inspect list,
       filters, search, counts, detail, and disabled actions.
 
 **Dependencies:** Task 1
@@ -122,7 +122,7 @@ Ordinary non-SSH vault behavior must remain usable whenever possible.
 - [x] Full JavaScript and QML suites pass.
 - [x] Qt6 lint remains at the documented baseline and the manifest validates.
 - [x] Marker tests prove no SSH private key or unknown cipher reaches QML.
-- [ ] Human review approves the prerequisite boundary.
+- [x] Human review approves the prerequisite boundary.
 
 ## Task 4: Pin the Rust security foundation
 
