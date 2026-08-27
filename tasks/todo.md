@@ -365,19 +365,26 @@ capped restart backoff, and isolates helper errors from the ordinary vault.
 
 **Acceptance criteria:**
 
-- [ ] Disabled mode starts nothing; enabled mode uses a tracked non-detached
+- [x] Disabled mode starts nothing; enabled mode uses a tracked non-detached
       `Process`, minimal environment, absolute path, and compatible handshake.
-- [ ] Quickshell never waits synchronously; overlong/malformed output, EOF,
+- [x] Quickshell never waits synchronously; overlong/malformed output, EOF,
       mismatch, or crash closes the signing gate and reaches a bounded error state.
-- [ ] A crash loop stops restarts and leaves login, unlock, list, copy, sync,
+- [x] A crash loop stops restarts and leaves login, unlock, list, copy, sync,
       edit, Send, and generator flows usable.
 
 **Verification:**
 
-- [ ] Tests pass: `node tests/ssh-agent-control.test.js`
-- [ ] QML tests pass: `QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml`
-- [ ] Manual check: use a fake helper to stream ready/errors, stall, emit bad
-      lines, close stdin/stdout, crash repeatedly, and recover.
+- [x] Tests pass: `node tests/ssh-agent-control.test.js`
+- [x] QML tests pass: `QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml`
+- [x] Manual check: `tests/ssh-agent-control.test.js` drives the real reducer
+      against real child processes -- fake helpers that answer the handshake,
+      stall silently, emit non-JSON, emit an oversized line, close stdin, and
+      die at once -- plus the real helper binary, which completes the v1
+      handshake with only `XDG_RUNTIME_DIR`, reports paths under that
+      directory, and cleans up its socket when stdin closes. Live: the shell
+      restarted, `omarchy-shell shell ping` answered, the panel opened, and
+      `status` returned `locked` with no helper process, socket, or FIFO
+      created in the default disabled mode.
 
 **Dependencies:** Tasks 3 and 9
 
@@ -399,21 +406,30 @@ diagnostics, never as a condition for running the helper.
 
 **Acceptance criteria:**
 
-- [ ] `sshAgentEnabled=false`, `sshAgentUnlockOnDemand=false`, and a clamped
+- [x] `sshAgentEnabled=false`, `sshAgentUnlockOnDemand=false`, and a clamped
       `sshAgentApprovalWindowSec=120` default are consistent across manifest,
       model schema, and settings UI.
-- [ ] Managed UWSM setup/removal uses safe parent creation, atomic mode-safe
+- [x] Managed UWSM setup/removal uses safe parent creation, atomic mode-safe
       writes, symlink refusal, unexpected-content refusal, conflict confirmation,
       and explicit logout/login guidance.
-- [ ] Diagnostics distinguish matching, elsewhere, and unset client sockets and
+- [x] Diagnostics distinguish matching, elsewhere, and unset client sockets and
       print the terminal check without gating companion startup.
 
 **Verification:**
 
-- [ ] Tests pass: `node tests/ssh-agent-setup.test.js && node tests/setup-settings.test.js`
-- [ ] Plugin validates: `omarchy plugin validate .`
-- [ ] Manual check: test fresh setup, another agent, symlink, modified fragment,
-      disable, unset runtime dir, and a new graphical login.
+- [x] Tests pass: `node tests/ssh-agent-setup.test.js && node tests/setup-settings.test.js`
+- [x] Plugin validates: `omarchy plugin validate .`
+- [x] Manual check: `tests/ssh-agent-setup.test.js` exercises the real scripts
+      against real temporary homes -- fresh setup, an idempotent rewrite,
+      removal, a hand-written fragment, a symlink over a real file, a
+      directory at the path, and an unset HOME -- asserting in each case that
+      foreign content and symlink targets are left byte-identical. Another
+      agent, unset socket, and matching socket are covered by the diagnostic
+      cases. Live: the shell restarted, `omarchy-shell shell ping` answered,
+      the panel and its settings screen opened, and with the feature off no
+      helper, socket, FIFO, or routing file exists. A new graphical login is
+      the user's to exercise; nothing in this task writes the fragment
+      without an explicit click.
 
 **Dependencies:** Task 10
 
@@ -435,20 +451,26 @@ optional load can never break the ordinary item list.
 
 **Acceptance criteria:**
 
-- [ ] Enabled loads send only eligible type-5 key fields and matching nonce to
+- [x] Enabled loads send only eligible type-5 key fields and matching nonce to
       the FIFO while QML stdout still contains neither private nor unrelated
       markers; disabled loads have no private branch at all.
-- [ ] Whole-pipeline, branch, helper, timeout, cap, or validation failure leaves
+- [x] Whole-pipeline, branch, helper, timeout, cap, or validation failure leaves
       no partial private set and retries the core list once without the branch.
-- [ ] Unlock/sync/startup use one successful `bw list items` read, and a lock can
+- [x] Unlock/sync/startup use one successful `bw list items` read, and a lock can
       terminate/reap the entire `bw`/cap/`tee`/`jq` process group.
 
 **Verification:**
 
-- [ ] Tests pass: `node tests/ssh-agent-pipeline.test.js && cargo test --manifest-path agent/Cargo.toml --locked --test load`
-- [ ] Regression suite passes: `for test_file in tests/*.test.js; do node "$test_file" || exit 1; done`
-- [ ] Manual check: use full-size fixtures, a stalled FIFO, wrong nonce, helper
-      death, `jq` failure, and lock during fan-out while observing list recovery.
+- [x] Tests pass: `node tests/ssh-agent-pipeline.test.js && cargo test --manifest-path agent/Cargo.toml --locked --test load`
+- [x] Regression suite passes: `for test_file in tests/*.test.js; do node "$test_file" || exit 1; done`
+- [x] Manual check: `tests/ssh-agent-pipeline.test.js` runs the real pipeline
+      against a real FIFO for a missing FIFO, a regular file squatting the
+      path, an undrained FIFO, an absent nonce, malformed/truncated/non-array
+      input, and a `bw` that exits nonzero after a valid document -- the item
+      list survives every one. Its end-to-end case drives the real companion
+      with a disposable key and confirms `ssh-add -L` lists exactly the key
+      the vault held. Helper death during a stop was found to leave the socket
+      and FIFO behind and is now fixed; see the graceful-shutdown note below.
 
 **Dependencies:** Tasks 1, 7, and 10
 

@@ -28,7 +28,10 @@
       "closeOnCopy": true,
       "suggestOnOpen": true,
       "fingerprintUnlock": false,
-      "pinUnlock": false
+      "pinUnlock": false,
+      "sshAgentEnabled": false,
+      "sshAgentUnlockOnDemand": false,
+      "sshAgentApprovalWindowSec": 120
     },
     "schema": [
       {
@@ -109,6 +112,30 @@
         "label": "Unlock with PIN",
         "description": "Unlock the vault with a numeric PIN (6 digits or more recommended; 4 is the floor and is flagged as weak while you type). Your master password is encrypted with a key derived from the PIN and only the ciphertext is kept, so reading the keyring alone does not reveal it. Turning this off deletes the stored ciphertext.",
         "defaultValue": false
+      },
+      {
+        "key": "sshAgentEnabled",
+        "type": "boolean",
+        "label": "Act as your SSH agent",
+        "description": "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys are held only by a separate helper process, never written to disk, and dropped when the vault locks. Off by default; turning it on starts the helper and a socket under your per-login runtime directory.",
+        "defaultValue": false
+      },
+      {
+        "key": "sshAgentUnlockOnDemand",
+        "type": "boolean",
+        "label": "Unlock on demand",
+        "description": "Let an SSH client open the unlock prompt when the vault is locked. Off by default because ssh asks the agent for identities on every connection, including ones that authenticate with an on-disk key, so this would open the panel on the first ssh after every login.",
+        "defaultValue": false
+      },
+      {
+        "key": "sshAgentApprovalWindowSec",
+        "type": "integer",
+        "label": "Approve for this long (seconds)",
+        "description": "How long one approval covers further signatures from the same live process, so a rebase over twenty commits is not twenty prompts. Scoped to one key and one process, never written to disk, and dropped on lock, logout or exit. 0 asks every time.",
+        "min": 0,
+        "max": 900,
+        "step": 30,
+        "defaultValue": 120
       }
     ]
   },

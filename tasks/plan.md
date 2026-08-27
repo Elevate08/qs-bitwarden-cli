@@ -146,9 +146,9 @@ Tasks 3 + 11 + 14 + 15 + 19
 
 ### Phase 3: Integrate the Optional Feature
 
-- [ ] Task 10: Establish companion supervision
-- [ ] Task 11: Deliver opt-in session setup
-- [ ] Task 12: Feed the companion from the shared vault read
+- [x] Task 10: Establish companion supervision
+- [x] Task 11: Deliver opt-in session setup
+- [x] Task 12: Feed the companion from the shared vault read
 
 ### Checkpoint: Optional Data Plane
 

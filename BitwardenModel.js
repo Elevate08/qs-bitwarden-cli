@@ -851,6 +851,43 @@ var SANITIZED_ITEMS_FILTER = [
   "end"
 ].join("\n")
 
+// The agent branch's projection. It sees the same validated array the panel
+// filter sees, and reduces it to the one thing the companion is allowed to
+// hold: eligible private keys, framed by the load nonce.
+//
+// Re-prompt items are dropped here rather than sent and skipped later. The
+// companion refuses them too -- that check is authoritative and stays -- but a
+// private key that never leaves this stage is one fewer copy in one fewer
+// process. Items with no private key are dropped for the same reason: an empty
+// PEM is not a key, and forwarding it would only produce a skip on the far side.
+//
+// The field names and shape are fixed by the companion's decoder, which uses
+// serde `deny_unknown_fields`. Anything extra here fails the whole load closed.
+var AGENT_KEYS_FILTER = [
+  "def string_or_empty: if type == \"string\" then . else \"\" end;",
+  "def reprompt_or_zero: if . == 0 or . == 1 then . else 0 end;",
+  "def item_type: try (.type | tonumber) catch null;",
+  "def ssh_type: item_type == 5;",
+  "if type != \"array\" then",
+  "  error(\"expected one item array\")",
+  "else",
+  "  {",
+  "    loadId: $loadId,",
+  "    items: [.[] | objects | select(ssh_type)",
+  "      | select((.reprompt | reprompt_or_zero) == 0)",
+  "      | {",
+  "        itemId: (.id | string_or_empty),",
+  "        name: (.name | string_or_empty),",
+  "        privateKey: ((try (.sshKey.privateKey // .privateKey) catch null) | string_or_empty),",
+  "        publicKey: ((try (.sshKey.publicKey // .publicKey) catch null) | string_or_empty),",
+  "        fingerprint: ((try (.sshKey.fingerprint // .sshKey.keyFingerprint // .fingerprint // .keyFingerprint) catch null) | string_or_empty),",
+  "        requiresReprompt: false",
+  "      }",
+  "      | select(.privateKey != \"\")]",
+  "  }",
+  "end"
+].join("\n")
+
 // jq deliberately accepts several non-JSON extensions and replaces malformed
 // UTF-8 before a filter can measure it. Validate and count the bounded raw byte
 // stream first with the Node runtime that `bw` itself requires. Nothing is
@@ -883,7 +920,38 @@ var SANITIZED_LIST_SSH_FIX_HINT = " Bitwarden CLI before " + SSH_MALFORMED_ITEM_
   + " can fail on malformed SSH key items. Upgrading to " + SSH_MALFORMED_ITEM_FIX_VERSION
   + " or newer may fix this."
 
-function sanitizedListCommand() {
+// The optional `tee` branch. Three rules shape every line of it, because this
+// is the one place where an optional feature sits inside the pipeline the
+// ordinary item list depends on:
+//
+//  1. It never blocks the pipeline on opening the FIFO. The open is O_RDWR
+//     (`exec 3<>`), which on a FIFO never waits for a peer -- so a companion
+//     that died between the panel's readiness check and this read costs
+//     nothing instead of hanging the list behind a blocking open.
+//  2. It never writes anywhere but a real FIFO. A missing path, a regular
+//     file, or anything else squatting there is left untouched and the branch
+//     does nothing, rather than creating a file full of private keys.
+//  3. It always drains its stdin. `tee` writes to this branch; a branch that
+//     exited early would leave `tee` with a broken pipe and could take the
+//     whole read down. The trailing `cat` guarantees the remainder is consumed
+//     however `jq` ended.
+//
+// `pipefail` cannot see inside a process substitution, so nothing here can
+// report success or failure to the panel. That is by design: `key_load_end`
+// carries the panel's view of the pipeline, and the companion's own nonce and
+// schema validation is what actually decides whether a load is accepted.
+function agentBranchScript() {
+  var inner = "__qsbw_fifo=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "/ssh-keys.fifo\"; "
+    + "if [ -p \"$__qsbw_fifo\" ] && exec 3<>\"$__qsbw_fifo\" 2>/dev/null; then "
+    + "timeout 10 jq -c --arg loadId \"${" + LOAD_ID_ENV + ":-}\" "
+    + shellQuote(AGENT_KEYS_FILTER) + " >&3 2>/dev/null || true; "
+    + "exec 3>&-; "
+    + "fi; "
+    + "cat >/dev/null 2>&1 || true"
+  return "tee >(" + inner + ") | "
+}
+
+function sanitizedListCommand(opts) {
   // The validator receives at most one byte beyond the raw ceiling and counts
   // bytes before UTF-8 decoding. The second cap and command substitution keep
   // partial sanitized JSON out of QML-facing stdout. All pipeline diagnostics
@@ -892,11 +960,15 @@ function sanitizedListCommand() {
   // the pre-2026.8.0 malformed-SSH-item bug is left to vaultListFailureMessage(),
   // which reads the already-probed CLI version instead of the failure text --
   // nothing here has to look at what the producer printed.
+  var agentBranch = Boolean(opts && opts.agentBranch)
   var maxPlusOne = MAX_ITEMS_BYTES + 1
   var script = "export LC_ALL=C BW_NOINTERACTION=true; set -o pipefail; "
   script += "__qsbw_items=$({ bw list items | head -c " + maxPlusOne
     + " | node -e " + shellQuote(STRICT_JSON_PASSTHROUGH) + " " + MAX_ITEMS_BYTES
-    + " | jq -c " + shellQuote(SANITIZED_ITEMS_FILTER)
+    // The branch sits after the strict validator, so the companion is only
+    // ever offered bytes that already parsed as one strict JSON array.
+    + " | " + (agentBranch ? agentBranchScript() : "")
+    + "jq -c " + shellQuote(SANITIZED_ITEMS_FILTER)
     + " | head -c " + maxPlusOne + "; } 2>/dev/null)\n"
   script += "__rc=$?\n"
   script += "if [ \"$__rc\" -ne 0 ] || [ \"${#__qsbw_items}\" -gt " + MAX_ITEMS_BYTES + " ]; then\n"
@@ -904,7 +976,10 @@ function sanitizedListCommand() {
   script += "  exit 1\n"
   script += "fi\n"
   script += "printf '%s' \"$__qsbw_items\""
-  return ["bash", "-c", script]
+  // Only the fan-out form needs the process-group wrapper: it is the one with
+  // a `tee` and a second `jq` that a lock has to be able to reap along with
+  // `bw`. The plain form keeps the exact command it has always run.
+  return agentBranch ? supervisedProcessCommand(script) : ["bash", "-c", script]
 }
 
 function listOrganizationsCommand() {
@@ -3048,6 +3123,707 @@ function vaultListFailureMessage(stderrText, deps, mode) {
   return SANITIZED_LIST_ERROR
 }
 
+// -------------------------------------------------------------------------
+// SSH companion supervision
+// -------------------------------------------------------------------------
+//
+// The companion is a separate process holding decrypted private keys, so the
+// panel supervises it rather than launching and forgetting it: a tracked,
+// non-detached Process with stdin held open, stdout parsed a line at a time
+// from the moment it starts, and a cleared environment carrying nothing but
+// the runtime directory it needs to find its own socket.
+//
+// Everything here is pure. The panel owns the Process, the timers and the
+// clock; this file owns the decisions. That is what keeps the supervision
+// asynchronous -- there is no point in this state machine where QML could
+// wait for the helper, because none of it can block, and the panel's only
+// response to any event is to set a property or arm a timer.
+//
+// The signing gate is the safety property. It opens on exactly one transition
+// -- a well-formed v1 `ready` answering the panel's `hello` -- and closes on
+// every other outcome: a malformed or overlong line, an unexpected message
+// type, a version mismatch, a stalled handshake, EOF, or a crash. Nothing in
+// the ordinary vault reads it, so a helper that never starts costs the user
+// nothing but the SSH feature.
+
+// Matches MAX_CONTROL_LINE in the companion. The panel enforces the same
+// ceiling on the way back so a helper that has lost its mind cannot make the
+// shell allocate without bound.
+var SSH_AGENT_CONTROL_VERSION = 1
+var SSH_AGENT_MAX_LINE_BYTES = 64 * 1024
+
+// The development helper, built by `cargo build --manifest-path agent/Cargo.toml`.
+// Task 18 replaces this with the checksum-validated bundled binary; until then
+// the path is still resolved the same way -- inside the plugin directory, from
+// an absolute base, with no shell and no PATH lookup between here and exec.
+var SSH_AGENT_HELPER_RELATIVE = "agent/target/debug/qs-bitwarden-ssh-agent"
+
+// A handshake is two writes and a read on an already-running process. Five
+// seconds is far past any honest answer and still short enough that a helper
+// wedged before `ready` is reported rather than waited on.
+var SSH_AGENT_HANDSHAKE_TIMEOUT_MS = 5000
+var SSH_AGENT_BACKOFF_BASE_MS = 500
+var SSH_AGENT_BACKOFF_MAX_MS = 30000
+var SSH_AGENT_MAX_RESTARTS = 5
+// The hard ceiling on `sshAgentApprovalWindowSec`. A grant is a window in
+// which a live process signs without asking again, so the cap is a security
+// bound and belongs next to the protocol constants rather than in the
+// settings screen that happens to draw it.
+var SSH_AGENT_APPROVAL_WINDOW_MAX_SEC = 900
+// A run that served for this long was working, whatever killed it afterwards.
+// Without this, one healthy helper restarted at the end of a long session
+// would carry the failure count from a crash loop hours earlier; with it, only
+// genuinely consecutive quick deaths reach the restart cap.
+var SSH_AGENT_HEALTHY_MS = 60 * 1000
+
+// Messages the companion is allowed to send. An unknown type is a mismatch
+// between the panel and a helper binary that should have been replaced with
+// it, which is exactly the case the protocol version exists to catch.
+var SSH_AGENT_EVENT_TYPES = [
+  "ready", "unlock_required", "approval_required", "keys_loaded",
+  "locked", "grants_changed", "state_changed", "error"
+]
+
+function sshAgentMaxLineBytes() { return SSH_AGENT_MAX_LINE_BYTES }
+function sshAgentApprovalWindowMax() { return SSH_AGENT_APPROVAL_WINDOW_MAX_SEC }
+function sshAgentMaxRestarts() { return SSH_AGENT_MAX_RESTARTS }
+function sshAgentHandshakeTimeoutMs() { return SSH_AGENT_HANDSHAKE_TIMEOUT_MS }
+
+// The plugin's own directory, from the `file://` URL QML resolves for it.
+// This is the base for the only executable the panel launches by path rather
+// than by name, so it is validated rather than trusted: absolute, `file:`
+// scheme or nothing, and no traversal segment either literal or percent-
+// encoded. A URL that fails any of those yields "", which disables the helper
+// instead of resolving an executable somewhere else on the disk.
+function pluginDirFromUrl(url) {
+  if (typeof url !== "string" || url === "") return ""
+  var raw = url
+  if (raw.indexOf("file://") === 0) {
+    raw = raw.slice("file://".length)
+  } else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) {
+    return ""
+  }
+  var decoded = raw
+  try {
+    decoded = decodeURIComponent(raw)
+  } catch (e) {
+    return ""
+  }
+  if (decoded.charAt(0) !== "/") return ""
+  while (decoded.length > 1 && decoded.charAt(decoded.length - 1) === "/") {
+    decoded = decoded.slice(0, decoded.length - 1)
+  }
+  var parts = decoded.split("/")
+  for (var i = 0; i < parts.length; i++) {
+    if (parts[i] === "." || parts[i] === "..") return ""
+  }
+  return decoded
+}
+
+function sshAgentHelperPath(pluginDir) {
+  if (typeof pluginDir !== "string" || pluginDir.charAt(0) !== "/") return ""
+  var base = pluginDir
+  while (base.length > 1 && base.charAt(base.length - 1) === "/") {
+    base = base.slice(0, base.length - 1)
+  }
+  var parts = base.split("/")
+  for (var i = 0; i < parts.length; i++) {
+    if (parts[i] === "." || parts[i] === "..") return ""
+  }
+  return base + "/" + SSH_AGENT_HELPER_RELATIVE
+}
+
+// No `bash -c` wrapper, unlike every `bw` call in this file. Those need a
+// shell for their output caps; this one needs the opposite -- an unwrapped
+// child whose stdin, stdout and lifetime belong to the Process object, so
+// closing stdin reaches the helper itself and killing the Process kills the
+// thing holding the keys rather than a shell that spawned it.
+function sshAgentHelperCommand(pluginDir) {
+  var helper = sshAgentHelperPath(pluginDir)
+  return helper ? [helper] : []
+}
+
+// The companion needs no PATH, no HOME, and no vault credential of any kind:
+// it spawns nothing and runs no `bw`. XDG_RUNTIME_DIR is the single variable
+// it reads, to find the private directory its socket and FIFO live in. Paired
+// with `clearEnvironment: true` on the Process, this is the whole environment
+// the helper is given -- BW_SESSION cannot leak into it because it is not
+// there to leak.
+function sshAgentHelperEnv(runtimeDir) {
+  if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return null
+  return { XDG_RUNTIME_DIR: runtimeDir }
+}
+
+function sshAgentHelloLine() {
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "hello" }) + "\n"
+}
+
+function sshAgentShutdownLine() {
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "shutdown" }) + "\n"
+}
+
+// The cap is in bytes because the companion's is. Counting UTF-16 units would
+// let a line of three-byte characters through at three times the ceiling.
+function utf8ByteLength(text) {
+  // A UTF-8 byte count is never below the UTF-16 unit count, so anything
+  // already longer than the cap in characters is over it in bytes. Checking
+  // that first keeps the loop off a line that is megabytes of junk.
+  if (text.length > SSH_AGENT_MAX_LINE_BYTES) return text.length
+  var bytes = 0
+  for (var i = 0; i < text.length; i++) {
+    var code = text.charCodeAt(i)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff) { bytes += 4; i++ }
+    else bytes += 3
+  }
+  return bytes
+}
+
+// One line of companion stdout. Returns {ok:true, message} or {ok:false, code,
+// fatal}. Only a blank line is non-fatal: SplitParser can hand back the empty
+// remainder around a final newline, and that is not a protocol failure.
+// Everything else that is not a well-formed, v1, known-type object closes the
+// signing gate, because the panel cannot tell a bug from a helper that is no
+// longer the binary it shipped with.
+// The panel caps each line, but the line itself is assembled by SplitParser,
+// which has no ceiling of its own: a helper that wrote without ever emitting a
+// newline would grow that buffer. That is inside the same-UID boundary this
+// feature does not defend against -- the process concerned is the plugin's own
+// binary -- and every line it does terminate is bounded here.
+function parseAgentEvent(line) {
+  var text = (line === undefined || line === null) ? "" : String(line)
+  if (text.charAt(text.length - 1) === "\n") text = text.slice(0, text.length - 1)
+  if (text.charAt(text.length - 1) === "\r") text = text.slice(0, text.length - 1)
+  if (text === "") return { ok: false, code: "EMPTY", fatal: false }
+  if (utf8ByteLength(text) > SSH_AGENT_MAX_LINE_BYTES) {
+    return { ok: false, code: "LINE_TOO_LONG", fatal: true }
+  }
+  var parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (e) {
+    return { ok: false, code: "MALFORMED", fatal: true }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, code: "MALFORMED", fatal: true }
+  }
+  if (parsed.v !== SSH_AGENT_CONTROL_VERSION) {
+    return { ok: false, code: "VERSION_MISMATCH", fatal: true }
+  }
+  if (typeof parsed.type !== "string" || SSH_AGENT_EVENT_TYPES.indexOf(parsed.type) < 0) {
+    return { ok: false, code: "UNKNOWN_TYPE", fatal: true }
+  }
+  if (parsed.type === "ready") {
+    if (typeof parsed.socketPath !== "string" || parsed.socketPath === ""
+        || typeof parsed.fifoPath !== "string" || parsed.fifoPath === ""
+        || typeof parsed.agentVersion !== "string" || parsed.agentVersion === "") {
+      return { ok: false, code: "MALFORMED", fatal: true }
+    }
+  }
+  return { ok: true, message: parsed }
+}
+
+// 500ms doubling to a 30s ceiling. The first retry is quick because the
+// overwhelmingly likely cause is a helper that was replaced under a running
+// shell; the ceiling is what stops a permanently broken build from spinning.
+function sshAgentRestartDelayMs(failures) {
+  var n = Math.floor(Number(failures))
+  if (!isFinite(n) || n < 1) return SSH_AGENT_BACKOFF_BASE_MS
+  var delay = SSH_AGENT_BACKOFF_BASE_MS * Math.pow(2, n - 1)
+  return Math.min(SSH_AGENT_BACKOFF_MAX_MS, delay)
+}
+
+// -------------------------------------------------------------------------
+// Client routing: the managed UWSM fragment and SSH_AUTH_SOCK diagnostics
+// -------------------------------------------------------------------------
+//
+// Nothing in this section decides whether the companion runs. The companion
+// binds a deterministic path and never reads SSH_AUTH_SOCK; that variable is
+// how *clients* -- ssh, git, ssh-add, ssh-keygen -Y sign, and everything that
+// spawns them -- find an agent. So routing is a separate, advisory concern,
+// and the panel's view of it is a hint rather than a verdict: it sees the
+// graphical session's environment, while a ~/.bashrc export, a systemd --user
+// unit, a TTY login, or an incoming SSH session can each differ and are all
+// invisible from here.
+
+function sshAgentSocketPath(runtimeDir) {
+  if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return ""
+  return runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.sock"
+}
+
+function sshAgentFifoPath(runtimeDir) {
+  if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return ""
+  return runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-keys.fifo"
+}
+
+// The per-load nonce. It is what stops another same-UID process writing its
+// own key set into an open FIFO window: it cannot guess a value it cannot
+// read. The panel delivers it to the companion over the private stdin pipe
+// and to `jq` through the environment -- never argv, because
+// /proc/<pid>/cmdline is world-readable while /proc/<pid>/environ is not.
+var LOAD_ID_ENV = "QSBW_LOAD_ID"
+var LOAD_ID_RE = /^[0-9a-f]{32}$/
+
+function loadIdEnvVar() { return LOAD_ID_ENV }
+
+function isValidLoadId(value) {
+  return typeof value === "string" && LOAD_ID_RE.test(value)
+}
+
+// 128 bits from the kernel CSPRNG. Math.random() is not a source for a value
+// whose whole job is being unguessable by a process running as this user.
+function loadIdCommand() {
+  var script = "LC_ALL=C od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n'"
+  return ["bash", "-c", script]
+}
+
+function sshAgentLoadBeginLine(epoch, loadId) {
+  if (!isValidLoadId(loadId)) return ""
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "key_load_begin",
+    epoch: Math.floor(Number(epoch)) || 0, loadId: loadId }) + "\n"
+}
+
+function sshAgentLoadEndLine(epoch, ok) {
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "key_load_end",
+    epoch: Math.floor(Number(epoch)) || 0, status: ok ? "ok" : "failed" }) + "\n"
+}
+
+function sshAgentVaultLockedLine(epoch) {
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "vault_locked",
+    epoch: Math.floor(Number(epoch)) || 0 }) + "\n"
+}
+
+function sshAgentLoggedOutLine() {
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "vault_logged_out" }) + "\n"
+}
+
+// Omarchy runs the graphical session through UWSM, which reads env.d
+// fragments at login. Exactly one file is plugin-owned, and it is identified
+// by its full contents rather than by its name, so nothing the user wrote is
+// ever replaced or deleted on the strength of a filename match.
+var UWSM_FRAGMENT_REL = ".config/uwsm/env.d/50-qs-bitwarden-ssh-agent"
+
+function uwsmFragmentDisplayPath() {
+  return "~/" + UWSM_FRAGMENT_REL
+}
+
+// ${XDG_RUNTIME_DIR} is left for the shell that sources this at login, not
+// expanded now: the runtime directory belongs to the session that will read
+// it, and baking today's path into a login fragment would survive into
+// sessions where it is wrong.
+function uwsmFragmentContent() {
+  return "# Managed by the qs-bitwarden-cli Quickshell plugin.\n"
+    + "# Routes SSH clients to the Bitwarden agent. Delete this file to stop.\n"
+    + "export SSH_AUTH_SOCK=\"${XDG_RUNTIME_DIR}/" + RUNTIME_SUBDIR + "/ssh-agent.sock\"\n"
+}
+
+// Exit codes shared by the write and remove scripts. They are the whole
+// vocabulary between the shell and parseUwsmActionResult(), so each one means
+// exactly one thing and none of them overlap with a shell's own.
+var UWSM_EXIT_NO_HOME = 3
+var UWSM_EXIT_PARENT = 4
+var UWSM_EXIT_SYMLINK = 5
+var UWSM_EXIT_FOREIGN = 6
+var UWSM_EXIT_WRITE = 7
+
+// The comparison both scripts make. `$(cat)` strips trailing newlines, so the
+// expected value is stripped the same way rather than the file being rewritten
+// to match a comparison artefact.
+function uwsmExpectedShell() {
+  var expected = uwsmFragmentContent().replace(/\n+$/, "")
+  return "__want=" + shellQuote(expected) + "; "
+    + "__frag=\"$HOME/" + UWSM_FRAGMENT_REL + "\"; "
+}
+
+function uwsmInspectCommand() {
+  var script = "test -n \"${HOME:-}\" || { echo no-home; exit 0; }; "
+    + uwsmExpectedShell()
+    // -L first, and lstat throughout: a symlink here must be reported as one
+    // rather than resolved into whatever it points at.
+    + "if [ -L \"$__frag\" ]; then echo symlink; exit 0; fi; "
+    + "if [ ! -e \"$__frag\" ]; then echo absent; exit 0; fi; "
+    + "if [ ! -f \"$__frag\" ]; then echo foreign; exit 0; fi; "
+    + "if [ ! -r \"$__frag\" ]; then echo unreadable; exit 0; fi; "
+    + "if [ \"$(cat \"$__frag\")\" = \"$__want\" ]; then echo managed; else echo foreign; fi"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+function uwsmWriteCommand() {
+  var script = "test -n \"${HOME:-}\" || exit " + UWSM_EXIT_NO_HOME + "; "
+    + uwsmExpectedShell()
+    + "__dir=\"$(dirname \"$__frag\")\"; "
+    // -m applies only to directories this actually creates, so an existing
+    // ~/.config keeps whatever mode the user gave it.
+    + "mkdir -p -m 700 \"$__dir\" || exit " + UWSM_EXIT_PARENT + "; "
+    + "if [ -L \"$__frag\" ]; then exit " + UWSM_EXIT_SYMLINK + "; fi; "
+    // Anything already there that is not byte-for-byte ours is somebody
+    // else's file. Rewriting our own content is allowed and is a no-op.
+    + "if [ -e \"$__frag\" ]; then "
+    + "  if [ ! -f \"$__frag\" ] || [ \"$(cat \"$__frag\" 2>/dev/null)\" != \"$__want\" ]; then "
+    + "    exit " + UWSM_EXIT_FOREIGN + "; fi; "
+    + "fi; "
+    // Same directory, so the rename is atomic: a reader at login time sees
+    // either the old file or the complete new one, never a half-written
+    // fragment that would break the session's environment.
+    + "__tmp=\"$(mktemp \"$__dir/.50-qs-bitwarden-ssh-agent.XXXXXX\")\" || exit " + UWSM_EXIT_WRITE + "; "
+    + "{ printf '%s\\n' \"$__want\" > \"$__tmp\" && chmod 644 \"$__tmp\" && mv -f \"$__tmp\" \"$__frag\"; } "
+    + "|| { rm -f \"$__tmp\"; exit " + UWSM_EXIT_WRITE + "; }; "
+    + "echo written"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+function uwsmRemoveCommand() {
+  var script = "test -n \"${HOME:-}\" || exit " + UWSM_EXIT_NO_HOME + "; "
+    + uwsmExpectedShell()
+    + "if [ -L \"$__frag\" ]; then exit " + UWSM_EXIT_SYMLINK + "; fi; "
+    + "if [ ! -e \"$__frag\" ]; then echo absent; exit 0; fi; "
+    + "if [ ! -f \"$__frag\" ] || [ \"$(cat \"$__frag\" 2>/dev/null)\" != \"$__want\" ]; then "
+    + "exit " + UWSM_EXIT_FOREIGN + "; fi; "
+    + "rm -f \"$__frag\" || exit " + UWSM_EXIT_WRITE + "; "
+    + "echo removed"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+var UWSM_LOGIN_NOTE = "UWSM applies this at your next graphical login, so log out and log back in. "
+  + "Restarting the shell is not enough: it cannot change the environment of programs that are already running."
+
+function parseUwsmInspection(raw) {
+  var verdict = String(raw === undefined || raw === null ? "" : raw).trim()
+  switch (verdict) {
+    case "managed":
+      return { state: "managed", removable: true,
+        message: "Routing is set up. " + uwsmFragmentDisplayPath() + " is the file this plugin wrote, "
+          + "and turning the agent off removes it." }
+    case "absent":
+      return { state: "absent", removable: false,
+        message: "No routing file. SSH clients will keep using whatever agent your session already has." }
+    case "symlink":
+      return { state: "symlink", removable: false,
+        message: uwsmFragmentDisplayPath() + " is a symlink, so this plugin will not write to it or "
+          + "remove it. Replace it with a regular file yourself if you want it managed here." }
+    case "unreadable":
+      return { state: "unreadable", removable: false,
+        message: uwsmFragmentDisplayPath() + " exists but cannot be read, so it is left alone." }
+    case "no-home":
+      return { state: "no-home", removable: false,
+        message: "No HOME is set, so there is nowhere to put a routing file." }
+    default:
+      return { state: "foreign", removable: false,
+        message: uwsmFragmentDisplayPath() + " already exists and is not the file this plugin writes, "
+          + "so it is left untouched. Remove or edit it yourself to change routing." }
+  }
+}
+
+function parseUwsmActionResult(exitCode, stdout) {
+  var code = Math.floor(Number(exitCode))
+  var out = String(stdout === undefined || stdout === null ? "" : stdout).trim()
+  if (code === 0 && (out === "written")) {
+    return { ok: true, code: "WRITTEN",
+      message: "Routing file written to " + uwsmFragmentDisplayPath() + ". " + UWSM_LOGIN_NOTE }
+  }
+  if (code === 0 && (out === "removed" || out === "absent")) {
+    return { ok: true, code: out === "removed" ? "REMOVED" : "ABSENT",
+      message: out === "removed"
+        ? "Routing file removed. Programs already running keep the old value until you log out and back in."
+        : "There was no routing file to remove." }
+  }
+  switch (code) {
+    case UWSM_EXIT_NO_HOME:
+      return { ok: false, code: "NO_HOME", message: "No HOME is set, so there is nowhere to put a routing file." }
+    case UWSM_EXIT_PARENT:
+      return { ok: false, code: "PARENT",
+        message: "Could not create " + uwsmFragmentDisplayPath() + "'s parent directory." }
+    case UWSM_EXIT_SYMLINK:
+      return { ok: false, code: "SYMLINK",
+        message: uwsmFragmentDisplayPath() + " is a symlink. This plugin will not write through it "
+          + "or delete it; sort that path out yourself first." }
+    case UWSM_EXIT_FOREIGN:
+      return { ok: false, code: "FOREIGN",
+        message: uwsmFragmentDisplayPath() + " already exists and is not this plugin's file, so it was "
+          + "left untouched. Remove or edit it yourself to change routing." }
+    default:
+      return { ok: false, code: "FAILED",
+        message: "Could not update " + uwsmFragmentDisplayPath() + "." }
+  }
+}
+
+// Which agent the graphical session is actually pointed at. Matched most
+// specific first, because this plugin's own socket also contains "bitwarden"
+// and would otherwise be attributed to Bitwarden Desktop.
+var SSH_AUTH_SOCK_OWNERS = [
+  { re: /\/gcr\/|\/keyring\//i, name: "GNOME Keyring" },
+  { re: /1password/i, name: "1Password" },
+  { re: /gpg-agent/i, name: "GPG Agent" },
+  { re: /bitwarden/i, name: "Bitwarden Desktop" },
+  { re: /^\/tmp\/ssh-[^/]+\/agent\./, name: "OpenSSH ssh-agent" }
+]
+
+function sshAuthSockTerminalCheck() {
+  return "echo \"$SSH_AUTH_SOCK\"; ssh-add -L"
+}
+
+// Three outcomes, and a fourth for "there is nothing to compare against".
+// None of them gate anything: the wording stays descriptive on purpose, so a
+// diagnostic can never read as a prerequisite the user has to satisfy.
+function sshAuthSockDiagnostic(sock, runtimeDir) {
+  var value = (sock === undefined || sock === null) ? "" : String(sock)
+  var ours = sshAgentSocketPath(runtimeDir)
+  var check = sshAuthSockTerminalCheck()
+  if (!ours) {
+    return { state: "unknown", owner: "", terminalCheck: check,
+      message: "Without a runtime directory there is no socket path to compare against." }
+  }
+  if (value === "") {
+    return { state: "unset", owner: "", terminalCheck: check,
+      message: "This session has no SSH_AUTH_SOCK, so SSH clients started from it have no agent yet." }
+  }
+  if (value === ours) {
+    return { state: "matches", owner: "", terminalCheck: check,
+      message: "This session points at the Bitwarden agent. Terminals you opened earlier may not; check with:" }
+  }
+  var owner = ""
+  for (var i = 0; i < SSH_AUTH_SOCK_OWNERS.length; i++) {
+    if (SSH_AUTH_SOCK_OWNERS[i].re.test(value)) { owner = SSH_AUTH_SOCK_OWNERS[i].name; break }
+  }
+  return { state: "elsewhere", owner: owner, terminalCheck: check,
+    message: "This session points at " + (owner ? owner : "another agent")
+      + " instead of the Bitwarden agent. Changing that is your choice; check any terminal with:" }
+}
+
+// Setup is an explicit state, not something inferred from whether a socket
+// happens to exist. There are exactly three, and the transient face of
+// starting up is `enabled` with `busy` set rather than a fourth:
+//
+//   disabled  nothing runs; no socket, no FIFO, no agent branch
+//   enabled   the helper is running, or is on its way to running
+//   error     the helper is stopped or backing off; the vault is unaffected
+//
+// Client routing is deliberately absent. Where SSH_AUTH_SOCK points changes
+// nothing here: the companion binds a deterministic path and never reads that
+// variable, so routing is a diagnostic about the user's terminal, not a
+// verdict on the feature. See sshAuthSockDiagnostic().
+function sshAgentSetupState(opts) {
+  var o = opts || {}
+  if (!o.enabled) {
+    return {
+      state: "disabled", busy: false,
+      message: "The SSH agent is off. Your vault works normally; SSH keys stay read-only records."
+    }
+  }
+  // The one hard prerequisite. XDG_RUNTIME_DIR is set by pam_systemd at login,
+  // and falling back to a guessable path would put the socket somewhere
+  // another user could have prepared first.
+  if (!o.supervisable) {
+    return {
+      state: "error", busy: false,
+      message: "The SSH agent needs a per-login runtime directory and could not find one. "
+        + "Without XDG_RUNTIME_DIR it refuses to start rather than use a path it cannot trust."
+    }
+  }
+  if (o.phase === "ready") {
+    return { state: "enabled", busy: false, message: "The SSH agent is running and serving its socket." }
+  }
+  if (o.phase === "starting" || o.phase === "handshaking") {
+    return { state: "enabled", busy: true, message: "Starting the SSH agent helper..." }
+  }
+  return {
+    state: "error", busy: false,
+    message: o.errorCode ? sshAgentErrorMessage(o.errorCode) : sshAgentErrorMessage("EXITED")
+  }
+}
+
+// phase:
+//   "disabled"    nothing runs and nothing is scheduled
+//   "starting"    Process.running is true, waiting for onStarted
+//   "handshaking" hello written, waiting for `ready` under a bounded timeout
+//   "ready"       handshake complete; this is the only phase with an open gate
+//   "restarting"  a failure was detected mid-run; waiting for the child to go
+//   "backoff"     a restart timer is armed
+//   "failed"      the restart cap was reached; the feature is off until it is
+//                 explicitly re-enabled, and the rest of the plugin is untouched
+function sshAgentInitialState() {
+  return {
+    phase: "disabled",
+    gateOpen: false,
+    socketPath: "",
+    fifoPath: "",
+    agentVersion: "",
+    failures: 0,
+    readyAtMs: 0,
+    errorCode: "",
+    errorMessage: ""
+  }
+}
+
+function sshAgentNoAction() {
+  return { start: false, stop: false, writeHello: false, cancelRestart: false, restartInMs: -1, message: null }
+}
+
+function sshAgentCopyState(state) {
+  var src = state || sshAgentInitialState()
+  return {
+    phase: src.phase, gateOpen: src.gateOpen,
+    socketPath: src.socketPath, fifoPath: src.fifoPath, agentVersion: src.agentVersion,
+    failures: src.failures, readyAtMs: src.readyAtMs,
+    errorCode: src.errorCode, errorMessage: src.errorMessage
+  }
+}
+
+var SSH_AGENT_ERROR_MESSAGES = {
+  MALFORMED: "The SSH agent helper sent something the panel could not read.",
+  LINE_TOO_LONG: "The SSH agent helper sent an oversized message.",
+  VERSION_MISMATCH: "The SSH agent helper does not match this version of the plugin.",
+  UNKNOWN_TYPE: "The SSH agent helper does not match this version of the plugin.",
+  PROTOCOL: "The SSH agent helper broke its side of the control protocol.",
+  HANDSHAKE_TIMEOUT: "The SSH agent helper did not finish starting up.",
+  EXITED: "The SSH agent helper stopped unexpectedly.",
+  CRASH_LOOP: "The SSH agent helper keeps failing to start, so it has been left off."
+}
+
+// Every message the user can see is a fixed string chosen by a stable code.
+// Nothing the helper wrote reaches the UI: its stdout is the one input here
+// that could be shaped by a vault item's name or a parser error.
+function sshAgentErrorMessage(code) {
+  return SSH_AGENT_ERROR_MESSAGES[code] || SSH_AGENT_ERROR_MESSAGES.EXITED
+}
+
+// A failure noticed while the child is still alive. The gate shuts now; the
+// restart is decided when the exit actually arrives, so the backoff always
+// counts real runs.
+function sshAgentFailMidRun(next, action, code) {
+  next.gateOpen = false
+  next.phase = "restarting"
+  next.errorCode = code
+  next.errorMessage = sshAgentErrorMessage(code)
+  action.stop = true
+  action.cancelRestart = true
+}
+
+// A run has ended. A run that lasted counts as healthy and clears the history
+// behind it; anything else advances the backoff, and passing the cap turns the
+// feature off rather than restarting forever.
+function sshAgentFailOnExit(state, next, action, nowMs) {
+  next.gateOpen = false
+  next.socketPath = ""
+  next.fifoPath = ""
+  next.agentVersion = ""
+  if (!next.errorCode) {
+    next.errorCode = "EXITED"
+    next.errorMessage = sshAgentErrorMessage("EXITED")
+  }
+  var wasHealthy = state.readyAtMs > 0 && (Number(nowMs) - state.readyAtMs) >= SSH_AGENT_HEALTHY_MS
+  next.readyAtMs = 0
+  next.failures = (wasHealthy ? 0 : state.failures) + 1
+  if (next.failures > SSH_AGENT_MAX_RESTARTS) {
+    next.phase = "failed"
+    next.errorCode = "CRASH_LOOP"
+    next.errorMessage = sshAgentErrorMessage("CRASH_LOOP")
+    action.restartInMs = -1
+    return
+  }
+  next.phase = "backoff"
+  action.restartInMs = sshAgentRestartDelayMs(next.failures)
+}
+
+// The whole supervisor, as one pure transition. The panel hands in an event
+// with the current clock and gets back the next state plus the side effects to
+// perform; it never has to work out what phase means what.
+function sshAgentReduce(state, event) {
+  var current = state || sshAgentInitialState()
+  var next = sshAgentCopyState(current)
+  var action = sshAgentNoAction()
+  var ev = event || {}
+  var nowMs = Number(ev.nowMs) || 0
+
+  if (ev.kind === "enabled") {
+    if (!ev.value) {
+      if (current.phase === "disabled") return { state: next, action: action }
+      next = sshAgentInitialState()
+      action.stop = true
+      action.cancelRestart = true
+      return { state: next, action: action }
+    }
+    // Re-enabling is the deliberate reset: it clears a crash-loop verdict and
+    // the failure history that produced it. Nothing else does, so a broken
+    // helper stays off until the user says otherwise.
+    if (current.phase !== "disabled" && current.phase !== "failed") {
+      return { state: next, action: action }
+    }
+    next = sshAgentInitialState()
+    next.phase = "starting"
+    action.start = true
+    return { state: next, action: action }
+  }
+
+  if (current.phase === "disabled" || current.phase === "failed") {
+    return { state: next, action: action }
+  }
+
+  switch (ev.kind) {
+    case "started":
+      if (current.phase !== "starting") return { state: next, action: action }
+      next.phase = "handshaking"
+      action.writeHello = true
+      return { state: next, action: action }
+
+    case "handshakeTimeout":
+      if (current.phase !== "starting" && current.phase !== "handshaking") {
+        return { state: next, action: action }
+      }
+      sshAgentFailMidRun(next, action, "HANDSHAKE_TIMEOUT")
+      return { state: next, action: action }
+
+    case "line": {
+      if (current.phase !== "handshaking" && current.phase !== "ready") {
+        return { state: next, action: action }
+      }
+      var parsed = parseAgentEvent(ev.line)
+      if (!parsed.ok) {
+        if (!parsed.fatal) return { state: next, action: action }
+        sshAgentFailMidRun(next, action, parsed.code)
+        return { state: next, action: action }
+      }
+      var isReady = parsed.message.type === "ready"
+      // `ready` answers `hello` exactly once. A second one, or any other
+      // message before the first, means the helper is not in the state the
+      // panel believes it is -- which is a signing-gate failure, not a
+      // message to interpret.
+      if (isReady !== (current.phase === "handshaking")) {
+        sshAgentFailMidRun(next, action, "PROTOCOL")
+        return { state: next, action: action }
+      }
+      if (isReady) {
+        next.phase = "ready"
+        next.gateOpen = true
+        next.socketPath = parsed.message.socketPath
+        next.fifoPath = parsed.message.fifoPath
+        next.agentVersion = parsed.message.agentVersion
+        next.readyAtMs = nowMs
+        next.failures = 0
+        next.errorCode = ""
+        next.errorMessage = ""
+        return { state: next, action: action }
+      }
+      action.message = parsed.message
+      return { state: next, action: action }
+    }
+
+    case "exited":
+      sshAgentFailOnExit(current, next, action, nowMs)
+      return { state: next, action: action }
+
+    case "restartTimer":
+      if (current.phase !== "backoff") return { state: next, action: action }
+      next.phase = "starting"
+      action.start = true
+      return { state: next, action: action }
+
+    default:
+      return { state: next, action: action }
+  }
+}
+
 // Whether the panel should be sitting on the setup screen instead of talking
 // to `bw`. The plugin is installed and enabled before the CLI it drives
 // necessarily exists -- `omarchy plugin add` does not install anything else --
@@ -3150,6 +3926,7 @@ function fingerprintSetupCommand() {
 
 var SETTINGS_GROUPS = [
   { id: "security", label: "Security" },
+  { id: "sshAgent", label: "SSH Agent" },
   { id: "behavior", label: "Behavior" },
   { id: "suggestions", label: "Suggestions" }
 ]
@@ -3173,6 +3950,14 @@ var SETTINGS_SCHEMA = [
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "Encrypt the master password with a key derived from a PIN. Use 6 digits or more; 4 is the floor and is flagged as weak." },
+
+  { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
+    description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },
+  { key: "sshAgentUnlockOnDemand", group: "sshAgent", type: "bool", label: "Unlock on demand", defaultValue: false,
+    description: "Let an SSH client open the unlock prompt when the vault is locked. Off by default because every ssh connection asks for identities, including ones with nothing to do with your vault." },
+  { key: "sshAgentApprovalWindowSec", group: "sshAgent", type: "int", label: "Approve for this long", unit: "seconds",
+    min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
+    description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
 
   { key: "closeOnCopy", group: "behavior", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
@@ -3201,6 +3986,31 @@ function groupedSettings() {
     }
   }
   return out
+}
+
+// The settings the panel should actually draw. The SSH agent rows are held
+// back behind the same probe that hides the SSH type filter: a toggle for a
+// feature the installed `bw` cannot serve is worse than no toggle at all.
+// Group headers are recomputed after the filter, so a hidden group takes its
+// heading with it and the ones that remain still get exactly one each.
+function visibleSettings(deps, checked) {
+  var showSsh = sshUiAvailable(deps, checked)
+  var rows = groupedSettings().filter(function(entry) {
+    return showSsh || entry.group !== "sshAgent"
+  })
+  var seen = {}
+  for (var i = 0; i < rows.length; i++) {
+    rows[i].groupLabel = seen[rows[i].group] ? "" : groupLabelFor(rows[i].group)
+    seen[rows[i].group] = true
+  }
+  return rows
+}
+
+function groupLabelFor(id) {
+  for (var i = 0; i < SETTINGS_GROUPS.length; i++) {
+    if (SETTINGS_GROUPS[i].id === id) return SETTINGS_GROUPS[i].label
+  }
+  return ""
 }
 
 function settingSchemaEntry(key) {

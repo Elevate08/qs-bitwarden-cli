@@ -31,6 +31,11 @@ Panel {
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
+  // The SSH agent is opt-in. Nothing starts a helper, creates a socket, or
+  // touches a FIFO while this is false.
+  readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
+  readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
+  readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -78,7 +83,7 @@ Panel {
   property bool setupWasGated: false
   property string settingsFlash: ""
   property int settingsIndex: 0
-  readonly property var settingsEntries: Model.groupedSettings()
+  readonly property var settingsEntries: Model.visibleSettings(dependencies, depsChecked)
 
   // Vault data
   property var items: []
@@ -334,6 +339,15 @@ Panel {
     // cannot succeed.
     root.checkDependencies()
     root.loadAssociations()
+    // Explicit as well as bound: onSshAgentSupervisableChanged carries every
+    // later change, but a shell that starts with the feature already enabled
+    // evaluates that binding to true once, at creation, with nothing yet
+    // listening.
+    root.syncSshAgentSupervision()
+    // Everything above is the startup value, not a user action. Only changes
+    // after this point are transitions worth reacting to.
+    root.sshAgentSettingsReady = true
+    root.inspectUwsmFragment()
   }
 
   readonly property var categories: [
@@ -352,6 +366,253 @@ Panel {
   readonly property var visibleCategories: sshUiAvailable
     ? categories
     : categories.filter(function(category) { return category.id !== "sshKey" })
+
+  // -------------------------------------------------------------------------
+  // SSH companion supervision
+  // -------------------------------------------------------------------------
+  //
+  // The decisions live in Model.sshAgentReduce(); this side owns the Process,
+  // the clock and the timers. Every event goes through applySshAgentEvent(),
+  // which is the only place the state object is replaced, so the mirrored
+  // properties below and the real state can never drift apart.
+  //
+  // Nothing here is on the path of an ordinary vault operation. A helper that
+  // will not start, will not handshake, or crashes repeatedly leaves login,
+  // unlock, list, copy, sync, edit, Send and the generator exactly as they
+  // are; it only closes the signing gate and parks in an error state.
+
+  // Resolved from Panel.qml's own URL, so the helper is launched by an
+  // absolute path inside the plugin directory rather than off PATH.
+  readonly property string sshAgentPluginDir: Model.pluginDirFromUrl(String(Qt.resolvedUrl(".")))
+  readonly property string sshAgentRuntimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
+  readonly property bool sshAgentSupervisable: sshAgentEnabled
+    && sshAgentPluginDir !== "" && sshAgentRuntimeDir !== ""
+
+  property var sshAgentState: Model.sshAgentInitialState()
+  // Mirrors of sshAgentState. QML cannot bind through a plain JS object, and
+  // the handshake timeout and backoff timers have to be driven by bindings
+  // rather than by anything that waits.
+  property string sshAgentPhase: "disabled"
+  property bool sshAgentGateOpen: false
+  property string sshAgentSocketPath: ""
+  property string sshAgentFifoPath: ""
+  property string sshAgentVersion: ""
+  property string sshAgentErrorCode: ""
+  property string sshAgentErrorMessage: ""
+
+  function applySshAgentEvent(event) {
+    var step = Model.sshAgentReduce(root.sshAgentState, event)
+    root.sshAgentState = step.state
+    root.sshAgentPhase = step.state.phase
+    root.sshAgentGateOpen = step.state.gateOpen
+    root.sshAgentSocketPath = step.state.socketPath
+    root.sshAgentFifoPath = step.state.fifoPath
+    root.sshAgentVersion = step.state.agentVersion
+    root.sshAgentErrorCode = step.state.errorCode
+    root.sshAgentErrorMessage = step.state.errorMessage
+
+    // The state above is committed before any of this runs, because stopping
+    // the Process can re-enter this function with the child's exit before the
+    // outer call returns. That order is what makes the re-entry safe: the
+    // inner reduction sees the phase it should, and no action set here is one
+    // the inner call also sets.
+    var action = step.action
+    // Cancel before scheduling: a stop that arrives while a restart is armed
+    // must not leave the timer running against a helper nobody asked for.
+    if (action.cancelRestart) sshAgentRestartTimer.stop()
+    if (action.stop) stopSshAgentHelper()
+    if (action.writeHello && sshAgentProc.running) sshAgentProc.write(Model.sshAgentHelloLine())
+    if (action.restartInMs >= 0) {
+      sshAgentRestartTimer.interval = action.restartInMs
+      sshAgentRestartTimer.restart()
+    }
+    if (action.start) startSshAgentHelper()
+    if (action.message) root.onSshAgentMessage(action.message)
+  }
+
+  function startSshAgentHelper() {
+    sshAgentTerminateTimer.stop()
+    // A previous stop closed this. The control channel is the helper's only
+    // input, so it has to be open again before the handshake is written.
+    sshAgentProc.stdinEnabled = true
+    sshAgentProc.running = true
+  }
+
+  // Stopping the helper is a request, not a signal. Its designed shutdown is
+  // the control channel closing: it drops its keys, unlinks its socket and
+  // FIFO, and exits. SIGTERM -- which is all `running = false` does -- skips
+  // every one of those, leaving a socket and FIFO behind for the next start
+  // to clean up. So ask, then terminate only if it does not go.
+  function stopSshAgentHelper() {
+    if (!sshAgentProc.running) {
+      sshAgentTerminateTimer.stop()
+      return
+    }
+    if (sshAgentProc.stdinEnabled) {
+      sshAgentProc.write(Model.sshAgentShutdownLine())
+      sshAgentProc.stdinEnabled = false
+    }
+    sshAgentTerminateTimer.restart()
+  }
+
+  // Live companion events. Task 10 supervises the channel; the vault
+  // lifecycle, approval UI and key loading that consume these arrive with
+  // Tasks 12-14. Until then an unhandled event is deliberately inert rather
+  // than an error: it is a valid v1 message the panel simply has no use for
+  // yet.
+  function onSshAgentMessage(message) {
+  }
+
+  // -------------------------------------------------------------------------
+  // Key loading (the agent branch of the shared vault read)
+  // -------------------------------------------------------------------------
+  //
+  // The companion's keystore requires a strictly increasing epoch per load, so
+  // this counter only ever goes up. It survives helper restarts harmlessly: a
+  // restarted companion begins again at 0, and every value the panel sends is
+  // still greater than that.
+  property int sshAgentEpoch: 0
+  property string sshAgentLoadId: ""
+  property bool sshAgentLoadActive: false
+  // Whether the read now running carries the agent branch, and whether it has
+  // already been retried without it. The retry exists so an optional feature
+  // can never cost the user their item list.
+  property bool listAgentBranchActive: false
+  property bool listRetriedWithoutAgent: false
+
+  // A nonce is generated ahead of the load that will use it. Reading
+  // /dev/urandom is fast, but it is still a process, and the ordinary item
+  // list must never wait on the agent feature -- so a load that finds no
+  // nonce ready simply runs without the branch and primes one for next time.
+  property string sshAgentNextLoadId: ""
+
+  function primeSshAgentLoadId() {
+    if (loadIdProc.running || sshAgentNextLoadId !== "") return
+    loadIdProc.running = true
+  }
+
+  function onSshAgentLoadIdRead(raw) {
+    var candidate = String(raw || "").trim()
+    root.sshAgentNextLoadId = Model.isValidLoadId(candidate) ? candidate : ""
+  }
+
+  // Close an open load window. Called on success, on failure, and on a lock
+  // that cancels the read underneath it. The companion holds every candidate
+  // unpublished until this arrives, and discards it on a failed status, so a
+  // window that is never closed is the one outcome to avoid.
+  function endSshAgentLoad(ok) {
+    if (!sshAgentLoadActive) return
+    sshAgentLoadActive = false
+    sshAgentLoadId = ""
+    if (sshAgentProc.running && sshAgentProc.stdinEnabled) {
+      sshAgentProc.write(Model.sshAgentLoadEndLine(sshAgentEpoch, ok))
+    }
+    primeSshAgentLoadId()
+  }
+
+  // A lock abandons the current loadId and stops the whole read. The pipeline
+  // runs as its own process group, so terminating the wrapper reaps `bw`, the
+  // caps, `tee` and both `jq` stages with it.
+  function cancelSshAgentLoad() {
+    if (listProc.running) listProc.running = false
+    endSshAgentLoad(false)
+    listAgentBranchActive = false
+    listRetriedWithoutAgent = false
+  }
+
+  function syncSshAgentSupervision() {
+    applySshAgentEvent({ kind: "enabled", value: root.sshAgentSupervisable, nowMs: Date.now() })
+  }
+
+  onSshAgentSupervisableChanged: syncSshAgentSupervision()
+
+  onSshAgentGateOpenChanged: {
+    if (sshAgentGateOpen) primeSshAgentLoadId()
+    else endSshAgentLoad(false)
+  }
+
+  // Disabled / enabled / error, as the design's table defines them. Derived,
+  // never stored: it can only ever say what the supervisor is actually doing.
+  readonly property var sshAgentSetup: Model.sshAgentSetupState({
+    enabled: sshAgentEnabled,
+    supervisable: sshAgentSupervisable,
+    phase: sshAgentPhase,
+    errorCode: sshAgentErrorCode
+  })
+
+  // -------------------------------------------------------------------------
+  // Client routing (advisory)
+  // -------------------------------------------------------------------------
+  //
+  // Where SSH_AUTH_SOCK points decides nothing above. The companion binds a
+  // deterministic path and never reads it; this is only about whether the
+  // user's *clients* will find that socket. The panel sees the graphical
+  // session's environment and nothing else, so everything here is phrased as
+  // a hint with a check the user can run in the terminal they actually use.
+  readonly property string sshAuthSock: Quickshell.env("SSH_AUTH_SOCK") || ""
+  readonly property var sshRouting: Model.sshAuthSockDiagnostic(sshAuthSock, sshAgentRuntimeDir)
+
+  property var uwsmFragment: ({ state: "unknown", removable: false, message: "" })
+  property bool uwsmBusy: false
+  property string uwsmFlash: ""
+  // Set when the session already points at another agent. Writing the fragment
+  // would make Bitwarden the primary agent at the next login, which is not
+  // something to do silently on one click.
+  property bool uwsmConfirmPending: false
+
+  function inspectUwsmFragment() {
+    if (uwsmInspectProc.running) return
+    uwsmInspectProc.running = true
+  }
+
+  function beginUwsmSetup() {
+    if (uwsmBusy) return
+    if (sshRouting.state === "elsewhere" && !uwsmConfirmPending) {
+      uwsmConfirmPending = true
+      return
+    }
+    uwsmConfirmPending = false
+    uwsmBusy = true
+    uwsmFlash = ""
+    uwsmWriteProc.running = true
+  }
+
+  function cancelUwsmSetup() {
+    uwsmConfirmPending = false
+  }
+
+  // Safe to call unconditionally: the script removes the file only when it is
+  // byte-for-byte the one this plugin writes, and refuses a symlink outright.
+  function removeUwsmFragment() {
+    if (uwsmBusy) return
+    uwsmConfirmPending = false
+    uwsmBusy = true
+    uwsmFlash = ""
+    uwsmRemoveProc.running = true
+  }
+
+  function onUwsmActionFinished(exitCode, stdout) {
+    var result = Model.parseUwsmActionResult(exitCode, stdout)
+    root.uwsmBusy = false
+    root.uwsmFlash = result.message
+    root.inspectUwsmFragment()
+  }
+
+  // Turning the agent off takes the routing file with it, but only if it is
+  // the exact file this plugin wrote. Anything the user manages by hand is
+  // left alone with instructions rather than deleted on a toggle.
+  //
+  // Gated on startup having finished, because this must fire on a real
+  // transition and not on the initial evaluation of the binding. Without the
+  // guard, every shell start with the feature off would delete a routing file
+  // the user never touched -- a filesystem change nobody asked for.
+  property bool sshAgentSettingsReady: false
+
+  onSshAgentEnabledChanged: {
+    inspectUwsmFragment()
+    if (!sshAgentSettingsReady) return
+    if (!sshAgentEnabled) removeUwsmFragment()
+  }
 
   // -------------------------------------------------------------------------
   // Lifecycle & Open / Close
@@ -1824,7 +2085,10 @@ Panel {
     if (currentScreen !== "settings") screenBeforeSettings = currentScreen
     settingsFlash = ""
     settingsIndex = 0
+    uwsmFlash = ""
+    uwsmConfirmPending = false
     checkDependencies()
+    inspectUwsmFragment()
     currentScreen = "settings"
   }
 
@@ -1858,6 +2122,9 @@ Panel {
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       // The toggle reflects a PIN actually being set, not just the flag.
       case "pinUnlock": return pinUnlock && pinConfigured
+      case "sshAgentEnabled": return sshAgentEnabled
+      case "sshAgentUnlockOnDemand": return sshAgentUnlockOnDemand
+      case "sshAgentApprovalWindowSec": return sshAgentApprovalWindowSec
     }
     return entry.type === "bool" ? Model.boolSetting(entry.key, setting(entry.key, entry.defaultValue)) : Number(setting(entry.key, 0))
   }
@@ -2138,6 +2405,7 @@ Panel {
     closeFilterGroup()
     cancelAuthPrewarm()
     clearClipboard()
+    cancelSshAgentLoad()
     if (session) {
       lockProc.command = Model.lockCommand()
       lockProc.running = true
@@ -2392,8 +2660,36 @@ Panel {
       if (!vaultReadIsStale("items")) errorMessage = Model.vaultListBlockedMessage(dependencies)
       return
     }
-    listProc.command = Model.sanitizedListCommand()
+    startVaultListRead(false)
+  }
+
+  // The one place the item read is launched, so the agent branch and its
+  // retry-without-it cannot drift apart. `retrying` is the second attempt
+  // after a fan-out read failed; it never carries the branch.
+  function startVaultListRead(retrying) {
+    var useAgent = !retrying && sshAgentGateOpen && Model.isValidLoadId(sshAgentNextLoadId)
+    if (useAgent) {
+      sshAgentEpoch += 1
+      sshAgentLoadId = sshAgentNextLoadId
+      sshAgentNextLoadId = ""
+      sshAgentLoadActive = true
+      if (sshAgentProc.stdinEnabled) {
+        sshAgentProc.write(Model.sshAgentLoadBeginLine(sshAgentEpoch, sshAgentLoadId))
+      }
+    }
+    listAgentBranchActive = useAgent
+    listProc.environment = root.vaultListEnv(useAgent ? sshAgentLoadId : "")
+    listProc.command = Model.sanitizedListCommand({ agentBranch: useAgent })
     listProc.running = true
+  }
+
+  // The nonce reaches `jq` through the environment rather than argv, because
+  // /proc/<pid>/cmdline is world-readable and the nonce's whole purpose is
+  // being unguessable by another process running as this user.
+  function vaultListEnv(loadId) {
+    var env = root.bwEnv()
+    env[Model.loadIdEnvVar()] = loadId !== "" ? loadId : null
+    return env
   }
 
   function onListFinished(rawJson) {
@@ -2417,10 +2713,25 @@ Panel {
 
   function onListProcessExited(exitCode, rawJson, stderrText) {
     if (finishScrubRun(listProc)) return
+    var hadAgentBranch = listAgentBranchActive
+    listAgentBranchActive = false
+    endSshAgentLoad(exitCode === 0)
+
     if (exitCode === 0) {
+      listRetriedWithoutAgent = false
       onListFinished(rawJson)
       return
     }
+
+    // The optional feature is never allowed to cost the user their item list.
+    // One retry, without the branch, before anything is reported as an error.
+    if (hadAgentBranch && !listRetriedWithoutAgent && !vaultReadIsStale("items")) {
+      listRetriedWithoutAgent = true
+      beginVaultRead("items")
+      startVaultListRead(true)
+      return
+    }
+    listRetriedWithoutAgent = false
 
     isLoading = false
     isSyncing = false
@@ -3557,6 +3868,96 @@ Panel {
       waitForEnd: true
       onStreamFinished: root.onScreenLockState(text)
     }
+  }
+
+  Process {
+    id: loadIdProc
+    command: Model.loadIdCommand()
+    stdout: StdioCollector {
+      id: loadIdStdout
+      waitForEnd: true
+      onStreamFinished: root.onSshAgentLoadIdRead(text)
+    }
+  }
+
+  Process {
+    id: uwsmInspectProc
+    command: Model.uwsmInspectCommand()
+    stdout: StdioCollector {
+      id: uwsmInspectStdout
+      waitForEnd: true
+      onStreamFinished: root.uwsmFragment = Model.parseUwsmInspection(text)
+    }
+  }
+
+  Process {
+    id: uwsmWriteProc
+    command: Model.uwsmWriteCommand()
+    stdout: StdioCollector { id: uwsmWriteStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmWriteStdout.text) }
+  }
+
+  Process {
+    id: uwsmRemoveProc
+    command: Model.uwsmRemoveCommand()
+    stdout: StdioCollector { id: uwsmRemoveStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmRemoveStdout.text) }
+  }
+
+  // The SSH companion. Tracked and non-detached so it dies with the shell and
+  // with a configuration reload, rather than outliving the panel that holds
+  // its control channel: the helper treats stdin EOF as "drop the keys and
+  // exit", and that only works if this Process really owns the child.
+  //
+  // clearEnvironment strips everything the shell was started with -- PATH,
+  // HOME, and above all BW_SESSION -- and `environment` puts back the single
+  // variable the helper reads. It runs no `bw` and spawns nothing, so it needs
+  // nothing else.
+  Process {
+    id: sshAgentProc
+    command: Model.sshAgentHelperCommand(root.sshAgentPluginDir)
+    clearEnvironment: true
+    environment: Model.sshAgentHelperEnv(root.sshAgentRuntimeDir) || ({})
+    stdinEnabled: true
+    // Attached from startup, so the `ready` that answers hello cannot be
+    // missed by a parser wired up after the fact.
+    stdout: SplitParser {
+      onRead: function(line) { root.applySshAgentEvent({ kind: "line", line: line, nowMs: Date.now() }) }
+    }
+    onStarted: root.applySshAgentEvent({ kind: "started", nowMs: Date.now() })
+    onExited: function(exitCode) {
+      sshAgentTerminateTimer.stop()
+      root.applySshAgentEvent({ kind: "exited", exitCode: exitCode, nowMs: Date.now() })
+    }
+  }
+
+  // The bound on the handshake. QML never waits for `ready`; it arms this and
+  // carries on, and a helper that has not answered by the time it fires is
+  // stopped and retried like any other failure.
+  Timer {
+    id: sshAgentHandshakeTimer
+    interval: Model.sshAgentHandshakeTimeoutMs()
+    repeat: false
+    running: root.sshAgentPhase === "starting" || root.sshAgentPhase === "handshaking"
+    onTriggered: root.applySshAgentEvent({ kind: "handshakeTimeout", nowMs: Date.now() })
+  }
+
+  // The grace period between asking the helper to shut down and making it.
+  // Two seconds is far longer than dropping keys and unlinking two paths
+  // takes, and short enough that a wedged helper does not delay a restart.
+  Timer {
+    id: sshAgentTerminateTimer
+    interval: 2000
+    repeat: false
+    onTriggered: if (sshAgentProc.running) sshAgentProc.running = false
+  }
+
+  // Capped restart backoff. The interval is set by the reducer before each
+  // restart; the timer only reports that it elapsed.
+  Timer {
+    id: sshAgentRestartTimer
+    repeat: false
+    onTriggered: root.applySshAgentEvent({ kind: "restartTimer", nowMs: Date.now() })
   }
 
   // Long-lived: it holds the sleep inhibitor that makes the lock land before
@@ -6168,6 +6569,183 @@ Panel {
               }
 
               PanelSeparator { width: parent.width }
+            }
+          }
+
+          // ---------------------------------------------------------------
+          // SSH agent status and client routing
+          // ---------------------------------------------------------------
+          //
+          // Two separate things, deliberately drawn apart. The top half is
+          // what the feature is doing; the bottom half is whether the user's
+          // terminals will reach it. Neither one gates the other.
+          Column {
+            visible: root.sshUiAvailable
+            width: parent.width
+            spacing: Style.space(6)
+
+            Item { width: parent.width; height: Style.space(10) }
+
+            PanelSectionHeader {
+              textFormat: Text.PlainText
+              text: "SSH AGENT STATUS"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text {
+                textFormat: Text.PlainText
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.sshAgentSetup.state === "enabled"
+                  ? (root.sshAgentSetup.busy ? "󰔟" : "󰄬")
+                  : (root.sshAgentSetup.state === "error" ? "󰀪" : "󰅘")
+                color: root.sshAgentSetup.state === "error"
+                  ? root.urgent
+                  : (root.sshAgentSetup.state === "enabled" && !root.sshAgentSetup.busy ? Color.accent : root.dim)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width - Style.space(30)
+                text: root.sshAgentSetup.message
+                color: root.sshAgentSetup.state === "error" ? root.urgent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            // The helper's own version, once it has said hello. Non-secret,
+            // and the quickest way to tell a stale bundled binary apart from
+            // a working one.
+            Text {
+              textFormat: Text.PlainText
+              visible: root.sshAgentVersion !== ""
+              width: parent.width
+              text: "Helper version " + Model.plainLabel(root.sshAgentVersion)
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Item { width: parent.width; height: Style.space(10) }
+
+            PanelSectionHeader {
+              textFormat: Text.PlainText
+              text: "CLIENT ROUTING"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: root.sshRouting.message
+              color: root.sshRouting.state === "matches" ? root.dim : root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // The check the user runs in the terminal they actually use --
+            // which is the only place the answer is authoritative.
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: "  " + root.sshRouting.terminalCheck
+              color: Color.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WrapAnywhere
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: root.uwsmFragment.message
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // Replacing the session's primary agent is a real decision, so the
+            // conflict is stated and confirmed rather than absorbed by the
+            // first click.
+            Text {
+              textFormat: Text.PlainText
+              visible: root.uwsmConfirmPending
+              width: parent.width
+              text: "This will make Bitwarden your session's SSH agent at the next login, replacing "
+                + (root.sshRouting.owner !== "" ? Model.plainLabel(root.sshRouting.owner) : "the one you have now")
+                + ". Continue?"
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: root.uwsmFlash !== ""
+              width: parent.width
+              text: root.uwsmFlash
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                visible: !root.uwsmConfirmPending && root.uwsmFragment.state !== "managed"
+                text: "Route SSH Clients Here"
+                iconText: "󰌘"
+                tooltipText: "Write " + Model.uwsmFragmentDisplayPath() + " so the next login points SSH clients at this agent"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                enabled: !root.uwsmBusy
+                onClicked: root.beginUwsmSetup()
+              }
+
+              Button {
+                visible: root.uwsmConfirmPending
+                text: "Yes, Replace It"
+                iconText: "󰄬"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                enabled: !root.uwsmBusy
+                onClicked: root.beginUwsmSetup()
+              }
+
+              Button {
+                visible: root.uwsmConfirmPending
+                text: "Cancel"
+                iconText: "󰅘"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.cancelUwsmSetup()
+              }
+
+              Button {
+                visible: !root.uwsmConfirmPending && root.uwsmFragment.removable
+                text: "Remove Routing File"
+                iconText: "󰩹"
+                tooltipText: "Delete " + Model.uwsmFragmentDisplayPath()
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                enabled: !root.uwsmBusy
+                onClicked: root.removeUwsmFragment()
+              }
             }
           }
 
