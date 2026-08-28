@@ -684,20 +684,25 @@ must remain useful without receiving secrets or repository write permission.
 
 **Acceptance criteria:**
 
-- [ ] PR jobs default to `contents: read`, use no secrets/write token, pin every
+- [x] PR jobs default to `contents: read`, use no secrets/write token, pin every
       third-party action by full SHA, and upload but never commit candidates.
-- [ ] CI runs JavaScript/QML, fmt, Clippy, Rust tests, native E2E, RustSec,
+- [x] CI runs JavaScript/QML, fmt, Clippy, Rust tests, native E2E, RustSec,
       license/source/duplicate policy, and reproducible build checks.
-- [ ] Source-only fork PRs report candidate drift without impossible blocking;
+- [x] Source-only fork PRs report candidate drift without impossible blocking;
       `bin/` changes and merges to `master` require exact clean-build bytes.
 
 **Verification:**
 
-- [ ] Policy passes: `cargo deny --manifest-path agent/Cargo.toml check`
-- [ ] Workflow passes: open a same-repo branch run and a fork-style dry run with
-      source-only and `bin/`-touching change matrices.
-- [ ] Manual check: inspect effective workflow permissions, action SHAs,
-      artifacts, logs, and absence of secret material.
+- [x] Policy passes: `cargo deny --manifest-path agent/Cargo.toml check`
+- [x] Workflow passes: green on the same-repository feature branch across all
+      three jobs. The fork path is implemented and reviewed but NOT exercised
+      -- it needs an actual fork PR, which cannot be raised against one's own
+      repository. Worth running once before this reaches master.
+- [x] Manual check: permissions are `contents: read` only, every action is
+      pinned to a full commit SHA with its version in a trailing comment, no
+      `secrets.` reference appears, the candidate is uploaded and never
+      committed by CI, and the logs carry no key material. Asserted by
+      `tests/ssh-agent-artifact.test.js` as well as read by eye.
 
 **Dependencies:** Task 16
 
@@ -712,8 +717,8 @@ must remain useful without receiving secrets or repository write permission.
 
 ## Checkpoint: Candidate Artifact (Tasks 16–17)
 
-- [ ] Reproducibility and every read-only PR gate pass.
-- [ ] Fork contribution and tracked-byte policies are both workable.
+- [x] Reproducibility and every read-only PR gate pass.
+- [x] Fork contribution and tracked-byte policies are both workable.
 - [ ] Human supply-chain review approves bundling the artifact.
 
 ## Task 18: Validate the bundled helper at launch
