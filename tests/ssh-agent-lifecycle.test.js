@@ -197,7 +197,7 @@ check("screen lock and suspend reach the companion through the lock path",
   "screen lock or suspend does not lock the vault")
 
 check("the gate opening arms a startup load",
-  /onSshAgentGateOpenChanged[\s\S]{0,900}?sshAgentStartupLoadTimer\.restart\(\)/.test(panelSrc),
+  /onSshAgentGateOpenChanged[\s\S]{0,1400}?sshAgentStartupLoadTimer\.restart\(\)/.test(panelSrc),
   "the gate opening never arms a startup load")
 check("a remembered unlocked session loads keys once the helper is ready",
   /function maybeStartupLoad\(\)[\s\S]{0,1200}?applySshAgentLifecycle\("startup"\)/.test(panelSrc),
@@ -228,6 +228,25 @@ const messageHandler = panelSrc.slice(
 check("the companion's own events are consumed rather than ignored",
   /message\.type === "locked"/.test(messageHandler) && /message\.type === "keys_loaded"/.test(messageHandler),
   "onSshAgentMessage ignores the lock acknowledgment or the load result")
+
+// Turning the feature off stops the helper through the supervisor, which is a
+// different path from the lifecycle table -- so the table's clearPublic has to
+// be applied explicitly or the projection is left on disk by a feature that is
+// no longer running.
+check("disabling the feature clears the public projection",
+  /onSshAgentEnabledChanged[\s\S]{0,700}?applySshAgentLifecycle\("disable"\)/.test(panelSrc),
+  "disabling never applies the disable transition")
+
+// A restarted helper is empty even when the vault epoch has not moved: the
+// keystore lives in the helper's memory, not the vault's. Keying the
+// startup-load guard on the vault epoch alone leaves a fresh helper keyless
+// until something unrelated happens to bump it.
+check("a new helper is always eligible for a load",
+  /onSshAgentGateOpenChanged[\s\S]{0,700}?sshAgentLoadedForVaultEpoch = -1/.test(panelSrc),
+  "a restarted helper inherits the old load bookkeeping and never loads")
+check("a departed helper's key count is not left standing",
+  /onSshAgentGateOpenChanged[\s\S]{0,700}?sshAgentKeyCount = 0/.test(panelSrc),
+  "the panel keeps reporting keys a dead helper no longer holds")
 
 // -------------------------------------------------------------------------
 // Control lines

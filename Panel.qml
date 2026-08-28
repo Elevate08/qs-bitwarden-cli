@@ -809,8 +809,16 @@ Panel {
     if (sshAgentGateOpen) sendSshAgentOptions()
     if (!sshAgentGateOpen) {
       endSshAgentLoad(false)
+      // The keystore lives in the helper's memory. Whatever it held went with
+      // it, so the panel must stop claiming those keys are still served.
+      root.sshAgentKeyCount = 0
       return
     }
+    // A new helper is empty even when the vault epoch has not moved -- the
+    // epoch tracks the vault, not the process. Clearing this is what makes a
+    // restarted or re-enabled helper eligible for a load, instead of leaving
+    // it keyless until something unrelated happens to bump the epoch.
+    root.sshAgentLoadedForVaultEpoch = -1
     primeSshAgentLoadId()
     // Startup is not evidence that the vault is locked: rememberSession can
     // restore a session key, so the panel can already be unlocked when the
@@ -954,7 +962,13 @@ Panel {
   onSshAgentEnabledChanged: {
     inspectUwsmFragment()
     if (!sshAgentSettingsReady) return
-    if (!sshAgentEnabled) removeUwsmFragment()
+    if (!sshAgentEnabled) {
+      // Stopping the helper goes through the supervisor, which knows nothing
+      // about the public projection. Without this, the files of a feature
+      // that is no longer running are left behind on disk.
+      applySshAgentLifecycle("disable")
+      removeUwsmFragment()
+    }
   }
 
   // -------------------------------------------------------------------------
