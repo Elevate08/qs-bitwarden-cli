@@ -3238,9 +3238,14 @@ function sshAgentHelperPath(pluginDir) {
 // child whose stdin, stdout and lifetime belong to the Process object, so
 // closing stdin reaches the helper itself and killing the Process kills the
 // thing holding the keys rather than a shell that spawned it.
-function sshAgentHelperCommand(pluginDir) {
-  var helper = sshAgentHelperPath(pluginDir)
-  return helper ? [helper] : []
+function sshAgentHelperCommand(pluginDir, source) {
+  var candidates = sshAgentHelperCandidates(pluginDir)
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i].source === source) return [candidates[i].path]
+  }
+  // No accepted source means the inspection has not run or did not accept
+  // anything, and launching a guess would defeat the point of inspecting.
+  return []
 }
 
 // The companion needs no PATH, no HOME, and no vault credential of any kind:
@@ -3589,6 +3594,159 @@ function sshAuthSockDiagnostic(sock, runtimeDir) {
   return { state: "elsewhere", owner: owner, terminalCheck: check,
     message: "This session points at " + (owner ? owner : "another agent")
       + " instead of the Bitwarden agent. Changing that is your choice; check any terminal with:" }
+}
+
+// -------------------------------------------------------------------------
+// The bundled helper
+// -------------------------------------------------------------------------
+//
+// The plugin ships a compiled helper rather than downloading one, so the
+// panel checks it before trusting it: that it is there, executable, the right
+// architecture, matches its recorded checksum, passes its own self-test, and
+// speaks this panel's protocol version.
+//
+// What the checksum is and is not. `bin/SHA256SUMS` sits beside the binary and
+// beside the QML that reads it, so anyone who can replace one can replace all
+// three. This is not tamper detection, and presenting it as such would be a
+// lie. What it does catch is what actually goes wrong: a partial clone, a Git
+// LFS placeholder, a truncated file, and -- most often -- a stale binary left
+// behind by a `git pull` that updated the source. Provenance is a separate
+// mechanism with a different root of trust; see the release documentation.
+var SSH_AGENT_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-ssh-agent"
+var SSH_AGENT_SUMS_RELATIVE = "bin/SHA256SUMS"
+// Cargo's ordinary debug output. Preferring the shipped artifact but falling
+// back to this keeps a developer's `cargo build` meaningful without a release
+// round-trip, and the settings screen says which one is in use so the two are
+// never confused.
+var SSH_AGENT_DEVELOPMENT_RELATIVE = "agent/target/debug/qs-bitwarden-ssh-agent"
+
+function sshAgentBundledRelative() { return SSH_AGENT_BUNDLED_RELATIVE }
+function sshAgentDevelopmentRelative() { return SSH_AGENT_DEVELOPMENT_RELATIVE }
+
+// In preference order. The shipped artifact first, because that is what a
+// user installed and what CI verified; the local build second, because a
+// developer who just compiled one means to run it.
+function sshAgentHelperCandidates(pluginDir) {
+  var base = sshAgentHelperPath(pluginDir) === "" ? "" : pluginDir
+  if (base === "") return []
+  var root = base
+  while (root.length > 1 && root.charAt(root.length - 1) === "/") root = root.slice(0, root.length - 1)
+  return [
+    { source: "bundled", path: root + "/" + SSH_AGENT_BUNDLED_RELATIVE },
+    { source: "development", path: root + "/" + SSH_AGENT_DEVELOPMENT_RELATIVE }
+  ]
+}
+
+function sshAgentHelperSourceLabel(source) {
+  if (source === "bundled") return "the helper shipped with this plugin"
+  if (source === "development") return "a locally built development helper, not the shipped artifact"
+  return ""
+}
+
+// One pass over both candidates, in the shell, reporting the first that is
+// usable. Written as one script rather than several commands because the
+// panel must not sequence six probes through six Process round-trips before
+// it can decide whether a feature is available.
+//
+// Emits `key=value` lines, which the parser below reads. Nothing from the
+// helper's own output is interpolated into a message.
+function sshAgentHelperInspectCommand(pluginDir) {
+  var candidates = sshAgentHelperCandidates(pluginDir)
+  if (candidates.length === 0) return ["bash", "-c", "echo state=missing"]
+  var root = candidates[0].path.slice(0, candidates[0].path.length - SSH_AGENT_BUNDLED_RELATIVE.length - 1)
+
+  var script = "__root=" + shellQuote(root) + "; "
+    + "__report() { printf '%s\\n' \"$@\"; exit 0; }; "
+    + "__found=''; "
+    // The shipped artifact first; a development build only if it is absent or
+    // unusable, so a broken release never strands a working local build.
+    + "for __pair in " + shellQuote("bundled:" + SSH_AGENT_BUNDLED_RELATIVE)
+    + " " + shellQuote("development:" + SSH_AGENT_DEVELOPMENT_RELATIVE) + "; do "
+    + "  __source=\"${__pair%%:*}\"; __rel=\"${__pair#*:}\"; __bin=\"$__root/$__rel\"; "
+    + "  [ -e \"$__bin\" ] || continue; "
+    + "  __found=\"$__source\"; "
+    + "  [ -f \"$__bin\" ] || { __state=not-a-file; continue; }; "
+    + "  [ -x \"$__bin\" ] || { __state=not-executable; continue; }; "
+    // ELF magic, before anything tries to run it. A Git LFS placeholder and a
+    // truncated download both fail here rather than as a confusing exec error.
+    + "  __magic=\"$(head -c 4 -- \"$__bin\" 2>/dev/null | od -An -tx1 | tr -d ' \\n')\"; "
+    + "  [ \"$__magic\" = \"7f454c46\" ] || { __state=not-elf; continue; }; "
+    + "  __arch=\"$(od -An -tx1 -j 18 -N 1 -- \"$__bin\" 2>/dev/null | tr -d ' \\n')\"; "
+    + "  [ \"$__arch\" = \"3e\" ] || { __state=wrong-architecture; continue; }; "
+    // The checksum applies to the shipped artifact only. A local build has no
+    // recorded digest and claiming one would be meaningless.
+    + "  __checksum=unchecked; "
+    + "  if [ \"$__source\" = bundled ] && [ -f \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" ]; then "
+    + "    if ( cd \"$__root/bin\" && sha256sum -c --status " + shellQuote(baseName(SSH_AGENT_SUMS_RELATIVE)) + " ) 2>/dev/null; then "
+    + "      __checksum=match; "
+    + "    else __checksum=mismatch; __state=checksum-mismatch; continue; fi; "
+    + "  fi; "
+    // Its own account of itself, bounded: a helper that hangs must not hang
+    // the panel's startup decision.
+    + "  __version=\"$(timeout 5 \"$__bin\" --version 2>/dev/null | head -c 200)\"; "
+    + "  case \"$__version\" in *'qs-bitwarden-ssh-agent '*) ;; *) __state=no-version; continue;; esac; "
+    + "  __semver=\"$(printf '%s' \"$__version\" | sed -n 's/.*qs-bitwarden-ssh-agent \\([0-9.]*\\).*/\\1/p')\"; "
+    + "  __proto=\"$(printf '%s' \"$__version\" | sed -n 's/.*protocol \\([0-9]*\\).*/\\1/p')\"; "
+    + "  if timeout 20 \"$__bin\" --self-test >/dev/null 2>&1; then __self=pass; "
+    + "  else __self=fail; __state=self-test-failed; continue; fi; "
+    + "  __report state=ok \"source=$__source\" \"version=$__semver\" \"protocol=$__proto\" "
+    + "\"checksum=$__checksum\" \"selfTest=$__self\"; "
+    + "done; "
+    + "if [ -z \"$__found\" ]; then __report state=missing; fi; "
+    // Carry the checksum verdict into the failure report too. Without it a
+    // mismatch arrives as "unchecked", which reads as "we did not look"
+    // rather than "we looked and it was wrong".
+    + "__report \"state=${__state:-unusable}\" \"source=$__found\" "
+    + "\"checksum=${__checksum:-unchecked}\" \"selfTest=${__self:-}\""
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+var SSH_AGENT_HELPER_MESSAGES = {
+  "missing": "No SSH agent helper was found. A release ships one; a source checkout needs "
+    + "`cargo build --manifest-path agent/Cargo.toml --locked`.",
+  "not-a-file": "The SSH agent helper path is not a file.",
+  "not-executable": "The SSH agent helper is not executable. A clone from an archive can drop "
+    + "file modes; `chmod +x` on it is enough.",
+  "not-elf": "The SSH agent helper is not a program. A partial clone, or Git LFS leaving a "
+    + "placeholder, both look like this.",
+  "wrong-architecture": "The SSH agent helper was built for a different architecture. This "
+    + "release ships x86_64 only.",
+  "checksum-mismatch": "The SSH agent helper does not match its recorded checksum. That usually "
+    + "means a stale binary after an update, or an incomplete clone.",
+  "no-version": "The SSH agent helper did not report a usable version.",
+  "self-test-failed": "The SSH agent helper failed its own self-test on this machine.",
+  "protocol-mismatch": "The SSH agent helper speaks a different control protocol than this "
+    + "version of the plugin. Reinstall the plugin so both come from the same release.",
+  "unusable": "The SSH agent helper could not be used."
+}
+
+function parseSshAgentHelperInspection(raw) {
+  var fields = { state: "missing", source: "", version: "", protocol: 0,
+    checksum: "unchecked", selfTest: "" }
+  var lines = String(raw === undefined || raw === null ? "" : raw).split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var cut = lines[i].indexOf("=")
+    if (cut <= 0) continue
+    var key = lines[i].slice(0, cut)
+    var value = lines[i].slice(cut + 1)
+    if (key === "protocol") fields.protocol = Math.floor(Number(value)) || 0
+    else if (fields[key] !== undefined) fields[key] = value
+  }
+  // The protocol version is the panel's own compatibility check rather than
+  // something the shell script judges: the panel knows what it speaks.
+  if (fields.state === "ok" && fields.protocol !== SSH_AGENT_CONTROL_VERSION) {
+    fields.state = "protocol-mismatch"
+  }
+  fields.message = fields.state === "ok" ? "" : (SSH_AGENT_HELPER_MESSAGES[fields.state]
+    || SSH_AGENT_HELPER_MESSAGES.unusable)
+  return fields
+}
+
+// Whether the supervisor may start at all. Every failure here disables this
+// optional feature and nothing else -- no socket, no FIFO, no agent branch in
+// the vault read.
+function sshAgentHelperReady(inspection) {
+  return Boolean(inspection) && inspection.state === "ok"
 }
 
 // -------------------------------------------------------------------------

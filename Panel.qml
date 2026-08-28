@@ -347,6 +347,7 @@ Panel {
     // Everything above is the startup value, not a user action. Only changes
     // after this point are transitions worth reacting to.
     root.sshAgentSettingsReady = true
+    if (root.sshAgentEnabled) root.inspectSshAgentHelper()
     root.inspectUwsmFragment()
   }
 
@@ -385,8 +386,28 @@ Panel {
   // absolute path inside the plugin directory rather than off PATH.
   readonly property string sshAgentPluginDir: Model.pluginDirFromUrl(String(Qt.resolvedUrl(".")))
   readonly property string sshAgentRuntimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
+  // What the shipped helper turned out to be. Checked once when the feature
+  // is enabled, and again whenever the plugin directory changes, because a
+  // plugin update can replace the binary under a running shell.
+  property var sshAgentHelper: ({ state: "unknown", source: "", version: "",
+    protocol: 0, checksum: "unchecked", selfTest: "", message: "" })
+
   readonly property bool sshAgentSupervisable: sshAgentEnabled
     && sshAgentPluginDir !== "" && sshAgentRuntimeDir !== ""
+    // A helper that fails inspection disables this feature and nothing else:
+    // no supervisor, so no socket, no FIFO, and no agent branch in the vault
+    // read. The rest of the plugin never sees it.
+    && Model.sshAgentHelperReady(sshAgentHelper)
+
+  function inspectSshAgentHelper() {
+    if (sshAgentHelperProc.running) return
+    sshAgentHelperProc.command = Model.sshAgentHelperInspectCommand(root.sshAgentPluginDir)
+    sshAgentHelperProc.running = true
+  }
+
+  function onSshAgentHelperInspected(raw) {
+    root.sshAgentHelper = Model.parseSshAgentHelperInspection(raw)
+  }
 
   property var sshAgentState: Model.sshAgentInitialState()
   // Mirrors of sshAgentState. QML cannot bind through a plain JS object, and
@@ -973,6 +994,7 @@ Panel {
   property bool sshAgentSettingsReady: false
 
   onSshAgentEnabledChanged: {
+    if (sshAgentEnabled) inspectSshAgentHelper()
     inspectUwsmFragment()
     if (!sshAgentSettingsReady) return
     if (!sshAgentEnabled) {
@@ -4274,6 +4296,15 @@ Panel {
   }
 
   Process {
+    id: sshAgentHelperProc
+    stdout: StdioCollector {
+      id: sshAgentHelperStdout
+      waitForEnd: true
+      onStreamFinished: root.onSshAgentHelperInspected(text)
+    }
+  }
+
+  Process {
     id: sshExportProc
     command: Model.sshExportCommand()
     stdinEnabled: true
@@ -4336,7 +4367,9 @@ Panel {
   // nothing else.
   Process {
     id: sshAgentProc
-    command: Model.sshAgentHelperCommand(root.sshAgentPluginDir)
+    // Whichever candidate the inspection accepted -- the shipped artifact by
+    // preference, a local development build otherwise.
+    command: Model.sshAgentHelperCommand(root.sshAgentPluginDir, root.sshAgentHelper.source)
     clearEnvironment: true
     environment: Model.sshAgentHelperEnv(root.sshAgentRuntimeDir) || ({})
     stdinEnabled: true
@@ -7107,6 +7140,35 @@ Panel {
               visible: root.sshCooldownStatus.active
               width: parent.width
               text: root.sshCooldownStatus.message
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // Which helper is running. A developer with a local build and a
+            // user on a release see the same panel otherwise, and confusing
+            // the two wastes an afternoon.
+            Text {
+              textFormat: Text.PlainText
+              visible: root.sshAgentHelper.source !== ""
+              width: parent.width
+              text: "Using " + Model.sshAgentHelperSourceLabel(root.sshAgentHelper.source)
+                + (root.sshAgentHelper.checksum === "match" ? " (checksum verified)" : "")
+              color: root.sshAgentHelper.source === "development" ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // Why the feature is unavailable, when it is. These are the
+            // failures a real clone produces: a stale binary, a dropped file
+            // mode, an LFS placeholder.
+            Text {
+              textFormat: Text.PlainText
+              visible: root.sshAgentEnabled && root.sshAgentHelper.message !== ""
+              width: parent.width
+              text: root.sshAgentHelper.message
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

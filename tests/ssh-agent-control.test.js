@@ -60,13 +60,21 @@ eq("helper path is plugin-relative and absolute",
 eq("helper path refuses a relative plugin dir", Model.sshAgentHelperPath("opt/bw"), "")
 eq("helper path refuses an empty plugin dir", Model.sshAgentHelperPath(""), "")
 
-const helperCmd = Model.sshAgentHelperCommand("/opt/bw")
+// The source is chosen by the bundle inspection (see ssh-agent-bundle.test.js),
+// and the command follows it rather than guessing. Launching an unvetted
+// binary would defeat the point of inspecting one.
+const helperCmd = Model.sshAgentHelperCommand("/opt/bw", "development")
 eq("helper runs directly with no shell and no arguments", helperCmd.length, 1)
 eq("helper command is the absolute helper path", helperCmd[0],
   "/opt/bw/agent/target/debug/qs-bitwarden-ssh-agent")
+eq("the shipped helper is launched when that is what was accepted",
+  Model.sshAgentHelperCommand("/opt/bw", "bundled")[0],
+  "/opt/bw/bin/x86_64-linux/qs-bitwarden-ssh-agent")
+eq("no accepted source launches nothing", Model.sshAgentHelperCommand("/opt/bw", "").length, 0)
+eq("an unknown source launches nothing", Model.sshAgentHelperCommand("/opt/bw", "elsewhere").length, 0)
 check("helper command never goes through a shell",
   !helperCmd.some(a => /^(?:ba)?sh$/.test(path.basename(String(a)))), JSON.stringify(helperCmd))
-eq("helper command is empty without a plugin dir", Model.sshAgentHelperCommand("").length, 0)
+eq("helper command is empty without a plugin dir", Model.sshAgentHelperCommand("", "bundled").length, 0)
 
 // -------------------------------------------------------------------------
 // Minimal environment

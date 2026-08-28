@@ -67,11 +67,14 @@ TestCase {
   function test_helper_is_launched_by_absolute_plugin_path() {
     var dir = Model.pluginDirFromUrl("file:///home/u/.config/omarchy/plugins/bw/")
     compare(dir, "/home/u/.config/omarchy/plugins/bw")
-    var cmd = Model.sshAgentHelperCommand(dir)
+    // The source comes from the bundle inspection; the command follows it
+    // rather than guessing which binary to run.
+    var cmd = Model.sshAgentHelperCommand(dir, "bundled")
     compare(cmd.length, 1)
     compare(cmd[0].charAt(0), "/")
     verify(cmd[0].indexOf("/home/u/.config/omarchy/plugins/bw/") === 0)
-    compare(Model.sshAgentHelperCommand(Model.pluginDirFromUrl("file:///opt/bw/../etc/")).length, 0)
+    compare(Model.sshAgentHelperCommand(Model.pluginDirFromUrl("file:///opt/bw/../etc/"), "bundled").length, 0)
+    compare(Model.sshAgentHelperCommand(dir, "").length, 0)
   }
 
   function test_helper_environment_is_minimal() {
