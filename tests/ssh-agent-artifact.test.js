@@ -138,17 +138,28 @@ check("a container runtime is used to enter the image, not required to be in it"
   /reexec_in_container/.test(script),
   "no path re-executes the build inside the pinned image")
 
-// The important refusal: without a pinned environment the script must not
-// report a reproducibility result it has no basis for.
-const verify = run("--verify-reproducible")
-if (verify.status === 0) {
-  check("a passing --verify-reproducible really had a container", /container runtime/.test(verify.stderr),
-    "reported success without saying what it built in")
-} else {
-  eq("--verify-reproducible refuses without a pinned environment", verify.status, 1)
-  check("and says why rather than failing opaquely",
-    /not be reproducible|container runtime/.test(verify.stderr), verify.stderr.slice(0, 200))
-}
+// Asked through --explain rather than by running it. Invoking
+// --verify-reproducible here would pull a 700MB image and run two full
+// release builds just to observe a decision -- which is what this file's
+// header promises not to do, and what it was doing on any machine with a
+// container runtime until CI pointed it out.
+const explain = run("--explain")
+eq("--explain reports without acting", explain.status, 0)
+check("--explain names the environment it would build in",
+  /^environment: /m.test(explain.stdout), explain.stdout.slice(0, 200))
+check("--explain is honest about an unpinned environment",
+  !/not pinned and no container runtime/.test(explain.stdout)
+    || /would not be reproducible/.test(explain.stdout),
+  explain.stdout.slice(0, 200))
+check("--explain pulls nothing and builds nothing",
+  explain.stdout.length < 500 && !/Compiling|Unable to find image/.test(explain.stdout + explain.stderr),
+  explain.stdout.slice(0, 200))
+
+// The refusal text itself is checked in the source, so that asserting it
+// costs no build anywhere.
+check("the refusal explains itself rather than failing opaquely",
+  /not in the pinned build environment[\s\S]{0,300}?would not be reproducible/.test(script),
+  "the refusal message does not say why")
 
 check("an unpinned build is possible but must be asked for",
   /--allow-unpinned/.test(script) && /not reproducible/.test(script),

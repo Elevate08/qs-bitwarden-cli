@@ -54,6 +54,8 @@ Usage: scripts/build-agent.sh [--verify-reproducible] [--check] [--allow-unpinne
   --allow-unpinned      Permit a host-toolchain build when no container runtime
                         is available. The result is NOT reproducible and is
                         refused by --verify-reproducible.
+  --explain             Say which build environment this would use and stop.
+                        Runs nothing, pulls nothing, writes nothing.
 USAGE
 }
 
@@ -252,6 +254,25 @@ build_release() {
   note "wrote bin/$OUTPUT_NAME and its checksum"
 }
 
+# Report the decision without acting on it. Useful for a person wondering why
+# a build refused, and for tests that need to check the decision logic without
+# pulling an image and running two full builds to find out.
+explain() {
+  if in_pinned_environment; then
+    printf 'environment: pinned (building here directly)\n'
+    return 0
+  fi
+  local runtime
+  if runtime="$(container_runtime)"; then
+    printf 'environment: not pinned, but reachable via %s\n' "$runtime"
+    printf 'image:       %s\n' "$PINNED_IMAGE"
+    return 0
+  fi
+  printf 'environment: not pinned and no container runtime to enter one\n'
+  printf 'consequence: a build here would not be reproducible; --verify-reproducible refuses\n'
+  return 0
+}
+
 # --- entry point -----------------------------------------------------------
 
 main() {
@@ -259,6 +280,7 @@ main() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --verify-reproducible) mode="verify" ;;
+      --explain) mode="explain" ;;
       --check) mode="check" ;;
       --allow-unpinned) allow_unpinned="yes" ;;
       -h|--help) usage; exit 0 ;;
@@ -272,6 +294,7 @@ main() {
   command -v cargo >/dev/null 2>&1 || fail "cargo is not on PATH"
 
   case "$mode" in
+    explain) explain ;;
     verify) verify_reproducible ;;
     check) check_committed ;;
     build) build_release "$allow_unpinned" ;;
