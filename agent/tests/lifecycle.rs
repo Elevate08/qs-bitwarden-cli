@@ -554,6 +554,7 @@ fn unlock_on_demand_raises_an_unlock_for_an_empty_identity_listing() {
     assert_eq!(identity_count(&agent.socket), 0);
 
     agent.send("{\"v\":1,\"type\":\"options\",\"unlockOnDemand\":true}");
+    agent.drain_control();
 
     let socket = agent.socket.clone();
     let client = std::thread::spawn(move || {
@@ -581,6 +582,7 @@ fn concurrent_identity_listings_coalesce_into_one_unlock() {
     let mut agent = TestAgent::start();
     let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
     agent.send("{\"v\":1,\"type\":\"options\",\"unlockOnDemand\":true}");
+    agent.drain_control();
 
     let mut clients = Vec::new();
     for _ in 0..3 {
@@ -820,6 +822,27 @@ impl TestAgent {
     fn send(&mut self, line: &str) {
         writeln!(self.input, "{line}").unwrap();
         self.input.flush().unwrap();
+    }
+
+    /// Wait until the control loop has processed everything sent so far.
+    ///
+    /// Control messages are read in order on one channel, so a message whose
+    /// effect is observable acts as a barrier for every message before it.
+    /// `vault_locked` is that message: it answers with `locked`, and locking
+    /// an empty store changes nothing a test then depends on.
+    ///
+    /// Needed because a test that sends `options` and then connects a client
+    /// is racing the control loop. That race is invisible on a fast machine
+    /// and cost a CI run: the client's listing arrived first, was answered
+    /// with an empty list instead of raising an unlock, and the test waited
+    /// for a message that was never going to come.
+    fn drain_control(&mut self) {
+        self.send("{\"v\":1,\"type\":\"vault_locked\",\"epoch\":0}");
+        let acknowledged = self.read();
+        assert_eq!(
+            acknowledged["type"], "locked",
+            "expected a lock acknowledgement"
+        );
     }
 
     fn read(&mut self) -> serde_json::Value {
