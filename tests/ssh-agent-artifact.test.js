@@ -259,6 +259,12 @@ check("only crates.io is permitted as a source",
 // The panel's JavaScript runs in QML's engine, not Node's, and they differ.
 check("the QML tests run in CI",
   /qmltestrunner/.test(workflow), "the QML suite passes locally and never runs in CI")
+// --no-install-recommends drops what QtQuick only recommends, and
+// QtQml.WorkerScript is one of them: importing QtQuick then fails with a
+// module-not-installed error that reads like a broken test.
+check("every QML module the tests import is installed explicitly",
+  /qml6-module-qtqml-workerscript/.test(workflow),
+  "QtQuick's recommended modules are dropped by --no-install-recommends")
 
 // A fork cannot push CI's bytes into its own branch, so an unconditional
 // match requirement would make every external agent-source PR unmergeable.

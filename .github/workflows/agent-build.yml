@@ -238,13 +238,25 @@ jobs:
         # The panel's own JavaScript runs inside QML's engine, not Node's, and
         # the two differ. These were passing locally and never running here.
         run: |
+          # Every module named explicitly. --no-install-recommends keeps the
+          # install lean but drops what QtQuick merely *recommends*, and
+          # QtQml.WorkerScript is one of those -- importing QtQuick then fails
+          # at compile time with a module-not-installed error that looks like
+          # a broken test rather than a missing package.
           sudo apt-get install -y -qq --no-install-recommends \
-            qml6-module-qttest qt6-declarative-dev-tools \
-            qml6-module-qtqml qml6-module-qtquick
+            qt6-declarative-dev-tools \
+            qml6-module-qttest \
+            qml6-module-qtqml \
+            qml6-module-qtqml-workerscript \
+            qml6-module-qtquick \
+            qml6-module-qtquick-window
           # Record what the snapshot actually resolved to, so a future
           # difference in behaviour can be traced to a version rather than
           # guessed at.
           dpkg -l qt6-declarative-dev-tools qml6-module-qttest | tail -2
+          # The import paths qmltestrunner will search, so a future
+          # module-not-installed failure can be read straight from the log.
+          /usr/lib/qt6/bin/qmltestrunner -help 2>&1 | head -3 || true
           QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml
 
       - name: Run every panel test
