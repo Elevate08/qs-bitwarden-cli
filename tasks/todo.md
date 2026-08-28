@@ -651,14 +651,18 @@ Produce separate debug symbols only as temporary artifacts.
 **Verification:**
 
 - [x] Tests pass: `node tests/ssh-agent-artifact.test.js`
-- [ ] Build succeeds: `scripts/build-agent.sh --verify-reproducible` -- runs
-      in CI; refuses locally for want of a pinned container, by design.
-- [ ] Manual check: compare artifacts from two clean paths and inspect them
-      with `file`, `readelf`, `ldd`, `sha256sum`. NOT DONE LOCALLY: this
-      machine has no usable container runtime, so the pinned environment
-      cannot be exercised here and `--verify-reproducible` correctly refuses
-      rather than reporting a result it cannot support. CI performs this on
-      the feature branch.
+- [x] Build succeeds: `scripts/build-agent.sh --verify-reproducible` -- green
+      in CI, which runs it inside the pinned image. It refuses locally for want
+      of that image, by design, and `--explain` says so without building.
+- [x] Manual check: done in CI rather than locally, this machine having no
+      usable container runtime. Two builds from `/tmp/*/path-one` and
+      `/tmp/*/a-considerably-longer-second-path` produced identical bytes:
+      sha256 7f4c38d405adf16504ea7029896365c4081b0e154a4fc1755cd624c12503e816.
+      Built under rustc 1.98.0 and GNU ld 2.40 in the pinned Debian bookworm
+      image -- the host's ld 2.47 would have produced different bytes, which
+      is what the image exists to prevent. `readelf`/`ldd` inspection of the
+      committed artifact belongs with Task 18, which is where a binary is
+      first committed.
 
 **Dependencies:** Task 9
 

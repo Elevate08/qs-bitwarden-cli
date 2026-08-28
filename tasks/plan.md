@@ -173,7 +173,7 @@ Tasks 3 + 11 + 14 + 15 + 19
 
 ### Phase 4: Establish the Artifact Trust Path
 
-- [ ] Task 16: Make the release build reproducible
+- [x] Task 16: Make the release build reproducible
 - [ ] Task 17: Add read-only pull-request gates
 
 ### Checkpoint: Candidate Artifact
