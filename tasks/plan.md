@@ -178,8 +178,8 @@ Tasks 3 + 11 + 14 + 15 + 19
 
 ### Checkpoint: Candidate Artifact
 
-- [ ] Two clean pinned builds produce identical stripped bytes.
-- [ ] Existing, Rust, audit, license, and end-to-end gates pass with no PR
+- [x] Two clean pinned builds produce identical stripped bytes.
+- [x] Existing, Rust, audit, license, and end-to-end gates pass with no PR
       secrets or write token.
 
 - [x] Task 18: Validate the bundled helper at launch
