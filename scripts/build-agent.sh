@@ -39,18 +39,28 @@ PINNED_IMAGE="rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5
 SUPPORTED_TARGET="x86_64-unknown-linux-gnu"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTPUT_DIR="$REPO_ROOT/bin"
+# Architecture-scoped from the start. v1 ships x86_64 only, but a flat bin/
+# would have to be restructured the day a second target appears, and the
+# checksum file would have to change shape with it.
+OUTPUT_ARCH="x86_64-linux"
+OUTPUT_DIR="$REPO_ROOT/bin/$OUTPUT_ARCH"
 OUTPUT_NAME="qs-bitwarden-ssh-agent"
+# One SHA256SUMS covering every tracked artifact, in the format `sha256sum -c`
+# reads, rather than a sidecar file per binary.
+SUMS_FILE="$REPO_ROOT/bin/SHA256SUMS"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/build-agent.sh [--verify-reproducible] [--check] [--allow-unpinned]
+Usage: scripts/build-agent.sh [--verify-reproducible] [--compare-tracked]
+                              [--allow-unpinned] [--explain]
 
-  (no flags)            Build the release helper into bin/ and write its checksum.
+  (no flags)            Build the release helper into bin/<arch>/ and write
+                        bin/SHA256SUMS.
   --verify-reproducible Build twice from two different absolute paths and
                         require byte-identical output. Writes nothing.
-  --check               Report whether bin/ matches a fresh build, without
-                        modifying the repository. Exit 1 on drift.
+  --compare-tracked     Report whether the tracked binary matches a fresh build
+                        of this source, without modifying the repository.
+                        Exit 1 on drift.
   --allow-unpinned      Permit a host-toolchain build when no container runtime
                         is available. The result is NOT reproducible and is
                         refused by --verify-reproducible.
@@ -211,9 +221,9 @@ verify_reproducible() {
 }
 
 # Report drift without touching the repository, so it is safe in a PR gate.
-check_committed() {
+compare_tracked() {
   local committed="$OUTPUT_DIR/$OUTPUT_NAME"
-  [ -f "$committed" ] || fail "no committed binary at bin/$OUTPUT_NAME"
+  [ -f "$committed" ] || fail "no tracked binary at bin/$OUTPUT_ARCH/$OUTPUT_NAME"
   local work
   work="$(mktemp -d)" || fail "could not create a work directory"
   # shellcheck disable=SC2064
@@ -224,9 +234,10 @@ check_committed() {
   fresh="$(digest "$(built_binary "$work/target")")"
   local have
   have="$(digest "$committed")"
-  printf 'committed: %s\nfresh:     %s\n' "$have" "$fresh"
-  [ "$have" = "$fresh" ] || fail "bin/$OUTPUT_NAME does not match a build of this source"
-  note "the committed binary matches this source"
+  printf 'tracked: %s\nfresh:   %s\n' "$have" "$fresh"
+  [ "$have" = "$fresh" ] \
+    || fail "bin/$OUTPUT_ARCH/$OUTPUT_NAME does not match a build of this source"
+  note "the tracked binary matches this source"
 }
 
 build_release() {
@@ -250,8 +261,10 @@ build_release() {
   trap "rm -rf '$work'" EXIT
   build_into "$REPO_ROOT" "$work/target" || fail "the build failed"
   install -m 0755 "$(built_binary "$work/target")" "$OUTPUT_DIR/$OUTPUT_NAME"
-  ( cd "$OUTPUT_DIR" && sha256sum "$OUTPUT_NAME" > "$OUTPUT_NAME.sha256" )
-  note "wrote bin/$OUTPUT_NAME and its checksum"
+  # Paths relative to bin/, so `sha256sum -c SHA256SUMS` works from there
+  # whatever the checkout is called.
+  ( cd "$REPO_ROOT/bin" && sha256sum "$OUTPUT_ARCH/$OUTPUT_NAME" > "$SUMS_FILE" )
+  note "wrote bin/$OUTPUT_ARCH/$OUTPUT_NAME and bin/SHA256SUMS"
 }
 
 # Report the decision without acting on it. Useful for a person wondering why
@@ -281,7 +294,7 @@ main() {
     case "$1" in
       --verify-reproducible) mode="verify" ;;
       --explain) mode="explain" ;;
-      --check) mode="check" ;;
+      --compare-tracked) mode="compare" ;;
       --allow-unpinned) allow_unpinned="yes" ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; fail "unknown argument '$1'" ;;
@@ -296,7 +309,7 @@ main() {
   case "$mode" in
     explain) explain ;;
     verify) verify_reproducible ;;
-    check) check_committed ;;
+    compare) compare_tracked ;;
     build) build_release "$allow_unpinned" ;;
   esac
 }

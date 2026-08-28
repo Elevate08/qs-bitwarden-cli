@@ -165,10 +165,27 @@ check("an unpinned build is possible but must be asked for",
   /--allow-unpinned/.test(script) && /not reproducible/.test(script),
   "no way to build without a container, or no warning that it is not the release artifact")
 
-check("--check reports drift without writing to the repository",
-  /check_committed\(\)[\s\S]{0,600}?mktemp -d/.test(script)
-    && !/check_committed\(\)[\s\S]{0,600}?install -m/.test(script),
+check("--compare-tracked reports drift without writing to the repository",
+  /compare_tracked\(\)[\s\S]{0,600}?mktemp -d/.test(script)
+    && !/compare_tracked\(\)[\s\S]{0,600}?install -m/.test(script),
   "the drift check writes into the repository")
+
+// The artifact paths and the flag name are what Task 18 and its verification
+// step refer to. They were wrong once -- a flat bin/ and a --check flag the
+// task list never mentions -- and the cost of that is only paid later, when
+// the binary is committed and everything has to be moved.
+check("the artifact is architecture-scoped",
+  /OUTPUT_ARCH="x86_64-linux"/.test(script) && /OUTPUT_DIR="\$REPO_ROOT\/bin\/\$OUTPUT_ARCH"/.test(script),
+  "a flat bin/ has to be restructured the day a second target appears")
+check("checksums go to one SHA256SUMS, not a sidecar per binary",
+  /SUMS_FILE="\$REPO_ROOT\/bin\/SHA256SUMS"/.test(script),
+  "no bin/SHA256SUMS")
+check("the checksum file is written relative to bin/ so sha256sum -c works there",
+  /cd "\$REPO_ROOT\/bin" && sha256sum "\$OUTPUT_ARCH\/\$OUTPUT_NAME"/.test(script),
+  "absolute or checkout-relative paths in SHA256SUMS would only verify here")
+check("the usage text lists the flags that exist",
+  /--compare-tracked/.test(script.split("USAGE")[1] || "") && !/\[--check\]/.test(script),
+  "usage advertises a flag the script does not accept")
 
 // -------------------------------------------------------------------------
 // CI shape
