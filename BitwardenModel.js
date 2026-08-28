@@ -3180,8 +3180,8 @@ var SSH_AGENT_HEALTHY_MS = 60 * 1000
 // between the panel and a helper binary that should have been replaced with
 // it, which is exactly the case the protocol version exists to catch.
 var SSH_AGENT_EVENT_TYPES = [
-  "ready", "unlock_required", "approval_required", "keys_loaded",
-  "locked", "grants_changed", "state_changed", "error"
+  "ready", "unlock_required", "approval_required", "request_cancelled",
+  "keys_loaded", "public_key", "locked", "grants_changed", "state_changed", "error"
 ]
 
 function sshAgentMaxLineBytes() { return SSH_AGENT_MAX_LINE_BYTES }
@@ -3592,6 +3592,399 @@ function sshAuthSockDiagnostic(sock, runtimeDir) {
 }
 
 // -------------------------------------------------------------------------
+// Public-key file projection
+// -------------------------------------------------------------------------
+//
+// Git SSH signing needs paths, not inline keys: `user.signingkey` takes a
+// file, and `gpg.ssh.allowedSignersFile` has no inline form at all. So the
+// panel writes the companion's validated public identities to disk.
+//
+// Public keys are not secret, so this does not cross the private boundary --
+// but the files are still written 0600 inside a 0700 directory, because a
+// projection of your vault's contents is nobody else's business either.
+// Private material is never written here under any circumstance.
+//
+// Not into ~/.ssh: that directory belongs to the user and to OpenSSH, and a
+// plugin that rewrites a set of files in it would eventually delete something
+// it did not create.
+var SSH_EXPORT_SUBDIR = "qs-bitwarden-cli/ssh"
+
+function sshExportDisplayDir() {
+  return "~/.local/share/" + SSH_EXPORT_SUBDIR
+}
+
+// An item name is decrypted vault content about to become a path, and the
+// collection it came from may be writable by somebody else. It goes through
+// the same sanitizer the attachment path uses, then gets ".pub" appended --
+// after sanitizing, so nothing in the name can consume the extension.
+//
+// `taken` accumulates the names already used by this projection. Two items may
+// legitimately share a name; neither may overwrite the other, so the loser
+// gains its item ID rather than the file being clobbered.
+function sshExportFileName(name, itemId, taken) {
+  var used = taken || {}
+  var base = safeAttachmentFileName(name)
+  if (base === "attachment") base = "ssh-key"
+  var candidate = base + ".pub"
+  if (used[candidate] !== undefined && used[candidate] !== itemId) {
+    var suffix = safeAttachmentFileName(String(itemId || "")).slice(0, 64)
+    candidate = base + "." + (suffix || "key") + ".pub"
+  }
+  used[candidate] = itemId
+  return candidate
+}
+
+// The OpenSSH one-line public form, and nothing that is not one. The
+// companion derives these from keys it validated, but this is the last gate
+// before bytes reach the filesystem and it costs nothing to check the shape.
+var SSH_PUBLIC_KEY_RE = /^(ssh-ed25519|ssh-rsa) [A-Za-z0-9+/=]+(\s|$)/
+
+function sshExportIdentities(identities) {
+  if (!identities || !Array.isArray(identities)) return []
+  var out = []
+  for (var i = 0; i < identities.length; i++) {
+    var identity = identities[i] || {}
+    var publicKey = String(identity.publicKey || "").trim()
+    if (!SSH_PUBLIC_KEY_RE.test(publicKey)) continue
+    if (publicKey.indexOf("PRIVATE") >= 0) continue
+    var itemId = String(identity.itemId || "")
+    if (itemId === "") continue
+    out.push({
+      itemId: itemId,
+      name: String(identity.name || ""),
+      fingerprint: String(identity.fingerprint || ""),
+      publicKey: publicKey
+    })
+  }
+  return out
+}
+
+// What the export script reads on stdin. Not argv: a hundred keys of RSA
+// public material would push at the argument limit, and stdin keeps the
+// vault-derived names out of /proc/<pid>/cmdline as a matter of habit.
+function sshExportPayload(identities) {
+  var taken = {}
+  var entries = []
+  var validated = sshExportIdentities(identities)
+  for (var i = 0; i < validated.length; i++) {
+    entries.push({
+      fileName: sshExportFileName(validated[i].name, validated[i].itemId, taken),
+      publicKey: validated[i].publicKey
+    })
+  }
+  return JSON.stringify(entries)
+}
+
+var SSH_EXPORT_EXIT_NO_HOME = 3
+var SSH_EXPORT_EXIT_UNSAFE_DIR = 5
+var SSH_EXPORT_EXIT_WRITE = 7
+
+// The directory the projection lives in, resolved and checked the same way in
+// both the export and the clear script.
+function sshExportDirPrelude() {
+  return "__base=\"${XDG_DATA_HOME:-}\"; "
+    + "if [ -z \"$__base\" ]; then "
+    + "  [ -n \"${HOME:-}\" ] || exit " + SSH_EXPORT_EXIT_NO_HOME + "; "
+    + "  __base=\"$HOME/.local/share\"; "
+    + "fi; "
+    + "case \"$__base\" in /*) ;; *) exit " + SSH_EXPORT_EXIT_NO_HOME + ";; esac; "
+    + "__dir=\"$__base/" + SSH_EXPORT_SUBDIR + "\"; "
+}
+
+function sshExportCommand() {
+  var script = sshExportDirPrelude()
+    // Safe parent creation, then the directory itself. A symlink at the
+    // export path is refused outright rather than followed: writing through
+    // it would let anything that could plant it choose where these land.
+    + "mkdir -p -m 700 \"$(dirname \"$__dir\")\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
+    + "if [ -L \"$__dir\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
+    + "if [ -e \"$__dir\" ]; then "
+    + "  [ -d \"$__dir\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
+    + "else (umask 077 && mkdir -- \"$__dir\") || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
+    + "chmod 700 -- \"$__dir\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
+    // The payload is read once into a variable so a partial stdin cannot
+    // leave a half-written projection behind.
+    + "__payload=\"$(cat)\"; "
+    + "printf '%s' \"$__payload\" | jq -e 'type == \"array\"' >/dev/null 2>&1 || exit "
+    + SSH_EXPORT_EXIT_WRITE + "; "
+    // NUL-delimited so a filename can never split a record, whatever the
+    // sanitizer let through.
+    // A bash array, not an accumulated string: "$x\n" inside double quotes
+    // appends a literal backslash-n, which silently made every freshly
+    // written file look stale and deleted it again.
+    + "__keep=(); "
+    + "while IFS= read -r -d '' __file && IFS= read -r -d '' __key; do "
+    + "  case \"$__file\" in */*|..|.|\"\") exit " + SSH_EXPORT_EXIT_WRITE + ";; esac; "
+    // Each file lands by rename, so a reader never sees a partial key, and an
+    // existing symlink at the name is replaced rather than written through.
+    + "  __tmp=\"$(mktemp \"$__dir/.export.XXXXXX\")\" || exit " + SSH_EXPORT_EXIT_WRITE + "; "
+    + "  printf '%s\\n' \"$__key\" > \"$__tmp\" || { rm -f -- \"$__tmp\"; exit "
+    + SSH_EXPORT_EXIT_WRITE + "; }; "
+    + "  chmod 600 -- \"$__tmp\" || { rm -f -- \"$__tmp\"; exit " + SSH_EXPORT_EXIT_WRITE + "; }; "
+    + "  mv -f -- \"$__tmp\" \"$__dir/$__file\" || { rm -f -- \"$__tmp\"; exit "
+    + SSH_EXPORT_EXIT_WRITE + "; }; "
+    + "  __keep+=(\"$__file\"); "
+    + "done < <(printf '%s' \"$__payload\" | jq -j '.[] | .fileName, \"\\u0000\", .publicKey, \"\\u0000\"'); "
+    // Anything left in the directory belonged to a previous epoch. Only files
+    // this projection creates are removed -- the pattern is ours, so a file a
+    // user dropped in here by hand is left alone.
+    + "for __existing in \"$__dir\"/*.pub; do "
+    + "  [ -e \"$__existing\" ] || [ -L \"$__existing\" ] || continue; "
+    + "  __name=\"$(basename -- \"$__existing\")\"; "
+    + "  __found=0; "
+    + "  for __k in ${__keep[@]+\"${__keep[@]}\"}; do "
+    + "    if [ \"$__k\" = \"$__name\" ]; then __found=1; break; fi; "
+    + "  done; "
+    + "  [ \"$__found\" = \"1\" ] || rm -f -- \"$__existing\"; "
+    + "done; "
+    + "rm -f -- \"$__dir\"/.export.* 2>/dev/null; "
+    + "echo exported"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// Logout, account change, and disabling the feature all remove the whole
+// projection. A lock does not: public identities stay advertised while
+// locked, so the files stay too.
+function sshExportClearCommand() {
+  var script = sshExportDirPrelude()
+    + "if [ -L \"$__dir\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
+    + "[ -d \"$__dir\" ] || { echo cleared; exit 0; }; "
+    + "rm -f -- \"$__dir\"/*.pub \"$__dir\"/.export.* 2>/dev/null; "
+    + "rmdir -- \"$__dir\" 2>/dev/null; "
+    + "echo cleared"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+function parseSshExportResult(exitCode, stdout) {
+  var code = Math.floor(Number(exitCode))
+  var out = String(stdout === undefined || stdout === null ? "" : stdout).trim()
+  if (code === 0 && (out === "exported" || out === "cleared" || out === "")) {
+    return { ok: true, code: "OK", message: "" }
+  }
+  switch (code) {
+    case SSH_EXPORT_EXIT_NO_HOME:
+      return { ok: false, code: "NO_HOME",
+        message: "No data directory is set, so public key files cannot be written." }
+    case SSH_EXPORT_EXIT_UNSAFE_DIR:
+      return { ok: false, code: "UNSAFE_DIR",
+        message: sshExportDisplayDir() + " is not a directory this plugin will write to. "
+          + "Remove or rename whatever is at that path." }
+    default:
+      return { ok: false, code: "FAILED",
+        message: "Could not write public key files to " + sshExportDisplayDir() + "." }
+  }
+}
+
+// -------------------------------------------------------------------------
+// Signing authorization UX
+// -------------------------------------------------------------------------
+//
+// The prompt is the only place a person is asked to authorise a signature, so
+// what it says has to match what the companion actually checked. It verifies
+// the peer's UID and nothing else: the PID, the executable path and the name
+// derived from it are context for a human, not an identity claim, and the
+// prompt says so rather than implying otherwise.
+
+// Matches REQUEST_LIFETIME_MS in the companion. The panel only draws the
+// countdown; the companion is what actually expires the request. Two minutes
+// rather than thirty seconds because this waits on a person reading a
+// fingerprint, not on a machine -- see docs/decisions/0003-request-deadline.md.
+var SSH_AGENT_REQUEST_DEADLINE_MS = 120 * 1000
+
+// Bounds on anything drawn from a vault item or another process. A name comes
+// from a collection somebody else may be able to edit, and a path comes from
+// outside the panel entirely.
+var SSH_AGENT_MAX_NAME_CHARS = 256
+var SSH_AGENT_MAX_PATH_CHARS = 512
+
+function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
+
+function boundedText(value, limit) {
+  var text = (value === undefined || value === null) ? "" : String(value)
+  return text.length > limit ? text.slice(0, limit) : text
+}
+
+function isRequestId(value) {
+  return typeof value === "number" && isFinite(value) && Math.floor(value) === value && value >= 0
+}
+
+function sshAgentApproveLine(requestId, grantSeconds) {
+  if (!isRequestId(requestId)) return ""
+  var seconds = Math.floor(Number(grantSeconds))
+  if (!isFinite(seconds) || seconds < 0) seconds = 0
+  seconds = Math.min(seconds, SSH_AGENT_APPROVAL_WINDOW_MAX_SEC)
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "approve",
+    requestId: requestId, grantSeconds: seconds }) + "\n"
+}
+
+function sshAgentDenyLine(requestId) {
+  if (!isRequestId(requestId)) return ""
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "deny", requestId: requestId }) + "\n"
+}
+
+// The companion has no way to tell a dismissed unlock dialog from a user who
+// wandered off, so the panel says which it was rather than letting the
+// request burn its deadline.
+function sshAgentUnlockCancelledLine(requestId) {
+  if (!isRequestId(requestId)) return ""
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "unlock_cancelled",
+    requestId: requestId, reason: "user-cancelled" }) + "\n"
+}
+
+function sshAgentRevokeGrantLine(grantId) {
+  if (!isRequestId(grantId)) return ""
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "revoke_grant", grantId: grantId }) + "\n"
+}
+
+// "/usr/bin/ssh" -> "ssh". Only ever for display beside the full path, never
+// as a substitute for it: a basename is the easiest part of this to fake.
+function processNameFromPath(processPath) {
+  var text = String(processPath === undefined || processPath === null ? "" : processPath)
+  var cut = text.lastIndexOf("/")
+  var name = cut >= 0 ? text.slice(cut + 1) : text
+  return boundedText(name, SSH_AGENT_MAX_NAME_CHARS)
+}
+
+function formatDuration(seconds) {
+  var total = Math.max(0, Math.floor(Number(seconds)) || 0)
+  var minutes = Math.floor(total / 60)
+  var rest = total % 60
+  if (minutes > 0 && rest > 0) return minutes + "m " + rest + "s"
+  if (minutes > 0) return minutes + "m"
+  return rest + "s"
+}
+
+var SSH_AGENT_PROVENANCE_NOTE =
+  "Reported by the system, not verified. Only the requesting user was checked."
+var SSH_AGENT_FORWARDED_WARNING =
+  "This request arrived over agent forwarding, which this release does not support. "
+  + "The process shown is not the one that will use the signature."
+
+// One approval_required message, reduced to what the prompt draws. Everything
+// attacker-influenced is bounded here rather than at the point it is rendered.
+function sshAgentPromptView(message, approvalWindowSec) {
+  var request = message || {}
+  var window = Math.max(0, Math.min(SSH_AGENT_APPROVAL_WINDOW_MAX_SEC,
+    Math.floor(Number(approvalWindowSec)) || 0))
+  var forwarded = request.forwarded === true
+  // A grant is a window in which this process signs without asking again, so
+  // it is offered only when the companion offered one, the user has a
+  // non-zero window configured, and nothing about the request is unusual.
+  var grantOffered = request.grantOffered === true && window > 0 && !forwarded
+  return {
+    requestId: isRequestId(request.requestId) ? request.requestId : -1,
+    keyId: boundedText(request.keyId, SSH_AGENT_MAX_NAME_CHARS),
+    keyName: boundedText(request.keyName, SSH_AGENT_MAX_NAME_CHARS),
+    fingerprint: boundedText(request.fingerprint, SSH_AGENT_MAX_NAME_CHARS),
+    pid: Math.floor(Number(request.pid)) || 0,
+    processPath: boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS),
+    processName: processNameFromPath(boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS)),
+    operation: request.operation === "ssh-sign" ? "ssh-sign" : "",
+    grantOffered: grantOffered,
+    grantSeconds: grantOffered ? window : 0,
+    // "program", not "process": a grant matches the executable path and the
+    // key, so a fresh process running the same program rides it. That is what
+    // makes it useful for Git signing, which spawns one ssh-keygen per commit.
+    // See docs/decisions/0002-grant-scope.md.
+    grantLabel: grantOffered ? "Approve for this program · " + formatDuration(window) : "",
+    forwardedWarning: forwarded ? SSH_AGENT_FORWARDED_WARNING : "",
+    provenanceNote: SSH_AGENT_PROVENANCE_NOTE
+  }
+}
+
+// The live grant set, as the settings screen draws it. Public metadata only:
+// the companion never sends key material here and nothing below would carry
+// it if it did.
+function sshAgentGrantViews(grants) {
+  if (!grants || !Array.isArray(grants)) return []
+  var out = []
+  for (var i = 0; i < grants.length; i++) {
+    var grant = grants[i] || {}
+    if (!isRequestId(grant.grantId)) continue
+    var remaining = Math.max(0, Math.floor(Number(grant.expiresInSec)) || 0)
+    out.push({
+      grantId: grant.grantId,
+      keyName: boundedText(grant.keyName, SSH_AGENT_MAX_NAME_CHARS),
+      fingerprint: boundedText(grant.fingerprint, SSH_AGENT_MAX_NAME_CHARS),
+      pid: Math.floor(Number(grant.pid)) || 0,
+      processPath: boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
+      processName: processNameFromPath(boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS)),
+      remainingSec: remaining,
+      remainingLabel: remaining > 0 ? formatDuration(remaining) + " left" : "expiring"
+    })
+  }
+  return out
+}
+
+// Unlocking runs the panel's ordinary vault read, which decrypts the whole
+// vault and takes seconds. The SSH request that triggered the unlock is held
+// across it rather than failed, so the user needs to see that something is
+// happening -- otherwise unlocking appears to do nothing until the approval
+// prompt arrives. There is no faster path: `bw` has no server-side type
+// filter, so an SSH-only read would decrypt exactly as much and cost the
+// same seconds.
+function sshAgentLoadingNote() {
+  return "Loading your SSH keys from the vault. The signing request is still waiting."
+}
+
+// The agent never opens an approval UI over the lock screen. An unknown screen
+// state counts as locked: the cost of not prompting is a failed SSH request,
+// and the cost of prompting is a credential decision on a locked desktop.
+function sshAgentShouldPrompt(context) {
+  if (!context || typeof context !== "object") return false
+  return context.screenLocked !== true
+}
+
+// A same-UID process can ask for a signature as often as it likes. It cannot
+// be stopped from trying, but it can be stopped from reopening the panel every
+// time: two consecutive refusals and the panel stops raising prompts for a
+// while. Approving clears the run, because a user who is engaging is not being
+// pestered.
+var SSH_AGENT_COOLDOWN_AFTER = 2
+var SSH_AGENT_COOLDOWN_MS = 5 * 60 * 1000
+
+function sshAgentCooldownInitial() {
+  return { refusals: 0, untilMs: 0 }
+}
+
+function sshAgentCooldownAfter(state, outcome, nowMs) {
+  var current = state || sshAgentCooldownInitial()
+  var now = Number(nowMs) || 0
+  if (outcome === "approved") return { refusals: 0, untilMs: 0 }
+  if (outcome !== "denied" && outcome !== "timeout") {
+    return { refusals: current.refusals, untilMs: current.untilMs }
+  }
+  var refusals = current.refusals + 1
+  return {
+    refusals: refusals,
+    untilMs: refusals >= SSH_AGENT_COOLDOWN_AFTER ? now + SSH_AGENT_COOLDOWN_MS : current.untilMs
+  }
+}
+
+function sshAgentCooldownActive(state, nowMs) {
+  var current = state || sshAgentCooldownInitial()
+  return (Number(nowMs) || 0) < current.untilMs
+}
+
+// A cooldown that fails signatures silently is worse than the pestering it
+// prevents: SSH stops working for minutes with no explanation anywhere, and
+// the user has no reason to connect the two. So it says what it is doing and
+// when it stops -- in general terms only, naming neither the key nor the
+// process, because the whole point is that the requests are unattended.
+function sshAgentCooldownStatus(state, nowMs) {
+  var current = state || sshAgentCooldownInitial()
+  var now = Number(nowMs) || 0
+  if (now >= current.untilMs) return { active: false, remainingSec: 0, message: "" }
+  var remaining = Math.ceil((current.untilMs - now) / 1000)
+  return {
+    active: true,
+    remainingSec: remaining,
+    message: "SSH signing requests are being refused after repeated unanswered prompts. "
+      + "Normal service resumes in " + formatDuration(remaining) + "."
+  }
+}
+
+// -------------------------------------------------------------------------
 // Vault lifecycle
 // -------------------------------------------------------------------------
 //
@@ -3607,6 +4000,13 @@ function sshAuthSockDiagnostic(sock, runtimeDir) {
 var SSH_AGENT_LOCK_ACK_TIMEOUT_MS = 2000
 
 function sshAgentLockAckTimeoutMs() { return SSH_AGENT_LOCK_ACK_TIMEOUT_MS }
+
+// Settings the companion has to act on. Sent after the handshake and again
+// whenever they change, because the companion has no other way to learn them.
+function sshAgentOptionsLine(unlockOnDemand) {
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "options",
+    unlockOnDemand: unlockOnDemand === true }) + "\n"
+}
 
 function sshAgentRevokeGrantsLine() {
   return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "revoke_grants" }) + "\n"

@@ -9,7 +9,14 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::time::{timeout, Duration};
 
 pub const MAX_CLIENTS: usize = 8;
+/// Socket read and write timeouts. These are machine-speed operations, so
+/// they stay short regardless of how long a person may take to answer.
 pub const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a client blocks waiting for the state loop's answer. It must
+/// exceed `approvals::REQUEST_LIFETIME_MS`, or a client would give up before
+/// the request it is waiting on expires and the human deadline would be
+/// decorative -- which it was when both were thirty seconds.
+pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(150);
 
 pub struct ClientEvent {
     pub peer: PeerContext,
@@ -72,9 +79,21 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
             }
             continue;
         }
-        let bytes = match timeout(CLIENT_IO_TIMEOUT, response).await {
-            Ok(Ok(bytes)) => bytes,
-            _ => protocol::failure_response(),
+        // Watch the socket while the request is pending. Awaiting only the
+        // reply would leave a client that walked away undetected until the
+        // deadline -- and a prompt on screen for a signature nobody is
+        // waiting for any more. Returning here drops the reply channel, which
+        // is what tells the state loop to withdraw the request.
+        //
+        // Anything that actually arrives is either EOF or a pipelined frame,
+        // which this protocol does not use; both end the connection.
+        let mut probe = [0_u8; 1];
+        let bytes = tokio::select! {
+            result = timeout(RESPONSE_TIMEOUT, response) => match result {
+                Ok(Ok(bytes)) => bytes,
+                _ => protocol::failure_response(),
+            },
+            _ = stream.read(&mut probe) => return,
         };
         if write_response(&mut stream, bytes).await.is_err() {
             return;

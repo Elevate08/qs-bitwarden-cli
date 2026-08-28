@@ -47,8 +47,20 @@ pub enum ControlMessage {
         request_id: u64,
         reason: String,
     },
+    /// Panel settings the companion needs to act on. Sent after the
+    /// handshake and whenever they change.
+    Options {
+        v: u8,
+        #[serde(rename = "unlockOnDemand")]
+        unlock_on_demand: bool,
+    },
     RevokeGrants {
         v: u8,
+    },
+    RevokeGrant {
+        v: u8,
+        #[serde(rename = "grantId")]
+        grant_id: u64,
     },
     Shutdown {
         v: u8,
@@ -78,6 +90,8 @@ impl ControlMessage {
             | Self::RevokeGrants { v }
             | Self::Shutdown { v } => *v,
             Self::KeyLoadBegin { v, .. }
+            | Self::Options { v, .. }
+            | Self::RevokeGrant { v, .. }
             | Self::KeyLoadEnd { v, .. }
             | Self::VaultLocked { v, .. }
             | Self::Approve { v, .. }

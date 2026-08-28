@@ -40,6 +40,21 @@ impl PeerContext {
         })
     }
 
+    /// Whether a grant taken for `self` covers a request from `other`.
+    ///
+    /// A grant is scoped to one user and one program, deliberately not to one
+    /// process. Git runs a fresh `ssh-keygen` for every commit it signs, so a
+    /// PID-scoped grant never matches the workflow grants exist to serve --
+    /// a twenty-commit rebase would prompt twenty times either way. The
+    /// exposure this accepts is that any process at the same path benefits
+    /// during the window; on an unlocked desktop a hostile same-UID process
+    /// could simply run that program itself, which the threat model already
+    /// declines to defend against. The UID check is not relaxed: that is the
+    /// one property the companion actually verifies.
+    pub fn shares_grant_scope(&self, other: &Self) -> bool {
+        self.uid == other.uid && self.executable == other.executable
+    }
+
     /// Capture grant-scoping context for a PID supplied by `SO_PEERCRED`.
     pub fn capture(uid: u32, pid: u32) -> Result<Self, PeerError> {
         if pid == 0 {

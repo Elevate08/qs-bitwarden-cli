@@ -159,8 +159,8 @@ Tasks 3 + 11 + 14 + 15 + 19
 - [x] QML remains responsive during blocked SSH clients and helper events.
 
 - [x] Task 13: Enforce vault lifecycle transitions
-- [ ] Task 14: Deliver signing authorization UX
-- [ ] Task 15: Project validated public-key files
+- [x] Task 14: Deliver signing authorization UX
+- [x] Task 15: Project validated public-key files
 
 ### Checkpoint: End-to-End Feature
 

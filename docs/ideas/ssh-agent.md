@@ -389,8 +389,12 @@ Contract rules:
   responses, and approvals after lock are rejected.
 - Only one unlock flow runs at a time. Show one approval prompt at a time and
   allow at most four pending sign requests including the visible request.
-  Reject overflow, give each request a 30-second deadline, and cancel it when
-  its client disconnects.
+  Reject overflow, give each request a deadline, and cancel it when its client
+  disconnects. **The deadline is 120 seconds, not the 30 originally specified
+  here** -- see `docs/decisions/0003-request-deadline.md`. Thirty seconds
+  expired under a user who was doing no more than reading the prompt, and each
+  expiry counted as a refusal, so a tight deadline escalated into the denial
+  cooldown switching signing off entirely.
 - A timeout returns only the normal SSH-agent failure and leaves a non-secret
   status in the panel. Do not create a desktop notification in v1; repeated
   local requests must not create notification spam or persistent history.
@@ -405,20 +409,31 @@ twenty modal prompts; a fetch followed by a push is two. Deferring grants until
 "real workflows make this unusable" defers past the first day of real use, so
 they are in v1.
 
+> **Superseded by `docs/decisions/0002-grant-scope.md`.** The process scoping
+> described in the next paragraph was implemented and then relaxed to *program*
+> scoping, because live testing showed it did not achieve the very thing this
+> section opens by arguing for. Git spawns a fresh `ssh-keygen -Y sign` for
+> every commit it signs, so each has a different PID and start time and no
+> PID-scoped grant ever matched: a twenty-commit rebase prompted twenty times
+> whether a grant had been taken or not. Grants now match on the peer UID, the
+> executable path, and the key. The ADR records what that widens and why it was
+> judged acceptable. The paragraph below is kept as the original reasoning.
+
 A grant is scoped to **one key and one live client process**. It is keyed on the
 peer PID *together with* that PID's start time from `/proc/<pid>/stat`, so PID
 reuse cannot inherit a grant, and on the executable path captured at grant time,
 so a re-`exec` invalidates it.
 
-- The approval prompt offers *Approve once* and *Approve for this process*.
+- The approval prompt offers *Approve once* and *Approve for this program*
+  (originally *for this process*; see the note above).
   `sshAgentApprovalWindowSec` (default `120`, maximum `900`, `0` to disable
   grants and always ask) sets the window.
 - Grants live only in the companion's memory. They are never written to disk and
   never survive a companion restart.
 - A grant is dropped on: expiry, lock, logout, account change, epoch change,
   disabling the feature, screen lock, suspend, client process exit,
-  `revoke_grants`, and any mismatch of key identity, PID start time, or
-  executable path.
+  `revoke_grants`, and any mismatch of key identity or executable path. (PID
+  start time no longer participates; see the note above.)
 - Every live grant is visible in the panel with its key, process, and remaining
   time, and is revocable individually or all at once.
 - A grant does not bypass the final authorization point. Epoch, lock state, and
@@ -1013,16 +1028,35 @@ does not prevent the rest of the Bitwarden plugin from loading.
   mutate vault items for plugin-specific metadata.
 - **Persistent private-key or session caches**: no encrypted side database and
   no “remember until reboot” mode.
-- **Unbounded or persistent approval**: grants are per key and per live process,
-  memory-only, and time-limited. There is no "always allow", no per-key policy
-  stored in the vault, and nothing that survives a lock, a logout, or a
-  companion restart.
+- **Unbounded or persistent approval**: grants are per key and per program (see
+  `docs/decisions/0002-grant-scope.md`, which relaxed this from per live
+  process), memory-only, and time-limited. There is no "always allow", no
+  per-key policy stored in the vault, and nothing that survives a lock, a
+  logout, or a companion restart.
 - **Item types 6–8** (bank account, driver's licence, passport): the allowlist
   excludes them along with type 5. Presenting them needs its own design; today
   they are silently mislabelled as logins.
 - **aarch64 and static/musl binaries**: v1 targets the normal x86_64 GNU Omarchy
   environment and adds platforms only when they can be executed and verified
   in CI.
+
+## Nice to Have (Deferred)
+
+Ideas worth doing that are deliberately outside the first release.
+
+- **Choice of approval presentation.** The approval prompt currently takes over
+  the panel. Offer a user preference between a genuinely full-screen prompt --
+  drawn over the desktop the way a lock screen is, so a signing request cannot
+  be missed while working in another window -- and the present in-panel one for
+  users who would rather it stayed small.
+
+  If the in-panel presentation is chosen, the panel should close itself once
+  the answer has been given, rather than leaving the user on whatever screen
+  was behind the prompt. Today the panel stays open after an approval, which is
+  fine when the user opened it themselves and wrong when a signing request
+  opened it on their behalf.
+
+  Neither variant may prompt over a locked screen; that rule is unchanged.
 
 ## Assumptions to Validate
 

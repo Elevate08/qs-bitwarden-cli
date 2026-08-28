@@ -4,7 +4,17 @@ use crate::keystore::{AuthorizationPermit, KeyStore};
 use crate::peer::PeerContext;
 
 const MAX_PENDING: usize = 4;
-const REQUEST_LIFETIME_MS: u64 = 30_000;
+/// How long a person has to answer a prompt before the request is abandoned.
+///
+/// This is a human deadline, not a machine one: the panel has to open, the
+/// user has to notice it, read a fingerprint, and decide. Thirty seconds --
+/// the figure the original design carried -- turned out to be shorter than
+/// that takes in practice, and expired prompts under a user who was simply
+/// reading them. See docs/decisions/0003-request-deadline.md.
+///
+/// The bound that actually reclaims resources promptly is the client
+/// disconnect, which the server watches for while a request is pending.
+pub const REQUEST_LIFETIME_MS: u64 = 120_000;
 const MAX_GRANT_SECONDS: u64 = 900;
 
 /// Stable authorization failures.
@@ -96,7 +106,9 @@ impl ApprovalManager {
         }
         self.expire(now_ms);
         if self.grants.iter().any(|grant| {
-            grant.epoch == epoch && grant.public_blob == public_blob && grant.peer == peer
+            grant.epoch == epoch
+                && grant.public_blob == public_blob
+                && grant.peer.shares_grant_scope(&peer)
         }) {
             return Ok(Submit::Granted(Authorization {
                 epoch,
@@ -180,7 +192,32 @@ impl ApprovalManager {
     }
 
     pub fn revoke_peer(&mut self, peer: &PeerContext) {
-        self.grants.retain(|grant| &grant.peer != peer);
+        self.grants
+            .retain(|grant| !grant.peer.shares_grant_scope(peer));
+    }
+
+    /// Reserve an identifier for a request the caller holds itself -- one
+    /// waiting on an unlock rather than on an approval. Drawn from the same
+    /// sequence, so no two live requests can ever share an id.
+    pub fn reserve_request_id(&mut self) -> Result<RequestId, ApprovalError> {
+        let id = self.next_id;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(ApprovalError::IdExhausted)?;
+        Ok(id)
+    }
+
+    /// Same-UID enforcement, for requests the caller holds itself rather than
+    /// registering as pending.
+    pub fn expects_uid(&self, uid: u32) -> bool {
+        uid == self.expected_uid
+    }
+
+    /// How many more requests may exist across both the pending set and any
+    /// the caller is holding. The four-request bound covers them together.
+    pub fn capacity_remaining(&self, held: usize) -> usize {
+        MAX_PENDING.saturating_sub(self.pending.len() + held)
     }
 
     pub fn pending_count(&self) -> usize {

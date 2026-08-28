@@ -32,6 +32,34 @@ fn loaded_store(epoch: u64) -> (KeyStore, Vec<u8>) {
     (store, blob)
 }
 
+/// Two clocks bound one wait, and they are not independent. The companion's
+/// request deadline is the human's time to answer; the server's reply wait is
+/// how long a client blocks for that answer. If the second is shorter, the
+/// first is decorative -- which it was, with both set to thirty seconds.
+#[test]
+fn a_client_waits_longer_than_the_human_is_given_to_answer() {
+    assert!(
+        qs_bitwarden_ssh_agent::server::RESPONSE_TIMEOUT
+            > std::time::Duration::from_millis(
+                qs_bitwarden_ssh_agent::approvals::REQUEST_LIFETIME_MS
+            ),
+        "a client must not give up before the request it is waiting on expires"
+    );
+    // Reading a frame or writing a reply is machine-speed and stays short;
+    // only the wait on a person is long.
+    assert!(
+        qs_bitwarden_ssh_agent::server::CLIENT_IO_TIMEOUT
+            < qs_bitwarden_ssh_agent::server::RESPONSE_TIMEOUT,
+        "socket I/O should not inherit the human-scale timeout"
+    );
+    // The number itself, so raising it stays a deliberate act.
+    assert_eq!(
+        qs_bitwarden_ssh_agent::approvals::REQUEST_LIFETIME_MS,
+        120_000,
+        "see docs/decisions/0003-request-deadline.md"
+    );
+}
+
 #[test]
 fn queue_is_bounded_expires_and_disconnect_cancels() {
     let (_, key) = loaded_store(1);
@@ -53,10 +81,19 @@ fn queue_is_bounded_expires_and_disconnect_cancels() {
         approvals.approve(ids[0], 0, 1_001),
         Err(ApprovalError::UnknownRequest)
     );
-    approvals.expire(31_001);
+    // Derived from the lifetime rather than hardcoded, so changing the
+    // deadline cannot leave this test asserting the old one.
+    let past_deadline = qs_bitwarden_ssh_agent::approvals::REQUEST_LIFETIME_MS + 1_001;
+    approvals.expire(past_deadline - 1_001 - 1);
+    assert_ne!(
+        approvals.pending_count(),
+        0,
+        "a request must survive right up to its deadline"
+    );
+    approvals.expire(past_deadline);
     assert_eq!(approvals.pending_count(), 0);
     assert_eq!(
-        approvals.approve(ids[1], 0, 31_001),
+        approvals.approve(ids[1], 0, past_deadline),
         Err(ApprovalError::UnknownRequest)
     );
 }
@@ -89,8 +126,14 @@ fn approval_is_single_use_and_old_epoch_fails_at_final_check() {
     assert!(second.finalize(&store).is_none());
 }
 
+/// A grant covers one key and one program, not one process. Git spawns a
+/// fresh `ssh-keygen` for every commit it signs, so a grant tied to a PID
+/// never matches the case grants exist for -- a rebase would prompt once per
+/// commit regardless. Scoping to the executable path is what makes the
+/// feature do its job; see docs/decisions/0002-grant-scope.md for the
+/// exposure this accepts.
 #[test]
-fn grants_are_capped_and_bound_to_key_pid_start_time_and_executable() {
+fn grants_are_capped_and_bound_to_key_and_executable() {
     let (_, key) = loaded_store(3);
     let mut approvals = ApprovalManager::new(rustix::process::geteuid().as_raw());
     let original = peer(200, 50, "/usr/bin/git");
@@ -104,22 +147,52 @@ fn grants_are_capped_and_bound_to_key_pid_start_time_and_executable() {
         approvals.submit(3, &key, original.clone(), 20).unwrap(),
         Submit::Granted(_)
     ));
-    assert!(matches!(
-        approvals
-            .submit(3, &key, peer(200, 51, "/usr/bin/git"), 20)
-            .unwrap(),
-        Submit::Pending(_)
-    ));
+
+    // The case that matters: a different process, same program. Every commit
+    // in a rebase looks like this.
+    assert!(
+        matches!(
+            approvals
+                .submit(3, &key, peer(9001, 7777, "/usr/bin/git"), 20)
+                .unwrap(),
+            Submit::Granted(_)
+        ),
+        "a fresh process running the same program must ride the grant"
+    );
+
+    // A different program does not, even from the same process identity.
     assert!(matches!(
         approvals
             .submit(3, &key, peer(200, 50, "/usr/bin/ssh"), 20)
             .unwrap(),
         Submit::Pending(_)
     ));
+    // Nor does a different key.
     assert!(matches!(
         approvals.submit(3, b"different key", original, 20).unwrap(),
         Submit::Pending(_)
     ));
+}
+
+/// Widening the scope to a program must not widen it across users. The peer
+/// UID is the one thing the companion actually verifies.
+#[test]
+fn a_grant_never_crosses_to_another_user() {
+    let (_, key) = loaded_store(3);
+    let expected = rustix::process::geteuid().as_raw();
+    let mut approvals = ApprovalManager::new(expected);
+    let mine = peer(200, 50, "/usr/bin/git");
+    let id = match approvals.submit(3, &key, mine, 0).unwrap() {
+        Submit::Pending(id) => id,
+        _ => unreachable!(),
+    };
+    approvals.approve(id, 120, 10).unwrap();
+
+    let theirs = PeerContext::new(expected.wrapping_add(1), 201, 51, "/usr/bin/git").unwrap();
+    assert!(
+        approvals.submit(3, &key, theirs, 20).is_err(),
+        "another user must not reach a grant, whatever program they run"
+    );
 }
 
 #[test]

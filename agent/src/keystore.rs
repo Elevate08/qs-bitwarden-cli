@@ -66,6 +66,11 @@ pub struct PublicIdentity {
     pub item_id: String,
     pub name: String,
     pub fingerprint: String,
+    /// The OpenSSH one-line form, derived from the parsed private key rather
+    /// than copied from vault metadata. Git signing needs this on disk as a
+    /// file, and the panel writes it; deriving it here means only material
+    /// this keystore actually validated can ever be exported.
+    pub public_key_openssh: String,
     public_blob: Vec<u8>,
 }
 
@@ -158,11 +163,18 @@ impl CandidateLoad {
             return Ok(self.skip(item.item_id, SkipCode::Duplicate));
         }
 
+        // Derived from the key that was just validated, not from the vault's
+        // copy: the export on disk must be material this keystore vouched for.
+        let public_key_openssh = match key.public_key().to_openssh() {
+            Ok(text) => text,
+            Err(_) => return Ok(self.skip(item.item_id, SkipCode::MalformedPublicKey)),
+        };
         let public_index = self.public.len();
         self.public.push(PublicIdentity {
             item_id: item.item_id,
             name: item.name,
             fingerprint,
+            public_key_openssh,
             public_blob,
         });
         self.private.push(PrivateIdentity { key, public_index });

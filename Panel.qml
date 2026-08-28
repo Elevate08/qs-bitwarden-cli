@@ -460,10 +460,218 @@ Panel {
   // Tasks 12-14. Until then an unhandled event is deliberately inert rather
   // than an error: it is a valid v1 message the panel simply has no use for
   // yet.
+  // -------------------------------------------------------------------------
+  // Signing authorization
+  // -------------------------------------------------------------------------
+  //
+  // One prompt at a time, never over a locked screen, and never claiming more
+  // about the requesting process than the companion actually checked.
+
+  // What is actually on screen. A live signing request outranks navigation:
+  // the panel's own flows reset currentScreen freely -- opening the panel,
+  // finishing an unlock -- and each of those would otherwise drop a prompt
+  // that a blocked client is waiting on. Screen visibility binds to this
+  // rather than to currentScreen, so no later assignment can hide a prompt.
+  readonly property string activeScreen: sshPrompt !== null ? "sshApproval" : currentScreen
+
+  property var sshPrompt: null            // the approval_required being shown
+  property var sshUnlockRequest: null     // the unlock_required being shown
+  property var sshUnlockRaw: null         // its original message, to promote from
+  property var sshGrants: []              // live grants, from the companion
+  property var sshCooldown: Model.sshAgentCooldownInitial()
+  // Whether the current cooldown has already been announced. Reset when it
+  // lapses, so a later one is announced again but the same one is not
+  // repeated on every refused request.
+  property bool sshCooldownAnnounced: false
+  readonly property var sshCooldownStatus: Model.sshAgentCooldownStatus(sshCooldown, sshCooldownTick)
+  // A one-second tick so the remaining time in the status actually counts
+  // down; bindings on Date.now() would never re-evaluate on their own.
+  property double sshCooldownTick: 0
+  property double sshPromptStartedMs: 0
+  property int sshPromptRemainingSec: 0
+  property string screenBeforeSshApproval: "main"
+
+  function sshAgentWrite(line) {
+    if (line === "") return
+    if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(line)
+  }
+
+  // Whether a request may raise UI at all. A locked screen never does, and a
+  // process that has had two refusals in a row is put on a cooldown so it
+  // cannot keep reopening the panel.
+  // Called wherever the cooldown may have just started. The announcement is
+  // the only thing that tells a user why their SSH command suddenly fails.
+  function noteSshCooldown() {
+    root.sshCooldownTick = Date.now()
+    var status = Model.sshAgentCooldownStatus(root.sshCooldown, Date.now())
+    if (status.active && !root.sshCooldownAnnounced) {
+      root.sshCooldownAnnounced = true
+      flashNotification("SSH signing paused: too many unanswered prompts")
+    } else if (!status.active) {
+      root.sshCooldownAnnounced = false
+    }
+  }
+
+  function sshAgentMayPrompt() {
+    // An unknown screen state counts as locked. The poll runs every few
+    // seconds while the agent is serving, so a reading older than this means
+    // the poll is not running and the panel cannot tell -- and the cost of
+    // guessing wrong is a credential prompt on a locked desktop.
+    var fresh = root.screenLockCheckedAt > 0
+      && (Date.now() - root.screenLockCheckedAt) < (Model.screenLockPollMs() * 4)
+    if (!Model.sshAgentShouldPrompt(fresh ? { screenLocked: root.screenIsLocked } : null)) return false
+    return !Model.sshAgentCooldownActive(root.sshCooldown, Date.now())
+  }
+
+  function showSshApproval(message) {
+    root.sshPrompt = Model.sshAgentPromptView(message, root.sshAgentApprovalWindowSec)
+    root.sshPromptStartedMs = Date.now()
+    root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
+    if (root.currentScreen !== "sshApproval") root.screenBeforeSshApproval = root.currentScreen
+    // Open first. Opening runs onPanelOpened(), which sends an unlocked panel
+    // to the item list, so claiming the screen before that would simply be
+    // undone -- the prompt would be live with nothing on screen.
+    if (!root.opened) root.open()
+    root.currentScreen = "sshApproval"
+  }
+
+  function dismissSshApproval() {
+    root.sshPrompt = null
+    root.sshUnlockRequest = null
+    root.sshUnlockRaw = null
+    if (root.currentScreen === "sshApproval") {
+      root.currentScreen = root.screenBeforeSshApproval === "sshApproval"
+        ? "main" : root.screenBeforeSshApproval
+    }
+  }
+
+  function approveSshRequest(grantSeconds) {
+    if (!sshPrompt) return
+    sshAgentWrite(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
+    noteSshCooldown()
+    dismissSshApproval()
+  }
+
+  function denySshRequest() {
+    if (sshUnlockRequest) {
+      sshAgentWrite(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
+    } else if (sshPrompt) {
+      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+    } else {
+      return
+    }
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+    noteSshCooldown()
+    dismissSshApproval()
+  }
+
+  // The companion expires the request; this only stops the panel showing a
+  // question whose answer would now be rejected anyway.
+  function expireSshRequest() {
+    if (!sshPrompt && !sshUnlockRequest) return
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "timeout", Date.now())
+    noteSshCooldown()
+    dismissSshApproval()
+  }
+
+  // Git SSH signing needs paths, so the validated public set is projected to
+  // files. Only what the companion vouched for is written, and only its
+  // public form -- sshExportIdentities() refuses anything that is not an
+  // OpenSSH public line.
+  function exportSshPublicKeys() {
+    var payload = Model.sshExportPayload(root.sshPendingPublicKeys)
+    root.sshPendingPublicKeys = []
+    if (sshExportProc.running) return
+    sshExportProc.running = true
+    sshExportProc.write(payload)
+    sshExportProc.stdinEnabled = false
+  }
+
+  // Logout, account change and disabling remove the projection. A lock does
+  // not: public identities stay advertised while locked, so their files stay
+  // with them.
+  function clearSshPublicKeys() {
+    root.sshPendingPublicKeys = []
+    root.sshPendingPublicEpoch = -1
+    if (sshExportClearProc.running) return
+    sshExportClearProc.running = true
+  }
+
+  function onSshExportFinished(exitCode, stdout) {
+    var result = Model.parseSshExportResult(exitCode, stdout)
+    root.sshExportError = result.ok ? "" : result.message
+  }
+
+  property string sshExportError: ""
+
+  function revokeSshGrant(grantId) {
+    sshAgentWrite(Model.sshAgentRevokeGrantLine(grantId))
+  }
+
+  function revokeAllSshGrants() {
+    sshAgentWrite(Model.sshAgentRevokeGrantsLine())
+  }
+
   function onSshAgentMessage(message) {
+    if (message.type === "approval_required") {
+      // A request that cannot raise UI is refused rather than left hanging:
+      // the client gets its answer now instead of waiting out the deadline.
+      if (!sshAgentMayPrompt()) {
+        sshAgentWrite(Model.sshAgentDenyLine(message.requestId))
+        return
+      }
+      showSshApproval(message)
+      return
+    }
+    if (message.type === "unlock_required") {
+      if (!sshAgentMayPrompt()) {
+        sshAgentWrite(Model.sshAgentUnlockCancelledLine(message.requestId))
+        return
+      }
+      root.sshUnlockRaw = message
+      root.sshUnlockRequest = Model.sshAgentPromptView(message, 0)
+      root.sshPromptStartedMs = Date.now()
+      root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
+      if (!root.opened) root.open()
+      return
+    }
+    if (message.type === "request_cancelled") {
+      // The request is gone -- the client disconnected, the deadline passed,
+      // or an unlock replaced it with an approval. Take the prompt down
+      // rather than leaving a question with nothing behind it.
+      var live = root.sshPrompt || root.sshUnlockRequest
+      if (live && live.requestId === message.requestId) {
+        // A prompt that was on screen and went unanswered is what the
+        // cooldown counts. "released" is the unlock handing over to an
+        // approval, which is the opposite of being ignored.
+        if (message.reason !== "released") {
+          root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "timeout", Date.now())
+          noteSshCooldown()
+        }
+        dismissSshApproval()
+      }
+      return
+    }
+    if (message.type === "grants_changed") {
+      root.sshGrants = Model.sshAgentGrantViews(message.grants)
+      return
+    }
+    if (message.type === "public_key") {
+      // A new epoch starts a new set rather than adding to the last one.
+      if (root.sshPendingPublicEpoch !== message.epoch) {
+        root.sshPendingPublicEpoch = message.epoch
+        root.sshPendingPublicKeys = []
+      }
+      root.sshPendingPublicKeys = root.sshPendingPublicKeys.concat([message])
+      return
+    }
     if (message.type === "keys_loaded") {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
       root.sshAgentKeysLoadedAt = Date.now()
+      // The set is complete: every public_key for this epoch arrived ahead of
+      // this message.
+      if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
       return
     }
     if (message.type === "locked") {
@@ -508,6 +716,11 @@ Panel {
   // a count, not the keys -- and it is what tells the panel whether a locked
   // companion still has a public cache to answer identity listings from.
   property int sshAgentKeyCount: 0
+  // The validated public identities the companion reported for the epoch
+  // currently loading. Accumulated per key, because a single message carrying
+  // all of them would exceed the control-line ceiling at the key limit.
+  property var sshPendingPublicKeys: []
+  property int sshPendingPublicEpoch: -1
   property double sshAgentKeysLoadedAt: 0
   // The vault epoch a key load has already been started for. dropVaultState()
   // advances vaultEpoch on every lock and logout, so this is what tells a
@@ -569,6 +782,7 @@ Panel {
     if (action.clearPublic) {
       root.sshAgentKeyCount = 0
       root.sshAgentKeysLoadedAt = 0
+      clearSshPublicKeys()
     }
     // The acknowledgment is a courtesy the panel gives the companion two
     // seconds to return. It is not a precondition for locking: `bw lock` has
@@ -585,7 +799,14 @@ Panel {
 
   onSshAgentSupervisableChanged: syncSshAgentSupervision()
 
+  function sendSshAgentOptions() {
+    sshAgentWrite(Model.sshAgentOptionsLine(root.sshAgentUnlockOnDemand))
+  }
+
+  onSshAgentUnlockOnDemandChanged: sendSshAgentOptions()
+
   onSshAgentGateOpenChanged: {
+    if (sshAgentGateOpen) sendSshAgentOptions()
     if (!sshAgentGateOpen) {
       endSshAgentLoad(false)
       return
@@ -623,7 +844,26 @@ Panel {
     applySshAgentLifecycle("startup")
   }
 
-  onStatusChanged: maybeStartupLoad()
+  onStatusChanged: {
+    promoteUnlockToApproval()
+    maybeStartupLoad()
+  }
+
+  // The vault is unlocked but its keys are still being read. Ask now rather
+  // than after: approving needs the key's identity and the requesting
+  // program, and both are already known. The companion records the approval
+  // and applies it the moment the keys land, re-checking that the approved
+  // key is actually present before it signs.
+  function promoteUnlockToApproval() {
+    if (root.status !== "unlocked" || !root.sshUnlockRaw || root.sshPrompt) return
+    // A listing is satisfied by the load itself; there is no signature to
+    // authorise, so it stays a wait rather than becoming an approval.
+    if (root.sshUnlockRaw.reason === "list-identities") return
+    var raw = root.sshUnlockRaw
+    root.sshUnlockRequest = null
+    root.sshUnlockRaw = null
+    showSshApproval(raw)
+  }
 
   // The bound on the companion's lock acknowledgment. A helper that cannot
   // confirm it has dropped its keys is a helper that must not keep running.
@@ -863,6 +1103,12 @@ Panel {
     detectActiveWindowContext()
     refreshFingerprintAvailability()
 
+    // A signing request outranks the item list: it is the reason the panel
+    // opened, and a client is blocked on the answer.
+    if (sshPrompt) {
+      currentScreen = "sshApproval"
+      return
+    }
     if (status === "unlocked") {
       currentScreen = "main"
       ensureItemsFresh()
@@ -2996,6 +3242,13 @@ Panel {
   // Innermost thing first: a drawer or picker closes before the screen it is
   // on, and a screen goes back before the panel closes.
   function handleEscape() {
+    // Ahead of every other screen: a signing request is a question with a
+    // client blocked on the answer, so dismissing it has to mean "no" rather
+    // than "later".
+    if (currentScreen === "sshApproval" || sshUnlockRequest) {
+      denySshRequest()
+      return
+    }
     if (openFilterGroup !== "") {
       closeFilterGroup()
       return
@@ -3926,9 +4179,17 @@ Panel {
   // replaces the countdown -- a vault left open at an unlocked desk is still
   // the case only elapsed time can catch.
 
+  // The last reading from the screen-lock poll, with the moment it was taken.
+  // The agent needs this even when lockOnScreenLock is off, because it must
+  // never raise an approval prompt over a locked screen.
+  property bool screenIsLocked: false
+  property double screenLockCheckedAt: 0
+
   function onScreenLockState(raw) {
+    root.screenIsLocked = Model.screenIsLocked(raw)
+    root.screenLockCheckedAt = Date.now()
     if (!lockOnScreenLock || status !== "unlocked") return
-    if (Model.screenIsLocked(raw)) lockVault()
+    if (root.screenIsLocked) lockVault()
   }
 
   function onSleepSignal(line) {
@@ -3954,7 +4215,10 @@ Panel {
     repeat: true
     // Nothing to ask while the setting is off or the vault is already locked,
     // which between them is every state but the one this is for.
-    running: root.lockOnScreenLock && root.status === "unlocked"
+    // Also while the agent is serving: an approval prompt must never appear
+    // over a locked screen, and that needs a current reading regardless of
+    // whether the vault is set to lock with the screen.
+    running: (root.lockOnScreenLock && root.status === "unlocked") || root.sshAgentGateOpen
     onTriggered: {
       if (!screenLockStateProc.running) screenLockStateProc.running = true
     }
@@ -3980,6 +4244,24 @@ Panel {
       waitForEnd: true
       onStreamFinished: root.onScreenLockState(text)
     }
+  }
+
+  Process {
+    id: sshExportProc
+    command: Model.sshExportCommand()
+    stdinEnabled: true
+    stdout: StdioCollector { id: sshExportStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      sshExportProc.stdinEnabled = true
+      root.onSshExportFinished(exitCode, sshExportStdout.text)
+    }
+  }
+
+  Process {
+    id: sshExportClearProc
+    command: Model.sshExportClearCommand()
+    stdout: StdioCollector { id: sshExportClearStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onSshExportFinished(exitCode, sshExportClearStdout.text) }
   }
 
   Process {
@@ -4052,6 +4334,27 @@ Panel {
     repeat: false
     running: root.sshAgentPhase === "starting" || root.sshAgentPhase === "handshaking"
     onTriggered: root.applySshAgentEvent({ kind: "handshakeTimeout", nowMs: Date.now() })
+  }
+
+  Timer {
+    id: sshCooldownCountdown
+    interval: 1000
+    repeat: true
+    running: root.sshCooldownStatus.active
+    onTriggered: root.noteSshCooldown()
+  }
+
+  Timer {
+    id: sshPromptCountdown
+    interval: 1000
+    repeat: true
+    running: root.sshPrompt !== null || root.sshUnlockRequest !== null
+    onTriggered: {
+      var elapsed = Date.now() - root.sshPromptStartedMs
+      var remaining = Math.ceil((Model.sshAgentRequestDeadlineMs() - elapsed) / 1000)
+      root.sshPromptRemainingSec = Math.max(0, remaining)
+      if (remaining <= 0) root.expireSshRequest()
+    }
   }
 
   // The grace period between asking the helper to shut down and making it.
@@ -4792,6 +5095,29 @@ Panel {
     }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
+    // Non-secret diagnostics for the SSH agent. No key material, no
+    // fingerprints, no process paths -- just enough to tell why a signature
+    // was or was not answered.
+    function sshAgentStatus(): string {
+      return JSON.stringify({
+        enabled: root.sshAgentEnabled,
+        phase: root.sshAgentPhase,
+        gateOpen: root.sshAgentGateOpen,
+        setupState: root.sshAgentSetup.state,
+        errorCode: root.sshAgentErrorCode,
+        keyCount: root.sshAgentKeyCount,
+        loadActive: root.sshAgentLoadActive,
+        epoch: root.sshAgentEpoch,
+        promptShowing: root.sshPrompt !== null,
+        unlockShowing: root.sshUnlockRequest !== null,
+        grants: root.sshGrants.length,
+        screenLocked: root.screenIsLocked,
+        screenLockAgeMs: root.screenLockCheckedAt > 0 ? Math.round(Date.now() - root.screenLockCheckedAt) : -1,
+        mayPrompt: root.sshAgentMayPrompt(),
+        cooldownRefusals: root.sshCooldown ? root.sshCooldown.refusals : 0,
+        cooldownActive: Model.sshAgentCooldownActive(root.sshCooldown, Date.now())
+      })
+    }
   }
 
   Component {
@@ -5121,7 +5447,7 @@ Panel {
 
             // New Item Button
             PanelActionButton {
-              visible: root.status === "unlocked" && root.currentScreen === "main"
+              visible: root.status === "unlocked" && root.activeScreen === "main"
               iconText: "󰐕"
               tooltipText: "New item (n)"
               fontFamily: root.fontFamily
@@ -5140,7 +5466,7 @@ Panel {
 
             // Send Button
             PanelActionButton {
-              visible: root.status === "unlocked" && root.currentScreen !== "sends"
+              visible: root.status === "unlocked" && root.activeScreen !== "sends"
               iconText: "󰒗"
               tooltipText: "Bitwarden Send (Alt+S)"
               fontFamily: root.fontFamily
@@ -5149,7 +5475,7 @@ Panel {
 
             // Generator Button
             PanelActionButton {
-              visible: root.status === "unlocked" && root.currentScreen !== "generator"
+              visible: root.status === "unlocked" && root.activeScreen !== "generator"
               iconText: "󰌆"
               tooltipText: "Password generator (g)"
               fontFamily: root.fontFamily
@@ -5158,7 +5484,7 @@ Panel {
 
             // Settings Button
             PanelActionButton {
-              visible: root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin"
+              visible: root.activeScreen !== "settings" && root.activeScreen !== "setup" && root.activeScreen !== "pin"
               iconText: "󰒓"
               tooltipText: "Settings (s)"
               fontFamily: root.fontFamily
@@ -5322,7 +5648,7 @@ Panel {
         // -------------------------------------------------------------------
         Flickable {
           id: sendFlick
-          visible: root.currentScreen === "sends"
+          visible: root.activeScreen === "sends"
           width: parent.width
           height: Math.min(Style.space(520), sendCol.implicitHeight)
           contentWidth: width
@@ -5648,7 +5974,7 @@ Panel {
         // -------------------------------------------------------------------
         Flickable {
           id: fpFlick
-          visible: root.currentScreen === "fingerprint"
+          visible: root.activeScreen === "fingerprint"
           width: parent.width
           height: Math.min(Style.space(520), fpCol.implicitHeight)
           contentWidth: width
@@ -5762,7 +6088,7 @@ Panel {
         // -------------------------------------------------------------------
         Flickable {
           id: genFlick
-          visible: root.currentScreen === "generator"
+          visible: root.activeScreen === "generator"
           width: parent.width
           height: Math.min(Style.space(520), genCol.implicitHeight)
           contentWidth: width
@@ -6135,7 +6461,7 @@ Panel {
         // than the popup's height cap on smaller displays.
         Flickable {
           id: pinFlick
-          visible: root.currentScreen === "pin"
+          visible: root.activeScreen === "pin"
           width: parent.width
           height: Math.min(Style.space(520), pinCol.implicitHeight)
           contentWidth: width
@@ -6283,7 +6609,7 @@ Panel {
         // than the popup's height cap on smaller displays.
         Flickable {
           id: setupFlick
-          visible: root.currentScreen === "setup"
+          visible: root.activeScreen === "setup"
           width: parent.width
           height: Math.min(Style.space(520), setupCol.implicitHeight)
           contentWidth: width
@@ -6478,7 +6804,7 @@ Panel {
         // than the popup's height cap on smaller displays.
         Flickable {
           id: settingsFlick
-          visible: root.currentScreen === "settings"
+          visible: root.activeScreen === "settings"
           width: parent.width
           height: Math.min(Style.space(520), settingsCol.implicitHeight)
           contentWidth: width
@@ -6687,6 +7013,7 @@ Panel {
           // ---------------------------------------------------------------
           // SSH agent status and client routing
           // ---------------------------------------------------------------
+          // (the approval screen itself is further down, with the screens)
           //
           // Two separate things, deliberately drawn apart. The top half is
           // what the feature is doing; the bottom half is whether the user's
@@ -6733,6 +7060,20 @@ Panel {
               }
             }
 
+            // Why SSH suddenly stopped working. Without this the cooldown is a
+            // silent multi-minute outage with nothing connecting it to the
+            // prompts that were left unanswered.
+            Text {
+              textFormat: Text.PlainText
+              visible: root.sshCooldownStatus.active
+              width: parent.width
+              text: root.sshCooldownStatus.message
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
             // The helper's own version, once it has said hello. Non-secret,
             // and the quickest way to tell a stale bundled binary apart from
             // a working one.
@@ -6744,6 +7085,64 @@ Panel {
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
+            }
+
+            Item {
+              visible: root.sshGrants.length > 0
+              width: parent.width
+              height: visible ? Style.space(10) : 0
+            }
+
+            PanelSectionHeader {
+              textFormat: Text.PlainText
+              visible: root.sshGrants.length > 0
+              text: "ACTIVE APPROVALS"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
+
+            // Every live grant, with the process it belongs to and what is
+            // left of it. A grant is a window in which signing happens with
+            // no prompt, so it has to be visible and revocable while it runs.
+            Repeater {
+              model: root.sshGrants
+
+              delegate: Row {
+                required property var modelData
+                width: parent.width
+                spacing: Style.space(8)
+
+                Text {
+                  textFormat: Text.PlainText
+                  width: parent.width - Style.space(110)
+                  text: Model.plainLabel(modelData.keyName) + "  ·  "
+                    + Model.plainLabel(modelData.processName) + " (pid " + modelData.pid + ")"
+                    + "  ·  " + modelData.remainingLabel
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+
+                Button {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Revoke"
+                  iconText: "󰩹"
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.revokeSshGrant(modelData.grantId)
+                }
+              }
+            }
+
+            Button {
+              visible: root.sshGrants.length > 1
+              text: "Revoke All Approvals"
+              iconText: "󰩹"
+              tooltipText: "Drop every live approval; the next signature asks again"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.revokeAllSshGrants()
             }
 
             Item { width: parent.width; height: Style.space(10) }
@@ -6901,11 +7300,267 @@ Panel {
                   }
         }
 
+        // An SSH request waiting on an unlock. Shown above whatever unlock
+        // control the vault is configured for, so the reason for the prompt
+        // is visible without the unlock itself authorising anything.
+        Column {
+          // Stays up through the load as well as the unlock: the request is
+          // held across the vault read, so dropping the block the moment the
+          // vault unlocks would leave the user watching nothing for seconds.
+          visible: root.sshUnlockRequest !== null
+            && (root.status === "locked" || root.sshAgentLoadActive)
+          width: parent.width
+          spacing: Style.space(6)
+
+          PanelSeparator { width: parent.width }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: "󰌆  An SSH key is needed"
+            color: Color.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: !root.sshUnlockRequest
+              ? ""
+              : (root.sshUnlockRequest.keyName !== ""
+                  ? Model.plainLabel(root.sshUnlockRequest.keyName) + " · requested by "
+                    + Model.plainLabel(root.sshUnlockRequest.processName)
+                    + " (pid " + root.sshUnlockRequest.pid + ")"
+                  // An identity listing names no key: the client is asking
+                  // which keys exist, and until the vault is open there is no
+                  // answer to give.
+                  : Model.plainLabel(root.sshUnlockRequest.processName)
+                    + " (pid " + root.sshUnlockRequest.pid + ") is asking which SSH keys are available")
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.sshAgentLoadActive
+              ? Model.sshAgentLoadingNote()
+              : "Unlocking loads your keys. You will still be asked before anything is signed."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              visible: !root.sshAgentLoadActive
+              text: "Not now (Esc)"
+              iconText: "󰅘"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.denySshRequest()
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.sshPromptRemainingSec + "s left"
+              color: root.sshPromptRemainingSec <= 5 ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN: SSH SIGNING APPROVAL
+        // -------------------------------------------------------------------
+        //
+        // The one place a signature is authorised. It states what the
+        // companion verified -- the requesting user -- and is explicit that
+        // everything else about the process is context rather than identity.
+        Column {
+          visible: root.activeScreen === "sshApproval" && root.sshPrompt !== null
+          width: parent.width
+          spacing: Style.space(12)
+
+          PanelSeparator { width: parent.width }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              anchors.verticalCenter: parent.verticalCenter
+              text: "󰌆"
+              color: Color.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              anchors.verticalCenter: parent.verticalCenter
+              text: "SSH signing request"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+
+            Item { width: parent.width - Style.space(230); height: 1 }
+
+            Text {
+              textFormat: Text.PlainText
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.sshPromptRemainingSec + "s left"
+              color: root.sshPromptRemainingSec <= 5 ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          // Forwarding is rejected in v1. If one ever reaches here it is
+          // called out rather than shown as ordinary context, because the
+          // process named would not be the one using the signature.
+          Text {
+            textFormat: Text.PlainText
+            visible: root.sshPrompt && root.sshPrompt.forwardedWarning !== ""
+            width: parent.width
+            text: root.sshPrompt ? root.sshPrompt.forwardedWarning : ""
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: root.sshAgentLoadActive
+            width: parent.width
+            text: Model.sshAgentLoadingNote()
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          PanelSectionHeader {
+            textFormat: Text.PlainText
+            text: "KEY"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.sshPrompt ? Model.plainLabel(root.sshPrompt.keyName) : ""
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+          }
+
+          // The fingerprint is the value worth checking, so it is shown whole
+          // rather than elided.
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.sshPrompt ? root.sshPrompt.fingerprint : ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WrapAnywhere
+          }
+
+          PanelSectionHeader {
+            textFormat: Text.PlainText
+            text: "REQUESTED BY"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.sshPrompt
+              ? Model.plainLabel(root.sshPrompt.processName) + " · pid " + root.sshPrompt.pid
+              : ""
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.sshPrompt ? Model.plainLabel(root.sshPrompt.processPath) : ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WrapAnywhere
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.sshPrompt ? root.sshPrompt.provenanceNote : ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          PanelSeparator { width: parent.width }
+
+          // Deny leads, and nothing is activated by a bare Enter: a stray
+          // keypress must not be able to sign.
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Deny (Esc)"
+              iconText: "󰅘"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.denySshRequest()
+            }
+
+            Button {
+              text: "Approve once"
+              iconText: "󰄬"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.approveSshRequest(0)
+            }
+          }
+
+          Button {
+            visible: root.sshPrompt && root.sshPrompt.grantOffered
+            text: root.sshPrompt ? root.sshPrompt.grantLabel : ""
+            iconText: "󰔟"
+            tooltipText: "Sign further requests from this same program with this key, without asking again, until the window expires"
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.approveSshRequest(root.sshPrompt ? root.sshPrompt.grantSeconds : 0)
+          }
+        }
+
         // -------------------------------------------------------------------
         // SCREEN 1: LOGIN VIEW (When unauthenticated)
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unauthenticated" && root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin" && root.currentScreen !== "fingerprint"
+          visible: root.status === "unauthenticated" && root.activeScreen !== "settings" && root.activeScreen !== "setup" && root.activeScreen !== "pin" && root.activeScreen !== "fingerprint"
           width: parent.width
           spacing: Style.space(12)
 
@@ -7413,7 +8068,7 @@ Panel {
         // SCREEN 3: UNLOCKED - ITEM LIST VIEW
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unlocked" && root.currentScreen === "main"
+          visible: root.status === "unlocked" && root.activeScreen === "main"
           width: parent.width
           spacing: Style.space(8)
 
@@ -7984,7 +8639,7 @@ Panel {
         // SCREEN 4: UNLOCKED - ITEM DETAIL VIEW
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unlocked" && root.currentScreen === "detail"
+          visible: root.status === "unlocked" && root.activeScreen === "detail"
           width: parent.width
           spacing: Style.space(12)
 
@@ -8590,7 +9245,7 @@ Panel {
         // SCREEN 5: ADD / EDIT ITEM FORM VIEW
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unlocked" && root.currentScreen === "edit"
+          visible: root.status === "unlocked" && root.activeScreen === "edit"
           width: parent.width
           spacing: Style.space(10)
 

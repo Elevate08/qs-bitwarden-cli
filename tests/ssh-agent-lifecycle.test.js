@@ -206,7 +206,7 @@ check("a remembered unlocked session loads keys once the helper is ready",
 // on only one of them loses the load whenever the other is second.
 check("both edges of the startup race trigger the load",
   /id: sshAgentStartupLoadTimer[\s\S]{0,200}?maybeStartupLoad\(\)/.test(panelSrc)
-    && /onStatusChanged: maybeStartupLoad\(\)/.test(panelSrc),
+    && /onStatusChanged:[\s\S]{0,200}?maybeStartupLoad\(\)/.test(panelSrc),
   "only one edge triggers the startup load")
 // The panel's first read is launched before the helper handshakes, so the
 // completion of that read is the third edge that can owe a key load.
@@ -220,9 +220,14 @@ check("the startup load happens once per vault epoch, not once per edge",
   /function maybeStartupLoad\(\)[\s\S]{0,1200}?sshAgentLoadedForVaultEpoch === root\.vaultEpoch/.test(panelSrc),
   "nothing stops the startup load repeating")
 
+// The lock acknowledgment is what stops the kill timer, so it has to be
+// consumed wherever the companion's messages are handled.
+const messageHandler = panelSrc.slice(
+  panelSrc.indexOf("function onSshAgentMessage(message)"),
+  panelSrc.indexOf("function syncSshAgentSupervision()"))
 check("the companion's own events are consumed rather than ignored",
-  /function onSshAgentMessage\(message\)[\s\S]{0,900}?message\.type === "locked"/.test(panelSrc),
-  "onSshAgentMessage still ignores everything")
+  /message\.type === "locked"/.test(messageHandler) && /message\.type === "keys_loaded"/.test(messageHandler),
+  "onSshAgentMessage ignores the lock acknowledgment or the load result")
 
 // -------------------------------------------------------------------------
 // Control lines

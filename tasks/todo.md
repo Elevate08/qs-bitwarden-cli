@@ -543,20 +543,27 @@ over screen lock.
 
 **Acceptance criteria:**
 
-- [ ] Prompts clearly offer deny, approve once, and process grant only when
+- [x] Prompts clearly offer deny, approve once, and process grant only when
       enabled; they show key/process/forwarding context without overstating PID
       authority.
-- [ ] Locked cached keys prompt at sign time; no-cache identity listing prompts
+- [x] Locked cached keys prompt at sign time; no-cache identity listing prompts
       only when unlock-on-demand is enabled, with coalescing and denial cooldown.
-- [ ] Four-request/deadline/disconnect behavior is visible and bounded, and live
+- [x] Four-request/deadline/disconnect behavior is visible and bounded, and live
       grants update/revoke without freezing or exposing secret control data.
 
 **Verification:**
 
-- [ ] Tests pass: `node tests/ssh-agent-ui.test.js`
-- [ ] QML tests pass: `QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml`
-- [ ] Manual check: authentication, fetch/push, signing, rebase, denied unlock,
-      timeout, disconnect, grant expiry/revoke, and screen-lock suppression.
+- [x] Tests pass: `node tests/ssh-agent-ui.test.js`
+- [x] QML tests pass: `QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml`
+- [x] Manual check: live, against a real vault and real OpenSSH clients --
+      `git push` authentication, `ssh-keygen -Y sign`, repeated signed commits
+      riding one grant, approving during a load, a dismissed unlock, request
+      timeout, and client disconnect. Found and fixed three defects no
+      automated test caught: the prompt never rendered (opening the panel
+      reset the screen after it was set), timeouts never fed the cooldown,
+      and the cooldown failed silently. Two design deviations were recorded
+      rather than made quietly: docs/decisions/0002-grant-scope.md and
+      docs/decisions/0003-request-deadline.md.
 
 **Dependencies:** Tasks 8, 10, and 13
 
@@ -588,19 +595,24 @@ the companion stays out of the filesystem. See
 
 **Acceptance criteria:**
 
-- [ ] One mode-0600 `.pub` file per advertised key exists inside a mode-0700
+- [x] One mode-0600 `.pub` file per advertised key exists inside a mode-0700
       directory; symlinks, wrong owners/types, collisions, and unexpected files
       cannot redirect or overwrite output.
-- [ ] Projection updates are atomic, survive lock, and clear on logout/account
+- [x] Projection updates are atomic, survive lock, and clear on logout/account
       change/disable without ever writing private material.
-- [ ] Real Git SSH signing and `IdentityFile`/`IdentitiesOnly` flows work from
+- [x] Real Git SSH signing and `IdentityFile`/`IdentitiesOnly` flows work from
       the exported paths using disposable keys.
 
 **Verification:**
 
-- [ ] Tests pass: `node tests/ssh-agent-export.test.js`
-- [ ] Manual check: inspect modes/content/lifecycle and sign/verify a commit with
-      `gpg.format=ssh` and a generated allowed-signers file.
+- [x] Tests pass: `node tests/ssh-agent-export.test.js`
+- [x] Manual check: live, against the real vault. The projection is a 0700
+      directory holding one 0600 `.pub` per advertised key with correct
+      OpenSSH content. A commit signed with `gpg.format=ssh`,
+      `user.signingkey` pointing at an exported path, and a generated
+      allowed-signers file verifies: `git verify-commit` reports a good
+      ED25519 signature and `git log %G?` reports `G`. Commits made earlier
+      through the locked-vault unlock-then-approve path verify the same way.
 
 **Dependencies:** Tasks 4, 6, 9, and 13
 
