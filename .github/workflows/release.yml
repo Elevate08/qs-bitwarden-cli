@@ -27,6 +27,12 @@ on:
   push:
     tags:
       - 'v*'
+    # TEMPORARY -- rehearsal only, reverted in the next commit. workflow_dispatch
+    # is refused for a workflow that is not on the default branch, and this
+    # release path has never been executed. A branch push runs gates and verify;
+    # the release job below still refuses anything that is not a tag, so nothing
+    # is published, attested, or written.
+    branches: [feature/ssh-agent]
   # Verification without publication: every gate and every report, on any ref.
   # The release job refuses anything that is not a tag, so a dispatch run can
   # rehearse the whole path without creating a release or an attestation.
