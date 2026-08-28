@@ -42,12 +42,8 @@ check("the workflow defines the three stages it describes",
 // What triggers it, and what cannot
 // -------------------------------------------------------------------------
 
-// TEMPORARY -- rehearsal only, reverted in the next commit alongside the
-// branch trigger this tolerates. The invariant that actually matters is the
-// one below: only a tag reaches the publishing job.
 check("a release is a tag, not a branch push",
-  /on:\n(?:.*\n)*?\s*push:\n\s*tags:\n\s*- 'v\*'/.test(release)
-    && !/^\s*branches:(?! \[feature\/ssh-agent\])/m.test(release),
+  /on:\n(?:.*\n)*?\s*push:\n\s*tags:\n\s*- 'v\*'/.test(release) && !/^\s*branches:/m.test(release),
   "the release workflow runs on something other than a version tag")
 check("a dispatch run can rehearse the whole path",
   /workflow_dispatch:/.test(release),

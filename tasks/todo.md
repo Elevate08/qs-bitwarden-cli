@@ -801,10 +801,21 @@ to the final release job and require review for security-sensitive paths.
       (self-review permitted -- single maintainer), deployments restricted to
       `v*` tags. Confirmed through the API after creation.
 - [ ] Workflow passes: execute a protected test tag/release in a staging target.
-      Not yet run: it publishes to a public repository, so the tag is the
-      maintainer's to push. Every shell block in the workflow was syntax-checked
-      and its logic rehearsed locally against the real manifest, changelog and
-      tracked binary, and the publish step was dry-run against a stub `gh`.
+      The publishing half is still unrun -- a tag publishes to a public
+      repository, so it is the maintainer's to push. Everything before it has
+      now run on real CI twice, via a temporary branch trigger that was
+      reverted immediately afterwards (`e696fb1` and its revert):
+      gates, tag/manifest/changelog agreement, checksum and ELF checks, the
+      version cross-check, `--self-test`, the SBOM, the licence and dependency
+      reports, the debug symbols, and the secret scan all pass, and the
+      publishing job correctly skipped itself on a non-tag ref.
+
+      The rehearsal earned its cost. It found two defects that reading the file
+      had not: a container job's default shell is `sh`, which has no arrays, so
+      the secret scan died after every expensive step had passed; and the gates
+      stage shared `agent-build.yml`'s concurrency group, letting a branch
+      build and a release cancel each other. Both are fixed and both now have
+      a test.
 - [ ] Provenance verifies: `gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent --repo Elevate08/qs-bitwarden-cli`
       Waits on the first protected tag run: nothing has been attested yet.
 - [ ] Manual check: audit permissions, environment protection, attestation
