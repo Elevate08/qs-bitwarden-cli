@@ -183,7 +183,8 @@ Tasks 3 + 11 + 14 + 15 + 19
       secrets or write token.
 
 - [x] Task 18: Validate the bundled helper at launch
-- [ ] Task 19: Protect release provenance
+- [~] Task 19: Protect release provenance -- workflow, environment and tests
+      are in place; the first protected tag run is still outstanding
 
 ### Checkpoint: Shippable Artifact
 
@@ -269,6 +270,11 @@ demand modes. CI must never use a real vault or credential.
   status, zeroization behavior, and license/audit surface must be re-verified
   from current primary sources during Task 4; the design draft's review date is
   not sufficient evidence.
-- **Release governance:** Protected environments, required reviewers, and
-  CODEOWNERS identities must be filled with repository-specific values before
-  Task 19 can be completed.
+- **Release governance:** *Resolved during Task 19.* The protected environment
+  is `release`; its required reviewer is `@Elevate08`, with self-review
+  permitted because this repository has one maintainer -- the gate exists so
+  that write, OIDC and attestation credentials never come into existence
+  without a deliberate human click, not to simulate a second pair of eyes that
+  does not exist. Deployments are restricted to `v*` tags. CODEOWNERS names
+  `@Elevate08` throughout, and calls out `/.github/workflows/release.yml`
+  separately as the only workflow that can write, mint a token, or sign.

@@ -772,20 +772,45 @@ to the final release job and require review for security-sensitive paths.
 
 **Acceptance criteria:**
 
-- [ ] Protected releases rebuild/compare final bytes, run them natively, verify
+- [x] Protected releases rebuild/compare final bytes, run them natively, verify
       checksum/mode/version/self-test, and fail before publication on drift.
-- [ ] Only the reviewed release job receives `id-token: write` and
+      The gates stage calls `agent-build.yml` rather than copying it, so the
+      release runs the branch's own `--verify-reproducible` and
+      `--compare-tracked` against the tagged commit; the verify stage re-checks
+      `bin/SHA256SUMS`, the executable bit, the ELF class, and the helper's
+      reported crate and control-protocol versions against `agent/Cargo.toml`
+      and `BitwardenModel.js`; the release stage runs the shipped bytes on the
+      bare runner, outside the build container, before it publishes anything.
+- [x] Only the reviewed release job receives `id-token: write` and
       `attestations: write`; all actions are SHA-pinned and source paths have
-      required CODEOWNERS review.
-- [ ] Release artifacts include provenance, SBOM, dependency/license report,
-      and separate debug symbols but no vault/test secret material.
+      required CODEOWNERS review. The workflow defaults to `contents: read`,
+      the gates and verify jobs restate it rather than inheriting it, and the
+      release job sits behind the `release` environment.
+- [x] Release artifacts include provenance, SBOM, dependency/license report,
+      and separate debug symbols but no vault/test secret material. The debug
+      symbols are a companion build and say so: the release profile strips
+      symbols, and a build with debug information links differently, so its
+      entry point and code layout are not the shipped binary's. That was
+      measured, not assumed, and `dist/DEBUG-SYMBOLS.md` states the limit where
+      whoever downloads the file will read it.
 
 **Verification:**
 
+- [x] Tests pass: `node tests/release-provenance.test.js`
+- [x] Environment configured: `release`, required reviewer `@Elevate08`
+      (self-review permitted -- single maintainer), deployments restricted to
+      `v*` tags. Confirmed through the API after creation.
 - [ ] Workflow passes: execute a protected test tag/release in a staging target.
+      Not yet run: it publishes to a public repository, so the tag is the
+      maintainer's to push. Every shell block in the workflow was syntax-checked
+      and its logic rehearsed locally against the real manifest, changelog and
+      tracked binary, and the publish step was dry-run against a stub `gh`.
 - [ ] Provenance verifies: `gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent --repo Elevate08/qs-bitwarden-cli`
+      Waits on the first protected tag run: nothing has been attested yet.
 - [ ] Manual check: audit permissions, environment protection, attestation
-      subject/digest, SBOM, reports, and retention settings.
+      subject/digest, SBOM, reports, and retention settings. Permissions and
+      environment protection are audited by the tests above; the attestation
+      subject, digest and published assets can only be audited after a run.
 
 **Dependencies:** Tasks 17 and 18
 
@@ -793,8 +818,11 @@ to the final release job and require review for security-sensitive paths.
 
 - `.github/workflows/release.yml`
 - `.github/CODEOWNERS`
+- `.github/workflows/agent-build.yml` (made callable, so the release reuses
+  the branch's gates instead of duplicating them)
+- `tests/release-provenance.test.js`
 
-**Estimated scope:** Small: 2 files
+**Estimated scope:** Small: 4 files
 
 ## Checkpoint: Shippable Artifact (Tasks 18–19)
 
