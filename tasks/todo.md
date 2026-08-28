@@ -725,19 +725,26 @@ behavior. Failures must disable only this optional feature.
 
 **Acceptance criteria:**
 
-- [ ] The repository contains executable release bytes and a matching checksum
+- [x] The repository contains executable release bytes and a matching checksum
       produced by Task 16, without Git LFS or runtime download.
-- [ ] Missing, corrupt, stale, wrong-architecture, non-executable, self-test-
+- [x] Missing, corrupt, stale, wrong-architecture, non-executable, self-test-
       failing, or protocol-mismatched helpers reach clear bounded diagnostics.
-- [ ] Every validation failure leaves the rest of the Bitwarden plugin usable
+- [x] Every validation failure leaves the rest of the Bitwarden plugin usable
       and creates no agent socket/FIFO/private branch.
 
 **Verification:**
 
-- [ ] Tests pass: `node tests/ssh-agent-bundle.test.js`
-- [ ] Artifact check passes: `scripts/build-agent.sh --compare-tracked`
-- [ ] Manual check: replace the helper in a disposable checkout with each
-      failure form and confirm isolated setup diagnostics.
+- [x] Tests pass: `node tests/ssh-agent-bundle.test.js`
+- [x] Artifact check passes: `scripts/build-agent.sh --compare-tracked` --
+      green in CI: tracked and freshly built both
+      69245af23a45ac96ec5e5d84ca1b34918cc8f0807a4b0e2aea6a74bac6a72852.
+- [x] Manual check: `tests/ssh-agent-bundle.test.js` does exactly this against
+      real files in disposable directories -- missing, non-executable,
+      truncated, a Git LFS placeholder, and a broken shipped binary beside a
+      working development build -- asserting the feature stays off and the
+      diagnostic names the cause. Live: the panel launches
+      bin/x86_64-linux/qs-bitwarden-ssh-agent, reaches ready and serves both
+      keys.
 
 **Dependencies:** Tasks 10 and 16
 

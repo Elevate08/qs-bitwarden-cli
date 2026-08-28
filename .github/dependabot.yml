@@ -1,0 +1,30 @@
+# Dependency updates, proposed rather than applied.
+#
+# The helper ships as committed bytes, so any accepted update here means
+# rebuilding and re-committing the binary in the same change -- CI's
+# --compare-tracked will fail otherwise, which is the intended behaviour and
+# not something to work around.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /agent
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Grouped so a week's routine bumps arrive as one reviewable change with
+    # one binary rebuild, rather than five that each invalidate the artifact.
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+    labels: ["dependencies", "needs-binary-rebuild"]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "ci"

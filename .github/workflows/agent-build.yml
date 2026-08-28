@@ -47,7 +47,7 @@ jobs:
 
     steps:
       - name: Check out the source
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Full history: the build exports a clean tree with `git archive`,
           # which needs the commit rather than a detached shallow blob.
@@ -107,18 +107,35 @@ jobs:
       - name: Compare the tracked binary with a clean rebuild
         env:
           QSBW_PINNED_BUILD: '1'
+          # A pull request from a fork cannot push CI's bytes into its own
+          # branch, so requiring an exact match would make every external
+          # agent-source contribution unmergeable. Such a run reports the
+          # drift and uploads the candidate instead of failing. The bytes
+          # still cannot reach master without a clean rebuild-and-compare,
+          # because this same step blocks on a same-repository run.
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
         # The gate that gives the committed bytes their meaning: they must be
         # what this source builds in this environment. Skipped only while no
-        # binary is tracked yet, so the check cannot silently pass by absence.
+        # binary is tracked, so it cannot pass by absence.
         run: |
-          if [ -f bin/x86_64-linux/qs-bitwarden-ssh-agent ]; then
-            ./scripts/build-agent.sh --compare-tracked
-          else
+          if [ ! -f bin/x86_64-linux/qs-bitwarden-ssh-agent ]; then
             echo "::notice::no tracked binary yet; nothing to compare"
+            exit 0
           fi
+          if ./scripts/build-agent.sh --compare-tracked; then
+            exit 0
+          fi
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::warning::the tracked binary does not match this source. A fork cannot"
+            echo "::warning::push CI's bytes, so this is reported rather than blocking."
+            echo "::warning::A maintainer must commit the uploaded candidate before merge."
+            exit 0
+          fi
+          echo "::error::the tracked binary does not match a clean build of this source"
+          exit 1
 
       - name: Upload the candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: qs-bitwarden-ssh-agent-x86_64-linux
           path: |
@@ -134,7 +151,7 @@ jobs:
       image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Formatting
         working-directory: agent
@@ -143,6 +160,16 @@ jobs:
       - name: Lint
         working-directory: agent
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Dependency and licence policy
+        working-directory: agent
+        # Advisories, licences, registries and duplicate policy. This binary
+        # holds decrypted private keys; its dependency tree was reviewed in
+        # writing once, and this is what stops that review going stale.
+        run: |
+          cargo install cargo-deny --locked --version ^0.16 >/dev/null 2>&1 \
+            || cargo install cargo-deny --locked
+          cargo deny --manifest-path Cargo.toml check
 
       - name: Tests
         working-directory: agent
@@ -156,7 +183,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install what the panel tests shell out to
         # The tests execute the real pipeline rather than mocking it, so the
@@ -165,7 +192,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq openssh-client
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
 
@@ -181,6 +208,14 @@ jobs:
           # tests would skip rather than fail, hiding real coverage loss.
           test -x agent/target/debug/qs-bitwarden-ssh-agent \
             || { echo "::error::helper not at agent/target/debug/"; exit 1; }
+
+      - name: Run the QML tests
+        # The panel's own JavaScript runs inside QML's engine, not Node's, and
+        # the two differ. These were passing locally and never running here.
+        run: |
+          sudo apt-get install -y -qq qml6-module-qttest qt6-declarative-dev-tools \
+            qml6-module-qtqml qml6-module-qtquick
+          QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml
 
       - name: Run every panel test
         run: |

@@ -211,13 +211,59 @@ check("CI compares the tracked binary against a clean rebuild",
   /--compare-tracked/.test(workflow),
   "nothing verifies that the committed bytes are what this source builds")
 check("the comparison is skipped only when no binary is tracked",
-  /if \[ -f bin\/x86_64-linux\/qs-bitwarden-ssh-agent \]/.test(workflow),
+  /if \[ ! -f bin\/x86_64-linux\/qs-bitwarden-ssh-agent \]/.test(workflow),
   "the comparison could pass by absence rather than by matching")
 
 check("CI runs against the feature branch while the feature is unfinished",
   /branches:\s*\[feature\/ssh-agent\]/.test(workflow), "the workflow does not run on the feature branch")
 check("the workflow is read-only",
   /permissions:\s*\n\s*contents:\s*read/.test(workflow), "the workflow requests more than read access")
+// A tag is a moving pointer. Pinning actions by commit is the same argument
+// as pinning the build image by digest, applied to the code that runs the
+// build -- and a workflow that establishes trust in bytes should not itself
+// depend on a mutable reference.
+const actionUses = [...workflow.matchAll(/uses:\s*([^\s@]+)@(\S+)/g)]
+check("every third-party action is used at least once", actionUses.length > 0, "no actions used")
+check("every action is pinned to a full commit SHA",
+  actionUses.every(([, , ref]) => /^[0-9a-f]{40}$/.test(ref)),
+  actionUses.filter(([, , ref]) => !/^[0-9a-f]{40}$/.test(ref)).map(m => m[0]).join(", "))
+check("each pin says which release it is, for a human",
+  (workflow.match(/@[0-9a-f]{40} # v\d/g) || []).length === actionUses.length,
+  "a bare SHA tells a reviewer nothing about what version it is")
+
+// The dependency tree of a key-holding binary was reviewed once in writing;
+// this is what stops that review going stale.
+const deny = read("deny.toml")
+check("CI enforces the dependency policy", /cargo deny/.test(workflow), "nothing runs cargo-deny")
+check("advisories are denied rather than warned about",
+  /yanked = "deny"/.test(deny), "yanked crates are tolerated")
+check("the one accepted advisory says why and where it is argued",
+  /RUSTSEC-2023-0071[\s\S]{0,400}?0001-ssh-agent-dependencies/.test(deny),
+  "an ignored advisory with no recorded reasoning is just a silenced alarm")
+check("only permissive licences are allowed",
+  /allow = \[[\s\S]*?"MIT"/.test(deny) && !/GPL/.test(deny.split("[bans]")[0]),
+  "a copyleft dependency would change this plugin's own distribution terms")
+check("only crates.io is permitted as a source",
+  /unknown-git = "deny"/.test(deny) && /unknown-registry = "deny"/.test(deny),
+  "a git dependency is a moving target no lockfile review covers")
+
+// The panel's JavaScript runs in QML's engine, not Node's, and they differ.
+check("the QML tests run in CI",
+  /qmltestrunner/.test(workflow), "the QML suite passes locally and never runs in CI")
+
+// A fork cannot push CI's bytes into its own branch, so an unconditional
+// match requirement would make every external agent-source PR unmergeable.
+check("a fork pull request reports binary drift rather than blocking on it",
+  /IS_FORK/.test(workflow) && /fork/.test(workflow),
+  "a fork contributor could never satisfy the binary comparison")
+check("a same-repository run still fails on drift",
+  /::error::the tracked binary does not match/.test(workflow),
+  "drift is never fatal, so the comparison decides nothing")
+
+check("dependency updates are told the binary must be rebuilt",
+  /needs-binary-rebuild/.test(read(".github/dependabot.yml")),
+  "an accepted dependency bump would fail --compare-tracked with no explanation")
+
 check("no secrets are referenced",
   !/secrets\./.test(workflow), "a build gate should need no secrets")
 check("the panel tests get the tools they shell out to",

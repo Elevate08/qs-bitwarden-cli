@@ -182,7 +182,7 @@ Tasks 3 + 11 + 14 + 15 + 19
 - [ ] Existing, Rust, audit, license, and end-to-end gates pass with no PR
       secrets or write token.
 
-- [ ] Task 18: Validate the bundled helper at launch
+- [x] Task 18: Validate the bundled helper at launch
 - [ ] Task 19: Protect release provenance
 
 ### Checkpoint: Shippable Artifact
