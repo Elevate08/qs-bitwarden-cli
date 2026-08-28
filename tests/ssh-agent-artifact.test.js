@@ -170,6 +170,22 @@ check("--compare-tracked reports drift without writing to the repository",
     && !/compare_tracked\(\)[\s\S]{0,600}?install -m/.test(script),
   "the drift check writes into the repository")
 
+// Every mode must build the same way. They did not: the release build put its
+// target directory outside the remapped source root while the comparison
+// modes put it inside, so the bytes CI offered as the candidate differed from
+// the bytes --verify-reproducible had just declared identical. Committing
+// those would have made the first --compare-tracked fail, or passed by luck
+// and shipped a binary nobody could reproduce.
+check("every build mode goes through one builder",
+  (script.match(/build_clean_copy /g) || []).length >= 3,
+  "the modes do not share a build procedure, so they can diverge again")
+check("the target directory lives inside the remapped source root",
+  /CARGO_TARGET_DIR="\$src\/target"/.test(script),
+  "a target directory outside the remap embeds an unremapped path in the binary")
+check("no mode passes its own target directory",
+  !/build_into "[^"]*" "[^"]*"/.test(script),
+  "a per-mode target directory is how the two paths diverged before")
+
 // The artifact paths and the flag name are what Task 18 and its verification
 // step refer to. They were wrong once -- a flat bin/ and a --check flag the
 // task list never mentions -- and the cost of that is only paid later, when

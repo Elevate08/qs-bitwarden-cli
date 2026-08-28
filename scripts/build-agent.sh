@@ -161,16 +161,36 @@ rustflags_for() {
 }
 
 # One cargo invocation, with everything that affects output stated explicitly.
+#
+# The target directory must live *inside* the source root. It is remapped
+# along with everything else under it, and build-script output paths reach the
+# binary: a target directory somewhere else is an unremapped path that changes
+# the bytes. That is not hypothetical -- the release build used a separate
+# temporary directory and produced a different digest from the two builds
+# --verify-reproducible had just declared identical.
 build_into() {
-  local src="$1" target_dir="$2"
+  local src="$1"
   ( cd "$src/agent" \
-    && CARGO_TARGET_DIR="$target_dir" \
+    && CARGO_TARGET_DIR="$src/target" \
        RUSTFLAGS="$(rustflags_for "$src")" \
        cargo build --locked --release --target "$SUPPORTED_TARGET" >&2 )
 }
 
-built_binary() {
-  printf '%s/%s/release/%s' "$1" "$SUPPORTED_TARGET" "$OUTPUT_NAME"
+# Export the committed tree somewhere clean and build it there.
+#
+# Every mode goes through this, so a release, a reproducibility check and a
+# drift comparison are literally the same procedure. They diverged once, and
+# the divergence was invisible until two digests of the same source disagreed.
+#
+# HEAD rather than the working tree: a release artifact should not contain
+# uncommitted changes, and the comparison modes have to build what the
+# repository actually says.
+build_clean_copy() {
+  local dest="$1"
+  mkdir -p "$dest" || return 1
+  git -C "$REPO_ROOT" archive HEAD | tar -x -C "$dest" || return 1
+  build_into "$dest" || return 1
+  printf '%s/target/%s/release/%s' "$dest" "$SUPPORTED_TARGET" "$OUTPUT_NAME"
 }
 
 digest() { sha256sum "$1" | cut -d' ' -f1; }
@@ -201,17 +221,11 @@ verify_reproducible() {
   first="$work/path-one"
   second="$work/a-considerably-longer-second-path"
 
-  for dest in "$first" "$second"; do
-    mkdir -p "$dest"
-    git -C "$REPO_ROOT" archive HEAD | tar -x -C "$dest" \
-      || fail "could not export a clean tree; commit or stash first"
-  done
-
-  local a b
-  build_into "$first" "$first/target" || fail "the first build failed"
-  build_into "$second" "$second/target" || fail "the second build failed"
-  a="$(digest "$(built_binary "$first/target")")"
-  b="$(digest "$(built_binary "$second/target")")"
+  local a b binary
+  binary="$(build_clean_copy "$first")" || fail "the first build failed"
+  a="$(digest "$binary")"
+  binary="$(build_clean_copy "$second")" || fail "the second build failed"
+  b="$(digest "$binary")"
 
   printf 'path one: %s\npath two: %s\n' "$a" "$b"
   if [ "$a" != "$b" ]; then
@@ -228,10 +242,9 @@ compare_tracked() {
   work="$(mktemp -d)" || fail "could not create a work directory"
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" EXIT
-  git -C "$REPO_ROOT" archive HEAD | tar -x -C "$work"
-  build_into "$work" "$work/target" || fail "the comparison build failed"
-  local fresh
-  fresh="$(digest "$(built_binary "$work/target")")"
+  local fresh binary
+  binary="$(build_clean_copy "$work/source")" || fail "the comparison build failed"
+  fresh="$(digest "$binary")"
   local have
   have="$(digest "$committed")"
   printf 'tracked: %s\nfresh:   %s\n' "$have" "$fresh"
@@ -259,8 +272,9 @@ build_release() {
   work="$(mktemp -d)" || fail "could not create a work directory"
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" EXIT
-  build_into "$REPO_ROOT" "$work/target" || fail "the build failed"
-  install -m 0755 "$(built_binary "$work/target")" "$OUTPUT_DIR/$OUTPUT_NAME"
+  local binary
+  binary="$(build_clean_copy "$work/source")" || fail "the build failed"
+  install -m 0755 "$binary" "$OUTPUT_DIR/$OUTPUT_NAME"
   # Paths relative to bin/, so `sha256sum -c SHA256SUMS` works from there
   # whatever the checkout is called.
   ( cd "$REPO_ROOT/bin" && sha256sum "$OUTPUT_ARCH/$OUTPUT_NAME" > "$SUMS_FILE" )
