@@ -851,20 +851,37 @@ public-export contradiction and mark validated assumptions with evidence.
 
 **Acceptance criteria:**
 
-- [ ] Documentation accurately covers UWSM re-login, terminal diagnostics,
+- [x] Documentation accurately covers UWSM re-login, terminal diagnostics,
       conflicts with other agents, configuration snippets, grants, public
       files, version floor, helper verification, and cleanup after removal.
-- [ ] The threat model plainly distinguishes best-effort erasure, public cache,
+      README gains an "SSH Agent" section, three rows in the configuration
+      reference, a feature bullet, and two removal paths; CHANGELOG and
+      manifest carry 1.4.0.
+- [x] The threat model plainly distinguishes best-effort erasure, public cache,
       same-UID/root limits, `bw` exposure, checksum corruption checks, and CI
-      provenance without overstating any guarantee.
+      provenance without overstating any guarantee. "What this does not defend
+      against" says the checksum is not tamper detection and names what it does
+      catch, that process attribution is reported rather than verified, and
+      that agent forwarding is unsupported in this release.
 - [ ] The complete manual matrix passes for login/unlock/sync/lock/logout,
       both unlock-on-demand modes, auth/sign/rebase, crash/reload/update,
-      disable/uninstall, and normal non-vault SSH keys.
+      disable/uninstall, and normal non-vault SSH keys. Needs a real desktop
+      and a real vault; the maintainer's to run.
+
+Two documentation defects were fixed while writing this, both stale rather
+than wrong when written: `manifest.json` still described an approval grant as
+scoped to one *process*, which `docs/decisions/0002-grant-scope.md` had
+already relaxed to one program; and the design draft's "Assumptions to
+Validate" named a `bw` floor of 2025.1.0 where the code enforces 2025.1.2.
 
 **Verification:**
 
 - [ ] Full gates pass: JavaScript, QML, Qt6 lint baseline, manifest validation,
       Rust fmt/Clippy/tests, dependency policy, reproducible build, and E2E.
+      The JavaScript suite and `omarchy plugin validate` pass on the doc
+      commit; the Rust and build gates last ran green on the previous commit
+      and are unaffected by documentation, but CI path filters mean a
+      docs-only push does not re-run them. Re-run before the tag.
 - [ ] Docs check: follow setup, signing, verification, troubleshooting, and
       uninstall instructions from a clean disposable user/session.
 - [ ] Manual check: complete the release matrix and obtain human security,

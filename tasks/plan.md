@@ -195,7 +195,8 @@ Tasks 3 + 11 + 14 + 15 + 19
 
 ### Phase 5: Document and Release
 
-- [ ] Task 20: Complete release documentation
+- [~] Task 20: Complete release documentation -- README, CHANGELOG, manifest
+      and the design draft are done; the manual release matrix is not
 
 ### Checkpoint: Complete
 

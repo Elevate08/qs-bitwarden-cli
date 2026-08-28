@@ -502,7 +502,8 @@ Public keys are not secret, so this does not cross the private boundary.
 - Never write private keys to disk under any circumstance. That is key export,
   and it stays out of scope.
 - Document the resulting `user.signingkey`, `allowed_signers`, and
-  `IdentityFile`/`IdentitiesOnly` snippets in setup.
+  `IdentityFile`/`IdentitiesOnly` snippets in setup. *Done: README, "SSH
+  Agent".*
 
 ## Security Requirements
 
@@ -1059,29 +1060,54 @@ Ideas worth doing that are deliberately outside the first release.
 
 ## Assumptions to Validate
 
-The design is settled, but these spike assumptions must be true before the
-feature proceeds past its prerequisite/headless stages:
+The design is settled, but these spike assumptions had to be true before the
+feature proceeded past its prerequisite/headless stages. Each is marked with
+what actually established it, not with confidence:
 
-- [ ] A maintained Rust dependency set can correctly implement the required
+- [x] A maintained Rust dependency set can correctly implement the required
       agent protocol and RSA signature flags without adopting deprecated code.
-- [ ] Quickshell remains responsive and can complete unlock/approval while the
-      requesting SSH client is blocked on the socket.
-- [ ] `bw list items` reliably returns all supported SSH keys in a format the
+      *Reviewed in `docs/decisions/0001-ssh-agent-dependencies.md`; the
+      allowlisted frame decoder and both signature flavours are covered by
+      `agent/tests/protocol.rs`.*
+- [x] Quickshell remains responsive and can complete unlock/approval while the
+      requesting SSH client is blocked on the socket. *Checkpoint "Optional
+      Data Plane" (Tasks 10-12), verified under blocked clients and failed
+      helpers.*
+- [x] `bw list items` reliably returns all supported SSH keys in a format the
       selected Rust key library can parse, including imported RSA keys.
-- [ ] Private key buffers can be bounded and best-effort-zeroized without
-      hidden long-lived clones in selected dependencies.
-- [ ] One `bw list items` read can be fanned out with `tee` into a QML stream
+      *`tests/ssh-items.test.js` and the end-to-end case in
+      `tests/ssh-agent-pipeline.test.js`, which drives the real companion and
+      confirms `ssh-add -L` lists exactly what the vault held.*
+- [x] Private key buffers can be bounded and best-effort-zeroized without
+      hidden long-lived clones in selected dependencies. *As far as a written
+      dependency review and `agent/tests/keystore.rs` can establish -- which is
+      the honest bound on this claim, and why the README says best-effort.*
+- [x] One `bw list items` read can be fanned out with `tee` into a QML stream
       and a FIFO without the agent branch ever truncating or failing the panel
-      list, and without unacceptable backpressure.
-- [ ] `bw` 2025.1.0 is a workable floor on the servers this plugin supports,
-      including self-hosted Bitwarden and Vaultwarden.
-- [ ] A pinned x86_64 GNU build environment can reproducibly emit the exact
+      list, and without unacceptable backpressure. *Task 12, against a real
+      FIFO under nine failure shapes.*
+- [~] The `bw` floor is workable on the servers this plugin supports. *Corrected
+      from 2025.1.0: the enforced floor is **2025.1.2**, the first release
+      Bitwarden documents as supporting SSH key items, with 2026.8.0 fixing a
+      malformed-item bug that fails the whole list. Verified against the
+      official service; self-hosted Bitwarden and Vaultwarden remain untested
+      here, which is why capability is reported as unconfirmed rather than
+      assumed.*
+- [x] A pinned x86_64 GNU build environment can reproducibly emit the exact
       bytes tracked in the repository and run them on the target Omarchy
-      environment.
+      environment. *CI builds twice from different paths and compares against
+      the tracked bytes on every push; the release workflow repeats it against
+      the tag and runs the result outside the build container.*
 
-Public-key export remains a later feature. Its filename, permission, conflict,
-removal, and account-change semantics require a separate design before it is
-implemented.
+**Resolved in v1.** This paragraph contradicted "Public Key File Export"
+above, which called the same work v1 scope. The stronger requirement won,
+because Git signing cannot be configured the way a user actually configures it
+without files on disk. Public-key export shipped in 1.4.0 with the semantics
+that section specifies: one `.pub` per advertised key under
+`${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh/`, mode `0600`
+inside a `0700` directory, names through the attachment sanitizer with the
+item ID resolving collisions, rewritten on load, and cleared on logout,
+account change, and when the feature is turned off but not on a lock.
 
 ## Corrections from Revision 1
 

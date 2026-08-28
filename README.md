@@ -3,7 +3,7 @@
 A modern, fast, and feature-rich Bitwarden password manager plugin for the **Omarchy** shell environment and **Hyprland** desktop.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.3.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.4.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -64,6 +64,11 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Enrolling asks for your master password up front in the settings screen, rather than quietly capturing it on some later unlock.
   - The reader is armed automatically whenever you open the panel on a locked vault; the master password field always stays available as a fallback.
   - See [Fingerprint Unlock](#fingerprint-unlock) below for the security trade-off before enabling it.
+
+- **SSH Agent** (opt-in, `sshAgentEnabled`):
+  - Serves the SSH keys in your vault to `ssh`, `git` and `ssh-keygen -Y sign` while the vault is unlocked, from a separate helper process that holds the private keys in memory and drops them on lock, logout, or exit. They are never written to disk and never reach QML.
+  - Every signature is approved in the panel, with the key, its fingerprint and the program asking. One approval can cover a whole rebase; live approvals are listed and revocable, and repeated unanswered prompts fall back to a cooldown rather than pestering.
+  - Public keys are projected to files for Git signing, one file per item, public material only. See [SSH Agent](#ssh-agent).
 
 - **Context-Aware Password Suggestions (Active Window / Browser Tab)**:
   - Reads the active window on open (`hyprctl activewindow -j`, falling back to the `hyprctl clients -j` focus history when the panel itself holds focus).
@@ -287,6 +292,10 @@ rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
 
 # Settings block, if you edited shell.json by hand
 # -> delete the "io.github.elevate08.qs-bitwarden-cli" key under "plugins"
+
+# SSH agent, if you used it: the exported public keys and the routing file
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh"
+rm -f ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
 ```
 
 Two more paths are written but need no cleaning up, because neither outlives
@@ -443,6 +452,9 @@ The following settings are read from the plugin's own entry in the
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see below. |
 | `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see below. |
+| `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](#ssh-agent). |
+| `sshAgentUnlockOnDemand` | `boolean` | `false` | Let a signing request against a locked vault open the unlock prompt instead of being refused. Off by default: `ssh` asks the agent for identities on every connection, so this opens the panel on the first `ssh` after every login. |
+| `sshAgentApprovalWindowSec` | `number` | `120` | How long one approval keeps covering further signatures from the same program with the same key. Range `0`-`900`; `0` asks every time. Held in memory only and dropped on lock, logout or exit. |
 
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
 
@@ -480,6 +492,97 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 PAM can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. Fingerprint unlock therefore keeps your master password in the OS login keyring and treats a verified fingerprint as the gate on reading it back. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock, and it means **anyone who can read your unlocked login keyring can read your master password**. It is off by default and worth leaving off on a shared or unattended machine.
 
 The stored password is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, log out of the account, or when the vault rejects it (for example after a master password change, which then prompts you for the new one).
+
+---
+
+## SSH Agent
+
+Off by default. Turn on **Act as your SSH agent** in the settings screen and the panel starts a separate helper process that serves the SSH keys in your vault to `ssh`, `git`, and `ssh-keygen -Y sign` for as long as the vault is unlocked.
+
+Private keys are held only by that helper, in memory. They never reach QML -- the vault read is split in a `jq` stage and the panel's half has the private material removed before it arrives -- they are never written to disk, and they are dropped when the vault locks, when you log out, and when the helper exits.
+
+**Requirements.** Bitwarden CLI `2025.1.2+` for SSH key items; `2026.8.0+` also fixes a bug where one malformed SSH item fails the whole vault list. `jq`, which the plugin already needs. The helper ships prebuilt for x86_64 Linux. A missing, corrupt, stale, wrong-architecture, non-executable or self-test-failing helper disables **only** this feature, names the reason under **SSH AGENT STATUS**, and leaves the rest of the plugin working.
+
+### Pointing SSH clients at it
+
+The helper binds `$XDG_RUNTIME_DIR/qs-bitwarden-cli/ssh-agent.sock` (mode `600`, in a `700` directory) and never reads `SSH_AUTH_SOCK` itself -- that variable is how *clients* find an agent. The panel offers **Route SSH Clients Here**, which writes exactly one file:
+
+```
+~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
+```
+
+Omarchy runs the graphical session through UWSM, which reads that directory at login, so **the change takes effect at your next login**, not immediately. If something else already owns `SSH_AUTH_SOCK`, the panel names it and asks before replacing it. The file is plugin-owned and recognised by its full contents rather than its name: a symlink, or a file containing anything else, is reported and left alone rather than overwritten.
+
+What the panel says about routing is a hint, not a verdict. It sees the graphical session's environment, while a `.bashrc` export, a systemd user unit, a TTY login or an incoming SSH session can each differ and are invisible from there -- so the status section prints a one-line check to run in the terminal you actually use. To route a shell by hand:
+
+```bash
+export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/qs-bitwarden-cli/ssh-agent.sock"
+```
+
+### Approving a signature
+
+Every signature asks first. The prompt names the key, its `SHA256:` fingerprint, and the program asking (path and pid), and gives you two minutes to answer.
+
+- **Approve once** signs this request and nothing further.
+- **Approve for this program · 2m** also covers later requests from the same executable with the same key, for `sshAgentApprovalWindowSec` seconds (default `120`, maximum `900`, `0` to ask every time). Git spawns a fresh `ssh-keygen -Y sign` for every commit it signs, so this is what makes a twenty-commit rebase one prompt instead of twenty. The grant matches on your UID, the executable path captured at approval, and the key -- deliberately not the pid, which changes with every commit.
+
+Live grants appear under **ACTIVE APPROVALS** with the program and time remaining, revocable one at a time or all at once, and are dropped on lock, logout, and helper exit. They are never written to disk.
+
+Two unanswered or refused prompts in a row start a five-minute cooldown during which signing requests are refused without raising the panel; approving anything clears it. The status section says a cooldown is running and when it ends -- unattended requests are exactly the case where a silent multi-minute SSH outage would be impossible to connect back to its cause.
+
+### While the vault is locked
+
+Public identities stay advertised, so `ssh` can still offer them, but nothing can be signed. With **Unlock on demand** on, a signing request opens the unlock prompt instead of being refused. It is off by default because `ssh` asks the agent for identities on every connection -- including ones that go on to authenticate with an on-disk key -- so leaving it on opens the panel on the first `ssh` after every login.
+
+### Public key files, and Git signing
+
+Git needs paths rather than inline keys (`user.signingkey` takes a file; `gpg.ssh.allowedSignersFile` has no inline form at all), so the helper's validated public identities are projected to files:
+
+```
+~/.local/share/qs-bitwarden-cli/ssh/<item name>.pub
+```
+
+Mode `600` inside a `700` directory. Only public material is ever written there, and only what the helper vouched for. The projection is refreshed on each load and removed on logout, on an account change, and when you turn the feature off; a lock leaves it in place, because locked keys are still advertised. Not `~/.ssh`: that directory belongs to you and to OpenSSH, and a plugin that rewrote a set of files in it would eventually delete something it did not create.
+
+Authentication needs nothing beyond routing. Signing needs Git told where to look:
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.local/share/qs-bitwarden-cli/ssh/work.pub
+git config --global commit.gpgsign true
+```
+
+### Verifying the helper
+
+The panel checks the shipped binary against `bin/SHA256SUMS` at launch and shows "checksum verified", and says plainly when it is running a locally built development helper instead of the shipped one. Be clear about what that check is worth: `SHA256SUMS` sits in the same directory as the binary *and* as the QML that reads it, so anyone able to replace one can replace the others. It is not tamper detection. What it does catch is real -- a partial clone, an LFS placeholder, an architecture or format mismatch, and above all a stale binary left behind by a `git pull` that updated the source.
+
+Provenance is the separate mechanism with a different root of trust. Releases from `v1.4.0` on carry a GitHub build-provenance attestation binding the binary's digest to this repository, workflow and commit, published alongside an SBOM and a dependency/licence report:
+
+```bash
+gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
+   --repo Elevate08/qs-bitwarden-cli
+```
+
+`gh` is not an Omarchy dependency, so this is a check you run if you want it, not one the plugin can assume. Worth re-running after a plugin update, when the binary has changed.
+
+### What this does not defend against
+
+- **Anything running as you.** The socket enforces the peer's UID and nothing more. A process running as you can ask for signatures -- it gets a prompt, and the cooldown limits how often it can raise one -- and it can equally replace the helper, the checksum file, and the QML that checks them. Filesystem permissions own that boundary; the plugin cannot defend itself against a same-UID attacker, and neither can any other agent.
+- **The process shown in the prompt.** The path, pid and start time are reported by the system for context. Only the requesting user is verified. Treat them as a useful hint about *what* is asking, not proof.
+- **Agent forwarding.** This release does not support it. A forwarded request is labelled in the prompt, and the process it shows is not the one that will use the signature.
+- **Erasure.** Secret memory is zeroized on a best-effort basis and the helper disables core dumps and `PR_SET_DUMPABLE` before the first key is read, but nothing can guarantee that a page freed by an allocator or swapped by the kernel is gone.
+- **Root, and the vault itself.** Root reads any process's memory. Separately, `bw` is the source of the keys and holds its own decrypted copies while it runs.
+
+### Turning it off
+
+Switching **Act as your SSH agent** off stops the helper, removes the socket and FIFO, drops every key and grant, and deletes the public-key projection. The routing file is left for you, because SSH clients would otherwise keep pointing at a socket that is gone:
+
+```bash
+# Or press "Remove Routing File" in the panel
+rm ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
+```
+
+Either way clients keep the old `SSH_AUTH_SOCK` until your next login.
 
 ---
 
