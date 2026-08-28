@@ -108,6 +108,14 @@ check("the release calls the branch's gates instead of copying them",
 check("the branch workflow is callable",
   /^\s*workflow_call:/m.test(build),
   "release.yml calls a workflow that does not accept being called")
+// The gates run as part of the release, so they share the called workflow's
+// concurrency group. Scoped by ref alone, a branch build and a release could
+// cancel each other -- which is exactly what release.yml's own
+// `cancel-in-progress: false` exists to prevent.
+check("a branch build and a release cannot cancel each other",
+  /group: agent-build-\$\{\{ github\.workflow \}\}/.test(build)
+    && /cancel-in-progress: \$\{\{ github\.workflow != 'release' \}\}/.test(build),
+  "the called workflow's concurrency group does not distinguish its callers")
 check("nothing publishes before those gates pass",
   /needs: gates/.test(jobs.get("verify") || "") && /needs: verify/.test(jobs.get("release") || ""),
   "the publishing job does not depend on verification")
@@ -128,6 +136,13 @@ check("the helper's reported versions are checked against the panel's",
   "a protocol bump could ship to users and disable the feature at launch")
 check("the shipped binary is executed, not merely compiled",
   /--self-test/.test(verify), "nothing runs the bytes being released")
+// A container job's default shell is the image's `sh`. The scan step uses an
+// array, and sh has none: the first rehearsal of this workflow died on
+// `Syntax error: "(" unexpected` after every expensive step had already
+// passed.
+check("the container job declares bash rather than taking the image's sh",
+  /defaults:\n\s*run:\n(?:\s*#[^\n]*\n)*\s*shell: bash/.test(verify),
+  "a bashism in a container step fails at the end of a long job")
 
 const releaseJob = jobs.get("release") || ""
 check("the release job runs the bytes outside the build container",

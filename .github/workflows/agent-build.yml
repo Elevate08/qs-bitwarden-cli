@@ -41,8 +41,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: agent-build-${{ github.ref }}
-  cancel-in-progress: true
+  # Scoped by the calling workflow, not just the ref. These jobs also run as
+  # release.yml's gates stage, and a shared group let a branch build and a
+  # release cancel one another -- which the rehearsal demonstrated by killing
+  # a branch build the moment the release run claimed the group. A release's
+  # gates are never cancelled; a superseded branch build still is.
+  group: agent-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.workflow != 'release' }}
 
 jobs:
   reproducible:

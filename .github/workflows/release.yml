@@ -65,6 +65,14 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    defaults:
+      run:
+        # A container job's default shell is the image's `sh`, not the runner's
+        # bash. The scan below uses an array, and `sh` answered that with
+        # `Syntax error: "(" unexpected` -- found by rehearsing this workflow
+        # rather than by reading it. Declared for the whole job so the next
+        # step that reaches for a bashism does not rediscover it.
+        shell: bash
     # The same digest scripts/build-agent.sh pins, for the same reason: the
     # debug-symbol build below has to come from the toolchain that produced
     # the release, not from whatever the runner image carries this week.
