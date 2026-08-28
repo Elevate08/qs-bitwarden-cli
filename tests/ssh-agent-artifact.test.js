@@ -265,6 +265,18 @@ check("the QML tests run in CI",
 check("every QML module the tests import is installed explicitly",
   /qml6-module-qtqml-workerscript/.test(workflow),
   "QtQuick's recommended modules are dropped by --no-install-recommends")
+// One QML test imports the Omarchy shell by absolute path, which a runner
+// does not have. Skipping it is right; skipping it silently, or skipping
+// everything and reporting success, is not.
+check("a QML test is skipped only for a stated, detected reason",
+  /\[ ! -d \/usr\/share\/omarchy\/shell\/Ui \]/.test(workflow),
+  "the skip is unconditional rather than tied to the missing dependency")
+check("the skipped files are named in the log",
+  /::notice::Omarchy shell not installed; skipped/.test(workflow),
+  "a silent skip looks identical to a passing test")
+check("skipping every QML test fails the job",
+  /every QML test was skipped, so this gate proved nothing/.test(workflow),
+  "the gate could pass by running nothing at all")
 
 // A fork cannot push CI's bytes into its own branch, so an unconditional
 // match requirement would make every external agent-source PR unmergeable.

@@ -257,7 +257,33 @@ jobs:
           # The import paths qmltestrunner will search, so a future
           # module-not-installed failure can be read straight from the log.
           /usr/lib/qt6/bin/qmltestrunner -help 2>&1 | head -3 || true
-          QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml
+          # One test imports the Omarchy shell's own UI kit by absolute path,
+          # which exists on a desktop and not on a runner. It is skipped here
+          # -- but narrowly, loudly, and only for that reason: a gate that
+          # quietly runs nothing is worse than no gate, and this file has
+          # already been bitten twice by checks passing through absence.
+          shopt -s nullglob
+          run=() ; skipped=()
+          for f in tests/qml/*.qml; do
+            if grep -q "/usr/share/omarchy/shell" "$f" && [ ! -d /usr/share/omarchy/shell/Ui ]; then
+              skipped+=("$f")
+            else
+              run+=("$f")
+            fi
+          done
+          if [ ${#skipped[@]} -gt 0 ]; then
+            echo "::notice::Omarchy shell not installed; skipped ${skipped[*]}"
+          fi
+          if [ ${#run[@]} -eq 0 ]; then
+            echo "::error::every QML test was skipped, so this gate proved nothing"
+            exit 1
+          fi
+          echo "running ${#run[@]} QML test file(s), skipping ${#skipped[@]}"
+          status=0
+          for f in "${run[@]}"; do
+            QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input "$f" || status=1
+          done
+          exit $status
 
       - name: Run every panel test
         run: |
