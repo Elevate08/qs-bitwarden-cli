@@ -12,8 +12,12 @@
 # written here, which would silently drop these settings; keeping the two
 # apart avoids that trap.
 
-[build]
-target = "x86_64-unknown-linux-gnu"
+# Deliberately no `[build] target`. Setting one moves cargo's output to
+# target/<triple>/, which is not where the panel looks for the development
+# helper (agent/target/debug/) and not where the tests look either -- so a
+# default target here breaks an ordinary `cargo build` for everyone while
+# buying nothing: scripts/build-agent.sh passes --target explicitly, which is
+# the only place the triple actually needs fixing.
 
 [net]
 # A release build resolves nothing: the lockfile is the dependency set, and a

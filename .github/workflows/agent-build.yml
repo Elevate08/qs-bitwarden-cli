@@ -78,6 +78,11 @@ jobs:
           }
 
       - name: Build twice from different paths and compare
+        env:
+          # This job *is* the pinned environment -- the container above. The
+          # script verifies the claim against rust-toolchain.toml and the
+          # image's own OS rather than taking it on trust.
+          QSBW_PINNED_BUILD: '1'
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           ./scripts/build-agent.sh --verify-reproducible
@@ -126,7 +131,16 @@ jobs:
 
       - name: Build the helper the pipeline tests drive
         working-directory: agent
+        # Plain debug build into agent/target/debug/, which is where the panel
+        # launches the development helper from and where the tests look for it.
         run: cargo build --locked
+
+      - name: Confirm the helper landed where the tests expect it
+        run: |
+          # A default target in .cargo/config.toml would move this and the
+          # tests would skip rather than fail, hiding real coverage loss.
+          test -x agent/target/debug/qs-bitwarden-ssh-agent \
+            || { echo "::error::helper not at agent/target/debug/"; exit 1; }
 
       - name: Run every panel test
         run: |

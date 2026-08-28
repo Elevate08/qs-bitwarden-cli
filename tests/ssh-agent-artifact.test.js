@@ -121,6 +121,23 @@ const wrongTarget = spawnSync("bash", [path.join(repoRoot, "scripts/build-agent.
 eq("an unsupported target is refused", wrongTarget.status, 1)
 check("the refusal names the target", /aarch64/.test(wrongTarget.stderr), wrongTarget.stderr.slice(0, 160))
 
+// The pinned environment is entered, not started: CI runs this script inside
+// the image, where no container runtime exists. Conflating "am I pinned" with
+// "can I start a container" made the script refuse in the one place it was
+// written for, so both halves are pinned down here.
+check("the script recognises being inside the pinned environment",
+  /in_pinned_environment\(\)/.test(script) && /QSBW_PINNED_BUILD/.test(script),
+  "the script cannot tell it is already in the pinned image")
+check("the workflow tells the script it is in the pinned environment",
+  /QSBW_PINNED_BUILD:\s*'1'/.test(workflow),
+  "CI runs in the pinned image but never says so")
+check("a claim of being pinned is verified, not trusted",
+  /rust-toolchain\.toml[\s\S]{0,400}?fail /.test(script) && /debian[\s\S]{0,200}?bookworm/.test(script),
+  "the environment claim is taken on trust")
+check("a container runtime is used to enter the image, not required to be in it",
+  /reexec_in_container/.test(script),
+  "no path re-executes the build inside the pinned image")
+
 // The important refusal: without a pinned environment the script must not
 // report a reproducibility result it has no basis for.
 const verify = run("--verify-reproducible")

@@ -77,6 +77,41 @@ require_target() {
     || fail "unsupported target '$target'; this release builds only $SUPPORTED_TARGET"
 }
 
+# Are we already running inside the pinned build environment?
+#
+# This is the question that matters, and it is not the same as "can I start a
+# container". CI runs this script *inside* the pinned image, where no
+# container runtime exists and none is wanted -- an earlier version conflated
+# the two and refused to build in the one environment it was written for.
+#
+# QSBW_PINNED_BUILD is the claim, set by the release workflow and by this
+# script when it re-executes itself in a container. The compiler check below
+# is the part that does not take that claim on trust: if the environment says
+# it is pinned but carries a different rustc than rust-toolchain.toml names,
+# the claim is wrong and the build stops.
+in_pinned_environment() {
+  [ "${QSBW_PINNED_BUILD:-}" = "1" ] || return 1
+  local pinned actual
+  pinned="$(grep -oP 'channel\s*=\s*"\K[^"]+' "$REPO_ROOT/agent/rust-toolchain.toml" 2>/dev/null)"
+  actual="$(rustc --version 2>/dev/null | cut -d' ' -f2)"
+  [ -n "$pinned" ] && [ "$pinned" = "$actual" ] \
+    || fail "this environment claims to be the pinned one but carries rustc ${actual:-unknown}, not $pinned"
+
+  # The compiler check alone is too weak: a host may happen to carry the same
+  # rustc while its glibc and binutils -- the things the image exists to pin --
+  # are entirely different. The pinned image is Debian bookworm, so verify
+  # that too. It is cheap, and it catches the case of a developer setting the
+  # variable on a machine that merely has the right Rust.
+  local os_id os_codename
+  os_id="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-}")"
+  os_codename="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_CODENAME:-}")"
+  [ "$os_id" = "debian" ] && [ "$os_codename" = "bookworm" ] \
+    || fail "this environment claims to be the pinned one but is ${os_id:-unknown}/${os_codename:-unknown},
+       not debian/bookworm. The image pins glibc and binutils, not just the compiler."
+  return 0
+}
+
+# A runtime we could use to *enter* the pinned environment from outside it.
 container_runtime() {
   # Omarchy's own convention is `sudo docker`: it does not put users in the
   # docker group, because that group is equivalent to passwordless root. A
@@ -86,6 +121,20 @@ container_runtime() {
   if sudo -n docker info >/dev/null 2>&1; then echo "sudo docker"; return 0; fi
   if podman info >/dev/null 2>&1; then echo "podman"; return 0; fi
   return 1
+}
+
+# Re-run this script inside the pinned image, so a local reproduction uses the
+# same glibc, linker and strip that produced the committed bytes.
+reexec_in_container() {
+  local runtime="$1"
+  shift
+  note "entering the pinned image with: $runtime"
+  # shellcheck disable=SC2086
+  $runtime run --rm \
+    -e QSBW_PINNED_BUILD=1 \
+    -v "$REPO_ROOT:/work" -w /work \
+    "$PINNED_IMAGE" \
+    /work/scripts/build-agent.sh "$@"
 }
 
 # --- the build itself ------------------------------------------------------
@@ -120,14 +169,18 @@ digest() { sha256sum "$1" | cut -d' ' -f1; }
 # second location is the point: a path that leaked into the binary shows up
 # here as a digest mismatch and nowhere else.
 verify_reproducible() {
-  local runtime
-  if ! runtime="$(container_runtime)"; then
-    fail "no container runtime, so the system toolchain is unpinned and the result would not be reproducible.
-       This check refuses to report success it cannot support. Run it in CI, where the
-       pinned image is used, or start a runtime locally. See --allow-unpinned for a
-       plain build that makes no reproducibility claim."
+  if ! in_pinned_environment; then
+    local runtime
+    if runtime="$(container_runtime)"; then
+      reexec_in_container "$runtime" --verify-reproducible
+      return $?
+    fi
+    fail "not in the pinned build environment and no container runtime to enter one, so the
+       system toolchain is unpinned and the result would not be reproducible. This check
+       refuses to report success it cannot support. It runs in CI, which executes it inside
+       the pinned image. See --allow-unpinned for a plain build that makes no such claim."
   fi
-  note "using container runtime: $runtime"
+  note "building in the pinned environment"
 
   local work first second
   work="$(mktemp -d)" || fail "could not create a work directory"
@@ -176,10 +229,15 @@ check_committed() {
 
 build_release() {
   local allow_unpinned="$1"
-  local runtime
-  if ! runtime="$(container_runtime)"; then
-    [ "$allow_unpinned" = "yes" ] || fail "no container runtime; the system toolchain would be unpinned.
-       Pass --allow-unpinned to build anyway, understanding the result is not the release artifact."
+  if ! in_pinned_environment; then
+    local runtime
+    if runtime="$(container_runtime)"; then
+      reexec_in_container "$runtime"
+      return $?
+    fi
+    [ "$allow_unpinned" = "yes" ] || fail "not in the pinned build environment and no container runtime
+       to enter one, so the system toolchain would be unpinned. Pass --allow-unpinned to build
+       anyway, understanding the result is not the release artifact."
     note "WARNING: building with the host toolchain. These bytes are not reproducible"
     note "         and must not be committed as the release binary."
   fi
