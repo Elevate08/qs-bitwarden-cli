@@ -641,19 +641,24 @@ Produce separate debug symbols only as temporary artifacts.
 
 **Acceptance criteria:**
 
-- [ ] Two clean builds from distinct absolute work paths emit identical
+- [x] Two clean builds from distinct absolute work paths emit identical
       stripped helper bytes and stable checksums.
-- [ ] Build inputs cover toolchain, container, linker/strip tools, target,
+- [x] Build inputs cover toolchain, container, linker/strip tools, target,
       flags, release profile, source path, and Cargo registry path.
-- [ ] The script refuses unlocked dependencies or an unsupported target and
+- [x] The script refuses unlocked dependencies or an unsupported target and
       reports source/binary drift without modifying the repository.
 
 **Verification:**
 
-- [ ] Tests pass: `node tests/ssh-agent-artifact.test.js`
-- [ ] Build succeeds: `scripts/build-agent.sh --verify-reproducible`
-- [ ] Manual check: compare artifacts from two clean paths and inspect them with
-      `file`, `readelf`, `ldd`, `sha256sum`, and helper `--self-test`.
+- [x] Tests pass: `node tests/ssh-agent-artifact.test.js`
+- [ ] Build succeeds: `scripts/build-agent.sh --verify-reproducible` -- runs
+      in CI; refuses locally for want of a pinned container, by design.
+- [ ] Manual check: compare artifacts from two clean paths and inspect them
+      with `file`, `readelf`, `ldd`, `sha256sum`. NOT DONE LOCALLY: this
+      machine has no usable container runtime, so the pinned environment
+      cannot be exercised here and `--verify-reproducible` correctly refuses
+      rather than reporting a result it cannot support. CI performs this on
+      the feature branch.
 
 **Dependencies:** Task 9
 

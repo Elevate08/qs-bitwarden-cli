@@ -1,0 +1,138 @@
+# Reproducible build of the SSH agent helper.
+#
+# The helper ships as committed bytes, so this job exists to prove those bytes
+# can be reproduced from the committed source. It runs inside a digest-pinned
+# container rather than on the runner image directly: `ubuntu-latest` rolls
+# forward, and a GNU-linked binary carries symbol requirements from the glibc
+# it built against while `strip` output varies across binutils releases. The
+# Rust side is pinned by rust-toolchain.toml and Cargo.lock; the container
+# pins everything underneath it.
+#
+# Scoped to the feature branch while the SSH agent is still being built. It
+# moves to master when the feature lands.
+
+name: agent build
+
+on:
+  push:
+    branches: [feature/ssh-agent]
+    paths:
+      - 'agent/**'
+      - 'scripts/build-agent.sh'
+      - '.github/workflows/agent-build.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'agent/**'
+      - 'scripts/build-agent.sh'
+      - '.github/workflows/agent-build.yml'
+  workflow_dispatch:
+
+# Read-only. This workflow inspects and builds; it never writes to the
+# repository, and it has no secrets to leak if a dependency misbehaves.
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproducible:
+    name: byte-identical across build paths
+    runs-on: ubuntu-24.04
+    # The same digest scripts/build-agent.sh pins. Keep the two in step.
+    container:
+      image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v4
+        with:
+          # Full history: the build exports a clean tree with `git archive`,
+          # which needs the commit rather than a detached shallow blob.
+          fetch-depth: 0
+
+      - name: Record the build environment
+        run: |
+          # These are the inputs that decide the output bytes. Printing them
+          # means a future mismatch can be diagnosed from the log alone.
+          rustc --version --verbose
+          cargo --version
+          ld --version | head -1
+          ldd --version | head -1
+          strip --version | head -1
+          echo "container: rust:1.98.0-bookworm@sha256:82150a52..."
+
+      - name: Confirm the pinned toolchain is the one in use
+        working-directory: agent
+        run: |
+          # The container ships one Rust, and rust-toolchain.toml names one.
+          # A silent mismatch would make every downstream comparison meaningless.
+          pinned="$(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)"
+          actual="$(rustc --version | cut -d' ' -f2)"
+          echo "pinned=$pinned actual=$actual"
+          [ "$pinned" = "$actual" ] || {
+            echo "::error::rust-toolchain.toml pins $pinned but the container has $actual"
+            exit 1
+          }
+
+      - name: Build twice from different paths and compare
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ./scripts/build-agent.sh --verify-reproducible
+
+  gates:
+    name: tests, format and lint
+    runs-on: ubuntu-24.04
+    container:
+      image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Formatting
+        working-directory: agent
+        run: cargo fmt --check
+
+      - name: Lint
+        working-directory: agent
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: agent
+        # The suite drives a real socket, a real FIFO and real disposable keys,
+        # so it needs no network and no vault -- but it does take a couple of
+        # minutes of wall time on the slower lifecycle cases.
+        run: cargo test --locked --all-targets
+
+  javascript:
+    name: panel tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install what the panel tests shell out to
+        # The tests execute the real pipeline rather than mocking it, so the
+        # tools that pipeline uses have to be present.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq openssh-client
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build the helper the pipeline tests drive
+        working-directory: agent
+        run: cargo build --locked
+
+      - name: Run every panel test
+        run: |
+          status=0
+          for test_file in tests/*.test.js; do
+            echo "--- $test_file"
+            node "$test_file" || status=1
+          done
+          exit $status
