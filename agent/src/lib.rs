@@ -22,6 +22,7 @@ pub mod load;
 pub mod peer;
 pub mod protocol;
 pub mod runtime;
+pub mod selftest;
 pub mod server;
 mod signing;
 pub mod state;

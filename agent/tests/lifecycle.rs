@@ -681,6 +681,81 @@ fn granting_and_revoking_announce_the_live_set() {
     agent.shutdown();
 }
 
+/// The panel validates the bundled helper before it trusts it, and needs the
+/// helper's own answers to do that: what version it is, what protocol it
+/// speaks, and whether its crypto actually works on this machine. Both must
+/// answer without touching the filesystem, opening a socket, or needing a
+/// runtime directory -- they run before any of that exists.
+#[test]
+fn version_and_self_test_answer_without_touching_the_system() {
+    let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");
+    let temp = TempDir::new();
+
+    let version = Command::new(executable)
+        .arg("--version")
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(version.status.success(), "--version must succeed");
+    let text = String::from_utf8(version.stdout).unwrap();
+    assert!(
+        text.contains(env!("CARGO_PKG_VERSION")),
+        "--version must report the crate version, got {text:?}"
+    );
+    assert!(
+        text.contains("protocol 1"),
+        "--version must report the control protocol version, got {text:?}"
+    );
+
+    // No XDG_RUNTIME_DIR at all: neither mode may depend on one.
+    let selftest = Command::new(executable)
+        .arg("--self-test")
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(
+        selftest.status.success(),
+        "--self-test failed: {}",
+        String::from_utf8_lossy(&selftest.stderr)
+    );
+    let report = String::from_utf8(selftest.stdout).unwrap();
+    assert!(
+        report.contains("ok"),
+        "self-test should say so, got {report:?}"
+    );
+
+    // Nothing was created anywhere it could have been.
+    let runtime = std::path::Path::new(&temp.0).join("qs-bitwarden-cli");
+    assert!(
+        !runtime.exists(),
+        "a self-test must not create a runtime directory"
+    );
+
+    // Neither mode may leak key material to either stream.
+    let combined = format!("{report}{}", String::from_utf8_lossy(&selftest.stderr));
+    assert!(
+        !combined.contains("PRIVATE"),
+        "the self-test must not print key material"
+    );
+}
+
+/// An unknown flag must not be mistaken for "run as the agent". The panel
+/// launches this binary with no arguments; anything else is a mistake worth
+/// reporting rather than silently starting a key-holding daemon.
+#[test]
+fn an_unknown_argument_is_refused() {
+    let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");
+    let out = Command::new(executable)
+        .arg("--not-a-real-flag")
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "an unknown flag must not start the agent"
+    );
+}
+
 /// A running agent with its control channel, for tests that drive several
 /// messages in sequence.
 struct TestAgent {

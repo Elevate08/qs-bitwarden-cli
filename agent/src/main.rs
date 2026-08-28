@@ -226,8 +226,50 @@ async fn write_output(mut messages: mpsc::Receiver<Output>) {
     }
 }
 
+/// What the panel asks this binary before it trusts it.
+///
+/// Argument handling is deliberately exhaustive: the panel launches the helper
+/// with no arguments, so anything else is a mistake, and silently starting a
+/// key-holding daemon in response to a typo is the wrong answer.
+fn dispatch_arguments() -> Option<i32> {
+    let mut args = std::env::args().skip(1);
+    let first = args.next()?;
+    if args.next().is_some() {
+        eprintln!("qs-bitwarden-ssh-agent: expected at most one argument");
+        return Some(2);
+    }
+    match first.as_str() {
+        "--version" => {
+            println!(
+                "qs-bitwarden-ssh-agent {} (control protocol {})",
+                env!("CARGO_PKG_VERSION"),
+                qs_bitwarden_ssh_agent::control::CONTROL_VERSION
+            );
+            Some(0)
+        }
+        "--self-test" => Some(qs_bitwarden_ssh_agent::selftest::run()),
+        "--help" | "-h" => {
+            println!("qs-bitwarden-ssh-agent [--version | --self-test]");
+            println!();
+            println!("With no arguments, serves the SSH agent protocol and speaks the");
+            println!("panel's control protocol on stdin and stdout. It is launched by the");
+            println!("Bitwarden Quickshell panel and is not useful on its own.");
+            Some(0)
+        }
+        other => {
+            eprintln!("qs-bitwarden-ssh-agent: unknown argument '{other}'");
+            Some(2)
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    // Before the runtime does anything: these modes answer and exit, and must
+    // not depend on a runtime directory, a socket, or any of the setup below.
+    if let Some(code) = dispatch_arguments() {
+        std::process::exit(code);
+    }
     if run().await.is_err() {
         std::process::exit(1);
     }

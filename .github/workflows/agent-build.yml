@@ -87,6 +87,33 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           ./scripts/build-agent.sh --verify-reproducible
 
+      - name: Build the candidate artifact
+        env:
+          QSBW_PINNED_BUILD: '1'
+        # The read-only candidate flow: this job builds the bytes and uploads
+        # them, a maintainer commits them, and a later run rebuilds and
+        # compares. No write token is ever handed to CI, and nothing here
+        # commits anything.
+        run: ./scripts/build-agent.sh
+
+      - name: Report what was produced
+        run: |
+          cat bin/SHA256SUMS
+          file bin/x86_64-linux/qs-bitwarden-ssh-agent
+          ldd bin/x86_64-linux/qs-bitwarden-ssh-agent || true
+          ./bin/x86_64-linux/qs-bitwarden-ssh-agent --version
+          ./bin/x86_64-linux/qs-bitwarden-ssh-agent --self-test
+
+      - name: Upload the candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: qs-bitwarden-ssh-agent-x86_64-linux
+          path: |
+            bin/x86_64-linux/qs-bitwarden-ssh-agent
+            bin/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
   gates:
     name: tests, format and lint
     runs-on: ubuntu-24.04
