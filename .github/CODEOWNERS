@@ -20,5 +20,10 @@
 /.github/               @Elevate08
 /deny.toml              @Elevate08
 
+# The only workflow that can write to this repository, mint an OIDC token, or
+# sign a provenance attestation. Covered by /.github/ above; named separately
+# because a reviewer scanning this file should not have to infer it.
+/.github/workflows/release.yml @Elevate08
+
 # Decisions that were argued once and should not drift silently.
 /docs/decisions/        @Elevate08

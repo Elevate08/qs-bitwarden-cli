@@ -10,6 +10,10 @@
 #
 # Scoped to the feature branch while the SSH agent is still being built. It
 # moves to master when the feature lands.
+#
+# Also called by release.yml, so a release re-runs these gates against the
+# tagged commit from this one definition rather than from a copy that can
+# drift away from it.
 
 name: agent build
 
@@ -27,6 +31,9 @@ on:
       - 'scripts/build-agent.sh'
       - '.github/workflows/agent-build.yml'
   workflow_dispatch:
+  # Callable as a reusable workflow. release.yml is the only caller: it runs
+  # every gate below against a release tag before anything is published.
+  workflow_call:
 
 # Read-only. This workflow inspects and builds; it never writes to the
 # repository, and it has no secrets to leak if a dependency misbehaves.
