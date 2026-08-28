@@ -461,6 +461,25 @@ Panel {
   // than an error: it is a valid v1 message the panel simply has no use for
   // yet.
   function onSshAgentMessage(message) {
+    if (message.type === "keys_loaded") {
+      root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
+      root.sshAgentKeysLoadedAt = Date.now()
+      return
+    }
+    if (message.type === "locked") {
+      // The companion has denied signing, dropped its grants and private keys,
+      // and kept only the public projection. That is what the kill timer was
+      // waiting for.
+      sshAgentLockAckTimer.stop()
+      return
+    }
+    if (message.type === "state_changed") {
+      root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
+      return
+    }
+    // unlock_required, approval_required and grants_changed are the signing
+    // UX, and arrive with Task 14. Ignoring a valid v1 message is deliberate
+    // here; an unknown *type* is a protocol failure and never reaches this.
   }
 
   // -------------------------------------------------------------------------
@@ -485,6 +504,15 @@ Panel {
   // list must never wait on the agent feature -- so a load that finds no
   // nonce ready simply runs without the branch and primes one for next time.
   property string sshAgentNextLoadId: ""
+  // What the companion last reported it was serving. Public metadata only --
+  // a count, not the keys -- and it is what tells the panel whether a locked
+  // companion still has a public cache to answer identity listings from.
+  property int sshAgentKeyCount: 0
+  property double sshAgentKeysLoadedAt: 0
+  // The vault epoch a key load has already been started for. dropVaultState()
+  // advances vaultEpoch on every lock and logout, so this is what tells a
+  // startup load apart from one that has already happened for this session.
+  property int sshAgentLoadedForVaultEpoch: -1
 
   function primeSshAgentLoadId() {
     if (loadIdProc.running || sshAgentNextLoadId !== "") return
@@ -520,6 +548,37 @@ Panel {
     listRetriedWithoutAgent = false
   }
 
+  // Every vault transition reaches the companion through here, so the ordering
+  // rules live in one place: deny first, cancel work in flight, then let the
+  // panel get on with its own lock. Nothing below ever waits on the helper.
+  function applySshAgentLifecycle(event) {
+    var action = Model.sshAgentLifecycleTransition(event, {
+      enabled: root.sshAgentEnabled,
+      helperReady: root.sshAgentGateOpen,
+      loggedIn: root.status !== "unauthenticated",
+      unlocked: root.status === "unlocked",
+      loading: root.sshAgentLoadActive,
+      hasPublicCache: root.sshAgentKeyCount > 0,
+      epoch: root.sshAgentEpoch
+    })
+
+    if (action.cancelLoad) cancelSshAgentLoad()
+    for (var i = 0; i < action.controlLines.length; i++) {
+      if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(action.controlLines[i])
+    }
+    if (action.clearPublic) {
+      root.sshAgentKeyCount = 0
+      root.sshAgentKeysLoadedAt = 0
+    }
+    // The acknowledgment is a courtesy the panel gives the companion two
+    // seconds to return. It is not a precondition for locking: `bw lock` has
+    // already been launched by the caller, and a companion that cannot
+    // confirm a lock is one that must not keep running.
+    if (action.awaitLockAck) sshAgentLockAckTimer.restart()
+    if (action.stopHelper) stopSshAgentHelper()
+    if (action.startLoad && !listProc.running) loadItems(false)
+  }
+
   function syncSshAgentSupervision() {
     applySshAgentEvent({ kind: "enabled", value: root.sshAgentSupervisable, nowMs: Date.now() })
   }
@@ -527,8 +586,52 @@ Panel {
   onSshAgentSupervisableChanged: syncSshAgentSupervision()
 
   onSshAgentGateOpenChanged: {
-    if (sshAgentGateOpen) primeSshAgentLoadId()
-    else endSshAgentLoad(false)
+    if (!sshAgentGateOpen) {
+      endSshAgentLoad(false)
+      return
+    }
+    primeSshAgentLoadId()
+    // Startup is not evidence that the vault is locked: rememberSession can
+    // restore a session key, so the panel can already be unlocked when the
+    // companion finishes its handshake with an empty keystore. Deferred by a
+    // beat so the nonce that was just primed is actually ready.
+    sshAgentStartupLoadTimer.restart()
+  }
+
+  Timer {
+    id: sshAgentStartupLoadTimer
+    interval: 250
+    repeat: false
+    onTriggered: root.maybeStartupLoad()
+  }
+
+  // Two things have to be true before a startup load makes sense -- the helper
+  // is serving, and the vault is actually unlocked -- and on a shell restart
+  // they arrive in either order: the handshake can easily beat the first
+  // `bw status`. So both edges call this, and the vault epoch keeps it to one
+  // load rather than one per edge.
+  function maybeStartupLoad() {
+    if (!sshAgentGateOpen || root.status !== "unlocked") return
+    // A read already running is the common case at startup: the panel's first
+    // item read is launched before the helper has finished handshaking, so it
+    // carries no agent branch. onListFinished() calls back here once it lands.
+    if (sshAgentLoadActive || listProc.running) return
+    if (sshAgentLoadedForVaultEpoch === root.vaultEpoch) return
+    // Marked before the attempt, not after it, so one failed attempt cannot
+    // turn into a read that relaunches itself.
+    sshAgentLoadedForVaultEpoch = root.vaultEpoch
+    applySshAgentLifecycle("startup")
+  }
+
+  onStatusChanged: maybeStartupLoad()
+
+  // The bound on the companion's lock acknowledgment. A helper that cannot
+  // confirm it has dropped its keys is a helper that must not keep running.
+  Timer {
+    id: sshAgentLockAckTimer
+    interval: Model.sshAgentLockAckTimeoutMs()
+    repeat: false
+    onTriggered: if (sshAgentProc.running) sshAgentProc.running = false
   }
 
   // Disabled / enabled / error, as the design's table defines them. Derived,
@@ -1193,6 +1296,9 @@ Panel {
     logoutCredentialsExitCode = 0
     terminalLoginStartedAt = 0
     lockVault()
+    // Stronger than the lock above: logout takes the public projection with
+    // it, so a new account cannot inherit the last one's identities.
+    applySshAgentLifecycle("logout")
     forgetStoredCredentials()
     pendingUnlockPassword = ""
     logoutProc.command = Model.logoutCommand()
@@ -2405,7 +2511,9 @@ Panel {
     closeFilterGroup()
     cancelAuthPrewarm()
     clearClipboard()
-    cancelSshAgentLoad()
+    // Before bw lock is launched, so the companion's deny transition is not
+    // sequenced behind it. The panel's own lock never waits on the answer.
+    applySshAgentLifecycle("lock")
     if (session) {
       lockProc.command = Model.lockCommand()
       lockProc.running = true
@@ -2673,6 +2781,7 @@ Panel {
       sshAgentLoadId = sshAgentNextLoadId
       sshAgentNextLoadId = ""
       sshAgentLoadActive = true
+      sshAgentLoadedForVaultEpoch = root.vaultEpoch
       if (sshAgentProc.stdinEnabled) {
         sshAgentProc.write(Model.sshAgentLoadBeginLine(sshAgentEpoch, sshAgentLoadId))
       }
@@ -2709,6 +2818,9 @@ Panel {
       flashNotification("Vault synced with Bitwarden")
     }
     if (metadataLoadPending) deferredMetadataTimer.restart()
+    // The first read of a session usually beats the helper's handshake, so it
+    // carries no keys. Now that it has landed, check whether one is owed.
+    maybeStartupLoad()
   }
 
   function onListProcessExited(exitCode, rawJson, stderrText) {

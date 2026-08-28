@@ -265,11 +265,13 @@ fn handle_client(
     started: Instant,
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
-    if !gate_open {
-        let _ = event.reply.send(protocol::failure_response());
-        return Ok(());
-    }
     match event.request {
+        // Deliberately not behind `gate_open`. Public keys are not secret, and
+        // a locked vault that still lists them is what stops every `ssh` after
+        // a lock from raising an unlock prompt for a connection that may have
+        // nothing to do with the vault. The cache is empty when logged out or
+        // locked before any load, so those answer with an empty list, and a
+        // lock clears the private set that signing needs regardless.
         AgentRequest::Identities => {
             let identities: Vec<_> = store
                 .public_identities()
@@ -283,6 +285,10 @@ fn handle_client(
             message,
             flags,
         } => {
+            if !gate_open {
+                let _ = event.reply.send(protocol::failure_response());
+                return Ok(());
+            }
             if store.authorize(&public_blob).is_none() {
                 let _ = event.reply.send(protocol::failure_response());
                 return Ok(());

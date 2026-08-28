@@ -280,6 +280,112 @@ fn disposable_key_load_identity_and_approved_sign_cross_the_real_socket() {
     assert!(child.wait().unwrap().success());
 }
 
+/// A lock drops the private set but keeps the public projection, and the
+/// design's state table says a locked-with-cache agent still lists identities:
+/// otherwise every `ssh` after a lock raises an unlock prompt, including the
+/// ones authenticating with an on-disk key. Signing is what the lock denies.
+#[test]
+fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
+    let temp = TempDir::new();
+    let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");
+    let mut child = Command::new(executable)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &temp.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    input.write_all(b"{\"v\":1,\"type\":\"hello\"}\n").unwrap();
+    input.flush().unwrap();
+    let ready = read_json_line(&mut output);
+    let socket = PathBuf::from(ready["socketPath"].as_str().unwrap());
+    let fifo = PathBuf::from(ready["fifoPath"].as_str().unwrap());
+
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    let nonce = "0123456789abcdef0123456789abcdef";
+    writeln!(
+        input,
+        "{{\"v\":1,\"type\":\"key_load_begin\",\"epoch\":1,\"loadId\":\"{nonce}\"}}"
+    )
+    .unwrap();
+    input.flush().unwrap();
+    let payload = serde_json::json!({"loadId": nonce, "items": [{
+        "itemId": "disposable", "name": "Disposable test key",
+        "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
+        "publicKey": key.public_key().to_openssh().unwrap(),
+        "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
+        "requiresReprompt": false
+    }]});
+    let mut writer = fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    writer
+        .write_all(&serde_json::to_vec(&payload).unwrap())
+        .unwrap();
+    writer.write_all(b"\n").unwrap();
+    drop(writer);
+    input
+        .write_all(b"{\"v\":1,\"type\":\"key_load_end\",\"epoch\":1,\"status\":\"ok\"}\n")
+        .unwrap();
+    input.flush().unwrap();
+    let loaded = read_json_line(&mut output);
+    assert_eq!(loaded["type"], "keys_loaded");
+    assert_eq!(loaded["keyCount"], 1);
+
+    // Unlocked: the identity is offered.
+    assert_eq!(identity_count(&socket), 1);
+
+    input
+        .write_all(b"{\"v\":1,\"type\":\"vault_locked\",\"epoch\":1}\n")
+        .unwrap();
+    input.flush().unwrap();
+    let locked = read_json_line(&mut output);
+    assert_eq!(locked["type"], "locked");
+
+    // Locked with a cache: still listed, because public keys are not secret.
+    assert_eq!(identity_count(&socket), 1);
+
+    // But the private set is gone, so a signature is refused outright and no
+    // approval is ever raised for it.
+    let mut stream = UnixStream::connect(&socket).unwrap();
+    let mut request = Vec::new();
+    13_u8.encode(&mut request).unwrap();
+    public_blob.as_slice().encode(&mut request).unwrap();
+    b"payload".as_slice().encode(&mut request).unwrap();
+    0_u32.encode(&mut request).unwrap();
+    let mut framed = u32::try_from(request.len()).unwrap().to_be_bytes().to_vec();
+    framed.extend_from_slice(&request);
+    stream.write_all(&framed).unwrap();
+    let response = read_agent_frame(&mut stream);
+    assert_eq!(response[4], 5, "a locked vault must refuse to sign");
+
+    // Logout takes the public projection with it.
+    input
+        .write_all(b"{\"v\":1,\"type\":\"vault_logged_out\"}\n")
+        .unwrap();
+    input.flush().unwrap();
+    assert_eq!(identity_count(&socket), 0);
+
+    input
+        .write_all(b"{\"v\":1,\"type\":\"shutdown\"}\n")
+        .unwrap();
+    input.flush().unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+/// Number of identities the agent offers over its real socket.
+fn identity_count(socket: &PathBuf) -> usize {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    let request = [0_u8, 0, 0, 1, 11];
+    stream.write_all(&request).unwrap();
+    let frame = read_agent_frame(&mut stream);
+    assert_eq!(frame[4], 12, "expected an identities answer, not a failure");
+    let mut body = &frame[5..];
+    usize::try_from(u32::decode(&mut body).unwrap()).unwrap()
+}
+
 fn read_json_line(reader: &mut BufReader<std::process::ChildStdout>) -> serde_json::Value {
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();

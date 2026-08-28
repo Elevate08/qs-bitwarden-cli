@@ -3591,6 +3591,127 @@ function sshAuthSockDiagnostic(sock, runtimeDir) {
       + " instead of the Bitwarden agent. Changing that is your choice; check any terminal with:" }
 }
 
+// -------------------------------------------------------------------------
+// Vault lifecycle
+// -------------------------------------------------------------------------
+//
+// The companion's state follows the vault's, and both are stated explicitly
+// rather than inferred from whether a socket or a key happens to exist. The
+// two functions below are the design's state table; sshAgentLifecycleTransition
+// is what each vault event does about it.
+
+// The panel waits this long for the companion's `locked` acknowledgment and
+// then kills it. The acknowledgment is what lets the panel say "keys cleared"
+// as well as "vault locked" -- it is never a precondition for locking, because
+// a companion that cannot confirm a lock is one that must not keep running.
+var SSH_AGENT_LOCK_ACK_TIMEOUT_MS = 2000
+
+function sshAgentLockAckTimeoutMs() { return SSH_AGENT_LOCK_ACK_TIMEOUT_MS }
+
+function sshAgentRevokeGrantsLine() {
+  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "revoke_grants" }) + "\n"
+}
+
+// Ordered most-restrictive first, so a stale public cache can never outrank a
+// logout: an account change has to leave nothing behind, whatever was loaded a
+// moment earlier.
+function sshAgentVaultState(context) {
+  var ctx = context || {}
+  if (!ctx.enabled || !ctx.helperReady) return "disabled"
+  if (!ctx.loggedIn) return "logged-out"
+  if (ctx.loading) return "loading"
+  if (ctx.unlocked) return "unlocked"
+  return ctx.hasPublicCache ? "locked-cached" : "locked-empty"
+}
+
+// What each state offers. Public keys are not secret, so they survive a lock
+// and spare the user an unlock prompt for an identity listing; private keys
+// exist in exactly one state, and it is the only one that can sign without a
+// further unlock.
+var SSH_AGENT_STATE_POLICY = {
+  "disabled":      { publicIdentities: false, privateKeys: false, signing: "denied" },
+  "logged-out":    { publicIdentities: false, privateKeys: false, signing: "denied" },
+  "locked-empty":  { publicIdentities: false, privateKeys: false, signing: "needs-unlock" },
+  // A load publishes nothing until it completes, so the previous public cache
+  // is all that is on offer and no signature may cross.
+  "loading":       { publicIdentities: true,  privateKeys: false, signing: "denied" },
+  "unlocked":      { publicIdentities: true,  privateKeys: true,  signing: "allowed" },
+  "locked-cached": { publicIdentities: true,  privateKeys: false, signing: "needs-unlock" }
+}
+
+function sshAgentIdentityPolicy(state) {
+  var policy = SSH_AGENT_STATE_POLICY[state]
+  if (!policy) return { publicIdentities: false, privateKeys: false, signing: "denied" }
+  return { publicIdentities: policy.publicIdentities, privateKeys: policy.privateKeys, signing: policy.signing }
+}
+
+// Events that end the current epoch's private material. Screen lock and
+// suspend are listed rather than left for a reader to infer from the panel:
+// they are locks, and the table should say so.
+var SSH_AGENT_LOCK_EVENTS = ["lock", "screen-lock", "suspend"]
+// Events that end the account itself, taking the public projection with it.
+var SSH_AGENT_LOGOUT_EVENTS = ["logout", "account-change"]
+// Events that ride the panel's own vault read. Only `startup` needs a caller:
+// unlock and sync already run loadItems(), which carries the agent branch
+// whenever the gate is open, so sending them here would load twice. They stay
+// in the table because the table is the specification of what each event
+// means, not a list of what happens to need a trigger today.
+var SSH_AGENT_LOAD_EVENTS = ["unlock", "sync", "startup"]
+
+function sshAgentLifecycleTransition(event, context) {
+  var ctx = context || {}
+  var action = {
+    controlLines: [],
+    cancelLoad: false,
+    startLoad: false,
+    awaitLockAck: false,
+    stopHelper: false,
+    clearPublic: false
+  }
+  var live = Boolean(ctx.enabled) && Boolean(ctx.helperReady)
+
+  if (event === "disable" || event === "shutdown") {
+    action.stopHelper = true
+    action.cancelLoad = true
+    // Nothing of this account survives the feature being turned off, and the
+    // companion's socket and FIFO go with the process.
+    action.clearPublic = true
+    return action
+  }
+
+  if (SSH_AGENT_LOCK_EVENTS.indexOf(event) >= 0) {
+    // The cancel happens whether or not a companion is listening: the load is
+    // the panel's own process group, and a lock has to stop it either way.
+    action.cancelLoad = true
+    if (live) {
+      action.controlLines.push(sshAgentVaultLockedLine(ctx.epoch))
+      action.awaitLockAck = true
+    }
+    return action
+  }
+
+  if (SSH_AGENT_LOGOUT_EVENTS.indexOf(event) >= 0) {
+    action.cancelLoad = true
+    action.clearPublic = true
+    // No acknowledgment is waited on here. Logout already tears the account
+    // down on the panel's side, and the companion's public cache goes with it
+    // rather than being retained the way a lock retains it.
+    if (live) action.controlLines.push(sshAgentLoggedOutLine())
+    return action
+  }
+
+  if (SSH_AGENT_LOAD_EVENTS.indexOf(event) >= 0) {
+    // Startup is not evidence that the vault is locked: `rememberSession` can
+    // restore a session key, leaving the panel unlocked while a freshly
+    // started companion still has no cache. That case needs the same load an
+    // interactive unlock would have run.
+    action.startLoad = live && Boolean(ctx.unlocked)
+    return action
+  }
+
+  return action
+}
+
 // Setup is an explicit state, not something inferred from whether a socket
 // happens to exist. There are exactly three, and the transient face of
 // starting up is `enabled` with `busy` set rather than a fourth:

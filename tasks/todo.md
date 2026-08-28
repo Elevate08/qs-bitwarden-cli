@@ -500,19 +500,28 @@ fallback without delaying `bw lock`.
 
 **Acceptance criteria:**
 
-- [ ] Every lifecycle path advances the epoch and produces the specified public
+- [x] Every lifecycle path advances the epoch and produces the specified public
       cache, private cache, grants, pending requests, and process state.
-- [ ] No signature response from the previous epoch returns after lock
+- [x] No signature response from the previous epoch returns after lock
       acknowledgment; timeout kills/reaps the helper while the vault lock proceeds.
-- [ ] Starting beside a remembered unlocked session performs an initial key
+- [x] Starting beside a remembered unlocked session performs an initial key
       load, while logout/account change/disable clear public projections too.
 
 **Verification:**
 
-- [ ] Tests pass: `node tests/ssh-agent-lifecycle.test.js && node tests/lock-triggers.test.js && node tests/lock-state.test.js`
-- [ ] Rust tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test lifecycle`
-- [ ] Manual check: lock during load/approval/signing/grant, suspend, screen lock,
-      restart unlocked, logout, account switch, disable, and failed acknowledgment.
+- [x] Tests pass: `node tests/ssh-agent-lifecycle.test.js && node tests/lock-triggers.test.js && node tests/lock-state.test.js`
+- [x] Rust tests pass: `cargo test --manifest-path agent/Cargo.toml --locked --test lifecycle`
+- [x] Manual check: live, with a real vault -- a shell restart into a
+      keyring-remembered unlocked session loaded keys (found and fixed a race
+      where the handshake and the first `bw status` could each be second), a
+      lock dropped the private set while the helper survived its
+      acknowledgment, and disabling stopped the helper and emptied the runtime
+      directory. Screen lock and suspend route through the same lock path.
+      Logout, account switch, and the locked-with-cache identity listing are
+      covered end to end over the real socket by
+      `agent/tests/lifecycle.rs::a_locked_vault_still_lists_identities_but_refuses_to_sign`.
+      NOT yet confirmed live: the locked-with-cache listing needs an unlocked
+      vault, and the approval/signing/grant lock races belong to Task 14.
 
 **Dependencies:** Tasks 8, 9, 10, and 12
 

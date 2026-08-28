@@ -279,9 +279,13 @@ for (const [label, contents] of [
   check("closing the window writes the versioned key_load_end line",
     /sshAgentProc\.write\(Model\.sshAgentLoadEndLine\(/.test(panelSrc),
     "key_load_end is never sent to the helper")
+  // The cancel itself lives in the lock transition (see
+  // tests/ssh-agent-lifecycle.test.js); what matters here is that locking
+  // goes through it rather than leaving a fan-out read running.
   check("a lock abandons the in-flight load",
-    /function lockVault\(\)[\s\S]{0,400}?cancelSshAgentLoad\(\)/.test(panelSrc),
-    "lockVault does not cancel the load")
+    /function lockVault\(\)[\s\S]{0,600}?applySshAgentLifecycle\("lock"\)/.test(panelSrc)
+      && /function applySshAgentLifecycle\(event\)[\s\S]{0,900}?action\.cancelLoad\) cancelSshAgentLoad\(\)/.test(panelSrc),
+    "locking does not cancel the in-flight load")
   check("a failed fan-out read is retried once without the branch",
     /listRetriedWithoutAgent = true[\s\S]{0,200}?startVaultListRead\(true\)/.test(panelSrc),
     "no retry without the agent branch")
