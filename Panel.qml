@@ -5129,7 +5129,19 @@ Panel {
       return JSON.stringify({
         enabled: root.sshAgentEnabled,
         phase: root.sshAgentPhase,
-        gateOpen: root.sshAgentGateOpen,
+        // Named for what it is: the control channel to the helper is up and
+        // handshaked. It is not "signing is allowed" -- that is the vault
+        // state below, and reading this as the former is misleading next to a
+        // locked vault.
+        helperChannelOpen: root.sshAgentGateOpen,
+        vaultState: Model.sshAgentVaultState({
+          enabled: root.sshAgentEnabled,
+          helperReady: root.sshAgentGateOpen,
+          loggedIn: root.status !== "unauthenticated",
+          unlocked: root.status === "unlocked",
+          loading: root.sshAgentLoadActive,
+          hasPublicCache: root.sshAgentKeyCount > 0
+        }),
         setupState: root.sshAgentSetup.state,
         errorCode: root.sshAgentErrorCode,
         keyCount: root.sshAgentKeyCount,
