@@ -627,9 +627,9 @@ the companion stays out of the filesystem. See
 
 ## Checkpoint: End-to-End Feature (Tasks 13–15)
 
-- [ ] Lifecycle, UI, export, full Rust, full JavaScript, and QML suites pass.
-- [ ] Real authentication and signing work without a private key on disk.
-- [ ] Security review confirms private material paths and final authorization.
+- [x] Lifecycle, UI, export, full Rust, full JavaScript, and QML suites pass.
+- [x] Real authentication and signing work without a private key on disk.
+- [x] Security review confirms private material paths and final authorization.
 - [ ] Human usability/security review approves packaging.
 
 ## Task 16: Make the release build reproducible

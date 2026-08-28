@@ -280,11 +280,25 @@ check("no screen visibility still binds to currentScreen directly",
   panelSrc.split("\n").filter(l => l.trim().startsWith("visible:") && l.includes("root.currentScreen")).join(" | "))
 
 check("raising the prompt switches to the approval screen",
-  /function showSshApproval\(message\)[\s\S]{0,600}?currentScreen = "sshApproval"/.test(panelSrc),
+  /function showSshApproval\(message\)[\s\S]{0,1200}?currentScreen = "sshApproval"/.test(panelSrc),
   "the prompt never opens the approval screen")
 check("a request that cannot prompt is denied rather than left hanging",
   /message\.type === "approval_required"[\s\S]{0,400}?sshAgentMayPrompt\(\)[\s\S]{0,200}?sshAgentDenyLine/.test(panelSrc),
   "a suppressed request is not answered")
+// A prompt that opened the panel on the user's behalf should hand the desktop
+// back when it is answered -- approved or denied alike. A panel the user had
+// already opened is theirs, so answering returns them to the screen they were
+// on rather than closing it under them.
+check("answering a prompt that opened the panel closes it again",
+  /function dismissSshApproval\(\)[\s\S]{0,900}?openedForThis && root\.opened\) root\.close\(\)/.test(panelSrc),
+  "the panel stays open after an answer it opened itself for")
+check("whether the panel was already open is captured before opening it",
+  /function showSshApproval\(message\)[\s\S]{0,900}?sshPromptOpenedPanel = !root\.opened/.test(panelSrc),
+  "nothing records whether the request opened the panel")
+check("a panel the user already had open is restored, not closed",
+  /function dismissSshApproval\(\)[\s\S]{0,900}?screenBeforeSshApproval/.test(panelSrc),
+  "answering does not restore the previous screen")
+
 check("a withdrawn request takes its prompt down",
   /message\.type === "request_cancelled"[\s\S]{0,900}?dismissSshApproval\(\)/.test(panelSrc),
   "request_cancelled is ignored")

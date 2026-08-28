@@ -164,11 +164,11 @@ Tasks 3 + 11 + 14 + 15 + 19
 
 ### Checkpoint: End-to-End Feature
 
-- [ ] Lock, logout, account change, suspend, screen lock, disable, crash, and
+- [x] Lock, logout, account change, suspend, screen lock, disable, crash, and
       Quickshell reload all satisfy the state machine.
-- [ ] Authentication, commit signing, and multi-commit signing work with no
+- [x] Authentication, commit signing, and multi-commit signing work with no
       private key on disk.
-- [ ] Public projections survive lock but clear on logout/account change/disable.
+- [x] Public projections survive lock but clear on logout/account change/disable.
 - [ ] Human security and usability review approves packaging.
 
 ### Phase 4: Establish the Artifact Trust Path

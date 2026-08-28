@@ -1050,11 +1050,10 @@ Ideas worth doing that are deliberately outside the first release.
   be missed while working in another window -- and the present in-panel one for
   users who would rather it stayed small.
 
-  If the in-panel presentation is chosen, the panel should close itself once
-  the answer has been given, rather than leaving the user on whatever screen
-  was behind the prompt. Today the panel stays open after an approval, which is
-  fine when the user opened it themselves and wrong when a signing request
-  opened it on their behalf.
+  The auto-close half of this is **done**: answering a prompt -- approved or
+  denied alike -- closes the panel when the request is what opened it, and
+  returns the user to the screen they were on when the panel was already
+  theirs. What remains deferred is the choice of presentation.
 
   Neither variant may prompt over a locked screen; that rule is unchanged.
 

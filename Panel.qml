@@ -490,6 +490,10 @@ Panel {
   property double sshPromptStartedMs: 0
   property int sshPromptRemainingSec: 0
   property string screenBeforeSshApproval: "main"
+  // Whether the signing request is what put the panel on screen. If it was,
+  // answering hands the desktop back; if the user already had the panel open,
+  // it is theirs and they are returned to what they were doing.
+  property bool sshPromptOpenedPanel: false
 
   function sshAgentWrite(line) {
     if (line === "") return
@@ -528,6 +532,8 @@ Panel {
     root.sshPromptStartedMs = Date.now()
     root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
     if (root.currentScreen !== "sshApproval") root.screenBeforeSshApproval = root.currentScreen
+    // Recorded before opening, because open() is what makes it true.
+    if (!root.sshUnlockRaw) root.sshPromptOpenedPanel = !root.opened
     // Open first. Opening runs onPanelOpened(), which sends an unlocked panel
     // to the item list, so claiming the screen before that would simply be
     // undone -- the prompt would be live with nothing on screen.
@@ -536,13 +542,19 @@ Panel {
   }
 
   function dismissSshApproval() {
+    var openedForThis = root.sshPromptOpenedPanel
     root.sshPrompt = null
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
+    root.sshPromptOpenedPanel = false
     if (root.currentScreen === "sshApproval") {
       root.currentScreen = root.screenBeforeSshApproval === "sshApproval"
         ? "main" : root.screenBeforeSshApproval
     }
+    // Answered -- approved or denied alike -- so give the desktop back if the
+    // request is what took it. A panel the user opened themselves stays open
+    // on whatever screen they were using.
+    if (openedForThis && root.opened) root.close()
   }
 
   function approveSshRequest(grantSeconds) {
@@ -633,6 +645,7 @@ Panel {
       root.sshUnlockRequest = Model.sshAgentPromptView(message, 0)
       root.sshPromptStartedMs = Date.now()
       root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
+      root.sshPromptOpenedPanel = !root.opened
       if (!root.opened) root.open()
       return
     }
