@@ -207,6 +207,13 @@ check("the usage text lists the flags that exist",
 // CI shape
 // -------------------------------------------------------------------------
 
+check("CI compares the tracked binary against a clean rebuild",
+  /--compare-tracked/.test(workflow),
+  "nothing verifies that the committed bytes are what this source builds")
+check("the comparison is skipped only when no binary is tracked",
+  /if \[ -f bin\/x86_64-linux\/qs-bitwarden-ssh-agent \]/.test(workflow),
+  "the comparison could pass by absence rather than by matching")
+
 check("CI runs against the feature branch while the feature is unfinished",
   /branches:\s*\[feature\/ssh-agent\]/.test(workflow), "the workflow does not run on the feature branch")
 check("the workflow is read-only",
