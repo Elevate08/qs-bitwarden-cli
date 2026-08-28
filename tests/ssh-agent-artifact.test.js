@@ -235,6 +235,15 @@ check("each pin says which release it is, for a human",
 // this is what stops that review going stale.
 const deny = read("deny.toml")
 check("CI enforces the dependency policy", /cargo deny/.test(workflow), "nothing runs cargo-deny")
+// cargo-deny discovers its config beside the manifest or in the working
+// directory. Running it from agent/ made it fall back to built-in defaults
+// and report success while reading none of this policy.
+check("the policy file is named explicitly rather than discovered",
+  /cargo deny[^\n]*--config deny\.toml/.test(workflow),
+  "a discovered config can silently be the wrong one, or none at all")
+check("apt packages are pinned by archive snapshot, not by version string",
+  /snapshot\.ubuntu\.com/.test(workflow) && !/apt-get install[^\n]*=[0-9]/.test(workflow),
+  "hard version pins break when Ubuntu drops the superseded package")
 check("advisories are denied rather than warned about",
   /yanked = "deny"/.test(deny), "yanked crates are tolerated")
 check("the one accepted advisory says why and where it is argued",

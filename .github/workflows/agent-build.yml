@@ -162,14 +162,23 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Dependency and licence policy
-        working-directory: agent
         # Advisories, licences, registries and duplicate policy. This binary
         # holds decrypted private keys; its dependency tree was reviewed in
         # writing once, and this is what stops that review going stale.
+        #
+        # --config is explicit rather than discovered. cargo-deny looks beside
+        # the manifest and in the working directory, so running it from agent/
+        # silently fell back to built-in defaults and checked none of our
+        # policy while reporting success -- a gate that passes without reading
+        # its rules is worse than no gate.
+        #
+        # Not version-pinned, deliberately: this tool reads a live advisory
+        # database, and an old copy fails to parse newer entries. It is
+        # checking dependencies, not producing artifact bytes, so currency
+        # matters more here than reproducibility.
         run: |
-          cargo install cargo-deny --locked --version ^0.16 >/dev/null 2>&1 \
-            || cargo install cargo-deny --locked
-          cargo deny --manifest-path Cargo.toml check
+          cargo install cargo-deny --locked
+          cargo deny --manifest-path agent/Cargo.toml --config deny.toml check
 
       - name: Tests
         working-directory: agent
@@ -188,9 +197,25 @@ jobs:
       - name: Install what the panel tests shell out to
         # The tests execute the real pipeline rather than mocking it, so the
         # tools that pipeline uses have to be present.
+        #
+        # Pinned through a point-in-time archive snapshot rather than by
+        # writing `package=version`: a hard version pin breaks as soon as
+        # Ubuntu supersedes the package and drops the old one from the pool,
+        # which turns drift-prevention into a time bomb. A snapshot fixes
+        # every version at once and keeps working.
+        #
+        # These tools decide whether the tests can run, not what the shipped
+        # binary contains -- that is pinned separately by the build container.
         run: |
+          sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null <<'SOURCES'
+          Types: deb
+          URIs: https://snapshot.ubuntu.com/ubuntu/20260801T000000Z
+          Suites: noble noble-updates
+          Components: main universe
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          SOURCES
           sudo apt-get update -qq
-          sudo apt-get install -y -qq jq openssh-client
+          sudo apt-get install -y -qq --no-install-recommends jq openssh-client
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
@@ -213,8 +238,13 @@ jobs:
         # The panel's own JavaScript runs inside QML's engine, not Node's, and
         # the two differ. These were passing locally and never running here.
         run: |
-          sudo apt-get install -y -qq qml6-module-qttest qt6-declarative-dev-tools \
+          sudo apt-get install -y -qq --no-install-recommends \
+            qml6-module-qttest qt6-declarative-dev-tools \
             qml6-module-qtqml qml6-module-qtquick
+          # Record what the snapshot actually resolved to, so a future
+          # difference in behaviour can be traced to a version rather than
+          # guessed at.
+          dpkg -l qt6-declarative-dev-tools qml6-module-qttest | tail -2
           QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml
 
       - name: Run every panel test
