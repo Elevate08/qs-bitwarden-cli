@@ -37,6 +37,28 @@ Panel {
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
   readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
 
+  // The SSH sections' own section header. PanelSectionHeader comes from the
+  // Omarchy shell, and its defaults are the global theme's -- `Color.foreground`
+  // and `Style.font.family` -- while everything around it here follows the bar's
+  // own foreground and font family. Stating them once keeps the headers matching
+  // the captions beneath them, and keeps `textFormat` explicit, which this
+  // panel requires of every text element whether or not its text is constant
+  // today.
+  component SshSectionHeader: PanelSectionHeader {
+    textFormat: Text.PlainText
+    foreground: root.fg
+    fontFamily: root.fontFamily
+  }
+
+  component SshCaption: Text {
+    textFormat: Text.PlainText
+    width: parent ? parent.width : 0
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
   property string status: "checking"
@@ -7097,11 +7119,8 @@ Panel {
 
             Item { width: parent.width; height: Style.space(10) }
 
-            PanelSectionHeader {
-              textFormat: Text.PlainText
+            SshSectionHeader {
               text: "SSH AGENT STATUS"
-              foreground: root.fg
-              fontFamily: root.fontFamily
             }
 
             Row {
@@ -7121,71 +7140,47 @@ Panel {
                 font.pixelSize: Style.font.body
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SshCaption {
                 width: parent.width - Style.space(30)
                 text: root.sshAgentSetup.message
                 color: root.sshAgentSetup.state === "error" ? root.urgent : root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
             }
 
             // Why SSH suddenly stopped working. Without this the cooldown is a
             // silent multi-minute outage with nothing connecting it to the
             // prompts that were left unanswered.
-            Text {
-              textFormat: Text.PlainText
+            SshCaption {
               visible: root.sshCooldownStatus.active
-              width: parent.width
               text: root.sshCooldownStatus.message
               color: root.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
             // Which helper is running. A developer with a local build and a
             // user on a release see the same panel otherwise, and confusing
             // the two wastes an afternoon.
-            Text {
-              textFormat: Text.PlainText
+            SshCaption {
               visible: root.sshAgentHelper.source !== ""
-              width: parent.width
               text: "Using " + Model.sshAgentHelperSourceLabel(root.sshAgentHelper.source)
                 + (root.sshAgentHelper.checksum === "match" ? " (checksum verified)" : "")
               color: root.sshAgentHelper.source === "development" ? root.urgent : root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
             // Why the feature is unavailable, when it is. These are the
             // failures a real clone produces: a stale binary, a dropped file
             // mode, an LFS placeholder.
-            Text {
-              textFormat: Text.PlainText
+            SshCaption {
               visible: root.sshAgentEnabled && root.sshAgentHelper.message !== ""
-              width: parent.width
               text: root.sshAgentHelper.message
               color: root.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
             // The helper's own version, once it has said hello. Non-secret,
             // and the quickest way to tell a stale bundled binary apart from
             // a working one.
-            Text {
-              textFormat: Text.PlainText
+            SshCaption {
               visible: root.sshAgentVersion !== ""
-              width: parent.width
               text: "Helper version " + root.sshAgentVersion
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
             }
 
             Item {
@@ -7194,12 +7189,9 @@ Panel {
               height: visible ? Style.space(10) : 0
             }
 
-            PanelSectionHeader {
-              textFormat: Text.PlainText
+            SshSectionHeader {
               visible: root.sshGrants.length > 0
               text: "ACTIVE APPROVALS"
-              foreground: root.fg
-              fontFamily: root.fontFamily
             }
 
             // Every live grant, with the process it belongs to and what is
@@ -7213,16 +7205,11 @@ Panel {
                 width: parent.width
                 spacing: Style.space(8)
 
-                Text {
-                  textFormat: Text.PlainText
+                SshCaption {
                   width: parent.width - Style.space(110)
                   text: modelData.keyName + "  ·  "
                     + modelData.processName + " (pid " + modelData.pid + ")"
                     + "  ·  " + modelData.remainingLabel
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
                 }
 
                 Button {
@@ -7248,21 +7235,13 @@ Panel {
 
             Item { width: parent.width; height: Style.space(10) }
 
-            PanelSectionHeader {
-              textFormat: Text.PlainText
+            SshSectionHeader {
               text: "CLIENT ROUTING"
-              foreground: root.fg
-              fontFamily: root.fontFamily
             }
 
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
+            SshCaption {
               text: root.sshRouting.message
               color: root.sshRouting.state === "matches" ? root.dim : root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
             // The check the user runs in the terminal they actually use --
@@ -7277,41 +7256,25 @@ Panel {
               wrapMode: Text.WrapAnywhere
             }
 
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
+            SshCaption {
               text: root.uwsmFragment.message
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
             // Replacing the session's primary agent is a real decision, so the
             // conflict is stated and confirmed rather than absorbed by the
             // first click.
-            Text {
-              textFormat: Text.PlainText
+            SshCaption {
               visible: root.uwsmConfirmPending
-              width: parent.width
               text: "This will make Bitwarden your session's SSH agent at the next login, replacing "
                 + (root.sshRouting.owner !== "" ? root.sshRouting.owner : "the one you have now")
                 + ". Continue?"
               color: root.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SshCaption {
               visible: root.uwsmFlash !== ""
-              width: parent.width
               text: root.uwsmFlash
               color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
             Row {
@@ -7424,9 +7387,7 @@ Panel {
             font.pixelSize: Style.font.body
           }
 
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
+          SshCaption {
             text: !root.sshUnlockRequest
               ? ""
               : (root.sshUnlockRequest.keyName !== ""
@@ -7439,21 +7400,12 @@ Panel {
                   : root.sshUnlockRequest.processName
                     + " (pid " + root.sshUnlockRequest.pid + ") is asking which SSH keys are available")
             color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
           }
 
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
+          SshCaption {
             text: root.sshAgentLoadActive
               ? Model.sshAgentLoadingNote()
               : "Unlocking loads your keys. You will still be asked before anything is signed."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
           }
 
           Row {
@@ -7531,33 +7483,19 @@ Panel {
           // Forwarding is rejected in v1. If one ever reaches here it is
           // called out rather than shown as ordinary context, because the
           // process named would not be the one using the signature.
-          Text {
-            textFormat: Text.PlainText
+          SshCaption {
             visible: root.sshPrompt && root.sshPrompt.forwardedWarning !== ""
-            width: parent.width
             text: root.sshPrompt ? root.sshPrompt.forwardedWarning : ""
             color: root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
           }
 
-          Text {
-            textFormat: Text.PlainText
+          SshCaption {
             visible: root.sshAgentLoadActive
-            width: parent.width
             text: Model.sshAgentLoadingNote()
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
           }
 
-          PanelSectionHeader {
-            textFormat: Text.PlainText
+          SshSectionHeader {
             text: "KEY"
-            foreground: root.fg
-            fontFamily: root.fontFamily
           }
 
           Text {
@@ -7572,21 +7510,13 @@ Panel {
 
           // The fingerprint is the value worth checking, so it is shown whole
           // rather than elided.
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
+          SshCaption {
             text: root.sshPrompt ? root.sshPrompt.fingerprint : ""
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
             wrapMode: Text.WrapAnywhere
           }
 
-          PanelSectionHeader {
-            textFormat: Text.PlainText
+          SshSectionHeader {
             text: "REQUESTED BY"
-            foreground: root.fg
-            fontFamily: root.fontFamily
           }
 
           Text {
@@ -7601,24 +7531,13 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
+          SshCaption {
             text: root.sshPrompt ? root.sshPrompt.processPath : ""
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
             wrapMode: Text.WrapAnywhere
           }
 
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
+          SshCaption {
             text: root.sshPrompt ? root.sshPrompt.provenanceNote : ""
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
           }
 
           PanelSeparator { width: parent.width }

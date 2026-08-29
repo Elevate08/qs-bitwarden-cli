@@ -44,6 +44,37 @@ impl fmt::Debug for Runtime {
     }
 }
 
+/// Accumulator for newline-delimited, byte-bounded FIFO payload framing.
+struct PayloadAccumulator {
+    payload: Zeroizing<Vec<u8>>,
+}
+
+impl PayloadAccumulator {
+    fn new() -> Self {
+        Self {
+            payload: Zeroizing::new(Vec::new()),
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>, RuntimeError> {
+        self.payload.extend_from_slice(chunk);
+        if self.payload.len() > MAX_FILTERED_BYTES + 1 {
+            return Err(RuntimeError::PayloadTooLarge);
+        }
+        if let Some(newline) = self.payload.iter().position(|byte| *byte == b'\n') {
+            if self.payload[newline + 1..]
+                .iter()
+                .any(|byte| !byte.is_ascii_whitespace())
+            {
+                return Err(RuntimeError::MultiplePayloads);
+            }
+            self.payload.truncate(newline);
+            return Ok(Some(std::mem::take(&mut self.payload)));
+        }
+        Ok(None)
+    }
+}
+
 impl Runtime {
     /// Create a fresh FIFO below `runtime_root`, refusing every existing FIFO
     /// path and every directory that is not a same-owner real `0700` directory.
@@ -98,28 +129,15 @@ impl Runtime {
     /// Drain one newline-delimited `jq -c` payload under hard byte/time bounds.
     pub fn read_payload(&mut self, timeout: Duration) -> Result<Zeroizing<Vec<u8>>, RuntimeError> {
         let deadline = Instant::now() + timeout;
-        let mut payload = Zeroizing::new(Vec::new());
+        let mut accumulator = PayloadAccumulator::new();
         let mut chunk = [0_u8; 8192];
         loop {
             let idle = match self.fifo.read(&mut chunk) {
                 Ok(0) => true,
-                Ok(count) => {
-                    payload.extend_from_slice(&chunk[..count]);
-                    if payload.len() > MAX_FILTERED_BYTES + 1 {
-                        return Err(RuntimeError::PayloadTooLarge);
-                    }
-                    if let Some(newline) = payload.iter().position(|byte| *byte == b'\n') {
-                        if payload[newline + 1..]
-                            .iter()
-                            .any(|byte| !byte.is_ascii_whitespace())
-                        {
-                            return Err(RuntimeError::MultiplePayloads);
-                        }
-                        payload.truncate(newline);
-                        return Ok(payload);
-                    }
-                    false
-                }
+                Ok(count) => match accumulator.push(&chunk[..count])? {
+                    Some(payload) => return Ok(payload),
+                    None => false,
+                },
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => true,
                 Err(_) => return Err(RuntimeError::Io),
             };
@@ -142,7 +160,7 @@ pub async fn read_payload_async(
 ) -> Result<Zeroizing<Vec<u8>>, RuntimeError> {
     let fifo = tokio::io::unix::AsyncFd::new(fifo).map_err(|_| RuntimeError::Io)?;
     tokio::time::timeout(timeout, async {
-        let mut payload = Zeroizing::new(Vec::new());
+        let mut accumulator = PayloadAccumulator::new();
         let mut chunk = [0_u8; 8192];
         loop {
             let mut ready = fifo.readable().await.map_err(|_| RuntimeError::Io)?;
@@ -157,18 +175,7 @@ pub async fn read_payload_async(
                 // the blocking twin above paces its idle reads.
                 Ok(Ok(0)) => tokio::time::sleep(Duration::from_millis(1)).await,
                 Ok(Ok(count)) => {
-                    payload.extend_from_slice(&chunk[..count]);
-                    if payload.len() > MAX_FILTERED_BYTES + 1 {
-                        return Err(RuntimeError::PayloadTooLarge);
-                    }
-                    if let Some(newline) = payload.iter().position(|byte| *byte == b'\n') {
-                        if payload[newline + 1..]
-                            .iter()
-                            .any(|byte| !byte.is_ascii_whitespace())
-                        {
-                            return Err(RuntimeError::MultiplePayloads);
-                        }
-                        payload.truncate(newline);
+                    if let Some(payload) = accumulator.push(&chunk[..count])? {
                         return Ok(payload);
                     }
                 }

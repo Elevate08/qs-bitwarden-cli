@@ -3458,6 +3458,10 @@ function uwsmExpectedShell() {
     + "__frag=\"$HOME/" + UWSM_FRAGMENT_REL + "\"; "
 }
 
+function uwsmForeignShell() {
+  return "[ ! -f \"$__frag\" ] || [ \"$(cat \"$__frag\" 2>/dev/null)\" != \"$__want\" ]"
+}
+
 function uwsmInspectCommand() {
   var script = "test -n \"${HOME:-}\" || { echo no-home; exit 0; }; "
     + uwsmExpectedShell()
@@ -3482,8 +3486,7 @@ function uwsmWriteCommand() {
     // Anything already there that is not byte-for-byte ours is somebody
     // else's file. Rewriting our own content is allowed and is a no-op.
     + "if [ -e \"$__frag\" ]; then "
-    + "  if [ ! -f \"$__frag\" ] || [ \"$(cat \"$__frag\" 2>/dev/null)\" != \"$__want\" ]; then "
-    + "    exit " + UWSM_EXIT_FOREIGN + "; fi; "
+    + "  if " + uwsmForeignShell() + "; then exit " + UWSM_EXIT_FOREIGN + "; fi; "
     + "fi; "
     // Same directory, so the rename is atomic: a reader at login time sees
     // either the old file or the complete new one, never a half-written
@@ -3500,8 +3503,7 @@ function uwsmRemoveCommand() {
     + uwsmExpectedShell()
     + "if [ -L \"$__frag\" ]; then exit " + UWSM_EXIT_SYMLINK + "; fi; "
     + "if [ ! -e \"$__frag\" ]; then echo absent; exit 0; fi; "
-    + "if [ ! -f \"$__frag\" ] || [ \"$(cat \"$__frag\" 2>/dev/null)\" != \"$__want\" ]; then "
-    + "exit " + UWSM_EXIT_FOREIGN + "; fi; "
+    + "if " + uwsmForeignShell() + "; then exit " + UWSM_EXIT_FOREIGN + "; fi; "
     + "rm -f \"$__frag\" || exit " + UWSM_EXIT_WRITE + "; "
     + "echo removed"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
@@ -3509,6 +3511,19 @@ function uwsmRemoveCommand() {
 
 var UWSM_LOGIN_NOTE = "UWSM applies this at your next graphical login, so log out and log back in. "
   + "Restarting the shell is not enough: it cannot change the environment of programs that are already running."
+
+function parseExitCodeResult(exitCode, stdout, parseSuccess, failureMap, defaultFailureMessage) {
+  var code = Math.floor(Number(exitCode))
+  var out = String(stdout === undefined || stdout === null ? "" : stdout).trim()
+  if (code === 0) {
+    var success = parseSuccess(out)
+    if (success) return success
+  }
+  if (failureMap && failureMap[code] !== undefined) {
+    return { ok: false, code: failureMap[code].code, message: failureMap[code].message }
+  }
+  return { ok: false, code: "FAILED", message: defaultFailureMessage || "" }
+}
 
 function parseUwsmInspection(raw) {
   var verdict = String(raw === undefined || raw === null ? "" : raw).trim()
@@ -3538,36 +3553,25 @@ function parseUwsmInspection(raw) {
 }
 
 function parseUwsmActionResult(exitCode, stdout) {
-  var code = Math.floor(Number(exitCode))
-  var out = String(stdout === undefined || stdout === null ? "" : stdout).trim()
-  if (code === 0 && (out === "written")) {
-    return { ok: true, code: "WRITTEN",
-      message: "Routing file written to " + uwsmFragmentDisplayPath() + ". " + UWSM_LOGIN_NOTE }
-  }
-  if (code === 0 && (out === "removed" || out === "absent")) {
-    return { ok: true, code: out === "removed" ? "REMOVED" : "ABSENT",
-      message: out === "removed"
-        ? "Routing file removed. Programs already running keep the old value until you log out and back in."
-        : "There was no routing file to remove." }
-  }
-  switch (code) {
-    case UWSM_EXIT_NO_HOME:
-      return { ok: false, code: "NO_HOME", message: "No HOME is set, so there is nowhere to put a routing file." }
-    case UWSM_EXIT_PARENT:
-      return { ok: false, code: "PARENT",
-        message: "Could not create " + uwsmFragmentDisplayPath() + "'s parent directory." }
-    case UWSM_EXIT_SYMLINK:
-      return { ok: false, code: "SYMLINK",
-        message: uwsmFragmentDisplayPath() + " is a symlink. This plugin will not write through it "
-          + "or delete it; sort that path out yourself first." }
-    case UWSM_EXIT_FOREIGN:
-      return { ok: false, code: "FOREIGN",
-        message: uwsmFragmentDisplayPath() + " already exists and is not this plugin's file, so it was "
-          + "left untouched. Remove or edit it yourself to change routing." }
-    default:
-      return { ok: false, code: "FAILED",
-        message: "Could not update " + uwsmFragmentDisplayPath() + "." }
-  }
+  var failures = {}
+  failures[UWSM_EXIT_NO_HOME] = { code: "NO_HOME", message: "No HOME is set, so there is nowhere to put a routing file." }
+  failures[UWSM_EXIT_PARENT] = { code: "PARENT", message: "Could not create " + uwsmFragmentDisplayPath() + "'s parent directory." }
+  failures[UWSM_EXIT_SYMLINK] = { code: "SYMLINK", message: uwsmFragmentDisplayPath() + " is a symlink. This plugin will not write through it or delete it; sort that path out yourself first." }
+  failures[UWSM_EXIT_FOREIGN] = { code: "FOREIGN", message: uwsmFragmentDisplayPath() + " already exists and is not this plugin's file, so it was left untouched. Remove or edit it yourself to change routing." }
+
+  return parseExitCodeResult(exitCode, stdout, function(out) {
+    if (out === "written") {
+      return { ok: true, code: "WRITTEN",
+        message: "Routing file written to " + uwsmFragmentDisplayPath() + ". " + UWSM_LOGIN_NOTE }
+    }
+    if (out === "removed" || out === "absent") {
+      return { ok: true, code: out === "removed" ? "REMOVED" : "ABSENT",
+        message: out === "removed"
+          ? "Routing file removed. Programs already running keep the old value until you log out and back in."
+          : "There was no routing file to remove." }
+    }
+    return null
+  }, failures, "Could not update " + uwsmFragmentDisplayPath() + ".")
 }
 
 // Which agent the graphical session is actually pointed at. Matched most
@@ -3864,15 +3868,16 @@ function sshExportDirPrelude() {
     + "fi; "
     + "case \"$__base\" in /*) ;; *) exit " + SSH_EXPORT_EXIT_NO_HOME + ";; esac; "
     + "__dir=\"$__base/" + SSH_EXPORT_SUBDIR + "\"; "
+    + "if [ -L \"$__dir\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
 }
 
 function sshExportCommand() {
   var script = sshExportDirPrelude()
     // Safe parent creation, then the directory itself. A symlink at the
-    // export path is refused outright rather than followed: writing through
-    // it would let anything that could plant it choose where these land.
+    // export path was refused by sshExportDirPrelude() rather than followed:
+    // writing through it would let anything that could plant it choose where
+    // these land.
     + "mkdir -p -m 700 \"$(dirname \"$__dir\")\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
-    + "if [ -L \"$__dir\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
     + "if [ -e \"$__dir\" ]; then "
     + "  [ -d \"$__dir\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "else (umask 077 && mkdir -- \"$__dir\") || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
@@ -3922,7 +3927,6 @@ function sshExportCommand() {
 // locked, so the files stay too.
 function sshExportClearCommand() {
   var script = sshExportDirPrelude()
-    + "if [ -L \"$__dir\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
     + "[ -d \"$__dir\" ] || { echo cleared; exit 0; }; "
     + "rm -f -- \"$__dir\"/*.pub \"$__dir\"/.export.* 2>/dev/null; "
     + "rmdir -- \"$__dir\" 2>/dev/null; "
@@ -3931,23 +3935,19 @@ function sshExportClearCommand() {
 }
 
 function parseSshExportResult(exitCode, stdout) {
-  var code = Math.floor(Number(exitCode))
-  var out = String(stdout === undefined || stdout === null ? "" : stdout).trim()
-  if (code === 0 && (out === "exported" || out === "cleared" || out === "")) {
-    return { ok: true, code: "OK", message: "" }
-  }
-  switch (code) {
-    case SSH_EXPORT_EXIT_NO_HOME:
-      return { ok: false, code: "NO_HOME",
-        message: "No data directory is set, so public key files cannot be written." }
-    case SSH_EXPORT_EXIT_UNSAFE_DIR:
-      return { ok: false, code: "UNSAFE_DIR",
-        message: sshExportDisplayDir() + " is not a directory this plugin will write to. "
-          + "Remove or rename whatever is at that path." }
-    default:
-      return { ok: false, code: "FAILED",
-        message: "Could not write public key files to " + sshExportDisplayDir() + "." }
-  }
+  var failures = {}
+  failures[SSH_EXPORT_EXIT_NO_HOME] = { code: "NO_HOME",
+    message: "No data directory is set, so public key files cannot be written." }
+  failures[SSH_EXPORT_EXIT_UNSAFE_DIR] = { code: "UNSAFE_DIR",
+    message: sshExportDisplayDir() + " is not a directory this plugin will write to. "
+      + "Remove or rename whatever is at that path." }
+
+  return parseExitCodeResult(exitCode, stdout, function(out) {
+    if (out === "exported" || out === "cleared" || out === "") {
+      return { ok: true, code: "OK", message: "" }
+    }
+    return null
+  }, failures, "Could not write public key files to " + sshExportDisplayDir() + ".")
 }
 
 // -------------------------------------------------------------------------
