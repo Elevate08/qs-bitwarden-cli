@@ -249,6 +249,21 @@ if (typeof Model.sshAgentLoadingNote === "function") {
 
 const panelSrc = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
 
+for (const expression of [
+  "Model.plainLabel(root.sshAgentVersion)",
+  "Model.plainLabel(modelData.keyName)",
+  "Model.plainLabel(modelData.processName)",
+  "Model.plainLabel(root.sshUnlockRequest.keyName)",
+  "Model.plainLabel(root.sshUnlockRequest.processName)",
+  "Model.plainLabel(root.sshPrompt.keyName)",
+  "Model.plainLabel(root.sshPrompt.processName)",
+  "Model.plainLabel(root.sshPrompt.processPath)",
+  "Model.plainLabel(root.sshRouting.owner)"
+]) {
+  check("SSH PlainText labels do not receive rich-text wrappers for " + expression,
+    panelSrc.indexOf(expression) < 0, expression)
+}
+
 check("there is a dedicated approval screen",
   /currentScreen === "sshApproval"/.test(panelSrc), "no sshApproval screen")
 check("an approval_required message raises the prompt",
@@ -354,9 +369,9 @@ check("repeated denials enter the cooldown",
   "the cooldown is not applied")
 check("escape denies rather than silently dismissing",
   /sshApproval[\s\S]{0,900}?denySshRequest\(/.test(panelSrc), "escape does not deny")
-check("the key name is rendered through plainLabel",
-  /plainLabel\(root\.sshPrompt\.keyName\)|plainLabel\(sshPrompt\.keyName\)/.test(panelSrc),
-  "the key name is not neutralised for rich-text controls")
+check("the key name is rendered literally by a PlainText control",
+  /Text\s*\{[\s\S]{0,180}?textFormat:\s*Text\.PlainText[\s\S]{0,180}?root\.sshPrompt\.keyName/.test(panelSrc),
+  "the key name is not pinned to plain text")
 
 if (failures.length) {
   console.error(`\n${failures.length} failed, ${pass} passed\n`)

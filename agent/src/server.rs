@@ -17,6 +17,7 @@ pub const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 /// the request it is waiting on expires and the human deadline would be
 /// decorative -- which it was when both were thirty seconds.
 pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(150);
+const ACCEPT_ERROR_DELAY: Duration = Duration::from_millis(100);
 
 pub struct ClientEvent {
     pub peer: PeerContext,
@@ -26,7 +27,19 @@ pub struct ClientEvent {
 
 pub async fn run(listener: UnixListener, events: mpsc::Sender<ClientEvent>) {
     let permits = Arc::new(Semaphore::new(MAX_CLIENTS));
-    while let Ok((stream, _)) = listener.accept().await {
+    loop {
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(_) => {
+                // accept(2) can surface connection and resource errors which
+                // do not invalidate the listener. There is no portable error
+                // taxonomy that proves this descriptor has become unusable,
+                // so keep serving and pace persistent failures; shutdown
+                // aborts this task with the rest of the companion.
+                tokio::time::sleep(ACCEPT_ERROR_DELAY).await;
+                continue;
+            }
+        };
         let Ok(permit) = permits.clone().try_acquire_owned() else {
             drop(stream);
             continue;

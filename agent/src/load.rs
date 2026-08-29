@@ -68,7 +68,7 @@ impl LoadWindow {
         let envelope: Envelope =
             serde_json::from_slice(bytes.as_slice()).map_err(|_| PayloadError::Malformed)?;
         let supplied = parse_nonce(&envelope.load_id).map_err(|_| PayloadError::NonceMismatch)?;
-        if supplied != expected {
+        if !constant_time_eq(&supplied, &expected) {
             return Err(PayloadError::NonceMismatch);
         }
         for item in envelope.items {
@@ -85,6 +85,15 @@ impl LoadWindow {
         }
         Ok(candidate)
     }
+}
+
+fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 fn parse_nonce(nonce: &str) -> Result<[u8; 32], PayloadError> {

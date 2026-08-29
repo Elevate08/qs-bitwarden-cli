@@ -924,13 +924,13 @@ var SANITIZED_LIST_SSH_FIX_HINT = " Bitwarden CLI before " + SSH_MALFORMED_ITEM_
 // is the one place where an optional feature sits inside the pipeline the
 // ordinary item list depends on:
 //
-//  1. It never blocks the pipeline on opening the FIFO. The open is O_RDWR
-//     (`exec 3<>`), which on a FIFO never waits for a peer -- so a companion
+//  1. It never blocks the pipeline on opening the FIFO. The writer opens it
+//     O_RDWR, which on a FIFO never waits for a peer -- so a companion
 //     that died between the panel's readiness check and this read costs
 //     nothing instead of hanging the list behind a blocking open.
-//  2. It never writes anywhere but a real FIFO. A missing path, a regular
-//     file, or anything else squatting there is left untouched and the branch
-//     does nothing, rather than creating a file full of private keys.
+//  2. It never writes anywhere but the real FIFO descriptor it opened with
+//     O_NOFOLLOW. A pathname check followed by a shell redirection would let
+//     the last component be swapped between the two operations.
 //  3. It always drains its stdin. `tee` writes to this branch; a branch that
 //     exited early would leave `tee` with a broken pipe and could take the
 //     whole read down. The trailing `cat` guarantees the remainder is consumed
@@ -941,12 +941,29 @@ var SANITIZED_LIST_SSH_FIX_HINT = " Bitwarden CLI before " + SSH_MALFORMED_ITEM_
 // carries the panel's view of the pipeline, and the companion's own nonce and
 // schema validation is what actually decides whether a load is accepted.
 function agentBranchScript() {
+  var fifoWriter = [
+    "const fs = require(\"fs\");",
+    "let fd = null;",
+    "try {",
+    "  const flags = fs.constants.O_RDWR | fs.constants.O_NOFOLLOW;",
+    "  const opened = fs.openSync(process.argv[1], flags);",
+    "  const stat = fs.fstatSync(opened);",
+    "  if ((stat.mode & fs.constants.S_IFMT) === fs.constants.S_IFIFO) fd = opened;",
+    "  else fs.closeSync(opened);",
+    "} catch (error) {}",
+    "process.stdin.on(\"data\", function (chunk) {",
+    "  if (fd === null) return;",
+    "  try {",
+    "    let offset = 0;",
+    "    while (offset < chunk.length) offset += fs.writeSync(fd, chunk, offset);",
+    "  } catch (error) { try { fs.closeSync(fd); } catch (ignored) {}; fd = null; }",
+    "});",
+    "process.stdin.on(\"end\", function () { if (fd !== null) fs.closeSync(fd); });"
+  ].join("\n")
   var inner = "__qsbw_fifo=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "/ssh-keys.fifo\"; "
-    + "if [ -p \"$__qsbw_fifo\" ] && exec 3<>\"$__qsbw_fifo\" 2>/dev/null; then "
     + "timeout 10 jq -c --arg loadId \"${" + LOAD_ID_ENV + ":-}\" "
-    + shellQuote(AGENT_KEYS_FILTER) + " >&3 2>/dev/null || true; "
-    + "exec 3>&-; "
-    + "fi; "
+    + shellQuote(AGENT_KEYS_FILTER) + " 2>/dev/null | timeout 10 node -e "
+    + shellQuote(fifoWriter) + " \"$__qsbw_fifo\" 2>/dev/null || true; "
     + "cat >/dev/null 2>&1 || true"
   return "tee >(" + inner + ") | "
 }

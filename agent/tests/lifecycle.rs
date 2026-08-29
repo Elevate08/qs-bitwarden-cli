@@ -156,6 +156,35 @@ fn executable_handshake_is_private_singleton_and_eof_supervised() {
 }
 
 #[test]
+fn hello_is_a_one_time_handshake_not_a_signing_gate_command() {
+    let temp = TempDir::new();
+    let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");
+    let mut child = Command::new(executable)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &temp.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    input.write_all(b"{\"v\":1,\"type\":\"hello\"}\n").unwrap();
+    input.flush().unwrap();
+    assert_eq!(read_json_line(&mut output)["type"], "ready");
+
+    input
+        .write_all(b"{\"v\":1,\"type\":\"vault_locked\",\"epoch\":1}\n")
+        .unwrap();
+    input.flush().unwrap();
+    assert_eq!(read_json_line(&mut output)["type"], "locked");
+    input.write_all(b"{\"v\":1,\"type\":\"hello\"}\n").unwrap();
+    input.flush().unwrap();
+
+    assert!(!child.wait().unwrap().success());
+}
+
+#[test]
 fn disposable_key_load_identity_and_approved_sign_cross_the_real_socket() {
     let temp = TempDir::new();
     let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");

@@ -301,6 +301,7 @@ async fn run() -> Result<(), ()> {
     let mut active_load: Option<ActiveLoad> = None;
     let started = Instant::now();
     let mut gate_open = false;
+    let mut handshake_complete = false;
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
 
     loop {
@@ -309,7 +310,8 @@ async fn run() -> Result<(), ()> {
                 let Some(line) = line? else { break };
                 let message = parse_control_line(&line).map_err(|_| ())?;
                 match message {
-                    ControlMessage::Hello { .. } if !gate_open => {
+                    ControlMessage::Hello { .. } if !handshake_complete => {
+                        handshake_complete = true;
                         gate_open = true;
                         emit(&output_tx, Output::Ready { v: 1, socket_path: socket.clone(), fifo_path: fifo.clone(), agent_version: env!("CARGO_PKG_VERSION").to_owned() })?;
                     }

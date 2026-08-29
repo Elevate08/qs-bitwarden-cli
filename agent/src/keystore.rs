@@ -10,6 +10,10 @@ use zeroize::Zeroizing;
 pub const MAX_KEYS: usize = 128;
 /// Maximum OpenSSH PEM bytes accepted for one item.
 pub const MAX_PEM_BYTES: usize = 64 * 1024;
+/// Public vault metadata retained in memory or emitted on the bounded control
+/// channel. Measured in UTF-8 bytes, matching the protocol ceiling. An item id
+/// past it fails the load; a name past it is truncated to it.
+pub const MAX_METADATA_BYTES: usize = 256;
 /// Maximum filtered FIFO payload accepted for one load.
 pub const MAX_FILTERED_BYTES: usize = 8 * 1024 * 1024;
 
@@ -57,6 +61,7 @@ pub enum LoadError {
     FilteredPayloadTooLarge,
     TooManyKeys,
     PemTooLarge,
+    MetadataTooLarge,
     FailedCandidate,
 }
 
@@ -120,6 +125,27 @@ impl CandidateLoad {
         if item.private_key_pem.len() > MAX_PEM_BYTES {
             self.failed = true;
             return Err(LoadError::PemTooLarge);
+        }
+        // An item id that long is malformed rather than unusual -- Bitwarden's
+        // are 36-character UUIDs -- and it identifies the key, so it cannot be
+        // shortened without changing what it names.
+        if item.item_id.len() > MAX_METADATA_BYTES {
+            self.failed = true;
+            return Err(LoadError::MetadataTooLarge);
+        }
+        // A long *name* is ordinary. Bitwarden allows them, and 256 bytes is
+        // around 85 CJK characters, so failing the load here would take the
+        // whole feature down over one item somebody named descriptively. The
+        // name is display and comment text, so it is bounded by truncation
+        // instead -- on a character boundary, because a String cut mid-sequence
+        // is not one.
+        let mut item = item;
+        if item.name.len() > MAX_METADATA_BYTES {
+            let mut end = MAX_METADATA_BYTES;
+            while end > 0 && !item.name.is_char_boundary(end) {
+                end -= 1;
+            }
+            item.name.truncate(end);
         }
         if item.requires_reprompt {
             return Ok(self.skip(item.item_id, SkipCode::RequiresReprompt));

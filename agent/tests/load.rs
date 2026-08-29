@@ -1,6 +1,8 @@
-use qs_bitwarden_ssh_agent::keystore::{KeyStore, LoadError, MAX_FILTERED_BYTES};
+use qs_bitwarden_ssh_agent::keystore::{
+    KeyStore, LoadError, MAX_FILTERED_BYTES, MAX_METADATA_BYTES,
+};
 use qs_bitwarden_ssh_agent::load::{LoadWindow, PayloadError};
-use qs_bitwarden_ssh_agent::runtime::{Runtime, RuntimeError};
+use qs_bitwarden_ssh_agent::runtime::{read_payload_async, Runtime, RuntimeError};
 use rand_core::OsRng;
 use ssh_key::{Algorithm, HashAlg, PrivateKey};
 use std::fs;
@@ -212,5 +214,70 @@ fn invalid_nonce_is_never_armed() {
     assert_eq!(
         LoadWindow::new(1, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").unwrap_err(),
         PayloadError::InvalidNonce
+    );
+}
+
+#[test]
+fn an_item_id_past_the_metadata_cap_fails_the_candidate() {
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let mut item = item_json("one", &key);
+    // Real ones are 36-character UUIDs, and this is what the key is known by,
+    // so it cannot be shortened to fit the way a display name can.
+    item["itemId"] = serde_json::Value::String("i".repeat(65 * 1024));
+    let mut window = LoadWindow::new(30, NONCE).unwrap();
+    let mut store = KeyStore::new();
+    assert_eq!(
+        window
+            .decode(Zeroizing::new(payload(NONCE, vec![item])), &mut store)
+            .unwrap_err(),
+        PayloadError::Load(LoadError::MetadataTooLarge)
+    );
+}
+
+#[test]
+fn a_long_item_name_is_truncated_rather_than_losing_the_whole_load() {
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let mut item = item_json("one", &key);
+    // Multibyte on purpose. 200 of these is 400 bytes, so the cut lands in the
+    // middle of a character unless the boundary is respected -- and a name is
+    // a String, which cannot hold half of one.
+    let name = "é".repeat(200);
+    item["name"] = serde_json::Value::String(name.clone());
+    let mut window = LoadWindow::new(30, NONCE).unwrap();
+    let mut store = KeyStore::new();
+    let candidate = window
+        .decode(Zeroizing::new(payload(NONCE, vec![item])), &mut store)
+        .expect("a descriptively named key is an ordinary key");
+    store.publish(candidate).unwrap();
+
+    let identities = store.public_identities();
+    assert_eq!(identities.len(), 1, "the key still loaded");
+    let stored = &identities[0].name;
+    assert!(stored.len() <= MAX_METADATA_BYTES);
+    assert!(name.starts_with(stored.as_str()));
+    assert!(!stored.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_producer_that_closes_without_a_newline_times_out() {
+    use std::io::Write;
+
+    let temp = TempDir::new("eof");
+    let runtime = Runtime::create(&temp.0).unwrap();
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .open(runtime.fifo_path())
+        .unwrap();
+    writer.write_all(b"{\"loadId\":\"unfinished\"").unwrap();
+    drop(writer);
+
+    // The reader keeps its own write end open, so this is a producer that gave
+    // up rather than a true end-of-stream -- but the read still has to end at
+    // its deadline rather than spinning on a descriptor that stays readable.
+    assert_eq!(
+        read_payload_async(runtime.fifo_reader().unwrap(), Duration::from_millis(150))
+            .await
+            .unwrap_err(),
+        RuntimeError::ReadTimeout
     );
 }

@@ -150,7 +150,12 @@ pub async fn read_payload_async(
                 let mut file = inner.get_ref();
                 file.read(&mut chunk)
             }) {
-                Ok(Ok(0)) => continue,
+                // EOF, not a spurious wakeup. `try_io` only clears readiness
+                // on `WouldBlock`, so a producer that closed without a newline
+                // leaves this readable for good: continuing straight back would
+                // spin a core flat out until the timeout. Paced the same way
+                // the blocking twin above paces its idle reads.
+                Ok(Ok(0)) => tokio::time::sleep(Duration::from_millis(1)).await,
                 Ok(Ok(count)) => {
                     payload.extend_from_slice(&chunk[..count]);
                     if payload.len() > MAX_FILTERED_BYTES + 1 {

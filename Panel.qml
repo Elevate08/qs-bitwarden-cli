@@ -7182,7 +7182,7 @@ Panel {
               textFormat: Text.PlainText
               visible: root.sshAgentVersion !== ""
               width: parent.width
-              text: "Helper version " + Model.plainLabel(root.sshAgentVersion)
+              text: "Helper version " + root.sshAgentVersion
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -7216,8 +7216,8 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   width: parent.width - Style.space(110)
-                  text: Model.plainLabel(modelData.keyName) + "  ·  "
-                    + Model.plainLabel(modelData.processName) + " (pid " + modelData.pid + ")"
+                  text: modelData.keyName + "  ·  "
+                    + modelData.processName + " (pid " + modelData.pid + ")"
                     + "  ·  " + modelData.remainingLabel
                   color: root.dim
                   font.family: root.fontFamily
@@ -7295,7 +7295,7 @@ Panel {
               visible: root.uwsmConfirmPending
               width: parent.width
               text: "This will make Bitwarden your session's SSH agent at the next login, replacing "
-                + (root.sshRouting.owner !== "" ? Model.plainLabel(root.sshRouting.owner) : "the one you have now")
+                + (root.sshRouting.owner !== "" ? root.sshRouting.owner : "the one you have now")
                 + ". Continue?"
               color: root.urgent
               font.family: root.fontFamily
@@ -7430,13 +7430,13 @@ Panel {
             text: !root.sshUnlockRequest
               ? ""
               : (root.sshUnlockRequest.keyName !== ""
-                  ? Model.plainLabel(root.sshUnlockRequest.keyName) + " · requested by "
-                    + Model.plainLabel(root.sshUnlockRequest.processName)
+                  ? root.sshUnlockRequest.keyName + " · requested by "
+                    + root.sshUnlockRequest.processName
                     + " (pid " + root.sshUnlockRequest.pid + ")"
                   // An identity listing names no key: the client is asking
                   // which keys exist, and until the vault is open there is no
                   // answer to give.
-                  : Model.plainLabel(root.sshUnlockRequest.processName)
+                  : root.sshUnlockRequest.processName
                     + " (pid " + root.sshUnlockRequest.pid + ") is asking which SSH keys are available")
             color: root.fg
             font.family: root.fontFamily
@@ -7563,7 +7563,7 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: root.sshPrompt ? Model.plainLabel(root.sshPrompt.keyName) : ""
+            text: root.sshPrompt ? root.sshPrompt.keyName : ""
             color: root.fg
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -7593,7 +7593,7 @@ Panel {
             textFormat: Text.PlainText
             width: parent.width
             text: root.sshPrompt
-              ? Model.plainLabel(root.sshPrompt.processName) + " · pid " + root.sshPrompt.pid
+              ? root.sshPrompt.processName + " · pid " + root.sshPrompt.pid
               : ""
             color: root.fg
             font.family: root.fontFamily
@@ -7604,7 +7604,7 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: root.sshPrompt ? Model.plainLabel(root.sshPrompt.processPath) : ""
+            text: root.sshPrompt ? root.sshPrompt.processPath : ""
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

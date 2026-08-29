@@ -126,6 +126,11 @@ check("two nonces differ", generated !== second, generated + " == " + second)
 // into an open FIFO window. /proc/<pid>/cmdline is world-readable, so it must
 // never be an argument.
 const agentCommandText = Model.sanitizedListCommand({ agentBranch: true, runtimeDir: runtimeDir }).join(" ")
+check("the FIFO is opened without following a swapped symlink",
+  agentCommandText.indexOf("O_NOFOLLOW") >= 0, agentCommandText.slice(0, 500))
+check("the opened descriptor, not the pathname, is checked as a FIFO",
+  agentCommandText.indexOf("fstatSync") >= 0 && agentCommandText.indexOf("S_IFIFO") >= 0,
+  agentCommandText.slice(0, 500))
 check("the nonce is read from the environment, never passed in argv",
   agentCommandText.indexOf(Model.loadIdEnvVar()) >= 0 && agentCommandText.indexOf(LOAD_ID) < 0,
   "nonce appears literally in the command")
