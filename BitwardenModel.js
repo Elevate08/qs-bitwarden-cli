@@ -961,9 +961,16 @@ function agentBranchScript() {
     "process.stdin.on(\"end\", function () { if (fd !== null) fs.closeSync(fd); });"
   ].join("\n")
   var inner = "__qsbw_fifo=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "/ssh-keys.fifo\"; "
+    // The pathname test is not the safety check -- the descriptor's own fstat
+    // is, below -- but it is free, and without it a companion that died
+    // between the panel's readiness check and this read would still cost a
+    // full decrypt-and-filter pass over the vault, piping private keys into a
+    // writer with nowhere to put them.
+    + "if [ -p \"$__qsbw_fifo\" ]; then "
     + "timeout 10 jq -c --arg loadId \"${" + LOAD_ID_ENV + ":-}\" "
     + shellQuote(AGENT_KEYS_FILTER) + " 2>/dev/null | timeout 10 node -e "
     + shellQuote(fifoWriter) + " \"$__qsbw_fifo\" 2>/dev/null || true; "
+    + "fi; "
     + "cat >/dev/null 2>&1 || true"
   return "tee >(" + inner + ") | "
 }
@@ -3554,10 +3561,16 @@ function parseUwsmInspection(raw) {
 
 function parseUwsmActionResult(exitCode, stdout) {
   var failures = {}
-  failures[UWSM_EXIT_NO_HOME] = { code: "NO_HOME", message: "No HOME is set, so there is nowhere to put a routing file." }
-  failures[UWSM_EXIT_PARENT] = { code: "PARENT", message: "Could not create " + uwsmFragmentDisplayPath() + "'s parent directory." }
-  failures[UWSM_EXIT_SYMLINK] = { code: "SYMLINK", message: uwsmFragmentDisplayPath() + " is a symlink. This plugin will not write through it or delete it; sort that path out yourself first." }
-  failures[UWSM_EXIT_FOREIGN] = { code: "FOREIGN", message: uwsmFragmentDisplayPath() + " already exists and is not this plugin's file, so it was left untouched. Remove or edit it yourself to change routing." }
+  failures[UWSM_EXIT_NO_HOME] = { code: "NO_HOME",
+    message: "No HOME is set, so there is nowhere to put a routing file." }
+  failures[UWSM_EXIT_PARENT] = { code: "PARENT",
+    message: "Could not create " + uwsmFragmentDisplayPath() + "'s parent directory." }
+  failures[UWSM_EXIT_SYMLINK] = { code: "SYMLINK",
+    message: uwsmFragmentDisplayPath() + " is a symlink. This plugin will not write through it "
+      + "or delete it; sort that path out yourself first." }
+  failures[UWSM_EXIT_FOREIGN] = { code: "FOREIGN",
+    message: uwsmFragmentDisplayPath() + " already exists and is not this plugin's file, so it was "
+      + "left untouched. Remove or edit it yourself to change routing." }
 
   return parseExitCodeResult(exitCode, stdout, function(out) {
     if (out === "written") {

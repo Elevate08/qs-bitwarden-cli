@@ -126,6 +126,12 @@ check("two nonces differ", generated !== second, generated + " == " + second)
 // into an open FIFO window. /proc/<pid>/cmdline is world-readable, so it must
 // never be an argument.
 const agentCommandText = Model.sanitizedListCommand({ agentBranch: true, runtimeDir: runtimeDir }).join(" ")
+// The fstat below is the check that decides; this one only keeps a dead
+// companion from costing a full decrypt-and-filter pass whose output has
+// nowhere to go.
+check("a missing FIFO skips the filter rather than running it for nobody",
+  /if \[ -p "\$__qsbw_fifo" \]; then/.test(agentCommandText),
+  agentCommandText.slice(0, 500))
 check("the FIFO is opened without following a swapped symlink",
   agentCommandText.indexOf("O_NOFOLLOW") >= 0, agentCommandText.slice(0, 500))
 check("the opened descriptor, not the pathname, is checked as a FIFO",

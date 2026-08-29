@@ -186,7 +186,12 @@ try {
   fs.rmSync(assocTmp, { recursive: true, force: true })
 }
 
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+// The panel is three QML files now -- the SSH settings sections and the
+// approval screen have their own. A check that reads only the largest one
+// silently narrows as markup moves out of it.
+const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
+  .map(file => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+  .join("\n")
 const bodyOf = name => {
   const start = panelSrc.indexOf(`function ${name}(`)
   if (start === -1) return ""

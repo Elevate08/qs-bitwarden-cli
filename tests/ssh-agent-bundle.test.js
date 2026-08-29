@@ -205,7 +205,12 @@ inTemp(dir => {
 // Failure isolation
 // -------------------------------------------------------------------------
 
-const panelSrc = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
+// The settings diagnostics live in SshAgentSettings.qml; the supervision that
+// feeds them is still in Panel.qml. Both, or a check lands on whichever half
+// happens to hold its pattern today.
+const panelSrc = ["Panel.qml", "SshAgentSettings.qml"]
+  .map(file => fs.readFileSync(path.join(repoRoot, file), "utf8"))
+  .join("\n")
 check("the helper is inspected before the supervisor is allowed to start",
   /sshAgentHelperReady\(/.test(panelSrc), "nothing gates startup on the inspection")
 check("a failed inspection disables only the agent",

@@ -494,7 +494,12 @@ async function processTests() {
 // The ordinary vault must not depend on the helper
 // -------------------------------------------------------------------------
 
-const panelSrc = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
+// The panel is three QML files now -- the SSH settings sections and the
+// approval screen have their own. A check that reads only the largest one
+// silently narrows as markup moves out of it.
+const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
+  .map(file => fs.readFileSync(path.join(repoRoot, file), "utf8"))
+  .join("\n")
 check("the supervisor Process is tracked, not detached",
   !/execDetached\([^)]*sshAgent/i.test(panelSrc), "found execDetached for the ssh agent")
 check("the supervisor keeps stdin open", /id:\s*sshAgentProc[\s\S]{0,400}?stdinEnabled:\s*true/.test(panelSrc),

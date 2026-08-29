@@ -165,7 +165,12 @@ eq("a lock with no live helper waits for no acknowledgment", lockNoHelper.awaitL
 // The panel's own lock is never blocked by the companion
 // -------------------------------------------------------------------------
 
-const panelSrc = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
+// The panel is three QML files now -- the SSH settings sections and the
+// approval screen have their own. A check that reads only the largest one
+// silently narrows as markup moves out of it.
+const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
+  .map(file => fs.readFileSync(path.join(repoRoot, file), "utf8"))
+  .join("\n")
 const lockVault = panelSrc.slice(panelSrc.indexOf("function lockVault()"),
   panelSrc.indexOf("function lockVault()") + 1400)
 

@@ -247,21 +247,35 @@ if (typeof Model.sshAgentLoadingNote === "function") {
 // The panel wiring
 // -------------------------------------------------------------------------
 
-const panelSrc = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
+// Every file the SSH markup lives in: the settings sections and the approval
+// screen have their own, and Panel.qml keeps the rest. Reading only the first
+// would leave every "this must NOT appear" check below passing on content that
+// had simply moved.
+const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
+  .map(file => fs.readFileSync(path.join(repoRoot, file), "utf8"))
+  .join("\n")
 
-for (const expression of [
-  "Model.plainLabel(root.sshAgentVersion)",
-  "Model.plainLabel(modelData.keyName)",
-  "Model.plainLabel(modelData.processName)",
-  "Model.plainLabel(root.sshUnlockRequest.keyName)",
-  "Model.plainLabel(root.sshUnlockRequest.processName)",
-  "Model.plainLabel(root.sshPrompt.keyName)",
-  "Model.plainLabel(root.sshPrompt.processName)",
-  "Model.plainLabel(root.sshPrompt.processPath)",
-  "Model.plainLabel(root.sshRouting.owner)"
+// plainLabel() wraps its argument in a span when the text contains markup
+// characters, which a PlainText control then renders literally. The field is
+// matched with whatever object it hangs off, because the settings sections
+// reach the panel as `panel` and the screens as `root`: pinning the prefix
+// would let these checks pass on content that had only moved between files.
+for (const field of [
+  "sshAgentVersion",
+  "modelData.keyName",
+  "modelData.processName",
+  "sshUnlockRequest.keyName",
+  "sshUnlockRequest.processName",
+  "sshPrompt.keyName",
+  "sshPrompt.processName",
+  "sshPrompt.processPath",
+  "sshRouting.owner"
 ]) {
-  check("SSH PlainText labels do not receive rich-text wrappers for " + expression,
-    panelSrc.indexOf(expression) < 0, expression)
+  const wrapped = new RegExp(
+    "plainLabel\\(\\s*(?:root|panel|section\\.panel)?\\.?"
+      + field.replace(/\./g, "\\.") + "\\s*\\)")
+  check("SSH PlainText labels do not receive rich-text wrappers for " + field,
+    !wrapped.test(panelSrc), field)
 }
 
 check("there is a dedicated approval screen",
@@ -326,8 +340,11 @@ check("unlocking promotes the held request straight to an approval",
 check("the promotion happens as soon as the vault unlocks",
   /onStatusChanged:[\s\S]{0,200}?promoteUnlockToApproval\(\)/.test(panelSrc),
   "nothing promotes on unlock")
+// The panel root reaches the screens as `root` and the extracted files as
+// `panel`, so the object is matched either way -- a check pinned to one of
+// them starts passing or failing on which file the markup sits in.
 check("the approval prompt says keys are still loading",
-  /visible: root\.sshAgentLoadActive[\s\S]{0,200}?sshAgentLoadingNote\(\)/.test(panelSrc),
+  /visible: (?:root|panel)\.sshAgentLoadActive[\s\S]{0,200}?sshAgentLoadingNote\(\)/.test(panelSrc),
   "the prompt does not say the keys are still on their way")
 
 check("the held request stays on screen while keys load",
@@ -370,7 +387,8 @@ check("repeated denials enter the cooldown",
 check("escape denies rather than silently dismissing",
   /sshApproval[\s\S]{0,900}?denySshRequest\(/.test(panelSrc), "escape does not deny")
 check("the key name is rendered literally by a PlainText control",
-  /Text\s*\{[\s\S]{0,180}?textFormat:\s*Text\.PlainText[\s\S]{0,180}?root\.sshPrompt\.keyName/.test(panelSrc),
+  /Text\s*\{[\s\S]{0,180}?textFormat:\s*Text\.PlainText[\s\S]{0,180}?(?:root|panel)\.sshPrompt\.keyName(?![A-Za-z0-9_])/
+    .test(panelSrc),
   "the key name is not pinned to plain text")
 
 if (failures.length) {
