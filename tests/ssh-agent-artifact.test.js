@@ -213,6 +213,25 @@ check("CI compares the tracked binary against a clean rebuild",
 check("the comparison is skipped only when no binary is tracked",
   /if \[ ! -f bin\/x86_64-linux\/qs-bitwarden-ssh-agent \]/.test(workflow),
   "the comparison could pass by absence rather than by matching")
+// `./scripts/build-agent.sh` with no flags writes bin/ and bin/SHA256SUMS.
+// Run the comparison after it and the tracked binary it reads back is the
+// candidate that step just wrote -- so it compares a build with itself and
+// passes whatever the committed bytes are. That is not hypothetical: it is
+// what this workflow did until a stale binary sailed through a green run.
+const compareAt = workflow.indexOf("name: Compare the tracked binary")
+const candidateAt = workflow.indexOf("name: Build the candidate artifact")
+check("the comparison runs before anything overwrites bin/",
+  compareAt > 0 && candidateAt > 0 && compareAt < candidateAt,
+  `compare step at ${compareAt}, candidate build at ${candidateAt}`)
+// A drifted binary is when the candidate matters most, so the upload has to
+// happen before the job gives up on the run.
+check("a drifted binary still uploads the candidate that fixes it",
+  workflow.indexOf("name: Upload the candidate") < workflow.indexOf("name: Fail if the tracked binary drifted"),
+  "the job fails before the bytes a maintainer needs are available")
+check("drift is still fatal on a same-repository run",
+  /steps\.compare\.outputs\.drift == 'yes'/.test(workflow)
+    && /github\.event\.pull_request\.head\.repo\.fork != true/.test(workflow),
+  "recording drift replaced failing on it")
 
 check("CI runs against the feature branch while the feature is unfinished",
   /branches:\s*\[feature\/ssh-agent\]/.test(workflow), "the workflow does not run on the feature branch")

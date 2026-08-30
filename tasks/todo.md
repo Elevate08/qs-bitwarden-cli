@@ -742,7 +742,14 @@ behavior. Failures must disable only this optional feature.
 - [x] Tests pass: `node tests/ssh-agent-bundle.test.js`
 - [x] Artifact check passes: `scripts/build-agent.sh --compare-tracked` --
       green in CI: tracked and freshly built both
-      69245af23a45ac96ec5e5d84ca1b34918cc8f0807a4b0e2aea6a74bac6a72852.
+      3b36e17fcbca8b5925b417b36c75157fc96502391720d5fcf0edac65a6abfbe3.
+
+      The earlier note here recorded 69245af2 from a run that proved nothing.
+      The comparison sat after "Build the candidate artifact", which writes
+      `bin/`, so it read back the candidate and compared it with itself. The
+      digests agreed because the binary happened to be current, not because
+      anything checked. The step now runs before any build writes to `bin/`,
+      and `tests/ssh-agent-artifact.test.js` fails if it is ever moved back.
 - [x] Manual check: `tests/ssh-agent-bundle.test.js` does exactly this against
       real files in disposable directories -- missing, non-executable,
       truncated, a Git LFS placeholder, and a broken shipped binary beside a

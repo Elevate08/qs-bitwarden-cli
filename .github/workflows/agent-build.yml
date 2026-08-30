@@ -99,6 +99,44 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           ./scripts/build-agent.sh --verify-reproducible
 
+      - name: Compare the tracked binary with a clean rebuild
+        id: compare
+        env:
+          QSBW_PINNED_BUILD: '1'
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+        # The gate that gives the committed bytes their meaning: they must be
+        # what this source builds in this environment. Skipped only while no
+        # binary is tracked, so it cannot pass by absence.
+        #
+        # FIRST, before anything else writes to bin/. This ran after "Build the
+        # candidate artifact" for four months, and that step calls the build
+        # script with no flags -- which *writes* bin/ and bin/SHA256SUMS. So the
+        # comparison read back the candidate it had just produced and compared
+        # it with itself. It reported `tracked` and `fresh` as the same digest
+        # on a repository whose committed binary was four commits stale, and
+        # every green run since Task 16 proved nothing at all.
+        #
+        # The verdict is recorded rather than acted on here, because a drifted
+        # binary is exactly when the candidate is most worth uploading: that
+        # artifact is how a maintainer fixes the drift. The job fails at the
+        # end instead.
+        run: |
+          if [ ! -f bin/x86_64-linux/qs-bitwarden-ssh-agent ]; then
+            echo "::notice::no tracked binary yet; nothing to compare"
+            echo "drift=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ./scripts/build-agent.sh --compare-tracked; then
+            echo "drift=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "drift=yes" >> "$GITHUB_OUTPUT"
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::warning::the tracked binary does not match this source. A fork cannot"
+            echo "::warning::push CI's bytes, so this is reported rather than blocking."
+            echo "::warning::A maintainer must commit the uploaded candidate before merge."
+          fi
+
       - name: Build the candidate artifact
         env:
           QSBW_PINNED_BUILD: '1'
@@ -116,36 +154,6 @@ jobs:
           ./bin/x86_64-linux/qs-bitwarden-ssh-agent --version
           ./bin/x86_64-linux/qs-bitwarden-ssh-agent --self-test
 
-      - name: Compare the tracked binary with a clean rebuild
-        env:
-          QSBW_PINNED_BUILD: '1'
-          # A pull request from a fork cannot push CI's bytes into its own
-          # branch, so requiring an exact match would make every external
-          # agent-source contribution unmergeable. Such a run reports the
-          # drift and uploads the candidate instead of failing. The bytes
-          # still cannot reach master without a clean rebuild-and-compare,
-          # because this same step blocks on a same-repository run.
-          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
-        # The gate that gives the committed bytes their meaning: they must be
-        # what this source builds in this environment. Skipped only while no
-        # binary is tracked, so it cannot pass by absence.
-        run: |
-          if [ ! -f bin/x86_64-linux/qs-bitwarden-ssh-agent ]; then
-            echo "::notice::no tracked binary yet; nothing to compare"
-            exit 0
-          fi
-          if ./scripts/build-agent.sh --compare-tracked; then
-            exit 0
-          fi
-          if [ "$IS_FORK" = "true" ]; then
-            echo "::warning::the tracked binary does not match this source. A fork cannot"
-            echo "::warning::push CI's bytes, so this is reported rather than blocking."
-            echo "::warning::A maintainer must commit the uploaded candidate before merge."
-            exit 0
-          fi
-          echo "::error::the tracked binary does not match a clean build of this source"
-          exit 1
-
       - name: Upload the candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -155,6 +163,18 @@ jobs:
             bin/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
+
+      - name: Fail if the tracked binary drifted
+        # After the upload, so the bytes that fix the drift are always
+        # available. A fork keeps its exemption: it cannot push CI's output
+        # into its own branch, and the bytes still cannot reach master without
+        # a same-repository run passing this.
+        if: steps.compare.outputs.drift == 'yes'
+          && github.event.pull_request.head.repo.fork != true
+        run: |
+          echo "::error::the tracked binary does not match a clean build of this source."
+          echo "::error::Commit the uploaded candidate: it is this source, built here."
+          exit 1
 
   gates:
     name: tests, format and lint
