@@ -59,6 +59,12 @@ BADGE_TITLE="${QSBW_BADGE_TITLE:-SSH agent support}"
 # more screenshot; this cannot be mistaken for one.
 BADGE_FG="$BG"
 BADGE_BG="$ACCENT"
+# Width kept clear at the right of the title band for the callout. The page
+# title is centred in what is left rather than in the whole width, so the gap
+# between the two does not depend on how long the badge phrase happens to be
+# -- and a badge that outgrows this is told to shrink rather than silently
+# shunting into the title.
+BADGE_ZONE=640
 GAP=28        # between panels, and around the whole thing
 TITLE_SIZE=96
 
@@ -123,9 +129,11 @@ else
   # keeps moving, and the text ended up off the left edge; a label of a known
   # size cannot land anywhere but where it is appended.
   WIDTH="$(magick identify -format '%w' "$work/framed.png")"
-  magick -size "${WIDTH}x$((TITLE_SIZE * 2))" -background "$BG" -fill "$ACCENT" \
-    -font "$FONT" -pointsize "$TITLE_SIZE" -gravity center \
-    label:"$TITLE" "$work/title.png"
+  magick -background "$BG" -fill "$ACCENT" -font "$FONT" \
+    -pointsize "$TITLE_SIZE" label:"$TITLE" "$work/title-text.png"
+  magick "$work/title-text.png" -background "$BG" -gravity center \
+    -extent "$((WIDTH - BADGE_ZONE))x$((TITLE_SIZE * 2))" \
+    -gravity east -splice "${BADGE_ZONE}x0" "$work/title.png"
 
   # -depth 8: the label pushes the pipeline to 16-bit, which triples the file
   # size of a flat-colour image for nothing a viewer can see.
@@ -133,13 +141,12 @@ else
     "$work/page.png"
 
   cp "$work/page.png" "$BASE"
-  # The callout hangs off the first column's height, which a badge-only run
-  # has no way to measure -- the columns are gone by then. Record it.
-  printf '%s\n' "$(( $(magick identify -format '%h' "$work/title.png") \
-    + $(magick identify -format '%h' "$work/c1.miff") ))" > "$BASE.anchor"
+  # The callout straddles the bottom of the title band, which a badge-only run
+  # has no way to measure -- the pieces are gone by then. Record it.
+  magick identify -format '%h' "$work/title.png" > "$BASE.anchor"
 fi
 [ -f "$BASE.anchor" ] || { echo "no anchor beside $BASE; rebuild the base" >&2; exit 1; }
-COL1_BOTTOM="$(cat "$BASE.anchor")"
+TITLE_H="$(cat "$BASE.anchor")"
 
 # --- the callout ------------------------------------------------------------
 #
@@ -150,10 +157,10 @@ COL1_BOTTOM="$(cat "$BASE.anchor")"
 # which turned a 34pt kicker into a 500pt "NEW" across the whole badge. The
 # point size governs, and the padding is added afterwards.
 magick -background "$BADGE_BG" -fill "$BADGE_FG" \
-  -font "$FONT" -pointsize 40 -interword-spacing 14 \
+  -font "$FONT" -pointsize 26 -interword-spacing 10 \
   label:"$BADGE_KICKER" "$work/kicker.png"
 magick -background "$BADGE_BG" -fill "$BADGE_FG" \
-  -font "$FONT" -pointsize 68 label:"$BADGE_TITLE" "$work/badge-title.png"
+  -font "$FONT" -pointsize 44 label:"$BADGE_TITLE" "$work/badge-title.png"
 
 # A solid block, not an outline: the panels are all accent-bordered rectangles
 # on black, so one more of those disappears among them. Inverting it -- accent
@@ -161,11 +168,26 @@ magick -background "$BADGE_BG" -fill "$BADGE_FG" \
 # rather than a part of it.
 magick "$work/kicker.png" "$work/badge-title.png" \
   -background "$BADGE_BG" -gravity west -append \
-  -bordercolor "$BADGE_BG" -border 30 \
+  -bordercolor "$BADGE_BG" -border 22 \
   "$work/badge.png"
 
-BADGE_X="$GAP"
-BADGE_Y=$((COL1_BOTTOM - 40))
+# Top right: the title is centred, so the corner beside it is empty, and
+# hanging the badge below the band's edge lets it clip the first panel of the
+# third column -- which is what keeps it looking placed rather than laid out.
+PAGE_W="$(magick identify -format '%w' "$work/page.png")"
+BADGE_BW="$(magick identify -format '%w' "$work/badge.png")"
+BADGE_BH="$(magick identify -format '%h' "$work/badge.png")"
+BADGE_X=$((PAGE_W - BADGE_BW - GAP))
+# Centred in the title band rather than overlapping anything. The two
+# neighbours here are both load-bearing -- the page title to its left and the
+# panel header below it -- and dipping into either one cost more than the
+# overlap was worth.
+BADGE_Y=$(((TITLE_H - BADGE_BH) / 2))
+
+if [ "$BADGE_BW" -gt "$((BADGE_ZONE - GAP))" ]; then
+  echo "  warning: the badge is wider than the ${BADGE_ZONE}px reserved for it" >&2
+  echo "  and will crowd the page title. Shorten the phrase or raise BADGE_ZONE." >&2
+fi
 
 magick "$work/page.png" "$work/badge.png" -geometry "+${BADGE_X}+${BADGE_Y}" \
   -composite -depth 8 -strip "$OUT"
