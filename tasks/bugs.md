@@ -42,3 +42,33 @@ rebuild.
 originally written cannot pass, because it describes behavior the design does
 not have. Signing refusal while locked is tested by dismissing the prompt, and
 by asking for a key the public cache does not know.
+
+## 2. A grant's remaining time never counted down
+
+**Status:** fixed. Found 2026-08-31 on `feature/ssh-agent`, during the Task 20
+manual matrix.
+
+**Observed:** With one live grant, the ACTIVE APPROVALS row on the SSH agent
+settings screen read "1m 59s left" for the whole two minutes and then the row
+disappeared, having never counted down. `sshAgentStatus` reported
+`"grants":1` throughout.
+
+**Cause:** `sshAgentGrantViews` computed `remainingLabel` from the companion's
+`expiresInSec` at the instant of the announcement, and the companion announces
+a grant once and says nothing further until the set changes. The view was a
+snapshot rendered for the life of the grant; nothing re-derived it, and
+nothing dropped a lapsed grant until the next announcement arrived.
+
+**Fixed by** stamping each announced grant with `expiresAtMs` -- when it runs
+out rather than how long it had left -- and adding `sshAgentGrantsAt(views,
+nowMs)`, which re-derives the remaining time for a given moment and drops what
+has lapsed. `Panel.sshGrants` became a derived property over
+`sshGrantsAnnounced` and a `sshGrantTick` driven by a 1s timer that runs only
+while grants exist, matching the cooldown countdown. Both fallbacks are
+deliberate: an unstamped view, or any view before the first tick, is shown as
+announced rather than dropped, because a grant must never disappear merely
+because a timer has not run yet.
+
+**Also worth knowing:** the same staleness would have hidden a grant that had
+genuinely expired, since `sshAgentStatus` reported the announced count rather
+than the live one. It now reports the live one.

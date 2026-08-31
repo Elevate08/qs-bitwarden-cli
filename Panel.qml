@@ -574,7 +574,13 @@ Panel {
   property var sshPrompt: null            // the approval_required being shown
   property var sshUnlockRequest: null     // the unlock_required being shown
   property var sshUnlockRaw: null         // its original message, to promote from
-  property var sshGrants: []              // live grants, from the companion
+  // What the companion last announced, and the live view of it. The
+  // announcement is a snapshot; the view is that snapshot re-derived against
+  // a ticking clock, so a grant counts down on screen and disappears when it
+  // lapses instead of waiting for the next thing to happen.
+  property var sshGrantsAnnounced: []
+  property double sshGrantTick: 0
+  readonly property var sshGrants: Model.sshAgentGrantsAt(sshGrantsAnnounced, sshGrantTick)
   property var sshCooldown: Model.sshAgentCooldownInitial()
   // Whether the current cooldown has already been announced. Reset when it
   // lapses, so a later one is announced again but the same one is not
@@ -774,7 +780,8 @@ Panel {
       return
     }
     if (message.type === "grants_changed") {
-      root.sshGrants = Model.sshAgentGrantViews(message.grants)
+      root.sshGrantsAnnounced = Model.sshAgentGrantViews(message.grants, Date.now())
+      root.sshGrantTick = Date.now()
       return
     }
     if (message.type === "public_key") {
@@ -4923,6 +4930,16 @@ Panel {
     repeat: false
     running: root.sshAgentPhase === "starting" || root.sshAgentPhase === "handshaking"
     onTriggered: root.applySshAgentEvent({ kind: "handshakeTimeout", nowMs: Date.now() })
+  }
+
+  // Only while there is something to count down. A grant is at most fifteen
+  // minutes, so this is never a timer that runs for the life of the shell.
+  Timer {
+    id: sshGrantCountdown
+    interval: 1000
+    repeat: true
+    running: root.sshGrantsAnnounced.length > 0
+    onTriggered: root.sshGrantTick = Date.now()
   }
 
   Timer {

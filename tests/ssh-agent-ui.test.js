@@ -23,6 +23,7 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.sshAgentRevokeGrantsLine = sshAgentRevokeGrantsLine
   exports.sshAgentPromptView = sshAgentPromptView
   exports.sshAgentGrantViews = sshAgentGrantViews
+  exports.sshAgentGrantsAt = sshAgentGrantsAt
   exports.sshAgentShouldPrompt = sshAgentShouldPrompt
   exports.sshAgentCooldownInitial = sshAgentCooldownInitial
   exports.sshAgentCooldownAfter = sshAgentCooldownAfter
@@ -171,6 +172,27 @@ check("an expiring grant says so", grants[1].remainingLabel.length > 0, grants[1
 check("no grant view carries key material",
   grants.every(g => JSON.stringify(g).indexOf("PRIVATE") < 0), "leaked")
 eq("a malformed grant list yields nothing", Model.sshAgentGrantViews(null).length, 0)
+
+// A grant is announced once and then nothing is said until it changes, so the
+// remaining time has to be re-derived rather than remembered. Without this the
+// settings screen showed "1m 59s left" for the whole two minutes and then the
+// row disappeared, having never counted down.
+const announced = Model.sshAgentGrantViews(
+  [{ grantId: 9, keyName: "personal ed25519", fingerprint: "SHA256:x", pid: 48213, processPath: "/usr/bin/ssh", expiresInSec: 120 }],
+  10_000)
+eq("an announced grant records when it expires", announced[0].expiresAtMs, 130_000)
+const halfway = Model.sshAgentGrantsAt(announced, 70_000)
+eq("the remaining time follows the clock", halfway[0].remainingSec, 60)
+check("and the label follows it", /1m/.test(halfway[0].remainingLabel), halfway[0].remainingLabel)
+eq("a lapsed grant leaves the list without waiting to be told",
+  Model.sshAgentGrantsAt(announced, 130_001).length, 0)
+eq("a grant on its last second is still listed",
+  Model.sshAgentGrantsAt(announced, 129_500).length, 1)
+eq("an unstamped view survives re-derivation rather than vanishing",
+  Model.sshAgentGrantsAt([{ grantId: 9, remainingLabel: "2m left" }], 70_000).length, 1)
+eq("and so does every view before the first tick",
+  Model.sshAgentGrantsAt(announced, 0).length, 1)
+eq("a malformed set re-derives to nothing", Model.sshAgentGrantsAt(null, 1).length, 0)
 
 // -------------------------------------------------------------------------
 // Never prompt over a locked screen

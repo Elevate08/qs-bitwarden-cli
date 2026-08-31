@@ -4367,8 +4367,9 @@ function sshAgentPromptView(message, approvalWindowSec) {
 // The live grant set, as the settings screen draws it. Public metadata only:
 // the companion never sends key material here and nothing below would carry
 // it if it did.
-function sshAgentGrantViews(grants) {
+function sshAgentGrantViews(grants, nowMs) {
   if (!grants || !Array.isArray(grants)) return []
+  var now = Number(nowMs) || 0
   var out = []
   for (var i = 0; i < grants.length; i++) {
     var grant = grants[i] || {}
@@ -4381,8 +4382,50 @@ function sshAgentGrantViews(grants) {
       pid: Math.floor(Number(grant.pid)) || 0,
       processPath: boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
       processName: processNameFromPath(boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS)),
+      // When it runs out, not how long it had left when it was announced.
+      // The label below is a snapshot of one instant; this is what lets a
+      // later instant be worked out without another announcement.
+      expiresAtMs: now + remaining * 1000,
       remainingSec: remaining,
       remainingLabel: remaining > 0 ? formatDuration(remaining) + " left" : "expiring"
+    })
+  }
+  return out
+}
+
+// The announced set as it stands at a given moment.
+//
+// The companion announces a grant once and says nothing more until something
+// changes, so a view rendered straight from an announcement is frozen at the
+// number it was born with -- a two-minute grant reading "1m 59s left" for its
+// whole life, then vanishing without ever having counted down. Re-deriving
+// against a ticking clock is what makes the remaining time mean anything, and
+// it drops a grant the moment it lapses rather than waiting to be told.
+function sshAgentGrantsAt(views, nowMs) {
+  if (!views || !Array.isArray(views)) return []
+  var now = Number(nowMs) || 0
+  var out = []
+  for (var i = 0; i < views.length; i++) {
+    var view = views[i] || {}
+    // Nothing to re-derive from: an announcement that has not been stamped,
+    // or a tick that has not run yet. Show it as announced rather than drop a
+    // live grant on a technicality.
+    if (typeof view.expiresAtMs !== "number" || now <= 0) {
+      out.push(view)
+      continue
+    }
+    var remaining = Math.max(0, Math.ceil((view.expiresAtMs - now) / 1000))
+    if (remaining <= 0) continue
+    out.push({
+      grantId: view.grantId,
+      keyName: view.keyName,
+      fingerprint: view.fingerprint,
+      pid: view.pid,
+      processPath: view.processPath,
+      processName: view.processName,
+      expiresAtMs: view.expiresAtMs,
+      remainingSec: remaining,
+      remainingLabel: formatDuration(remaining) + " left"
     })
   }
   return out
