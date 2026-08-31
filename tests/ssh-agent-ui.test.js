@@ -206,6 +206,30 @@ mixed = Model.sshAgentCooldownAfter(mixed, "approved", 100)
 mixed = Model.sshAgentCooldownAfter(mixed, "denied", 200)
 eq("an approval resets the denial run", Model.sshAgentCooldownActive(mixed, 200), false)
 
+// An approval cannot end a cooldown that is already running -- the cooldown is
+// precisely what stops the prompt an approval would answer. Only an explicit
+// resume ends it early; otherwise a user who dismissed two prompts waits out
+// the full five minutes with nothing they can do about it.
+let stuck = Model.sshAgentCooldownInitial()
+stuck = Model.sshAgentCooldownAfter(stuck, "denied", 0)
+stuck = Model.sshAgentCooldownAfter(stuck, "denied", 100)
+eq("two denials leave a cooldown running", Model.sshAgentCooldownActive(stuck, 100), true)
+stuck = Model.sshAgentCooldownAfter(stuck, "resumed", 200)
+eq("an explicit resume ends it at once", Model.sshAgentCooldownActive(stuck, 200), false)
+eq("and clears the run behind it, so one later denial does not re-arm it",
+  Model.sshAgentCooldownActive(Model.sshAgentCooldownAfter(stuck, "denied", 300), 300), false)
+
+// Nothing the requesting process does may end a cooldown, or prolong one: the
+// suppressed path answers the client itself and records no outcome, so only
+// prompts a person actually saw ever feed the run.
+let unattended = Model.sshAgentCooldownInitial()
+unattended = Model.sshAgentCooldownAfter(unattended, "denied", 0)
+unattended = Model.sshAgentCooldownAfter(unattended, "denied", 100)
+eq("an unanswered request leaves the window where it was",
+  Model.sshAgentCooldownAfter(unattended, "withdrawn", 200).untilMs, unattended.untilMs)
+eq("and the cooldown lapses on its own",
+  Model.sshAgentCooldownActive(unattended, 100 + 5 * 60 * 1000), false)
+
 // A cooldown that fails signatures silently is worse than the pestering it
 // prevents: SSH just stops working for five minutes with no explanation
 // anywhere. It has to say so, and say when it lifts.
@@ -390,6 +414,15 @@ check("the cooldown is surfaced in the panel rather than failing silently",
 check("entering the cooldown is announced once, not on every refusal",
   /sshCooldownAnnounced/.test(panelSrc), "nothing announces the cooldown")
 
+check("a request the cooldown refuses does not feed the cooldown",
+  /!sshAgentMayPrompt\(\)\)\s*\{\s*sshAgentWrite\(Model\.sshAgentDenyLine\(message\.requestId\)\)\s*return/.test(panelSrc),
+  "a suppressed request records an outcome, so a busy process can hold the cooldown open")
+check("a running cooldown can be ended from the panel",
+  /function resumeSshSigning\(\)[\s\S]{0,300}?sshAgentCooldownAfter\(root\.sshCooldown, "resumed"/.test(panelSrc),
+  "nothing ends the cooldown early, so it cannot be escaped")
+check("and the control that does it sits on the banner explaining the outage",
+  /sshCooldownStatus\.active[\s\S]{0,1600}?resumeSshSigning\(\)/.test(panelSrc),
+  "the resume control is not on the cooldown banner")
 check("repeated denials enter the cooldown",
   /sshAgentCooldownAfter\(/.test(panelSrc) && /sshAgentCooldownActive\(/.test(panelSrc),
   "the cooldown is not applied")

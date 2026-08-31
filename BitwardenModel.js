@@ -4422,7 +4422,12 @@ function sshAgentCooldownInitial() {
 function sshAgentCooldownAfter(state, outcome, nowMs) {
   var current = state || sshAgentCooldownInitial()
   var now = Number(nowMs) || 0
-  if (outcome === "approved") return { refusals: 0, untilMs: 0 }
+  // Approving clears the run because the user is engaging. So does resuming,
+  // and that one matters more than it looks: a running cooldown suppresses the
+  // prompts an approval would have to come from, so an approval can never end
+  // one that has already started. Without an explicit resume the only exit is
+  // waiting the full window out.
+  if (outcome === "approved" || outcome === "resumed") return { refusals: 0, untilMs: 0 }
   if (outcome !== "denied" && outcome !== "timeout") {
     return { refusals: current.refusals, untilMs: current.untilMs }
   }

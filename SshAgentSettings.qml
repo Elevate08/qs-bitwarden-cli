@@ -70,15 +70,6 @@ Column {
     }
   }
 
-  // Why SSH suddenly stopped working. Without this the cooldown is a
-  // silent multi-minute outage with nothing connecting it to the
-  // prompts that were left unanswered.
-  SshCaption {
-    visible: panel.sshCooldownStatus.active
-    text: panel.sshCooldownStatus.message
-    color: panel.urgent
-  }
-
   // Which helper is running. A developer with a local build and a
   // user on a release see the same panel otherwise, and confusing
   // the two wastes an afternoon.

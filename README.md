@@ -189,7 +189,7 @@ Every signature asks first. The prompt names the key, its `SHA256:` fingerprint,
 
 Live grants appear under **ACTIVE APPROVALS** with the program and time remaining, revocable one at a time or all at once, and are dropped on lock, logout, and helper exit. They are never written to disk.
 
-Two unanswered or refused prompts in a row start a five-minute cooldown during which signing requests are refused without raising the panel; approving anything clears it. The status section says a cooldown is running and when it ends -- unattended requests are exactly the case where a silent multi-minute SSH outage would be impossible to connect back to its cause.
+Two unanswered or refused prompts in a row start a five-minute cooldown during which signing requests are refused without raising the panel. A banner on every screen says so and counts down, because a silent multi-minute SSH outage is impossible to connect back to its cause -- and unattended requests, the case the cooldown exists for, are exactly the ones you were not watching. Approving cannot end a cooldown that is already running: it is the prompts an approval would answer that the cooldown is suppressing. **Resume Signing Now** on that banner is the way out, or wait the five minutes. A process that keeps asking neither shortens the window nor extends it; the refusals it collects are answered without a prompt and never counted.
 
 #### While the vault is locked
 

@@ -613,6 +613,16 @@ Panel {
     }
   }
 
+  // The only way out of a running cooldown other than waiting it out. It has
+  // to be explicit: the cooldown suppresses the prompts an approval would
+  // answer, so nothing the requesting process does can end it, and nothing it
+  // does should. A person pressing this is the signal that the requests are
+  // wanted after all.
+  function resumeSshSigning() {
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "resumed", Date.now())
+    noteSshCooldown()
+  }
+
   function sshAgentMayPrompt() {
     // An unknown screen state counts as locked. The poll runs every few
     // seconds while the agent is serving, so a reading older than this means
@@ -6248,6 +6258,62 @@ Panel {
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.Wrap
               width: parent.width - Style.space(24)
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SSH Signing Cooldown Banner
+        // -------------------------------------------------------------------
+        // A five-minute signing outage is not noticed on the SSH agent
+        // settings screen: the requests it refuses arrive while the panel is
+        // showing something else, or while the vault is locked and no prompt
+        // can be raised at all. So the explanation lives on every screen,
+        // and carries the only control that ends the cooldown early -- an
+        // approval cannot, because there is no prompt left to approve.
+        BorderSurface {
+          visible: root.sshCooldownStatus.active
+          width: parent.width
+          implicitHeight: sshCooldownBannerBody.implicitHeight + Style.space(12)
+          color: Util.alpha(Color.urgent, 0.15)
+          radius: Style.cornerRadius
+          borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+          Row {
+            anchors.centerIn: parent
+            width: parent.width - Style.space(16)
+            spacing: Style.space(8)
+            Text {
+              textFormat: Text.PlainText
+              text: "󰀪"
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+            Column {
+              id: sshCooldownBannerBody
+              width: parent.width - Style.space(24)
+              spacing: Style.space(8)
+
+              Text {
+                textFormat: Text.PlainText
+                id: sshCooldownBannerText
+                text: root.sshCooldownStatus.message
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.Wrap
+                width: parent.width
+              }
+
+              Button {
+                text: "Resume Signing Now"
+                iconText: "󰐊"
+                tooltipText: "End the cooldown; the next signing request asks again"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.resumeSshSigning()
+              }
             }
           }
         }
