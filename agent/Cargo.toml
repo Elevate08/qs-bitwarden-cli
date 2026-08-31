@@ -18,12 +18,12 @@ ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "e
 # Wire primitives for the allowlisted agent frame decoder (Task 5). Same
 # version ssh-key uses, declared directly because this crate encodes and
 # decodes frames itself rather than through an agent framework.
-ssh-encoding = { version = "0.2", default-features = false, features = ["alloc"] }
+ssh-encoding = { version = "0.3", default-features = false, features = ["alloc"] }
 # Declared only to turn ed25519-dalek's zeroize-on-drop impl on for the whole
 # graph. ssh-key depends on dalek with default features off and does not ask
 # for `zeroize`, so without this line the transient SigningKey built for each
 # signature leaves its 32 secret bytes in freed memory.
-ed25519-dalek = { version = "2.2", default-features = false, features = ["zeroize"] }
+ed25519-dalek = { version = "3.0", default-features = false, features = ["zeroize"] }
 # Same reasoning in reverse: rsa zeroizes unconditionally, and pinning it here
 # keeps the version that does so under this crate's own review.
 rsa = { version = "0.9.10", default-features = false, features = ["sha2"] }
@@ -37,8 +37,8 @@ rustix = { version = "1.1", default-features = false, features = ["std", "fs", "
 # The NDJSON control channel the panel speaks on stdin/stdout.
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-signature = { version = "2", default-features = false, features = ["alloc"] }
-sha2 = { version = "0.10", default-features = false }
+signature = { version = "3", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11", default-features = false }
 
 [dev-dependencies]
 # Test-only key generation, so no private key material is committed.
