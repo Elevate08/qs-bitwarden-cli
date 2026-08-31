@@ -456,6 +456,15 @@ The following settings are read from the plugin's own entry in the
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let a signing request against a locked vault open the unlock prompt instead of being refused. Off by default: `ssh` asks the agent for identities on every connection, so this opens the panel on the first `ssh` after every login. |
 | `sshAgentApprovalWindowSec` | `number` | `120` | How long one approval keeps covering further signatures from the same program with the same key. Range `0`-`900`; `0` asks every time. Held in memory only and dropped on lock, logout or exit. |
 
+One further key, `twoFactorMethods`, is written to the same entry but is not a
+setting you configure. It records which two-step method last logged each
+account in, keyed by login address -- `{"you@example.com": 0}`, where `0` is
+authenticator, `1` email and `3` YubiKey -- so an account with more than one
+method is asked only once, and two vaults on one machine each keep their own
+answer. **Change method** on the code screen asks again and rewrites it. Entries
+are capped at ten accounts, and anything unreadable is treated as not
+remembered, which costs that account one extra prompt.
+
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
 
 ---

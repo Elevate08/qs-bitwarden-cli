@@ -290,8 +290,17 @@ check("an approval_required message raises the prompt",
 check("the panel is opened before the approval screen is claimed",
   /function showSshApproval\(message\)[\s\S]{0,900}?root\.open\(\)[\s\S]{0,200}?currentScreen = "sshApproval"/.test(panelSrc),
   "the screen is claimed before opening, so opening resets it")
+// Pinned on the ordering rather than on a character distance: what matters is
+// that a live prompt claims the screen and returns before the branch that
+// would send an unlocked panel to the item list, not how much housekeeping
+// happens above it.
+const openedBody = panelSrc.slice(panelSrc.indexOf("function onPanelOpened()"),
+  panelSrc.indexOf("function onPanelClosed") > 0
+    ? panelSrc.indexOf("function onPanelClosed")
+    : panelSrc.indexOf("function onPanelOpened()") + 2000)
 check("opening the panel does not discard a live request",
-  /function onPanelOpened\(\)[\s\S]{0,400}?if \(sshPrompt\)[\s\S]{0,120}?currentScreen = "sshApproval"/.test(panelSrc),
+  /if \(sshPrompt\)[\s\S]{0,160}?currentScreen = "sshApproval"[\s\S]{0,40}?return/.test(openedBody)
+    && openedBody.indexOf("sshPrompt") < openedBody.indexOf('status === "unlocked"'),
   "onPanelOpened resets away from a live prompt")
 check("a withdrawn prompt counts toward the cooldown",
   /message\.reason !== "released"[\s\S]{0,200}?sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(panelSrc),

@@ -76,6 +76,57 @@ Panel {
   property string loginClientSecret: ""
   property bool show2faField: false
   property bool showServerField: false
+  // Whether the login attempt now running carries --code. It is the only way
+  // to tell a rejected two-step code from a new-device-verification challenge;
+  // see loginNeedsDeviceVerification() in BitwardenModel.js.
+  property bool loginAttemptHadCode: false
+  // Set once Bitwarden has asked to verify this device with an emailed OTP.
+  // bw can only answer that interactively, so the panel stops asking for a
+  // code it cannot use and points at the terminal login instead.
+  property bool loginDeviceVerification: false
+
+  // Which two-step method this login tells bw to use, or -1 for "let bw
+  // decide", which is right whenever the account has exactly one. See
+  // TWO_FACTOR_METHODS in BitwardenModel.js.
+  property int login2faMethod: rememberedTwoFactorMethod
+  // Whether that method came from the user picking it in this login rather
+  // than from the remembered setting. A remembered method can be stale -- it
+  // is not scoped to an account -- so an unconfirmed one is dropped and
+  // retried without, where a confirmed one is reported as not configured.
+  property bool login2faMethodConfirmed: false
+  property bool show2faMethodPicker: false
+  // New-device verification collects its code in its own stage, because it is
+  // answered on a different path from a two-step code and must not be mistaken
+  // for one. See deviceVerificationLoginCommand() in BitwardenModel.js.
+  property string loginDeviceCode: ""
+  property bool showDeviceCodeField: false
+  // Set while the one login that runs with bw's prompts enabled is in flight,
+  // so both its environment and its result are read differently.
+  property bool deviceVerificationAttempt: false
+  property bool deviceVerificationPending: false
+  // When the login reached a stage that is waiting on a second factor, as
+  // epoch ms, or 0 if it is not. A closed panel keeps that login alive for
+  // SECOND_FACTOR_WINDOW_MS, because an emailed code cannot be read without
+  // leaving the panel. See secondFactorWindowOpen() in BitwardenModel.js.
+  property double secondFactorStartedAt: 0
+  // Whether this login has already spent its one automatic retry at handing
+  // the password to bw. See onAuthPasswordWriterExited().
+  property bool loginPasswordRetryUsed: false
+  // The email login is four stages deep now: credentials, the method question
+  // when bw asks it, the two-step code, and new-device verification. Only one
+  // is ever on screen.
+  readonly property bool loginCredentialsStage:
+    !show2faField && !show2faMethodPicker && !showDeviceCodeField
+  readonly property string login2faMethodLabel: Model.twoFactorMethodLabel(login2faMethod)
+  // The method the last attempt actually sent, so its answer can be read
+  // against it.
+  property int loginAttemptMethod: -1
+  // Keyed by login address, so two vaults on one machine each keep their own
+  // answer. Tracks loginEmail as it is typed, which is what makes the method
+  // apply the moment the address is complete.
+  readonly property var twoFactorMethodStore: setting("twoFactorMethods", null)
+  readonly property int rememberedTwoFactorMethod:
+    Model.rememberedTwoFactorMethodFor(twoFactorMethodStore, loginEmail)
 
   // When the panel last launched a terminal login, as epoch ms, or 0 if it
   // never did. A session key left in the runtime directory is only adopted in
@@ -214,6 +265,9 @@ Panel {
   property bool metadataForceRefresh: false
   property bool statusRefreshAfterItems: false
   property bool statusCheckAuthoritative: true
+  // Whether this unlocked session has already tried to repair an unsynced
+  // vault. See the lastSync check in onStatusFinished().
+  property bool initialSyncAttempted: false
   property bool syncReloadPending: false
   property string errorMessage: ""
   property string flashMessage: ""
@@ -1059,7 +1113,8 @@ Panel {
     totpFollowupActive = false
     isUnlocking = false
     cancelAuthPrewarm()
-    abandonAuthSecrets()
+    if (pendingSecondFactorLogin()) suspendPendingLogin()
+    else abandonAuthSecrets()
     // Closing a setup form is cancellation even if its keyring writer has
     // already started; its completion handler will clear a stale write.
     abandonPinSetup()
@@ -1144,18 +1199,51 @@ Panel {
     rebuildFilter()
   }
 
+  // Every field on the login screen, and every field on the unlock screen.
+  // focusAppropriateField() consults these before it moves the cursor.
+  function loginFieldHasFocus() {
+    return emailField.activeFocus || loginPassField.activeFocus
+      || code2faField.activeFocus || deviceCodeField.activeFocus
+      || serverUrlField.activeFocus
+      || apiClientIdField.activeFocus || apiClientSecretField.activeFocus
+      || apiMasterField.activeFocus
+  }
+
+  function unlockFieldHasFocus() {
+    return passField.activeFocus || pinField.activeFocus
+  }
+
+  // Put the cursor somewhere sensible when a screen appears -- not hold it
+  // there. Those are the same thing right up until something announces a
+  // screen the user is already typing on, and something does: a logout sets
+  // the status itself and then runs `bw status` to confirm it, which takes a
+  // few seconds and arrives to say "unauthenticated" in the middle of the
+  // master password being typed. Re-focusing on that news moved the cursor
+  // from the password field to the email field mid-word, so the rest of the
+  // password went into an unmasked field that was about to be submitted as an
+  // email address.
+  //
+  // So a screen that already holds the cursor keeps it. Moving between screens
+  // still focuses, because the field holding focus then belongs to the screen
+  // being left rather than the one arriving.
   function focusAppropriateField() {
     Qt.callLater(function() {
       // Setup has no field to type into, and the ones this would reach for are
       // on screens that are not showing.
       if (currentScreen === "setup") return
       if (status === "unlocked" && currentScreen === "main") {
-        searchField.forceActiveFocus()
+        if (!searchField.activeFocus) searchField.forceActiveFocus()
       } else if (status === "locked" || status === "checking") {
+        if (unlockFieldHasFocus()) return
         if (pinReady) pinField.forceActiveFocus()
         else passField.forceActiveFocus()
       } else if (status === "unauthenticated") {
-        emailField.forceActiveFocus()
+        if (loginFieldHasFocus()) return
+        // A login resumed on a challenge opens on the field that is waiting,
+        // not back at the top of the form.
+        if (showDeviceCodeField) deviceCodeField.forceActiveFocus()
+        else if (show2faField) code2faField.forceActiveFocus()
+        else if (!show2faMethodPicker) emailField.forceActiveFocus()
       }
     })
   }
@@ -1165,11 +1253,20 @@ Panel {
     else {
       cancelFingerprintUnlock()
       cancelAuthPrewarm()
-      abandonAuthSecrets()
+      if (pendingSecondFactorLogin()) suspendPendingLogin()
+      else abandonAuthSecrets()
+      // A closed panel must not keep a field focused, or the next open would
+      // count as "already typing here" and skip the field the screen opens on.
+      keyCatcher.forceActiveFocus()
     }
   }
 
   function onPanelOpened() {
+    // A pending login that outlived its window is gone, not resumed.
+    if (secondFactorStartedAt > 0
+        && !Model.secondFactorWindowOpen(secondFactorStartedAt, Date.now())) {
+      abandonAuthSecrets()
+    }
     focusAppropriateField()
     detectActiveWindowContext()
     refreshFingerprintAvailability()
@@ -1296,8 +1393,22 @@ Panel {
     statusProc.running = true
   }
 
+  // An authentication the user has actually submitted, still running.
+  function authAttemptInFlight() {
+    return loginSubmitted || unlockSubmitted
+  }
+
   function onStatusFinished(rawJson) {
     if (epochOperationIsStale("status")) return
+    // A `bw status` answers about the world as it was when it started, and it
+    // takes seconds. Landing mid-login, that answer is "unauthenticated" --
+    // truthfully, for the moment it was asked -- and acting on it cancelled the
+    // login in flight: SIGTERM to a process the user had just submitted, the
+    // button dropping back out of "Verifying...", and nothing shown at all. The
+    // attempt is the newer news; it will set the state itself when it lands.
+    if (authAttemptInFlight()) {
+      return
+    }
     isLoading = false
     var authoritative = statusCheckAuthoritative
     statusCheckAuthoritative = true
@@ -1334,6 +1445,18 @@ Panel {
       ensureItemsFresh()
       resetAutoLockTimer()
       focusAppropriateField()
+      // A vault that has never synced holds no ciphers, so the item list is
+      // empty and correct -- which looks exactly like a vault with nothing in
+      // it. `bw login` is supposed to have synced by now, and reports success
+      // whether or not it managed to: it calls fullSync() without
+      // allowThrowOnError, so a sync that throws is swallowed, lastSync is
+      // never set, and the session it prints is a working session onto an
+      // empty local vault. That is not a state to render as an empty vault,
+      // so repair it once and reload.
+      if (!st.lastSync && session && !initialSyncAttempted && !isSyncing) {
+        initialSyncAttempted = true
+        syncVault()
+      }
     } else if (st.locked) {
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
@@ -1363,7 +1486,8 @@ Panel {
   function emailLoginSignature() {
     return String(loginEmail || "").trim() + "\n"
       + String(loginServerUrl || "").trim() + "\n"
-      + (String(login2faCode || "").trim() ? "2fa" : "plain")
+      + (String(login2faCode || "").trim() ? "2fa" : "plain") + "\n"
+      + String(login2faMethod)
   }
 
   function invalidateEmailLoginPrewarm() {
@@ -1378,6 +1502,147 @@ Panel {
   function resetEmailLoginSecondFactor() {
     show2faField = false
     login2faCode = ""
+    loginDeviceVerification = false
+    show2faMethodPicker = false
+    login2faMethodConfirmed = false
+    showDeviceCodeField = false
+    loginDeviceCode = ""
+    // Back to the remembered method, not to nothing: a fresh attempt should
+    // start from what worked last time.
+    login2faMethod = rememberedTwoFactorMethod
+    syncLoginFieldsToState()
+  }
+
+  // The user answering bw's provider question. The pick is not trusted yet --
+  // it is sent on its own first, without a code, which makes bw either mail
+  // the code (Email), accept it silently (Authenticator, YubiKey), or say the
+  // account does not have it. So a wrong pick costs nothing typed.
+  function chooseTwoFactorMethod(method) {
+    if (!Model.isTwoFactorMethod(method)) return
+    errorMessage = ""
+    login2faMethod = method
+    login2faMethodConfirmed = true
+    show2faMethodPicker = false
+    show2faField = false
+    login2faCode = ""
+    submitLogin()
+  }
+
+  // Answering bw's new-device prompt, which is the only challenge it will not
+  // take from a flag. The code the user just typed goes to the command's
+  // environment, the password down the usual FIFO, and bw runs with its
+  // prompts enabled for this one call.
+  function submitDeviceVerification() {
+    if (loginSubmitted) return
+    var code = String(loginDeviceCode || "").trim()
+    if (!code) {
+      errorMessage = "Enter the code Bitwarden emailed you."
+      Qt.callLater(function() { deviceCodeField.forceActiveFocus() })
+      return
+    }
+    if (!String(loginPassword || "")) {
+      errorMessage = "Your master password is needed again for this step."
+      resetEmailLoginSecondFactor()
+      Qt.callLater(function() { loginPassField.forceActiveFocus() })
+      return
+    }
+    errorMessage = ""
+    isLoading = true
+    // A prewarmed process was started for the ordinary login and cannot answer
+    // this; stop it and start the interactive one when it is gone.
+    if (loginProc.running) {
+      deviceVerificationPending = true
+      loginSubmitAfterPrewarmStop = false
+      loginPrepareAfterPrewarmStop = false
+      loginProc.running = false
+      return
+    }
+    startDeviceVerificationLogin()
+  }
+
+  function startDeviceVerificationLogin() {
+    deviceVerificationPending = false
+    loginPrewarmSignature = ""
+    loginAttemptHadCode = false
+    loginAttemptMethod = login2faMethod
+    // Set before the process starts, because both the environment binding and
+    // the exit handler read it.
+    deviceVerificationAttempt = true
+    loginProc.command = Model.deviceVerificationLoginCommand(
+      String(loginEmail || "").trim(), String(loginServerUrl || "").trim(), login2faMethod)
+    loginProc.running = true
+    loginSubmitted = true
+    writeAuthPassword("login", loginPassword)
+  }
+
+  // A login stopped on a challenge it cannot answer without leaving the panel.
+  // Only these survive a close, only while the window is open, and only while
+  // there is still a password to submit with the answer.
+  function pendingSecondFactorLogin() {
+    if (status !== "unauthenticated" || loginMethod !== "email") return false
+    if (!show2faField && !showDeviceCodeField && !show2faMethodPicker) return false
+    if (!String(loginPassword || "")) return false
+    return Model.secondFactorWindowOpen(secondFactorStartedAt, Date.now())
+  }
+
+  // Typing into a TextField assigns to its own `text`, which breaks the binding
+  // back to the property behind it. After that the two are independent, and
+  // clearing the property alone leaves the field showing what was typed --
+  // while every submit reads the property. That is exactly how a login came to
+  // be sent with no code at all while the user was looking at a filled-in
+  // field: bw answered "Code is required.", the panel reported the code as
+  // rejected, and retyping it repaired the property so the next click worked.
+  //
+  // So a field is never cleared by clearing what is behind it. These go
+  // together, always.
+  function syncLoginFieldsToState() {
+    code2faField.text = login2faCode
+    deviceCodeField.text = loginDeviceCode
+    loginPassField.text = loginPassword
+    apiMasterField.text = loginPassword
+    apiClientIdField.text = loginClientId
+    apiClientSecretField.text = loginClientSecret
+  }
+
+  // Closing on a challenge keeps the stage and the password, and drops the
+  // code -- whatever was half-typed before going to look it up is not the code
+  // that is about to be read.
+  function suspendPendingLogin() {
+    login2faCode = ""
+    loginDeviceCode = ""
+    loginSubmitted = false
+    isLoading = false
+    syncLoginFieldsToState()
+  }
+
+  // What a stopped login process owes whoever stopped it. `mayScrub` is false
+  // when the run that just ended was itself the scrub, so one cannot schedule
+  // another.
+  function resumeDeferredLogin(mayScrub) {
+    if (deviceVerificationPending) {
+      deviceVerificationPending = false
+      Qt.callLater(startDeviceVerificationLogin)
+    } else if (loginSubmitAfterPrewarmStop) {
+      loginSubmitAfterPrewarmStop = false
+      Qt.callLater(submitLogin)
+    } else if (loginPrepareAfterPrewarmStop) {
+      loginPrepareAfterPrewarmStop = false
+      Qt.callLater(prepareEmailLogin)
+    } else if (mayScrub) {
+      clearProcessCollectorSoon(loginProc)
+    }
+  }
+
+  function markSecondFactorStage() {
+    secondFactorStartedAt = Date.now()
+  }
+
+  function reopenTwoFactorMethodPicker() {
+    errorMessage = ""
+    show2faField = false
+    login2faCode = ""
+    show2faMethodPicker = true
+    markSecondFactorStage()
   }
 
   function emailLoginButtonText() {
@@ -1407,8 +1672,11 @@ Panel {
     loginPrepareAfterPrewarmStop = false
     loginPrewarmSignature = signature
     loginSubmitted = false
+    deviceVerificationAttempt = false
+    loginAttemptHadCode = String(login2faCode || "").trim().length > 0
+    loginAttemptMethod = login2faMethod
     loginProc.command = Model.emailLoginPrewarmCommand(
-      email, String(login2faCode || "").trim().length > 0, String(loginServerUrl || "").trim())
+      email, loginAttemptHadCode, String(loginServerUrl || "").trim(), login2faMethod)
     loginProc.running = true
   }
 
@@ -1439,12 +1707,25 @@ Panel {
     loginClientSecret = ""
     login2faCode = ""
     show2faField = false
+    loginDeviceVerification = false
+    loginAttemptHadCode = false
+    show2faMethodPicker = false
+    login2faMethodConfirmed = false
+    login2faMethod = rememberedTwoFactorMethod
+    loginAttemptMethod = -1
+    showDeviceCodeField = false
+    loginDeviceCode = ""
+    deviceVerificationAttempt = false
+    deviceVerificationPending = false
+    secondFactorStartedAt = 0
+    loginPasswordRetryUsed = false
     pendingUnlockPassword = ""
     pendingUnlockFrom = ""
     authPasswordWriteValue = ""
     pinEntry = ""
     pinUnlockSubmitted = false
     fingerprintAuthorized = false
+    syncLoginFieldsToState()
   }
 
   function writeAuthPassword(channel, password) {
@@ -1458,7 +1739,11 @@ Panel {
     var target = authPasswordWriteTarget
     authPasswordWriteTarget = ""
     authPasswordWriteValue = ""
-    if (exitCode === 0 || !target) return
+    if (exitCode === 0) {
+      loginPasswordRetryUsed = false
+      return
+    }
+    if (!target) return
 
     if (target === "unlock") {
       unlockSubmitted = false
@@ -1470,6 +1755,18 @@ Panel {
       loginSubmitted = false
       isLoading = false
       if (loginProc.running) loginProc.running = false
+      // The writer polls for bw's FIFO and gives up if bw has not opened it in
+      // time, which a cold start after the panel has been closed can outrun.
+      // Unlock has always re-armed itself here; login left the button for the
+      // user to press again, which is what having to click Verify twice was.
+      // Once, so a genuinely broken delivery still reports rather than looping.
+      if (!loginPasswordRetryUsed) {
+        loginPasswordRetryUsed = true
+        var retryDevice = deviceVerificationAttempt
+        deviceVerificationAttempt = false
+        Qt.callLater(retryDevice ? submitDeviceVerification : submitLogin)
+        return
+      }
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
     }
   }
@@ -1502,6 +1799,10 @@ Panel {
         errorMessage = "Master password is required"
         return
       }
+      if (show2faMethodPicker) {
+        errorMessage = "Choose a two-step method to continue."
+        return
+      }
       if (show2faField && !String(login2faCode || "").trim()) {
         errorMessage = "Two-step verification code is required"
         Qt.callLater(function() { code2faField.forceActiveFocus() })
@@ -1509,6 +1810,7 @@ Panel {
       }
 
       isLoading = true
+      deviceVerificationAttempt = false
       var signature = emailLoginSignature()
       if (loginProc.running && loginPrewarmSignature !== signature) {
         loginPrepareAfterPrewarmStop = false
@@ -1518,8 +1820,10 @@ Panel {
       }
       if (!loginProc.running) {
         loginPrewarmSignature = signature
+        loginAttemptHadCode = login2faCode.trim().length > 0
+        loginAttemptMethod = login2faMethod
         loginProc.command = Model.emailLoginPrewarmCommand(
-          email, login2faCode.trim().length > 0, loginServerUrl.trim())
+          email, loginAttemptHadCode, loginServerUrl.trim(), login2faMethod)
         loginProc.running = true
       }
       loginSubmitted = true
@@ -1552,9 +1856,17 @@ Panel {
       // Client ID, client secret and password all travel in the environment.
       loginSubmitted = true
       loginPrewarmSignature = ""
+      loginAttemptHadCode = false
+      loginAttemptMethod = -1
       loginProc.command = Model.apiKeyLoginCommand(loginServerUrl.trim())
       loginProc.running = true
     }
+  }
+
+  // Every exit from onLoginOutput says which branch it took. Read with:
+  //   quickshell log -f | grep qs-bitwarden
+  function logLogin(branch, out, err, exitCode) {
+    console.log("qs-bitwarden login " + Model.loginDiagnostic(out, err, exitCode, branch))
   }
 
   function onLoginOutput(stdoutText, stderrText, exitCode) {
@@ -1562,10 +1874,120 @@ Panel {
     loginPrewarmSignature = ""
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
+    var wasDeviceAttempt = deviceVerificationAttempt
+    deviceVerificationAttempt = false
+
+    // The interactive login answers for itself. Its output is a prompt session
+    // rather than one of bw's one-line refusals, so none of the detectors
+    // below should be allowed to read it.
+    if (wasDeviceAttempt && !(exitCode === 0 && out.length > 10)) {
+      var detail = Model.sanitizeInteractiveStderr(err, loginDeviceCode)
+      loginDeviceCode = ""
+      loginDeviceVerification = true
+      // 124 is `timeout`; the prompt error is inquirer finding nothing left to
+      // read. Both mean bw wanted something this login could not give it, and
+      // a terminal is the only thing that can.
+      if (exitCode === 124 || Model.loginPromptRanOutOfInput(out, err)) {
+        showDeviceCodeField = false
+        logLogin("device-unanswerable", out, err, exitCode)
+        errorMessage = "This login asked for something the panel could not answer. "
+          + "Finish it in a terminal instead."
+        return
+      }
+      logLogin("device-code-rejected", out, err, exitCode)
+      showDeviceCodeField = true
+      markSecondFactorStage()
+      errorMessage = detail
+        ? "Device verification failed: " + detail
+        : "That verification code was not accepted. Use the newest email and try again."
+      Qt.callLater(function() { deviceCodeField.forceActiveFocus() })
+      return
+    }
+
+    // Checked before the second-factor branch, which matches the same sentence.
+    // A code went out and bw still says a code is required, so this is the
+    // new-device challenge -- asking for the code again would loop forever on
+    // one bw cannot be given. The terminal login can answer it.
+    if (Model.loginNeedsDeviceVerification(out, err, loginAttemptHadCode)) {
+      resetEmailLoginSecondFactor()
+      loginDeviceVerification = true
+      showDeviceCodeField = true
+      markSecondFactorStage()
+      errorMessage = "Bitwarden needs to verify this device. Enter the code it emailed you."
+      logLogin("device-verification", out, err, exitCode)
+      Qt.callLater(function() { deviceCodeField.forceActiveFocus() })
+      return
+    }
+
+    // No --method can answer this one and no terminal helps: the account's
+    // two-step methods are ones the CLI cannot perform at all.
+    if (Model.loginHasNoUsableProvider(out, err)) {
+      resetEmailLoginSecondFactor()
+      logLogin("no-usable-provider", out, err, exitCode)
+      errorMessage = "This account's two-step method is one the Bitwarden CLI cannot use, "
+        + "such as a passkey or Duo. Log in with an API key instead."
+      return
+    }
+
+    // bw asking which two-step method to use. Answering it by guessing is what
+    // costs a real failed attempt, so the panel puts the question to the user.
+    if (Model.loginNeedsMethodChoice(out, err)) {
+      // A method that was only remembered, never confirmed against this
+      // account, is the likeliest thing to be wrong here -- shell.json holds
+      // one method for whichever account logged in last. Drop it and let the
+      // untargeted attempt say what this account actually needs. The method
+      // only ever goes from set to unset here, so this cannot loop.
+      if (Model.isTwoFactorMethod(loginAttemptMethod) && !login2faMethodConfirmed) {
+        forgetTwoFactorMethod()
+        login2faMethod = -1
+        loginAttemptMethod = -1
+        logLogin("method-stale-retry", out, err, exitCode)
+        Qt.callLater(submitLogin)
+        return
+      }
+      var rejectedMethod = login2faMethodConfirmed
+        ? Model.twoFactorMethodLabel(loginAttemptMethod) : ""
+      show2faField = false
+      login2faCode = ""
+      login2faMethod = -1
+      login2faMethodConfirmed = false
+      show2faMethodPicker = true
+      markSecondFactorStage()
+      errorMessage = rejectedMethod
+        ? "Bitwarden does not have " + rejectedMethod + " set up for this account. "
+          + "Choose another method."
+        : "This account has more than one two-step method. Choose the one you use."
+        logLogin("method-choice", out, err, exitCode)
+      return
+    }
 
     if (Model.loginNeedsSecondFactor(out, err)) {
+      // A code must never be sent without the method it belongs to. bw only
+      // puts the token on the wire when a provider came with it, so without
+      // --method the first request is a bare password grant -- and for an
+      // email provider the server answers that by issuing a fresh code,
+      // invalidating the one the user is about to type. Confirmed against
+      // bw 2026.2.0: the same command with --method succeeds and without it
+      // returns "Two-step token is invalid."
+      //
+      // The method cannot be inferred, so it is asked for once per account
+      // before any code is collected. An authenticator would survive being
+      // asked in the wrong order; an emailed code would not.
+      if (!Model.isTwoFactorMethod(login2faMethod)) {
+        show2faField = false
+        login2faCode = ""
+        show2faMethodPicker = true
+        markSecondFactorStage()
+        syncLoginFieldsToState()
+        errorMessage = "Two-step verification is required. Choose the method this account uses."
+        logLogin("second-factor-needs-method", out, err, exitCode)
+        return
+      }
       var secondFactorWasVisible = show2faField
+      show2faMethodPicker = false
       show2faField = true
+      markSecondFactorStage()
+      logLogin("second-factor", out, err, exitCode)
       errorMessage = secondFactorWasVisible
         ? "That two-step verification code was not accepted. Please try again."
         : "Two-step verification is required. Enter your code to continue."
@@ -1574,18 +1996,29 @@ Panel {
     }
 
     if (exitCode === 0 && out.length > 10) {
+      rememberTwoFactorMethod(login2faMethod)
       loginPassword = ""
       login2faCode = ""
+      logLogin("success", out, err, exitCode)
       onUnlockSuccess(out)
       return
     }
 
     if (err) {
+      logLogin("bw-error", out, err, exitCode)
       errorMessage = err
     } else if (exitCode !== 0) {
+      logLogin("failed-no-stderr", out, err, exitCode)
       errorMessage = "Login failed. Please check your credentials."
     } else {
-      unlockVaultWithPassword(loginPassword)
+      // bw exited cleanly and said nothing at all. Handing that to the unlock
+      // path was silent by construction: prepareUnlock() refuses it because
+      // the vault is not locked, so the password went to a FIFO nobody had
+      // created and failed two seconds later, after the next click had already
+      // cleared the message. Say what happened instead.
+      logLogin("clean-exit-no-session", out, err, exitCode)
+      errorMessage = "Bitwarden reported no error but returned no session. "
+        + "Please try again, or use the terminal login."
     }
   }
 
@@ -1832,6 +2265,15 @@ Panel {
                      String(loginClientId || "").trim(),
                      String(loginClientSecret || "").trim(),
                      String(login2faCode || "").trim())
+    }
+    // The one login allowed to prompt. BW_NOINTERACTION is left out rather
+    // than set to anything, since bw tests it against the literal "true", and
+    // the code goes in for the command's own printf to read -- authEnv() is
+    // not used here precisely because it would put the flag back.
+    if (deviceVerificationAttempt) {
+      var deviceEnv = bwEnv()
+      deviceEnv[Model.deviceCodeEnvVar()] = String(loginDeviceCode || "").trim()
+      return deviceEnv
     }
     // Email/password login reads its password from the FIFO writer. Keeping it
     // out of the long-lived prewarmed process also keeps partial typing out of
@@ -2528,6 +2970,27 @@ Panel {
     settingsFlashTimer.restart()
   }
 
+  // The remembered two-step method is not a preference anybody set, so it is
+  // written without the settings screen's "Saved" flash -- it is a note the
+  // login leaves for the next one, and it has no row to flash next to.
+  function writeSettingQuietly(key, value, type) {
+    settingWriteProc.command = Model.settingWriteCommand(key, value, type)
+    settingWriteProc.running = true
+  }
+
+  function rememberTwoFactorMethod(method) {
+    if (!Model.isTwoFactorMethod(method)) return
+    if (method === rememberedTwoFactorMethod) return
+    var next = Model.rememberTwoFactorMethodIn(twoFactorMethodStore, loginEmail, method)
+    if (next) writeSettingQuietly("twoFactorMethods", next, "json")
+  }
+
+  function forgetTwoFactorMethod() {
+    if (rememberedTwoFactorMethod < 0) return
+    var next = Model.forgetTwoFactorMethodIn(twoFactorMethodStore, loginEmail)
+    if (next) writeSettingQuietly("twoFactorMethods", next, "json")
+  }
+
   // Read back through the same properties the plugin actually runs on, so the
   // settings screen can never show a different value than the one in effect.
   // (setting() alone would miss the manifest defaults for unset keys.)
@@ -2786,6 +3249,20 @@ Panel {
     loginClientSecret = ""
     login2faCode = ""
     show2faField = false
+    loginDeviceVerification = false
+    loginAttemptHadCode = false
+    show2faMethodPicker = false
+    login2faMethodConfirmed = false
+    login2faMethod = rememberedTwoFactorMethod
+    loginAttemptMethod = -1
+    showDeviceCodeField = false
+    loginDeviceCode = ""
+    deviceVerificationAttempt = false
+    deviceVerificationPending = false
+    secondFactorStartedAt = 0
+    loginPasswordRetryUsed = false
+    initialSyncAttempted = false
+    syncLoginFieldsToState()
     isUnlocking = false
     unlockSubmitted = false
     if (!s) {
@@ -2861,6 +3338,7 @@ Panel {
   // transition fail closed without pretending that a remote/local CLI error
   // was a successful Bitwarden lock command.
   function dropVaultState() {
+    initialSyncAttempted = false
     pinUnlockSubmitted = false
     cancelFingerprintUnlock()
     cancelAttachmentDownloads()
@@ -2946,8 +3424,21 @@ Panel {
     loginPassword = ""
     login2faCode = ""
     show2faField = false
+    loginDeviceVerification = false
+    loginAttemptHadCode = false
+    show2faMethodPicker = false
+    login2faMethodConfirmed = false
+    login2faMethod = rememberedTwoFactorMethod
+    loginAttemptMethod = -1
+    showDeviceCodeField = false
+    loginDeviceCode = ""
+    deviceVerificationAttempt = false
+    deviceVerificationPending = false
+    secondFactorStartedAt = 0
+    loginPasswordRetryUsed = false
     loginClientId = ""
     loginClientSecret = ""
+    syncLoginFieldsToState()
     pinEntry = ""
     pinSetupPin = ""
     pinSetupConfirm = ""
@@ -3010,6 +3501,12 @@ Panel {
   function clearProcessCollectorSoon(proc) {
     Qt.callLater(function() {
       if (proc.running) return
+      // Deferred by a callLater, so a submit can arrive between the schedule
+      // and the run. Taking the process here would make that submit wait on
+      // the scrub instead of on its own login.
+      if (proc === loginProc
+          && (loginSubmitAfterPrewarmStop || loginPrepareAfterPrewarmStop
+              || deviceVerificationPending || loginSubmitted)) return
       proc.command = Model.scrubCommand()
       proc.running = true
     })
@@ -4945,6 +5442,21 @@ Panel {
     }
   }
 
+  // Polls rather than counting down, for the same reason the auto-lock does:
+  // a monotonic timer stops while the machine is suspended, and a login left
+  // pending across a lid close must expire on the time that actually passed.
+  Timer {
+    id: pendingLoginTimer
+    interval: 1000
+    repeat: true
+    running: root.secondFactorStartedAt > 0
+    onTriggered: {
+      if (!Model.secondFactorWindowOpen(root.secondFactorStartedAt, Date.now())) {
+        root.abandonAuthSecrets()
+      }
+    }
+  }
+
   Process {
     id: loginProc
     environment: root.loginProcessEnv()
@@ -4957,15 +5469,18 @@ Panel {
       waitForEnd: true
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(loginProc)) return
+      // A scrub is started from this same handler and claims the process for a
+      // moment, so a submit arriving in that moment waits on the scrub's exit
+      // rather than the login's. Returning here without dispatching used to
+      // drop that submit on the floor -- the click did nothing at all, and the
+      // one after it worked because by then nothing held the process. That was
+      // "I had to press Verify twice".
+      if (root.finishScrubRun(loginProc)) {
+        if (!root.loginSubmitted) root.resumeDeferredLogin(false)
+        return
+      }
       if (!root.loginSubmitted) {
-        if (root.loginSubmitAfterPrewarmStop) {
-          root.loginSubmitAfterPrewarmStop = false
-          Qt.callLater(root.submitLogin)
-        } else if (root.loginPrepareAfterPrewarmStop) {
-          root.loginPrepareAfterPrewarmStop = false
-          Qt.callLater(root.prepareEmailLogin)
-        } else root.clearProcessCollectorSoon(loginProc)
+        root.resumeDeferredLogin(true)
         return
       }
       root.loginSubmitted = false
@@ -7267,7 +7782,7 @@ Panel {
             spacing: Style.space(10)
 
             Column {
-              visible: !root.show2faField
+              visible: root.loginCredentialsStage
               width: parent.width
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "EMAIL ADDRESS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -7287,7 +7802,7 @@ Panel {
             }
 
             Column {
-              visible: !root.show2faField
+              visible: root.loginCredentialsStage
               width: parent.width
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -7324,6 +7839,156 @@ Panel {
               }
             }
 
+            // New-device verification. bw takes this code from a prompt and
+            // from nothing else, so answering it here is the difference
+            // between finishing the login in the panel and sending the user to
+            // a terminal to do it. See deviceVerificationLoginCommand().
+            Column {
+              visible: root.showDeviceCodeField
+              width: parent.width
+              spacing: Style.space(3)
+
+              Text {
+                textFormat: Text.PlainText
+                text: "NEW DEVICE VERIFICATION"
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Bitwarden has not seen this machine before and emailed a code to "
+                  + "your login address. This is asked once per device."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              TextField {
+                id: deviceCodeField
+                width: parent.width
+                placeholderText: "Code from your email..."
+                text: root.loginDeviceCode
+                onTextChanged: root.loginDeviceCode = text
+                onAccepted: root.submitDeviceVerification()
+              }
+
+              Button {
+                width: parent.width
+                text: root.isLoading ? "Verifying device..." : "Verify Device & Unlock"
+                iconText: root.isLoading ? "󰑐" : "󰌋"
+                iconSpinning: root.isLoading
+                selected: true
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                enabled: !root.isLoading
+                onClicked: root.submitDeviceVerification()
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Button {
+                  text: "Back to credentials"
+                  iconText: "󰁍"
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: {
+                    root.errorMessage = ""
+                    root.resetEmailLoginSecondFactor()
+                    root.invalidateEmailLoginPrewarm()
+                    Qt.callLater(function() { loginPassField.forceActiveFocus() })
+                  }
+                }
+
+                // Still here, because bw in a real terminal can answer
+                // anything this path cannot.
+                Button {
+                  text: "Use Terminal Instead"
+                  iconText: "󰞷"
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.launchTerminalLogin()
+                }
+              }
+            }
+
+            // bw asks this question only when an account has more than one
+            // method it can use, and only a terminal ever got to see it. The
+            // pick is sent on its own, before any code is collected, so a
+            // wrong one costs a round trip rather than a typed code.
+            Column {
+              visible: root.show2faMethodPicker
+              width: parent.width
+              spacing: Style.space(6)
+
+              Text {
+                textFormat: Text.PlainText
+                text: "TWO-STEP METHOD"
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Which one do you use for this account? Bitwarden is asked for a code "
+                  + "only after you choose, and the choice is remembered for next time."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Repeater {
+                model: Model.twoFactorMethods()
+
+                Column {
+                  width: parent.width
+                  spacing: Style.space(2)
+
+                  Button {
+                    width: parent.width
+                    text: modelData.label
+                    iconText: "󰌋"
+                    fontFamily: root.fontFamily
+                    enabled: !root.isLoading
+                    onClicked: root.chooseTwoFactorMethod(modelData.method)
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    width: parent.width
+                    text: modelData.hint
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+                }
+              }
+
+              Button {
+                text: "Back to credentials"
+                iconText: "󰁍"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: {
+                  root.errorMessage = ""
+                  root.resetEmailLoginSecondFactor()
+                  root.invalidateEmailLoginPrewarm()
+                  Qt.callLater(function() { loginPassField.forceActiveFocus() })
+                }
+              }
+            }
+
             // Bitwarden tells us whether this account needs a second factor.
             Column {
               visible: root.show2faField
@@ -7332,7 +7997,9 @@ Panel {
 
               Text {
                 textFormat: Text.PlainText
-                text: "TWO-STEP VERIFICATION CODE (2FA)"
+                text: root.login2faMethodLabel
+                  ? "TWO-STEP CODE (" + root.login2faMethodLabel.toUpperCase() + ")"
+                  : "TWO-STEP VERIFICATION CODE (2FA)"
                 color: Color.accent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -7351,23 +8018,42 @@ Panel {
                 onAccepted: root.submitLogin()
               }
 
-              Button {
-                text: "Back to credentials"
-                iconText: "󰁍"
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                onClicked: {
-                  root.errorMessage = ""
-                  root.resetEmailLoginSecondFactor()
-                  root.invalidateEmailLoginPrewarm()
-                  Qt.callLater(function() { loginPassField.forceActiveFocus() })
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Button {
+                  text: "Back to credentials"
+                  iconText: "󰁍"
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: {
+                    root.errorMessage = ""
+                    root.resetEmailLoginSecondFactor()
+                    root.invalidateEmailLoginPrewarm()
+                    Qt.callLater(function() { loginPassField.forceActiveFocus() })
+                  }
+                }
+
+                // The escape hatch from a remembered method. It is the only
+                // way back to the question once an account has answered it, so
+                // it stays available even when nothing has gone wrong yet.
+                Button {
+                  text: "Change method"
+                  iconText: "󰑐"
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: {
+                    root.invalidateEmailLoginPrewarm()
+                    root.reopenTwoFactorMethodPicker()
+                  }
                 }
               }
             }
 
             // Custom Server URL (collapsible)
             Column {
-              visible: !root.show2faField
+              visible: root.loginCredentialsStage
               width: parent.width
               spacing: Style.space(4)
 
@@ -7389,6 +8075,7 @@ Panel {
               }
 
               TextField {
+                id: serverUrlField
                 visible: root.showServerField
                 width: parent.width
                 placeholderText: "https://vault.example.com"
@@ -7403,6 +8090,10 @@ Panel {
             }
 
             Button {
+              // The picker stage submits by choosing, and the device stage has
+              // its own button, so this one belongs to the stages that share
+              // the ordinary login command.
+              visible: !root.show2faMethodPicker && !root.showDeviceCodeField
               width: parent.width
               text: root.emailLoginButtonText()
               iconText: root.logoutCleanupFailed ? "󰑐" : ((root.logoutPending || root.isLoading) ? "󰑐" : "󰌋")
@@ -7426,6 +8117,7 @@ Panel {
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "CLIENT ID"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
+                id: apiClientIdField
                 width: parent.width
                 placeholderText: "user.xxxxxxxx-xxxx-xxxx..."
                 text: root.loginClientId
@@ -7438,6 +8130,7 @@ Panel {
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "CLIENT SECRET"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
+                id: apiClientSecretField
                 width: parent.width
                 placeholderText: "Client secret string..."
                 password: true
@@ -7451,6 +8144,7 @@ Panel {
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
+                id: apiMasterField
                 width: parent.width
                 placeholderText: "Master password to unlock vault..."
                 password: true
@@ -7473,20 +8167,28 @@ Panel {
             }
           }
 
+          // Normally the quieter of the two ways in. When Bitwarden has asked
+          // to verify this device it is the only one, so it stops being an
+          // aside and says what it is for.
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
             Text {
               textFormat: Text.PlainText
-              text: "Prefer interactive TTY login?"
-              color: root.dim
+              text: root.loginDeviceVerification
+                ? "Device verification needs a terminal:"
+                : "Prefer interactive TTY login?"
+              color: root.loginDeviceVerification ? Color.accent : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
+              font.bold: root.loginDeviceVerification
               anchors.verticalCenter: parent.verticalCenter
             }
             Button {
-              text: "Launch Terminal"
+              text: root.loginDeviceVerification ? "Finish in Terminal" : "Launch Terminal"
               iconText: "󰞷"
+              selected: root.loginDeviceVerification
+              accent: Color.accent
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.launchTerminalLogin()
