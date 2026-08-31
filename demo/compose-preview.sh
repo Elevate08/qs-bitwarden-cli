@@ -7,6 +7,12 @@
 # first, then this.
 #
 #   ./demo/compose-preview.sh [screenshot-dir] [output]
+#   ./demo/compose-preview.sh --badge-only        (reuse the cached base)
+#
+# The base -- panels and title, everything that comes from screenshots -- is
+# cached beside the shots. Only the callout changes when a release wants a
+# different phrase, and rebuilding six panels to redraw one banner made trying
+# wordings slower than it needed to be.
 #
 # Everything it reads is fixture data by construction -- capture.sh only ever
 # runs against demo/bin/bw and demo/fixtures.json -- so nothing here can put a
@@ -14,8 +20,18 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SHOTS="${1:-$REPO/docs/screenshots}"
-OUT="${2:-$REPO/preview.png}"
+
+BADGE_ONLY=0
+args=()
+for a in "$@"; do
+  case "$a" in
+    --badge-only) BADGE_ONLY=1 ;;
+    *) args+=("$a") ;;
+  esac
+done
+SHOTS="${args[0]:-$REPO/docs/screenshots}"
+OUT="${args[1]:-$REPO/preview.png}"
+BASE="$SHOTS/.preview-base.png"
 
 command -v magick >/dev/null || { echo "missing required tool: magick" >&2; exit 1; }
 
@@ -34,12 +50,15 @@ FONT_BODY="${QSBW_PREVIEW_FONT_BODY:-CaskaydiaMono-NF-Regular}"
 # one element here that is not a screenshot, so it borrows the panels' own
 # vocabulary -- same accent, same square border, same black ground -- and
 # earns its place by naming what the release added.
-BADGE_KICKER='NEW'
-BADGE_TITLE='SSH agent support'
-BADGE_BODY='Serve your vault'"'"'s SSH keys to ssh
-and Git. Every signature is approved
-in the panel; nothing touches disk.'
-BADGE_W=720
+# Set either from the environment to try a phrase without touching the file:
+#   QSBW_BADGE_TITLE='Now signs your commits' ./demo/compose-preview.sh --badge-only
+BADGE_KICKER="${QSBW_BADGE_KICKER:-NEW}"
+BADGE_TITLE="${QSBW_BADGE_TITLE:-SSH agent support}"
+# Filled with the accent and lettered in the page's own black, rather than
+# outlined like the panels. A seventh accent-bordered rectangle read as one
+# more screenshot; this cannot be mistaken for one.
+BADGE_FG="$BG"
+BADGE_BG="$ACCENT"
 GAP=28        # between panels, and around the whole thing
 TITLE_SIZE=96
 
@@ -76,37 +95,51 @@ column() { # column <name>...
 }
 
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-column "${COL1[@]}" > "$work/c1.miff"
-column "${COL2[@]}" > "$work/c2.miff"
-column "${COL3[@]}" > "$work/c3.miff"
 
-# Columns side by side, each hung from the top. The gravity has to be north
-# for the append itself: +append centres shorter images vertically unless told
-# otherwise, which left the third column floating in the middle of the page.
-magick "$work/c1.miff" "$work/c2.miff" "$work/c3.miff" \
-  -background "$BG" -gravity west -splice "${GAP}x0" \
-  -gravity north +append -chop "${GAP}x0" "$work/panels.png"
+if [ "$BADGE_ONLY" = 1 ]; then
+  [ -f "$BASE" ] || { echo "no cached base at $BASE; run without --badge-only first" >&2; exit 1; }
+  cp "$BASE" "$work/page.png"
+else
+  column "${COL1[@]}" > "$work/c1.miff"
+  column "${COL2[@]}" > "$work/c2.miff"
+  column "${COL3[@]}" > "$work/c3.miff"
 
-magick "$work/panels.png" \
-  -background "$BG" \
-  -gravity south -splice "0x${GAP}" \
-  -gravity west  -splice "${GAP}x0" \
-  -gravity east  -splice "${GAP}x0" \
-  "$work/framed.png"
+  # Columns side by side, each hung from the top. The gravity has to be north
+  # for the append itself: +append centres shorter images vertically unless told
+  # otherwise, which left the third column floating in the middle of the page.
+  magick "$work/c1.miff" "$work/c2.miff" "$work/c3.miff" \
+    -background "$BG" -gravity west -splice "${GAP}x0" \
+    -gravity north +append -chop "${GAP}x0" "$work/panels.png"
 
-# The title as its own image, the width of the page, rather than annotated on
-# to it. `-annotate` with a gravity places from an origin this composition
-# keeps moving, and the text ended up off the left edge; a label of a known
-# size cannot land anywhere but where it is appended.
-WIDTH="$(magick identify -format '%w' "$work/framed.png")"
-magick -size "${WIDTH}x$((TITLE_SIZE * 2))" -background "$BG" -fill "$ACCENT" \
-  -font "$FONT" -pointsize "$TITLE_SIZE" -gravity center \
-  label:"$TITLE" "$work/title.png"
+  magick "$work/panels.png" \
+    -background "$BG" \
+    -gravity south -splice "0x${GAP}" \
+    -gravity west  -splice "${GAP}x0" \
+    -gravity east  -splice "${GAP}x0" \
+    "$work/framed.png"
 
-# -depth 8: the label pushes the pipeline to 16-bit, which triples the file
-# size of a flat-colour image for nothing a viewer can see.
-magick "$work/title.png" "$work/framed.png" -background "$BG" -append \
-  "$work/page.png"
+  # The title as its own image, the width of the page, rather than annotated on
+  # to it. `-annotate` with a gravity places from an origin this composition
+  # keeps moving, and the text ended up off the left edge; a label of a known
+  # size cannot land anywhere but where it is appended.
+  WIDTH="$(magick identify -format '%w' "$work/framed.png")"
+  magick -size "${WIDTH}x$((TITLE_SIZE * 2))" -background "$BG" -fill "$ACCENT" \
+    -font "$FONT" -pointsize "$TITLE_SIZE" -gravity center \
+    label:"$TITLE" "$work/title.png"
+
+  # -depth 8: the label pushes the pipeline to 16-bit, which triples the file
+  # size of a flat-colour image for nothing a viewer can see.
+  magick "$work/title.png" "$work/framed.png" -background "$BG" -append \
+    "$work/page.png"
+
+  cp "$work/page.png" "$BASE"
+  # The callout hangs off the first column's height, which a badge-only run
+  # has no way to measure -- the columns are gone by then. Record it.
+  printf '%s\n' "$(( $(magick identify -format '%h' "$work/title.png") \
+    + $(magick identify -format '%h' "$work/c1.miff") ))" > "$BASE.anchor"
+fi
+[ -f "$BASE.anchor" ] || { echo "no anchor beside $BASE; rebuild the base" >&2; exit 1; }
+COL1_BOTTOM="$(cat "$BASE.anchor")"
 
 # --- the callout ------------------------------------------------------------
 #
@@ -115,41 +148,24 @@ magick "$work/title.png" "$work/framed.png" -background "$BG" -append \
 # put something over a region that already has pixels in it.
 # No -size here: `label:` with an explicit size scales the text to fill it,
 # which turned a 34pt kicker into a 500pt "NEW" across the whole badge. The
-# point size governs, and the width is set once after the lines are stacked.
-magick -background "$BG" -fill "$ACCENT" \
-  -font "$FONT" -pointsize 34 -interword-spacing 12 \
+# point size governs, and the padding is added afterwards.
+magick -background "$BADGE_BG" -fill "$BADGE_FG" \
+  -font "$FONT" -pointsize 40 -interword-spacing 14 \
   label:"$BADGE_KICKER" "$work/kicker.png"
-magick -background "$BG" -fill "$ACCENT" \
-  -font "$FONT" -pointsize 62 label:"$BADGE_TITLE" "$work/badge-title.png"
-magick -background "$BG" -fill '#C8C8C8' \
-  -font "$FONT_BODY" -pointsize 28 -interline-spacing 10 \
-  label:"$BADGE_BODY" "$work/badge-body.png"
+magick -background "$BADGE_BG" -fill "$BADGE_FG" \
+  -font "$FONT" -pointsize 68 label:"$BADGE_TITLE" "$work/badge-title.png"
 
-# Stacked left-aligned, padded, then bordered -- the border last so it wraps
-# the padding rather than sitting inside it.
-magick "$work/kicker.png" "$work/badge-title.png" "$work/badge-body.png" \
-  -background "$BG" -gravity west -append "$work/badge-text.png"
-
-# BADGE_W is a floor, not a crop: -extent to a width narrower than the text
-# silently cuts the longest line off, which is how the body lost its last
-# three characters.
-TEXT_W="$(magick identify -format '%w' "$work/badge-text.png")"
-[ "$TEXT_W" -gt "$BADGE_W" ] && BADGE_W="$TEXT_W"
-
-magick "$work/badge-text.png" \
-  -background "$BG" -gravity west -extent "${BADGE_W}x" \
-  -gravity north -splice "0x18" -gravity south -splice "0x8" \
-  -bordercolor "$BG" -border 26 \
-  -bordercolor "$ACCENT" -border 3 \
+# A solid block, not an outline: the panels are all accent-bordered rectangles
+# on black, so one more of those disappears among them. Inverting it -- accent
+# ground, black letters -- is what makes it read as a label on the image
+# rather than a part of it.
+magick "$work/kicker.png" "$work/badge-title.png" \
+  -background "$BADGE_BG" -gravity west -append \
+  -bordercolor "$BADGE_BG" -border 30 \
   "$work/badge.png"
 
-# Anchored to the first column: its left edge, and high enough to overlap the
-# panel above by a little, which is what stops it reading as a sixth panel.
-BADGE_H="$(magick identify -format '%h' "$work/badge.png")"
-COL1_H="$(magick identify -format '%h' "$work/c1.miff")"
-TITLE_H="$(magick identify -format '%h' "$work/title.png")"
 BADGE_X="$GAP"
-BADGE_Y=$((TITLE_H + COL1_H - 40))
+BADGE_Y=$((COL1_BOTTOM - 40))
 
 magick "$work/page.png" "$work/badge.png" -geometry "+${BADGE_X}+${BADGE_Y}" \
   -composite -depth 8 -strip "$OUT"
