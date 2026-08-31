@@ -97,54 +97,15 @@ Column {
     text: "Helper version " + panel.sshAgentVersion
   }
 
-  Item {
-    visible: panel.sshGrants.length > 0
-    width: parent.width
-    height: visible ? Style.space(10) : 0
-  }
-
-  SshSectionHeader {
-    visible: panel.sshGrants.length > 0
-    text: "ACTIVE APPROVALS"
-  }
-
-  // Every live grant, with the process it belongs to and what is
-  // left of it. A grant is a window in which signing happens with
-  // no prompt, so it has to be visible and revocable while it runs.
-  Repeater {
-    model: panel.sshGrants
-
-    delegate: Row {
-      required property var modelData
-      width: parent.width
-      spacing: Style.space(8)
-
-      SshCaption {
-        width: parent.width - Style.space(110)
-        text: modelData.keyName + "  ·  "
-          + modelData.processName + " (pid " + modelData.pid + ")"
-          + "  ·  " + modelData.remainingLabel
-      }
-
-      Button {
-        anchors.verticalCenter: parent.verticalCenter
-        text: "Revoke"
-        iconText: "󰩹"
-        fontFamily: panel.fontFamily
-        fontSize: Style.font.caption
-        onClicked: panel.revokeSshGrant(modelData.grantId)
-      }
-    }
-  }
-
-  Button {
-    visible: panel.sshGrants.length > 1
-    text: "Revoke All Approvals"
-    iconText: "󰩹"
-    tooltipText: "Drop every live approval; the next signature asks again"
-    fontFamily: panel.fontFamily
-    fontSize: Style.font.bodySmall
-    onClicked: panel.revokeAllSshGrants()
+  // Routing is the thing most likely to be missing when the agent looks
+  // healthy and SSH still does not use it. Said here because this is the
+  // block a user reads first, and decided by the routing file rather than by
+  // this session's SSH_AUTH_SOCK -- see sshAgentRoutingNotice for why.
+  SshCaption {
+    visible: panel.sshAgentSetup.state === "enabled" && !panel.sshAgentSetup.busy
+      && panel.sshRoutingNotice.text !== ""
+    text: panel.sshRoutingNotice.text
+    color: panel.sshRoutingNotice.urgent ? panel.urgent : panel.dim
   }
 
   Item { width: parent.width; height: Style.space(10) }
@@ -235,5 +196,54 @@ Column {
       enabled: !panel.uwsmBusy
       onClicked: panel.removeUwsmFragment()
     }
+  }
+  Item {
+    visible: panel.sshGrants.length > 0
+    width: parent.width
+    height: visible ? Style.space(10) : 0
+  }
+
+  SshSectionHeader {
+    visible: panel.sshGrants.length > 0
+    text: "ACTIVE APPROVALS"
+  }
+
+  // Every live grant, with the process it belongs to and what is
+  // left of it. A grant is a window in which signing happens with
+  // no prompt, so it has to be visible and revocable while it runs.
+  Repeater {
+    model: panel.sshGrants
+
+    delegate: Row {
+      required property var modelData
+      width: parent.width
+      spacing: Style.space(8)
+
+      SshCaption {
+        width: parent.width - Style.space(110)
+        text: modelData.keyName + "  ·  "
+          + modelData.processName + " (pid " + modelData.pid + ")"
+          + "  ·  " + modelData.remainingLabel
+      }
+
+      Button {
+        anchors.verticalCenter: parent.verticalCenter
+        text: "Revoke"
+        iconText: "󰩹"
+        fontFamily: panel.fontFamily
+        fontSize: Style.font.caption
+        onClicked: panel.revokeSshGrant(modelData.grantId)
+      }
+    }
+  }
+
+  Button {
+    visible: panel.sshGrants.length > 1
+    text: "Revoke All Approvals"
+    iconText: "󰩹"
+    tooltipText: "Drop every live approval; the next signature asks again"
+    fontFamily: panel.fontFamily
+    fontSize: Style.font.bodySmall
+    onClicked: panel.revokeAllSshGrants()
   }
 }

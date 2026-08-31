@@ -3843,6 +3843,31 @@ function parseUwsmInspection(raw) {
   }
 }
 
+// The status block's one line about routing, decided by the file rather than
+// by this session's SSH_AUTH_SOCK.
+//
+// The variable was fixed at login, so it says what routing *was*; the file
+// says what routing *will be*. Reading the variable hides a missing fragment
+// for the whole life of a session that started routed -- the warning then
+// arrives at the next boot, which is the one moment it can no longer help.
+function sshAgentRoutingNotice(fragment, routing) {
+  var fragmentState = fragment && fragment.state ? String(fragment.state) : "unknown"
+  var routingState = routing && routing.state ? String(routing.state) : "unknown"
+  // States the plugin refuses to act on say their piece in the routing
+  // section itself, in full. Repeating a summary here would be noise.
+  if (fragmentState === "unknown" || fragmentState === "no-home") {
+    return { text: "", urgent: false }
+  }
+  if (fragmentState !== "managed") {
+    return { text: "SSH clients are not routed here, and will not be at your next login.",
+      urgent: true }
+  }
+  if (routingState !== "matches") {
+    return { text: "Routing is written. It takes effect at your next login.", urgent: false }
+  }
+  return { text: "", urgent: false }
+}
+
 function parseUwsmActionResult(exitCode, stdout) {
   var failures = {}
   failures[UWSM_EXIT_NO_HOME] = { code: "NO_HOME",

@@ -1031,6 +1031,7 @@ Panel {
   readonly property var sshRouting: Model.sshAuthSockDiagnostic(sshAuthSock, sshAgentRuntimeDir)
 
   property var uwsmFragment: ({ state: "unknown", removable: false, message: "" })
+  readonly property var sshRoutingNotice: Model.sshAgentRoutingNotice(uwsmFragment, sshRouting)
   property bool uwsmBusy: false
   property string uwsmFlash: ""
   // Set when the session already points at another agent. Writing the fragment
@@ -1096,7 +1097,33 @@ Panel {
       // that is no longer running are left behind on disk.
       applySshAgentLifecycle("disable")
       removeUwsmFragment()
+      return
     }
+    // And turning it back on puts the file back, because taking it away on
+    // one toggle and not restoring it on the other is a trap: SSH_AUTH_SOCK
+    // is fixed at login, so the session that flips the setting keeps working
+    // either way and the damage only appears at the next boot, long past the
+    // point where anyone would connect the two. The inspection above is
+    // asynchronous, so the decision waits for its answer.
+    uwsmRestorePending = true
+  }
+
+  // Only ever set by re-enabling the agent, and cleared by the first
+  // inspection that follows. It restores what disabling removed; it never
+  // routes a session that was not already routed, and it never overrules a
+  // file this plugin did not write.
+  property bool uwsmRestorePending: false
+
+  function applyUwsmRestore() {
+    if (!uwsmRestorePending) return
+    uwsmRestorePending = false
+    if (!sshAgentEnabled || uwsmBusy) return
+    // "absent" only: a foreign file, a symlink, an unreadable one or no HOME
+    // are all cases the plugin refuses to touch, and it must keep refusing
+    // here. An agent already owning SSH_AUTH_SOCK is a decision the user
+    // makes at the button, with the conflict named.
+    if (uwsmFragment.state !== "absent" || sshRouting.state === "elsewhere") return
+    beginUwsmSetup()
   }
 
   // -------------------------------------------------------------------------
@@ -4874,7 +4901,10 @@ Panel {
     stdout: StdioCollector {
       id: uwsmInspectStdout
       waitForEnd: true
-      onStreamFinished: root.uwsmFragment = Model.parseUwsmInspection(text)
+      onStreamFinished: {
+        root.uwsmFragment = Model.parseUwsmInspection(text)
+        root.applyUwsmRestore()
+      }
     }
   }
 

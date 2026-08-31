@@ -25,6 +25,7 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.sshAgentGrantViews = sshAgentGrantViews
   exports.sshAgentGrantsAt = sshAgentGrantsAt
   exports.sshAgentDevelopmentHelperWarning = sshAgentDevelopmentHelperWarning
+  exports.sshAgentRoutingNotice = sshAgentRoutingNotice
   exports.sshAgentShouldPrompt = sshAgentShouldPrompt
   exports.sshAgentCooldownInitial = sshAgentCooldownInitial
   exports.sshAgentCooldownAfter = sshAgentCooldownAfter
@@ -458,6 +459,45 @@ check("entering the cooldown is announced once, not on every refusal",
 check("a request the cooldown refuses does not feed the cooldown",
   /!sshAgentMayPrompt\(\)\)\s*\{\s*sshAgentWrite\(Model\.sshAgentDenyLine\(message\.requestId\)\)\s*return/.test(panelSrc),
   "a suppressed request records an outcome, so a busy process can hold the cooldown open")
+// SSH_AUTH_SOCK is fixed at login, so it says what routing *was*. A session
+// that started routed keeps reporting "matches" after the file is deleted,
+// which is precisely the window in which a warning would still be useful --
+// the notice therefore has to read the file, not the environment.
+const routed = { state: "matches" }
+eq("a deleted fragment is caught even while this session still points here",
+  Model.sshAgentRoutingNotice({ state: "absent" }, routed).urgent, true)
+check("and it says the next login is what breaks",
+  /next login/.test(Model.sshAgentRoutingNotice({ state: "absent" }, routed).text),
+  Model.sshAgentRoutingNotice({ state: "absent" }, routed).text)
+eq("a foreign file is called out too",
+  Model.sshAgentRoutingNotice({ state: "foreign" }, routed).urgent, true)
+eq("a managed fragment in a routed session says nothing",
+  Model.sshAgentRoutingNotice({ state: "managed" }, routed).text, "")
+check("a managed fragment in an unrouted session explains the wait",
+  /next login/.test(Model.sshAgentRoutingNotice({ state: "managed" }, { state: "elsewhere" }).text),
+  "a freshly written fragment does not explain why nothing changed yet")
+eq("and that is information, not a fault",
+  Model.sshAgentRoutingNotice({ state: "managed" }, { state: "elsewhere" }).urgent, false)
+for (const quiet of ["unknown", "no-home"]) {
+  eq(`a ${quiet} fragment leaves the routing section to explain itself`,
+    Model.sshAgentRoutingNotice({ state: quiet }, routed).text, "")
+}
+eq("a missing record says nothing rather than throwing",
+  Model.sshAgentRoutingNotice(null, null).text, "")
+
+check("the routing notice precedes the routing section",
+  /sshRoutingNotice\.text[\s\S]{0,500}?text: "CLIENT ROUTING"/.test(panelSrc),
+  "the routing notice does not precede the routing section")
+check("re-enabling the agent restores the routing file it removed on disable",
+  /uwsmRestorePending = true[\s\S]{0,1200}?function applyUwsmRestore\(\)[\s\S]{0,600}?beginUwsmSetup\(\)/.test(panelSrc),
+  "disabling removes the routing file and enabling never puts it back")
+check("but never over a file it did not write, or another session's agent",
+  /uwsmFragment\.state !== "absent" \|\| sshRouting\.state === "elsewhere"[\s\S]{0,40}?return/.test(panelSrc),
+  "the restore overrules a foreign routing file or an existing agent")
+check("and routing is reachable before the approvals list",
+  panelSrc.indexOf('text: "CLIENT ROUTING"') < panelSrc.indexOf('text: "ACTIVE APPROVALS"'),
+  "approvals still push routing down the screen")
+
 check("a development helper is called out wherever the user is",
   /sshAgentHelper\.source === "development"[\s\S]{0,900}?sshAgentDevelopmentHelperWarning\(/.test(panelSrc),
   "nothing warns that an unverified helper is serving keys")

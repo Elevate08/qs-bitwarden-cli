@@ -249,14 +249,14 @@ omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 
 #### Turning it off
 
-Switching **Act as your SSH agent** off stops the helper, removes the socket and FIFO, drops every key and grant, and deletes the public-key projection. The routing file is left for you, because SSH clients would otherwise keep pointing at a socket that is gone:
+Switching **Act as your SSH agent** off stops the helper, removes the socket and FIFO, drops every key and grant, deletes the public-key projection, and removes the routing file -- but only when that file is byte-for-byte the one this plugin wrote. Anything you manage by hand is left alone. Turning the agent back on writes the routing file again, so a toggle costs you nothing; it will not do so when another agent already owns `SSH_AUTH_SOCK`, or when something other than this plugin's own file is sitting at that path. Either way, clients keep the `SSH_AUTH_SOCK` they were given until your next login, so nothing changes under a running session.
+
+To remove the routing file without turning the agent off:
 
 ```bash
 # Or press "Remove Routing File" in the panel
 rm ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
 ```
-
-Either way clients keep the old `SSH_AUTH_SOCK` until your next login.
 
 ---
 
