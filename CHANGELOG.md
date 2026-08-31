@@ -2,24 +2,26 @@
 
 ## [1.5.0] - 2026-08-31
 
+Opt-in SSH agent. Implements #1.
+
 ### Added
 
-- **Opt-in SSH agent.** With `sshAgentEnabled` on, the panel serves your vault's SSH keys to `ssh`, Git and `ssh-keygen -Y sign` while the vault is unlocked. Private keys are held only by a separate helper process, never written to disk and never passed to QML, and are dropped when the vault locks, on logout, and when the helper exits.
-- Per-signature approval in the panel, naming the key, its `SHA256:` fingerprint and the program asking. One approval can cover further signatures from the same program and key for `sshAgentApprovalWindowSec` seconds (default 120), so a twenty-commit rebase is one prompt rather than twenty. Live approvals are listed with the time each has left, counting down, and can be revoked individually or together.
-- Two unanswered or refused prompts start a five-minute cooldown, during which signing is refused without raising the panel. A banner on every screen says so and counts down, because a silent multi-minute SSH outage is impossible to connect back to its cause. An approval cannot end a cooldown already running -- it suppresses the prompts an approval would answer -- so **Resume Signing Now** on that banner is the way out, or waiting. Nothing the requesting process does can shorten the window or extend it.
-- `sshAgentUnlockOnDemand` (off by default) lets an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. It exists for the first connection of a session: with no cache there is nothing to offer, so no signing request can follow to ask. Signing a key the helper already holds always raises the prompt, with or without this setting; dismissing it is what refuses the signature.
-- Public identities are projected to `~/.local/share/qs-bitwarden-cli/ssh/*.pub`, mode 600 in a 700 directory, so Git SSH signing has the file paths it requires. Public material only; removed on logout, account change, and when the feature is turned off.
-- **Route SSH Clients Here** writes one plugin-owned UWSM fragment, `~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent`, taking effect at the next login. An existing agent is named and confirmed before it is replaced, and a file that is a symlink or holds anything else is reported rather than overwritten. Turning the agent off removes that fragment and turning it back on restores it, so a toggle costs nothing; the status block says when nothing is routed, decided by the file rather than by this session's `SSH_AUTH_SOCK`, which was fixed at login and cannot report a fragment deleted since.
-- The helper ships as a committed, reproducibly built x86_64 binary, validated at launch for architecture, format, mode, checksum, self-test and control-protocol version. Any failure disables this feature alone and leaves the rest of the plugin working. If a locally built helper is present it is used instead, and a banner says so: it carries no recorded digest and no build provenance, and the remedy named is to reinstall the plugin.
-- **Remove Plugin Data** on the settings screen clears the keyring entries, the learned suggestions and the exported public keys in one confirmed action. `omarchy plugin remove` has no uninstall hook, so the last moment this plugin can clean up after itself is while it is still installed. Your vault is not touched; `bw logout` stays a separate decision.
-- `omarchy-shell io.github.elevate08.qs-bitwarden-cli sshAgentStatus` reports `helperSource`, `helperChecksum`, `helperState`, `routingFragment` and `routingNotice`, so which helper is running, whether it was verified, and what the panel believes about client routing can all be read from a terminal.
-- Releases now publish a GitHub build-provenance attestation, an SBOM, and a dependency/licence report, produced by a protected release workflow whose publishing job is the only one holding write, OIDC or attestation permission. Verify with `gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent --repo Elevate08/qs-bitwarden-cli`.
+- **SSH agent** (`sshAgentEnabled`, off by default). Serves the SSH keys in your vault to `ssh`, Git and `ssh-keygen -Y sign` while the vault is unlocked. Ed25519 and RSA SHA-2, over a socket in `$XDG_RUNTIME_DIR` that only your own UID may use. Private keys live in a separate helper process, never on disk and never in QML, and are dropped on lock, logout and exit.
+- **Every signature is approved in the panel**, which names the key, its fingerprint and the program asking. One approval can cover further signatures from the same program and key for `sshAgentApprovalWindowSec` seconds (default 120), so a twenty-commit rebase is one prompt. Live approvals are listed with the time they have left and can be revoked.
+- **A cooldown after two unanswered prompts**, five minutes, during which signing is refused without reopening the panel. A banner says so and counts down; **Resume Signing Now** ends it early.
+- **Public keys are projected** to `~/.local/share/qs-bitwarden-cli/ssh/*.pub`, public material only, so Git SSH signing has the file paths it requires.
+- **Client routing** through one plugin-owned UWSM fragment, written when the agent is enabled and removed when it is disabled, taking effect at the next login. An agent that already owns `SSH_AUTH_SOCK` is named and confirmed before it is replaced; a file this plugin did not write is reported and left alone.
+- **`sshAgentUnlockOnDemand`** (off by default) lets an identity listing raise the unlock prompt when the vault is locked with no keys loaded. Signing a key the helper already holds always prompts, with or without it.
+- **Remove Plugin Data** on the settings screen clears the keyring entries, learned suggestions and exported public keys in one confirmed action. Your vault is untouched.
+- **`sshAgentStatus` diagnostics**: which helper is running, whether its checksum matched, and what the panel believes about client routing.
+- The helper ships as a **reproducibly built, checksum-validated binary**, with releases carrying a GitHub build-provenance attestation, an SBOM and a dependency report. Any validation failure disables SSH support alone and leaves the rest of the plugin working; a locally built helper is used as a fallback and says so on a banner.
 
 ### Security
 
-- The vault read is split before it reaches the panel: SSH private material goes to the helper over a private FIFO carrying a 128-bit per-load nonce, and QML receives a sanitized list from which it has been removed.
-- A signature is refused unless the vault is unlocked at the epoch the key was loaded under, so a lock racing a load, an approval or a signature cannot leave a key usable.
+- The vault read is split before it reaches the panel: SSH private material goes to the helper over a private FIFO carrying a per-load nonce, and QML receives a sanitized list with it removed.
+- A signature is refused unless the vault is unlocked at the epoch its key was loaded under, so a lock racing a load, an approval or a signature cannot leave a key usable.
 - Agent forwarding is not supported in this release; a forwarded request is labelled as such in the prompt, because the process it names is not the one that would use the signature.
+- `ecdsa` keys are not supported.
 
 ## [1.4.1] - 2026-08-31
 
