@@ -28,6 +28,18 @@ TITLE='Bitwarden Vault Plugin'
 # name. `magick -list font` is the list it will accept; override if your
 # machine names it differently.
 FONT="${QSBW_PREVIEW_FONT:-CaskaydiaMono-NF-Bold}"
+FONT_BODY="${QSBW_PREVIEW_FONT_BODY:-CaskaydiaMono-NF-Regular}"
+
+# The callout that fills the empty corner under the first column. It is the
+# one element here that is not a screenshot, so it borrows the panels' own
+# vocabulary -- same accent, same square border, same black ground -- and
+# earns its place by naming what the release added.
+BADGE_KICKER='NEW'
+BADGE_TITLE='SSH agent support'
+BADGE_BODY='Serve your vault'"'"'s SSH keys to ssh
+and Git. Every signature is approved
+in the panel; nothing touches disk.'
+BADGE_W=720
 GAP=28        # between panels, and around the whole thing
 TITLE_SIZE=96
 
@@ -94,6 +106,52 @@ magick -size "${WIDTH}x$((TITLE_SIZE * 2))" -background "$BG" -fill "$ACCENT" \
 # -depth 8: the label pushes the pipeline to 16-bit, which triples the file
 # size of a flat-colour image for nothing a viewer can see.
 magick "$work/title.png" "$work/framed.png" -background "$BG" -append \
-  -depth 8 -strip "$OUT"
+  "$work/page.png"
+
+# --- the callout ------------------------------------------------------------
+#
+# Drawn as its own image and composited, rather than annotated on to the page:
+# it overlaps the panel above it by design, and a composite is the only way to
+# put something over a region that already has pixels in it.
+# No -size here: `label:` with an explicit size scales the text to fill it,
+# which turned a 34pt kicker into a 500pt "NEW" across the whole badge. The
+# point size governs, and the width is set once after the lines are stacked.
+magick -background "$BG" -fill "$ACCENT" \
+  -font "$FONT" -pointsize 34 -interword-spacing 12 \
+  label:"$BADGE_KICKER" "$work/kicker.png"
+magick -background "$BG" -fill "$ACCENT" \
+  -font "$FONT" -pointsize 62 label:"$BADGE_TITLE" "$work/badge-title.png"
+magick -background "$BG" -fill '#C8C8C8' \
+  -font "$FONT_BODY" -pointsize 28 -interline-spacing 10 \
+  label:"$BADGE_BODY" "$work/badge-body.png"
+
+# Stacked left-aligned, padded, then bordered -- the border last so it wraps
+# the padding rather than sitting inside it.
+magick "$work/kicker.png" "$work/badge-title.png" "$work/badge-body.png" \
+  -background "$BG" -gravity west -append "$work/badge-text.png"
+
+# BADGE_W is a floor, not a crop: -extent to a width narrower than the text
+# silently cuts the longest line off, which is how the body lost its last
+# three characters.
+TEXT_W="$(magick identify -format '%w' "$work/badge-text.png")"
+[ "$TEXT_W" -gt "$BADGE_W" ] && BADGE_W="$TEXT_W"
+
+magick "$work/badge-text.png" \
+  -background "$BG" -gravity west -extent "${BADGE_W}x" \
+  -gravity north -splice "0x18" -gravity south -splice "0x8" \
+  -bordercolor "$BG" -border 26 \
+  -bordercolor "$ACCENT" -border 3 \
+  "$work/badge.png"
+
+# Anchored to the first column: its left edge, and high enough to overlap the
+# panel above by a little, which is what stops it reading as a sixth panel.
+BADGE_H="$(magick identify -format '%h' "$work/badge.png")"
+COL1_H="$(magick identify -format '%h' "$work/c1.miff")"
+TITLE_H="$(magick identify -format '%h' "$work/title.png")"
+BADGE_X="$GAP"
+BADGE_Y=$((TITLE_H + COL1_H - 40))
+
+magick "$work/page.png" "$work/badge.png" -geometry "+${BADGE_X}+${BADGE_Y}" \
+  -composite -depth 8 -strip "$OUT"
 
 magick identify "$OUT"
