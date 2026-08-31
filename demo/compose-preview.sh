@@ -53,7 +53,7 @@ FONT_BODY="${QSBW_PREVIEW_FONT_BODY:-CaskaydiaMono-NF-Regular}"
 # Set either from the environment to try a phrase without touching the file:
 #   QSBW_BADGE_TITLE='Now signs your commits' ./demo/compose-preview.sh --badge-only
 BADGE_KICKER="${QSBW_BADGE_KICKER:-NEW}"
-BADGE_TITLE="${QSBW_BADGE_TITLE:-SSH agent support}"
+BADGE_TITLE="${QSBW_BADGE_TITLE:-SSH Agent Support}"
 # Filled with the accent and lettered in the page's own black, rather than
 # outlined like the panels. A seventh accent-bordered rectangle read as one
 # more screenshot; this cannot be mistaken for one.
