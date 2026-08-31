@@ -471,12 +471,21 @@ The cursor starts on the option already in effect, so <kbd>Enter</kbd> never cha
 
 ## Uninstall
 
+**Turn the SSH agent off first, if you had it on**, and press **Remove Plugin
+Data** on the settings screen. Between them those clear everything this plugin
+put outside its own folder: the helper stops cleanly and takes its socket,
+FIFO and routing file with it, and the button clears the keyring entries, the
+learned suggestions and the exported public keys. Both have to happen before
+the next step, because `omarchy plugin remove` has no uninstall hook -- once
+the folder is gone there is no code left to run.
+
 ```bash
 omarchy plugin remove io.github.elevate08.qs-bitwarden-cli
 ```
 
-That removes the plugin folder and its bar entry. Nothing the plugin stores
-lives inside that folder, so clear the rest yourself if you want it gone:
+That removes the plugin folder and its bar entry. If you skipped the two steps
+above, or you are cleaning up after a plugin that is already gone, this is the
+same work by hand:
 
 ```bash
 # Session key, and the master password stored for PIN/fingerprint unlock
@@ -492,6 +501,13 @@ rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh"
 rm -f ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
 ```
+
+The agent's socket, FIFO and lock under `$XDG_RUNTIME_DIR` are removed when the
+helper shuts down, which is what turning the agent off does. Removing the
+plugin while the agent is still running kills the helper instead, so those
+three files are left until you log out and the tmpfs goes with the session; a
+stale socket at the routed path is harmless but answers nothing. Deleting the
+directory by hand is safe once no helper is running.
 
 Two more paths are written but need no cleaning up, because neither outlives
 the moment it is used: the session handoff file under `$XDG_RUNTIME_DIR`, which

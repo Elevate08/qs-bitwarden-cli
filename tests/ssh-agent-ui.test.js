@@ -26,6 +26,8 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.sshAgentGrantsAt = sshAgentGrantsAt
   exports.sshAgentDevelopmentHelperWarning = sshAgentDevelopmentHelperWarning
   exports.sshAgentRoutingNotice = sshAgentRoutingNotice
+  exports.pluginDataRemoveCommand = pluginDataRemoveCommand
+  exports.parsePluginDataRemoval = parsePluginDataRemoval
   exports.sshAgentShouldPrompt = sshAgentShouldPrompt
   exports.sshAgentCooldownInitial = sshAgentCooldownInitial
   exports.sshAgentCooldownAfter = sshAgentCooldownAfter
@@ -498,12 +500,49 @@ check("and routing is reachable before the approvals list",
   panelSrc.indexOf('text: "CLIENT ROUTING"') < panelSrc.indexOf('text: "ACTIVE APPROVALS"'),
   "approvals still push routing down the screen")
 
+// `omarchy plugin remove` has no uninstall hook, so the last moment this code
+// can run is while the plugin is still installed. What it misses becomes a
+// command the user has to type from the README.
+const wipe = Model.pluginDataRemoveCommand().join(" ")
+for (const [what, needle] of [
+  ["the keyring entries", "secret-tool clear service qs-bitwarden-cli"],
+  ["the learned suggestions", "XDG_STATE_HOME"],
+  ["the exported public keys", "XDG_DATA_HOME"]
+]) check(`removal clears ${what}`, wipe.indexOf(needle) >= 0, wipe)
+check("and never logs the vault out on its own",
+  wipe.indexOf("bw logout") < 0 && wipe.indexOf("bw ") < 0, wipe)
+check("nor touches the shell's own settings file",
+  wipe.indexOf("shell.json") < 0, wipe)
+
+const wiped = Model.parsePluginDataRemoval(0, "removed keyring state data")
+eq("a full removal reports success", wiped.ok, true)
+check("and names what went", /keyring|suggestions|public keys/.test(wiped.message), wiped.message)
+check("and says the vault survived it", /vault/i.test(wiped.message), wiped.message)
+eq("nothing to remove is still a success",
+  Model.parsePluginDataRemoval(0, "removed").ok, true)
+check("and says so plainly",
+  /nothing/i.test(Model.parsePluginDataRemoval(0, "removed").message),
+  Model.parsePluginDataRemoval(0, "removed").message)
+eq("a missing HOME is a failure, not a silent no-op",
+  Model.parsePluginDataRemoval(3, "").ok, false)
+eq("and so is any other non-zero exit", Model.parsePluginDataRemoval(1, "").ok, false)
+
+check("removing plugin data is confirmed before it happens",
+  /pluginDataConfirmPending = true[\s\S]{0,200}?return/.test(panelSrc),
+  "the first click wipes stored data with no confirmation")
+check("and a cleared keyring is not still believed to hold a password",
+  /parsePluginDataRemoval[\s\S]{0,400}?fingerprintStored = false/.test(panelSrc),
+  "the panel still thinks a deleted master password is stored")
+
 check("a development helper is called out wherever the user is",
   /sshAgentHelper\.source === "development"[\s\S]{0,900}?sshAgentDevelopmentHelperWarning\(/.test(panelSrc),
   "nothing warns that an unverified helper is serving keys")
 check("the diagnostics say which helper is running and whether it was verified",
   /helperSource: root\.sshAgentHelper\.source[\s\S]{0,200}?helperChecksum: root\.sshAgentHelper\.checksum/.test(panelSrc),
   "sshAgentStatus cannot tell a shipped helper from a local build")
+check("and what the panel believes about client routing",
+  /routingFragment: root\.uwsmFragment\.state[\s\S]{0,200}?routingNotice: root\.sshRoutingNotice\.text !== ""/.test(panelSrc),
+  "routing state cannot be read without squinting at the panel")
 check("and why inspection rejected one, which errorCode never carries",
   /helperState: root\.sshAgentHelper\.state/.test(panelSrc),
   "sshAgentStatus reports an error state without naming it")

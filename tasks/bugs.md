@@ -72,3 +72,30 @@ because a timer has not run yet.
 **Also worth knowing:** the same staleness would have hidden a grant that had
 genuinely expired, since `sshAgentStatus` reported the announced count rather
 than the live one. It now reports the live one.
+
+## 3. The helper leaks its runtime files when the plugin is removed
+
+**Status:** open, low severity. Found 2026-08-31 during the Task 20 manual
+matrix.
+
+**Observed:** After `omarchy plugin remove` with the SSH agent still enabled,
+`/run/user/1000/qs-bitwarden-cli/` still held `ssh-agent.sock`,
+`ssh-agent.lock` and `ssh-keys.fifo`, with no helper process running.
+
+**Cause:** `ServiceRuntime` and `Runtime` in `agent/src/runtime.rs:264` and
+`:320` unlink those files from `Drop`, which runs on a graceful shutdown --
+which is why turning the agent off leaves nothing behind. Tearing the plugin
+down kills the helper rather than shutting it down, so `Drop` never runs.
+
+**Impact:** Small. The files are on a tmpfs and go with the login session, and
+`omarchy plugin remove` has no uninstall hook, so nothing of ours can run at
+that moment anyway. Until the next login, a client routed at that path finds a
+socket that answers nothing rather than no socket at all.
+
+**Possible fix:** A SIGTERM handler in the helper that runs the same cleanup,
+if the shell terminates rather than kills the process. `Drop` cannot help
+against SIGKILL and nothing can. Worth checking which signal the shell
+actually sends before writing the handler.
+
+**Documented meanwhile** in the README's Uninstall section: turn the agent off
+before removing the plugin, and what the three files are if you did not.

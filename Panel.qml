@@ -1056,6 +1056,38 @@ Panel {
     uwsmWriteProc.running = true
   }
 
+  // Clearing everything the plugin stored outside its own folder. Confirmed
+  // rather than absorbed by the first click: it drops a stored master
+  // password and every learned suggestion, and none of it comes back.
+  property bool pluginDataConfirmPending: false
+  property bool pluginDataBusy: false
+  property string pluginDataFlash: ""
+
+  function beginPluginDataRemoval() {
+    if (pluginDataBusy) return
+    if (!pluginDataConfirmPending) {
+      pluginDataConfirmPending = true
+      return
+    }
+    pluginDataConfirmPending = false
+    pluginDataBusy = true
+    pluginDataFlash = ""
+    pluginDataRemoveProc.running = true
+  }
+
+  function cancelPluginDataRemoval() {
+    pluginDataConfirmPending = false
+  }
+
+  function onPluginDataRemoved(exitCode, stdout) {
+    var result = Model.parsePluginDataRemoval(exitCode, stdout)
+    root.pluginDataBusy = false
+    root.pluginDataFlash = result.message
+    // The keyring entry is part of what was just deleted, so what the panel
+    // believes about a stored master password must not be kept.
+    if (result.ok) root.fingerprintStored = false
+  }
+
   function cancelUwsmSetup() {
     uwsmConfirmPending = false
   }
@@ -4909,6 +4941,13 @@ Panel {
   }
 
   Process {
+    id: pluginDataRemoveProc
+    command: Model.pluginDataRemoveCommand()
+    stdout: StdioCollector { id: pluginDataRemoveStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onPluginDataRemoved(exitCode, pluginDataRemoveStdout.text) }
+  }
+
+  Process {
     id: uwsmWriteProc
     command: Model.uwsmWriteCommand()
     stdout: StdioCollector { id: uwsmWriteStdout; waitForEnd: true }
@@ -5782,6 +5821,12 @@ Panel {
         // empty for all of these, so without this the terminal is told the
         // feature is in error and never told what the error was.
         helperState: root.sshAgentHelper.state,
+        // What the panel believes about client routing: the file it last
+        // inspected, and whether that produced a notice. Both are read from
+        // the same state the settings screen draws, so a disagreement between
+        // this and the screen is itself the answer.
+        routingFragment: root.uwsmFragment.state,
+        routingNotice: root.sshRoutingNotice.text !== "",
         errorCode: root.sshAgentErrorCode,
         keyCount: root.sshAgentKeyCount,
         loadActive: root.sshAgentLoadActive,
@@ -7814,6 +7859,70 @@ Panel {
               fontSize: Style.font.bodySmall
               onClicked: root.forgetFingerprintUnlock()
             }
+          }
+
+          // Its own row: this sits beside two buttons already, and a third
+          // one plus the two the confirmation adds overflow the panel width
+          // and elide their labels -- "Remove Plugin Data" reading as
+          // "Remove Plugin" is a considerably more alarming button.
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              visible: !root.pluginDataConfirmPending
+              text: "Remove Plugin Data"
+              iconText: "󰩹"
+              tooltipText: "Clear the keyring entries, learned suggestions and exported public keys this plugin stored"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              enabled: !root.pluginDataBusy
+              onClicked: root.beginPluginDataRemoval()
+            }
+
+            Button {
+              visible: root.pluginDataConfirmPending
+              text: "Remove Everything"
+              iconText: "󰩹"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              enabled: !root.pluginDataBusy
+              onClicked: root.beginPluginDataRemoval()
+            }
+
+            Button {
+              visible: root.pluginDataConfirmPending
+              text: "Cancel"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.cancelPluginDataRemoval()
+            }
+          }
+
+          // Run this before removing the plugin: once the folder is gone
+          // there is no code left to do it, and `omarchy plugin remove` has
+          // no uninstall hook to call.
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            visible: root.pluginDataConfirmPending
+            text: "This clears the stored master password, learned suggestions and exported public keys. "
+              + "Settings and your vault are untouched. It cannot be undone."
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            visible: root.pluginDataFlash !== ""
+            text: root.pluginDataFlash
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
           Text {

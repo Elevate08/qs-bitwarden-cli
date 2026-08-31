@@ -3789,6 +3789,54 @@ function uwsmWriteCommand() {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
+// Everything this plugin leaves outside its own folder, removed in one pass.
+//
+// It exists because removal cannot do it. `omarchy plugin remove` has no
+// uninstall hook -- it disables the plugin and deletes the directory -- so the
+// last moment any of this code can run is while the plugin is still
+// installed. What is not cleared here has to be cleared by hand afterwards,
+// from instructions, which is how it was until now.
+//
+// Deliberately not included: the vault. `bw logout` is the user's own call and
+// removing a panel is no reason to make it. Nor the shell.json entry, which
+// belongs to the shell and is rewritten by `omarchy bar` rather than by us.
+function pluginDataRemoveCommand() {
+  var script = "test -n \"${HOME:-}\" || exit " + PLUGIN_DATA_EXIT_NO_HOME + "; "
+    + "__state=\"${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli\"; "
+    + "__data=\"${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli\"; "
+    // Each step reports rather than aborting the rest: a keyring that is
+    // already empty, or a directory already gone, must not stop the others.
+    + "__done=''; "
+    + "if secret-tool clear service qs-bitwarden-cli 2>/dev/null; then __done=\"$__done keyring\"; fi; "
+    + "if [ -e \"$__state\" ]; then rm -rf -- \"$__state\" && __done=\"$__done state\"; fi; "
+    + "if [ -e \"$__data\" ]; then rm -rf -- \"$__data\" && __done=\"$__done data\"; fi; "
+    + "printf 'removed%s\\n' \"$__done\""
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+var PLUGIN_DATA_EXIT_NO_HOME = 3
+
+function parsePluginDataRemoval(exitCode, stdout) {
+  var code = Math.floor(Number(exitCode))
+  if (code === PLUGIN_DATA_EXIT_NO_HOME) {
+    return { ok: false, message: "No HOME is set, so there is nothing to clear." }
+  }
+  if (code !== 0) {
+    return { ok: false, message: "Could not remove the plugin's stored data." }
+  }
+  var line = String(stdout === undefined || stdout === null ? "" : stdout).trim()
+  var cleared = []
+  if (line.indexOf("keyring") >= 0) cleared.push("keyring entries")
+  if (line.indexOf("state") >= 0) cleared.push("learned suggestions")
+  if (line.indexOf("data") >= 0) cleared.push("exported public keys")
+  if (cleared.length === 0) {
+    return { ok: true, message: "Nothing was left to remove." }
+  }
+  return { ok: true,
+    message: "Removed " + cleared.join(", ")
+      + ". Your vault is untouched; run `bw logout` separately if you want that too." }
+}
+
 function uwsmRemoveCommand() {
   var script = "test -n \"${HOME:-}\" || exit " + UWSM_EXIT_NO_HOME + "; "
     + uwsmExpectedShell()
