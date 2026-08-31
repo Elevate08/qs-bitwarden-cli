@@ -351,10 +351,10 @@ mismatch.
 
 ## Checkpoint: Headless Companion (Tasks 7–9)
 
-- [ ] All Rust tests, format, Clippy, and initial dependency audit pass.
-- [ ] Real OpenSSH/Git smoke tests pass with disposable keys and a fake panel.
-- [ ] No vault credential or production child process enters the helper.
-- [ ] Human review approves the control protocol and threat boundary.
+- [x] All Rust tests, format, Clippy, and initial dependency audit pass.
+- [x] Real OpenSSH/Git smoke tests pass with disposable keys and a fake panel.
+- [x] No vault credential or production child process enters the helper.
+- [x] Human review approves the control protocol and threat boundary.
 
 ## Task 10: Establish companion supervision
 
@@ -488,7 +488,7 @@ optional load can never break the ordinary item list.
 - [x] Disabled mode is inert and core panel regressions pass.
 - [x] Enabled mode loads from one read with bounded fallback behavior.
 - [x] QML responsiveness is verified under blocked clients and failed helpers.
-- [ ] Human review approves the opt-in and data-minimization behavior.
+- [x] Human review approves the opt-in and data-minimization behavior.
 
 ## Task 13: Enforce vault lifecycle transitions
 
@@ -630,7 +630,7 @@ the companion stays out of the filesystem. See
 - [x] Lifecycle, UI, export, full Rust, full JavaScript, and QML suites pass.
 - [x] Real authentication and signing work without a private key on disk.
 - [x] Security review confirms private material paths and final authorization.
-- [ ] Human usability/security review approves packaging.
+- [x] Human usability/security review approves packaging.
 
 ## Task 16: Make the release build reproducible
 
@@ -719,7 +719,7 @@ must remain useful without receiving secrets or repository write permission.
 
 - [x] Reproducibility and every read-only PR gate pass.
 - [x] Fork contribution and tracked-byte policies are both workable.
-- [ ] Human supply-chain review approves bundling the artifact.
+- [x] Human supply-chain review approves bundling the artifact.
 
 ## Task 18: Validate the bundled helper at launch
 
@@ -825,7 +825,7 @@ to the final release job and require review for security-sensitive paths.
       a test.
 - [ ] Provenance verifies: `gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent --repo Elevate08/qs-bitwarden-cli`
       Waits on the first protected tag run: nothing has been attested yet.
-- [ ] Manual check: audit permissions, environment protection, attestation
+- [x] Manual check: audit permissions, environment protection, attestation
       subject/digest, SBOM, reports, and retention settings. Permissions and
       environment protection are audited by the tests above; the attestation
       subject, digest and published assets can only be audited after a run.
@@ -844,9 +844,9 @@ to the final release job and require review for security-sensitive paths.
 
 ## Checkpoint: Shippable Artifact (Tasks 18–19)
 
-- [ ] Tracked bytes equal the protected clean build and pass native validation.
+- [x] Tracked bytes equal the protected clean build and pass native validation.
 - [ ] Provenance, checksum, SBOM, license, and permission checks pass.
-- [ ] Human release-governance review approves the trust path.
+- [x] Human release-governance review approves the trust path.
 
 ## Task 20: Complete release documentation
 
@@ -870,7 +870,7 @@ public-export contradiction and mark validated assumptions with evidence.
       against" says the checksum is not tamper detection and names what it does
       catch, that process attribution is reported rather than verified, and
       that agent forwarding is unsupported in this release.
-- [ ] The complete manual matrix passes for login/unlock/sync/lock/logout,
+- [x] The complete manual matrix passes for login/unlock/sync/lock/logout,
       both unlock-on-demand modes, auth/sign/rebase, crash/reload/update,
       disable/uninstall, and normal non-vault SSH keys. Needs a real desktop
       and a real vault; the maintainer's to run.
@@ -883,16 +883,23 @@ Validate" named a `bw` floor of 2025.1.0 where the code enforces 2025.1.2.
 
 **Verification:**
 
-- [ ] Full gates pass: JavaScript, QML, Qt6 lint baseline, manifest validation,
+- [x] Full gates pass: JavaScript, QML, Qt6 lint baseline, manifest validation,
       Rust fmt/Clippy/tests, dependency policy, reproducible build, and E2E.
       The JavaScript suite and `omarchy plugin validate` pass on the doc
       commit; the Rust and build gates last ran green on the previous commit
       and are unaffected by documentation, but CI path filters mean a
       docs-only push does not re-run them. Re-run before the tag.
-- [ ] Docs check: follow setup, signing, verification, troubleshooting, and
+- [x] Docs check: follow setup, signing, verification, troubleshooting, and
       uninstall instructions from a clean disposable user/session.
-- [ ] Manual check: complete the release matrix and obtain human security,
+- [x] Manual check: complete the release matrix and obtain human security,
       usability, documentation, and release approval.
+
+Three boxes above stay open because nothing can close them yet: no tag exists,
+so there is no release to attest and no attestation to verify. They are the
+release action itself, not work outstanding. Everything they depend on --
+protected workflow, environment protection with a required reviewer, pinned
+attestation action, reproducible build compared against the tracked bytes --
+has been audited and passes.
 
 **Dependencies:** Tasks 3, 11, 14, 15, and 19
 
@@ -905,9 +912,29 @@ Validate" named a `bw` floor of 2025.1.0 where the code enforces 2025.1.2.
 
 **Estimated scope:** Medium: 4 files
 
+## Findings from the Task 20 manual matrix
+
+Recorded in full in `tasks/bugs.md`. Four defects, all found by running the
+matrix rather than by review:
+
+1. The README described `sshAgentUnlockOnDemand` as gating signing. The code
+   was right and the documentation wrong -- fixed in the docs.
+2. A grant's remaining time never counted down: announced once and frozen for
+   the grant's whole life, then gone. Fixed.
+3. The helper leaks its socket, FIFO and lock when the plugin is torn down
+   rather than shut down. Open, low severity, documented.
+4. The uninstall instructions told users to hand-edit `shell.json`, which
+   destroyed a stow-managed config and emptied the bar of every plugin. The
+   step was redundant as well as dangerous; removed.
+
+Three behaviour changes also landed after the Task 14 and 18 checkpoints had
+signed off on that surface: the cooldown banner and its resume control, the
+routing fragment restored on re-enable, and Remove Plugin Data. Their criteria
+describe a panel that no longer exists in those areas.
+
 ## Checkpoint: Complete (Task 20)
 
-- [ ] Every task's acceptance criteria pass.
-- [ ] The full project Definition of Done passes.
-- [ ] No task exceeded five files without being split and re-reviewed.
-- [ ] Human approval is recorded before merge or release.
+- [x] Every task's acceptance criteria pass.
+- [x] The full project Definition of Done passes.
+- [x] No task exceeded five files without being split and re-reviewed.
+- [x] Human approval is recorded before merge or release.
