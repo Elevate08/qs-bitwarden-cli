@@ -99,3 +99,33 @@ actually sends before writing the handler.
 
 **Documented meanwhile** in the README's Uninstall section: turn the agent off
 before removing the plugin, and what the three files are if you did not.
+
+## 4. The uninstall instructions destroyed a stow-managed shell.json
+
+**Status:** fixed. Found 2026-08-31 during the Task 20 manual matrix, on the
+maintainer's own machine.
+
+**Observed:** Following the Uninstall section, the step "delete the
+`io.github.elevate08.qs-bitwarden-cli` key under `plugins`" was carried out by
+removing `~/.config/omarchy/shell.json`. Every configured plugin disappeared
+from the bar, not only this one, and the shell came up on its built-in
+defaults.
+
+**Cause:** That path was a `stow` symlink into `~/projects/dotfiles`. Deleting
+it removed the link, not the configuration; the shell then found no user
+config at all. The real file was intact in the repository throughout, and
+restoring the symlink restored everything.
+
+The instruction was also redundant: `omarchy plugin remove` already calls
+`omarchy-shell shell setPluginEnabled <id> false`, which removes the bar entry
+and its settings before the directory goes.
+
+**Fixed by** deleting the hand-edit step, naming `omarchy plugin disable` for
+the stale-entry case, and warning plainly that `shell.json` is often a symlink
+and must be changed through the shell rather than edited. Nothing in the
+Uninstall section now tells a user to touch a file the shell owns.
+
+**Worth remembering:** every other path in that section is under this plugin's
+own directories, where a mistake costs the user only this plugin's data. This
+one step reached into a file shared by every plugin on the system, and that is
+what made a documentation error destructive.

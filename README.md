@@ -494,13 +494,24 @@ secret-tool clear service qs-bitwarden-cli
 # Learned window-title -> vault item suggestions
 rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
 
-# Settings block, if you edited shell.json by hand
-# -> delete the "io.github.elevate08.qs-bitwarden-cli" key under "plugins"
+# Settings block: already gone. `omarchy plugin remove` takes the bar entry
+# and its settings with it. If a stale one is left -- from a plugin removed
+# some other way -- clear it through the shell, never by editing the file:
+#   omarchy plugin disable io.github.elevate08.qs-bitwarden-cli
 
 # SSH agent, if you used it: the exported public keys and the routing file
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh"
 rm -f ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
 ```
+
+**Do not hand-edit `~/.config/omarchy/shell.json`.** On many setups it is not a
+regular file: Omarchy configs are commonly managed with `stow` or another
+dotfile manager, which puts a symlink there pointing into a repository. Deleting
+"the file" then deletes the link, the shell falls back to its built-in defaults,
+and every plugin you had configured disappears at once -- not just this one. The
+config itself is unharmed, sitting in the repository the link pointed at, but
+working that out from an empty bar is not a pleasant few minutes. Every command
+above goes through the shell or touches only this plugin's own paths.
 
 The agent's socket, FIFO and lock under `$XDG_RUNTIME_DIR` are removed when the
 helper shuts down, which is what turning the agent off does. Removing the
