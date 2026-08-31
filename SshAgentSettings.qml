@@ -222,7 +222,7 @@ Column {
       SshCaption {
         width: parent.width - Style.space(110)
         text: modelData.keyName + "  ·  "
-          + modelData.processName + " (pid " + modelData.pid + ")"
+          + modelData.processName
           + "  ·  " + modelData.remainingLabel
       }
 

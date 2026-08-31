@@ -117,7 +117,7 @@ Column {
     textFormat: Text.PlainText
     width: parent.width
     text: panel.sshPrompt
-      ? panel.sshPrompt.processName + " · pid " + panel.sshPrompt.pid
+      ? panel.sshPrompt.processName
       : ""
     color: panel.fg
     font.family: panel.fontFamily

@@ -7966,12 +7966,11 @@ Panel {
               : (root.sshUnlockRequest.keyName !== ""
                   ? root.sshUnlockRequest.keyName + " · requested by "
                     + root.sshUnlockRequest.processName
-                    + " (pid " + root.sshUnlockRequest.pid + ")"
                   // An identity listing names no key: the client is asking
                   // which keys exist, and until the vault is open there is no
                   // answer to give.
                   : root.sshUnlockRequest.processName
-                    + " (pid " + root.sshUnlockRequest.pid + ") is asking which SSH keys are available")
+                    + " is asking which SSH keys are available")
             color: root.fg
           }
 

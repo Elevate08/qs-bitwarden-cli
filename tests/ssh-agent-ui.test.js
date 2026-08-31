@@ -322,6 +322,8 @@ if (typeof Model.sshAgentLoadingNote === "function") {
 const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
   .map(file => fs.readFileSync(path.join(repoRoot, file), "utf8"))
   .join("\n")
+const approvalSrc = fs.readFileSync(path.join(repoRoot, "SshApprovalScreen.qml"), "utf8")
+const settingsSrc = fs.readFileSync(path.join(repoRoot, "SshAgentSettings.qml"), "utf8")
 
 // plainLabel() wraps its argument in a span when the text contains markup
 // characters, which a PlainText control then renders literally. The field is
@@ -533,6 +535,14 @@ check("removing plugin data is confirmed before it happens",
 check("and a cleared keyring is not still believed to hold a password",
   /parsePluginDataRemoval[\s\S]{0,400}?fingerprintStored = false/.test(panelSrc),
   "the panel still thinks a deleted master password is stored")
+
+// A pid is noise on a prompt: it is gone by the time anyone could look it up,
+// and it is deliberately not part of what a grant matches on -- so showing it
+// implies a scope the approval does not have.
+for (const [what, src] of [["the approval prompt", approvalSrc], ["the settings screen", settingsSrc]])
+  check(`${what} does not show a pid`, !/\bpid\b/.test(src), `${what} still renders a pid`)
+check("the unlock prompt does not either", !/sshUnlockRequest\.pid/.test(panelSrc),
+  "the unlock prompt still renders a pid")
 
 check("a development helper is called out wherever the user is",
   /sshAgentHelper\.source === "development"[\s\S]{0,900}?sshAgentDevelopmentHelperWarning\(/.test(panelSrc),

@@ -182,7 +182,7 @@ export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/qs-bitwarden-cli/ssh-agent.sock"
 
 #### Approving a signature
 
-Every signature asks first. The prompt names the key, its `SHA256:` fingerprint, and the program asking (path and pid), and gives you two minutes to answer.
+Every signature asks first. The prompt names the key, its `SHA256:` fingerprint, and the program asking -- its name and the absolute path it ran from -- and gives you two minutes to answer. Not its pid: the number is gone by the time you could look it up, and the grant is not scoped to it.
 
 - **Approve once** signs this request and nothing further.
 - **Approve for this program · 2m** also covers later requests from the same executable with the same key, for `sshAgentApprovalWindowSec` seconds (default `120`, maximum `900`, `0` to ask every time). Git spawns a fresh `ssh-keygen -Y sign` for every commit it signs, so this is what makes a twenty-commit rebase one prompt instead of twenty. The grant matches on your UID, the executable path captured at approval, and the key -- deliberately not the pid, which changes with every commit.
@@ -242,7 +242,7 @@ omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 #### What this does not defend against
 
 - **Anything running as you.** The socket enforces the peer's UID and nothing more. A process running as you can ask for signatures -- it gets a prompt, and the cooldown limits how often it can raise one -- and it can equally replace the helper, the checksum file, and the QML that checks them. Filesystem permissions own that boundary; the plugin cannot defend itself against a same-UID attacker, and neither can any other agent.
-- **The process shown in the prompt.** The path, pid and start time are reported by the system for context. Only the requesting user is verified. Treat them as a useful hint about *what* is asking, not proof.
+- **The process shown in the prompt.** The executable path is reported by the system for context. Only the requesting user is verified. Treat it as a useful hint about *what* is asking, not proof.
 - **Agent forwarding.** This release does not support it. A forwarded request is labelled in the prompt, and the process it shows is not the one that will use the signature.
 - **Erasure.** Secret memory is zeroized on a best-effort basis and the helper disables core dumps and `PR_SET_DUMPABLE` before the first key is read, but nothing can guarantee that a page freed by an allocator or swapped by the kernel is gone.
 - **Root, and the vault itself.** Root reads any process's memory. Separately, `bw` is the source of the keys and holds its own decrypted copies while it runs.
