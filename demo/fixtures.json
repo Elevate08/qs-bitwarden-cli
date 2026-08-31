@@ -7,46 +7,269 @@
     "status": "unlocked"
   },
   "folders": [
-    { "object": "folder", "id": "f-infra",  "name": "Infrastructure" },
-    { "object": "folder", "id": "f-fin",    "name": "Finance" },
-    { "object": "folder", "id": "f-social", "name": "Social" }
+    {
+      "object": "folder",
+      "id": "f-infra",
+      "name": "Infrastructure"
+    },
+    {
+      "object": "folder",
+      "id": "f-fin",
+      "name": "Finance"
+    },
+    {
+      "object": "folder",
+      "id": "f-social",
+      "name": "Social"
+    }
   ],
   "organizations": [
-    { "object": "organization", "id": "org-acme", "name": "Acme Corp", "status": 2 }
+    {
+      "object": "organization",
+      "id": "org-acme",
+      "name": "Acme Corp",
+      "status": 2
+    }
   ],
   "items": [
-    { "object": "item", "id": "i1", "organizationId": null, "folderId": "f-social", "type": 1, "name": "GitHub", "favorite": true,
-      "login": { "username": "demo-user", "password": "hunter2-not-real", "totp": "otpauth://totp/demo", "uris": [{ "uri": "https://github.com" }] } },
-    { "object": "item", "id": "i2", "organizationId": null, "folderId": "f-social", "type": 1, "name": "Reddit", "favorite": false,
-      "login": { "username": "demo-user", "password": "placeholder", "totp": null, "uris": [{ "uri": "https://reddit.com" }] } },
-    { "object": "item", "id": "i3", "organizationId": "org-acme", "folderId": "f-infra", "type": 1, "name": "Acme VPN", "favorite": false,
-      "login": { "username": "d.demo@example.com", "password": "placeholder", "totp": "otpauth://totp/demo", "uris": [{ "uri": "https://vpn.acme.example" }] },
+    {
+      "object": "item",
+      "id": "i1",
+      "organizationId": null,
+      "folderId": "f-social",
+      "type": 1,
+      "name": "GitHub",
+      "favorite": true,
+      "login": {
+        "username": "demo-user",
+        "password": "hunter2-not-real",
+        "totp": "otpauth://totp/demo",
+        "uris": [
+          {
+            "uri": "https://github.com"
+          }
+        ]
+      }
+    },
+    {
+      "object": "item",
+      "id": "i2",
+      "organizationId": null,
+      "folderId": "f-social",
+      "type": 1,
+      "name": "Reddit",
+      "favorite": false,
+      "login": {
+        "username": "demo-user",
+        "password": "placeholder",
+        "totp": null,
+        "uris": [
+          {
+            "uri": "https://reddit.com"
+          }
+        ]
+      }
+    },
+    {
+      "object": "item",
+      "id": "i3",
+      "organizationId": "org-acme",
+      "folderId": "f-infra",
+      "type": 1,
+      "name": "Acme VPN",
+      "favorite": false,
+      "login": {
+        "username": "d.demo@example.com",
+        "password": "placeholder",
+        "totp": "otpauth://totp/demo",
+        "uris": [
+          {
+            "uri": "https://vpn.acme.example"
+          }
+        ]
+      },
       "attachments": [
-        { "object": "attachment", "id": "a3", "fileName": "acme-vpn.ovpn", "size": "8192", "sizeName": "8 KB", "url": "https://example.invalid/a3" }
-      ] },
-    { "object": "item", "id": "i4", "organizationId": null, "folderId": "f-infra", "type": 1, "name": "Home Assistant", "favorite": true,
-      "login": { "username": "admin", "password": "placeholder", "totp": null, "uris": [{ "uri": "https://homeassistant.local:8123" }] } },
-    { "object": "item", "id": "i5", "organizationId": null, "folderId": "f-fin", "type": 1, "name": "Example Bank", "favorite": false,
-      "login": { "username": "demo-user", "password": "placeholder", "totp": "otpauth://totp/demo", "uris": [{ "uri": "https://bank.example.com" }] } },
-    { "object": "item", "id": "i6", "organizationId": null, "folderId": null, "type": 2, "name": "Recovery Codes", "favorite": false,
-      "notes": "Placeholder note. No real data here.", "secureNote": { "type": 0 },
+        {
+          "object": "attachment",
+          "id": "a3",
+          "fileName": "acme-vpn.ovpn",
+          "size": "8192",
+          "sizeName": "8 KB",
+          "url": "https://example.invalid/a3"
+        }
+      ]
+    },
+    {
+      "object": "item",
+      "id": "i4",
+      "organizationId": null,
+      "folderId": "f-infra",
+      "type": 1,
+      "name": "Home Assistant",
+      "favorite": true,
+      "login": {
+        "username": "admin",
+        "password": "placeholder",
+        "totp": null,
+        "uris": [
+          {
+            "uri": "https://homeassistant.local:8123"
+          }
+        ]
+      }
+    },
+    {
+      "object": "item",
+      "id": "i5",
+      "organizationId": null,
+      "folderId": "f-fin",
+      "type": 1,
+      "name": "Example Bank",
+      "favorite": false,
+      "login": {
+        "username": "demo-user",
+        "password": "placeholder",
+        "totp": "otpauth://totp/demo",
+        "uris": [
+          {
+            "uri": "https://bank.example.com"
+          }
+        ]
+      }
+    },
+    {
+      "object": "item",
+      "id": "i6",
+      "organizationId": null,
+      "folderId": null,
+      "type": 2,
+      "name": "Recovery Codes",
+      "favorite": false,
+      "notes": "Placeholder note. No real data here.",
+      "secureNote": {
+        "type": 0
+      },
       "attachments": [
-        { "object": "attachment", "id": "a1", "fileName": "recovery-codes.txt", "size": "412", "sizeName": "412 B", "url": "https://example.invalid/a1" },
-        { "object": "attachment", "id": "a2", "fileName": "backup-key.pem", "size": "3204", "sizeName": "3.13 KB", "url": "https://example.invalid/a2" }
-      ] },
-    { "object": "item", "id": "i7", "organizationId": null, "folderId": "f-fin", "type": 3, "name": "Demo Card", "favorite": false,
-      "card": { "cardholderName": "D. Demo", "brand": "Visa", "number": "4111111111111111", "expMonth": "12", "expYear": "2030", "code": "123" } },
-    { "object": "item", "id": "i8", "organizationId": "org-acme", "folderId": "f-infra", "type": 1, "name": "Acme Grafana", "favorite": false,
-      "login": { "username": "d.demo@example.com", "password": "placeholder", "totp": null, "uris": [{ "uri": "https://grafana.acme.example" }] } },
-    { "object": "item", "id": "i9", "organizationId": null, "folderId": null, "type": 4, "name": "Demo Identity", "favorite": false,
-      "identity": { "firstName": "Dana", "lastName": "Demo", "email": "demo@example.com" } }
+        {
+          "object": "attachment",
+          "id": "a1",
+          "fileName": "recovery-codes.txt",
+          "size": "412",
+          "sizeName": "412 B",
+          "url": "https://example.invalid/a1"
+        },
+        {
+          "object": "attachment",
+          "id": "a2",
+          "fileName": "backup-key.pem",
+          "size": "3204",
+          "sizeName": "3.13 KB",
+          "url": "https://example.invalid/a2"
+        }
+      ]
+    },
+    {
+      "object": "item",
+      "id": "i7",
+      "organizationId": null,
+      "folderId": "f-fin",
+      "type": 3,
+      "name": "Demo Card",
+      "favorite": false,
+      "card": {
+        "cardholderName": "D. Demo",
+        "brand": "Visa",
+        "number": "4111111111111111",
+        "expMonth": "12",
+        "expYear": "2030",
+        "code": "123"
+      }
+    },
+    {
+      "object": "item",
+      "id": "i8",
+      "organizationId": "org-acme",
+      "folderId": "f-infra",
+      "type": 1,
+      "name": "Acme Grafana",
+      "favorite": false,
+      "login": {
+        "username": "d.demo@example.com",
+        "password": "placeholder",
+        "totp": null,
+        "uris": [
+          {
+            "uri": "https://grafana.acme.example"
+          }
+        ]
+      }
+    },
+    {
+      "object": "item",
+      "id": "i9",
+      "organizationId": null,
+      "folderId": null,
+      "type": 4,
+      "name": "Demo Identity",
+      "favorite": false,
+      "identity": {
+        "firstName": "Dana",
+        "lastName": "Demo",
+        "email": "demo@example.com"
+      }
+    },
+    {
+      "object": "item",
+      "id": "i-ssh-1",
+      "organizationId": null,
+      "folderId": "f-infra",
+      "type": 5,
+      "name": "Demo Deploy Key",
+      "notes": null,
+      "favorite": false,
+      "collectionIds": [],
+      "reprompt": 0,
+      "revisionDate": "2026-08-20T10:00:00.000Z",
+      "creationDate": "2026-08-20T10:00:00.000Z",
+      "sshKey": {
+        "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACBGTamxk2fLE7NZekQoaoQkLjAbzaNDSJrO8clPlNnoXAAAAJhQ/dXxUP3V\n8QAAAAtzc2gtZWQyNTUxOQAAACBGTamxk2fLE7NZekQoaoQkLjAbzaNDSJrO8clPlNnoXA\nAAAEAqEDoJ+o48bC8qt9agrYLugGkX0IjZdM/iT5kK0Q0BGUZNqbGTZ8sTs1l6RChqhCQu\nMBvNo0NIms7xyU+U2ehcAAAAEGRlbW9AZXhhbXBsZS5jb20BAgMEBQ==\n-----END OPENSSH PRIVATE KEY-----\n",
+        "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEZNqbGTZ8sTs1l6RChqhCQuMBvNo0NIms7xyU+U2ehc demo@example.com",
+        "keyFingerprint": "SHA256:WJN+07USrkd8tFp3vVJBXAjwolWfskqqzl+UPp5GH30"
+      }
+    }
   ],
   "sends": [
-    { "object": "send", "id": "s1", "name": "Wifi password for guests", "type": 0, "accessUrl": "https://vault.bitwarden.com/#/send/demo1",
-      "accessCount": 1, "maxAccessCount": 5, "deletionDate": "2026-08-24T10:00:00.000Z", "passwordSet": true, "disabled": false,
-      "text": { "text": "placeholder", "hidden": true } },
-    { "object": "send", "id": "s2", "name": "Onboarding checklist", "type": 0, "accessUrl": "https://vault.bitwarden.com/#/send/demo2",
-      "accessCount": 0, "maxAccessCount": null, "deletionDate": "2026-08-28T10:00:00.000Z", "passwordSet": false, "disabled": false,
-      "text": { "text": "placeholder", "hidden": false } }
+    {
+      "object": "send",
+      "id": "s1",
+      "name": "Wifi password for guests",
+      "type": 0,
+      "accessUrl": "https://vault.bitwarden.com/#/send/demo1",
+      "accessCount": 1,
+      "maxAccessCount": 5,
+      "deletionDate": "2026-08-24T10:00:00.000Z",
+      "passwordSet": true,
+      "disabled": false,
+      "text": {
+        "text": "placeholder",
+        "hidden": true
+      }
+    },
+    {
+      "object": "send",
+      "id": "s2",
+      "name": "Onboarding checklist",
+      "type": 0,
+      "accessUrl": "https://vault.bitwarden.com/#/send/demo2",
+      "accessCount": 0,
+      "maxAccessCount": null,
+      "deletionDate": "2026-08-28T10:00:00.000Z",
+      "passwordSet": false,
+      "disabled": false,
+      "text": {
+        "text": "placeholder",
+        "hidden": false
+      }
+    }
   ]
 }
