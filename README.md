@@ -52,6 +52,12 @@ You can reopen it any time with <kbd>,</kbd> from the settings screen, or:
 omarchy-shell io.github.elevate08.qs-bitwarden-cli setup
 ```
 
+On the login screen, choose **US** (the default), **EU**, or **Custom** under
+**Server Region**. EU connects the Bitwarden CLI to
+`https://vault.bitwarden.eu`; Custom reveals the existing server URL field for
+self-hosted Bitwarden and Vaultwarden installations. The selection applies to
+email/password, API-key, and interactive terminal login.
+
 <details>
 <summary>What the setup screen installs, and why</summary>
 

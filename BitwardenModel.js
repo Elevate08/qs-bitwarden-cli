@@ -740,6 +740,19 @@ function authPasswordWriteCommand(channel) {
 // means the official server), or the reason it was refused.
 var SERVER_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//
 var LOOPBACK_HOST_RE = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/i
+var BITWARDEN_US_SERVER = "https://vault.bitwarden.com"
+var BITWARDEN_EU_SERVER = "https://vault.bitwarden.eu"
+
+// Both cloud regions are explicit because bw persists its last configured
+// server. An empty US override after an EU login would keep sending the next
+// login to EU. Unknown UI state fails closed to US instead of accidentally
+// sending credentials to a stale custom URL.
+function loginServerUrlFor(region, customUrl) {
+  var choice = String(region || "").toLowerCase()
+  if (choice === "eu") return BITWARDEN_EU_SERVER
+  if (choice === "custom") return String(customUrl || "").trim()
+  return BITWARDEN_US_SERVER
+}
 
 function validateServerUrl(raw) {
   var url = String(raw || "").trim()
@@ -816,8 +829,11 @@ var HANDOFF_BASENAME = "session-handoff"
 // `mode` is "login" when logged out and "unlock" when merely locked. The panel
 // already knows which, so this does not probe with `bw status` first -- that
 // probe measured at ~3.3s, spent before the user was even shown a prompt.
-function terminalLoginCommand(mode) {
+function terminalLoginCommand(mode, serverUrl) {
   var verb = (mode === "unlock") ? "unlock" : "login"
+  var configureServer = (verb === "login" && serverUrl && serverUrl.trim())
+    ? "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
+    : ""
   var inner = "set -u; "
     + "d=\"${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR -- refusing to write a session key}/"
     + RUNTIME_SUBDIR + "\"; f=\"$d/" + HANDOFF_BASENAME + "\"; "
@@ -831,6 +847,7 @@ function terminalLoginCommand(mode) {
     // Remove a stale entry before opening the output path, so a pre-created
     // symlink is unlinked rather than followed by shell redirection.
     + "rm -f -- \"$f\" || exit 1; "
+    + configureServer
     + "if bw " + verb + " --raw > \"$f\" && [ -s \"$f\" ]; then "
     // Bring the panel back itself rather than making the user find it again.
     // Only the method name crosses this boundary; the key never does.

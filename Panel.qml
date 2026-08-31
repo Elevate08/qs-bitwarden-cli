@@ -71,11 +71,11 @@ Panel {
   property string loginEmail: ""
   property string loginPassword: ""
   property string login2faCode: ""
+  property string loginServerRegion: "us" // "us" | "eu" | "custom"
   property string loginServerUrl: ""
   property string loginClientId: ""
   property string loginClientSecret: ""
   property bool show2faField: false
-  property bool showServerField: false
   // Whether the login attempt now running carries --code. It is the only way
   // to tell a rejected two-step code from a new-device-verification challenge;
   // see loginNeedsDeviceVerification() in BitwardenModel.js.
@@ -1561,9 +1561,21 @@ Panel {
 
   function emailLoginSignature() {
     return String(loginEmail || "").trim() + "\n"
-      + String(loginServerUrl || "").trim() + "\n"
+      + resolvedLoginServerUrl() + "\n"
       + (String(login2faCode || "").trim() ? "2fa" : "plain") + "\n"
       + String(login2faMethod)
+  }
+
+  function resolvedLoginServerUrl() {
+    return Model.loginServerUrlFor(loginServerRegion, loginServerUrl)
+  }
+
+  function selectLoginServerRegion(region) {
+    if (loginServerRegion === region) return
+    loginServerRegion = region
+    errorMessage = ""
+    resetEmailLoginSecondFactor()
+    invalidateEmailLoginPrewarm()
   }
 
   function invalidateEmailLoginPrewarm() {
@@ -1645,7 +1657,7 @@ Panel {
     // the exit handler read it.
     deviceVerificationAttempt = true
     loginProc.command = Model.deviceVerificationLoginCommand(
-      String(loginEmail || "").trim(), String(loginServerUrl || "").trim(), login2faMethod)
+      String(loginEmail || "").trim(), resolvedLoginServerUrl(), login2faMethod)
     loginProc.running = true
     loginSubmitted = true
     writeAuthPassword("login", loginPassword)
@@ -1731,11 +1743,12 @@ Panel {
   function prepareEmailLogin() {
     if (logoutPending || !opened || status !== "unauthenticated" || loginMethod !== "email" || isLoading) return
     var email = String(loginEmail || "").trim()
-    if (!email || Model.validateServerUrl(loginServerUrl)) return
+    var serverUrl = resolvedLoginServerUrl()
+    if (!email || Model.validateServerUrl(serverUrl)) return
     // Configuring a custom server changes bw's persistent global state. Do it
     // only after explicit submission, never merely because the password field
     // received focus. Default-cloud logins still get the full prewarm win.
-    if (String(loginServerUrl || "").trim()) return
+    if (serverUrl) return
 
     var signature = emailLoginSignature()
     if (loginProc.running) {
@@ -1752,7 +1765,7 @@ Panel {
     loginAttemptHadCode = String(login2faCode || "").trim().length > 0
     loginAttemptMethod = login2faMethod
     loginProc.command = Model.emailLoginPrewarmCommand(
-      email, loginAttemptHadCode, String(loginServerUrl || "").trim(), login2faMethod)
+      email, loginAttemptHadCode, serverUrl, login2faMethod)
     loginProc.running = true
   }
 
@@ -1857,10 +1870,10 @@ Panel {
 
     // Checked before either branch, because both send the master password to
     // whatever this names. See validateServerUrl() for what it refuses.
-    var serverProblem = Model.validateServerUrl(loginServerUrl)
+    var serverUrl = resolvedLoginServerUrl()
+    var serverProblem = Model.validateServerUrl(serverUrl)
     if (serverProblem) {
       errorMessage = serverProblem
-      showServerField = true
       return
     }
 
@@ -1899,7 +1912,7 @@ Panel {
         loginAttemptHadCode = login2faCode.trim().length > 0
         loginAttemptMethod = login2faMethod
         loginProc.command = Model.emailLoginPrewarmCommand(
-          email, loginAttemptHadCode, loginServerUrl.trim(), login2faMethod)
+          email, loginAttemptHadCode, serverUrl, login2faMethod)
         loginProc.running = true
       }
       loginSubmitted = true
@@ -1934,7 +1947,7 @@ Panel {
       loginPrewarmSignature = ""
       loginAttemptHadCode = false
       loginAttemptMethod = -1
-      loginProc.command = Model.apiKeyLoginCommand(loginServerUrl.trim())
+      loginProc.command = Model.apiKeyLoginCommand(serverUrl)
       loginProc.running = true
     }
   }
@@ -2106,11 +2119,17 @@ Panel {
     // The panel knows whether this is a login or an unlock, so the terminal
     // does not have to spend a `bw status` round trip working it out.
     var mode = (status === "locked") ? "unlock" : "login"
+    var serverUrl = mode === "login" ? resolvedLoginServerUrl() : ""
+    var serverProblem = Model.validateServerUrl(serverUrl)
+    if (serverProblem) {
+      errorMessage = serverProblem
+      return
+    }
     close()
     // Opens the window in which a handed-over session key is accepted. See
     // refreshStatus().
     terminalLoginStartedAt = Date.now()
-    Quickshell.execDetached(Model.terminalLoginCommand(mode))
+    Quickshell.execDetached(Model.terminalLoginCommand(mode, serverUrl))
   }
 
   function logoutAccount() {
@@ -8048,6 +8067,64 @@ Panel {
             }
           }
 
+          Column {
+            visible: root.loginMethod !== "email" || root.loginCredentialsStage
+            width: parent.width
+            spacing: Style.space(5)
+
+            Text {
+              textFormat: Text.PlainText
+              text: "SERVER REGION"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Row {
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: Style.space(6)
+
+              Button {
+                text: "US"
+                selected: root.loginServerRegion === "us"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.selectLoginServerRegion("us")
+              }
+
+              Button {
+                text: "EU"
+                selected: root.loginServerRegion === "eu"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.selectLoginServerRegion("eu")
+              }
+
+              Button {
+                text: "Custom"
+                selected: root.loginServerRegion === "custom"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.selectLoginServerRegion("custom")
+              }
+            }
+
+            TextField {
+              id: serverUrlField
+              visible: root.loginServerRegion === "custom"
+              width: parent.width
+              placeholderText: "https://vault.example.com"
+              text: root.loginServerUrl
+              onTextChanged: root.loginServerUrl = text
+              onTextEdited: {
+                root.loginServerUrl = text
+                root.resetEmailLoginSecondFactor()
+                root.invalidateEmailLoginPrewarm()
+              }
+            }
+          }
+
           // METHOD A: Email & Password
           Column {
             visible: root.loginMethod === "email"
@@ -8320,44 +8397,6 @@ Panel {
                     root.invalidateEmailLoginPrewarm()
                     root.reopenTwoFactorMethodPicker()
                   }
-                }
-              }
-            }
-
-            // Custom Server URL (collapsible)
-            Column {
-              visible: root.loginCredentialsStage
-              width: parent.width
-              spacing: Style.space(4)
-
-              MouseArea {
-                width: parent.width
-                height: Style.space(20)
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.showServerField = !root.showServerField
-                Row {
-                  spacing: Style.space(4)
-                  Text {
-                    textFormat: Text.PlainText
-                    text: root.showServerField ? "▾ Custom Server URL" : "▸ Custom Server (Self-hosted Vaultwarden)"
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-                }
-              }
-
-              TextField {
-                id: serverUrlField
-                visible: root.showServerField
-                width: parent.width
-                placeholderText: "https://vault.example.com"
-                text: root.loginServerUrl
-                onTextChanged: root.loginServerUrl = text
-                onTextEdited: {
-                  root.loginServerUrl = text
-                  root.resetEmailLoginSecondFactor()
-                  root.invalidateEmailLoginPrewarm()
                 }
               }
             }

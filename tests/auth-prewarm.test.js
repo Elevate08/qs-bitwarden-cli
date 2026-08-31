@@ -284,8 +284,9 @@ check("focusing the email-login password field prepares login",
   "loginPassField has no prewarm focus handler")
 const prepareEmail = bodyOf("prepareEmailLogin")
 check("a custom server is not configured by focus-only prewarming",
-  /String\(loginServerUrl\s*\|\|\s*""\)\.trim\(\)[\s\S]{0,80}return/.test(prepareEmail)
-    && prepareEmail.indexOf("String(loginServerUrl") < prepareEmail.indexOf("loginProc.command"),
+  /var serverUrl\s*=\s*resolvedLoginServerUrl\(\)/.test(prepareEmail)
+    && /if\s*\(serverUrl\)\s*return/.test(prepareEmail)
+    && prepareEmail.indexOf("resolvedLoginServerUrl") < prepareEmail.indexOf("loginProc.command"),
   prepareEmail)
 check("submitting while an obsolete login prewarm stops queues a clean restart",
   /loginSubmitAfterPrewarmStop\s*=\s*true/.test(bodyOf("submitLogin"))
