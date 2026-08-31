@@ -863,7 +863,7 @@ public-export contradiction and mark validated assumptions with evidence.
       files, version floor, helper verification, and cleanup after removal.
       README gains an "SSH Agent" section, three rows in the configuration
       reference, a feature bullet, and two removal paths; CHANGELOG and
-      manifest carry 1.4.0.
+      manifest carry 1.5.0.
 - [x] The threat model plainly distinguishes best-effort erasure, public cache,
       same-UID/root limits, `bw` exposure, checksum corruption checks, and CI
       provenance without overstating any guarantee. "What this does not defend

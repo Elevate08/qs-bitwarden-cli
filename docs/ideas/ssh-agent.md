@@ -1102,7 +1102,7 @@ what actually established it, not with confidence:
 **Resolved in v1.** This paragraph contradicted "Public Key File Export"
 above, which called the same work v1 scope. The stronger requirement won,
 because Git signing cannot be configured the way a user actually configures it
-without files on disk. Public-key export shipped in 1.4.0 with the semantics
+without files on disk. Public-key export shipped in 1.5.0 with the semantics
 that section specifies: one `.pub` per advertised key under
 `${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh/`, mode `0600`
 inside a `0700` directory, names through the attachment sanitizer with the

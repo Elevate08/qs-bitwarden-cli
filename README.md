@@ -3,7 +3,7 @@
 A modern, fast, and feature-rich Bitwarden password manager plugin for the **Omarchy** shell environment and **Hyprland** desktop.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.4.0-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.5.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -556,7 +556,7 @@ git config --global commit.gpgsign true
 
 The panel checks the shipped binary against `bin/SHA256SUMS` at launch and shows "checksum verified", and says plainly when it is running a locally built development helper instead of the shipped one. Be clear about what that check is worth: `SHA256SUMS` sits in the same directory as the binary *and* as the QML that reads it, so anyone able to replace one can replace the others. It is not tamper detection. What it does catch is real -- a partial clone, an LFS placeholder, an architecture or format mismatch, and above all a stale binary left behind by a `git pull` that updated the source.
 
-Provenance is the separate mechanism with a different root of trust. Releases from `v1.4.0` on carry a GitHub build-provenance attestation binding the binary's digest to this repository, workflow and commit, published alongside an SBOM and a dependency/licence report:
+Provenance is the separate mechanism with a different root of trust. Releases from `v1.5.0` on carry a GitHub build-provenance attestation binding the binary's digest to this repository, workflow and commit, published alongside an SBOM and a dependency/licence report:
 
 ```bash
 gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
