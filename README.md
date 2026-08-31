@@ -3,7 +3,7 @@
 A modern, fast, and feature-rich Bitwarden password manager plugin for the **Omarchy** shell environment and **Hyprland** desktop.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.3.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.4.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI](https://img.shields.io/badge/requires-bw%20CLI-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -442,6 +442,15 @@ The following settings are read from the plugin's own entry in the
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see below. |
 | `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see below. |
+
+One further key, `twoFactorMethods`, is written to the same entry but is not a
+setting you configure. It records which two-step method last logged each
+account in, keyed by login address -- `{"you@example.com": 0}`, where `0` is
+authenticator, `1` email and `3` YubiKey -- so an account with more than one
+method is asked only once, and two vaults on one machine each keep their own
+answer. **Change method** on the code screen asks again and rewrites it. Entries
+are capped at ten accounts, and anything unreadable is treated as not
+remembered, which costs that account one extra prompt.
 
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
 

@@ -93,8 +93,15 @@ const CLIENT_SECRET_ENV = "BW_CLIENTSECRET"
 const TWOFACTOR_CODE_ENV = "QSBW_CODE"
 
 // bw prompts on a tty it does not have here, so every auth command runs with
-// interaction disabled and fails fast instead of hanging.
+// interaction disabled and fails fast instead of hanging. The one exception is
+// deviceVerificationLoginCommand(), which keeps the same guarantee by other
+// means -- see the comment there.
 const NOINTERACTION_ENV = "BW_NOINTERACTION"
+
+// The new-device verification code. Like the two-step code it is single-use
+// and short-lived, and unlike it, it never reaches an argv at all: it is read
+// out of the environment by a printf inside the command and piped to bw.
+const DEVICE_CODE_ENV = "QSBW_DEVICE_CODE"
 
 function sessionEnvVar() {
   return SESSION_ENV
@@ -118,6 +125,10 @@ function twoFactorCodeEnvVar() {
 
 function noInteractionEnvVar() {
   return NOINTERACTION_ENV
+}
+
+function deviceCodeEnvVar() {
+  return DEVICE_CODE_ENV
 }
 
 // Limits on stdout and stderr streams collected into the shell's memory space.
@@ -414,7 +425,120 @@ function unlockPrewarmCommand() {
   return supervisedAuthCommand("unlock", command)
 }
 
-function emailLoginPrewarmCommand(email, hasCode, serverUrl) {
+// The two-step methods bw is able to use, in the order bw itself lists them.
+// This is the whole set, not a selection from it: getSupportedProviders()
+// offers Duo and Organization Duo only if supportsDuo() and WebAuthn only if
+// supportsWebAuthn(), and the CLI's platform layer returns false for both, so
+// whatever an account has configured, the providers bw can act on are always a
+// subset of these three. A picker over them is therefore complete, which
+// matters because bw exposes no way to ask which ones an account actually has:
+// it keeps that list in a "memory" StateDefinition that dies with the process,
+// `bw serve` has no login route, and no flag reports it.
+var TWO_FACTOR_METHODS = [
+  { method: 0, label: "Authenticator app",
+    hint: "The rotating 6-digit code from your authenticator." },
+  { method: 3, label: "YubiKey OTP",
+    hint: "Touch the key to type its one-time password." },
+  { method: 1, label: "Email",
+    hint: "Bitwarden sends a code to your login address when you choose this." }
+]
+
+function twoFactorMethods() {
+  var out = []
+  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
+    var entry = {}
+    for (var k in TWO_FACTOR_METHODS[i]) entry[k] = TWO_FACTOR_METHODS[i][k]
+    out.push(entry)
+  }
+  return out
+}
+
+// --method is the one part of the login command that is neither quoted nor
+// carried in the environment, because bw wants a bare integer. Nothing outside
+// this table may reach it, so membership -- not shape -- is the test.
+function isTwoFactorMethod(method) {
+  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
+    if (TWO_FACTOR_METHODS[i].method === method) return true
+  }
+  return false
+}
+
+function twoFactorMethodLabel(method) {
+  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
+    if (TWO_FACTOR_METHODS[i].method === method) return TWO_FACTOR_METHODS[i].label
+  }
+  return ""
+}
+
+// Two-step methods belong to an account, not to a machine. A single remembered
+// method was wrong for anyone with more than one vault: signing into the second
+// account sent the first account's method, which that account rejects, and the
+// stale-method recovery then spent a round trip discovering it. Keyed by email,
+// each account answers the question once and keeps its own answer.
+var MAX_REMEMBERED_ACCOUNTS = 10
+
+// Bitwarden treats the login address case-insensitively, so the key has to as
+// well or the same account remembers itself twice.
+function twoFactorAccountKey(email) {
+  return String(email || "").trim().toLowerCase()
+}
+
+// shell.json is not validated by anything that writes it, and a remembered
+// method is read straight back into an argv, so it is checked against the table
+// on the way in as well as on the way out. Anything else is "not remembered",
+// which costs one picker rather than a malformed command.
+function rememberedTwoFactorMethodFor(store, email) {
+  var key = twoFactorAccountKey(email)
+  if (!key || !store || typeof store !== "object") return -1
+  var raw = store[key]
+  // The same reason intSetting() does not lean on Number() alone: it reads
+  // null, "" and false as 0, and 0 is Authenticator, so an absent entry would
+  // come back as a confident answer.
+  var m = (typeof raw === "number" || (typeof raw === "string" && String(raw).trim() !== ""))
+    ? Math.floor(Number(raw))
+    : NaN
+  return isFinite(m) && isTwoFactorMethod(m) ? m : -1
+}
+
+// Rebuilt rather than mutated, so whatever else is in that key -- a hand-edit,
+// an entry from a newer version, an unreadable value -- cannot survive into
+// what gets written back. Bounded, because this is a config file and not a
+// history: past the cap the oldest surviving entries are simply not copied,
+// which costs their accounts one picker each.
+function rememberTwoFactorMethodIn(store, email, method) {
+  var key = twoFactorAccountKey(email)
+  if (!key || !isTwoFactorMethod(method)) return null
+  var next = {}
+  var kept = 0
+  if (store && typeof store === "object") {
+    for (var k in store) {
+      var other = twoFactorAccountKey(k)
+      if (!other || other === key) continue
+      var existing = rememberedTwoFactorMethodFor(store, k)
+      if (existing < 0) continue
+      if (kept >= MAX_REMEMBERED_ACCOUNTS - 1) continue
+      next[other] = existing
+      kept++
+    }
+  }
+  next[key] = method
+  return next
+}
+
+function forgetTwoFactorMethodIn(store, email) {
+  var key = twoFactorAccountKey(email)
+  if (!key || !store || typeof store !== "object") return null
+  var next = {}
+  for (var k in store) {
+    var other = twoFactorAccountKey(k)
+    if (!other || other === key) continue
+    var existing = rememberedTwoFactorMethodFor(store, k)
+    if (existing >= 0) next[other] = existing
+  }
+  return next
+}
+
+function emailLoginPrewarmCommand(email, hasCode, serverUrl, method) {
   var command = ""
 
   if (serverUrl && serverUrl.trim()) {
@@ -422,15 +546,146 @@ function emailLoginPrewarmCommand(email, hasCode, serverUrl) {
   }
 
   command += "bw login " + shellQuote(email) + " --passwordfile \"$__auth_fifo\""
+  if (isTwoFactorMethod(method)) command += " --method " + String(method)
   if (hasCode) command += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
   command += " --raw | head -c " + MAX_TOKEN_BYTES
   return supervisedAuthCommand("login", command)
 }
 
+// bw 2026.2.0 answers two different challenges with this one bare sentence,
+// and which one it is decides whether this panel can answer it at all. See
+// loginNeedsDeviceVerification().
+// How long the one interactive login may run. It is answering a prompt with a
+// code the user has already typed, so it is a couple of server round trips --
+// not a person thinking. The bound exists so a login that reaches no prompt at
+// all cannot sit holding the master password until the panel is closed.
+var DEVICE_VERIFICATION_TIMEOUT_S = 60
+
+// The only login that runs with bw's prompts enabled.
+//
+// New-device verification is the one challenge bw accepts from no flag. Its
+// token comes from an inquirer prompt and from nothing else, so stdin is the
+// only way to answer it, and a login that cannot answer it cannot finish here
+// at all.
+//
+// Piping rather than opening a pty is what keeps BW_NOINTERACTION's guarantee
+// after taking BW_NOINTERACTION away. That flag was there so bw fails fast
+// instead of blocking on a prompt nobody can see, and a pipe ends: measured
+// against the inquirer 8.2.6 that bw bundles, a prompt with nothing left to
+// read throws ERR_USE_AFTER_CLOSE and the process exits, and a second prompt
+// after the single line supplied here does the same. So an unexpected prompt
+// still ends the login rather than hanging it, which is the property that
+// mattered. `timeout` covers the remainder: a bw that never prompts at all.
+//
+// The code itself is read from the environment by printf, so unlike --code it
+// reaches no argv, not even bw's.
+function deviceVerificationLoginCommand(email, serverUrl, method) {
+  var command = ""
+
+  if (serverUrl && serverUrl.trim()) {
+    command += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
+  }
+
+  command += "printf '%s\\n' \"$" + DEVICE_CODE_ENV + "\" | "
+  command += "timeout " + DEVICE_VERIFICATION_TIMEOUT_S + "s bw login " + shellQuote(email)
+    + " --passwordfile \"$__auth_fifo\""
+  if (isTwoFactorMethod(method)) command += " --method " + String(method)
+  command += " --raw | head -c " + MAX_TOKEN_BYTES
+  return supervisedAuthCommand("login", command)
+}
+
+// inquirer's own failure when it is asked for input that is not coming. It
+// means bw reached a prompt this login did not expect, which is a reason to
+// hand the login to a terminal rather than anything to show the user.
+function loginPromptRanOutOfInput(stdoutText, stderrText) {
+  var combined = String(stderrText || "") + "\n" + String(stdoutText || "")
+  return /ERR_USE_AFTER_CLOSE|readline was closed/.test(combined)
+}
+
+// An interactive bw draws its prompt on stderr and echoes every keystroke back
+// with the cursor movement to match, so the captured stream holds the code and
+// a great deal of noise. None of that is an error message. Strip the escape
+// sequences, drop the lines inquirer drew, and redact the code itself, so what
+// is left is whatever bw actually had to say.
+function sanitizeInteractiveStderr(raw, secret) {
+  var text = String(raw || "")
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "")
+    .replace(/\r/g, "\n")
+  var code = String(secret || "").trim()
+  var parts = text.split("\n")
+  var kept = []
+  for (var i = 0; i < parts.length; i++) {
+    var line = parts[i].trim()
+    if (!line) continue
+    if (line.charAt(0) === "?") continue
+    if (code && line.indexOf(code) !== -1) continue
+    kept.push(line)
+  }
+  // A crashing node prints a stack trace, which is not an error message
+  // either. Whatever survives is only ever shown as one line of context.
+  return kept.join(" ").slice(0, 300)
+}
+
+// A failed login is the hardest thing in this plugin to diagnose: it happens on
+// someone else's machine, against someone else's account, and the panel shows a
+// curated message rather than whatever bw said. This reports the shape of an
+// attempt and never its content -- the session token is counted, not printed,
+// and stderr goes through the same sanitiser the panel uses before it shows
+// anything, with no code to redact because none is passed.
+function loginDiagnostic(stdoutText, stderrText, exitCode, branch) {
+  return "exit=" + String(exitCode)
+    + " stdout=" + String(stdoutText || "").length + "b"
+    + " branch=" + String(branch || "?")
+    + " stderr=" + JSON.stringify(sanitizeInteractiveStderr(stderrText, "").slice(0, 200))
+}
+
+function loginCodeIsRequiredChallenge(stdoutText, stderrText) {
+  var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
+  return /(?:^|[\r\n])\s*code\s+is\s+required[.!]?\s*(?=$|[\r\n])/.test(combined)
+}
+
 function loginNeedsSecondFactor(stdoutText, stderrText) {
   var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
   return /(?:two[ _-]?(?:step|factor)|2fa|verification[ _-]?code)/.test(combined)
-    || /(?:^|[\r\n])\s*code\s+is\s+required[.!]?\s*(?=$|[\r\n])/.test(combined)
+    || loginCodeIsRequiredChallenge(stdoutText, stderrText)
+}
+
+// New-device verification is the challenge --code cannot answer. bw's login
+// command takes a two-step token from --code and reads it only in its
+// requiresTwoFactor branch; the requiresDeviceVerification branch that follows
+// takes its OTP from an inquirer prompt and nothing else, so BW_NOINTERACTION
+// leaves it with an empty token and it returns "Code is required." again. bw
+// 2026.2.0 offers no flag for that token -- login accepts --method, --code,
+// --sso, --apikey, --passwordenv and --passwordfile, and none of them reach it.
+//
+// The two challenges are indistinguishable on a first attempt: both come back
+// as that same sentence. They separate on the second. A login that carried a
+// code and still says the code is required did not have its code rejected --
+// a rejected two-step token says so ("Two-step token is invalid") -- it was
+// never read. That attempt is the evidence, so the caller passes it in.
+function loginNeedsDeviceVerification(stdoutText, stderrText, codeWasSent) {
+  if (!codeWasSent) return false
+  return loginCodeIsRequiredChallenge(stdoutText, stderrText)
+}
+
+// bw's answer when an account has more than one usable provider and nothing
+// told it which one to use. It reads like a failure but it is a question: bw
+// would have shown a menu here if it had a terminal to show one on, and
+// --method is the only answer it accepts. Guessing at it is what produces a
+// real failed attempt, so the panel asks instead.
+function loginNeedsMethodChoice(stdoutText, stderrText) {
+  var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
+  return /no\s+provider\s+selected/.test(combined)
+}
+
+// The dead end next to it: the account's two-step methods are all ones this
+// client cannot perform -- a passkey or Duo, typically. No --method answers
+// this and no terminal helps, because it is the CLI that lacks the support,
+// so the only way in is an API key.
+function loginHasNoUsableProvider(stdoutText, stderrText) {
+  var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
+  return /no\s+providers\s+available\s+for\s+this\s+client/.test(combined)
 }
 
 // The password remains in BW_PASSWORD, inherited only by this short-lived
@@ -587,6 +842,35 @@ function handoffWindowMs() {
 
 // Whether a handoff written now would still be accepted. `startedAt` is when
 // the panel launched the terminal, or 0 if it never did.
+// How long a login that is waiting on a second factor survives the panel being
+// closed.
+//
+// It has to survive it at all, because a code that arrives by email cannot be
+// read without leaving the panel, and a login that forgets everything the
+// moment it loses focus is one that can never be completed by email -- not for
+// two-step email codes and not for new-device verification, which is emailed
+// too. The panel dropping its state on close is right for every other case and
+// wrong for this one.
+//
+// Shorter than the terminal handoff window, because what is being held over is
+// the master password rather than a session key: long enough to open a mail
+// client and read six digits, not long enough to be somewhere the password
+// lives.
+var SECOND_FACTOR_WINDOW_MS = 5 * 60 * 1000
+
+function secondFactorWindowOpen(startedAt, now) {
+  var began = Number(startedAt)
+  if (!isFinite(began) || began <= 0) return false
+  var elapsed = Number(now) - began
+  // Measured on the wall clock rather than a monotonic timer, for the reason
+  // the auto-lock is: a suspended machine stops CLOCK_MONOTONIC, and a login
+  // left pending across a lid close must expire on the time that actually
+  // passed. A clock stepped backwards closes the window rather than reopening
+  // it, the same way handoffWindowOpen() treats it.
+  if (!isFinite(elapsed) || elapsed < 0) return false
+  return elapsed <= SECOND_FACTOR_WINDOW_MS
+}
+
 function handoffWindowOpen(startedAt, now) {
   var began = Number(startedAt)
   if (!isFinite(began) || began <= 0) return false
@@ -2925,6 +3209,10 @@ function boolSetting(key, raw) {
 function settingWriteCommand(key, value, type) {
   var raw
   if (type === "bool") raw = value ? "true" : "false"
+  // `omarchy bar set --json` stores whatever JSON it is handed, which is how a
+  // per-account map reaches shell.json. Only the value's own shape travels
+  // here; nothing secret is ever a setting.
+  else if (type === "json") raw = JSON.stringify(value === undefined ? null : value)
   else raw = String(Number(value) || 0)
   var script = "omarchy bar set io.github.elevate08.qs-bitwarden-cli "
     + shellQuote(String(key)) + " " + shellQuote(raw) + " --json | head -c " + MAX_MISC_BYTES

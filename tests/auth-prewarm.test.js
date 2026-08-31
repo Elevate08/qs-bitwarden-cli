@@ -292,15 +292,32 @@ check("submitting while an obsolete login prewarm stops queues a clean restart",
     && /loginProc\.running\s*=\s*false/.test(bodyOf("submitLogin")),
   bodyOf("submitLogin"))
 const loginProcBlock = panelSrc.slice(panelSrc.indexOf("id: loginProc"), panelSrc.indexOf("id: authPasswordWriterProc"))
+// The dispatch lives in resumeDeferredLogin() so both ways the process can end
+// -- its own exit, and the buffer scrub that may follow it -- go through it.
+// A scrub that returned early used to drop the queued login silently.
+const resumeDeferredBlock = bodyOf("resumeDeferredLogin")
 check("the obsolete prewarm exit starts the queued login instead of consuming its result",
-  /loginSubmitAfterPrewarmStop[\s\S]*submitLogin/.test(loginProcBlock), loginProcBlock)
+  /loginSubmitAfterPrewarmStop[\s\S]*submitLogin/.test(resumeDeferredBlock)
+    && /resumeDeferredLogin\(true\)/.test(loginProcBlock),
+  resumeDeferredBlock)
+check("a queued login survives the buffer scrub taking the process first",
+  /finishScrubRun\(loginProc\)\)\s*\{[\s\S]{0,140}resumeDeferredLogin\(false\)/.test(loginProcBlock),
+  loginProcBlock)
 check("focusing during prewarm shutdown queues another prewarm",
   /loginPrepareAfterPrewarmStop\s*=\s*true/.test(bodyOf("prepareEmailLogin")),
   bodyOf("prepareEmailLogin"))
 check("the stopped process services a queued prewarm when no submit is waiting",
-  /loginPrepareAfterPrewarmStop[\s\S]*prepareEmailLogin/.test(loginProcBlock), loginProcBlock)
+  /loginPrepareAfterPrewarmStop[\s\S]*prepareEmailLogin/.test(resumeDeferredBlock),
+  resumeDeferredBlock)
 check("a cancelled login with no queued restart scrubs any token that won the exit race",
-  /else\s+root\.clearProcessCollectorSoon\(loginProc\)/.test(loginProcBlock), loginProcBlock)
+  /else if \(mayScrub\) \{\s*\n\s*clearProcessCollectorSoon\(loginProc\)/.test(resumeDeferredBlock),
+  resumeDeferredBlock)
+// The scrub is the fallback, so a queued restart must be preferred to it --
+// otherwise the restart is what gets dropped.
+check("a queued restart is dispatched in preference to the scrub",
+  resumeDeferredBlock.indexOf("loginSubmitAfterPrewarmStop")
+    < resumeDeferredBlock.indexOf("clearProcessCollectorSoon"),
+  resumeDeferredBlock)
 const unlockProcBlock = panelSrc.slice(panelSrc.indexOf("id: unlockProc"), panelSrc.indexOf("id: logoutProc"))
 check("a cancelled unlock scrubs any token that won the exit race",
   /!root\.unlockSubmitted[\s\S]{0,120}clearProcessCollectorSoon\(unlockProc\)/.test(unlockProcBlock),
