@@ -165,9 +165,20 @@ check("an unpinned build is possible but must be asked for",
   /--allow-unpinned/.test(script) && /not reproducible/.test(script),
   "no way to build without a container, or no warning that it is not the release artifact")
 
+// The comparison is only meaningful from inside the pinned image: the tracked
+// bytes were produced there, and it pins glibc and binutils as well as the
+// compiler. Run against a host toolchain it reports drift that is not drift --
+// which, for the mode that exists to be a PR gate, is the worst way to fail.
+check("--compare-tracked enters the pinned image like every other build mode",
+  /compare_tracked\(\)[\s\S]{0,700}?in_pinned_environment[\s\S]{0,300}?reexec_in_container "\$runtime" --compare-tracked/.test(script),
+  "the drift check builds with whatever toolchain the host happens to have")
+check("and refuses rather than guessing when it cannot enter one",
+  /compare_tracked\(\)[\s\S]{0,1100}?fail "not in the pinned build environment/.test(script),
+  "an unpinned comparison reports a mismatch it cannot stand behind")
+
 check("--compare-tracked reports drift without writing to the repository",
-  /compare_tracked\(\)[\s\S]{0,600}?mktemp -d/.test(script)
-    && !/compare_tracked\(\)[\s\S]{0,600}?install -m/.test(script),
+  /compare_tracked\(\)[\s\S]{0,1400}?mktemp -d/.test(script)
+    && !/compare_tracked\(\)[\s\S]{0,1400}?install -m/.test(script),
   "the drift check writes into the repository")
 
 // Every mode must build the same way. They did not: the release build put its

@@ -238,6 +238,26 @@ verify_reproducible() {
 compare_tracked() {
   local committed="$OUTPUT_DIR/$OUTPUT_NAME"
   [ -f "$committed" ] || fail "no tracked binary at bin/$OUTPUT_ARCH/$OUTPUT_NAME"
+
+  # The comparison is only worth anything from inside the pinned environment.
+  # The tracked bytes were produced there, and the image pins glibc and
+  # binutils as well as the compiler -- so a host build with the right rustc
+  # and a different libc reports drift that does not exist. This mode is the
+  # PR gate: it was the one mode that could fail for a reason having nothing
+  # to do with the source it was asked about.
+  if ! in_pinned_environment; then
+    local runtime
+    if runtime="$(container_runtime)"; then
+      reexec_in_container "$runtime" --compare-tracked
+      return $?
+    fi
+    fail "not in the pinned build environment and no container runtime to enter one. A build
+       here would use the host toolchain, whose output differs from the tracked bytes for
+       reasons that are not drift -- so this check refuses to report a mismatch it cannot
+       stand behind. It runs in CI, which executes it inside the pinned image."
+  fi
+  note "comparing in the pinned environment"
+
   local work
   work="$(mktemp -d)" || fail "could not create a work directory"
   # shellcheck disable=SC2064
