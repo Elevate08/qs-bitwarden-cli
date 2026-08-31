@@ -3955,6 +3955,23 @@ function sshAgentHelperCandidates(pluginDir) {
   ]
 }
 
+// What the banner says when a local build is serving SSH keys. It has to
+// carry why that is worth knowing, not just that it is true: the shipped
+// binary is the one with a recorded digest and a CI provenance attestation
+// behind it, and a development build has neither. When the shipped one was
+// rejected rather than absent, say which -- "yours is broken" and "you built
+// one" are different situations. The remedy is the same either way and is
+// named in the words a user has: reinstall the plugin. Rebuilding from source
+// is a maintainer's answer, and this banner is not only read by maintainers.
+function sshAgentDevelopmentHelperWarning(helper) {
+  var checksum = helper && helper.checksum ? helper.checksum : "unchecked"
+  var why = checksum === "mismatch"
+    ? "The shipped helper failed its checksum, so a locally built one is serving your SSH keys."
+    : "A locally built helper is serving your SSH keys, not the shipped one."
+  return why + " It carries no recorded digest and no build provenance. "
+    + "Reinstall the plugin to restore the shipped helper before trusting a signature from it."
+}
+
 function sshAgentHelperSourceLabel(source) {
   if (source === "bundled") return "the helper shipped with this plugin"
   if (source === "development") return "a locally built development helper, not the shipped artifact"

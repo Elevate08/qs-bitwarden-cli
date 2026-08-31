@@ -5740,6 +5740,18 @@ Panel {
           hasPublicCache: root.sshAgentKeyCount > 0
         }),
         setupState: root.sshAgentSetup.state,
+        // Which binary is actually running, and whether its digest was
+        // checked. A shipped helper and a silently substituted development
+        // build behave identically until one of them misbehaves, and without
+        // these two fields the terminal cannot tell them apart at all.
+        helperSource: root.sshAgentHelper.source,
+        helperChecksum: root.sshAgentHelper.checksum,
+        // Why inspection rejected it, in the inspector's own vocabulary:
+        // checksum-mismatch, not-elf, wrong-architecture, not-executable,
+        // self-test-failed. errorCode covers the running helper and stays
+        // empty for all of these, so without this the terminal is told the
+        // feature is in error and never told what the error was.
+        helperState: root.sshAgentHelper.state,
         errorCode: root.sshAgentErrorCode,
         keyCount: root.sshAgentKeyCount,
         loadActive: root.sshAgentLoadActive,
@@ -6270,6 +6282,46 @@ Panel {
               textFormat: Text.PlainText
               id: errorText
               text: root.errorMessage
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.Wrap
+              width: parent.width - Style.space(24)
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // Development Helper Banner
+        // -------------------------------------------------------------------
+        // The shipped helper is what a user installed and what CI verified.
+        // Falling back to a local build is deliberate -- a broken release must
+        // not strand a working one -- but it is a state you can sit in for
+        // days without noticing, signing with a binary nobody checked. The
+        // settings screen says so in passing; this says so wherever you are.
+        BorderSurface {
+          visible: root.sshAgentHelper.source === "development" && root.activeScreen !== "settings"
+          width: parent.width
+          implicitHeight: sshDevHelperText.implicitHeight + Style.space(12)
+          color: Util.alpha(Color.urgent, 0.15)
+          radius: Style.cornerRadius
+          borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+          Row {
+            anchors.centerIn: parent
+            width: parent.width - Style.space(16)
+            spacing: Style.space(8)
+            Text {
+              textFormat: Text.PlainText
+              text: "󰀪"
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              textFormat: Text.PlainText
+              id: sshDevHelperText
+              text: Model.sshAgentDevelopmentHelperWarning(root.sshAgentHelper)
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall

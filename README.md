@@ -228,6 +228,17 @@ gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
 
 `gh` is not an Omarchy dependency, so this is a check you run if you want it, not one the plugin can assume. Worth re-running after a plugin update, when the binary has changed.
 
+**When the check fails.** The panel disables SSH support, names the reason, and leaves the rest of the plugin working. If a locally built helper is present it falls back to that instead and says so on a banner -- which is the state to be careful about, because signing carries on with a binary that has no recorded digest and no provenance behind it. Either way the fix is to restore the shipped artifact:
+
+```bash
+omarchy plugin remove io.github.elevate08.qs-bitwarden-cli
+omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
+```
+
+`omarchy plugin update` is not enough on its own: it pulls, and a pull will not overwrite a tracked file you have modified locally. Removing and re-adding gets you a clean checkout. Nothing you care about lives in the plugin folder -- the session key and stored password are in the keyring, learned suggestions in `~/.local/state` -- so this costs you your `shell.json` settings for the plugin and nothing else.
+
+`omarchy-shell io.github.elevate08.qs-bitwarden-cli sshAgentStatus` reports `helperSource`, `helperChecksum` and `helperState` if you want the verdict without opening the panel.
+
 #### What this does not defend against
 
 - **Anything running as you.** The socket enforces the peer's UID and nothing more. A process running as you can ask for signatures -- it gets a prompt, and the cooldown limits how often it can raise one -- and it can equally replace the helper, the checksum file, and the QML that checks them. Filesystem permissions own that boundary; the plugin cannot defend itself against a same-UID attacker, and neither can any other agent.
