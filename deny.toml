@@ -1,0 +1,65 @@
+# Dependency policy for the SSH agent helper.
+#
+# This binary holds decrypted private keys. Its dependency tree was reviewed
+# once, deliberately and in writing, in docs/decisions/0001-ssh-agent-dependencies.md;
+# this file is what stops that review going stale between releases. Anything
+# it rejects is a prompt to think, not a rule to route around.
+
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+# Only what the release actually compiles. Auditing features this build never
+# enables produces findings nobody can act on.
+all-features = false
+
+[advisories]
+# Every RustSec advisory is a build failure, with one documented exception.
+yanked = "deny"
+ignore = [
+  # RUSTSEC-2023-0071: Marvin, a timing sidechannel in `rsa`'s private-key
+  # operations. Unpatched upstream -- there is no fixed release to move to.
+  #
+  # Accepted for the reasons recorded in the Task 4 ADR: the attack needs
+  # accurate timing of many private-key operations from the attacker's own
+  # observations, and this helper signs only after an explicit human approval
+  # or inside a short grant, over a same-UID socket. An attacker positioned to
+  # farm timings from it is already a same-UID process on an unlocked desktop,
+  # which the threat model does not defend against by design.
+  #
+  # Revisit when `rsa` publishes a fix, or if Ed25519-only becomes acceptable.
+  { id = "RUSTSEC-2023-0071", reason = "no upstream fix; see docs/decisions/0001-ssh-agent-dependencies.md" },
+]
+
+[licenses]
+# Permissive only. A copyleft dependency in a binary this repository ships
+# would change the plugin's own distribution terms, which is a decision for a
+# human rather than a dependency bump.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate major versions of one crate mean two copies compiled in. For a
+# crypto dependency that also means two implementations, one of which nobody
+# audited. Warn rather than deny: transitive duplicates are common and often
+# outside our control, but they should be visible in the log.
+multiple-versions = "warn"
+wildcards = "deny"
+# Nothing here should reach for the network or spawn processes; both would
+# contradict the design's claim that the helper has exactly three inputs.
+deny = []
+
+[sources]
+# Only crates.io. A git dependency is a moving target that no lockfile review
+# can meaningfully cover, and this binary is committed as bytes.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -40,9 +40,10 @@ for (const source of ["onUnlockSuccess", "onSessionHandoff"]) {
 
 const listFinished = bodyOf("onListFinished")
 check("metadata deferral begins only after the item result is accepted",
-  /items\s*=\s*Model\.parseItems/.test(listFinished)
+  /items\s*=\s*Model\.parseSanitizedItems/.test(listFinished)
+    && !/items\s*=\s*Model\.parseItems/.test(listFinished)
     && /deferredMetadataTimer\.restart\(\)/.test(listFinished)
-    && listFinished.indexOf("items = Model.parseItems") < listFinished.indexOf("deferredMetadataTimer.restart()"),
+    && listFinished.indexOf("items = Model.parseSanitizedItems") < listFinished.indexOf("deferredMetadataTimer.restart()"),
   listFinished)
 
 const listExited = bodyOf("onListProcessExited")
@@ -54,12 +55,21 @@ check("a failed item refresh clears all loading and deferred-work state",
     && /metadataLoadPending\s*=\s*false/.test(listExited)
     && /syncReloadPending\s*=\s*false/.test(listExited),
   listExited)
+check("a failed item refresh does not run the post-load status refresh",
+  !/statusRefreshAfterItems[\s\S]{0,140}runStatusCheck\(/.test(listExited),
+  listExited)
 
 const timerStart = panelSrc.indexOf("id: deferredMetadataTimer")
 const timer = timerStart === -1 ? "" : panelSrc.slice(timerStart, timerStart + 700)
 check("deferred metadata loads both organizations and folders", /loadOrganizations\(/.test(timer) && /loadFolders\(/.test(timer), timer)
 check("metadata waits long enough for an item-list frame",
   /interval:\s*(?:[2-9][0-9]|[1-9][0-9]{2,})/.test(timer), timer)
+check("post-load status refresh is metadata-only",
+  /runStatusCheck\(false\)/.test(timer)
+    && /function runStatusCheck\(authoritative\)/.test(panelSrc)
+    && /statusCheckAuthoritative\s*=\s*authoritative\s*!==\s*false/.test(panelSrc)
+    && /if\s*\(!authoritative\)\s*\{[\s\S]{0,220}return/.test(bodyOf("onStatusFinished")),
+  bodyOf("runStatusCheck") + "\n" + bodyOf("onStatusFinished") + "\n" + timer)
 
 const sync = bodyOf("onSyncFinished")
 check("a successful server sync also reloads items before metadata",

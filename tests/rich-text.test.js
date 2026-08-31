@@ -53,7 +53,7 @@ check("plainLabel is idempotent in the sense that re-running it cannot inject",
 // Text defaults to Text.AutoText. Vault names, usernames, URIs, notes and Send
 // names all land in one of these, so every one of them has to say otherwise --
 // including the ones that only render a constant today.
-for (const file of ["Panel.qml", "FormPickerRow.qml"]) {
+for (const file of ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml", "FormPickerRow.qml"]) {
   const src = fs.readFileSync(path.join(__dirname, "..", file), "utf8").split("\n")
   const bare = []
   src.forEach((line, i) => {
@@ -67,7 +67,10 @@ for (const file of ["Panel.qml", "FormPickerRow.qml"]) {
 
 // The kit's Button builds its own Text and exposes no textFormat, so the
 // strings we hand it have to arrive already neutralized.
-const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+// Every QML file that draws vault-derived text, not just the largest one.
+const panel = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml", "FormPickerRow.qml"]
+  .map(file => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+  .join("\n")
 for (const binding of ["formFolderLabel()", "formOrgLabel()", 'modelData.name + ": " + modelData.value']) {
   const line = panel.split("\n").find(l => l.includes(binding) && /^\s*(text|tooltipText):/.test(l))
   check(`the button label built from ${binding} goes through plainLabel`,

@@ -31,6 +31,33 @@ Panel {
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
+  // The SSH agent is opt-in. Nothing starts a helper, creates a socket, or
+  // touches a FIFO while this is false.
+  readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
+  readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
+  readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
+
+  // The SSH sections' own section header. PanelSectionHeader comes from the
+  // Omarchy shell, and its defaults are the global theme's -- `Color.foreground`
+  // and `Style.font.family` -- while everything around it here follows the bar's
+  // own foreground and font family. Stating them once keeps the headers matching
+  // the captions beneath them, and keeps `textFormat` explicit, which this
+  // panel requires of every text element whether or not its text is constant
+  // today.
+  component SshSectionHeader: PanelSectionHeader {
+    textFormat: Text.PlainText
+    foreground: root.fg
+    fontFamily: root.fontFamily
+  }
+
+  component SshCaption: Text {
+    textFormat: Text.PlainText
+    width: parent ? parent.width : 0
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -114,6 +141,8 @@ Panel {
   property var dependencies: ({ items: [], hasOmarchy: true })
   property bool depsChecked: false
   property bool setupDismissed: false
+  property string listReadMode: "sanitized"
+  property var sshCapability: Model.defaultSshCapability()
   // True while the panel should be showing setup rather than probing `bw`.
   // See setupGateActive() in BitwardenModel.js for why the gate exists.
   readonly property bool setupGated: Model.setupGateActive(dependencies, depsChecked, setupDismissed)
@@ -127,7 +156,7 @@ Panel {
   property bool setupWasGated: false
   property string settingsFlash: ""
   property int settingsIndex: 0
-  readonly property var settingsEntries: Model.groupedSettings()
+  readonly property var settingsEntries: Model.visibleSettings(dependencies, depsChecked)
 
   // Vault data
   property var items: []
@@ -152,11 +181,12 @@ Panel {
   readonly property int filterRowHeight: Style.space(30)
   readonly property int filterVisibleRows: 5
   readonly property var currentFilterOptions: openFilterGroup === "" ? [] : filterOptions(openFilterGroup)
+  readonly property int currentFilterVisibleRows: openFilterGroup === "types" ? currentFilterOptions.length : filterVisibleRows
   // The drawer's own height. The panel adds this to its cap so the window
   // opens downward like a drawer instead of squeezing the item list.
   readonly property int filterDrawerHeight: openFilterGroup === ""
     ? 0
-    : Style.space(30) + Math.min(filterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
+    : Style.space(30) + Math.min(currentFilterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
   property string formFolderId: ""
   property string newFolderName: ""
   // Which picker in the item form is expanded: "" | "folder" | "organization"
@@ -234,6 +264,7 @@ Panel {
   property bool metadataLoadPending: false
   property bool metadataForceRefresh: false
   property bool statusRefreshAfterItems: false
+  property bool statusCheckAuthoritative: true
   // Whether this unlocked session has already tried to repair an unsynced
   // vault. See the lastSync check in onStatusFinished().
   property bool initialSyncAttempted: false
@@ -384,6 +415,16 @@ Panel {
     // cannot succeed.
     root.checkDependencies()
     root.loadAssociations()
+    // Explicit as well as bound: onSshAgentSupervisableChanged carries every
+    // later change, but a shell that starts with the feature already enabled
+    // evaluates that binding to true once, at creation, with nothing yet
+    // listening.
+    root.syncSshAgentSupervision()
+    // Everything above is the startup value, not a user action. Only changes
+    // after this point are transitions worth reacting to.
+    root.sshAgentSettingsReady = true
+    if (root.sshAgentEnabled) root.inspectSshAgentHelper()
+    root.inspectUwsmFragment()
   }
 
   readonly property var categories: [
@@ -392,8 +433,730 @@ Panel {
     { id: "secureNote", label: "Notes", icon: "󰈙" },
     { id: "card", label: "Cards", icon: "󰿯" },
     { id: "identity", label: "Identities", icon: "" },
+    { id: "sshKey", label: "SSH Keys", icon: "󰣀" },
     { id: "favorite", label: "Favorites", icon: "󰓒" }
   ]
+
+  // SSH keys need a CLI that can decrypt them. Until the probe confirms one,
+  // the type filter that can only ever come back empty is not offered.
+  readonly property bool sshUiAvailable: Model.sshUiAvailable(dependencies, depsChecked)
+  readonly property var visibleCategories: sshUiAvailable
+    ? categories
+    : categories.filter(function(category) { return category.id !== "sshKey" })
+
+  // -------------------------------------------------------------------------
+  // SSH companion supervision
+  // -------------------------------------------------------------------------
+  //
+  // The decisions live in Model.sshAgentReduce(); this side owns the Process,
+  // the clock and the timers. Every event goes through applySshAgentEvent(),
+  // which is the only place the state object is replaced, so the mirrored
+  // properties below and the real state can never drift apart.
+  //
+  // Nothing here is on the path of an ordinary vault operation. A helper that
+  // will not start, will not handshake, or crashes repeatedly leaves login,
+  // unlock, list, copy, sync, edit, Send and the generator exactly as they
+  // are; it only closes the signing gate and parks in an error state.
+
+  // Resolved from Panel.qml's own URL, so the helper is launched by an
+  // absolute path inside the plugin directory rather than off PATH.
+  readonly property string sshAgentPluginDir: Model.pluginDirFromUrl(String(Qt.resolvedUrl(".")))
+  readonly property string sshAgentRuntimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
+  // What the shipped helper turned out to be. Checked once when the feature
+  // is enabled, and again whenever the plugin directory changes, because a
+  // plugin update can replace the binary under a running shell.
+  property var sshAgentHelper: ({ state: "unknown", source: "", version: "",
+    protocol: 0, checksum: "unchecked", selfTest: "", message: "" })
+
+  readonly property bool sshAgentSupervisable: sshAgentEnabled
+    && sshAgentPluginDir !== "" && sshAgentRuntimeDir !== ""
+    // A helper that fails inspection disables this feature and nothing else:
+    // no supervisor, so no socket, no FIFO, and no agent branch in the vault
+    // read. The rest of the plugin never sees it.
+    && Model.sshAgentHelperReady(sshAgentHelper)
+
+  function inspectSshAgentHelper() {
+    if (sshAgentHelperProc.running) return
+    sshAgentHelperProc.command = Model.sshAgentHelperInspectCommand(root.sshAgentPluginDir)
+    sshAgentHelperProc.running = true
+  }
+
+  function onSshAgentHelperInspected(raw) {
+    root.sshAgentHelper = Model.parseSshAgentHelperInspection(raw)
+  }
+
+  property var sshAgentState: Model.sshAgentInitialState()
+  // Mirrors of sshAgentState. QML cannot bind through a plain JS object, and
+  // the handshake timeout and backoff timers have to be driven by bindings
+  // rather than by anything that waits.
+  property string sshAgentPhase: "disabled"
+  property bool sshAgentGateOpen: false
+  property string sshAgentSocketPath: ""
+  property string sshAgentFifoPath: ""
+  property string sshAgentVersion: ""
+  property string sshAgentErrorCode: ""
+  property string sshAgentErrorMessage: ""
+
+  function applySshAgentEvent(event) {
+    var step = Model.sshAgentReduce(root.sshAgentState, event)
+    root.sshAgentState = step.state
+    root.sshAgentPhase = step.state.phase
+    root.sshAgentGateOpen = step.state.gateOpen
+    root.sshAgentSocketPath = step.state.socketPath
+    root.sshAgentFifoPath = step.state.fifoPath
+    root.sshAgentVersion = step.state.agentVersion
+    root.sshAgentErrorCode = step.state.errorCode
+    root.sshAgentErrorMessage = step.state.errorMessage
+
+    // The state above is committed before any of this runs, because stopping
+    // the Process can re-enter this function with the child's exit before the
+    // outer call returns. That order is what makes the re-entry safe: the
+    // inner reduction sees the phase it should, and no action set here is one
+    // the inner call also sets.
+    var action = step.action
+    // Cancel before scheduling: a stop that arrives while a restart is armed
+    // must not leave the timer running against a helper nobody asked for.
+    if (action.cancelRestart) sshAgentRestartTimer.stop()
+    if (action.stop) stopSshAgentHelper()
+    if (action.writeHello && sshAgentProc.running) sshAgentProc.write(Model.sshAgentHelloLine())
+    if (action.restartInMs >= 0) {
+      sshAgentRestartTimer.interval = action.restartInMs
+      sshAgentRestartTimer.restart()
+    }
+    if (action.start) startSshAgentHelper()
+    if (action.message) root.onSshAgentMessage(action.message)
+  }
+
+  function startSshAgentHelper() {
+    sshAgentTerminateTimer.stop()
+    // A previous stop closed this. The control channel is the helper's only
+    // input, so it has to be open again before the handshake is written.
+    sshAgentProc.stdinEnabled = true
+    sshAgentProc.running = true
+  }
+
+  // Stopping the helper is a request, not a signal. Its designed shutdown is
+  // the control channel closing: it drops its keys, unlinks its socket and
+  // FIFO, and exits. SIGTERM -- which is all `running = false` does -- skips
+  // every one of those, leaving a socket and FIFO behind for the next start
+  // to clean up. So ask, then terminate only if it does not go.
+  function stopSshAgentHelper() {
+    if (!sshAgentProc.running) {
+      sshAgentTerminateTimer.stop()
+      return
+    }
+    if (sshAgentProc.stdinEnabled) {
+      sshAgentProc.write(Model.sshAgentShutdownLine())
+      sshAgentProc.stdinEnabled = false
+    }
+    sshAgentTerminateTimer.restart()
+  }
+
+  // Live companion events. Task 10 supervises the channel; the vault
+  // lifecycle, approval UI and key loading that consume these arrive with
+  // Tasks 12-14. Until then an unhandled event is deliberately inert rather
+  // than an error: it is a valid v1 message the panel simply has no use for
+  // yet.
+  // -------------------------------------------------------------------------
+  // Signing authorization
+  // -------------------------------------------------------------------------
+  //
+  // One prompt at a time, never over a locked screen, and never claiming more
+  // about the requesting process than the companion actually checked.
+
+  // What is actually on screen. A live signing request outranks navigation:
+  // the panel's own flows reset currentScreen freely -- opening the panel,
+  // finishing an unlock -- and each of those would otherwise drop a prompt
+  // that a blocked client is waiting on. Screen visibility binds to this
+  // rather than to currentScreen, so no later assignment can hide a prompt.
+  readonly property string activeScreen: sshPrompt !== null ? "sshApproval" : currentScreen
+
+  property var sshPrompt: null            // the approval_required being shown
+  property var sshUnlockRequest: null     // the unlock_required being shown
+  property var sshUnlockRaw: null         // its original message, to promote from
+  // What the companion last announced, and the live view of it. The
+  // announcement is a snapshot; the view is that snapshot re-derived against
+  // a ticking clock, so a grant counts down on screen and disappears when it
+  // lapses instead of waiting for the next thing to happen.
+  property var sshGrantsAnnounced: []
+  property double sshGrantTick: 0
+  readonly property var sshGrants: Model.sshAgentGrantsAt(sshGrantsAnnounced, sshGrantTick)
+  property var sshCooldown: Model.sshAgentCooldownInitial()
+  // Whether the current cooldown has already been announced. Reset when it
+  // lapses, so a later one is announced again but the same one is not
+  // repeated on every refused request.
+  property bool sshCooldownAnnounced: false
+  readonly property var sshCooldownStatus: Model.sshAgentCooldownStatus(sshCooldown, sshCooldownTick)
+  // A one-second tick so the remaining time in the status actually counts
+  // down; bindings on Date.now() would never re-evaluate on their own.
+  property double sshCooldownTick: 0
+  property double sshPromptStartedMs: 0
+  property int sshPromptRemainingSec: 0
+  property string screenBeforeSshApproval: "main"
+  // Whether the signing request is what put the panel on screen. If it was,
+  // answering hands the desktop back; if the user already had the panel open,
+  // it is theirs and they are returned to what they were doing.
+  property bool sshPromptOpenedPanel: false
+
+  function sshAgentWrite(line) {
+    if (line === "") return
+    if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(line)
+  }
+
+  // Whether a request may raise UI at all. A locked screen never does, and a
+  // process that has had two refusals in a row is put on a cooldown so it
+  // cannot keep reopening the panel.
+  // Called wherever the cooldown may have just started. The announcement is
+  // the only thing that tells a user why their SSH command suddenly fails.
+  function noteSshCooldown() {
+    root.sshCooldownTick = Date.now()
+    var status = Model.sshAgentCooldownStatus(root.sshCooldown, Date.now())
+    if (status.active && !root.sshCooldownAnnounced) {
+      root.sshCooldownAnnounced = true
+      flashNotification("SSH signing paused: too many unanswered prompts")
+    } else if (!status.active) {
+      root.sshCooldownAnnounced = false
+    }
+  }
+
+  // The only way out of a running cooldown other than waiting it out. It has
+  // to be explicit: the cooldown suppresses the prompts an approval would
+  // answer, so nothing the requesting process does can end it, and nothing it
+  // does should. A person pressing this is the signal that the requests are
+  // wanted after all.
+  function resumeSshSigning() {
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "resumed", Date.now())
+    noteSshCooldown()
+  }
+
+  function sshAgentMayPrompt() {
+    // An unknown screen state counts as locked. The poll runs every few
+    // seconds while the agent is serving, so a reading older than this means
+    // the poll is not running and the panel cannot tell -- and the cost of
+    // guessing wrong is a credential prompt on a locked desktop.
+    var fresh = root.screenLockCheckedAt > 0
+      && (Date.now() - root.screenLockCheckedAt) < (Model.screenLockPollMs() * 4)
+    if (!Model.sshAgentShouldPrompt(fresh ? { screenLocked: root.screenIsLocked } : null)) return false
+    return !Model.sshAgentCooldownActive(root.sshCooldown, Date.now())
+  }
+
+  function showSshApproval(message) {
+    root.sshPrompt = Model.sshAgentPromptView(message, root.sshAgentApprovalWindowSec)
+    root.sshPromptStartedMs = Date.now()
+    root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
+    if (root.currentScreen !== "sshApproval") root.screenBeforeSshApproval = root.currentScreen
+    // Recorded before opening, because open() is what makes it true.
+    if (!root.sshUnlockRaw) root.sshPromptOpenedPanel = !root.opened
+    // Open first. Opening runs onPanelOpened(), which sends an unlocked panel
+    // to the item list, so claiming the screen before that would simply be
+    // undone -- the prompt would be live with nothing on screen.
+    if (!root.opened) root.open()
+    root.currentScreen = "sshApproval"
+  }
+
+  function dismissSshApproval() {
+    var openedForThis = root.sshPromptOpenedPanel
+    root.sshPrompt = null
+    root.sshUnlockRequest = null
+    root.sshUnlockRaw = null
+    root.sshPromptOpenedPanel = false
+    if (root.currentScreen === "sshApproval") {
+      root.currentScreen = root.screenBeforeSshApproval === "sshApproval"
+        ? "main" : root.screenBeforeSshApproval
+    }
+    // Answered -- approved or denied alike -- so give the desktop back if the
+    // request is what took it. A panel the user opened themselves stays open
+    // on whatever screen they were using.
+    if (openedForThis && root.opened) root.close()
+  }
+
+  function approveSshRequest(grantSeconds) {
+    if (!sshPrompt) return
+    sshAgentWrite(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
+    noteSshCooldown()
+    dismissSshApproval()
+  }
+
+  function denySshRequest() {
+    if (sshUnlockRequest) {
+      sshAgentWrite(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
+    } else if (sshPrompt) {
+      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+    } else {
+      return
+    }
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+    noteSshCooldown()
+    dismissSshApproval()
+  }
+
+  // The companion expires the request; this only stops the panel showing a
+  // question whose answer would now be rejected anyway.
+  function expireSshRequest() {
+    if (!sshPrompt && !sshUnlockRequest) return
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "timeout", Date.now())
+    noteSshCooldown()
+    dismissSshApproval()
+  }
+
+  // Git SSH signing needs paths, so the validated public set is projected to
+  // files. Only what the companion vouched for is written, and only its
+  // public form -- sshExportIdentities() refuses anything that is not an
+  // OpenSSH public line.
+  function exportSshPublicKeys() {
+    var payload = Model.sshExportPayload(root.sshPendingPublicKeys)
+    root.sshPendingPublicKeys = []
+    if (sshExportProc.running) return
+    sshExportProc.running = true
+    sshExportProc.write(payload)
+    sshExportProc.stdinEnabled = false
+  }
+
+  // Logout, account change and disabling remove the projection. A lock does
+  // not: public identities stay advertised while locked, so their files stay
+  // with them.
+  function clearSshPublicKeys() {
+    root.sshPendingPublicKeys = []
+    root.sshPendingPublicEpoch = -1
+    if (sshExportClearProc.running) return
+    sshExportClearProc.running = true
+  }
+
+  function onSshExportFinished(exitCode, stdout) {
+    var result = Model.parseSshExportResult(exitCode, stdout)
+    root.sshExportError = result.ok ? "" : result.message
+  }
+
+  property string sshExportError: ""
+
+  function revokeSshGrant(grantId) {
+    sshAgentWrite(Model.sshAgentRevokeGrantLine(grantId))
+  }
+
+  function revokeAllSshGrants() {
+    sshAgentWrite(Model.sshAgentRevokeGrantsLine())
+  }
+
+  function onSshAgentMessage(message) {
+    if (message.type === "approval_required") {
+      // A request that cannot raise UI is refused rather than left hanging:
+      // the client gets its answer now instead of waiting out the deadline.
+      if (!sshAgentMayPrompt()) {
+        sshAgentWrite(Model.sshAgentDenyLine(message.requestId))
+        return
+      }
+      showSshApproval(message)
+      return
+    }
+    if (message.type === "unlock_required") {
+      if (!sshAgentMayPrompt()) {
+        sshAgentWrite(Model.sshAgentUnlockCancelledLine(message.requestId))
+        return
+      }
+      root.sshUnlockRaw = message
+      root.sshUnlockRequest = Model.sshAgentPromptView(message, 0)
+      root.sshPromptStartedMs = Date.now()
+      root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
+      root.sshPromptOpenedPanel = !root.opened
+      if (!root.opened) root.open()
+      return
+    }
+    if (message.type === "request_cancelled") {
+      // The request is gone -- the client disconnected, the deadline passed,
+      // or an unlock replaced it with an approval. Take the prompt down
+      // rather than leaving a question with nothing behind it.
+      var live = root.sshPrompt || root.sshUnlockRequest
+      if (live && live.requestId === message.requestId) {
+        // A prompt that was on screen and went unanswered is what the
+        // cooldown counts. "released" is the unlock handing over to an
+        // approval, which is the opposite of being ignored.
+        if (message.reason !== "released") {
+          root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "timeout", Date.now())
+          noteSshCooldown()
+        }
+        dismissSshApproval()
+      }
+      return
+    }
+    if (message.type === "grants_changed") {
+      root.sshGrantsAnnounced = Model.sshAgentGrantViews(message.grants, Date.now())
+      root.sshGrantTick = Date.now()
+      return
+    }
+    if (message.type === "public_key") {
+      // A new epoch starts a new set rather than adding to the last one.
+      if (root.sshPendingPublicEpoch !== message.epoch) {
+        root.sshPendingPublicEpoch = message.epoch
+        root.sshPendingPublicKeys = []
+      }
+      root.sshPendingPublicKeys = root.sshPendingPublicKeys.concat([message])
+      return
+    }
+    if (message.type === "keys_loaded") {
+      root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
+      root.sshAgentKeysLoadedAt = Date.now()
+      // The set is complete: every public_key for this epoch arrived ahead of
+      // this message.
+      if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
+      return
+    }
+    if (message.type === "locked") {
+      // The companion has denied signing, dropped its grants and private keys,
+      // and kept only the public projection. That is what the kill timer was
+      // waiting for.
+      sshAgentLockAckTimer.stop()
+      return
+    }
+    if (message.type === "state_changed") {
+      root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
+      return
+    }
+    // unlock_required, approval_required and grants_changed are the signing
+    // UX, and arrive with Task 14. Ignoring a valid v1 message is deliberate
+    // here; an unknown *type* is a protocol failure and never reaches this.
+  }
+
+  // -------------------------------------------------------------------------
+  // Key loading (the agent branch of the shared vault read)
+  // -------------------------------------------------------------------------
+  //
+  // The companion's keystore requires a strictly increasing epoch per load, so
+  // this counter only ever goes up. It survives helper restarts harmlessly: a
+  // restarted companion begins again at 0, and every value the panel sends is
+  // still greater than that.
+  property int sshAgentEpoch: 0
+  property string sshAgentLoadId: ""
+  property bool sshAgentLoadActive: false
+  // Whether the read now running carries the agent branch, and whether it has
+  // already been retried without it. The retry exists so an optional feature
+  // can never cost the user their item list.
+  property bool listAgentBranchActive: false
+  property bool listRetriedWithoutAgent: false
+
+  // A nonce is generated ahead of the load that will use it. Reading
+  // /dev/urandom is fast, but it is still a process, and the ordinary item
+  // list must never wait on the agent feature -- so a load that finds no
+  // nonce ready simply runs without the branch and primes one for next time.
+  property string sshAgentNextLoadId: ""
+  // What the companion last reported it was serving. Public metadata only --
+  // a count, not the keys -- and it is what tells the panel whether a locked
+  // companion still has a public cache to answer identity listings from.
+  property int sshAgentKeyCount: 0
+  // The validated public identities the companion reported for the epoch
+  // currently loading. Accumulated per key, because a single message carrying
+  // all of them would exceed the control-line ceiling at the key limit.
+  property var sshPendingPublicKeys: []
+  property int sshPendingPublicEpoch: -1
+  property double sshAgentKeysLoadedAt: 0
+  // The vault epoch a key load has already been started for. dropVaultState()
+  // advances vaultEpoch on every lock and logout, so this is what tells a
+  // startup load apart from one that has already happened for this session.
+  property int sshAgentLoadedForVaultEpoch: -1
+
+  function primeSshAgentLoadId() {
+    if (loadIdProc.running || sshAgentNextLoadId !== "") return
+    loadIdProc.running = true
+  }
+
+  function onSshAgentLoadIdRead(raw) {
+    var candidate = String(raw || "").trim()
+    root.sshAgentNextLoadId = Model.isValidLoadId(candidate) ? candidate : ""
+  }
+
+  // Close an open load window. Called on success, on failure, and on a lock
+  // that cancels the read underneath it. The companion holds every candidate
+  // unpublished until this arrives, and discards it on a failed status, so a
+  // window that is never closed is the one outcome to avoid.
+  function endSshAgentLoad(ok) {
+    if (!sshAgentLoadActive) return
+    sshAgentLoadActive = false
+    sshAgentLoadId = ""
+    if (sshAgentProc.running && sshAgentProc.stdinEnabled) {
+      sshAgentProc.write(Model.sshAgentLoadEndLine(sshAgentEpoch, ok))
+    }
+    primeSshAgentLoadId()
+  }
+
+  // A lock abandons the current loadId and stops the whole read. The pipeline
+  // runs as its own process group, so terminating the wrapper reaps `bw`, the
+  // caps, `tee` and both `jq` stages with it.
+  function cancelSshAgentLoad() {
+    if (listProc.running) listProc.running = false
+    endSshAgentLoad(false)
+    listAgentBranchActive = false
+    listRetriedWithoutAgent = false
+  }
+
+  // Every vault transition reaches the companion through here, so the ordering
+  // rules live in one place: deny first, cancel work in flight, then let the
+  // panel get on with its own lock. Nothing below ever waits on the helper.
+  function applySshAgentLifecycle(event) {
+    var action = Model.sshAgentLifecycleTransition(event, {
+      enabled: root.sshAgentEnabled,
+      helperReady: root.sshAgentGateOpen,
+      loggedIn: root.status !== "unauthenticated",
+      unlocked: root.status === "unlocked",
+      loading: root.sshAgentLoadActive,
+      hasPublicCache: root.sshAgentKeyCount > 0,
+      epoch: root.sshAgentEpoch
+    })
+
+    if (action.cancelLoad) cancelSshAgentLoad()
+    for (var i = 0; i < action.controlLines.length; i++) {
+      if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(action.controlLines[i])
+    }
+    if (action.clearPublic) {
+      root.sshAgentKeyCount = 0
+      root.sshAgentKeysLoadedAt = 0
+      clearSshPublicKeys()
+    }
+    // The acknowledgment is a courtesy the panel gives the companion two
+    // seconds to return. It is not a precondition for locking: `bw lock` has
+    // already been launched by the caller, and a companion that cannot
+    // confirm a lock is one that must not keep running.
+    if (action.awaitLockAck) sshAgentLockAckTimer.restart()
+    if (action.stopHelper) stopSshAgentHelper()
+    if (action.startLoad && !listProc.running) loadItems(false)
+  }
+
+  function syncSshAgentSupervision() {
+    applySshAgentEvent({ kind: "enabled", value: root.sshAgentSupervisable, nowMs: Date.now() })
+  }
+
+  onSshAgentSupervisableChanged: syncSshAgentSupervision()
+
+  function sendSshAgentOptions() {
+    sshAgentWrite(Model.sshAgentOptionsLine(root.sshAgentUnlockOnDemand))
+  }
+
+  onSshAgentUnlockOnDemandChanged: sendSshAgentOptions()
+
+  onSshAgentGateOpenChanged: {
+    if (sshAgentGateOpen) sendSshAgentOptions()
+    if (!sshAgentGateOpen) {
+      endSshAgentLoad(false)
+      // The keystore lives in the helper's memory. Whatever it held went with
+      // it, so the panel must stop claiming those keys are still served.
+      root.sshAgentKeyCount = 0
+      return
+    }
+    // A new helper is empty even when the vault epoch has not moved -- the
+    // epoch tracks the vault, not the process. Clearing this is what makes a
+    // restarted or re-enabled helper eligible for a load, instead of leaving
+    // it keyless until something unrelated happens to bump the epoch.
+    root.sshAgentLoadedForVaultEpoch = -1
+    primeSshAgentLoadId()
+    // Startup is not evidence that the vault is locked: rememberSession can
+    // restore a session key, so the panel can already be unlocked when the
+    // companion finishes its handshake with an empty keystore. Deferred by a
+    // beat so the nonce that was just primed is actually ready.
+    sshAgentStartupLoadTimer.restart()
+  }
+
+  Timer {
+    id: sshAgentStartupLoadTimer
+    interval: 250
+    repeat: false
+    onTriggered: root.maybeStartupLoad()
+  }
+
+  // Two things have to be true before a startup load makes sense -- the helper
+  // is serving, and the vault is actually unlocked -- and on a shell restart
+  // they arrive in either order: the handshake can easily beat the first
+  // `bw status`. So both edges call this, and the vault epoch keeps it to one
+  // load rather than one per edge.
+  function maybeStartupLoad() {
+    if (!sshAgentGateOpen || root.status !== "unlocked") return
+    // A read already running is the common case at startup: the panel's first
+    // item read is launched before the helper has finished handshaking, so it
+    // carries no agent branch. onListFinished() calls back here once it lands.
+    if (sshAgentLoadActive || listProc.running) return
+    if (sshAgentLoadedForVaultEpoch === root.vaultEpoch) return
+    // Marked before the attempt, not after it, so one failed attempt cannot
+    // turn into a read that relaunches itself.
+    sshAgentLoadedForVaultEpoch = root.vaultEpoch
+    applySshAgentLifecycle("startup")
+  }
+
+  onStatusChanged: {
+    promoteUnlockToApproval()
+    maybeStartupLoad()
+  }
+
+  // The vault is unlocked but its keys are still being read. Ask now rather
+  // than after: approving needs the key's identity and the requesting
+  // program, and both are already known. The companion records the approval
+  // and applies it the moment the keys land, re-checking that the approved
+  // key is actually present before it signs.
+  function promoteUnlockToApproval() {
+    if (root.status !== "unlocked" || !root.sshUnlockRaw || root.sshPrompt) return
+    // A listing is satisfied by the load itself; there is no signature to
+    // authorise, so it stays a wait rather than becoming an approval.
+    if (root.sshUnlockRaw.reason === "list-identities") return
+    var raw = root.sshUnlockRaw
+    root.sshUnlockRequest = null
+    root.sshUnlockRaw = null
+    showSshApproval(raw)
+  }
+
+  // The bound on the companion's lock acknowledgment. A helper that cannot
+  // confirm it has dropped its keys is a helper that must not keep running.
+  Timer {
+    id: sshAgentLockAckTimer
+    interval: Model.sshAgentLockAckTimeoutMs()
+    repeat: false
+    onTriggered: if (sshAgentProc.running) sshAgentProc.running = false
+  }
+
+  // Disabled / enabled / error, as the design's table defines them. Derived,
+  // never stored: it can only ever say what the supervisor is actually doing.
+  readonly property var sshAgentSetup: Model.sshAgentSetupState({
+    enabled: sshAgentEnabled,
+    supervisable: sshAgentSupervisable,
+    phase: sshAgentPhase,
+    errorCode: sshAgentErrorCode
+  })
+
+  // -------------------------------------------------------------------------
+  // Client routing (advisory)
+  // -------------------------------------------------------------------------
+  //
+  // Where SSH_AUTH_SOCK points decides nothing above. The companion binds a
+  // deterministic path and never reads it; this is only about whether the
+  // user's *clients* will find that socket. The panel sees the graphical
+  // session's environment and nothing else, so everything here is phrased as
+  // a hint with a check the user can run in the terminal they actually use.
+  readonly property string sshAuthSock: Quickshell.env("SSH_AUTH_SOCK") || ""
+  readonly property var sshRouting: Model.sshAuthSockDiagnostic(sshAuthSock, sshAgentRuntimeDir)
+
+  property var uwsmFragment: ({ state: "unknown", removable: false, message: "" })
+  readonly property var sshRoutingNotice: Model.sshAgentRoutingNotice(uwsmFragment, sshRouting)
+  property bool uwsmBusy: false
+  property string uwsmFlash: ""
+  // Set when the session already points at another agent. Writing the fragment
+  // would make Bitwarden the primary agent at the next login, which is not
+  // something to do silently on one click.
+  property bool uwsmConfirmPending: false
+
+  function inspectUwsmFragment() {
+    if (uwsmInspectProc.running) return
+    uwsmInspectProc.running = true
+  }
+
+  function beginUwsmSetup() {
+    if (uwsmBusy) return
+    if (sshRouting.state === "elsewhere" && !uwsmConfirmPending) {
+      uwsmConfirmPending = true
+      return
+    }
+    uwsmConfirmPending = false
+    uwsmBusy = true
+    uwsmFlash = ""
+    uwsmWriteProc.running = true
+  }
+
+  // Clearing everything the plugin stored outside its own folder. Confirmed
+  // rather than absorbed by the first click: it drops a stored master
+  // password and every learned suggestion, and none of it comes back.
+  property bool pluginDataConfirmPending: false
+  property bool pluginDataBusy: false
+  property string pluginDataFlash: ""
+
+  function beginPluginDataRemoval() {
+    if (pluginDataBusy) return
+    if (!pluginDataConfirmPending) {
+      pluginDataConfirmPending = true
+      return
+    }
+    pluginDataConfirmPending = false
+    pluginDataBusy = true
+    pluginDataFlash = ""
+    pluginDataRemoveProc.running = true
+  }
+
+  function cancelPluginDataRemoval() {
+    pluginDataConfirmPending = false
+  }
+
+  function onPluginDataRemoved(exitCode, stdout) {
+    var result = Model.parsePluginDataRemoval(exitCode, stdout)
+    root.pluginDataBusy = false
+    root.pluginDataFlash = result.message
+    // The keyring entry is part of what was just deleted, so what the panel
+    // believes about a stored master password must not be kept.
+    if (result.ok) root.fingerprintStored = false
+  }
+
+  function cancelUwsmSetup() {
+    uwsmConfirmPending = false
+  }
+
+  // Safe to call unconditionally: the script removes the file only when it is
+  // byte-for-byte the one this plugin writes, and refuses a symlink outright.
+  function removeUwsmFragment() {
+    if (uwsmBusy) return
+    uwsmConfirmPending = false
+    uwsmBusy = true
+    uwsmFlash = ""
+    uwsmRemoveProc.running = true
+  }
+
+  function onUwsmActionFinished(exitCode, stdout) {
+    var result = Model.parseUwsmActionResult(exitCode, stdout)
+    root.uwsmBusy = false
+    root.uwsmFlash = result.message
+    root.inspectUwsmFragment()
+  }
+
+  // Turning the agent off takes the routing file with it, but only if it is
+  // the exact file this plugin wrote. Anything the user manages by hand is
+  // left alone with instructions rather than deleted on a toggle.
+  //
+  // Gated on startup having finished, because this must fire on a real
+  // transition and not on the initial evaluation of the binding. Without the
+  // guard, every shell start with the feature off would delete a routing file
+  // the user never touched -- a filesystem change nobody asked for.
+  property bool sshAgentSettingsReady: false
+
+  onSshAgentEnabledChanged: {
+    if (sshAgentEnabled) inspectSshAgentHelper()
+    inspectUwsmFragment()
+    if (!sshAgentSettingsReady) return
+    if (!sshAgentEnabled) {
+      // Stopping the helper goes through the supervisor, which knows nothing
+      // about the public projection. Without this, the files of a feature
+      // that is no longer running are left behind on disk.
+      applySshAgentLifecycle("disable")
+      removeUwsmFragment()
+      return
+    }
+    // And turning it back on puts the file back, because taking it away on
+    // one toggle and not restoring it on the other is a trap: SSH_AUTH_SOCK
+    // is fixed at login, so the session that flips the setting keeps working
+    // either way and the damage only appears at the next boot, long past the
+    // point where anyone would connect the two. The inspection above is
+    // asynchronous, so the decision waits for its answer.
+    uwsmRestorePending = true
+  }
+
+  // Only ever set by re-enabling the agent, and cleared by the first
+  // inspection that follows. It restores what disabling removed; it never
+  // routes a session that was not already routed, and it never overrules a
+  // file this plugin did not write.
+  property bool uwsmRestorePending: false
+
+  function applyUwsmRestore() {
+    if (!uwsmRestorePending) return
+    uwsmRestorePending = false
+    if (!sshAgentEnabled || uwsmBusy) return
+    // "absent" only: a foreign file, a symlink, an unreadable one or no HOME
+    // are all cases the plugin refuses to touch, and it must keep refusing
+    // here. An agent already owning SSH_AUTH_SOCK is a decision the user
+    // makes at the button, with the conflict named.
+    if (uwsmFragment.state !== "absent" || sshRouting.state === "elsewhere") return
+    beginUwsmSetup()
+  }
 
   // -------------------------------------------------------------------------
   // Lifecycle & Open / Close
@@ -476,14 +1239,14 @@ Panel {
   // Called whenever the user acts on an item while a window context is active.
   // Silent by design: teaching happens as a side effect of normal use.
   function learnFromPick(item) {
-    if (!suggestOnOpen || !item || !item.id || !detectedContext) return
+    if (!suggestOnOpen || !item || !item.id || !detectedContext || !Model.isLoginItem(item)) return
     if (Model.isAssociated(associations, detectedContext, item.id)) return
     saveAssociations(Model.recordAssociation(associations, detectedContext, item.id, new Date().toISOString()))
   }
 
   // Explicit pin/unpin from the detail view.
   function toggleAssociation(item) {
-    if (!item || !item.id || !detectedContext) return
+    if (!item || !item.id || !detectedContext || !Model.isLoginItem(item)) return
     if (Model.isAssociated(associations, detectedContext, item.id)) {
       saveAssociations(Model.forgetAssociation(associations, detectedContext, item.id))
       flashNotification("No longer suggested for " + detectedContext.displayName)
@@ -584,6 +1347,12 @@ Panel {
     detectActiveWindowContext()
     refreshFingerprintAvailability()
 
+    // A signing request outranks the item list: it is the reason the panel
+    // opened, and a client is blocked on the answer.
+    if (sshPrompt) {
+      currentScreen = "sshApproval"
+      return
+    }
     if (status === "unlocked") {
       currentScreen = "main"
       ensureItemsFresh()
@@ -692,8 +1461,9 @@ Panel {
     runStatusCheck()
   }
 
-  function runStatusCheck() {
+  function runStatusCheck(authoritative) {
     if (statusProc.running) return
+    statusCheckAuthoritative = authoritative !== false
     beginEpochOperation("status")
     statusProc.command = Model.statusCommand()
     statusProc.running = true
@@ -716,7 +1486,16 @@ Panel {
       return
     }
     isLoading = false
+    var authoritative = statusCheckAuthoritative
+    statusCheckAuthoritative = true
     var st = Model.parseStatus(rawJson)
+    if (!authoritative) {
+      if (st && st.userEmail) {
+        userEmail = st.userEmail
+        if (!loginEmail) loginEmail = st.userEmail
+      }
+      return
+    }
     if (!st) {
       cancelAuthPrewarm()
       if (vaultStatePresent()) {
@@ -1343,6 +2122,9 @@ Panel {
     logoutCredentialsExitCode = 0
     terminalLoginStartedAt = 0
     lockVault()
+    // Stronger than the lock above: logout takes the public projection with
+    // it, so a new account cannot inherit the last one's identities.
+    applySshAgentLifecycle("logout")
     forgetStoredCredentials()
     pendingUnlockPassword = ""
     logoutProc.command = Model.logoutCommand()
@@ -2244,7 +3026,10 @@ Panel {
     if (currentScreen !== "settings") screenBeforeSettings = currentScreen
     settingsFlash = ""
     settingsIndex = 0
+    uwsmFlash = ""
+    uwsmConfirmPending = false
     checkDependencies()
+    inspectUwsmFragment()
     currentScreen = "settings"
   }
 
@@ -2299,6 +3084,9 @@ Panel {
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       // The toggle reflects a PIN actually being set, not just the flag.
       case "pinUnlock": return pinUnlock && pinConfigured
+      case "sshAgentEnabled": return sshAgentEnabled
+      case "sshAgentUnlockOnDemand": return sshAgentUnlockOnDemand
+      case "sshAgentApprovalWindowSec": return sshAgentApprovalWindowSec
     }
     return entry.type === "bool" ? Model.boolSetting(entry.key, setting(entry.key, entry.defaultValue)) : Number(setting(entry.key, 0))
   }
@@ -2593,6 +3381,9 @@ Panel {
     closeFilterGroup()
     cancelAuthPrewarm()
     clearClipboard()
+    // Before bw lock is launched, so the companion's deny transition is not
+    // sequenced behind it. The panel's own lock never waits on the answer.
+    applySshAgentLifecycle("lock")
     if (session) {
       lockProc.command = Model.lockCommand()
       lockProc.running = true
@@ -2861,14 +3652,50 @@ Panel {
     if (!session) return
     if (showSpinner !== false) isLoading = true
     beginVaultRead("items")
-    listProc.command = Model.listCommand()
+    listReadMode = Model.vaultListMode(dependencies)
+    if (listReadMode === "blocked") {
+      isLoading = false
+      if (!vaultReadIsStale("items")) errorMessage = Model.vaultListBlockedMessage(dependencies)
+      return
+    }
+    startVaultListRead(false)
+  }
+
+  // The one place the item read is launched, so the agent branch and its
+  // retry-without-it cannot drift apart. `retrying` is the second attempt
+  // after a fan-out read failed; it never carries the branch.
+  function startVaultListRead(retrying) {
+    var useAgent = !retrying && sshAgentGateOpen && Model.isValidLoadId(sshAgentNextLoadId)
+    if (useAgent) {
+      sshAgentEpoch += 1
+      sshAgentLoadId = sshAgentNextLoadId
+      sshAgentNextLoadId = ""
+      sshAgentLoadActive = true
+      sshAgentLoadedForVaultEpoch = root.vaultEpoch
+      if (sshAgentProc.stdinEnabled) {
+        sshAgentProc.write(Model.sshAgentLoadBeginLine(sshAgentEpoch, sshAgentLoadId))
+      }
+    }
+    listAgentBranchActive = useAgent
+    listProc.environment = root.vaultListEnv(useAgent ? sshAgentLoadId : "")
+    listProc.command = Model.sanitizedListCommand({ agentBranch: useAgent })
     listProc.running = true
+  }
+
+  // The nonce reaches `jq` through the environment rather than argv, because
+  // /proc/<pid>/cmdline is world-readable and the nonce's whole purpose is
+  // being unguessable by another process running as this user.
+  function vaultListEnv(loadId) {
+    var env = root.bwEnv()
+    env[Model.loadIdEnvVar()] = loadId !== "" ? loadId : null
+    return env
   }
 
   function onListFinished(rawJson) {
     isLoading = false
     if (vaultReadIsStale("items")) return
-    items = Model.parseItems(rawJson)
+    sshCapability = Model.inspectSanitizedVault(rawJson)
+    items = Model.parseSanitizedItems(rawJson)
     itemsLoadedAt = Date.now()
     if (activeWindowData) {
       handleActiveWindowDetected(activeWindowData)
@@ -2881,14 +3708,32 @@ Panel {
       flashNotification("Vault synced with Bitwarden")
     }
     if (metadataLoadPending) deferredMetadataTimer.restart()
+    // The first read of a session usually beats the helper's handshake, so it
+    // carries no keys. Now that it has landed, check whether one is owed.
+    maybeStartupLoad()
   }
 
   function onListProcessExited(exitCode, rawJson, stderrText) {
     if (finishScrubRun(listProc)) return
+    var hadAgentBranch = listAgentBranchActive
+    listAgentBranchActive = false
+    endSshAgentLoad(exitCode === 0)
+
     if (exitCode === 0) {
+      listRetriedWithoutAgent = false
       onListFinished(rawJson)
       return
     }
+
+    // The optional feature is never allowed to cost the user their item list.
+    // One retry, without the branch, before anything is reported as an error.
+    if (hadAgentBranch && !listRetriedWithoutAgent && !vaultReadIsStale("items")) {
+      listRetriedWithoutAgent = true
+      beginVaultRead("items")
+      startVaultListRead(true)
+      return
+    }
+    listRetriedWithoutAgent = false
 
     isLoading = false
     isSyncing = false
@@ -2897,10 +3742,9 @@ Panel {
     metadataForceRefresh = false
     if (statusRefreshAfterItems) {
       statusRefreshAfterItems = false
-      runStatusCheck()
     }
     if (!vaultReadIsStale("items")) {
-      errorMessage = String(stderrText || "").trim() || "Could not load vault items"
+      errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
     }
   }
 
@@ -3017,8 +3861,8 @@ Panel {
         out.push({ id: organizations[i].id, label: organizations[i].name, icon: "󰓹", active: selectedOrg === organizations[i].id })
       }
     } else if (group === "types") {
-      for (i = 0; i < categories.length; i++) {
-        out.push({ id: categories[i].id, label: categories[i].label, icon: categories[i].icon, active: selectedCategory === categories[i].id })
+      for (i = 0; i < visibleCategories.length; i++) {
+        out.push({ id: visibleCategories[i].id, label: visibleCategories[i].label, icon: visibleCategories[i].icon, active: selectedCategory === visibleCategories[i].id })
       }
     }
     return out
@@ -3042,6 +3886,13 @@ Panel {
   // Innermost thing first: a drawer or picker closes before the screen it is
   // on, and a screen goes back before the panel closes.
   function handleEscape() {
+    // Ahead of every other screen: a signing request is a question with a
+    // client blocked on the answer, so dismissing it has to mean "no" rather
+    // than "later".
+    if (currentScreen === "sshApproval" || sshUnlockRequest) {
+      denySshRequest()
+      return
+    }
     if (openFilterGroup !== "") {
       closeFilterGroup()
       return
@@ -3260,7 +4111,13 @@ Panel {
       detailPassword = detail.password
     } else {
       beginVaultRead("detail")
-      getItemProc.command = Model.getItemCommand(item.id)
+      if (item.typeCode === 5) {
+        isLoading = false
+        errorMessage = "SSH keys are read-only public records"
+        currentScreen = "main"
+        return
+      }
+      getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
       getItemProc.running = true
     }
 
@@ -3486,7 +4343,10 @@ Panel {
   }
 
   function startEditItem(item) {
-    if (!item) return
+    if (!item || item.typeCode === 5) {
+      if (item && item.typeCode === 5) errorMessage = "SSH keys are read-only public records"
+      return
+    }
     formIsEditing = true
     formItemId = item.id
     formTypeCode = item.typeCode || 1
@@ -3526,11 +4386,13 @@ Panel {
 
     if (formIsEditing) {
       var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
+      if (!editPayload) { isLoading = false; errorMessage = "This item is read-only"; return }
       itemPayloadJson = JSON.stringify(editPayload)
-      editItemProc.command = Model.editItemCommand(formItemId)
+      editItemProc.command = Model.editItemCommand(formItemId, formTypeCode)
       editItemProc.running = true
     } else {
       var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
+      if (!createPayload) { isLoading = false; errorMessage = "This item type is read-only"; return }
       itemPayloadJson = JSON.stringify(createPayload)
       createItemProc.command = Model.createItemCommand(createPayload)
       createItemProc.running = true
@@ -3554,10 +4416,10 @@ Panel {
   }
 
   function deleteCurrentItem() {
-    if (!detailItem || !detailItem.id) return
+    if (!detailItem || !detailItem.id || detailItem.typeCode === 5) return
     isLoading = true
     beginVaultRead("itemDelete")
-    deleteItemProc.command = Model.deleteItemCommand(detailItem.id)
+    deleteItemProc.command = Model.deleteItemCommand(detailItem.id, detailItem.typeCode)
     deleteItemProc.running = true
   }
 
@@ -3607,8 +4469,20 @@ Panel {
     }
   }
 
+  // What the list says when it has nothing to show. The SSH filter gets its own
+  // answer: a vault that returned no SSH keys is not the same as a server that
+  // never confirmed it can store them, and only the first is worth waiting on.
+  function emptyListMessage() {
+    if (selectedCategory === "sshKey" && filteredItems.length === 0 && sshCapability
+        && sshCapability.state === "unconfirmed") {
+      return sshCapability.message
+    }
+    if (items.length === 0) return "Vault is empty"
+    return "No items match '" + searchQuery + "'"
+  }
+
   function selectCategory(catId) {
-    selectedCategory = catId
+    selectedCategory = catId === "sshKey" && !sshUiAvailable ? "all" : catId
     selectedIndex = 0
     rebuildFilter()
   }
@@ -3621,14 +4495,14 @@ Panel {
 
   function cycleCategory(delta) {
     var currentIndex = 0
-    for (var i = 0; i < categories.length; i++) {
-      if (categories[i].id === selectedCategory) {
+    for (var i = 0; i < visibleCategories.length; i++) {
+      if (visibleCategories[i].id === selectedCategory) {
         currentIndex = i
         break
       }
     }
-    var nextIndex = (currentIndex + delta + categories.length) % categories.length
-    selectCategory(categories[nextIndex].id)
+    var nextIndex = (currentIndex + delta + visibleCategories.length) % visibleCategories.length
+    selectCategory(visibleCategories[nextIndex].id)
   }
 
   // Every main-screen shortcut in one place. Reached two ways: bare letters
@@ -3709,7 +4583,7 @@ Panel {
     Quickshell.execDetached(["wl-copy", "--clear"])
   }
 
-  function requestPasswordCopy(itemId) {
+  function requestPasswordCopy(itemId, typeCode) {
     if (!session || !itemId) return
     if (copyPasswordProc.running) {
       errorMessage = "Another password copy is still loading"
@@ -3717,7 +4591,7 @@ Panel {
     }
     passwordCopyItemId = String(itemId)
     beginVaultRead("passwordCopy")
-    copyPasswordProc.command = Model.getPasswordCommand(itemId)
+    copyPasswordProc.command = Model.getPasswordCommand(itemId, typeCode)
     copyPasswordProc.running = true
   }
 
@@ -3740,7 +4614,7 @@ Panel {
   // Smart sequential Enter handler: Copies Password, then arms and auto-copies TOTP
   function handleSmartEnter(item) {
     openFilterGroup = ""
-    if (!item) return
+    if (!item || !Model.isLoginItem(item)) return
 
     // If already in active TOTP follow-up mode for this item, copy TOTP now!
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id) {
@@ -3773,7 +4647,7 @@ Panel {
 
   function copyPassword(item) {
     closeFilterGroup()
-    if (!item) return
+    if (!item || !Model.isLoginItem(item)) return
     learnFromPick(item)
     var pass = (detailItem && detailItem.id === item.id && detailPassword) ? detailPassword : (item.password || "")
     if (pass) {
@@ -3781,7 +4655,7 @@ Panel {
       return
     }
     if (session) {
-      requestPasswordCopy(item.id)
+      requestPasswordCopy(item.id, item.typeCode)
     } else {
       errorMessage = "Vault is locked or session expired. Please unlock your vault."
     }
@@ -3795,7 +4669,7 @@ Panel {
 
   function copyTotpCode(item) {
     closeFilterGroup()
-    if (!item) return
+    if (!item || !Model.isLoginItem(item)) return
     if (liveTotp && item.id === (detailItem ? detailItem.id : "")) {
       copyToClipboard(liveTotp, "TOTP code")
       return
@@ -3865,7 +4739,7 @@ Panel {
       root.loadFolders(force)
       if (root.statusRefreshAfterItems) {
         root.statusRefreshAfterItems = false
-        root.runStatusCheck()
+        root.runStatusCheck(false)
       }
     }
   }
@@ -3949,9 +4823,17 @@ Panel {
   // replaces the countdown -- a vault left open at an unlocked desk is still
   // the case only elapsed time can catch.
 
+  // The last reading from the screen-lock poll, with the moment it was taken.
+  // The agent needs this even when lockOnScreenLock is off, because it must
+  // never raise an approval prompt over a locked screen.
+  property bool screenIsLocked: false
+  property double screenLockCheckedAt: 0
+
   function onScreenLockState(raw) {
+    root.screenIsLocked = Model.screenIsLocked(raw)
+    root.screenLockCheckedAt = Date.now()
     if (!lockOnScreenLock || status !== "unlocked") return
-    if (Model.screenIsLocked(raw)) lockVault()
+    if (root.screenIsLocked) lockVault()
   }
 
   function onSleepSignal(line) {
@@ -3977,7 +4859,10 @@ Panel {
     repeat: true
     // Nothing to ask while the setting is off or the vault is already locked,
     // which between them is every state but the one this is for.
-    running: root.lockOnScreenLock && root.status === "unlocked"
+    // Also while the agent is serving: an approval prompt must never appear
+    // over a locked screen, and that needs a current reading regardless of
+    // whether the vault is set to lock with the screen.
+    running: (root.lockOnScreenLock && root.status === "unlocked") || root.sshAgentGateOpen
     onTriggered: {
       if (!screenLockStateProc.running) screenLockStateProc.running = true
     }
@@ -4003,6 +4888,166 @@ Panel {
       waitForEnd: true
       onStreamFinished: root.onScreenLockState(text)
     }
+  }
+
+  Process {
+    id: sshAgentHelperProc
+    stdout: StdioCollector {
+      id: sshAgentHelperStdout
+      waitForEnd: true
+      onStreamFinished: root.onSshAgentHelperInspected(text)
+    }
+  }
+
+  Process {
+    id: sshExportProc
+    command: Model.sshExportCommand()
+    stdinEnabled: true
+    stdout: StdioCollector { id: sshExportStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      sshExportProc.stdinEnabled = true
+      root.onSshExportFinished(exitCode, sshExportStdout.text)
+    }
+  }
+
+  Process {
+    id: sshExportClearProc
+    command: Model.sshExportClearCommand()
+    stdout: StdioCollector { id: sshExportClearStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onSshExportFinished(exitCode, sshExportClearStdout.text) }
+  }
+
+  Process {
+    id: loadIdProc
+    command: Model.loadIdCommand()
+    stdout: StdioCollector {
+      id: loadIdStdout
+      waitForEnd: true
+      onStreamFinished: root.onSshAgentLoadIdRead(text)
+    }
+  }
+
+  Process {
+    id: uwsmInspectProc
+    command: Model.uwsmInspectCommand()
+    stdout: StdioCollector {
+      id: uwsmInspectStdout
+      waitForEnd: true
+      onStreamFinished: {
+        root.uwsmFragment = Model.parseUwsmInspection(text)
+        root.applyUwsmRestore()
+      }
+    }
+  }
+
+  Process {
+    id: pluginDataRemoveProc
+    command: Model.pluginDataRemoveCommand()
+    stdout: StdioCollector { id: pluginDataRemoveStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onPluginDataRemoved(exitCode, pluginDataRemoveStdout.text) }
+  }
+
+  Process {
+    id: uwsmWriteProc
+    command: Model.uwsmWriteCommand()
+    stdout: StdioCollector { id: uwsmWriteStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmWriteStdout.text) }
+  }
+
+  Process {
+    id: uwsmRemoveProc
+    command: Model.uwsmRemoveCommand()
+    stdout: StdioCollector { id: uwsmRemoveStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmRemoveStdout.text) }
+  }
+
+  // The SSH companion. Tracked and non-detached so it dies with the shell and
+  // with a configuration reload, rather than outliving the panel that holds
+  // its control channel: the helper treats stdin EOF as "drop the keys and
+  // exit", and that only works if this Process really owns the child.
+  //
+  // clearEnvironment strips everything the shell was started with -- PATH,
+  // HOME, and above all BW_SESSION -- and `environment` puts back the single
+  // variable the helper reads. It runs no `bw` and spawns nothing, so it needs
+  // nothing else.
+  Process {
+    id: sshAgentProc
+    // Whichever candidate the inspection accepted -- the shipped artifact by
+    // preference, a local development build otherwise.
+    command: Model.sshAgentHelperCommand(root.sshAgentPluginDir, root.sshAgentHelper.source)
+    clearEnvironment: true
+    environment: Model.sshAgentHelperEnv(root.sshAgentRuntimeDir) || ({})
+    stdinEnabled: true
+    // Attached from startup, so the `ready` that answers hello cannot be
+    // missed by a parser wired up after the fact.
+    stdout: SplitParser {
+      onRead: function(line) { root.applySshAgentEvent({ kind: "line", line: line, nowMs: Date.now() }) }
+    }
+    onStarted: root.applySshAgentEvent({ kind: "started", nowMs: Date.now() })
+    onExited: function(exitCode) {
+      sshAgentTerminateTimer.stop()
+      root.applySshAgentEvent({ kind: "exited", exitCode: exitCode, nowMs: Date.now() })
+    }
+  }
+
+  // The bound on the handshake. QML never waits for `ready`; it arms this and
+  // carries on, and a helper that has not answered by the time it fires is
+  // stopped and retried like any other failure.
+  Timer {
+    id: sshAgentHandshakeTimer
+    interval: Model.sshAgentHandshakeTimeoutMs()
+    repeat: false
+    running: root.sshAgentPhase === "starting" || root.sshAgentPhase === "handshaking"
+    onTriggered: root.applySshAgentEvent({ kind: "handshakeTimeout", nowMs: Date.now() })
+  }
+
+  // Only while there is something to count down. A grant is at most fifteen
+  // minutes, so this is never a timer that runs for the life of the shell.
+  Timer {
+    id: sshGrantCountdown
+    interval: 1000
+    repeat: true
+    running: root.sshGrantsAnnounced.length > 0
+    onTriggered: root.sshGrantTick = Date.now()
+  }
+
+  Timer {
+    id: sshCooldownCountdown
+    interval: 1000
+    repeat: true
+    running: root.sshCooldownStatus.active
+    onTriggered: root.noteSshCooldown()
+  }
+
+  Timer {
+    id: sshPromptCountdown
+    interval: 1000
+    repeat: true
+    running: root.sshPrompt !== null || root.sshUnlockRequest !== null
+    onTriggered: {
+      var elapsed = Date.now() - root.sshPromptStartedMs
+      var remaining = Math.ceil((Model.sshAgentRequestDeadlineMs() - elapsed) / 1000)
+      root.sshPromptRemainingSec = Math.max(0, remaining)
+      if (remaining <= 0) root.expireSshRequest()
+    }
+  }
+
+  // The grace period between asking the helper to shut down and making it.
+  // Two seconds is far longer than dropping keys and unlinking two paths
+  // takes, and short enough that a wedged helper does not delay a restart.
+  Timer {
+    id: sshAgentTerminateTimer
+    interval: 2000
+    repeat: false
+    onTriggered: if (sshAgentProc.running) sshAgentProc.running = false
+  }
+
+  // Capped restart backoff. The interval is set by the reducer before each
+  // restart; the timer only reports that it elapsed.
+  Timer {
+    id: sshAgentRestartTimer
+    repeat: false
+    onTriggered: root.applySshAgentEvent({ kind: "restartTimer", nowMs: Date.now() })
   }
 
   // Long-lived: it holds the sleep inhibitor that makes the lock land before
@@ -4743,6 +5788,59 @@ Panel {
     }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
+    // Non-secret diagnostics for the SSH agent. No key material, no
+    // fingerprints, no process paths -- just enough to tell why a signature
+    // was or was not answered.
+    function sshAgentStatus(): string {
+      return JSON.stringify({
+        enabled: root.sshAgentEnabled,
+        phase: root.sshAgentPhase,
+        // Named for what it is: the control channel to the helper is up and
+        // handshaked. It is not "signing is allowed" -- that is the vault
+        // state below, and reading this as the former is misleading next to a
+        // locked vault.
+        helperChannelOpen: root.sshAgentGateOpen,
+        vaultState: Model.sshAgentVaultState({
+          enabled: root.sshAgentEnabled,
+          helperReady: root.sshAgentGateOpen,
+          loggedIn: root.status !== "unauthenticated",
+          unlocked: root.status === "unlocked",
+          loading: root.sshAgentLoadActive,
+          hasPublicCache: root.sshAgentKeyCount > 0
+        }),
+        setupState: root.sshAgentSetup.state,
+        // Which binary is actually running, and whether its digest was
+        // checked. A shipped helper and a silently substituted development
+        // build behave identically until one of them misbehaves, and without
+        // these two fields the terminal cannot tell them apart at all.
+        helperSource: root.sshAgentHelper.source,
+        helperChecksum: root.sshAgentHelper.checksum,
+        // Why inspection rejected it, in the inspector's own vocabulary:
+        // checksum-mismatch, not-elf, wrong-architecture, not-executable,
+        // self-test-failed. errorCode covers the running helper and stays
+        // empty for all of these, so without this the terminal is told the
+        // feature is in error and never told what the error was.
+        helperState: root.sshAgentHelper.state,
+        // What the panel believes about client routing: the file it last
+        // inspected, and whether that produced a notice. Both are read from
+        // the same state the settings screen draws, so a disagreement between
+        // this and the screen is itself the answer.
+        routingFragment: root.uwsmFragment.state,
+        routingNotice: root.sshRoutingNotice.text !== "",
+        errorCode: root.sshAgentErrorCode,
+        keyCount: root.sshAgentKeyCount,
+        loadActive: root.sshAgentLoadActive,
+        epoch: root.sshAgentEpoch,
+        promptShowing: root.sshPrompt !== null,
+        unlockShowing: root.sshUnlockRequest !== null,
+        grants: root.sshGrants.length,
+        screenLocked: root.screenIsLocked,
+        screenLockAgeMs: root.screenLockCheckedAt > 0 ? Math.round(Date.now() - root.screenLockCheckedAt) : -1,
+        mayPrompt: root.sshAgentMayPrompt(),
+        cooldownRefusals: root.sshCooldown ? root.sshCooldown.refusals : 0,
+        cooldownActive: Model.sshAgentCooldownActive(root.sshCooldown, Date.now())
+      })
+    }
   }
 
   Component {
@@ -5021,7 +6119,7 @@ Panel {
           } else if (lower === "e") {
             if (root.detailItem) root.startEditItem(root.detailItem)
           } else if (lower === "x") {
-            root.showDeleteConfirm = true
+            if (root.detailItem && root.detailItem.typeCode !== 5) root.showDeleteConfirm = true
           } else if (lower === "v") {
             root.passwordRevealed = !root.passwordRevealed
           } else if (lower === "a") {
@@ -5072,7 +6170,7 @@ Panel {
 
             // New Item Button
             PanelActionButton {
-              visible: root.status === "unlocked" && root.currentScreen === "main"
+              visible: root.status === "unlocked" && root.activeScreen === "main"
               iconText: "󰐕"
               tooltipText: "New item (n)"
               fontFamily: root.fontFamily
@@ -5091,7 +6189,7 @@ Panel {
 
             // Send Button
             PanelActionButton {
-              visible: root.status === "unlocked" && root.currentScreen !== "sends"
+              visible: root.status === "unlocked" && root.activeScreen !== "sends"
               iconText: "󰒗"
               tooltipText: "Bitwarden Send (Alt+S)"
               fontFamily: root.fontFamily
@@ -5100,7 +6198,7 @@ Panel {
 
             // Generator Button
             PanelActionButton {
-              visible: root.status === "unlocked" && root.currentScreen !== "generator"
+              visible: root.status === "unlocked" && root.activeScreen !== "generator"
               iconText: "󰌆"
               tooltipText: "Password generator (g)"
               fontFamily: root.fontFamily
@@ -5109,7 +6207,7 @@ Panel {
 
             // Settings Button
             PanelActionButton {
-              visible: root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin"
+              visible: root.activeScreen !== "settings" && root.activeScreen !== "setup" && root.activeScreen !== "pin"
               iconText: "󰒓"
               tooltipText: "Settings (s)"
               fontFamily: root.fontFamily
@@ -5269,11 +6367,107 @@ Panel {
         }
 
         // -------------------------------------------------------------------
+        // Development Helper Banner
+        // -------------------------------------------------------------------
+        // The shipped helper is what a user installed and what CI verified.
+        // Falling back to a local build is deliberate -- a broken release must
+        // not strand a working one -- but it is a state you can sit in for
+        // days without noticing, signing with a binary nobody checked. The
+        // settings screen says so in passing; this says so wherever you are.
+        BorderSurface {
+          visible: root.sshAgentHelper.source === "development" && root.activeScreen !== "settings"
+          width: parent.width
+          implicitHeight: sshDevHelperText.implicitHeight + Style.space(12)
+          color: Util.alpha(Color.urgent, 0.15)
+          radius: Style.cornerRadius
+          borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+          Row {
+            anchors.centerIn: parent
+            width: parent.width - Style.space(16)
+            spacing: Style.space(8)
+            Text {
+              textFormat: Text.PlainText
+              text: "󰀪"
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              textFormat: Text.PlainText
+              id: sshDevHelperText
+              text: Model.sshAgentDevelopmentHelperWarning(root.sshAgentHelper)
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.Wrap
+              width: parent.width - Style.space(24)
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SSH Signing Cooldown Banner
+        // -------------------------------------------------------------------
+        // A five-minute signing outage is not noticed on the SSH agent
+        // settings screen: the requests it refuses arrive while the panel is
+        // showing something else, or while the vault is locked and no prompt
+        // can be raised at all. So the explanation lives on every screen,
+        // and carries the only control that ends the cooldown early -- an
+        // approval cannot, because there is no prompt left to approve.
+        BorderSurface {
+          visible: root.sshCooldownStatus.active
+          width: parent.width
+          implicitHeight: sshCooldownBannerBody.implicitHeight + Style.space(12)
+          color: Util.alpha(Color.urgent, 0.15)
+          radius: Style.cornerRadius
+          borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+          Row {
+            anchors.centerIn: parent
+            width: parent.width - Style.space(16)
+            spacing: Style.space(8)
+            Text {
+              textFormat: Text.PlainText
+              text: "󰀪"
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+            Column {
+              id: sshCooldownBannerBody
+              width: parent.width - Style.space(24)
+              spacing: Style.space(8)
+
+              Text {
+                textFormat: Text.PlainText
+                id: sshCooldownBannerText
+                text: root.sshCooldownStatus.message
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.Wrap
+                width: parent.width
+              }
+
+              Button {
+                text: "Resume Signing Now"
+                iconText: "󰐊"
+                tooltipText: "End the cooldown; the next signing request asks again"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.resumeSshSigning()
+              }
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
         // SCREEN 0f: BITWARDEN SEND
         // -------------------------------------------------------------------
         Flickable {
           id: sendFlick
-          visible: root.currentScreen === "sends"
+          visible: root.activeScreen === "sends"
           width: parent.width
           height: Math.min(Style.space(520), sendCol.implicitHeight)
           contentWidth: width
@@ -5599,7 +6793,7 @@ Panel {
         // -------------------------------------------------------------------
         Flickable {
           id: fpFlick
-          visible: root.currentScreen === "fingerprint"
+          visible: root.activeScreen === "fingerprint"
           width: parent.width
           height: Math.min(Style.space(520), fpCol.implicitHeight)
           contentWidth: width
@@ -5713,7 +6907,7 @@ Panel {
         // -------------------------------------------------------------------
         Flickable {
           id: genFlick
-          visible: root.currentScreen === "generator"
+          visible: root.activeScreen === "generator"
           width: parent.width
           height: Math.min(Style.space(520), genCol.implicitHeight)
           contentWidth: width
@@ -6086,7 +7280,7 @@ Panel {
         // than the popup's height cap on smaller displays.
         Flickable {
           id: pinFlick
-          visible: root.currentScreen === "pin"
+          visible: root.activeScreen === "pin"
           width: parent.width
           height: Math.min(Style.space(520), pinCol.implicitHeight)
           contentWidth: width
@@ -6234,7 +7428,7 @@ Panel {
         // than the popup's height cap on smaller displays.
         Flickable {
           id: setupFlick
-          visible: root.currentScreen === "setup"
+          visible: root.activeScreen === "setup"
           width: parent.width
           height: Math.min(Style.space(520), setupCol.implicitHeight)
           contentWidth: width
@@ -6340,6 +7534,17 @@ Panel {
                     wrapMode: Text.WordWrap
                   }
 
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: !!modelData.note
+                    width: parent.width
+                    text: modelData.note
+                    color: root.urgent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+
                   // The package being on PATH is not the finish line for a
                   // setup row: fingerprint unlock also wants an enrolled
                   // finger and the PAM stack, and only the setup command
@@ -6418,7 +7623,7 @@ Panel {
         // than the popup's height cap on smaller displays.
         Flickable {
           id: settingsFlick
-          visible: root.currentScreen === "settings"
+          visible: root.activeScreen === "settings"
           width: parent.width
           height: Math.min(Style.space(520), settingsCol.implicitHeight)
           contentWidth: width
@@ -6624,6 +7829,10 @@ Panel {
             }
           }
 
+          // SSH agent status and client routing, in SshAgentSettings.qml.
+          // The approval screen stays below with the other screens.
+          SshAgentSettings { panel: root }
+
           Row {
             width: parent.width
             spacing: Style.space(8)
@@ -6652,6 +7861,70 @@ Panel {
             }
           }
 
+          // Its own row: this sits beside two buttons already, and a third
+          // one plus the two the confirmation adds overflow the panel width
+          // and elide their labels -- "Remove Plugin Data" reading as
+          // "Remove Plugin" is a considerably more alarming button.
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              visible: !root.pluginDataConfirmPending
+              text: "Remove Plugin Data"
+              iconText: "󰩹"
+              tooltipText: "Clear the keyring entries, learned suggestions and exported public keys this plugin stored"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              enabled: !root.pluginDataBusy
+              onClicked: root.beginPluginDataRemoval()
+            }
+
+            Button {
+              visible: root.pluginDataConfirmPending
+              text: "Remove Everything"
+              iconText: "󰩹"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              enabled: !root.pluginDataBusy
+              onClicked: root.beginPluginDataRemoval()
+            }
+
+            Button {
+              visible: root.pluginDataConfirmPending
+              text: "Cancel"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.cancelPluginDataRemoval()
+            }
+          }
+
+          // Run this before removing the plugin: once the folder is gone
+          // there is no code left to do it, and `omarchy plugin remove` has
+          // no uninstall hook to call.
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            visible: root.pluginDataConfirmPending
+            text: "This clears the stored master password, learned suggestions and exported public keys. "
+              + "Settings and your vault are untouched. It cannot be undone."
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            visible: root.pluginDataFlash !== ""
+            text: root.pluginDataFlash
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
           Text {
             textFormat: Text.PlainText
             width: parent.width
@@ -6664,11 +7937,81 @@ Panel {
                   }
         }
 
+        // An SSH request waiting on an unlock. Shown above whatever unlock
+        // control the vault is configured for, so the reason for the prompt
+        // is visible without the unlock itself authorising anything.
+        Column {
+          // Stays up through the load as well as the unlock: the request is
+          // held across the vault read, so dropping the block the moment the
+          // vault unlocks would leave the user watching nothing for seconds.
+          visible: root.sshUnlockRequest !== null
+            && (root.status === "locked" || root.sshAgentLoadActive)
+          width: parent.width
+          spacing: Style.space(6)
+
+          PanelSeparator { width: parent.width }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: "󰌆  An SSH key is needed"
+            color: Color.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          SshCaption {
+            text: !root.sshUnlockRequest
+              ? ""
+              : (root.sshUnlockRequest.keyName !== ""
+                  ? root.sshUnlockRequest.keyName + " · requested by "
+                    + root.sshUnlockRequest.processName
+                  // An identity listing names no key: the client is asking
+                  // which keys exist, and until the vault is open there is no
+                  // answer to give.
+                  : root.sshUnlockRequest.processName
+                    + " is asking which SSH keys are available")
+            color: root.fg
+          }
+
+          SshCaption {
+            text: root.sshAgentLoadActive
+              ? Model.sshAgentLoadingNote()
+              : "Unlocking loads your keys. You will still be asked before anything is signed."
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              visible: !root.sshAgentLoadActive
+              text: "Not now (Esc)"
+              iconText: "󰅘"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.denySshRequest()
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.sshPromptRemainingSec + "s left"
+              color: root.sshPromptRemainingSec <= 5 ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        // SCREEN: SSH signing approval, in SshApprovalScreen.qml.
+        SshApprovalScreen { panel: root }
+
         // -------------------------------------------------------------------
         // SCREEN 1: LOGIN VIEW (When unauthenticated)
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unauthenticated" && root.currentScreen !== "settings" && root.currentScreen !== "setup" && root.currentScreen !== "pin" && root.currentScreen !== "fingerprint"
+          visible: root.status === "unauthenticated" && root.activeScreen !== "settings" && root.activeScreen !== "setup" && root.activeScreen !== "pin" && root.activeScreen !== "fingerprint"
           width: parent.width
           spacing: Style.space(12)
 
@@ -7363,7 +8706,7 @@ Panel {
         // SCREEN 3: UNLOCKED - ITEM LIST VIEW
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unlocked" && root.currentScreen === "main"
+          visible: root.status === "unlocked" && root.activeScreen === "main"
           width: parent.width
           spacing: Style.space(8)
 
@@ -7375,7 +8718,7 @@ Panel {
             TextField {
               id: searchField
               width: parent.width - (root.searchQuery ? clearSearchBtn.width + Style.space(6) : 0)
-              placeholderText: "Search items, usernames, URLs..."
+              placeholderText: "Search items, usernames, URLs, public keys, fingerprints..."
               text: root.searchQuery
               onTextChanged: {
                 root.searchQuery = text
@@ -7639,7 +8982,7 @@ Panel {
                     visible: isSelected || isHovered
 
                     PanelActionButton {
-                      visible: itemData.hasPassword
+                      visible: itemData.typeCode !== 5 && itemData.hasPassword
                       iconText: "󰌆"
                       tooltipText: "Copy password (Enter / y)"
                       fontFamily: root.fontFamily
@@ -7647,7 +8990,7 @@ Panel {
                     }
 
                     PanelActionButton {
-                      visible: itemData.username !== ""
+                      visible: itemData.typeCode !== 5 && itemData.username !== ""
                       iconText: ""
                       tooltipText: "Copy username (u)"
                       fontFamily: root.fontFamily
@@ -7655,7 +8998,7 @@ Panel {
                     }
 
                     PanelActionButton {
-                      visible: itemData.hasTotp
+                      visible: itemData.typeCode !== 5 && itemData.hasTotp
                       iconText: "󰥔"
                       tooltipText: "Copy TOTP code (m)"
                       fontFamily: root.fontFamily
@@ -7664,13 +9007,13 @@ Panel {
 
                     PanelActionButton {
                       iconText: "󰏫"
-                      tooltipText: "View / Edit item (e)"
+                      tooltipText: itemData.typeCode === 5 ? "View public key" : "View / Edit item (e)"
                       fontFamily: root.fontFamily
                       onClicked: root.openDetail(itemData)
                     }
 
                     PanelActionButton {
-                      visible: itemData.uris && itemData.uris.length > 0
+                      visible: itemData.typeCode !== 5 && itemData.uris && itemData.uris.length > 0
                       iconText: "󰖟"
                       tooltipText: "Open URL (w)"
                       fontFamily: root.fontFamily
@@ -7724,7 +9067,7 @@ Panel {
                   anchors.horizontalCenter: parent.horizontalCenter
                   text: root.isLoading && root.items.length === 0
                     ? "Loading items..."
-                    : (root.items.length === 0 ? "Vault is empty" : ("No items match '" + root.searchQuery + "'"))
+                    : root.emptyListMessage()
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -7789,7 +9132,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.currentFilterOptions.length > root.filterVisibleRows
+                visible: root.currentFilterOptions.length > root.currentFilterVisibleRows
                 text: root.currentFilterOptions.length + " total"
                 color: root.dim
                 font.family: root.fontFamily
@@ -7800,7 +9143,7 @@ Panel {
             Flickable {
               id: filterOptionsList
               width: parent.width
-              height: Math.min(root.filterVisibleRows, root.currentFilterOptions.length) * root.filterRowHeight
+              height: Math.min(root.currentFilterVisibleRows, root.currentFilterOptions.length) * root.filterRowHeight
               contentWidth: width
               contentHeight: filterOptionsCol.implicitHeight
               clip: true
@@ -7934,7 +9277,7 @@ Panel {
         // SCREEN 4: UNLOCKED - ITEM DETAIL VIEW
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unlocked" && root.currentScreen === "detail"
+          visible: root.status === "unlocked" && root.activeScreen === "detail"
           width: parent.width
           spacing: Style.space(12)
 
@@ -7954,7 +9297,7 @@ Panel {
             Item { Layout.fillWidth: true }
 
             Button {
-              visible: Boolean(root.detectedContext && root.detectedContext.displayName && root.detailItem)
+              visible: Boolean(root.detectedContext && root.detectedContext.displayName && root.detailItem && root.detailItem.typeCode !== 5)
               readonly property bool pinned: Boolean(root.detailItem
                 && Model.isAssociated(root.associations, root.detectedContext, root.detailItem.id))
               text: pinned ? "Suggested here" : "Suggest here"
@@ -7971,6 +9314,7 @@ Panel {
             }
 
             Button {
+              visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5)
               text: "Edit"
               iconText: "󰏫"
               fontFamily: root.fontFamily
@@ -7979,6 +9323,7 @@ Panel {
             }
 
             Button {
+              visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5)
               text: "Delete"
               iconText: "󰆴"
               accent: Color.urgent
@@ -8122,9 +9467,44 @@ Panel {
                 }
               }
 
+              // FIELD: Public SSH key (type 5 is deliberately read-only)
+              Column {
+                visible: Boolean(root.detailItem && root.detailItem.typeCode === 5)
+                width: parent.width
+                spacing: Style.space(4)
+                PanelSectionHeader { text: "PUBLIC KEY" }
+                BorderSurface {
+                  width: parent.width
+                  implicitHeight: Math.max(Style.space(54), sshPublicKeyText.implicitHeight + Style.space(20))
+                  radius: Style.cornerRadius
+                  color: Style.hoverFillFor(root.fg, Color.accent)
+                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+                  Text {
+                    textFormat: Text.PlainText
+                    id: sshPublicKeyText
+                    anchors.fill: parent
+                    anchors.margins: Style.space(10)
+                    text: root.detailItem ? (root.detailItem.publicKey || "No public key") : ""
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WrapAnywhere
+                  }
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  visible: Boolean(root.detailItem && root.detailItem.fingerprint)
+                  text: "Fingerprint: " + (root.detailItem ? root.detailItem.fingerprint : "")
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WrapAnywhere
+                }
+              }
+
               // FIELD: Username
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.username !== "")
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.username !== "")
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -8167,7 +9547,7 @@ Panel {
 
               // FIELD: Password
               Column {
-                visible: Boolean(root.detailItem && (root.detailPassword !== "" || root.detailItem.hasPassword))
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && (root.detailPassword !== "" || root.detailItem.hasPassword))
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -8221,7 +9601,7 @@ Panel {
 
               // FIELD: TOTP (2FA Code)
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.hasTotp)
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.hasTotp)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -8288,7 +9668,7 @@ Panel {
 
               // FIELD: Website / URIs
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.uris && root.detailItem.uris.length > 0)
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.uris && root.detailItem.uris.length > 0)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -8345,7 +9725,7 @@ Panel {
               // attached is that case, and the files were the thing being
               // pushed out of sight.
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.hasAttachments)
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.hasAttachments)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -8456,7 +9836,7 @@ Panel {
 
               // FIELD: Notes
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.notes !== "")
+                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.notes !== "")
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -8503,7 +9883,7 @@ Panel {
         // SCREEN 5: ADD / EDIT ITEM FORM VIEW
         // -------------------------------------------------------------------
         Column {
-          visible: root.status === "unlocked" && root.currentScreen === "edit"
+          visible: root.status === "unlocked" && root.activeScreen === "edit"
           width: parent.width
           spacing: Style.space(10)
 

@@ -3,37 +3,340 @@
 A modern, fast, and feature-rich Bitwarden password manager plugin for the **Omarchy** shell environment and **Hyprland** desktop.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.4.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.5.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
-[![Requires: Bitwarden CLI](https://img.shields.io/badge/requires-bw%20CLI-175ddc.svg)](https://bitwarden.com/help/cli/)
+[![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
 ![Bitwarden Vault Plugin preview](preview.png)
-
----
-
-## Screenshots
-
-Every screenshot below is captured against a **fixture vault** of made-up entries, never a real one -- see [Regenerating the Screenshots](#regenerating-the-screenshots) for how they are made and how to regenerate them.
-
-| First run |
-| :---: |
-| ![Setup](docs/screenshots/00-setup.png) |
-| The whole install: `omarchy plugin add`, then one button here. The panel watches for it and moves on to your vault by itself |
-
-| Log in | Vault list | Filter drawer |
-| :---: | :---: | :---: |
-| ![Login](docs/screenshots/06-login.png) | ![Vault list](docs/screenshots/01-vault-list.png) | ![Folder drawer](docs/screenshots/02-folder-drawer.png) |
-| Email + password first, then 2FA only when Bitwarden requests it; API key, custom server, and terminal handoff are also available | Folders, organizations, favourites and TOTP at a glance | Folders, Organizations and Types open as a drawer |
-
-| Generator | Bitwarden Send | Settings |
-| :---: | :---: | :---: |
-| ![Generator](docs/screenshots/03-generator.png) | ![Sends](docs/screenshots/04-sends.png) | ![Settings](docs/screenshots/05-settings.png) |
 
 ---
 
 ## Overview
 
 `qs-bitwarden-cli` seamlessly integrates your Bitwarden vault into the Omarchy status bar and quick access panel. Built with native QML/C++ bindings on top of Quickshell and the official Bitwarden CLI (`bw`), it provides lightning-fast search, secure credential auto-copy, live 2FA TOTP generation, multi-organization switching, and complete vault item management without ever opening a web browser.
+
+---
+
+## Installation & Setup
+
+### 1. Install the Plugin
+
+```bash
+omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
+```
+
+That is the whole install. It clones the plugin into
+`~/.config/omarchy/plugins/`, enables it, and places it in the bar section named
+by the manifest (`right`). Nothing else has to be installed first. To update it
+later:
+
+```bash
+omarchy plugin update io.github.elevate08.qs-bitwarden-cli
+```
+
+### 2. First Run
+
+The widget appears in the bar straight away, with a small `+` badge if anything
+it drives is still missing. Click it and the panel opens on its setup screen:
+on a stock Omarchy install that is the Bitwarden CLI and nothing else, with an
+**Install** button. Pressing it opens Omarchy's own installer window -- floating,
+centred and themed, the same one every other app install on the system uses.
+
+The panel watches that window's work for you. As soon as the tools land, it
+moves on to the login or unlock screen on its own -- there is nothing to come
+back and re-check, and no command to run first.
+
+You can reopen it any time with <kbd>,</kbd> from the settings screen, or:
+
+```bash
+omarchy-shell io.github.elevate08.qs-bitwarden-cli setup
+```
+
+<details>
+<summary>What the setup screen installs, and why</summary>
+
+The plugin shells out to these rather than bundling them, so they are ordinary
+system packages you can also install by hand:
+
+| Tool | Package | Required | Used for |
+| --- | --- | :---: | --- |
+| `bw` | `bitwarden-cli` | yes | Reading and writing your vault. |
+| `jq` | `jq` | yes | Safe SSH-aware vault sanitization before QML reads item data. SSH support requires Bitwarden `2025.1.2+`. |
+| `fprintd-list` | (via `omarchy setup security fingerprint`) | no | Fingerprint unlock. Omarchy installs the reader stack, enrols your finger and writes the PAM config in one command; the row only appears if you have a reader. |
+
+The equivalent of what the Install button runs:
+
+```bash
+omarchy install app 'Bitwarden plugin dependencies' 'bitwarden-cli jq'
+```
+
+That is the whole list, and only the first entry holds the panel back. The
+plugin also uses `wl-copy` for the clipboard, `secret-tool` for the keyring,
+`hyprctl` for window detection, and `gdbus`, `systemd-inhibit` and `openssl`
+for suspend handling and PIN encryption -- but Omarchy ships every one of
+those, so the setup screen does not list what it would only ever find already
+there.
+
+</details>
+
+### 3. Bar Placement & Configuration
+
+`--enable` already puts the widget in the bar. To move it:
+
+```bash
+omarchy bar move io.github.elevate08.qs-bitwarden-cli --section right
+```
+
+Settings are editable from the panel's own settings screen, or directly in
+`~/.config/omarchy/shell.json`. Each setting lives **inline on the bar entry**,
+not in a separate block:
+
+```json
+{
+  "bar": {
+    "layout": {
+      "right": [
+        {
+          "id": "io.github.elevate08.qs-bitwarden-cli",
+          "autoLockMinutes": 15,
+          "lockOnScreenLock": true,
+          "lockOnSuspend": true,
+          "clearClipboardSec": 30,
+          "rememberSession": true,
+          "fingerprintUnlock": false
+        }
+      ]
+    }
+  }
+}
+```
+
+### 4. Global Hotkey Configuration
+
+To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle")
+```
+
+Apply changes by restarting the shell:
+
+```bash
+omarchy restart shell
+```
+
+### 5. Optional: PIN Unlock
+
+Turn on **Unlock with PIN** in the settings screen. You are asked for your master password once (it is needed to encrypt) and for a PIN. Six digits or more is what the screen asks for; four and five are accepted but shown in red with the number of combinations spelled out, so a weak PIN is a decision rather than an accident.
+
+**How it differs from fingerprint unlock.** Fingerprint unlock keeps your master password in the login keyring in the clear, because PAM can only prove presence. A PIN can do better: the master password is encrypted with a key derived from the PIN (PBKDF2-SHA256, 600,000 iterations, salted) and only the ciphertext is stored, so reading the keyring is not by itself enough. A wrong PIN fails decryption, which means correctness needs no stored hash and there is no hash to attack.
+
+**The honest limit.** A short PIN is a small search space, and if the ciphertext leaks, the iteration count is the only thing standing between an attacker and your master password. Five wrong attempts at the panel deletes the stored ciphertext, but that is a UI throttle and does nothing against an offline attack on a copy of the blob. Concretely: 4 digits is 10,000 candidates, which is minutes of offline guessing even at 600,000 PBKDF2 rounds each; 6 digits is 1,000,000, and 8 is 100,000,000. Pick accordingly.
+
+The stored ciphertext is removed when you turn the setting off, after five wrong attempts, or when the vault rejects the decrypted password (for example after a master password change).
+
+### 6. Optional: Fingerprint Unlock
+
+Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of your master password.
+
+**Requirements**
+
+- A fingerprint reader with at least one enrolled finger, configured through `omarchy setup security fingerprint`. The plugin verifies all of this itself (`/etc/pam.d/omarchy-lock-fingerprint`, `fprintd-list`) and silently stays hidden when any part is missing.
+- A running, unlocked OS keyring, as used by `rememberSession`. Omarchy ships libsecret itself, so there is nothing to install for this.
+
+**How it works**
+
+1. Switch **Unlock with fingerprint** on in the settings screen. It asks for your master password once -- the same way setting a PIN does -- and stores it in the login keyring under `service=qs-bitwarden-cli, account=master_password`.
+2. On every later lock, opening the panel arms the reader. A verified fingerprint releases the stored password to `bw unlock`; the password field remains available as a fallback at all times.
+3. Unlocking with your master password afterwards refreshes the stored copy, so changing your master password does not silently strand the enrolment.
+
+**Security trade-off -- read before enabling**
+
+PAM can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. Fingerprint unlock therefore keeps your master password in the OS login keyring and treats a verified fingerprint as the gate on reading it back. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock, and it means **anyone who can read your unlocked login keyring can read your master password**. It is off by default and worth leaving off on a shared or unattended machine.
+
+The stored password is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, log out of the account, or when the vault rejects it (for example after a master password change, which then prompts you for the new one).
+
+### 7. Optional: SSH Agent
+
+Off by default. Turn on **Act as your SSH agent** in the settings screen and the panel starts a separate helper process that serves the SSH keys in your vault to `ssh`, `git`, and `ssh-keygen -Y sign` for as long as the vault is unlocked.
+
+Private keys are held only by that helper, in memory. They never reach QML -- the vault read is split in a `jq` stage and the panel's half has the private material removed before it arrives -- they are never written to disk, and they are dropped when the vault locks, when you log out, and when the helper exits.
+
+**Requirements.** Bitwarden CLI `2025.1.2+` for SSH key items; `2026.8.0+` also fixes a bug where one malformed SSH item fails the whole vault list. `jq`, which the plugin already needs. The helper ships prebuilt for x86_64 Linux. A missing, corrupt, stale, wrong-architecture, non-executable or self-test-failing helper disables **only** this feature, names the reason under **SSH AGENT STATUS**, and leaves the rest of the plugin working.
+
+#### Pointing SSH clients at it
+
+The helper binds `$XDG_RUNTIME_DIR/qs-bitwarden-cli/ssh-agent.sock` (mode `600`, in a `700` directory) and never reads `SSH_AUTH_SOCK` itself -- that variable is how *clients* find an agent. The panel offers **Route SSH Clients Here**, which writes exactly one file:
+
+```
+~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
+```
+
+Omarchy runs the graphical session through UWSM, which reads that directory at login, so **the change takes effect at your next login**, not immediately. If something else already owns `SSH_AUTH_SOCK`, the panel names it and asks before replacing it. The file is plugin-owned and recognised by its full contents rather than its name: a symlink, or a file containing anything else, is reported and left alone rather than overwritten.
+
+What the panel says about routing is a hint, not a verdict. It sees the graphical session's environment, while a `.bashrc` export, a systemd user unit, a TTY login or an incoming SSH session can each differ and are invisible from there -- so the status section prints a one-line check to run in the terminal you actually use. To route a shell by hand:
+
+```bash
+export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/qs-bitwarden-cli/ssh-agent.sock"
+```
+
+#### Approving a signature
+
+Every signature asks first. The prompt names the key, its `SHA256:` fingerprint, and the program asking -- its name and the absolute path it ran from -- and gives you two minutes to answer. Not its pid: the number is gone by the time you could look it up, and the grant is not scoped to it.
+
+- **Approve once** signs this request and nothing further.
+- **Approve for this program · 2m** also covers later requests from the same executable with the same key, for `sshAgentApprovalWindowSec` seconds (default `120`, maximum `900`, `0` to ask every time). Git spawns a fresh `ssh-keygen -Y sign` for every commit it signs, so this is what makes a twenty-commit rebase one prompt instead of twenty. The grant matches on your UID, the executable path captured at approval, and the key -- deliberately not the pid, which changes with every commit.
+
+Live grants appear under **ACTIVE APPROVALS** with the program and time remaining, revocable one at a time or all at once, and are dropped on lock, logout, and helper exit. They are never written to disk.
+
+Two unanswered or refused prompts in a row start a five-minute cooldown during which signing requests are refused without raising the panel. A banner on every screen says so and counts down, because a silent multi-minute SSH outage is impossible to connect back to its cause -- and unattended requests, the case the cooldown exists for, are exactly the ones you were not watching. Approving cannot end a cooldown that is already running: it is the prompts an approval would answer that the cooldown is suppressing. **Resume Signing Now** on that banner is the way out, or wait the five minutes. A process that keeps asking neither shortens the window nor extends it; the refusals it collects are answered without a prompt and never counted.
+
+#### While the vault is locked
+
+Public identities stay advertised, so `ssh` can still offer them, but nothing is signed while the vault is locked. A signing request for a key the helper already knows raises the unlock prompt and holds the request rather than failing it: by that point a specific vault key has been chosen, and refusing a client that has no way to retry is worse than asking. Dismiss the prompt and the signature is refused at once. This does not depend on any setting.
+
+**Unlock on demand** governs a different moment -- the first connection of a session, before any key has been loaded. With no cache there is nothing to offer, and no signing request can ever follow to ask, so the setting lets the identity listing itself raise the unlock prompt. It is off by default because `ssh` asks the agent for identities on every connection -- including ones that go on to authenticate with an on-disk key -- so leaving it on opens the panel on the first `ssh` after every login.
+
+#### Public key files, and Git signing
+
+Git needs paths rather than inline keys (`user.signingkey` takes a file; `gpg.ssh.allowedSignersFile` has no inline form at all), so the helper's validated public identities are projected to files:
+
+```
+~/.local/share/qs-bitwarden-cli/ssh/<item name>.pub
+```
+
+Mode `600` inside a `700` directory. Only public material is ever written there, and only what the helper vouched for. The projection is refreshed on each load and removed on logout, on an account change, and when you turn the feature off; a lock leaves it in place, because locked keys are still advertised. Not `~/.ssh`: that directory belongs to you and to OpenSSH, and a plugin that rewrote a set of files in it would eventually delete something it did not create.
+
+Authentication needs nothing beyond routing. Signing needs Git told where to look:
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.local/share/qs-bitwarden-cli/ssh/work.pub
+git config --global commit.gpgsign true
+```
+
+#### Verifying the helper
+
+The panel checks the shipped binary against `bin/SHA256SUMS` at launch and shows "checksum verified", and says plainly when it is running a locally built development helper instead of the shipped one. Be clear about what that check is worth: `SHA256SUMS` sits in the same directory as the binary *and* as the QML that reads it, so anyone able to replace one can replace the others. It is not tamper detection. What it does catch is real -- a partial clone, an LFS placeholder, an architecture or format mismatch, and above all a stale binary left behind by a `git pull` that updated the source.
+
+Provenance is the separate mechanism with a different root of trust. Releases from `v1.5.0` on carry a GitHub build-provenance attestation binding the binary's digest to this repository, workflow and commit, published alongside an SBOM and a dependency/licence report:
+
+```bash
+gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
+   --repo Elevate08/qs-bitwarden-cli
+```
+
+`gh` is not an Omarchy dependency, so this is a check you run if you want it, not one the plugin can assume. Worth re-running after a plugin update, when the binary has changed.
+
+**When the check fails.** The panel disables SSH support, names the reason, and leaves the rest of the plugin working. If a locally built helper is present it falls back to that instead and says so on a banner -- which is the state to be careful about, because signing carries on with a binary that has no recorded digest and no provenance behind it. Either way the fix is to restore the shipped artifact:
+
+```bash
+omarchy plugin remove io.github.elevate08.qs-bitwarden-cli
+omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
+```
+
+`omarchy plugin update` is not enough on its own: it pulls, and a pull will not overwrite a tracked file you have modified locally. Removing and re-adding gets you a clean checkout. Nothing you care about lives in the plugin folder -- the session key and stored password are in the keyring, learned suggestions in `~/.local/state` -- so this costs you your `shell.json` settings for the plugin and nothing else.
+
+`omarchy-shell io.github.elevate08.qs-bitwarden-cli sshAgentStatus` reports `helperSource`, `helperChecksum` and `helperState` if you want the verdict without opening the panel.
+
+#### What this does not defend against
+
+- **Anything running as you.** The socket enforces the peer's UID and nothing more. A process running as you can ask for signatures -- it gets a prompt, and the cooldown limits how often it can raise one -- and it can equally replace the helper, the checksum file, and the QML that checks them. Filesystem permissions own that boundary; the plugin cannot defend itself against a same-UID attacker, and neither can any other agent.
+- **The process shown in the prompt.** The executable path is reported by the system for context. Only the requesting user is verified. Treat it as a useful hint about *what* is asking, not proof.
+- **Agent forwarding.** This release does not support it. A forwarded request is labelled in the prompt, and the process it shows is not the one that will use the signature.
+- **Erasure.** Secret memory is zeroized on a best-effort basis and the helper disables core dumps and `PR_SET_DUMPABLE` before the first key is read, but nothing can guarantee that a page freed by an allocator or swapped by the kernel is gone.
+- **Root, and the vault itself.** Root reads any process's memory. Separately, `bw` is the source of the keys and holds its own decrypted copies while it runs.
+
+#### Turning it off
+
+Switching **Act as your SSH agent** off stops the helper, removes the socket and FIFO, drops every key and grant, deletes the public-key projection, and removes the routing file -- but only when that file is byte-for-byte the one this plugin wrote. Anything you manage by hand is left alone. Turning the agent back on writes the routing file again, so a toggle costs you nothing; it will not do so when another agent already owns `SSH_AUTH_SOCK`, or when something other than this plugin's own file is sitting at that path. Either way, clients keep the `SSH_AUTH_SOCK` they were given until your next login, so nothing changes under a running session.
+
+To remove the routing file without turning the agent off:
+
+```bash
+# Or press "Remove Routing File" in the panel
+rm ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
+```
+
+---
+
+## Usage & Keyboard Shortcuts
+
+The panel opens with the item list focused, so single-letter shortcuts work straight away. Press <kbd>/</kbd> to type a search.
+
+**While the search box has focus** every letter is search text -- as a text field should behave. Hold <kbd>Alt</kbd> to reach the same shortcuts without leaving the box or disturbing your query; <kbd>↓</kbd> also hands focus back to the list.
+
+### Vault List View (Main Screen)
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up) |
+| <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
+| <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
+| <kbd>/</kbd> | Focus the search box |
+| <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle types without opening the drawer |
+| <kbd>p</kbd> *(or <kbd>y</kbd>)* | Copy **p**assword |
+| <kbd>u</kbd> *(or <kbd>c</kbd>)* | Copy **u**sername / email |
+| <kbd>m</kbd> | Copy TOTP **m**ulti-factor code |
+| <kbd>w</kbd> | Open the **w**ebsite in your browser |
+| <kbd>e</kbd> | Open the detail inspector / **e**dit |
+| <kbd>f</kbd> | **F**olders filter |
+| <kbd>o</kbd> | **O**rganizations filter |
+| <kbd>t</kbd> | **T**ypes filter |
+| <kbd>g</kbd> | **G**enerator |
+| <kbd>n</kbd> | **N**ew vault item |
+| <kbd>s</kbd> | **S**ettings |
+| <kbd>r</kbd> | Sync (**r**efresh) |
+| <kbd>l</kbd> | **L**ock the vault |
+| <kbd>Alt</kbd>+<kbd>s</kbd> | Bitwarden **S**end |
+| <kbd>Alt</kbd>+<kbd>,</kbd> | Settings |
+| <kbd>Esc</kbd> | Close the filter drawer, clear the search, or close the panel |
+
+`Alt` + any letter above runs the same action from inside the search box. Two are `Alt`-only: <kbd>Alt</kbd>+<kbd>s</kbd> opens **Send** (which has no bare letter, since <kbd>s</kbd> is Settings), and <kbd>Alt</kbd>+<kbd>,</kbd> opens **Settings**, so Settings is still reachable while searching.
+
+### Detail Inspector
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>p</kbd> / <kbd>y</kbd> | Copy password |
+| <kbd>u</kbd> / <kbd>c</kbd> | Copy username |
+| <kbd>m</kbd> | Copy TOTP code |
+| <kbd>v</kbd> | Toggle re**v**eal / mask password |
+| <kbd>a</kbd> | Save every **a**ttachment on this item |
+| <kbd>e</kbd> | Edit this item |
+| <kbd>x</kbd> | Delete this item (asks first) |
+| <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Back to the list |
+
+### Filter Drawer (Folders / Organizations / Types)
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>f</kbd> / <kbd>o</kbd> / <kbd>t</kbd> | Open (or close) that drawer |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Move through the options |
+| <kbd>Enter</kbd> | Apply the highlighted option |
+| <kbd>Esc</kbd> | Close without changing anything |
+
+The cursor starts on the option already in effect, so <kbd>Enter</kbd> never changes a filter by accident.
+
+### Settings Screen
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Move between settings |
+| <kbd>←</kbd> / <kbd>→</kbd> | Decrease / increase a number by its step, or switch a toggle off / on |
+| <kbd>Enter</kbd> | Flip the highlighted toggle, or open the PIN / fingerprint form |
+| <kbd>Esc</kbd> | Back |
+
+### Send Screen
+
+| Shortcut | Action |
+| :--- | :--- |
+| <kbd>Alt</kbd>+<kbd>s</kbd> | Open Sends |
+| <kbd>n</kbd> | New Send |
+| <kbd>r</kbd> | Refresh the list |
+| <kbd>x</kbd> | Delete the highlighted Send |
+| <kbd>Enter</kbd> | Copy the highlighted Send's link |
+| <kbd>Esc</kbd> | Back |
 
 ---
 
@@ -63,7 +366,12 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
   - Verifies through the same PAM stack as the Omarchy lock screen (`/etc/pam.d/omarchy-lock-fingerprint`), so it works wherever `omarchy setup security fingerprint` has been run.
   - Enrolling asks for your master password up front in the settings screen, rather than quietly capturing it on some later unlock.
   - The reader is armed automatically whenever you open the panel on a locked vault; the master password field always stays available as a fallback.
-  - See [Fingerprint Unlock](#fingerprint-unlock) below for the security trade-off before enabling it.
+  - See [Optional: Fingerprint Unlock](#6-optional-fingerprint-unlock) for the security trade-off before enabling it.
+
+- **SSH Agent** (opt-in, `sshAgentEnabled`):
+  - Serves the SSH keys in your vault to `ssh`, `git` and `ssh-keygen -Y sign` while the vault is unlocked, from a separate helper process that holds the private keys in memory and drops them on lock, logout, or exit. They are never written to disk and never reach QML.
+  - Every signature is approved in the panel, with the key, its fingerprint and the program asking. One approval can cover a whole rebase; live approvals are listed and revocable, and repeated unanswered prompts fall back to a cooldown rather than pestering.
+  - Public keys are projected to files for Git signing, one file per item, public material only. See [SSH Agent](#7-optional-ssh-agent).
 
 - **Context-Aware Password Suggestions (Active Window / Browser Tab)**:
   - Reads the active window on open (`hyprctl activewindow -j`, falling back to the `hyprctl clients -j` focus history when the panel itself holds focus).
@@ -161,121 +469,23 @@ Every screenshot below is captured against a **fixture vault** of made-up entrie
 
 ---
 
-## Installation & Setup
+## Uninstall
 
-### 1. Install the Plugin
-
-```bash
-omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
-```
-
-That is the whole install. It clones the plugin into
-`~/.config/omarchy/plugins/`, enables it, and places it in the bar section named
-by the manifest (`right`). Nothing else has to be installed first. To update it
-later:
-
-```bash
-omarchy plugin update io.github.elevate08.qs-bitwarden-cli
-```
-
-### 2. First Run
-
-The widget appears in the bar straight away, with a small `+` badge if anything
-it drives is still missing. Click it and the panel opens on its setup screen:
-on a stock Omarchy install that is the Bitwarden CLI and nothing else, with an
-**Install** button. Pressing it opens Omarchy's own installer window -- floating,
-centred and themed, the same one every other app install on the system uses.
-
-The panel watches that window's work for you. As soon as the tools land, it
-moves on to the login or unlock screen on its own -- there is nothing to come
-back and re-check, and no command to run first.
-
-You can reopen it any time with <kbd>,</kbd> from the settings screen, or:
-
-```bash
-omarchy-shell io.github.elevate08.qs-bitwarden-cli setup
-```
-
-<details>
-<summary>What the setup screen installs, and why</summary>
-
-The plugin shells out to these rather than bundling them, so they are ordinary
-system packages you can also install by hand:
-
-| Tool | Package | Required | Used for |
-| --- | --- | :---: | --- |
-| `bw` | `bitwarden-cli` | yes | Reading and writing your vault. |
-| `fprintd-list` | (via `omarchy setup security fingerprint`) | no | Fingerprint unlock. Omarchy installs the reader stack, enrols your finger and writes the PAM config in one command; the row only appears if you have a reader. |
-
-The equivalent of what the Install button runs:
-
-```bash
-omarchy install app 'Bitwarden CLI' bitwarden-cli
-```
-
-That is the whole list, and only the first entry holds the panel back. The
-plugin also uses `wl-copy` for the clipboard, `secret-tool` for the keyring,
-`hyprctl` for window detection, and `gdbus`, `systemd-inhibit` and `openssl`
-for suspend handling and PIN encryption -- but Omarchy ships every one of
-those, so the setup screen does not list what it would only ever find already
-there.
-
-</details>
-
-### 3. Bar Placement & Configuration
-
-`--enable` already puts the widget in the bar. To move it:
-
-```bash
-omarchy bar move io.github.elevate08.qs-bitwarden-cli --section right
-```
-
-Settings are editable from the panel's own settings screen, or directly in
-`~/.config/omarchy/shell.json`. Each setting lives **inline on the bar entry**,
-not in a separate block:
-
-```json
-{
-  "bar": {
-    "layout": {
-      "right": [
-        {
-          "id": "io.github.elevate08.qs-bitwarden-cli",
-          "autoLockMinutes": 15,
-          "lockOnScreenLock": true,
-          "lockOnSuspend": true,
-          "clearClipboardSec": 30,
-          "rememberSession": true,
-          "fingerprintUnlock": false
-        }
-      ]
-    }
-  }
-}
-```
-
-### 4. Global Hotkey Configuration
-
-To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
-
-```lua
-o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle")
-```
-
-Apply changes by restarting the shell:
-
-```bash
-omarchy restart shell
-```
-
-### 5. Removal
+**Turn the SSH agent off first, if you had it on**, and press **Remove Plugin
+Data** on the settings screen. Between them those clear everything this plugin
+put outside its own folder: the helper stops cleanly and takes its socket,
+FIFO and routing file with it, and the button clears the keyring entries, the
+learned suggestions and the exported public keys. Both have to happen before
+the next step, because `omarchy plugin remove` has no uninstall hook -- once
+the folder is gone there is no code left to run.
 
 ```bash
 omarchy plugin remove io.github.elevate08.qs-bitwarden-cli
 ```
 
-That removes the plugin folder and its bar entry. Nothing the plugin stores
-lives inside that folder, so clear the rest yourself if you want it gone:
+That removes the plugin folder and its bar entry. If you skipped the two steps
+above, or you are cleaning up after a plugin that is already gone, this is the
+same work by hand:
 
 ```bash
 # Session key, and the master password stored for PIN/fingerprint unlock
@@ -284,9 +494,31 @@ secret-tool clear service qs-bitwarden-cli
 # Learned window-title -> vault item suggestions
 rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
 
-# Settings block, if you edited shell.json by hand
-# -> delete the "io.github.elevate08.qs-bitwarden-cli" key under "plugins"
+# Settings block: already gone. `omarchy plugin remove` takes the bar entry
+# and its settings with it. If a stale one is left -- from a plugin removed
+# some other way -- clear it through the shell, never by editing the file:
+#   omarchy plugin disable io.github.elevate08.qs-bitwarden-cli
+
+# SSH agent, if you used it: the exported public keys and the routing file
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh"
+rm -f ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
 ```
+
+**Do not hand-edit `~/.config/omarchy/shell.json`.** On many setups it is not a
+regular file: Omarchy configs are commonly managed with `stow` or another
+dotfile manager, which puts a symlink there pointing into a repository. Deleting
+"the file" then deletes the link, the shell falls back to its built-in defaults,
+and every plugin you had configured disappears at once -- not just this one. The
+config itself is unharmed, sitting in the repository the link pointed at, but
+working that out from an empty bar is not a pleasant few minutes. Every command
+above goes through the shell or touches only this plugin's own paths.
+
+The agent's socket, FIFO and lock under `$XDG_RUNTIME_DIR` are removed when the
+helper shuts down, which is what turning the agent off does. Removing the
+plugin while the agent is still running kills the helper instead, so those
+three files are left until you log out and the tmpfs goes with the session; a
+stale socket at the routed path is harmless but answers nothing. Deleting the
+directory by hand is safe once no helper is running.
 
 Two more paths are written but need no cleaning up, because neither outlives
 the moment it is used: the session handoff file under `$XDG_RUNTIME_DIR`, which
@@ -298,86 +530,6 @@ ends. Saved attachments themselves stay where you saved them, mode `600`.
 Beyond those, the plugin writes nothing outside the paths above and your
 `shell.json` entry, and it never modifies your Bitwarden vault on removal. Your vault is untouched -- log
 out of the `bw` CLI separately with `bw logout` if you also want that cleared.
-
----
-
-## Usage & Keyboard Shortcuts
-
-The panel opens with the item list focused, so single-letter shortcuts work straight away. Press <kbd>/</kbd> to type a search.
-
-**While the search box has focus** every letter is search text -- as a text field should behave. Hold <kbd>Alt</kbd> to reach the same shortcuts without leaving the box or disturbing your query; <kbd>↓</kbd> also hands focus back to the list.
-
-### Vault List View (Main Screen)
-
-| Shortcut | Action |
-| :--- | :--- |
-| <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up) |
-| <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
-| <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
-| <kbd>/</kbd> | Focus the search box |
-| <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle types without opening the drawer |
-| <kbd>p</kbd> *(or <kbd>y</kbd>)* | Copy **p**assword |
-| <kbd>u</kbd> *(or <kbd>c</kbd>)* | Copy **u**sername / email |
-| <kbd>m</kbd> | Copy TOTP **m**ulti-factor code |
-| <kbd>w</kbd> | Open the **w**ebsite in your browser |
-| <kbd>e</kbd> | Open the detail inspector / **e**dit |
-| <kbd>f</kbd> | **F**olders filter |
-| <kbd>o</kbd> | **O**rganizations filter |
-| <kbd>t</kbd> | **T**ypes filter |
-| <kbd>g</kbd> | **G**enerator |
-| <kbd>n</kbd> | **N**ew vault item |
-| <kbd>s</kbd> | **S**ettings |
-| <kbd>r</kbd> | Sync (**r**efresh) |
-| <kbd>l</kbd> | **L**ock the vault |
-| <kbd>Alt</kbd>+<kbd>s</kbd> | Bitwarden **S**end |
-| <kbd>Alt</kbd>+<kbd>,</kbd> | Settings |
-| <kbd>Esc</kbd> | Close the filter drawer, clear the search, or close the panel |
-
-`Alt` + any letter above runs the same action from inside the search box. Two are `Alt`-only: <kbd>Alt</kbd>+<kbd>s</kbd> opens **Send** (which has no bare letter, since <kbd>s</kbd> is Settings), and <kbd>Alt</kbd>+<kbd>,</kbd> opens **Settings**, so Settings is still reachable while searching.
-
-### Detail Inspector
-
-| Shortcut | Action |
-| :--- | :--- |
-| <kbd>p</kbd> / <kbd>y</kbd> | Copy password |
-| <kbd>u</kbd> / <kbd>c</kbd> | Copy username |
-| <kbd>m</kbd> | Copy TOTP code |
-| <kbd>v</kbd> | Toggle re**v**eal / mask password |
-| <kbd>a</kbd> | Save every **a**ttachment on this item |
-| <kbd>e</kbd> | Edit this item |
-| <kbd>x</kbd> | Delete this item (asks first) |
-| <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Back to the list |
-
-### Filter Drawer (Folders / Organizations / Types)
-
-| Shortcut | Action |
-| :--- | :--- |
-| <kbd>f</kbd> / <kbd>o</kbd> / <kbd>t</kbd> | Open (or close) that drawer |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | Move through the options |
-| <kbd>Enter</kbd> | Apply the highlighted option |
-| <kbd>Esc</kbd> | Close without changing anything |
-
-The cursor starts on the option already in effect, so <kbd>Enter</kbd> never changes a filter by accident.
-
-### Settings Screen
-
-| Shortcut | Action |
-| :--- | :--- |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | Move between settings |
-| <kbd>←</kbd> / <kbd>→</kbd> | Decrease / increase a number by its step, or switch a toggle off / on |
-| <kbd>Enter</kbd> | Flip the highlighted toggle, or open the PIN / fingerprint form |
-| <kbd>Esc</kbd> | Back |
-
-### Send Screen
-
-| Shortcut | Action |
-| :--- | :--- |
-| <kbd>Alt</kbd>+<kbd>s</kbd> | Open Sends |
-| <kbd>n</kbd> | New Send |
-| <kbd>r</kbd> | Refresh the list |
-| <kbd>x</kbd> | Delete the highlighted Send |
-| <kbd>Enter</kbd> | Copy the highlighted Send's link |
-| <kbd>Esc</kbd> | Back |
 
 ---
 
@@ -440,8 +592,11 @@ The following settings are read from the plugin's own entry in the
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
-| `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see below. |
-| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see below. |
+| `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see [Optional: Fingerprint Unlock](#6-optional-fingerprint-unlock). |
+| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see [Optional: PIN Unlock](#5-optional-pin-unlock). |
+| `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](#7-optional-ssh-agent). |
+| `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this opens the panel on the first `ssh` after every login. |
+| `sshAgentApprovalWindowSec` | `number` | `120` | How long one approval keeps covering further signatures from the same program with the same key. Range `0`-`900`; `0` asks every time. Held in memory only and dropped on lock, logout or exit. |
 
 One further key, `twoFactorMethods`, is written to the same entry but is not a
 setting you configure. It records which two-step method last logged each
@@ -453,57 +608,6 @@ are capped at ten accounts, and anything unreadable is treated as not
 remembered, which costs that account one extra prompt.
 
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
-
----
-
-## PIN Unlock
-
-Turn on **Unlock with PIN** in the settings screen. You are asked for your master password once (it is needed to encrypt) and for a PIN. Six digits or more is what the screen asks for; four and five are accepted but shown in red with the number of combinations spelled out, so a weak PIN is a decision rather than an accident.
-
-**How it differs from fingerprint unlock.** Fingerprint unlock keeps your master password in the login keyring in the clear, because PAM can only prove presence. A PIN can do better: the master password is encrypted with a key derived from the PIN (PBKDF2-SHA256, 600,000 iterations, salted) and only the ciphertext is stored, so reading the keyring is not by itself enough. A wrong PIN fails decryption, which means correctness needs no stored hash and there is no hash to attack.
-
-**The honest limit.** A short PIN is a small search space, and if the ciphertext leaks, the iteration count is the only thing standing between an attacker and your master password. Five wrong attempts at the panel deletes the stored ciphertext, but that is a UI throttle and does nothing against an offline attack on a copy of the blob. Concretely: 4 digits is 10,000 candidates, which is minutes of offline guessing even at 600,000 PBKDF2 rounds each; 6 digits is 1,000,000, and 8 is 100,000,000. Pick accordingly.
-
-The stored ciphertext is removed when you turn the setting off, after five wrong attempts, or when the vault rejects the decrypted password (for example after a master password change).
-
----
-
-## Fingerprint Unlock
-
-Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of your master password.
-
-**Requirements**
-
-- A fingerprint reader with at least one enrolled finger, configured through `omarchy setup security fingerprint`. The plugin verifies all of this itself (`/etc/pam.d/omarchy-lock-fingerprint`, `fprintd-list`) and silently stays hidden when any part is missing.
-- A running, unlocked OS keyring, as used by `rememberSession`. Omarchy ships libsecret itself, so there is nothing to install for this.
-
-**How it works**
-
-1. Switch **Unlock with fingerprint** on in the settings screen. It asks for your master password once -- the same way setting a PIN does -- and stores it in the login keyring under `service=qs-bitwarden-cli, account=master_password`.
-2. On every later lock, opening the panel arms the reader. A verified fingerprint releases the stored password to `bw unlock`; the password field remains available as a fallback at all times.
-3. Unlocking with your master password afterwards refreshes the stored copy, so changing your master password does not silently strand the enrolment.
-
-**Security trade-off -- read before enabling**
-
-PAM can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. Fingerprint unlock therefore keeps your master password in the OS login keyring and treats a verified fingerprint as the gate on reading it back. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock, and it means **anyone who can read your unlocked login keyring can read your master password**. It is off by default and worth leaving off on a shared or unattended machine.
-
-The stored password is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, log out of the account, or when the vault rejects it (for example after a master password change, which then prompts you for the new one).
-
----
-
-## Regenerating the Screenshots
-
-The screenshots in this README are generated, not hand-cropped, and never show a real vault:
-
-```bash
-./demo/capture.sh            # writes docs/screenshots/*.png
-```
-
-`demo/bin/bw` is a stand-in for the Bitwarden CLI that answers from `demo/fixtures.json`. The script restarts the Omarchy shell with `demo/bin` ahead of it on `PATH`, so the plugin resolves `bw` to the shim and renders a vault of invented entries -- `demo@example.com`, `Acme Corp`, a card numbered `4111 1111 1111 1111`. Nothing in that path reads your keyring, touches the network, or runs the real `bw`, and the real shell is restored on exit, including if the script is interrupted.
-
-`demo/find_panel.py` crops each image to the panel by locating its accent-coloured border. That matters for privacy as much as tidiness: a fixed crop leaves a margin of whatever is behind the panel -- windows, filenames, terminal scrollback -- in the published image.
-
-To change what the screenshots show, edit `demo/fixtures.json` and re-run the script.
 
 ---
 
@@ -534,13 +638,14 @@ omarchy plugin validate .
 
 ## Tests
 
-Regression suites, no dependencies beyond Node:
+Regression suites require Node; the SSH-items boundary suite also exercises jq:
 
 ```bash
 node tests/auth.test.js             # unlock/login commands, and that no credential reaches argv
 node tests/auth-prewarm.test.js     # private FIFO lifecycle, byte-exact password delivery, and cancellation
 node tests/context-match.test.js    # window-title matching and learned suggestions
 node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
+node tests/ssh-items.test.js         # bounded out-of-process vault sanitization and SSH private-key exclusion
 node tests/first-run.test.js        # a fresh install with no `bw` yet: the setup gate, the
                                     # sequence that follows the install, and what the
                                     # in-panel install button asks for

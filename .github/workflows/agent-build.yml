@@ -1,0 +1,344 @@
+# Reproducible build of the SSH agent helper.
+#
+# The helper ships as committed bytes, so this job exists to prove those bytes
+# can be reproduced from the committed source. It runs inside a digest-pinned
+# container rather than on the runner image directly: `ubuntu-latest` rolls
+# forward, and a GNU-linked binary carries symbol requirements from the glibc
+# it built against while `strip` output varies across binutils releases. The
+# Rust side is pinned by rust-toolchain.toml and Cargo.lock; the container
+# pins everything underneath it.
+#
+# Scoped to the feature branch while the SSH agent is still being built. It
+# moves to master when the feature lands.
+#
+# Also called by release.yml, so a release re-runs these gates against the
+# tagged commit from this one definition rather than from a copy that can
+# drift away from it.
+
+name: agent build
+
+on:
+  push:
+    branches: [feature/ssh-agent]
+    paths:
+      - 'agent/**'
+      - 'scripts/build-agent.sh'
+      - '.github/workflows/agent-build.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'agent/**'
+      - 'scripts/build-agent.sh'
+      - '.github/workflows/agent-build.yml'
+  workflow_dispatch:
+  # Callable as a reusable workflow. release.yml is the only caller: it runs
+  # every gate below against a release tag before anything is published.
+  workflow_call:
+
+# Read-only. This workflow inspects and builds; it never writes to the
+# repository, and it has no secrets to leak if a dependency misbehaves.
+permissions:
+  contents: read
+
+concurrency:
+  # Scoped by the calling workflow, not just the ref. These jobs also run as
+  # release.yml's gates stage, and a shared group let a branch build and a
+  # release cancel one another -- which the rehearsal demonstrated by killing
+  # a branch build the moment the release run claimed the group. A release's
+  # gates are never cancelled; a superseded branch build still is.
+  group: agent-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.workflow != 'release' }}
+
+jobs:
+  reproducible:
+    name: byte-identical across build paths
+    runs-on: ubuntu-24.04
+    # The same digest scripts/build-agent.sh pins. Keep the two in step.
+    container:
+      image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Full history: the build exports a clean tree with `git archive`,
+          # which needs the commit rather than a detached shallow blob.
+          fetch-depth: 0
+
+      - name: Record the build environment
+        run: |
+          # These are the inputs that decide the output bytes. Printing them
+          # means a future mismatch can be diagnosed from the log alone.
+          rustc --version --verbose
+          cargo --version
+          ld --version | head -1
+          ldd --version | head -1
+          strip --version | head -1
+          echo "container: rust:1.98.0-bookworm@sha256:82150a52..."
+
+      - name: Confirm the pinned toolchain is the one in use
+        working-directory: agent
+        run: |
+          # The container ships one Rust, and rust-toolchain.toml names one.
+          # A silent mismatch would make every downstream comparison meaningless.
+          pinned="$(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)"
+          actual="$(rustc --version | cut -d' ' -f2)"
+          echo "pinned=$pinned actual=$actual"
+          [ "$pinned" = "$actual" ] || {
+            echo "::error::rust-toolchain.toml pins $pinned but the container has $actual"
+            exit 1
+          }
+
+      - name: Build twice from different paths and compare
+        env:
+          # This job *is* the pinned environment -- the container above. The
+          # script verifies the claim against rust-toolchain.toml and the
+          # image's own OS rather than taking it on trust.
+          QSBW_PINNED_BUILD: '1'
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ./scripts/build-agent.sh --verify-reproducible
+
+      - name: Compare the tracked binary with a clean rebuild
+        id: compare
+        env:
+          QSBW_PINNED_BUILD: '1'
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+        # The gate that gives the committed bytes their meaning: they must be
+        # what this source builds in this environment. Skipped only while no
+        # binary is tracked, so it cannot pass by absence.
+        #
+        # FIRST, before anything else writes to bin/. This ran after "Build the
+        # candidate artifact" for four months, and that step calls the build
+        # script with no flags -- which *writes* bin/ and bin/SHA256SUMS. So the
+        # comparison read back the candidate it had just produced and compared
+        # it with itself. It reported `tracked` and `fresh` as the same digest
+        # on a repository whose committed binary was four commits stale, and
+        # every green run since Task 16 proved nothing at all.
+        #
+        # The verdict is recorded rather than acted on here, because a drifted
+        # binary is exactly when the candidate is most worth uploading: that
+        # artifact is how a maintainer fixes the drift. The job fails at the
+        # end instead.
+        run: |
+          if [ ! -f bin/x86_64-linux/qs-bitwarden-ssh-agent ]; then
+            echo "::notice::no tracked binary yet; nothing to compare"
+            echo "drift=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ./scripts/build-agent.sh --compare-tracked; then
+            echo "drift=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "drift=yes" >> "$GITHUB_OUTPUT"
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::warning::the tracked binary does not match this source. A fork cannot"
+            echo "::warning::push CI's bytes, so this is reported rather than blocking."
+            echo "::warning::A maintainer must commit the uploaded candidate before merge."
+          fi
+
+      - name: Build the candidate artifact
+        env:
+          QSBW_PINNED_BUILD: '1'
+        # The read-only candidate flow: this job builds the bytes and uploads
+        # them, a maintainer commits them, and a later run rebuilds and
+        # compares. No write token is ever handed to CI, and nothing here
+        # commits anything.
+        run: ./scripts/build-agent.sh
+
+      - name: Report what was produced
+        run: |
+          cat bin/SHA256SUMS
+          file bin/x86_64-linux/qs-bitwarden-ssh-agent
+          ldd bin/x86_64-linux/qs-bitwarden-ssh-agent || true
+          ./bin/x86_64-linux/qs-bitwarden-ssh-agent --version
+          ./bin/x86_64-linux/qs-bitwarden-ssh-agent --self-test
+
+      - name: Upload the candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qs-bitwarden-ssh-agent-x86_64-linux
+          path: |
+            bin/x86_64-linux/qs-bitwarden-ssh-agent
+            bin/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail if the tracked binary drifted
+        # After the upload, so the bytes that fix the drift are always
+        # available. A fork keeps its exemption: it cannot push CI's output
+        # into its own branch, and the bytes still cannot reach master without
+        # a same-repository run passing this.
+        if: steps.compare.outputs.drift == 'yes'
+          && github.event.pull_request.head.repo.fork != true
+        run: |
+          echo "::error::the tracked binary does not match a clean build of this source."
+          echo "::error::Commit the uploaded candidate: it is this source, built here."
+          exit 1
+
+  gates:
+    name: tests, format and lint
+    runs-on: ubuntu-24.04
+    container:
+      image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Formatting
+        working-directory: agent
+        run: cargo fmt --check
+
+      - name: Lint
+        working-directory: agent
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Dependency and licence policy
+        # Advisories, licences, registries and duplicate policy. This binary
+        # holds decrypted private keys; its dependency tree was reviewed in
+        # writing once, and this is what stops that review going stale.
+        #
+        # --config is explicit rather than discovered. cargo-deny looks beside
+        # the manifest and in the working directory, so running it from agent/
+        # silently fell back to built-in defaults and checked none of our
+        # policy while reporting success -- a gate that passes without reading
+        # its rules is worse than no gate.
+        #
+        # Not version-pinned, deliberately: this tool reads a live advisory
+        # database, and an old copy fails to parse newer entries. It is
+        # checking dependencies, not producing artifact bytes, so currency
+        # matters more here than reproducibility.
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny --manifest-path agent/Cargo.toml --config deny.toml check
+
+      - name: Tests
+        working-directory: agent
+        # The suite drives a real socket, a real FIFO and real disposable keys,
+        # so it needs no network and no vault -- but it does take a couple of
+        # minutes of wall time on the slower lifecycle cases.
+        run: cargo test --locked --all-targets
+
+  javascript:
+    name: panel tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install what the panel tests shell out to
+        # The tests execute the real pipeline rather than mocking it, so the
+        # tools that pipeline uses have to be present.
+        #
+        # Pinned through a point-in-time archive snapshot rather than by
+        # writing `package=version`: a hard version pin breaks as soon as
+        # Ubuntu supersedes the package and drops the old one from the pool,
+        # which turns drift-prevention into a time bomb. A snapshot fixes
+        # every version at once and keeps working.
+        #
+        # These tools decide whether the tests can run, not what the shipped
+        # binary contains -- that is pinned separately by the build container.
+        run: |
+          sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null <<'SOURCES'
+          Types: deb
+          URIs: https://snapshot.ubuntu.com/ubuntu/20260801T000000Z
+          Suites: noble noble-updates
+          Components: main universe
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          SOURCES
+          # The snapshot archive is the only official point-in-time mirror, and
+          # it is slower and flakier than the moving ones -- two runs in a row
+          # died on 502s and 503s from it. Switching mirrors would trade that
+          # for unpinned versions, which is the problem this job exists to
+          # avoid, so make the requests survivable instead.
+          #
+          # Retries first. Then stop fetching index metadata nothing here
+          # reads: DEP-11 application data, command-not-found lookups, and
+          # translations. apt already treats those as optional -- it logged
+          # "ignored, or old ones used instead" while failing on a package --
+          # so dropping them removes requests that can only ever cost us.
+          sudo tee /etc/apt/apt.conf.d/99-snapshot-resilience >/dev/null <<'APTCONF'
+          Acquire::Retries "5";
+          Acquire::Languages "none";
+          Acquire::IndexTargets::deb::DEP-11::DefaultEnabled "false";
+          Acquire::IndexTargets::deb::Commands::DefaultEnabled "false";
+          APTCONF
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends jq openssh-client
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+
+      - name: Build the helper the pipeline tests drive
+        working-directory: agent
+        # Plain debug build into agent/target/debug/, which is where the panel
+        # launches the development helper from and where the tests look for it.
+        run: cargo build --locked
+
+      - name: Confirm the helper landed where the tests expect it
+        run: |
+          # A default target in .cargo/config.toml would move this and the
+          # tests would skip rather than fail, hiding real coverage loss.
+          test -x agent/target/debug/qs-bitwarden-ssh-agent \
+            || { echo "::error::helper not at agent/target/debug/"; exit 1; }
+
+      - name: Run the QML tests
+        # The panel's own JavaScript runs inside QML's engine, not Node's, and
+        # the two differ. These were passing locally and never running here.
+        run: |
+          # Every module named explicitly. --no-install-recommends keeps the
+          # install lean but drops what QtQuick merely *recommends*, and
+          # QtQml.WorkerScript is one of those -- importing QtQuick then fails
+          # at compile time with a module-not-installed error that looks like
+          # a broken test rather than a missing package.
+          sudo apt-get install -y -qq --no-install-recommends \
+            qt6-declarative-dev-tools \
+            qml6-module-qttest \
+            qml6-module-qtqml \
+            qml6-module-qtqml-workerscript \
+            qml6-module-qtquick \
+            qml6-module-qtquick-window
+          # Record what the snapshot actually resolved to, so a future
+          # difference in behaviour can be traced to a version rather than
+          # guessed at.
+          dpkg -l qt6-declarative-dev-tools qml6-module-qttest | tail -2
+          # The import paths qmltestrunner will search, so a future
+          # module-not-installed failure can be read straight from the log.
+          /usr/lib/qt6/bin/qmltestrunner -help 2>&1 | head -3 || true
+          # One test imports the Omarchy shell's own UI kit by absolute path,
+          # which exists on a desktop and not on a runner. It is skipped here
+          # -- but narrowly, loudly, and only for that reason: a gate that
+          # quietly runs nothing is worse than no gate, and this file has
+          # already been bitten twice by checks passing through absence.
+          shopt -s nullglob
+          run=() ; skipped=()
+          for f in tests/qml/*.qml; do
+            if grep -q "/usr/share/omarchy/shell" "$f" && [ ! -d /usr/share/omarchy/shell/Ui ]; then
+              skipped+=("$f")
+            else
+              run+=("$f")
+            fi
+          done
+          if [ ${#skipped[@]} -gt 0 ]; then
+            echo "::notice::Omarchy shell not installed; skipped ${skipped[*]}"
+          fi
+          if [ ${#run[@]} -eq 0 ]; then
+            echo "::error::every QML test was skipped, so this gate proved nothing"
+            exit 1
+          fi
+          echo "running ${#run[@]} QML test file(s), skipping ${#skipped[@]}"
+          status=0
+          for f in "${run[@]}"; do
+            QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input "$f" || status=1
+          done
+          exit $status
+
+      - name: Run every panel test
+        run: |
+          status=0
+          for test_file in tests/*.test.js; do
+            echo "--- $test_file"
+            node "$test_file" || status=1
+          done
+          exit $status

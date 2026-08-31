@@ -49,13 +49,13 @@ const bodyOf = name => {
 // ships those -- and parseDependencies must ignore what it was not asked
 // about rather than inventing rows for it.
 const FRESH = Model.parseDependencies(
-  "bw=0\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=0\nfingerprint_ready=0\nomarchy=1")
+  "bw=0\nbw_version=\njq=0\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=0\nfingerprint_ready=0\nomarchy=1")
 // The same machine after one trip through the setup screen's install button.
 const INSTALLED = Model.parseDependencies(
-  "bw=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=0\nomarchy=1")
+  "bw=1\nbw_version=2025.1.2\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=0\nomarchy=1")
 // Required tools only. The optional ones stay absent, and must not gate.
 const MINIMAL = Model.parseDependencies(
-  "bw=1\nwlcopy=1\nhyprctl=0\nsecrettool=0\nfprintd=0\nfingerprint_ready=0\nomarchy=1")
+  "bw=1\nbw_version=2025.1.2\njq=1\nwlcopy=1\nhyprctl=0\nsecrettool=0\nfprintd=0\nfingerprint_ready=0\nomarchy=1")
 
 // Omarchy's own base packages. The wizard must never ask for one of these: a
 // first-run screen whose rows are green on every machine that can run this
@@ -152,7 +152,7 @@ check("dismissed: an install landing later is still picked up",
 // --- what the install button asks for ---------------------------------------
 const fresh = Model.missingPackages(FRESH)
 check("install: asks for the tools it can install, and only those",
-  fresh.join(" ") === "bitwarden-cli",
+  fresh.join(" ") === "bitwarden-cli jq",
   `got [${fresh}]`)
 
 check("install: never asks for a package Omarchy already ships",
@@ -209,7 +209,7 @@ check("fingerprint: the row is a setup row, not a package row",
 
 check("fingerprint: never reaches the package installer",
   Model.missingPackages(Model.parseDependencies(
-    "bw=1\nfprintd=0\nfingerprint_ready=0\nfingerprint_hw=1\nomarchy=1")).length === 0,
+    "bw=1\nbw_version=2025.1.2\njq=1\nfprintd=0\nfingerprint_ready=0\nfingerprint_hw=1\nomarchy=1")).length === 0,
   "fprintd was handed to omarchy install app")
 
 const fp = Model.fingerprintSetupCommand()
@@ -219,9 +219,9 @@ check("fingerprint: runs Omarchy's own setup in the floating terminal",
 
 // --- hardware the machine does not have -------------------------------------
 const NO_READER = Model.parseDependencies(
-  "bw=1\nfprintd=0\nfingerprint_ready=0\nfingerprint_hw=0\nomarchy=1")
+  "bw=1\nbw_version=2025.1.2\njq=1\nfprintd=0\nfingerprint_ready=0\nfingerprint_hw=0\nomarchy=1")
 const WITH_READER = Model.parseDependencies(
-  "bw=1\nfprintd=0\nfingerprint_ready=0\nfingerprint_hw=1\nomarchy=1")
+  "bw=1\nbw_version=2025.1.2\njq=1\nfprintd=0\nfingerprint_ready=0\nfingerprint_hw=1\nomarchy=1")
 
 check("reader: a desktop with no reader is not shown a fingerprint row",
   Model.applicableDependencies(NO_READER).every(d => d.key !== "fprintd"),

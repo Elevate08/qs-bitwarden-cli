@@ -1,0 +1,52 @@
+[package]
+name = "qs-bitwarden-ssh-agent"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+description = "Headless SSH-agent companion for the qs-bitwarden-cli Quickshell panel"
+
+# Why each dependency is here, and why its features are cut this far down, is
+# recorded in docs/decisions/0001-ssh-agent-dependencies.md. Anything added
+# here needs the same review: this process holds decrypted private keys.
+[dependencies]
+# Key parsing, public blobs, fingerprints, and the signing primitives. Default
+# features are off so ECDSA, DSA, and OpenSSH key encryption never compile in:
+# v1 signs with Ed25519 and RSA SHA-2 only.
+ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "ed25519", "rsa"] }
+# Wire primitives for the allowlisted agent frame decoder (Task 5). Same
+# version ssh-key uses, declared directly because this crate encodes and
+# decodes frames itself rather than through an agent framework.
+ssh-encoding = { version = "0.2", default-features = false, features = ["alloc"] }
+# Declared only to turn ed25519-dalek's zeroize-on-drop impl on for the whole
+# graph. ssh-key depends on dalek with default features off and does not ask
+# for `zeroize`, so without this line the transient SigningKey built for each
+# signature leaves its 32 secret bytes in freed memory.
+ed25519-dalek = { version = "2.2", default-features = false, features = ["zeroize"] }
+# Same reasoning in reverse: rsa zeroizes unconditionally, and pinning it here
+# keeps the version that does so under this crate's own review.
+rsa = { version = "0.9.10", default-features = false, features = ["sha2"] }
+# Zeroizing<Vec<u8>> for PEM text and FIFO payloads, from the first byte read.
+zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
+# Current-thread async runtime: independent socket tasks with bounded channels,
+# no thread pool. `net` carries UnixListener and SO_PEERCRED via peer_cred().
+tokio = { version = "1.53", default-features = false, features = ["rt", "net", "io-util", "io-std", "sync", "time", "macros"] }
+# RLIMIT_CORE=0 and PR_SET_DUMPABLE=0 before the first secret is read.
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process", "thread"] }
+# The NDJSON control channel the panel speaks on stdin/stdout.
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+signature = { version = "2", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+# Test-only key generation, so no private key material is committed.
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+[profile.release]
+# A key-holding process should not leave a core file or unwind through
+# arbitrary Drop impls on panic; abort keeps secret memory out of a longer
+# unwind path and out of a dumpable child.
+panic = "abort"
+strip = "symbols"

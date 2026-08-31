@@ -186,7 +186,12 @@ try {
   fs.rmSync(assocTmp, { recursive: true, force: true })
 }
 
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+// The panel is three QML files now -- the SSH settings sections and the
+// approval screen have their own. A check that reads only the largest one
+// silently narrows as markup moves out of it.
+const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
+  .map(file => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+  .join("\n")
 const bodyOf = name => {
   const start = panelSrc.indexOf(`function ${name}(`)
   if (start === -1) return ""
@@ -217,8 +222,9 @@ check("the long-lived clipboard owner does not inherit the copied secret variabl
 check("locking clears any credential already on the clipboard",
   /clearClipboard\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
 check("a password missing from the in-memory item uses a managed generation-stamped fetch",
-  /requestPasswordCopy\(item\.id\)/.test(bodyOf("copyPassword"))
+  /requestPasswordCopy\(item\.id,\s*item\.typeCode\)/.test(bodyOf("copyPassword"))
     && /beginVaultRead\("passwordCopy"\)/.test(bodyOf("requestPasswordCopy"))
+    && /Model\.getPasswordCommand\(itemId,\s*typeCode\)/.test(bodyOf("requestPasswordCopy"))
     && /vaultReadIsStale\("passwordCopy"\)/.test(bodyOf("onPasswordCopyFinished")),
   bodyOf("copyPassword") + "\n" + bodyOf("requestPasswordCopy") + "\n" + bodyOf("onPasswordCopyFinished"))
 check("TOTP copy reuses the managed TOTP reader instead of a detached bw process",

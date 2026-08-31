@@ -1,0 +1,349 @@
+# Protected release of the plugin and its SSH agent helper.
+#
+# The helper ships as committed bytes. `agent-build.yml` proves on every branch
+# push that those bytes are what the committed source builds; this workflow is
+# what turns that proof into a published release, and it is deliberately the
+# only place in the repository that holds a token able to write anything.
+#
+# The shape is three stages, and the split is the point:
+#
+#   gates    every check the branch already runs, re-run against the tag,
+#            from the branch's own definition rather than a copy of it
+#   verify   the release-only questions -- does the tag agree with the
+#            manifest, the changelog, and the binary's own reported version;
+#            do the committed bytes still match the committed checksum -- plus
+#            the SBOM, dependency report and debug symbols a release publishes
+#   release  the only job with write, id-token and attestations permission,
+#            behind the `release` environment so a human approves the moment
+#            elevated credentials come into existence
+#
+# Nothing before the last stage can write to the repository, mint an OIDC
+# token, or sign an attestation. A dependency that misbehaves during the build
+# runs in a job that has nothing to steal and nothing to publish.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Verification without publication: every gate and every report, on any ref.
+  # The release job refuses anything that is not a tag, so a dispatch run can
+  # rehearse the whole path without creating a release or an attestation.
+  workflow_dispatch:
+
+# Read-only by default. The release job raises this for itself and nothing
+# else inherits it.
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel a release in flight. A half-published release is worse than a
+  # queued one, and a tag is pushed once.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gates:
+    name: every branch gate, against the tag
+    # Called rather than copied. A release that re-implements the branch's
+    # checks drifts from them silently, and the release is the copy where that
+    # matters most.
+    uses: ./.github/workflows/agent-build.yml
+    permissions:
+      contents: read
+
+  verify:
+    name: tag consistency, tracked bytes and reports
+    needs: gates
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        # A container job's default shell is the image's `sh`, not the runner's
+        # bash. The scan below uses an array, and `sh` answered that with
+        # `Syntax error: "(" unexpected` -- found by rehearsing this workflow
+        # rather than by reading it. Declared for the whole job so the next
+        # step that reaches for a bashism does not rediscover it.
+        shell: bash
+    # The same digest scripts/build-agent.sh pins, for the same reason: the
+    # debug-symbol build below has to come from the toolchain that produced
+    # the release, not from whatever the runner image carries this week.
+    container:
+      image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Name the version this run claims
+        # A dispatch run has no tag, so it verifies the manifest against
+        # itself. A tag run is the one that has to agree with something.
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          manifest="$(grep -oP '"version"\s*:\s*"\K[^"]+' manifest.json | head -1)"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$manifest"
+            echo "::notice::no tag; verifying manifest version $version without publishing"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "MANIFEST_VERSION=$manifest" >> "$GITHUB_ENV"
+
+      - name: The tag, the manifest and the changelog must agree
+        run: |
+          [ "$VERSION" = "$MANIFEST_VERSION" ] || {
+            echo "::error::tag says $VERSION but manifest.json says $MANIFEST_VERSION"
+            exit 1
+          }
+          grep -qF "## [$VERSION]" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section"
+            exit 1
+          }
+          echo "version $VERSION agrees across the tag, manifest.json and CHANGELOG.md"
+
+      - name: The committed bytes are the ones the committed checksum names
+        # `--compare-tracked` in the gates job already proved these bytes are
+        # what this source builds. This is the cheaper, different question the
+        # panel asks at launch: does the checksum shipped beside the binary
+        # still describe the binary. A release must not ship the two out of
+        # step, whatever the reason.
+        run: |
+          binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
+          test -f "$binary" || { echo "::error::no tracked helper at $binary"; exit 1; }
+          test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
+          ( cd bin && sha256sum -c SHA256SUMS )
+          file "$binary"
+          file "$binary" | grep -q 'ELF 64-bit LSB.*x86-64' || {
+            echo "::error::$binary is not an x86-64 ELF"
+            exit 1
+          }
+          ldd "$binary" || true
+
+      - name: The helper reports the versions the panel expects
+        # Three numbers have to line up, and nothing else checks all three:
+        # the crate version the binary was built from, the control-protocol
+        # version the panel speaks, and the binary's own report of both. A
+        # protocol bump that reaches the helper but not the panel would
+        # disable the feature at every user's next launch.
+        run: |
+          binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
+          reported="$("./$binary" --version)"
+          echo "$reported"
+          crate="$(grep -oP '^version\s*=\s*"\K[^"]+' agent/Cargo.toml | head -1)"
+          panel="$(grep -oP 'SSH_AGENT_CONTROL_VERSION\s*=\s*\K\d+' BitwardenModel.js | head -1)"
+          echo "$reported" | grep -qF "qs-bitwarden-ssh-agent $crate" || {
+            echo "::error::the helper reports a version that is not agent/Cargo.toml's $crate"
+            exit 1
+          }
+          echo "$reported" | grep -qF "(control protocol $panel)" || {
+            echo "::error::the helper's control protocol is not the $panel the panel speaks"
+            exit 1
+          }
+          "./$binary" --self-test
+
+      - name: Collect the dependency and licence report
+        # The same policy the gates job enforces, published as evidence rather
+        # than only as a pass/fail. A user asking "what is in this binary and
+        # under what terms" should not have to install a Rust toolchain.
+        run: |
+          mkdir -p dist
+          cargo install cargo-deny --locked
+          cargo deny --manifest-path agent/Cargo.toml --config deny.toml \
+            list --layout crate --format json > dist/dependency-licences.json
+          cargo tree --manifest-path agent/Cargo.toml --locked \
+            --edges normal --target x86_64-unknown-linux-gnu > dist/dependency-tree.txt
+
+      - name: Collect the SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --manifest-path agent/Cargo.toml --format json \
+            --describe binaries --target x86_64-unknown-linux-gnu
+          mv agent/qs-bitwarden-ssh-agent_bin.cdx.json dist/qs-bitwarden-ssh-agent.cdx.json
+
+      - name: Collect debug symbols
+        # The release profile sets `strip = "symbols"`, so the shipped binary
+        # carries no symbol table and none can be extracted from it. What can
+        # be published is a companion build: same commit, same pinned
+        # toolchain, same flags, with debug information turned on.
+        #
+        # Its addresses are NOT the shipped binary's -- enabling debug info
+        # changes the link, and the entry point and .text layout move with it.
+        # That is measured, not assumed. So this file is for debugging this
+        # source version under gdb, not for symbolising an address from a user's
+        # copy of the shipped helper, and dist/DEBUG-SYMBOLS.md says so where
+        # whoever downloads it will read it.
+        run: |
+          src="$PWD"
+          CARGO_TARGET_DIR="$src/target-debuginfo" \
+          CARGO_PROFILE_RELEASE_STRIP=none \
+          CARGO_PROFILE_RELEASE_DEBUG=full \
+          RUSTFLAGS="--remap-path-prefix=$src=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry=/registry" \
+            cargo build --manifest-path agent/Cargo.toml --locked --release \
+              --target x86_64-unknown-linux-gnu
+          built="$src/target-debuginfo/x86_64-unknown-linux-gnu/release/qs-bitwarden-ssh-agent"
+          objcopy --only-keep-debug "$built" dist/qs-bitwarden-ssh-agent.debug
+          gzip -9 dist/qs-bitwarden-ssh-agent.debug
+          cat > dist/DEBUG-SYMBOLS.md <<'NOTE'
+          # Debug symbols
+
+          `qs-bitwarden-ssh-agent.debug.gz` comes from a companion build of the
+          tagged commit: the same source, the same pinned container, the same
+          `--remap-path-prefix` flags, but built with debug information instead
+          of the release profile's `strip = "symbols"`.
+
+          It is **not** a split of the shipped binary. Enabling debug
+          information changes the link, so the companion build's entry point
+          and code layout differ from the bytes in `bin/x86_64-linux/`. Use
+          these symbols to debug this version of the source; do not use them to
+          translate an address taken from a shipped helper.
+
+          The shipped binary deliberately carries no symbols: it is a process
+          that holds decrypted private keys, and its release profile also sets
+          `panic = "abort"` and disables core dumps at startup.
+          NOTE
+
+      - name: Refuse to publish anything that looks like key material
+        # The reports come from a lockfile and a dependency tree, and the suite
+        # that ran before them makes disposable keys in temporary directories.
+        # Neither should be able to reach dist/ -- but "should not" is the kind
+        # of claim that is worth one grep.
+        #
+        # Two patterns, applied to different things, because a single one would
+        # be either useless or a landmine:
+        #
+        #   b3BlbnNzaC1rZXktdjE  base64 of "openssh-key-v1", which begins the
+        #                        body of every OpenSSH private key. Checked
+        #                        against every artifact including the symbols,
+        #                        because it appears in real key material and
+        #                        not in compiled output -- verified against
+        #                        both a generated key and the shipped binary.
+        #   BEGIN ... PRIVATE KEY  a PEM header, checked against the text
+        #                        reports only. The helper parses PEM, so its
+        #                        own label strings are compiled into it, and
+        #                        scanning the symbols for this would fail every
+        #                        release for the wrong reason.
+        #
+        # Compressed artifacts are decompressed for the scan rather than
+        # skipped, or gzip would be all it takes to walk a secret past this.
+        run: |
+          found=0
+          for f in dist/*; do
+            case "$f" in
+              *.gz) reader=(gzip -dc "$f") ;;
+              *)    reader=(cat "$f") ;;
+            esac
+            if "${reader[@]}" | grep -aq 'b3BlbnNzaC1rZXktdjE'; then
+              echo "::error::$f contains OpenSSH private key material"
+              found=1
+            fi
+            if "${reader[@]}" | grep -aEq 'BW_SESSION=[A-Za-z0-9+/=]{20}'; then
+              echo "::error::$f contains something session-token-shaped"
+              found=1
+            fi
+            case "$f" in
+              *.json|*.txt|*.md)
+                if grep -aEq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$f"; then
+                  echo "::error::$f contains a PEM private key header"
+                  found=1
+                fi
+                ;;
+            esac
+          done
+          [ "$found" -eq 0 ] || exit 1
+          ls -l dist/
+
+      - name: Upload the release reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-reports
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: attest and publish
+    needs: verify
+    # Only a tag publishes. A dispatch run stops after verification, which is
+    # what makes it safe to rehearse.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    # The protection boundary. `release` requires a reviewer's approval before
+    # this job starts, and it is the only job in the repository that asks for
+    # anything beyond read.
+    environment:
+      name: release
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+    permissions:
+      contents: write       # create the release and upload its assets
+      id-token: write       # mint the OIDC token the attestation is signed with
+      attestations: write   # record the provenance attestation
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Collect the reports the verify job produced
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-reports
+          path: dist
+
+      - name: Run the shipped bytes on the runner, outside the build container
+        # The gates job runs the helper inside the image that built it, which
+        # cannot tell whether it also runs anywhere else. This is a plain
+        # x86-64 Linux host with a different glibc: a binary that only works
+        # in its own build container is not a release.
+        run: |
+          binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
+          ( cd bin && sha256sum -c SHA256SUMS )
+          test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
+          ldd --version | head -1
+          "./$binary" --version
+          "./$binary" --self-test
+          sha256sum "$binary"
+
+      - name: Attest the shipped bytes
+        # Binds this digest to this repository, this workflow and this commit.
+        # Verified by:
+        #   gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
+        #      --repo ${{ github.repository }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: bin/x86_64-linux/qs-bitwarden-ssh-agent
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          # The changelog section for exactly this version, without the next
+          # one. A release whose notes are the whole file is a release nobody
+          # reads.
+          awk -v v="## [$version]" '
+            index($0, v) == 1 { inside = 1; next }
+            inside && /^## \[/ { exit }
+            inside { print }
+          ' CHANGELOG.md > dist/release-notes.md
+          [ -s dist/release-notes.md ] || {
+            echo "::error::no changelog section for $version"
+            exit 1
+          }
+          cp bin/SHA256SUMS dist/SHA256SUMS
+          notes=dist/release-notes.md
+          assets=(dist/*.json dist/*.txt dist/*.gz dist/DEBUG-SYMBOLS.md dist/SHA256SUMS
+                  bin/x86_64-linux/qs-bitwarden-ssh-agent)
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::release $TAG exists; uploading assets to it"
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
+          fi

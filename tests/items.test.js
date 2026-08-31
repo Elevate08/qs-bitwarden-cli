@@ -14,6 +14,13 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.parseItemDetail = parseItemDetail
   exports.itemDetailFromObject = itemDetailFromObject
   exports.itemTypeGlyph = itemTypeGlyph
+  exports.parseSanitizedItems = parseSanitizedItems
+  exports.filterItems = filterItems
+  exports.buildCreatePayload = buildCreatePayload
+  exports.buildEditPayload = buildEditPayload
+  exports.getItemCommand = getItemCommand
+  exports.editItemCommand = editItemCommand
+  exports.deleteItemCommand = deleteItemCommand
 `)(Model)
 
 let pass = 0
@@ -47,6 +54,22 @@ const identity = {
               phone: "555", address1: "1 Road", city: "Town", state: "ST",
               postalCode: "00000", country: "US" }
 }
+
+const sshPublic = { id: "ssh-1", name: "Work SSH", type: 5, organizationId: "org-1",
+  folderId: "folder-1", favorite: true, reprompt: 1,
+  sshKey: { publicKey: "ssh-ed25519 AAAATEST", fingerprint: "SHA256:public" } }
+const sanitized = Model.parseSanitizedItems(JSON.stringify({ items: [login], sshKeys: [sshPublic] }))
+check("sanitized envelope adds a public SSH item", sanitized.length === 2
+  && sanitized.some(i => i.typeCode === 5 && i.publicKey === "ssh-ed25519 AAAATEST"), JSON.stringify(sanitized))
+const ssh = sanitized.find(i => i.typeCode === 5)
+check("SSH search and favorite filtering use the combined list",
+  Model.filterItems(sanitized, "AAAATEST", "all", "all", "all").length === 1
+    && Model.filterItems(sanitized, "", "favorite", "all", "all").some(i => i.id === "ssh-1"), JSON.stringify(sanitized))
+check("SSH detail is public-only", ssh && Model.itemDetailFromObject(ssh.rawObject).password === ""
+  && Model.itemDetailFromObject(ssh.rawObject).publicKey === "ssh-ed25519 AAAATEST", JSON.stringify(ssh))
+check("generic write and private-read commands reject SSH", Model.buildCreatePayload(5, "x") === null
+  && Model.buildEditPayload(ssh, "x") === null && Model.getItemCommand("ssh-1", 5).length === 0
+  && Model.editItemCommand("ssh-1", 5).length === 0 && Model.deleteItemCommand("ssh-1", 5).length === 0, "guard missing")
 
 // --- the equivalence the optimisation rests on ------------------------------
 

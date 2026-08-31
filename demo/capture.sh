@@ -21,6 +21,10 @@ mkdir -p "$OUT"
 
 restore() {
   echo "restoring the real shell..."
+  # The fixture vault's SSH key gets projected to the same directory the real
+  # one uses. The real shell rewrites its own keys on the next load but will
+  # not remove a file it never wrote, so a demo key would sit there for good.
+  rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh/Demo Deploy Key.pub"
   pkill -f "quickshell -n -p /usr/share/omarchy/shell" 2>/dev/null || true
   sleep 1
   omarchy restart shell >/dev/null 2>&1 || true
@@ -60,8 +64,59 @@ shot() { # shot <name>
     echo "  SKIPPED $1: ${err:-could not locate the panel border}" >&2
   fi
   rm -f /tmp/find_panel.err
-  rm -f "$OUT/.raw.png"
+  if [ -n "${QSBW_KEEP_RAW:-}" ]; then mv -f "$OUT/.raw.png" "$OUT/.raw-$1.png" 2>/dev/null || true
+  else rm -f "$OUT/.raw.png"; fi
 }
+
+# --- SSH signing approval ---------------------------------------------------
+#
+# The approval screen exists only while a real signing request is waiting, so
+# it cannot be navigated to -- it has to be raised. `ssh-add -T` asks the agent
+# to sign one challenge with one key and nothing else, which is the smallest
+# request that produces this prompt.
+#
+# Everything here is the fixture vault: the key is the throwaway pair in
+# fixtures.json, and the socket belongs to the fixture shell started above.
+# The request is denied rather than approved, so no signature is ever made.
+capture_ssh_approval() {
+  local sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qs-bitwarden-cli/ssh-agent.sock"
+  local pub="${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh/Demo Deploy Key.pub"
+
+  # The helper starts with the panel and projects its public keys after the
+  # vault loads, so wait for the file rather than guessing at a delay.
+  local waited=0
+  while [ ! -S "$sock" ] || [ ! -f "$pub" ]; do
+    sleep 1; waited=$((waited + 1))
+    if [ "$waited" -ge 30 ]; then
+      echo "  skipped 07-ssh-approval: no agent socket or projected key after ${waited}s" >&2
+      echo "  (is 'Act as your SSH agent' enabled in shell.json?)" >&2
+      return 0
+    fi
+  done
+
+  "${IPC[@]}" open >/dev/null 2>&1; sleep 2
+  # In the background: it blocks until the prompt is answered, which is the
+  # point -- the prompt has to still be on screen when the shot is taken.
+  SSH_AUTH_SOCK="$sock" ssh-add -T "$pub" >/dev/null 2>&1 &
+  local asker=$!
+  sleep "${QSBW_SSH_SETTLE:-4}"
+  shot 07-ssh-approval
+  # Deny it. Escape is the approval screen's own deny, so nothing is signed.
+  wtype -k Escape 2>/dev/null; sleep 1
+  wait "$asker" 2>/dev/null || true
+  "${IPC[@]}" close >/dev/null 2>&1 || true
+}
+
+# QSBW_ONLY_SSH=1 captures the approval shot alone. It is the only shot that
+# depends on timing rather than on a keystroke, so it is the one that gets
+# iterated on, and re-running the whole sequence to retake it costs a minute
+# and five shells.
+if [ -n "${QSBW_ONLY_SSH:-}" ]; then
+  start_shell unlocked
+  capture_ssh_approval
+  echo "done -> $OUT"
+  exit 0
+fi
 
 # --- logged out -------------------------------------------------------------
 
@@ -92,4 +147,7 @@ wtype -M alt -k comma -m alt 2>/dev/null; sleep 3
 shot 05-settings
 
 "${IPC[@]}" close >/dev/null 2>&1 || true
+
+capture_ssh_approval
+
 echo "done -> $OUT"

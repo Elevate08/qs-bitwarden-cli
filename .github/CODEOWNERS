@@ -1,0 +1,29 @@
+# Review ownership for the parts of this repository where a mistake is
+# expensive or invisible.
+#
+# GitHub only enforces these when branch protection requires review from code
+# owners. Listed regardless, because the file also documents which paths
+# deserve a second look.
+
+# Everything, by default.
+*                       @Elevate08
+
+# The helper holds decrypted private keys in memory and signs with them.
+/agent/                 @Elevate08
+
+# Committed executable bytes. A change here that is not accompanied by a
+# matching source change is exactly the thing the trust path exists to catch.
+/bin/                   @Elevate08
+
+# How those bytes are produced, and what CI is permitted to do.
+/scripts/build-agent.sh @Elevate08
+/.github/               @Elevate08
+/deny.toml              @Elevate08
+
+# The only workflow that can write to this repository, mint an OIDC token, or
+# sign a provenance attestation. Covered by /.github/ above; named separately
+# because a reviewer scanning this file should not have to infer it.
+/.github/workflows/release.yml @Elevate08
+
+# Decisions that were argued once and should not drift silently.
+/docs/decisions/        @Elevate08
