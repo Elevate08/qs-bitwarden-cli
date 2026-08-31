@@ -5101,7 +5101,7 @@ Panel {
             // Generator Button
             PanelActionButton {
               visible: root.status === "unlocked" && root.currentScreen !== "generator"
-              iconText: "󰑐"
+              iconText: "󰌆"
               tooltipText: "Password generator (g)"
               fontFamily: root.fontFamily
               onClicked: root.openGenerator()
@@ -5856,7 +5856,7 @@ Panel {
 
               Button {
                 text: "Password"
-                iconText: "󰑐"
+                iconText: "󰌆"
                 selected: root.genOpts.type === "password"
                 accent: Color.accent
                 fontFamily: root.fontFamily
@@ -7640,7 +7640,7 @@ Panel {
 
                     PanelActionButton {
                       visible: itemData.hasPassword
-                      iconText: "󰑐"
+                      iconText: "󰌆"
                       tooltipText: "Copy password (Enter / y)"
                       fontFamily: root.fontFamily
                       onClicked: root.handleSmartEnter(itemData)
@@ -8209,7 +8209,7 @@ Panel {
                       }
 
                       PanelActionButton {
-                        iconText: "󰑐"
+                        iconText: "󰌆"
                         tooltipText: "Copy password (y / Enter)"
                         fontFamily: root.fontFamily
                         onClicked: root.copyToClipboard(root.detailPassword, "Password")
@@ -8846,7 +8846,7 @@ Panel {
                   // comes back. The ellipsis says it goes somewhere first.
                   Button {
                     text: "Generate..."
-                    iconText: "󰑐"
+                    iconText: "󰌆"
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption
                     onClicked: root.openGenerator()

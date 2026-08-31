@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.1] - 2026-08-31
+
+### Fixed
+
+- The password generator, both Copy password buttons, the generator's Password type and the field-level **Generate...** shortcut wear a key icon again. 1.4.0 replaced all five with the refresh icon: a bulk glyph edit meant to correct one new button rewrote every other use of the same codepoint. Cosmetic only -- no button changed what it does -- and now pinned per button by test rather than by count, since a count moves with exactly this kind of mistake.
+
 ## [1.4.0] - 2026-08-30
 
 ### Added

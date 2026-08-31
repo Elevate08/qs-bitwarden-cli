@@ -125,5 +125,29 @@ check("an unrecognised type is drawn as a login, not as the unreachable shield",
   Model.itemTypeGlyph(99).codePointAt(0) === 0xF030B,
   Model.itemTypeGlyph(99).codePointAt(0).toString(16))
 
+// A key icon on the password controls, not a refresh icon. Pinned by button
+// rather than by count, because what broke this was a bulk glyph replacement
+// that meant to touch one new button and silently rewrote every other use of
+// the same codepoint. A count alone would have moved with it.
+const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const KEY = String.fromCodePoint(0xF0306)
+const passwordButtons = [
+  ['tooltipText: "Password generator (g)"', "the generator button"],
+  ['tooltipText: "Copy password (Enter / y)"', "copy password on an item row"],
+  ['tooltipText: "Copy password (y / Enter)"', "copy password in the detail view"],
+  ['selected: root.genOpts.type === "password"', "the generator's Password type"],
+]
+for (const [anchor, label] of passwordButtons) {
+  const at = panelSrc.indexOf(anchor)
+  const before = at < 0 ? "" : panelSrc.slice(Math.max(0, at - 200), at)
+  const icon = before.lastIndexOf("iconText:")
+  check(`${label} wears the key glyph`,
+    at >= 0 && icon >= 0 && before.slice(icon).includes(KEY),
+    at < 0 ? `anchor missing: ${anchor}` : JSON.stringify(before.slice(icon).trim()))
+}
+check("the Generate... button wears it too",
+  /text: "Generate\.\.\."[\s\S]{0,80}iconText: "\u{F0306}"/u.test(panelSrc),
+  "the field-level generator shortcut")
+
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
