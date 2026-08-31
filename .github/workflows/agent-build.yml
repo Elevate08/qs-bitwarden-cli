@@ -246,6 +246,23 @@ jobs:
           Components: main universe
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
           SOURCES
+          # The snapshot archive is the only official point-in-time mirror, and
+          # it is slower and flakier than the moving ones -- two runs in a row
+          # died on 502s and 503s from it. Switching mirrors would trade that
+          # for unpinned versions, which is the problem this job exists to
+          # avoid, so make the requests survivable instead.
+          #
+          # Retries first. Then stop fetching index metadata nothing here
+          # reads: DEP-11 application data, command-not-found lookups, and
+          # translations. apt already treats those as optional -- it logged
+          # "ignored, or old ones used instead" while failing on a package --
+          # so dropping them removes requests that can only ever cost us.
+          sudo tee /etc/apt/apt.conf.d/99-snapshot-resilience >/dev/null <<'APTCONF'
+          Acquire::Retries "5";
+          Acquire::Languages "none";
+          Acquire::IndexTargets::deb::DEP-11::DefaultEnabled "false";
+          Acquire::IndexTargets::deb::Commands::DefaultEnabled "false";
+          APTCONF
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends jq openssh-client
 
