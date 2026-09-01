@@ -12,11 +12,45 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    # Grouped so a week's routine bumps arrive as one reviewable change with
-    # one binary rebuild, rather than five that each invalidate the artifact.
+    # Cargo.toml's requirements are the review record: every version floor in
+    # it is there for a stated reason, and several exist purely to unify the
+    # RustCrypto trait generation that ssh-key and rsa re-export. Dependabot
+    # rewriting those bounds is what broke PR #11 -- it raised `signature` to
+    # 3 and `sha2` to 0.11 while ssh-key 0.6.7 still required 2.x and 0.10,
+    # so cargo resolved two copies of each and Verifier/Signer/Digest stopped
+    # unifying.
+    #
+    # lockfile-only removes that whole failure class by construction: updates
+    # land in Cargo.lock only, always inside the bounds the manifest already
+    # allows, so the resolver can never be handed two incompatible majors.
+    # Crossing a major is then a deliberate manifest edit -- all the coupled
+    # crates in one commit, reviewed together, as the upgrade actually needs.
+    versioning-strategy: lockfile-only
+    # Still grouped, because the binary is rebuilt once per merged PR: one
+    # weekly PR means one rebuild. Split in two so a stalled crypto bump
+    # cannot hold up routine crates the way it did in PR #11.
     groups:
+      crypto:
+        patterns:
+          - "ssh-*"
+          - "*25519*"
+          - "signature"
+          - "sha2"
+          - "digest"
+          - "rsa"
+          - "zeroize"
+          - "rand_core"
       rust-dependencies:
         patterns: ["*"]
+        exclude-patterns:
+          - "ssh-*"
+          - "*25519*"
+          - "signature"
+          - "sha2"
+          - "digest"
+          - "rsa"
+          - "zeroize"
+          - "rand_core"
     labels: ["dependencies", "needs-binary-rebuild"]
     commit-message:
       prefix: "deps"
