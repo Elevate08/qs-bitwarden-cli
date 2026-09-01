@@ -611,6 +611,48 @@ Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/as
 
 ---
 
+## Dependencies
+
+The helper's crates are updated by Dependabot under `versioning-strategy:
+lockfile-only`, so a proposed bump only ever moves `agent/Cargo.lock` within
+the bounds `agent/Cargo.toml` already allows. Crossing a major is a manual
+edit, on purpose: several of the version floors in that manifest exist to keep
+one copy of the RustCrypto traits in the graph, and Dependabot raising them
+one at a time is what broke the build in PR #11.
+
+**The crypto stack moves together or not at all.** `ssh-key` and `rsa`
+re-export the trait generation their callers must match, and `agent/src/lib.rs`
+calls those traits directly -- `Verifier::verify`, `try_sign`,
+`pkcs1v15::SigningKey`. Bump one crate without the others and cargo resolves
+two versions side by side, at which point the traits stop unifying and
+nothing compiles. The coupled set is `ssh-key`, `ssh-encoding`,
+`ed25519-dalek`, `rsa`, `signature`, `sha2`/`digest`, `zeroize` and
+`rand_core`; Dependabot groups them under `crypto` for the same reason.
+
+As of 2026-08-31 that upgrade is gated upstream: `ssh-key` is at `0.7.0-rc.11`
+and `rsa` at `0.10.0-rc.18`, both still pre-release, and the stable releases
+still pin the older generation. When they land, raise every crate in the set
+in one commit and expect real source changes, not just a manifest edit.
+Nothing will prompt you -- there are no `ignore` conditions to trip, because
+cargo's own semver rules already hold `0.10` back from `0.11`.
+
+Every accepted bump, major or not, changes the shipped bytes and so needs the
+binary rebuilt in the same change -- see the `needs-binary-rebuild` label:
+
+```bash
+gh pr checkout <n>
+./scripts/build-agent.sh    # re-enters the digest-pinned image
+git commit -am "deps: rebuild the agent binary" && git push
+```
+
+CI never does this for you. `--compare-tracked` proves the committed bytes are
+what the committed source builds; it cannot tell you whether that source is
+trustworthy, and a malicious crate builds just as reproducibly as an honest
+one. Reading the `Cargo.lock` diff before you commit the binary is the only
+check that covers that, which is why the rebuild stays a human step.
+
+---
+
 ## Linting
 
 Omarchy plugins are Qt6/Quickshell, so lint with the **Qt6** `qmllint` --
