@@ -137,6 +137,7 @@ for (const [name, build] of builders) {
 // --- terminal login handoff -------------------------------------------------
 const login = Model.terminalLoginCommand("login")[2]
 const unlock = Model.terminalLoginCommand("unlock")[2]
+const euLogin = Model.terminalLoginCommand("login", "https://vault.bitwarden.eu")[2]
 check("terminal login runs in a terminal", login.includes("omarchy launch terminal"), login.slice(0, 80))
 check("it falls back to a second terminal if the first is unavailable",
   login.includes("alacritty"), login.slice(0, 80))
@@ -151,6 +152,11 @@ check("neither mode probes with bw status",
   !login.includes("bw status") && !unlock.includes("bw status"), "expected no status probe")
 check("an unknown mode falls back to login",
   Model.terminalLoginCommand("")[2].includes("bw login --raw"), "expected login")
+check("terminal login configures an explicitly selected region before authenticating",
+  euLogin.includes("bw config server")
+    && euLogin.includes("https://vault.bitwarden.eu")
+    && euLogin.indexOf("bw config server") < euLogin.indexOf("bw login --raw"),
+  euLogin.slice(0, 300))
 // Only the method name crosses the IPC boundary; the key never does.
 check("a successful login reopens the panel",
   login.includes("omarchy-shell io.github.elevate08.qs-bitwarden-cli open"), login.slice(0, 300))

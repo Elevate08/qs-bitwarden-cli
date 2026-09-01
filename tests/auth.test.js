@@ -18,6 +18,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.unlockPrewarmCommand = unlockPrewarmCommand
   exports.emailLoginPrewarmCommand = emailLoginPrewarmCommand
   exports.apiKeyLoginCommand = apiKeyLoginCommand
+  exports.loginServerUrlFor = typeof loginServerUrlFor === "function" ? loginServerUrlFor : null
   exports.passwordEnvVar = passwordEnvVar
   exports.clientIdEnvVar = clientIdEnvVar
   exports.clientSecretEnvVar = clientSecretEnvVar
@@ -60,6 +61,20 @@ const CLIENT_ID = "user.11111111-2222-3333-4444-555555555555"
 const CLIENT_SECRET = "sEcReTcLiEnTsTrInG"
 const CODE = "249213"
 const SERVER = "https://vault.example.com"
+
+// Fixes #6. Cloud regions are distinct Bitwarden environments, while a
+// self-hosted installation still needs to retain the free-form server path.
+check("the login server selector maps US, EU and custom without conflating them",
+  Model.loginServerUrlFor
+    && Model.loginServerUrlFor("us", SERVER) === "https://vault.bitwarden.com"
+    && Model.loginServerUrlFor("eu", SERVER) === "https://vault.bitwarden.eu"
+    && Model.loginServerUrlFor("custom", `  ${SERVER}  `) === SERVER,
+  "US and EU must use their official vault URLs, and custom the entered URL")
+check("an invalid login server selection falls back to the safe US default",
+  Model.loginServerUrlFor
+    && Model.loginServerUrlFor("", SERVER) === "https://vault.bitwarden.com"
+    && Model.loginServerUrlFor("other", SERVER) === "https://vault.bitwarden.com",
+  "unknown region values must not turn a stale custom URL into a destination")
 
 check("only explicit Bitwarden second-factor challenges reveal the follow-up prompt",
   Model.loginNeedsSecondFactor
@@ -623,10 +638,23 @@ const syncFields = bodyOf("syncLoginFieldsToState")
 const submitDevice = bodyOf("submitDeviceVerification")
 const startDevice = bodyOf("startDeviceVerificationLogin")
 const loginFieldFocus = bodyOf("loginFieldHasFocus")
+const resolvedLoginServer = bodyOf("resolvedLoginServerUrl")
 const terminalLoginUi = panelSrc.slice(panelSrc.indexOf("// METHOD B: API Key"),
   panelSrc.indexOf("// SCREEN 2: LOCKED VIEW"))
 const emailLoginUi = panelSrc.slice(panelSrc.indexOf("// METHOD A: Email & Password"),
   panelSrc.indexOf("// METHOD B: API Key"))
+
+check("the login screen offers US, EU and Custom server choices to both login methods",
+  /text:\s*"US"[\s\S]{0,500}text:\s*"EU"[\s\S]{0,500}text:\s*"Custom"/.test(panelSrc)
+    && panelSrc.indexOf('text: "US"') < panelSrc.indexOf("// METHOD A: Email & Password"),
+  "the shared region selector must appear before the method-specific forms")
+check("the custom URL field appears only for the Custom server choice",
+  /id:\s*serverUrlField[\s\S]{0,160}visible:\s*root\.loginServerRegion\s*===\s*"custom"/.test(panelSrc),
+  "selecting US or EU must not expose a misleading self-hosted URL field")
+check("all login paths resolve their server choice through the same mapping",
+  /Model\.loginServerUrlFor\(loginServerRegion,\s*loginServerUrl\)/.test(resolvedLoginServer)
+    && (panelSrc.match(/resolvedLoginServerUrl\(\)/g) || []).length >= 4,
+  resolvedLoginServer || "resolvedLoginServerUrl() is missing")
 
 // Email/password login is deliberately two-stage. Asking every user for a
 // second factor up front makes an optional challenge look mandatory and
@@ -635,7 +663,8 @@ check("the email login initially hides the second-factor prompt",
   /Column\s*\{\s*visible:\s*root\.show2faField[\s\S]{0,420}TWO-STEP VERIFICATION CODE/.test(emailLoginUi),
   emailLoginUi)
 check("each login stage replaces the controls before it instead of overflowing below them",
-  (emailLoginUi.match(/visible:\s*root\.loginCredentialsStage/g) || []).length >= 3
+  (emailLoginUi.match(/visible:\s*root\.loginCredentialsStage/g) || []).length >= 2
+    && /visible:\s*root\.loginMethod\s*!==\s*"email"\s*\|\|\s*root\.loginCredentialsStage/.test(panelSrc)
     && /loginCredentialsStage:\s*!show2faField\s*&&\s*!show2faMethodPicker/.test(panelSrc)
     && /visible:\s*root\.show2faMethodPicker/.test(emailLoginUi)
     && /visible:\s*root\.show2faField/.test(emailLoginUi),
