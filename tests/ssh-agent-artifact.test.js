@@ -244,8 +244,19 @@ check("drift is still fatal on a same-repository run",
     && /github\.event\.pull_request\.head\.repo\.fork != true/.test(workflow),
   "recording drift replaced failing on it")
 
-check("CI runs against the feature branch while the feature is unfinished",
-  /branches:\s*\[feature\/ssh-agent\]/.test(workflow), "the workflow does not run on the feature branch")
+// These gates ran on neither the branch nor the files that needed them: the
+// trigger still named the SSH agent's feature branch after that work reached
+// master, and a paths filter of agent/** kept the panel -- Panel.qml,
+// BitwardenModel.js, tests/ -- entirely outside the workflow. PR #13 merged
+// with `no checks reported`. Both halves are asserted, because fixing one
+// leaves the hole open.
+check("CI runs against master, where the code now lands",
+  /push:\s*\n\s*branches:\s*\[master\]/.test(workflow)
+    && /pull_request:\s*\n\s*branches:\s*\[master\]/.test(workflow),
+  "the workflow does not run on master pushes and master PRs")
+check("no paths filter decides which changes are checked",
+  !/^\s*paths:/m.test(workflow),
+  "a paths filter is how the panel went unchecked; these gates are cheap enough to always run")
 check("the workflow is read-only",
   /permissions:\s*\n\s*contents:\s*read/.test(workflow), "the workflow requests more than read access")
 // A tag is a moving pointer. Pinning actions by commit is the same argument
@@ -271,8 +282,16 @@ check("CI enforces the dependency policy", /cargo deny/.test(workflow), "nothing
 check("the policy file is named explicitly rather than discovered",
   /cargo deny[^\n]*--config deny\.toml/.test(workflow),
   "a discovered config can silently be the wrong one, or none at all")
-check("apt packages are pinned by archive snapshot, not by version string",
-  /snapshot\.ubuntu\.com/.test(workflow) && !/apt-get install[^\n]*=[0-9]/.test(workflow),
+// apt answers a failed index with a warning and exit 0. That is how a 502
+// from the archive passed `apt-get update` and came back four minutes later
+// as `Unable to locate package` on six Qt packages -- the wrong error, in the
+// wrong step, about the wrong thing. Error-Mode=any is what makes a mirror
+// outage report itself as one.
+check("a failed package index fails the step that fetched it",
+  /apt-get update[^\n]*APT::Update::Error-Mode=any/.test(workflow),
+  "apt warns and exits 0 on a failed index, so the real error surfaces later and misattributed")
+check("apt packages are not pinned by version string",
+  !/apt-get install[^\n]*=[0-9]/.test(workflow),
   "hard version pins break when Ubuntu drops the superseded package")
 check("advisories are denied rather than warned about",
   /yanked = "deny"/.test(deny), "yanked crates are tolerated")

@@ -8,9 +8,6 @@
 # Rust side is pinned by rust-toolchain.toml and Cargo.lock; the container
 # pins everything underneath it.
 #
-# Scoped to the feature branch while the SSH agent is still being built. It
-# moves to master when the feature lands.
-#
 # Also called by release.yml, so a release re-runs these gates against the
 # tagged commit from this one definition rather than from a copy that can
 # drift away from it.
@@ -18,18 +15,23 @@
 name: agent build
 
 on:
+  # Every push to master and every PR into it, with no `paths` filter.
+  #
+  # There was one, naming agent/** and the build script, and it meant this
+  # workflow never saw the panel: Panel.qml, BitwardenModel.js and tests/ were
+  # all outside it. PR #13 -- the server region feature -- merged with `no
+  # checks reported`, and the v1.6.0 tag run was the first time CI read a line
+  # of it. The branch list was stale in the same way, still naming the feature
+  # branch the SSH agent was built on after that work reached master.
+  #
+  # This is the third gate in this file to prove nothing through absence, after
+  # the digest check that compared a build with itself and the QML tests that
+  # were all skipped. The reproducible-build job costs two minutes; filtering
+  # it was never worth a hole this size.
   push:
-    branches: [feature/ssh-agent]
-    paths:
-      - 'agent/**'
-      - 'scripts/build-agent.sh'
-      - '.github/workflows/agent-build.yml'
+    branches: [master]
   pull_request:
     branches: [master]
-    paths:
-      - 'agent/**'
-      - 'scripts/build-agent.sh'
-      - '.github/workflows/agent-build.yml'
   workflow_dispatch:
   # Callable as a reusable workflow. release.yml is the only caller: it runs
   # every gate below against a release tag before anything is published.
@@ -230,40 +232,28 @@ jobs:
         # The tests execute the real pipeline rather than mocking it, so the
         # tools that pipeline uses have to be present.
         #
-        # Pinned through a point-in-time archive snapshot rather than by
-        # writing `package=version`: a hard version pin breaks as soon as
-        # Ubuntu supersedes the package and drops the old one from the pool,
-        # which turns drift-prevention into a time bomb. A snapshot fixes
-        # every version at once and keeps working.
+        # From the runner image's own mirrors, not a pinned point-in-time
+        # snapshot. That snapshot cost about thirty lines of retry tuning and
+        # index-disabling and still took down three runs on 502s, the v1.6.0
+        # release among them, and what it bought was version pinning -- not
+        # provenance. Provenance comes from `Signed-By`, which apt applies to
+        # every mirror alike.
         #
-        # These tools decide whether the tests can run, not what the shipped
-        # binary contains -- that is pinned separately by the build container.
+        # Nothing installed here reaches the shipped binary: these are the
+        # tools that decide whether the tests can run, and the bytes users get
+        # are pinned separately by the digest-pinned build container. This job
+        # holds no secrets and no write token -- `permissions: contents: read`
+        # at the top of the file -- so a package that misbehaves in it has
+        # nothing to reach. The boundary is the release environment, not the
+        # archive date.
+        #
+        # Error-Mode=any is the part worth keeping. apt reports a failed index
+        # as a warning and exits 0, so the snapshot's 502 passed this step and
+        # surfaced four minutes later as `Unable to locate package` on six Qt
+        # packages -- a mirror outage wearing a missing-dependency costume.
+        # Now the fetch fails where it happens, saying what happened.
         run: |
-          sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null <<'SOURCES'
-          Types: deb
-          URIs: https://snapshot.ubuntu.com/ubuntu/20260801T000000Z
-          Suites: noble noble-updates
-          Components: main universe
-          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          SOURCES
-          # The snapshot archive is the only official point-in-time mirror, and
-          # it is slower and flakier than the moving ones -- two runs in a row
-          # died on 502s and 503s from it. Switching mirrors would trade that
-          # for unpinned versions, which is the problem this job exists to
-          # avoid, so make the requests survivable instead.
-          #
-          # Retries first. Then stop fetching index metadata nothing here
-          # reads: DEP-11 application data, command-not-found lookups, and
-          # translations. apt already treats those as optional -- it logged
-          # "ignored, or old ones used instead" while failing on a package --
-          # so dropping them removes requests that can only ever cost us.
-          sudo tee /etc/apt/apt.conf.d/99-snapshot-resilience >/dev/null <<'APTCONF'
-          Acquire::Retries "5";
-          Acquire::Languages "none";
-          Acquire::IndexTargets::deb::DEP-11::DefaultEnabled "false";
-          Acquire::IndexTargets::deb::Commands::DefaultEnabled "false";
-          APTCONF
-          sudo apt-get update -qq
+          sudo apt-get update -o APT::Update::Error-Mode=any
           sudo apt-get install -y -qq --no-install-recommends jq openssh-client
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -299,9 +289,11 @@ jobs:
             qml6-module-qtqml-workerscript \
             qml6-module-qtquick \
             qml6-module-qtquick-window
-          # Record what the snapshot actually resolved to, so a future
-          # difference in behaviour can be traced to a version rather than
-          # guessed at.
+          # Record what these actually resolved to, so a future difference in
+          # behaviour can be traced to a version rather than guessed at. This
+          # is the log line that replaces the archive pin: the versions move,
+          # and when one of them changes something, the run that changed says
+          # so.
           dpkg -l qt6-declarative-dev-tools qml6-module-qttest | tail -2
           # The import paths qmltestrunner will search, so a future
           # module-not-installed failure can be read straight from the log.
