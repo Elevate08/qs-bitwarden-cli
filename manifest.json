@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.elevate08.qs-bitwarden-cli",
   "name": "Bitwarden",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "author": "David Spencer",
   "license": "MIT",
   "description": "Bitwarden password manager integration for the Omarchy status bar and quick access panel.",

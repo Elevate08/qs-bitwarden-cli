@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.0] - 2026-08-31
+
+### Added
+
+- **Server region** on the login screen: **US** (the default), **EU**, or **Custom**. EU points the CLI at `https://vault.bitwarden.eu`; Custom reveals the server URL field for self-hosted Bitwarden and Vaultwarden. The choice applies to email/password, API key and the interactive terminal login alike, so an EU account no longer has to be told its own server's address. Refs #6.
+
+### Changed
+
+- Dependabot proposes lockfile-only cargo updates, so a bump moves `agent/Cargo.lock` within the bounds `agent/Cargo.toml` already allows and never raises a floor on its own. The crypto crates are coupled -- `ssh-key`, `rsa` and the traits they re-export have to move together or cargo resolves two generations side by side and nothing compiles -- and README's **Dependencies** section records why that upgrade is a manual, all-at-once edit, along with the binary rebuild every accepted bump needs.
+
 ## [1.5.0] - 2026-08-31
 
 Opt-in SSH agent. Implements #1.
