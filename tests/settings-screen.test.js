@@ -58,14 +58,22 @@ check("the indicator is held rather than bound",
   /property var settingsStickyEntry: null/.test(panelSrc),
   "it depends on delegate geometry, which a binding cannot read without fighting layout")
 
-// The bar stands in for a heading that is gone. A heading still on screen can
-// be clicked where it is, and naming it in the bar as well just draws it twice
-// -- which is what happened when the rule pinned a heading the moment its top
-// reached the viewport top, so the first section was pinned and visible at
-// rest.
-check("a section is pinned only once its heading has scrolled out of view",
-  /if \(row\.y \+ row\.height > top\) break/.test(panelSrc),
-  "a heading still on screen must not be duplicated into the bar")
+// The bar names the section the view is inside, including at rest -- an empty
+// bar on the one position everybody starts from is worse than a redundant one.
+// Duplication is prevented at the other end instead: the in-list heading of
+// the section the bar names is drawn transparent.
+check("the bar names a section from the top of the list, before any scrolling",
+  /if \(row\.y > top \+ 1\) break/.test(panelSrc),
+  "a heading at the top edge is the section the view is in")
+
+check("the in-list heading yields to the bar rather than drawing alongside it",
+  /opacity: \(root\.settingsStickyEntry\s*\n?\s*&& root\.settingsStickyEntry\.group === modelData\.group\) \? 0 : 1/.test(panelSrc),
+  "the pinned section's own heading must not be drawn twice")
+
+check("it yields by going transparent, not by being removed",
+  /\/\/ Transparent\s*\n\s*\/\/ rather than hidden|rather than hidden: removing it would shorten the content/.test(panelSrc)
+    && !/visible: !\(root\.settingsStickyEntry/.test(panelSrc),
+  "removing it would shorten the content and jump the view at the top edge")
 
 check("and only while part of that section is still on screen",
   /if \(top < settingsSectionEnd\(i\)\)/.test(panelSrc),

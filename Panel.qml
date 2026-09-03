@@ -3206,16 +3206,19 @@ Panel {
   // The last group heading at or above the top of the viewport. Scrolling past
   // a heading makes it the current section; scrolling back above it hands the
   // section back to the one before.
-  // The bar stands in for a heading that has scrolled out of view, and only
-  // for that. A heading still on screen needs no proxy -- it can be clicked
-  // where it is -- and naming it in the bar as well simply draws it twice.
+  // The section the view is currently inside: the last heading at or above the
+  // top of the viewport, while any part of its section is still on screen.
   //
-  // So a section is pinned while both of these hold: its heading has gone off
-  // the top, and some part of the section is still on screen. The second half
-  // is what stops the last group from staying pinned through the maintenance
-  // and danger-zone rows below it, which are not sections and cannot be
-  // folded; the bar would otherwise offer to fold a section the user had
-  // scrolled well past and could no longer see.
+  // Both halves matter. Without the first the bar sits empty until the user
+  // has scrolled, which is the one position everybody starts from. Without the
+  // second the last group stays pinned through the maintenance and danger-zone
+  // rows below it -- and those are not foldable sections, so the bar would
+  // offer a chevron that folds something the user had scrolled past and could
+  // no longer see.
+  //
+  // Drawing the heading twice is prevented at the other end: the in-list
+  // heading of whichever section this names is drawn transparent, so it keeps
+  // its place in the layout without appearing alongside its own copy.
   function updateSettingsSticky() {
     var entries = settingsEntries
     var top = settingsViewportTop()
@@ -3225,12 +3228,10 @@ Panel {
       if (!entries[i] || entries[i].kind !== "group") continue
       var row = settingsRepeaterItem(i)
       if (!row) continue
-      if (row.y + row.height > top) break
-
-      if (top < settingsSectionEnd(i)) {
-        found = entries[i]
-        break
-      }
+      // Still below the top edge: the section before this one is the one the
+      // view is in.
+      if (row.y > top + 1) break
+      if (top < settingsSectionEnd(i)) found = entries[i]
     }
     settingsStickyEntry = found
   }
@@ -7993,6 +7994,11 @@ Panel {
                   visible: isGroup
                   width: parent.width
                   height: visible ? Style.space(22) : 0
+                  // The pinned bar is already drawing this one. Transparent
+                  // rather than hidden: removing it would shorten the content
+                  // and jump the view at the moment a heading reached the top.
+                  opacity: (root.settingsStickyEntry
+                    && root.settingsStickyEntry.group === modelData.group) ? 0 : 1
 
                   Rectangle {
                     anchors.left: parent.left
