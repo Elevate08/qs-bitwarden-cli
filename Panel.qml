@@ -283,6 +283,36 @@ Panel {
   property bool formPasswordRevealed: false
   property bool showDeleteConfirm: false
 
+  // Card and identity boxes. Flat strings rather than one object per type,
+  // because that is what every other field on this form is and what the
+  // TextField two-way binding above expects; formTypeFields() gathers them
+  // back into the shape the payload builders want.
+  property string formCardholderName: ""
+  property string formCardBrand: ""
+  property string formCardNumber: ""
+  property string formCardExpMonth: ""
+  property string formCardExpYear: ""
+  property string formCardCode: ""
+
+  property string formIdTitle: ""
+  property string formIdFirstName: ""
+  property string formIdMiddleName: ""
+  property string formIdLastName: ""
+  property string formIdUsername: ""
+  property string formIdCompany: ""
+  property string formIdEmail: ""
+  property string formIdPhone: ""
+  property string formIdSsn: ""
+  property string formIdPassport: ""
+  property string formIdLicense: ""
+  property string formIdAddress1: ""
+  property string formIdAddress2: ""
+  property string formIdAddress3: ""
+  property string formIdCity: ""
+  property string formIdState: ""
+  property string formIdPostalCode: ""
+  property string formIdCountry: ""
+
   // When the current auto-lock window started, in wall-clock terms, so a
   // suspend cannot hide from the countdown. See the autoLockWatchdog Timer.
   property double autoLockArmedAt: 0
@@ -3640,6 +3670,7 @@ Panel {
     formIsEditing = false
     formItemId = ""
     formTypeCode = 1
+    clearTypeFields()
     formName = ""
     formUsername = ""
     formUri = ""
@@ -4517,11 +4548,86 @@ Panel {
   // CRUD Operations (Add, Edit, Delete)
   // -------------------------------------------------------------------------
 
+  // The card or identity boxes, in the shape buildCreatePayload and
+  // buildEditPayload want. Returns null for a login or a note, and null is
+  // exactly what tells buildEditPayload to leave an existing sub-object alone.
+  function formTypeFields() {
+    if (formTypeCode === 3) {
+      return {
+        cardholderName: formCardholderName, brand: formCardBrand,
+        number: formCardNumber, expMonth: formCardExpMonth,
+        expYear: formCardExpYear, code: formCardCode
+      }
+    }
+    if (formTypeCode === 4) {
+      return {
+        title: formIdTitle, firstName: formIdFirstName,
+        middleName: formIdMiddleName, lastName: formIdLastName,
+        username: formIdUsername, company: formIdCompany,
+        email: formIdEmail, phone: formIdPhone, ssn: formIdSsn,
+        passportNumber: formIdPassport, licenseNumber: formIdLicense,
+        address1: formIdAddress1, address2: formIdAddress2,
+        address3: formIdAddress3, city: formIdCity, state: formIdState,
+        postalCode: formIdPostalCode, country: formIdCountry
+      }
+    }
+    return null
+  }
+
+  // Every card and identity box, emptied. Called wherever the form resets so
+  // a new item never opens wearing the last one's card number.
+  function clearTypeFields() {
+    formCardholderName = ""; formCardBrand = ""; formCardNumber = ""
+    formCardExpMonth = ""; formCardExpYear = ""; formCardCode = ""
+    formIdTitle = ""; formIdFirstName = ""; formIdMiddleName = ""
+    formIdLastName = ""; formIdUsername = ""; formIdCompany = ""
+    formIdEmail = ""; formIdPhone = ""; formIdSsn = ""
+    formIdPassport = ""; formIdLicense = ""; formIdAddress1 = ""
+    formIdAddress2 = ""; formIdAddress3 = ""; formIdCity = ""
+    formIdState = ""; formIdPostalCode = ""; formIdCountry = ""
+  }
+
+  function loadTypeFields(item) {
+    clearTypeFields()
+    if (!item) return
+    var c = item.card || null
+    if (c) {
+      formCardholderName = String(c.cardholderName || "")
+      formCardBrand = String(c.brand || "")
+      formCardNumber = String(c.number || "")
+      formCardExpMonth = String(c.expMonth || "")
+      formCardExpYear = String(c.expYear || "")
+      formCardCode = String(c.code || "")
+    }
+    var d = item.identity || null
+    if (d) {
+      formIdTitle = String(d.title || "")
+      formIdFirstName = String(d.firstName || "")
+      formIdMiddleName = String(d.middleName || "")
+      formIdLastName = String(d.lastName || "")
+      formIdUsername = String(d.username || "")
+      formIdCompany = String(d.company || "")
+      formIdEmail = String(d.email || "")
+      formIdPhone = String(d.phone || "")
+      formIdSsn = String(d.ssn || "")
+      formIdPassport = String(d.passportNumber || "")
+      formIdLicense = String(d.licenseNumber || "")
+      formIdAddress1 = String(d.address1 || "")
+      formIdAddress2 = String(d.address2 || "")
+      formIdAddress3 = String(d.address3 || "")
+      formIdCity = String(d.city || "")
+      formIdState = String(d.state || "")
+      formIdPostalCode = String(d.postalCode || "")
+      formIdCountry = String(d.country || "")
+    }
+  }
+
   function startAddNewItem() {
     closeFilterGroup()
     formIsEditing = false
     formItemId = ""
     formTypeCode = 1
+    clearTypeFields()
     formName = ""
     formUsername = ""
     formPassword = ""
@@ -4564,6 +4670,10 @@ Panel {
     // Editing keeps whatever collections the item already has until changed.
     formCollectionIds = (item.rawObject && item.rawObject.collectionIds)
       ? item.rawObject.collectionIds.slice() : []
+    // The list row carries the parsed card and identity, so an edit opens with
+    // the real values in the boxes rather than blanks that would be written
+    // straight back over them on save.
+    loadTypeFields(item)
     if (formOrgId && formOrgId !== "personal") loadOrgCollections(formOrgId)
     formPasswordRevealed = false
     errorMessage = ""
@@ -4584,13 +4694,13 @@ Panel {
     beginVaultRead("itemSave")
 
     if (formIsEditing) {
-      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
+      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
       if (!editPayload) { isLoading = false; errorMessage = "This item is read-only"; return }
       itemPayloadJson = JSON.stringify(editPayload)
       editItemProc.command = Model.editItemCommand(formItemId, formTypeCode)
       editItemProc.running = true
     } else {
-      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
+      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
       if (!createPayload) { isLoading = false; errorMessage = "This item type is read-only"; return }
       itemPayloadJson = JSON.stringify(createPayload)
       createItemProc.command = Model.createItemCommand(createPayload)
@@ -10309,6 +10419,23 @@ Panel {
                   fontSize: Style.font.caption
                   onClicked: root.formTypeCode = 2
                 }
+                Button {
+                  text: "Card"
+                  iconText: "󰿯"
+                  selected: root.formTypeCode === 3
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.formTypeCode = 3
+                }
+
+                Button {
+                  text: "Identity"
+                  iconText: ""
+                  selected: root.formTypeCode === 4
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.formTypeCode = 4
+                }
               }
 
               // FIELD: Title / Name
@@ -10635,6 +10762,305 @@ Panel {
                   placeholderText: "https://example.com/login..."
                   text: root.formUri
                   onTextChanged: root.formUri = text
+                }
+              }
+
+              // -----------------------------------------------------------
+              // FORM FIELDS: Card
+              // -----------------------------------------------------------
+              // Expiry is split here, unlike the detail view, because these
+              // are two values the vault stores separately and a single box
+              // would have to guess where the boundary between them falls.
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "CARDHOLDER NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "Name as printed on the card"
+                  text: root.formCardholderName
+                  onTextChanged: root.formCardholderName = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "BRAND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "Visa, Mastercard, Amex..."
+                  text: root.formCardBrand
+                  onTextChanged: root.formCardBrand = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "CARD NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "1234 5678 9012 3456"
+                  text: root.formCardNumber
+                  onTextChanged: root.formCardNumber = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "EXPIRY MONTH"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "MM"
+                  text: root.formCardExpMonth
+                  onTextChanged: root.formCardExpMonth = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "EXPIRY YEAR"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "YYYY"
+                  text: root.formCardExpYear
+                  onTextChanged: root.formCardExpYear = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "SECURITY CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "CVV / CVC"
+                  text: root.formCardCode
+                  onTextChanged: root.formCardCode = text
+                }
+              }
+
+              // -----------------------------------------------------------
+              // FORM FIELDS: Identity
+              // -----------------------------------------------------------
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "TITLE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "Mr, Ms, Dr..."
+                  text: root.formIdTitle
+                  onTextChanged: root.formIdTitle = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "FIRST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdFirstName
+                  onTextChanged: root.formIdFirstName = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "MIDDLE NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdMiddleName
+                  onTextChanged: root.formIdMiddleName = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "LAST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdLastName
+                  onTextChanged: root.formIdLastName = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "USERNAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdUsername
+                  onTextChanged: root.formIdUsername = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "COMPANY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdCompany
+                  onTextChanged: root.formIdCompany = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "name@example.com"
+                  text: root.formIdEmail
+                  onTextChanged: root.formIdEmail = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "PHONE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdPhone
+                  onTextChanged: root.formIdPhone = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "SOCIAL SECURITY NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdSsn
+                  onTextChanged: root.formIdSsn = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "PASSPORT NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdPassport
+                  onTextChanged: root.formIdPassport = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "LICENCE NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdLicense
+                  onTextChanged: root.formIdLicense = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 1"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdAddress1
+                  onTextChanged: root.formIdAddress1 = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 2"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdAddress2
+                  onTextChanged: root.formIdAddress2 = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 3"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdAddress3
+                  onTextChanged: root.formIdAddress3 = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "CITY / TOWN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdCity
+                  onTextChanged: root.formIdCity = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "STATE / COUNTY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdState
+                  onTextChanged: root.formIdState = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "POSTAL CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdPostalCode
+                  onTextChanged: root.formIdPostalCode = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "COUNTRY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdCountry
+                  onTextChanged: root.formIdCountry = text
                 }
               }
 
