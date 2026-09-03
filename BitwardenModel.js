@@ -2039,15 +2039,33 @@ function identityDetail(identity) {
   return {
     title: String(identity.title || ""),
     firstName: String(identity.firstName || ""),
+    middleName: String(identity.middleName || ""),
     lastName: String(identity.lastName || ""),
+    username: String(identity.username || ""),
+    company: String(identity.company || ""),
     email: String(identity.email || ""),
     phone: String(identity.phone || ""),
+    ssn: String(identity.ssn || ""),
+    passportNumber: String(identity.passportNumber || ""),
+    licenseNumber: String(identity.licenseNumber || ""),
     address1: String(identity.address1 || ""),
+    address2: String(identity.address2 || ""),
+    address3: String(identity.address3 || ""),
     city: String(identity.city || ""),
     state: String(identity.state || ""),
     postalCode: String(identity.postalCode || ""),
     country: String(identity.country || "")
   }
+}
+
+// First, middle and last, with the gaps closed. An identity that carries only
+// a surname should read as that surname, not as two spaces and a surname.
+function identityFullName(identity) {
+  if (!identity) return ""
+  return [identity.title, identity.firstName, identity.middleName, identity.lastName]
+    .map(function(part) { return String(part || "").trim() })
+    .filter(function(part) { return part !== "" })
+    .join(" ")
 }
 
 function itemCustomFields(fields) {
@@ -2084,6 +2102,12 @@ function parseItems(raw) {
       cardSubtitle = (card.brand ? card.brand + " " : "") + (last4 ? "•••• " + last4 : "")
     }
 
+    var identity = it.identity || null
+    var identitySubtitle = ""
+    if (identity) {
+      identitySubtitle = identityFullName(identity) || String(identity.email || "")
+    }
+
     var subtitle = ""
     if (login.username) {
       subtitle = String(login.username)
@@ -2091,6 +2115,8 @@ function parseItems(raw) {
       subtitle = uris[0].replace(/^https?:\/\//, "").replace(/\/.*$/, "")
     } else if (cardSubtitle) {
       subtitle = cardSubtitle
+    } else if (identitySubtitle) {
+      subtitle = identitySubtitle
     } else if (it.type === 2) {
       subtitle = "Secure Note"
     }
@@ -2112,6 +2138,12 @@ function parseItems(raw) {
       attachments: attachments,
       hasAttachments: attachments.length > 0,
       subtitle: subtitle,
+      // The list row carries these so search can match a card by its brand or
+      // last four and an identity by name or email -- the same things the
+      // subtitle now shows. Without them the row displays a value the search
+      // box cannot find.
+      card: cardDetail(it.card),
+      identity: identityDetail(it.identity),
       notes: String(it.notes || ""),
       rawObject: it
     })
@@ -2256,6 +2288,25 @@ function matchesQuery(item, query) {
   if (String(item.publicKey || "").toLowerCase().indexOf(q) !== -1) return true
   if (String(item.fingerprint || "").toLowerCase().indexOf(q) !== -1) return true
 
+  // A card row shows its brand and last four; an identity row shows a name or
+  // an email. Anything the list is willing to display, the search box has to
+  // be able to find -- otherwise the one visible handle on a card is the one
+  // thing you cannot type. Never the full number: a substring search over
+  // stored card numbers is a lookup nobody asked this box to perform.
+  if (item.card) {
+    if (String(item.card.brand || "").toLowerCase().indexOf(q) !== -1) return true
+    if (String(item.card.cardholderName || "").toLowerCase().indexOf(q) !== -1) return true
+    var digits = String(item.card.number || "").replace(/\D/g, "")
+    if (digits.length >= 4 && digits.slice(-4).indexOf(q.replace(/\D/g, "")) !== -1
+        && q.replace(/\D/g, "") !== "") return true
+  }
+  if (item.identity) {
+    if (identityFullName(item.identity).toLowerCase().indexOf(q) !== -1) return true
+    if (String(item.identity.email || "").toLowerCase().indexOf(q) !== -1) return true
+    if (String(item.identity.username || "").toLowerCase().indexOf(q) !== -1) return true
+    if (String(item.identity.company || "").toLowerCase().indexOf(q) !== -1) return true
+  }
+
   // toList, not Array.isArray: this item came back out of a QML `var`
   // property, and the array nested inside it did not survive that trip as one.
   // The check that reads right is the check that quietly turned URL search off
@@ -2348,7 +2399,37 @@ function updateLoginFields(login, username, password, totp) {
   login.totp = totp && totp.trim() ? totp.trim() : null
 }
 
-function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
+// Create and edit write these through the same pair, so a field the form can
+// set is a field both paths set the same way. `fields` is whatever the form
+// collected; anything absent from it is written as an empty string rather
+// than left undefined, because `bw edit` treats a missing key and an empty
+// one differently and the form's cleared box means cleared.
+function updateCardFields(card, fields) {
+  var f = fields || {}
+  card.cardholderName = String(f.cardholderName || "").trim()
+  card.brand = String(f.brand || "").trim()
+  card.number = String(f.number || "").trim()
+  card.expMonth = String(f.expMonth || "").trim()
+  card.expYear = String(f.expYear || "").trim()
+  card.code = String(f.code || "").trim()
+}
+
+function updateIdentityFields(identity, fields) {
+  var f = fields || {}
+  var keys = ["title", "firstName", "middleName", "lastName", "username",
+              "company", "email", "phone", "ssn", "passportNumber",
+              "licenseNumber", "address1", "address2", "address3",
+              "city", "state", "postalCode", "country"]
+  for (var i = 0; i < keys.length; i++) {
+    identity[keys[i]] = String(f[keys[i]] || "").trim()
+  }
+}
+
+// `typeFields` carries the card or identity boxes. It is a trailing object
+// rather than twenty-four more positional arguments: a card needs six and an
+// identity eighteen, and a call site that long is one transposed pair away
+// from writing an expiry year into a security code.
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields) {
   if (Number(typeCode) === 5) return null
   var payload = {
     type: Number(typeCode || 1),
@@ -2373,12 +2454,18 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
     payload.login = login
   } else if (Number(typeCode) === 2) { // Secure Note
     payload.secureNote = { type: 0 }
+  } else if (Number(typeCode) === 3) { // Card
+    payload.card = {}
+    updateCardFields(payload.card, typeFields)
+  } else if (Number(typeCode) === 4) { // Identity
+    payload.identity = {}
+    updateIdentityFields(payload.identity, typeFields)
   }
 
   return payload
 }
 
-function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields) {
   if (existingItem && (Number(existingItem.typeCode || existingItem.type) === 5
       || (existingItem.rawObject && Number(existingItem.rawObject.type) === 5))) return null
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
@@ -2399,12 +2486,28 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
     delete payload.collectionIds
   }
 
+  // The payload started as a deep clone of the item as the vault holds it, so
+  // every sub-object the form does not expose is already correct. Each branch
+  // writes only its own type's fields; nothing here deletes another type's,
+  // because an item that arrived as a card leaves as a card.
+  //
+  // The `&& typeFields` is load-bearing. The writers set every key they know,
+  // so calling one with nothing to write blanks the lot -- an edit that only
+  // meant to rename a card would return it to the vault with its number,
+  // expiry and security code erased. A caller with no type fields to offer is
+  // saying "leave that sub-object alone", and the clone already has it right.
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}
     updateLoginFields(payload.login, username, password, totp)
     if (uri && uri.trim()) {
       payload.login.uris = [{ match: null, uri: uri.trim() }]
     }
+  } else if (payload.type === 3 && typeFields) {
+    if (!payload.card) payload.card = {}
+    updateCardFields(payload.card, typeFields)
+  } else if (payload.type === 4 && typeFields) {
+    if (!payload.identity) payload.identity = {}
+    updateIdentityFields(payload.identity, typeFields)
   }
 
   return payload

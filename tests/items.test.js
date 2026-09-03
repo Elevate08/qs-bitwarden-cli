@@ -18,6 +18,8 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.filterItems = filterItems
   exports.buildCreatePayload = buildCreatePayload
   exports.buildEditPayload = buildEditPayload
+  exports.matchesQuery = matchesQuery
+  exports.identityFullName = identityFullName
   exports.getItemCommand = getItemCommand
   exports.editItemCommand = editItemCommand
   exports.deleteItemCommand = deleteItemCommand
@@ -50,8 +52,11 @@ const card = {
 const identity = {
   object: "item", id: "33333333-3333-3333-3333-333333333333",
   type: 4, name: "Home", notes: "", favorite: false,
-  identity: { title: "Mr", firstName: "A", lastName: "Person", email: "a@example.com",
-              phone: "555", address1: "1 Road", city: "Town", state: "ST",
+  identity: { title: "Mr", firstName: "A", middleName: "Q", lastName: "Person",
+              username: "aperson", company: "Acme", email: "a@example.com",
+              phone: "555", ssn: "000-00-0000", passportNumber: "P123",
+              licenseNumber: "L456", address1: "1 Road", address2: "Flat 2",
+              address3: "", city: "Town", state: "ST",
               postalCode: "00000", country: "US" }
 }
 
@@ -108,6 +113,83 @@ const identityDetail = Model.itemDetailFromObject(listedIdentity.rawObject)
 check("identity fields survive too",
   identityDetail.identity.email === "a@example.com" && identityDetail.identity.postalCode === "00000",
   JSON.stringify(identityDetail.identity))
+
+// --- cards and identities are first-class, not decoration --------------------
+//
+// The model parsed both of these long before anything drew them, so these
+// assertions guard the half that was always right as much as the half that
+// was added: what the list shows, what search can find, and above all what
+// survives an edit.
+
+check("an identity carries the fields Bitwarden actually returns",
+  identityDetail.identity.middleName === "Q" && identityDetail.identity.company === "Acme"
+    && identityDetail.identity.passportNumber === "P123"
+    && identityDetail.identity.address2 === "Flat 2",
+  JSON.stringify(identityDetail.identity))
+
+check("a full name closes the gaps rather than padding them",
+  Model.identityFullName({ title: "", firstName: "", middleName: "", lastName: "Person" }) === "Person",
+  JSON.stringify(Model.identityFullName({ lastName: "Person" })))
+
+check("a card row is subtitled with its brand and last four",
+  listedCard.subtitle === "Visa •••• 1111", listedCard.subtitle)
+check("an identity row is subtitled with its name, not left blank",
+  listedIdentity.subtitle === "Mr A Q Person", listedIdentity.subtitle)
+
+// Anything the list is willing to show, the search box has to be able to find.
+check("a card is found by its brand", Model.matchesQuery(listedCard, "visa"), listedCard.subtitle)
+check("a card is found by its last four", Model.matchesQuery(listedCard, "1111"), listedCard.subtitle)
+check("a card is not found by the middle of its number",
+  !Model.matchesQuery(listedCard, "111111111"), "a stored-card-number lookup is not this box's job")
+check("an identity is found by name", Model.matchesQuery(listedIdentity, "person"), listedIdentity.subtitle)
+check("an identity is found by email", Model.matchesQuery(listedIdentity, "a@example.com"), listedIdentity.subtitle)
+
+// --- payloads ---------------------------------------------------------------
+
+const createdCard = Model.buildCreatePayload(3, "New", "", "", "", "", "", false, null, null, null,
+  { cardholderName: "B Person", brand: "MC", number: "5555444433332222", expMonth: "01", expYear: "2031", code: "999" })
+check("creating a card emits a card object and no login",
+  createdCard.type === 3 && createdCard.card.number === "5555444433332222"
+    && createdCard.card.code === "999" && createdCard.login === undefined,
+  JSON.stringify(createdCard))
+
+const createdIdentity = Model.buildCreatePayload(4, "New", "", "", "", "", "", false, null, null, null,
+  { firstName: "Ada", lastName: "Lovelace", email: "ada@example.com" })
+check("creating an identity emits an identity object",
+  createdIdentity.type === 4 && createdIdentity.identity.firstName === "Ada"
+    && createdIdentity.identity.email === "ada@example.com"
+    && createdIdentity.identity.ssn === "",
+  JSON.stringify(createdIdentity))
+
+// The regression that matters most here. The form can rename a card without
+// ever showing its number, and the writers set every key they know -- so an
+// edit that passes no type fields must leave the sub-object entirely alone,
+// not blank it. This is what the `&& typeFields` guard in buildEditPayload is
+// for, and it is worth an assertion because nothing about the call site looks
+// dangerous.
+const renamedCard = Model.buildEditPayload({ typeCode: 3, rawObject: card },
+  "Renamed", "", "", "", "", "", false, null, null, null)
+check("renaming a card leaves its number, expiry and code untouched",
+  renamedCard.name === "Renamed" && renamedCard.card.number === "4111111111111111"
+    && renamedCard.card.code === "123" && renamedCard.card.expYear === "2030",
+  JSON.stringify(renamedCard.card))
+
+const renamedIdentity = Model.buildEditPayload({ typeCode: 4, rawObject: identity },
+  "Renamed", "", "", "", "", "", false, null, null, null)
+check("renaming an identity leaves its fields untouched",
+  renamedIdentity.identity.email === "a@example.com" && renamedIdentity.identity.ssn === "000-00-0000",
+  JSON.stringify(renamedIdentity.identity))
+
+const editedCard = Model.buildEditPayload({ typeCode: 3, rawObject: card },
+  "Visa", "", "", "", "", "", false, null, null, null,
+  { cardholderName: "A Person", brand: "Visa", number: "4111111111111112", expMonth: "05", expYear: "2031", code: "321" })
+check("an edit that does carry card fields writes them",
+  editedCard.card.number === "4111111111111112" && editedCard.card.code === "321"
+    && editedCard.card.expMonth === "05",
+  JSON.stringify(editedCard.card))
+
+check("editing a card never turns it into a login",
+  editedCard.type === 3 && editedCard.login === undefined, JSON.stringify(Object.keys(editedCard)))
 
 // --- the fallback path still has to behave ----------------------------------
 
