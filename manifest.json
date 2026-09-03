@@ -31,7 +31,7 @@
       "pinUnlock": false,
       "sshAgentEnabled": false,
       "sshAgentUnlockOnDemand": false,
-      "sshAgentApprovalPopup": false,
+      "sshAgentApprovalPopup": true,
       "sshAgentApprovalWindowSec": 120
     },
     "schema": [
@@ -132,8 +132,8 @@
         "key": "sshAgentApprovalPopup",
         "type": "boolean",
         "label": "Use centered approval popup",
-        "description": "Show SSH unlock and signing prompts in the middle of the screen instead of opening the Bitwarden panel. The popup disappears as soon as the request is answered or expires.",
-        "defaultValue": false
+        "description": "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel.",
+        "defaultValue": true
       },
       {
         "key": "sshAgentApprovalWindowSec",

@@ -4471,6 +4471,40 @@ function sshAgentPromptView(message, approvalWindowSec) {
   }
 }
 
+// FIFO queueing for concurrent SSH requests. Bounded to match the companion's
+// MAX_PENDING capacity.
+function sshAgentEnqueuePrompt(queue, message, maxQueue) {
+  var cap = typeof maxQueue === "number" && maxQueue > 0 ? maxQueue : 4
+  var list = Array.isArray(queue) ? queue.slice() : []
+  if (!message || !isRequestId(message.requestId)) return list
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].requestId === message.requestId) return list
+  }
+  if (list.length >= cap) return list
+  list.push(message)
+  return list
+}
+
+function sshAgentDequeuePrompt(queue) {
+  if (!Array.isArray(queue) || queue.length === 0) {
+    return { next: null, remaining: [] }
+  }
+  return { next: queue[0], remaining: queue.slice(1) }
+}
+
+function sshAgentRemovePrompt(queue, requestId) {
+  if (!Array.isArray(queue)) return []
+  return queue.filter(function(item) {
+    return item && item.requestId !== requestId
+  })
+}
+
+function sshAgentPendingCount(activePrompt, queue) {
+  var active = activePrompt ? 1 : 0
+  var queued = Array.isArray(queue) ? queue.length : 0
+  return active + queued
+}
+
 // The live grant set, as the settings screen draws it. Public metadata only:
 // the companion never sends key material here and nothing below would carry
 // it if it did.
@@ -5107,8 +5141,8 @@ var SETTINGS_SCHEMA = [
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },
   { key: "sshAgentUnlockOnDemand", group: "sshAgent", type: "bool", label: "Unlock on demand", defaultValue: false,
     description: "Let an SSH client open the unlock prompt when the vault is locked. Off by default because every ssh connection asks for identities, including ones with nothing to do with your vault." },
-  { key: "sshAgentApprovalPopup", group: "sshAgent", type: "bool", label: "Use centered approval popup", defaultValue: false,
-    description: "Show SSH unlock and signing prompts in the middle of the screen instead of opening the Bitwarden panel." },
+  { key: "sshAgentApprovalPopup", group: "sshAgent", type: "bool", label: "Use centered approval popup", defaultValue: true,
+    description: "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel." },
   { key: "sshAgentApprovalWindowSec", group: "sshAgent", type: "int", label: "Approve for this long", unit: "seconds",
     min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },

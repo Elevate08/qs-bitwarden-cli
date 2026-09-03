@@ -36,6 +36,10 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.sshAgentLoadingNote = sshAgentLoadingNote
   exports.sshAgentOptionsLine = sshAgentOptionsLine
   exports.sshAgentRequestDeadlineMs = sshAgentRequestDeadlineMs
+  exports.sshAgentEnqueuePrompt = sshAgentEnqueuePrompt
+  exports.sshAgentDequeuePrompt = sshAgentDequeuePrompt
+  exports.sshAgentRemovePrompt = sshAgentRemovePrompt
+  exports.sshAgentPendingCount = sshAgentPendingCount
   exports.plainLabel = plainLabel
 `)(Model)
 
@@ -643,6 +647,70 @@ check("closing the transient popup clears authentication state",
   /function clearSshPopupUnlockState\(\)[\s\S]{0,700}?masterPassword = ""/.test(panelSrc)
     && /function dismissSshApproval\(\)[\s\S]{0,900}?clearSshPopupUnlockState\(\)/.test(panelSrc),
   "password/PIN state can survive a dismissed popup")
+
+// -------------------------------------------------------------------------
+// Concurrent request queueing
+// -------------------------------------------------------------------------
+
+let q = []
+q = Model.sshAgentEnqueuePrompt(q, { requestId: 1, keyName: "key1" }, 4)
+eq("enqueues first item", q.length, 1)
+q = Model.sshAgentEnqueuePrompt(q, { requestId: 2, keyName: "key2" }, 4)
+eq("enqueues second item", q.length, 2)
+q = Model.sshAgentEnqueuePrompt(q, { requestId: 2, keyName: "key2" }, 4)
+eq("ignores duplicate requestId", q.length, 2)
+q = Model.sshAgentEnqueuePrompt(q, { requestId: 3 }, 4)
+q = Model.sshAgentEnqueuePrompt(q, { requestId: 4 }, 4)
+q = Model.sshAgentEnqueuePrompt(q, { requestId: 5 }, 4)
+eq("respects queue capacity cap", q.length, 4)
+
+eq("pending count includes active and queued", Model.sshAgentPendingCount({ requestId: 0 }, q), 5)
+eq("pending count with no active", Model.sshAgentPendingCount(null, q), 4)
+eq("pending count with no queue", Model.sshAgentPendingCount({ requestId: 0 }, []), 1)
+
+let deq = Model.sshAgentDequeuePrompt(q)
+eq("dequeues first item", deq.next.requestId, 1)
+eq("remaining queue length is decremented", deq.remaining.length, 3)
+
+let emptyDeq = Model.sshAgentDequeuePrompt([])
+eq("empty dequeue next is null", emptyDeq.next, null)
+eq("empty dequeue remaining is empty", emptyDeq.remaining.length, 0)
+
+let removed = Model.sshAgentRemovePrompt(q, 3)
+eq("removes targeted requestId", removed.length, 3)
+eq("requestId 3 is absent", removed.some(x => x.requestId === 3), false)
+
+check("the panel declares an SSH prompt queue",
+  /property var sshPromptQueue:\s*\[\]/.test(panelSrc),
+  "sshPromptQueue is missing from Panel.qml")
+check("the panel declares total pending counts",
+  /readonly property int sshPendingCount:/.test(panelSrc)
+    && /readonly property int sshUnlockPendingCount:/.test(panelSrc),
+  "sshPendingCount or sshUnlockPendingCount is missing")
+check("multiple concurrent approval requests are queued",
+  /root\.sshPromptQueue = Model\.sshAgentEnqueuePrompt\(root\.sshPromptQueue, message, 4\)/.test(panelSrc),
+  "concurrent approvals are not queued")
+check("multiple concurrent unlock requests are queued",
+  /root\.sshUnlockQueue = Model\.sshAgentEnqueuePrompt\(root\.sshUnlockQueue, message, 4\)/.test(panelSrc),
+  "concurrent unlocks are not queued")
+check("advancing an approval dequeues the next prompt",
+  /function advanceSshPrompt\(\)[\s\S]{0,400}?Model\.sshAgentDequeuePrompt\(root\.sshPromptQueue\)/.test(panelSrc),
+  "advanceSshPrompt does not dequeue from sshPromptQueue")
+check("advancing an unlock dequeues the next unlock request",
+  /function advanceSshUnlock\(\)[\s\S]{0,400}?Model\.sshAgentDequeuePrompt\(root\.sshUnlockQueue\)/.test(panelSrc),
+  "advanceSshUnlock does not dequeue from sshUnlockQueue")
+check("deny all rejects active and queued requests",
+  /function denyAllSshRequests\(\)[\s\S]{0,900}?sshPromptQueue[\s\S]{0,600}?sshUnlockQueue[\s\S]{0,600}?dismissSshApproval\(\)/.test(panelSrc),
+  "denyAllSshRequests is missing or does not clear queues")
+check("approval screen displays 1 of N when multiple requests are queued",
+  /text:\s*"1 of "\s*\+\s*panel\.sshPendingCount/.test(approvalSrc),
+  "approval screen does not display queue counter")
+check("approval screen provides a Deny all button when multiple requests exist",
+  /text:\s*"Deny all \("\s*\+\s*panel\.sshPendingCount\s*\+\s*"\)"/.test(approvalSrc),
+  "approval screen is missing Deny all button")
+check("popup accepts Shift+Escape to deny all requests",
+  /event\.modifiers\s*&\s*Qt\.ShiftModifier[\s\S]{0,120}?popup\.panel\.denyAllSshRequests\(\)/.test(popupSrc),
+  "popup does not handle Shift+Escape for deny all")
 
 if (failures.length) {
   console.error(`\n${failures.length} failed, ${pass} passed\n`)

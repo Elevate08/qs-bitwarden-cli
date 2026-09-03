@@ -120,9 +120,14 @@ PanelWindow {
 
       Keys.priority: Keys.BeforeItem
       Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_Escape && !(event.modifiers & ~Qt.KeypadModifier)) {
-          popup.panel.denySshRequest()
-          event.accepted = true
+        if (event.key === Qt.Key_Escape) {
+          if (!(event.modifiers & ~Qt.KeypadModifier)) {
+            popup.panel.denySshRequest()
+            event.accepted = true
+          } else if (event.modifiers & Qt.ShiftModifier) {
+            popup.panel.denyAllSshRequests()
+            event.accepted = true
+          }
         }
       }
 

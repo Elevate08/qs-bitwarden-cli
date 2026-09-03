@@ -73,7 +73,18 @@ Column {
       font.pixelSize: Style.font.body
     }
 
-    Item { width: Math.max(0, parent.width - Style.space(230)); height: 1 }
+    Item { width: Math.max(0, parent.width - Style.space(panel.sshPendingCount > 1 ? 290 : 230)); height: 1 }
+
+    Text {
+      textFormat: Text.PlainText
+      visible: panel.sshPendingCount > 1
+      anchors.verticalCenter: parent.verticalCenter
+      text: "1 of " + panel.sshPendingCount
+      color: Color.accent
+      font.family: panel.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
 
     Text {
       textFormat: Text.PlainText
@@ -164,6 +175,16 @@ Column {
       fontSize: Style.font.bodySmall
       focusable: true
       onClicked: panel.denySshRequest()
+    }
+
+    Button {
+      visible: panel.sshPendingCount > 1
+      text: "Deny all (" + panel.sshPendingCount + ")"
+      iconText: "󰅙"
+      fontFamily: panel.fontFamily
+      fontSize: Style.font.bodySmall
+      focusable: true
+      onClicked: panel.denyAllSshRequests()
     }
 
     Button {

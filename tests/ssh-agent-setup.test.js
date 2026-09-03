@@ -54,7 +54,7 @@ const modelEntry = key => Model.settingSchemaEntry(key)
 const expected = [
   { key: "sshAgentEnabled", type: "bool", manifestType: "boolean", defaultValue: false },
   { key: "sshAgentUnlockOnDemand", type: "bool", manifestType: "boolean", defaultValue: false },
-  { key: "sshAgentApprovalPopup", type: "bool", manifestType: "boolean", defaultValue: false },
+  { key: "sshAgentApprovalPopup", type: "bool", manifestType: "boolean", defaultValue: true },
   { key: "sshAgentApprovalWindowSec", type: "int", manifestType: "integer", defaultValue: 120 }
 ]
 
@@ -96,9 +96,9 @@ eq("the agent is off when the setting is absent", Model.boolSetting("sshAgentEna
 eq("the agent is off when shell.json holds junk", Model.boolSetting("sshAgentEnabled", "yes please"), false)
 eq("the agent is on only for a real boolean", Model.boolSetting("sshAgentEnabled", true), true)
 eq("unlock-on-demand is off by default", Model.boolSetting("sshAgentUnlockOnDemand", undefined), false)
-eq("the centered approval popup is off by default", Model.boolSetting("sshAgentApprovalPopup", undefined), false)
-eq("the centered approval popup accepts true", Model.boolSetting("sshAgentApprovalPopup", true), true)
-eq("the centered approval popup rejects junk", Model.boolSetting("sshAgentApprovalPopup", "yes"), false)
+eq("the centered approval popup is on by default", Model.boolSetting("sshAgentApprovalPopup", undefined), true)
+eq("the centered approval popup accepts false", Model.boolSetting("sshAgentApprovalPopup", false), false)
+eq("the centered approval popup rejects junk", Model.boolSetting("sshAgentApprovalPopup", "yes"), true)
 
 eq("the approval window defaults to 120", Model.intSetting("sshAgentApprovalWindowSec", undefined), 120)
 eq("the approval window keeps a valid value", Model.intSetting("sshAgentApprovalWindowSec", 300), 300)

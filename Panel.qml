@@ -35,7 +35,7 @@ Panel {
   // touches a FIFO while this is false.
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
-  readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", false))
+  readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", true))
   readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
 
   // The SSH sections' own section header. PanelSectionHeader comes from the
@@ -573,8 +573,13 @@ Panel {
   readonly property string activeScreen: sshPrompt !== null && !sshAgentApprovalPopup ? "sshApproval" : currentScreen
 
   property var sshPrompt: null            // the approval_required being shown
+  property var sshPromptQueue: []         // FIFO queue of approval_required messages waiting to be shown
   property var sshUnlockRequest: null     // the unlock_required being shown
   property var sshUnlockRaw: null         // its original message, to promote from
+  property var sshUnlockQueue: []         // FIFO queue of unlock_required messages waiting
+  readonly property int sshPendingCount: Model.sshAgentPendingCount(sshPrompt, sshPromptQueue)
+  readonly property int sshUnlockPendingCount: Model.sshAgentPendingCount(sshUnlockRequest, sshUnlockQueue)
+  readonly property int sshTotalPendingCount: sshPendingCount + sshUnlockPendingCount
   readonly property bool sshApprovalPopupOpen: sshAgentApprovalPopup
     && (sshPrompt !== null || sshUnlockRequest !== null)
   // Password, PIN, and fingerprint completion handlers must accept the
@@ -686,8 +691,11 @@ Panel {
     var openedForThis = root.sshPromptOpenedPanel
     var popupWasUsed = root.sshApprovalPopupOpen
     root.sshPrompt = null
+    root.sshPromptQueue = []
+    root.sshPromotedOldId = null
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
+    root.sshUnlockQueue = []
     root.sshPromptOpenedPanel = false
     if (root.currentScreen === "sshApproval") {
       root.currentScreen = root.screenBeforeSshApproval === "sshApproval"
@@ -698,6 +706,29 @@ Panel {
     // request is what took it. A panel the user opened themselves stays open
     // on whatever screen they were using.
     if (openedForThis && root.opened) root.close()
+  }
+
+  function advanceSshPrompt() {
+    var res = Model.sshAgentDequeuePrompt(root.sshPromptQueue)
+    root.sshPromptQueue = res.remaining
+    if (res.next) {
+      showSshApproval(res.next)
+      return
+    }
+    dismissSshApproval()
+  }
+
+  function advanceSshUnlock() {
+    var res = Model.sshAgentDequeuePrompt(root.sshUnlockQueue)
+    root.sshUnlockQueue = res.remaining
+    if (res.next) {
+      root.sshUnlockRaw = res.next
+      root.sshUnlockRequest = Model.sshAgentPromptView(res.next, 0)
+      root.sshPromptStartedMs = Date.now()
+      root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
+      return
+    }
+    dismissSshApproval()
   }
 
   // The popup is deliberately short lived. Do not let a dismissed or expired
@@ -722,16 +753,43 @@ Panel {
     sshAgentWrite(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
     noteSshCooldown()
-    dismissSshApproval()
+    advanceSshPrompt()
   }
 
   function denySshRequest() {
     if (sshUnlockRequest) {
       sshAgentWrite(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
-    } else if (sshPrompt) {
-      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
-    } else {
+      root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+      noteSshCooldown()
+      advanceSshUnlock()
       return
+    }
+    if (sshPrompt) {
+      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+      root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+      noteSshCooldown()
+      advanceSshPrompt()
+      return
+    }
+    dismissSshApproval()
+  }
+
+  function denyAllSshRequests() {
+    if (sshPrompt) {
+      sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+    }
+    for (var i = 0; i < root.sshPromptQueue.length; i++) {
+      if (root.sshPromptQueue[i] && root.sshPromptQueue[i].requestId) {
+        sshAgentWrite(Model.sshAgentDenyLine(root.sshPromptQueue[i].requestId))
+      }
+    }
+    if (sshUnlockRequest) {
+      sshAgentWrite(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
+    }
+    for (var j = 0; j < root.sshUnlockQueue.length; j++) {
+      if (root.sshUnlockQueue[j] && root.sshUnlockQueue[j].requestId) {
+        sshAgentWrite(Model.sshAgentUnlockCancelledLine(root.sshUnlockQueue[j].requestId))
+      }
     }
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
     noteSshCooldown()
@@ -785,6 +843,17 @@ Panel {
     sshAgentWrite(Model.sshAgentRevokeGrantsLine())
   }
 
+  property var sshPromotedOldId: null
+
+  function adoptSshPrompt(message) {
+    if (root.sshPromotedOldId !== null && root.sshPrompt) {
+      root.sshPrompt.requestId = message.requestId
+      root.sshPromotedOldId = null
+      return true
+    }
+    return false
+  }
+
   function onSshAgentMessage(message) {
     if (message.type === "approval_required") {
       // A request that cannot raise UI is refused rather than left hanging:
@@ -793,12 +862,21 @@ Panel {
         sshAgentWrite(Model.sshAgentDenyLine(message.requestId))
         return
       }
+      if (adoptSshPrompt(message)) return
+      if (root.sshPrompt !== null) {
+        root.sshPromptQueue = Model.sshAgentEnqueuePrompt(root.sshPromptQueue, message, 4)
+        return
+      }
       showSshApproval(message)
       return
     }
     if (message.type === "unlock_required") {
       if (!sshAgentMayPrompt()) {
         sshAgentWrite(Model.sshAgentUnlockCancelledLine(message.requestId))
+        return
+      }
+      if (root.sshUnlockRequest !== null) {
+        root.sshUnlockQueue = Model.sshAgentEnqueuePrompt(root.sshUnlockQueue, message, 4)
         return
       }
       root.sshUnlockRaw = message
@@ -814,19 +892,25 @@ Panel {
       return
     }
     if (message.type === "request_cancelled") {
-      // The request is gone -- the client disconnected, the deadline passed,
-      // or an unlock replaced it with an approval. Take the prompt down
-      // rather than leaving a question with nothing behind it.
+      // The request was cancelled by the client, timed out, or released on unlock.
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
-        // A prompt that was on screen and went unanswered is what the
-        // cooldown counts. "released" is the unlock handing over to an
-        // approval, which is the opposite of being ignored.
         if (message.reason !== "released") {
           root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "timeout", Date.now())
           noteSshCooldown()
+        } else {
+          return
         }
-        dismissSshApproval()
+        if (root.sshPrompt && root.sshPromptQueue.length > 0) advanceSshPrompt()
+        else if (root.sshUnlockRequest && root.sshUnlockQueue.length > 0) advanceSshUnlock()
+        else dismissSshApproval()
+        return
+      }
+      if (root.sshPromptQueue.length > 0) {
+        root.sshPromptQueue = Model.sshAgentRemovePrompt(root.sshPromptQueue, message.requestId)
+      }
+      if (root.sshUnlockQueue.length > 0) {
+        root.sshUnlockQueue = Model.sshAgentRemovePrompt(root.sshUnlockQueue, message.requestId)
       }
       return
     }
@@ -1046,8 +1130,10 @@ Panel {
     // authorise, so it stays a wait rather than becoming an approval.
     if (root.sshUnlockRaw.reason === "list-identities") return
     var raw = root.sshUnlockRaw
+    root.sshPromotedOldId = raw.requestId
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
+    root.sshUnlockQueue = []
     showSshApproval(raw)
   }
 

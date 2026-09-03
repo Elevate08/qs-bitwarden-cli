@@ -111,7 +111,7 @@ not in a separate block:
           "rememberSession": true,
           "fingerprintUnlock": false,
           "sshAgentEnabled": false,
-          "sshAgentApprovalPopup": false
+          "sshAgentApprovalPopup": true
         }
       ]
     }
@@ -192,7 +192,9 @@ export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/qs-bitwarden-cli/ssh-agent.sock"
 
 Every signature asks first. The prompt names the key, its `SHA256:` fingerprint, and the program asking -- its name and the absolute path it ran from -- and gives you two minutes to answer. Not its pid: the number is gone by the time you could look it up, and the grant is not scoped to it.
 
-By default, that prompt opens in the Bitwarden panel. Turn on **Use centered approval popup** (`sshAgentApprovalPopup`) for the quieter mode: only a small card appears in the middle of the screen, and it disappears as soon as you answer, dismiss it, or the request expires. If the vault is locked, the card first explains that it must be unlocked and offers the configured PIN, fingerprint, and master-password methods. Unlocking does not approve anything; the same card then changes to the signing question. Escape or a click outside the card denies the request, and keyboard focus starts on **Deny** rather than an approval action.
+By default, that prompt appears in a transient card centered on your active screen (**Use centered approval popup**, `sshAgentApprovalPopup`). If you prefer prompts to open the anchored Bitwarden panel instead, disable this setting in Settings or config (`"sshAgentApprovalPopup": false`). If the vault is locked, the card first explains that it must be unlocked and offers the configured PIN, fingerprint, and master-password methods. Unlocking does not approve anything; the same card then changes to the signing question. Escape or a click outside the card denies the request, and keyboard focus starts on **Deny** rather than an approval action.
+
+When multiple SSH requests arrive concurrently (such as parallel `git fetch` or `git submodule` tasks), requests are queued in order (up to 4 deep, matching helper capacity). A badge indicates **1 of N** requests. Answering or denying advances to the next request in the queue. Clicking **Deny all (N)** or pressing `Shift+Escape` dismisses all pending requests immediately. If an SSH client aborts while queued, it is removed automatically.
 
 - **Approve once** signs this request and nothing further.
 - **Approve for this program · 2m** also covers later requests from the same executable with the same key, for `sshAgentApprovalWindowSec` seconds (default `120`, maximum `900`, `0` to ask every time). Git spawns a fresh `ssh-keygen -Y sign` for every commit it signs, so this is what makes a twenty-commit rebase one prompt instead of twenty. The grant matches on your UID, the executable path captured at approval, and the key -- deliberately not the pid, which changes with every commit.
@@ -606,7 +608,7 @@ The following settings are read from the plugin's own entry in the
 | `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see [Optional: PIN Unlock](#5-optional-pin-unlock). |
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](#7-optional-ssh-agent). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
-| `sshAgentApprovalPopup` | `boolean` | `false` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. A locked vault unlocks inside the card and then advances to the separate signing decision. Escape and outside click deny. |
+| `sshAgentApprovalPopup` | `boolean` | `true` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show prompts in the panel. Multiple concurrent requests are queued sequentially with a "1 of N" counter and "Deny all" option. Escape and outside click deny. |
 | `sshAgentApprovalWindowSec` | `number` | `120` | How long one approval keeps covering further signatures from the same program with the same key. Range `0`-`900`; `0` asks every time. Held in memory only and dropped on lock, logout or exit. |
 
 One further key, `twoFactorMethods`, is written to the same entry but is not a

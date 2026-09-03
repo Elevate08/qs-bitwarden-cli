@@ -307,7 +307,17 @@ Column {
       onClicked: screen.panel.denySshRequest()
     }
 
-    Item { width: Math.max(0, parent.width - Style.space(160)); height: 1 }
+    Button {
+      visible: screen.panel.sshUnlockPendingCount > 1
+      text: "Deny all (" + screen.panel.sshUnlockPendingCount + ")"
+      iconText: "󰅙"
+      fontFamily: screen.panel.fontFamily
+      fontSize: Style.font.bodySmall
+      focusable: true
+      onClicked: screen.panel.denyAllSshRequests()
+    }
+
+    Item { width: Math.max(0, parent.width - Style.space(screen.panel.sshUnlockPendingCount > 1 ? 280 : 160)); height: 1 }
 
     Text {
       textFormat: Text.PlainText
