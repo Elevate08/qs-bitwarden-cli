@@ -11,6 +11,7 @@
 
 - **The settings screen is organised into sections.** It had grown into one undifferentiated scroll of fourteen settings, the SSH agent status block and a row of action buttons. The settings are now grouped under **General**, **Security** and **SSH Agent** headings, with Behavior and Suggestions -- one and two rows each -- merged into General, and the SSH agent's status and client-routing block moved inside the section it describes rather than trailing every group.
 - **The section you are reading is named above the scroll area, and stays there as you scroll.** Its own heading in the list yields to it, so nothing is drawn twice, and it clears once you scroll past the last section into the maintenance rows. **Back (Esc)** is pinned alongside it on the right, instead of scrolling out of reach with everything else.
+- The settings scrollbar has a lane of its own rather than floating over the right edge of the rows, where it sat on top of the toggles and number fields it overlapped.
 - **Destructive actions have their own section.** **Remove Plugin Data** sat in a row visually identical to **Dependencies**, so the button that clears your keyring entries looked exactly as safe to press as the one that opens a checklist. The action buttons are now split under **MAINTENANCE** and a separated **DANGER ZONE**.
 
 ### Fixed

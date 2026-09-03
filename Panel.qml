@@ -3175,6 +3175,13 @@ Panel {
     }
   }
 
+  // The width the vertical scrollbar occupies on the settings screen, kept
+  // clear of content. Read from the bar itself rather than guessed at, so a
+  // theme with a wider one does not put it back on top of the toggles; the
+  // floor covers the frames before it has an implicit width of its own.
+  readonly property real settingsScrollGutter:
+    Math.max(settingsScrollBar ? settingsScrollBar.implicitWidth : 0, Style.space(10))
+
   // Which section the view is currently inside, named by the pinned indicator.
   // Held rather than derived, because it depends on delegate geometry the
   // Repeater only knows after layout, and a binding cannot read that without
@@ -7830,6 +7837,10 @@ Panel {
 
             Row {
               anchors.right: parent.right
+              // Flush with the scrolling rows below, which stop short of the
+              // scrollbar. Without this the Back button overhangs every
+              // control it sits above.
+              anchors.rightMargin: root.settingsScrollGutter
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(8)
 
@@ -7863,17 +7874,26 @@ Panel {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             flickableDirection: Flickable.VerticalFlick
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: ScrollBar {
+              id: settingsScrollBar
+              policy: ScrollBar.AsNeeded
+            }
 
-            // The pinned bar names the section the view is inside, so it has to be
-            // recomputed as the view moves and whenever folding changes what is in
-            // the list. The height case runs a frame later, after layout.
+            // The pinned bar names the section the view is inside, so it has to
+            // be recomputed as the view moves and whenever the content resizes.
+            // The height case runs a frame later, after layout.
             onContentYChanged: root.updateSettingsSticky()
             onContentHeightChanged: Qt.callLater(root.updateSettingsSticky)
 
             Column {
               id: settingsCol
-              width: settingsFlick.width
+              // Short of the scrollbar rather than under it. The bar is an
+              // overlay, so without this it sits on top of whatever is at the
+              // right edge -- which on this screen is every toggle and every
+              // number field. Reserved unconditionally: the width would
+              // otherwise change as the bar came and went, reflowing the rows
+              // underneath it.
+              width: settingsFlick.width - root.settingsScrollGutter
             spacing: Style.space(10)
 
             Connections {
@@ -7980,9 +8000,13 @@ Panel {
                     Text {
                       textFormat: Text.PlainText
                       width: parent.width
+                      // `|| ""` because this binding also runs for the heading
+                      // rows, which carry no description: an invisible item's
+                      // bindings are evaluated all the same, and undefined
+                      // reaches a QString property as a warning per frame.
                       text: blocked
                         ? "Needs fingerprint setup -- see Dependencies below."
-                        : modelData.description
+                        : (modelData.description || "")
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
@@ -8049,7 +8073,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   visible: modelData.type === "int" && root.settingValue(modelData) === 0 && !!modelData.zeroLabel
-                  text: modelData.zeroLabel + " -- this is disabled."
+                  text: (modelData.zeroLabel || "") + " -- this is disabled."
                   color: root.urgent
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption

@@ -41,7 +41,8 @@ check("the scrolling column no longer draws its own Back button",
 // The section name goes left, the way out goes right.
 check("the section indicator anchors left and the exit anchors right",
   /id: stickySection[\s\S]{0,200}anchors\.left: parent\.left/.test(screen)
-    && /anchors\.right: parent\.right[\s\S]{0,600}text: "Back \(Esc\)"/.test(screen),
+    && screen.indexOf("anchors.right: parent.right") < screen.indexOf('text: "Back (Esc)"')
+    && screen.indexOf("anchors.right: parent.right") > screen.indexOf("id: stickySection"),
   "expected section on the left, Back on the right")
 
 // --- the pinned indicator tracks the scroll ----------------------------------
@@ -138,6 +139,34 @@ check("both helpers survive being called before the view exists",
   /return settingsFlick \? settingsFlick\.contentY : 0/.test(panelSrc)
     && /return settingsRepeater \? settingsRepeater\.itemAt\(i\) : null/.test(panelSrc),
   "openSettings runs before the screen is built")
+
+// --- the scrollbar gets a lane of its own -------------------------------------
+//
+// The bar is an overlay. Left to itself it sits on top of whatever is at the
+// right edge, which on this screen is every toggle and every number field.
+
+check("the scrolling content stops short of the scrollbar",
+  /width: settingsFlick\.width - root\.settingsScrollGutter/.test(panelSrc),
+  "the column must not run under the bar")
+
+check("the gutter is read from the scrollbar, not guessed",
+  /settingsScrollBar \? settingsScrollBar\.implicitWidth : 0/.test(panelSrc),
+  "a theme with a wider bar would put it back over the toggles")
+
+check("the gutter has a floor for the frames before the bar has a width",
+  /Math\.max\(settingsScrollBar[\s\S]{0,80}Style\.space\(10\)\)/.test(panelSrc),
+  "expected a minimum gutter")
+
+check("the pinned row is inset to match, so its right edge lines up",
+  /anchors\.rightMargin: root\.settingsScrollGutter/.test(panelSrc),
+  "Back would otherwise overhang every control beneath it")
+
+// Heading rows carry no description and no zeroLabel, and QML evaluates the
+// bindings of invisible items, so these ran for every heading in the list.
+check("bindings that also run for heading rows tolerate the missing fields",
+  /\(modelData\.description \|\| ""\)/.test(panelSrc)
+    && /\(modelData\.zeroLabel \|\| ""\)/.test(panelSrc),
+  "undefined reaching a QString property is a warning on every frame")
 
 // --- the danger zone ----------------------------------------------------------
 
