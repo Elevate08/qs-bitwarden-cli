@@ -15,7 +15,8 @@
 name: agent build
 
 on:
-  # Every push to master and every PR into it, with no `paths` filter.
+  # Every push to master or a release branch, and every PR into either, with
+  # no `paths` filter.
   #
   # There was one, naming agent/** and the build script, and it meant this
   # workflow never saw the panel: Panel.qml, BitwardenModel.js and tests/ were
@@ -28,10 +29,16 @@ on:
   # the digest check that compared a build with itself and the QML tests that
   # were all skipped. The reproducible-build job costs two minutes; filtering
   # it was never worth a hole this size.
+  #
+  # Release branches are listed for the same reason the paths filter came
+  # off. A release is assembled on one, so a PR into `release/1.7.0` that
+  # only master's branch list covered would merge with `no checks
+  # reported` -- the same hole reached through the base branch rather
+  # than through a path.
   push:
-    branches: [master]
+    branches: [master, 'release/**']
   pull_request:
-    branches: [master]
+    branches: [master, 'release/**']
   workflow_dispatch:
   # Callable as a reusable workflow. release.yml is the only caller: it runs
   # every gate below against a release tag before anything is published.

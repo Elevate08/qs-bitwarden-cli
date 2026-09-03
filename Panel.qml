@@ -6318,74 +6318,6 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // Flash Message Banner
-        // -------------------------------------------------------------------
-        BorderSurface {
-          visible: root.flashMessage !== "" && !root.totpFollowupActive
-          width: parent.width
-          implicitHeight: flashText.implicitHeight + Style.space(10)
-          color: Util.alpha(Color.accent, 0.15)
-          radius: Style.cornerRadius
-          borderSpec: Border.surfaceSpec("menu", "border", Color.accent, 1)
-
-          Row {
-            anchors.centerIn: parent
-            spacing: Style.space(8)
-            Text {
-              textFormat: Text.PlainText
-              text: "󰄬"
-              color: Color.accent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-            }
-            Text {
-              textFormat: Text.PlainText
-              id: flashText
-              text: root.flashMessage
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              font.bold: true
-            }
-          }
-        }
-
-        // -------------------------------------------------------------------
-        // Error Message Banner
-        // -------------------------------------------------------------------
-        BorderSurface {
-          visible: root.errorMessage !== ""
-          width: parent.width
-          implicitHeight: errorText.implicitHeight + Style.space(12)
-          color: Util.alpha(Color.urgent, 0.15)
-          radius: Style.cornerRadius
-          borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
-
-          Row {
-            anchors.centerIn: parent
-            width: parent.width - Style.space(16)
-            spacing: Style.space(8)
-            Text {
-              textFormat: Text.PlainText
-              text: "󰅚"
-              color: Color.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-            }
-            Text {
-              textFormat: Text.PlainText
-              id: errorText
-              text: root.errorMessage
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.Wrap
-              width: parent.width - Style.space(24)
-            }
-          }
-        }
-
-        // -------------------------------------------------------------------
         // Development Helper Banner
         // -------------------------------------------------------------------
         // The shipped helper is what a user installed and what CI verified.
@@ -10363,6 +10295,23 @@ Panel {
             }
           }
         }
+      }
+
+      // Transient updates belong to the panel, but not to its layout. Keeping
+      // this beside mainColumn means fittedContentHeight never sees it, so an
+      // unlock, copy, save, or error cannot shove the active screen down and
+      // pull it back up when the message clears.
+      StatusNotice {
+        id: statusNotice
+        statusMessage: root.flashMessage
+        errorMessage: root.errorMessage
+        statusSuppressed: root.totpFollowupActive
+        foreground: root.fg
+        surfaceColor: root.bar ? root.bar.background : Color.background
+        accentColor: root.accent
+        urgentColor: root.urgent
+        fontFamily: root.fontFamily
+        onErrorDismissed: root.errorMessage = ""
       }
     }
   }
