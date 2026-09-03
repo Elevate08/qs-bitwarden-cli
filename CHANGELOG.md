@@ -2,6 +2,10 @@
 
 ## [1.7.0] - 2026-09-03
 
+### Fixed
+
+- Transient status and error messages now float at the bottom of the panel instead of changing its measured height, so updates such as a successful unlock no longer shift the active screen down and back up. Errors use the same compact notice surface and can be dismissed in place.
+
 ## [1.6.0] - 2026-08-31
 
 ### Added
