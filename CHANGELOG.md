@@ -2,6 +2,11 @@
 
 ## [1.7.0] - 2026-09-03
 
+### Added
+
+- **Centered SSH approval popup** (`sshAgentApprovalPopup`, on by default). Shows SSH unlock and signing requests in a transient card centered on the active screen instead of opening the full Bitwarden panel. Users who prefer prompts in the anchored panel can disable the popup in Settings or config. If the vault is locked, the card presents configured unlock options (PIN, fingerprint, or master password) before transitioning to the signing approval once unlocked. Escape or clicking outside the card denies the request, and initial focus defaults to Deny.
+- **Concurrent SSH request queueing**. Multiple simultaneous SSH requests are sequentially queued in order (up to 4 deep, matching helper capacity) instead of dropping or overwriting in-flight prompts. The approval screen surfaces a `1 of N` queue counter, advances to the next request upon approval or denial, offers a `Deny all (N)` action (`Shift+Escape` in the popup), and automatically purges requests when clients cancel or time out.
+
 ### Fixed
 
 - Transient status and error messages now float at the bottom of the panel instead of changing its measured height, so updates such as a successful unlock no longer shift the active screen down and back up. Errors use the same compact notice surface and can be dismissed in place.

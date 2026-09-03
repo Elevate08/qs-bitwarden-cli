@@ -15,6 +15,14 @@ Column {
   id: screen
 
   required property var panel
+  property bool active: panel.activeScreen === "sshApproval"
+
+  // A signing decision should never open with an affirmative action focused.
+  // Both the anchored panel and the centered popup can call this after their
+  // window receives keyboard focus.
+  function focusDefault() {
+    if (screen.active && screen.visible) denyButton.forceActiveFocus()
+  }
 
   // The bar's foreground and font family rather than the global theme's, the
   // same as every other text element in this panel. Text defaults to AutoText,
@@ -34,11 +42,14 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  visible: panel.activeScreen === "sshApproval" && panel.sshPrompt !== null
+  visible: active && panel.sshPrompt !== null
   width: parent.width
   spacing: Style.space(12)
 
-  PanelSeparator { width: parent.width }
+  PanelSeparator {
+    visible: !screen.panel.sshAgentApprovalPopup
+    width: parent.width
+  }
 
   Row {
     width: parent.width
@@ -62,7 +73,18 @@ Column {
       font.pixelSize: Style.font.body
     }
 
-    Item { width: parent.width - Style.space(230); height: 1 }
+    Item { width: Math.max(0, parent.width - Style.space(panel.sshPendingCount > 1 ? 290 : 230)); height: 1 }
+
+    Text {
+      textFormat: Text.PlainText
+      visible: panel.sshPendingCount > 1
+      anchors.verticalCenter: parent.verticalCenter
+      text: "1 of " + panel.sshPendingCount
+      color: Color.accent
+      font.family: panel.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
 
     Text {
       textFormat: Text.PlainText
@@ -134,7 +156,10 @@ Column {
     text: panel.sshPrompt ? panel.sshPrompt.provenanceNote : ""
   }
 
-  PanelSeparator { width: parent.width }
+  PanelSeparator {
+    visible: !screen.panel.sshAgentApprovalPopup
+    width: parent.width
+  }
 
   // Deny leads, and nothing is activated by a bare Enter: a stray
   // keypress must not be able to sign.
@@ -143,11 +168,23 @@ Column {
     spacing: Style.space(8)
 
     Button {
+      id: denyButton
       text: "Deny (Esc)"
       iconText: "󰅘"
       fontFamily: panel.fontFamily
       fontSize: Style.font.bodySmall
+      focusable: true
       onClicked: panel.denySshRequest()
+    }
+
+    Button {
+      visible: panel.sshPendingCount > 1
+      text: "Deny all (" + panel.sshPendingCount + ")"
+      iconText: "󰅙"
+      fontFamily: panel.fontFamily
+      fontSize: Style.font.bodySmall
+      focusable: true
+      onClicked: panel.denyAllSshRequests()
     }
 
     Button {
@@ -155,6 +192,7 @@ Column {
       iconText: "󰄬"
       fontFamily: panel.fontFamily
       fontSize: Style.font.bodySmall
+      focusable: true
       onClicked: panel.approveSshRequest(0)
     }
   }
@@ -166,6 +204,7 @@ Column {
     tooltipText: "Sign further requests from this same program with this key, without asking again, until the window expires"
     fontFamily: panel.fontFamily
     fontSize: Style.font.bodySmall
+    focusable: true
     onClicked: panel.approveSshRequest(panel.sshPrompt ? panel.sshPrompt.grantSeconds : 0)
   }
 }

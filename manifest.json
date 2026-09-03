@@ -31,6 +31,7 @@
       "pinUnlock": false,
       "sshAgentEnabled": false,
       "sshAgentUnlockOnDemand": false,
+      "sshAgentApprovalPopup": true,
       "sshAgentApprovalWindowSec": 120
     },
     "schema": [
@@ -126,6 +127,13 @@
         "label": "Unlock on demand",
         "description": "Let an SSH client open the unlock prompt when the vault is locked. Off by default because ssh asks the agent for identities on every connection, including ones that authenticate with an on-disk key, so this would open the panel on the first ssh after every login.",
         "defaultValue": false
+      },
+      {
+        "key": "sshAgentApprovalPopup",
+        "type": "boolean",
+        "label": "Use centered approval popup",
+        "description": "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel.",
+        "defaultValue": true
       },
       {
         "key": "sshAgentApprovalWindowSec",
