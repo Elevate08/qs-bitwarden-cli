@@ -194,20 +194,21 @@ check("an expanded heading is not marked collapsed",
 // deliberately.
 const defaults = Model.defaultCollapsedGroups()
 check("only Security starts expanded",
-  defaults.security === undefined && defaults.sshAgent === true
-    && defaults.behavior === true && defaults.suggestions === true,
+  defaults.security === undefined
+    && Object.keys(defaults).every(g => g !== "security")
+    && Object.keys(defaults).length === Model.SETTINGS_GROUPS.length - 1,
   JSON.stringify(defaults))
 check("the defaults are a fresh object each call, not a shared one",
   Model.defaultCollapsedGroups() !== Model.defaultCollapsedGroups(), "same object returned twice")
 
-const toggledOpen = Model.toggleCollapsedGroup({ behavior: true }, "behavior")
-const toggledShut = Model.toggleCollapsedGroup({}, "behavior")
-check("toggling a collapsed group opens it", toggledOpen.behavior === undefined,
+const toggledOpen = Model.toggleCollapsedGroup({ general: true }, "general")
+const toggledShut = Model.toggleCollapsedGroup({}, "general")
+check("toggling a collapsed group opens it", toggledOpen.general === undefined,
   JSON.stringify(toggledOpen))
-check("toggling an open group collapses it", toggledShut.behavior === true,
+check("toggling an open group collapses it", toggledShut.general === true,
   JSON.stringify(toggledShut))
 check("toggling does not mutate the object it was given",
-  (() => { const before = { behavior: true }; Model.toggleCollapsedGroup(before, "behavior"); return before.behavior === true })(),
+  (() => { const before = { general: true }; Model.toggleCollapsedGroup(before, "general"); return before.general === true })(),
   "the caller's object was mutated")
 
 // A caller that has never set collapse state gets everything open, so nothing
