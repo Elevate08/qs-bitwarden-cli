@@ -2306,9 +2306,65 @@ function parseSanitizedEnvelope(raw) {
 // Returns null when the envelope is not one this filter produced, and the
 // caller reloads instead. Nothing here is a fallback worth improvising on: an
 // item list that quietly disagrees with the vault is worse than a slow one.
+// The row to show while a save is in flight.
+//
+// Built from the payload on its way to `bw`, through the same parser the real
+// list uses, so an optimistic row and the row that replaces it are the same
+// shape and cannot disagree about how a card is subtitled or whether an item
+// has a password. It is the user's own input rendered back; the authoritative
+// version arrives a second or two later and replaces it.
+//
+// A create has no id yet -- the server assigns one -- so it carries a
+// provisional one that the save's response swaps out. The prefix is what
+// distinguishes it, and it cannot collide with a vault id because Bitwarden's
+// are UUIDs.
+var PENDING_ID_PREFIX = "qsbw-pending:"
+
+function pendingItemId(seed) { return PENDING_ID_PREFIX + String(seed) }
+function isPendingItemId(id) { return String(id || "").indexOf(PENDING_ID_PREFIX) === 0 }
+
+function findItemById(items, id) {
+  var existing = toList(items)
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i] && existing[i].id === id) return existing[i]
+  }
+  return null
+}
+
+function optimisticItem(payload, itemId) {
+  if (!payload) return null
+  var draft = JSON.parse(JSON.stringify(payload))
+  draft.id = String(itemId || "")
+  draft.object = "item"
+  var parsed = parseItems(JSON.stringify([draft]))
+  if (parsed.length !== 1) return null
+  parsed[0].pending = true
+  return parsed[0]
+}
+
+// Replace-or-insert by id, then sort -- the same operation spliceSavedItem
+// performs, without the envelope. Used to put an optimistic row in and to take
+// it back out again when a save fails.
+function replaceItemById(items, id, replacement) {
+  var out = []
+  var existing = toList(items)
+  var replaced = false
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i] && existing[i].id === id) {
+      if (replacement) out.push(replacement)
+      replaced = true
+    } else {
+      out.push(existing[i])
+    }
+  }
+  if (!replaced && replacement) out.push(replacement)
+  out.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  return out
+}
+
 function savedUnsanitizedMarker() { return SAVED_UNSANITIZED_MARKER }
 
-function spliceSavedItem(items, raw) {
+function spliceSavedItem(items, raw, replacingId) {
   var envelope = parseSanitizedEnvelope(raw)
   if (!envelope) return null
   var saved = envelope.items.concat(envelope.sshKeys)
@@ -2316,11 +2372,14 @@ function spliceSavedItem(items, raw) {
   var one = saved[0]
   if (!one || !one.id) return null
 
+  // On a create the row in the list is the provisional one, whose id the
+  // server has just replaced; `replacingId` is how the two are matched up.
+  var target = replacingId ? String(replacingId) : one.id
   var out = []
   var replaced = false
   var existing = toList(items)
   for (var i = 0; i < existing.length; i++) {
-    if (existing[i] && existing[i].id === one.id) {
+    if (existing[i] && existing[i].id === target) {
       out.push(one)
       replaced = true
     } else {

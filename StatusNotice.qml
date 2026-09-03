@@ -21,7 +21,11 @@ BorderSurface {
   readonly property bool shown: showsError || showsStatus
   readonly property color tone: showsError ? root.urgentColor : root.accentColor
 
+  // Optional recovery offered alongside an error. Empty means none.
+  property string actionLabel: ""
+
   signal errorDismissed()
+  signal actionRequested()
 
   anchors.horizontalCenter: parent.horizontalCenter
   anchors.bottom: parent.bottom
@@ -95,6 +99,19 @@ BorderSurface {
         font.pixelSize: Style.font.bodySmall
         wrapMode: Text.Wrap
       }
+    }
+
+    // An error the user can do something about carries the doing with it. A
+    // failed save is the case this exists for: the message says the vault
+    // refused it, and the button is the way back to what was typed.
+    PanelActionButton {
+      id: noticeActionButton
+      visible: root.showsError && root.actionLabel !== ""
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: "󰑌"
+      tooltipText: root.actionLabel
+      fontFamily: root.fontFamily
+      onClicked: root.actionRequested()
     }
 
     PanelActionButton {

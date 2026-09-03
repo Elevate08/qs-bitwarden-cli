@@ -21,6 +21,11 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.matchesQuery = matchesQuery
   exports.createItemCommand = createItemCommand
   exports.spliceSavedItem = spliceSavedItem
+  exports.optimisticItem = optimisticItem
+  exports.replaceItemById = replaceItemById
+  exports.findItemById = findItemById
+  exports.pendingItemId = pendingItemId
+  exports.isPendingItemId = isPendingItemId
   exports.savedUnsanitizedMarker = savedUnsanitizedMarker
   exports.identityFullName = identityFullName
   exports.getItemCommand = getItemCommand
@@ -321,6 +326,74 @@ check("a save runs its response through the allowlisting filter",
     && createCmd.includes("sshCapability"), createCmd.slice(0, 200))
 check("a failed save is never reported as a success",
   /if \[ "\$__rc" -ne 0 \]; then exit "\$__rc"; fi/.test(createCmd), createCmd)
+
+// --- saving without making the user wait -------------------------------------
+//
+// A save costs whatever `bw` costs: a second or two of CLI startup, vault
+// decryption and a round trip, none of which this plugin can shorten. So the
+// form closes when the command is launched and the list shows the item as it
+// will be, marked as saving, until the vault answers.
+
+const draftCard = { type: 3, name: "Draft Visa", notes: "", favorite: false,
+  card: { brand: "Visa", number: "4111111111111111", code: "999",
+          expMonth: "01", expYear: "2031", cardholderName: "A Person" } }
+
+const provisional = Model.pendingItemId(12345)
+const optimistic = Model.optimisticItem(draftCard, provisional)
+
+check("an optimistic row is built through the same parser as a real one",
+  optimistic.typeCode === 3 && optimistic.subtitle === "Visa •••• 1111"
+    && optimistic.hasPassword === false,
+  JSON.stringify(optimistic))
+check("and is marked as still saving", optimistic.pending === true, JSON.stringify(optimistic))
+check("a provisional id is recognisable as one",
+  Model.isPendingItemId(optimistic.id), optimistic.id)
+check("a real vault id is not mistaken for a provisional one",
+  !Model.isPendingItemId(card.id), card.id)
+
+// The response carries the id the server assigned, which is not the one the
+// row went in under.
+const createdEnvelope = JSON.stringify({
+  sshCapability: "unconfirmed",
+  items: [{ ...draftCard, object: "item", id: "55555555-5555-5555-5555-555555555555" }],
+  sshKeys: []
+})
+const withOptimistic = Model.replaceItemById(listed3, provisional, optimistic)
+check("the optimistic row goes into the list", withOptimistic.length === listed3.length + 1,
+  String(withOptimistic.length))
+
+const settled = Model.spliceSavedItem(withOptimistic, createdEnvelope, provisional)
+check("the saved item replaces the provisional row rather than joining it",
+  settled.length === withOptimistic.length
+    && settled.filter(i => Model.isPendingItemId(i.id)).length === 0,
+  JSON.stringify(settled.map(i => i.id)))
+check("and lands under the id the server assigned",
+  settled.some(i => i.id === "55555555-5555-5555-5555-555555555555"),
+  JSON.stringify(settled.map(i => i.id)))
+check("the settled row is no longer marked as saving",
+  !settled.find(i => i.id === "55555555-5555-5555-5555-555555555555").pending,
+  "a row that has landed must not keep spinning")
+
+// A refused save must not leave the panel showing something the vault rejected.
+check("a failed create takes its provisional row back out",
+  Model.replaceItemById(withOptimistic, provisional, null).length === listed3.length,
+  "a create that failed must leave no row behind")
+
+const editOptimistic = Model.optimisticItem(
+  { ...card, name: "Renamed while saving" }, card.id)
+const duringEdit = Model.replaceItemById(listed3, card.id, editOptimistic)
+check("an optimistic edit replaces in place rather than duplicating",
+  duringEdit.length === listed3.length, String(duringEdit.length))
+check("a failed edit puts the previous row back",
+  (() => {
+    const before = Model.findItemById(listed3, card.id)
+    const after = Model.replaceItemById(duringEdit, card.id, before)
+    const restored = Model.findItemById(after, card.id)
+    return after.length === listed3.length && restored.name === "Visa" && !restored.pending
+  })(), "the list must return to what the vault actually holds")
+
+check("finding an item by id returns null rather than throwing when absent",
+  Model.findItemById(listed3, "nope") === null, "expected null")
 
 // --- the fallback path still has to behave ----------------------------------
 

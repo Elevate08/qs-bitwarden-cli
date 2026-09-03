@@ -123,6 +123,41 @@ check("the reveal hint is a property rather than a hardcoded (v)",
     && !/\+ " \(v\)"/.test(fieldSrc),
   "every masked field claimed the v shortcut")
 
+// --- the save does not hold the panel hostage --------------------------------
+
+check("the form closes when the command is launched, not when it returns",
+  /createItemProc\.running = true[\s\S]{0,400}currentScreen = "main"/.test(panelSrc),
+  "the user should get the panel back immediately")
+
+check("only one save is in flight at a time",
+  /if \(pendingSave\) \{[\s\S]{0,140}return\s*\n\s*\}/.test(panelSrc),
+  "there is one process per kind; a second command would lose the first")
+
+check("a row still being saved cannot be edited",
+  /if \(item\.pending\) \{[\s\S]{0,120}Still saving/.test(panelSrc),
+  "editing it would race the save it is waiting on")
+
+check("nor deleted",
+  /if \(detailItem\.pending \|\| Model\.isPendingItemId\(detailItem\.id\)\)/.test(panelSrc),
+  "a create has no vault id to delete yet")
+
+check("a refused save puts the list back to what the vault holds",
+  /items = Model\.replaceItemById\(items, save\.id, save\.previous\)/.test(panelSrc),
+  "the panel must not keep showing something the vault rejected")
+
+check("and keeps what the user typed so it can be reopened",
+  /failedSave = \{ name: save\.name, form: save\.form \}/.test(panelSrc)
+    && /function reopenFailedSave\(\)/.test(panelSrc),
+  "a refused save must not cost the user their edit")
+
+check("a save that lands but cannot be sanitised drops its provisional row",
+  /if \(save && save\.isCreate\) items = Model\.replaceItemById\(items, save\.id, null\)/.test(panelSrc),
+  "a provisional row must not survive the reload that replaces it")
+
+check("the saving row is marked in the list",
+  /text: itemData\.pending \? "[^"]*" : Model\.itemTypeGlyph/.test(panelSrc),
+  "the user needs to see which row has not landed yet")
+
 // --- gating ------------------------------------------------------------------
 
 check("login fields are gated on the type, not on 'not an SSH key'",

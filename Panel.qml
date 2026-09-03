@@ -292,6 +292,14 @@ Panel {
   property string totpFollowupCode: ""
   property bool totpFollowupActive: false
 
+  // The save currently in flight, or null. Holds what the list showed before
+  // it, and the form that produced it, so a failure can put both back.
+  property var pendingSave: null
+  // A save that came back refused. The list has been restored to what the
+  // vault actually holds; this is what the user typed, kept so it can be
+  // reopened rather than retyped.
+  property var failedSave: null
+
   // Add / Edit Form State
   property bool formIsEditing: false
   property string formItemId: ""
@@ -4667,9 +4675,60 @@ Panel {
     currentScreen = "edit"
   }
 
+  // The item form as one object, so a save that fails can be reopened exactly
+  // as it was rather than costing the user everything they typed.
+  function captureItemForm() {
+    return {
+      isEditing: formIsEditing, itemId: formItemId, typeCode: formTypeCode,
+      name: formName, username: formUsername, password: formPassword,
+      totp: formTotp, uri: formUri, notes: formNotes, favorite: formFavorite,
+      orgId: formOrgId, folderId: formFolderId,
+      collectionIds: (formCollectionIds || []).slice(),
+      typeFields: formTypeFields()
+    }
+  }
+
+  function restoreItemForm(f) {
+    if (!f) return
+    formIsEditing = f.isEditing
+    formItemId = f.itemId
+    formTypeCode = f.typeCode
+    formName = f.name
+    formUsername = f.username
+    formPassword = f.password
+    formTotp = f.totp
+    formUri = f.uri
+    formNotes = f.notes
+    formFavorite = f.favorite
+    formOrgId = f.orgId
+    formFolderId = f.folderId
+    formCollectionIds = (f.collectionIds || []).slice()
+    loadTypeFields({ card: f.typeCode === 3 ? f.typeFields : null,
+                     identity: f.typeCode === 4 ? f.typeFields : null })
+    formPicker = ""
+    formPasswordRevealed = false
+    if (formOrgId && formOrgId !== "personal") loadOrgCollections(formOrgId)
+    currentScreen = "edit"
+  }
+
+  // Reopens the form a refused save was made from.
+  function reopenFailedSave() {
+    if (!failedSave) return
+    var f = failedSave.form
+    failedSave = null
+    errorMessage = ""
+    restoreItemForm(f)
+  }
+
   function startEditItem(item) {
     if (!item || item.typeCode === 5) {
       if (item && item.typeCode === 5) errorMessage = "SSH keys are read-only public records"
+      return
+    }
+    // The vault has not answered about this row yet, and on a create it does
+    // not have an id to edit. Editing it would race the save it is waiting on.
+    if (item.pending) {
+      errorMessage = "Still saving this item -- one moment"
       return
     }
     formIsEditing = true
@@ -4700,7 +4759,21 @@ Panel {
     currentScreen = "edit"
   }
 
+  // A save takes as long as `bw` takes -- a second or two of CLI startup, vault
+  // decryption and a round trip, none of which this plugin can shorten. What it
+  // can do is stop making the user watch. The form closes as soon as the
+  // command is launched and the list shows the item as it will be, marked as
+  // saving, and the authoritative row replaces it when the vault answers.
+  //
+  // One at a time. There is a single process per kind, and starting a second
+  // command on a running one would lose the first; a save while one is in
+  // flight is refused with a reason rather than silently dropped.
   function saveItemForm() {
+    if (pendingSave) {
+      errorMessage = "Still saving " + pendingSave.name + " -- one moment"
+      return
+    }
+
     // Bitwarden refuses an organization item with no collection; say so here
     // rather than letting the CLI fail after the form is gone.
     var problem = Model.validateItemForm(formName, formOrgId, formCollectionIds)
@@ -4709,23 +4782,50 @@ Panel {
       return
     }
 
+    var editing = formIsEditing
+    var payload = editing
+      ? Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
+      : Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
+    if (!payload) {
+      errorMessage = editing ? "This item is read-only" : "This item type is read-only"
+      return
+    }
+
     errorMessage = ""
-    isLoading = true
     beginVaultRead("itemSave")
 
-    if (formIsEditing) {
-      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
-      if (!editPayload) { isLoading = false; errorMessage = "This item is read-only"; return }
-      itemPayloadJson = JSON.stringify(editPayload)
+    // An edit keeps the item's id; a create has none until the server assigns
+    // one, so the row carries a provisional id the response swaps out.
+    var rowId = editing ? formItemId : Model.pendingItemId(Date.now())
+    var optimistic = Model.optimisticItem(payload, rowId)
+
+    pendingSave = {
+      id: rowId,
+      isCreate: !editing,
+      name: String(formName || "Untitled").trim(),
+      // What the list held before, so a failed save can put it back rather
+      // than leaving the panel showing something the vault never accepted.
+      previous: editing ? Model.findItemById(items, rowId) : null,
+      // The form as it was, so a failed save can be reopened and retried
+      // instead of costing the user everything they typed.
+      form: captureItemForm()
+    }
+
+    itemPayloadJson = JSON.stringify(payload)
+    if (editing) {
       editItemProc.command = Model.editItemCommand(formItemId, formTypeCode)
       editItemProc.running = true
     } else {
-      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
-      if (!createPayload) { isLoading = false; errorMessage = "This item type is read-only"; return }
-      itemPayloadJson = JSON.stringify(createPayload)
-      createItemProc.command = Model.createItemCommand(createPayload)
+      createItemProc.command = Model.createItemCommand(payload)
       createItemProc.running = true
     }
+
+    if (optimistic) {
+      items = Model.replaceItemById(items, rowId, optimistic)
+      itemsLoadedAt = Date.now()
+      refreshDerivedFromItems()
+    }
+    currentScreen = "main"
   }
 
   function onSaveItemFinished(exitCode, stdoutText, stderrText) {
@@ -4734,18 +4834,34 @@ Panel {
     // Send payload does, so it goes the same way the Send one does: as soon as
     // the process that needed it has exited.
     itemPayloadJson = ""
+
+    var save = pendingSave
+    pendingSave = null
     if (vaultReadIsStale("itemSave")) return
+
     if (exitCode !== 0) {
-      errorMessage = stderrText || "Failed to save item"
+      // The vault refused it, so the list must stop showing it as though it
+      // had not. The optimistic row is taken back out -- replaced by what was
+      // there before on an edit, removed entirely on a create -- and what the
+      // user typed is kept so they can reopen it instead of retyping it.
+      if (save) {
+        items = Model.replaceItemById(items, save.id, save.previous)
+        itemsLoadedAt = Date.now()
+        refreshDerivedFromItems()
+        failedSave = { name: save.name, form: save.form }
+        errorMessage = "Could not save " + save.name + ". " + (stderrText || "")
+      } else {
+        errorMessage = stderrText || "Failed to save item"
+      }
       return
     }
 
-    flashNotification(formIsEditing ? "Item updated successfully!" : "Item created successfully!")
-    currentScreen = "main"
+    flashNotification(save && save.isCreate ? "Item created successfully!" : "Item updated successfully!")
 
     // The save printed the item the vault now holds, so the list can be
     // brought up to date from that instead of re-reading and re-decrypting
-    // every other item to learn about this one.
+    // every other item to learn about this one. On a create the row being
+    // replaced is the provisional one, whose id the server has just assigned.
     //
     // Any doubt falls back to the full read. The command prints a marker when
     // the item was stored but could not be sanitised, and spliceSavedItem
@@ -4753,8 +4869,10 @@ Panel {
     // item is in the vault and the list simply has to catch up the slow way.
     // A list that quietly disagrees with the vault is worse than a slow one.
     var spliced = String(stdoutText).indexOf(Model.savedUnsanitizedMarker()) === 0
-      ? null : Model.spliceSavedItem(items, stdoutText)
+      ? null : Model.spliceSavedItem(items, stdoutText, save ? save.id : "")
     if (!spliced) {
+      // A provisional row must never survive a reload it is not part of.
+      if (save && save.isCreate) items = Model.replaceItemById(items, save.id, null)
       loadItems()
       return
     }
@@ -4765,6 +4883,10 @@ Panel {
 
   function deleteCurrentItem() {
     if (!detailItem || !detailItem.id || detailItem.typeCode === 5) return
+    if (detailItem.pending || Model.isPendingItemId(detailItem.id)) {
+      errorMessage = "Still saving this item -- one moment"
+      return
+    }
     isLoading = true
     beginVaultRead("itemDelete")
     deleteItemProc.command = Model.deleteItemCommand(detailItem.id, detailItem.typeCode)
@@ -9242,15 +9364,28 @@ Panel {
                   anchors.rightMargin: Style.space(8)
                   spacing: Style.space(10)
 
-                  // Type Icon
+                  // Type Icon, or a spinner while the vault is being told about
+                  // this row. The glyph is the row's identity, so the saving
+                  // state borrows it rather than adding a second marker and
+                  // reflowing everything beside it.
                   Text {
                     textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
-                    text: Model.itemTypeGlyph(itemData.typeCode)
-                    color: itemData.favorite ? Color.accent : root.fg
+                    text: itemData.pending ? "󰑐" : Model.itemTypeGlyph(itemData.typeCode)
+                    color: itemData.pending
+                      ? root.dim
+                      : (itemData.favorite ? Color.accent : root.fg)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.title
                     width: Style.space(20)
+
+                    RotationAnimator on rotation {
+                      running: Boolean(itemData.pending)
+                      loops: Animation.Infinite
+                      from: 0
+                      to: 360
+                      duration: 1200
+                    }
                   }
 
                   // Labels (Title + Subtitle + Org Tag)
@@ -11209,7 +11344,17 @@ Panel {
         accentColor: root.accent
         urgentColor: root.urgent
         fontFamily: root.fontFamily
-        onErrorDismissed: root.errorMessage = ""
+        actionLabel: root.failedSave ? "Reopen " + root.failedSave.name : ""
+        onActionRequested: root.reopenFailedSave()
+        onErrorDismissed: {
+          // Dismissing the message drops the recovery with it: the list is
+          // already back to what the vault holds, so what is being discarded
+          // is the attempt, and leaving a Reopen behind an invisible message
+          // would be a button for something the user has said they are done
+          // with.
+          root.failedSave = null
+          root.errorMessage = ""
+        }
       }
     }
   }
