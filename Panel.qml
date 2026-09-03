@@ -214,6 +214,37 @@ Panel {
   readonly property bool detailIsLoginLike: detailTypeCode === 1 || detailTypeCode === 2
   readonly property bool detailIsCard: detailTypeCode === 3
   readonly property bool detailIsIdentity: detailTypeCode === 4
+
+  readonly property var detailCard: detailItem ? (detailItem.card || null) : null
+  readonly property var detailIdentity: detailItem ? (detailItem.identity || null) : null
+
+  // Expiry reads as one value, so it is composed once here rather than in the
+  // binding that draws it. A card with only one half filled in shows that
+  // half rather than a stray slash.
+  readonly property string detailCardExpiry: {
+    if (!detailCard) return ""
+    var m = String(detailCard.expMonth || "").trim()
+    var y = String(detailCard.expYear || "").trim()
+    if (m && y) return m + " / " + y
+    return m || y
+  }
+
+  readonly property string detailIdentityName: detailIdentity ? Model.identityFullName(detailIdentity) : ""
+
+  // The postal parts, in the order an envelope wants them, with the empty
+  // lines left out instead of drawn as blanks.
+  readonly property string detailIdentityAddress: {
+    if (!detailIdentity) return ""
+    var street = [detailIdentity.address1, detailIdentity.address2, detailIdentity.address3]
+      .map(function(part) { return String(part || "").trim() })
+      .filter(function(part) { return part !== "" })
+    var locality = [detailIdentity.city, detailIdentity.state, detailIdentity.postalCode]
+      .map(function(part) { return String(part || "").trim() })
+      .filter(function(part) { return part !== "" })
+      .join(" ")
+    var country = String(detailIdentity.country || "").trim()
+    return street.concat(locality ? [locality] : []).concat(country ? [country] : []).join("\n")
+  }
   property string liveTotp: ""
   property int totpSecRemaining: 30
   property string totpRequestItemId: ""
@@ -6283,10 +6314,37 @@ Panel {
           if (lower === "/") searchField.forceActiveFocus()
           else root.runShortcut(lower)
         } else if (root.currentScreen === "detail") {
+          // `y` is "copy the thing this item is for". On a login that is the
+          // password; on a card it is the number. Keeping one key for the
+          // primary secret is worth more than a key that means `password`
+          // everywhere and does nothing on two of the four types.
           if (lower === "y" || lower === "p") {
-            if (root.detailPassword) root.copyToClipboard(root.detailPassword, "Password")
+            if (root.detailIsCard) {
+              if (root.detailCard && root.detailCard.number) root.copyToClipboard(root.detailCard.number, "Card number")
+            } else if (root.detailPassword) {
+              root.copyToClipboard(root.detailPassword, "Password")
+            }
+          } else if (lower === "n") {
+            if (root.detailIsCard && root.detailCard && root.detailCard.number) {
+              root.copyToClipboard(root.detailCard.number, "Card number")
+            }
+          } else if (lower === "k") {
+            if (root.detailIsCard && root.detailCard && root.detailCard.code) {
+              root.copyToClipboard(root.detailCard.code, "Security code")
+            }
           } else if (lower === "u" || lower === "c") {
-            if (root.detailItem && root.detailItem.username) root.copyToClipboard(root.detailItem.username, "Username")
+            // `u` copies the identifier, `c` the contact address. On a login
+            // both land on the one username field, which is what they have
+            // always done.
+            if (root.detailIsIdentity && root.detailIdentity) {
+              if (lower === "c" && root.detailIdentity.email) {
+                root.copyToClipboard(root.detailIdentity.email, "Email")
+              } else if (root.detailIdentity.username) {
+                root.copyToClipboard(root.detailIdentity.username, "Username")
+              }
+            } else if (root.detailItem && root.detailItem.username) {
+              root.copyToClipboard(root.detailItem.username, "Username")
+            }
           } else if (lower === "m") {
             if (root.liveTotp) root.copyToClipboard(root.liveTotp, "TOTP")
           } else if (lower === "e") {
@@ -9645,7 +9703,7 @@ Panel {
 
               // FIELD: Password
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && (root.detailPassword !== "" || root.detailItem.hasPassword))
+                visible: root.detailIsLoginLike && Boolean(root.detailItem) && (root.detailPassword !== "" || root.detailItem.hasPassword)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -9699,7 +9757,7 @@ Panel {
 
               // FIELD: TOTP (2FA Code)
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.hasTotp)
+                visible: root.detailIsLoginLike && Boolean(root.detailItem) && root.detailItem.hasTotp
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -9766,7 +9824,7 @@ Panel {
 
               // FIELD: Website / URIs
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.uris && root.detailItem.uris.length > 0)
+                visible: root.detailIsLoginLike && Boolean(root.detailItem) && root.detailItem.uris && root.detailItem.uris.length > 0
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -9971,6 +10029,207 @@ Panel {
                   }
                 }
               }
+
+              // -----------------------------------------------------------
+              // FIELDS: Card
+              // -----------------------------------------------------------
+              // Expiry is one field rather than two. It is written, read and
+              // typed as a unit, and a vault that shows "04" above "2030" in
+              // two labelled boxes is describing its storage rather than the
+              // card in your hand.
+              DetailField {
+                visible: root.detailIsCard
+                label: "Cardholder Name"
+                value: root.detailCard ? root.detailCard.cardholderName : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.cardholderName : "", "Cardholder name")
+              }
+
+              DetailField {
+                visible: root.detailIsCard
+                label: "Brand"
+                value: root.detailCard ? root.detailCard.brand : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.brand : "", "Brand")
+              }
+
+              DetailField {
+                visible: root.detailIsCard
+                label: "Card Number"
+                copyLabel: "Card number"
+                shortcutHint: "n / Enter"
+                sensitive: true
+                revealed: root.passwordRevealed
+                value: root.detailCard ? root.detailCard.number : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.number : "", "Card number")
+              }
+
+              DetailField {
+                visible: root.detailIsCard
+                label: "Expires"
+                value: root.detailCardExpiry
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailCardExpiry, "Expiry")
+              }
+
+              DetailField {
+                visible: root.detailIsCard
+                label: "Security Code"
+                copyLabel: "Security code"
+                shortcutHint: "k"
+                sensitive: true
+                revealed: root.passwordRevealed
+                value: root.detailCard ? root.detailCard.code : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.code : "", "Security code")
+              }
+
+              // -----------------------------------------------------------
+              // FIELDS: Identity
+              // -----------------------------------------------------------
+              // Every field an identity can carry is declared; DetailField
+              // hides the empty ones. Most identities fill in a handful, and
+              // the alternative -- deciding here which are worth drawing --
+              // is how the useful one for somebody ends up missing.
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Name"
+                value: root.detailIdentityName
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentityName, "Name")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Username"
+                shortcutHint: "u"
+                value: root.detailIdentity ? root.detailIdentity.username : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.username : "", "Username")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Company"
+                value: root.detailIdentity ? root.detailIdentity.company : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.company : "", "Company")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Email"
+                shortcutHint: "c"
+                value: root.detailIdentity ? root.detailIdentity.email : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.email : "", "Email")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Phone"
+                value: root.detailIdentity ? root.detailIdentity.phone : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.phone : "", "Phone")
+              }
+
+              // The three an identity item usually exists to hold. Masked for
+              // the same reason a password is: a shoulder is enough to lose
+              // them, and unlike a password they cannot be rotated.
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Social Security Number"
+                copyLabel: "SSN"
+                sensitive: true
+                revealed: root.passwordRevealed
+                value: root.detailIdentity ? root.detailIdentity.ssn : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.ssn : "", "SSN")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Passport Number"
+                copyLabel: "Passport number"
+                sensitive: true
+                revealed: root.passwordRevealed
+                value: root.detailIdentity ? root.detailIdentity.passportNumber : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.passportNumber : "", "Passport number")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Licence Number"
+                copyLabel: "Licence number"
+                sensitive: true
+                revealed: root.passwordRevealed
+                value: root.detailIdentity ? root.detailIdentity.licenseNumber : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.licenseNumber : "", "Licence number")
+              }
+
+              PanelSectionHeader {
+                visible: root.detailIsIdentity && root.detailIdentityAddress !== ""
+                text: "ADDRESS"
+              }
+
+              // One block, not seven rows. An address is copied as an address.
+              BorderSurface {
+                visible: root.detailIsIdentity && root.detailIdentityAddress !== ""
+                width: parent.width
+                implicitHeight: addressText.implicitHeight + Style.space(16)
+                radius: Style.cornerRadius
+                color: Style.hoverFillFor(root.fg, Color.accent)
+                borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                Row {
+                  anchors.fill: parent
+                  anchors.margins: Style.space(8)
+                  spacing: Style.space(6)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: addressText
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.detailIdentityAddress
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    wrapMode: Text.Wrap
+                    width: parent.width - copyAddressBtn.width - Style.space(10)
+                  }
+
+                  PanelActionButton {
+                    id: copyAddressBtn
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconText: "󰈙"
+                    tooltipText: "Copy address"
+                    fontFamily: root.fontFamily
+                    onClicked: root.copyToClipboard(root.detailIdentityAddress, "Address")
+                  }
+                }
+              }
+
 
             }
           }
