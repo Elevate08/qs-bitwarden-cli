@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- **Saving an item is about 2.7 seconds faster.** Every save, folder creation and Send piped its payload through `bw encode`, which base64-encodes stdin and does nothing else -- no vault, no session, no network -- for the price of a full Bitwarden CLI startup. `base64` from coreutils produces byte-identical output in about two milliseconds. The payload still travels in the environment and is still piped rather than interpolated, so nothing about where a password lives has changed.
+- Enter on a list row now opens items that have nothing to copy. It still copies the password on a login, and still arms the TOTP follow-up; but on a card, an identity, a note, an SSH key, or a login saved without a password it opens the item instead of doing nothing at all. Enter on the detail screen copies the primary secret -- the password on a login, the number on a card -- which the "Copy password (y / Enter)" tooltip had been promising all along without anything implementing it.
 - Transient status and error messages now float at the bottom of the panel instead of changing its measured height, so updates such as a successful unlock no longer shift the active screen down and back up. Errors use the same compact notice surface and can be dismissed in place.
 
 ## [1.6.0] - 2026-08-31

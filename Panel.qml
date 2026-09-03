@@ -4921,9 +4921,26 @@ Panel {
   }
 
   // Smart sequential Enter handler: Copies Password, then arms and auto-copies TOTP
+  // Enter on a list row does the obvious thing for the item under it. For a
+  // login that is "copy the password", which is what this used to be and the
+  // only thing it did: every other type fell out of the guard below and Enter
+  // did nothing at all, on an item whose whole content was one keystroke away.
+  //
+  // A card, an identity, a note and an SSH key have no default secret to put
+  // on the clipboard, and neither does a login that was saved without a
+  // password. In all of those cases the useful answer is to open the item,
+  // which is what a user pressing Enter on a row they cannot copy from was
+  // reaching for anyway.
   function handleSmartEnter(item) {
     openFilterGroup = ""
-    if (!item || !Model.isLoginItem(item)) return
+    if (!item) return
+
+    var copyable = Model.isLoginItem(item)
+      && (item.hasPassword !== undefined ? item.hasPassword : Boolean(item.password))
+    if (!copyable) {
+      openDetail(item)
+      return
+    }
 
     // If already in active TOTP follow-up mode for this item, copy TOTP now!
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id) {
@@ -6409,6 +6426,22 @@ Panel {
           var item = root.getSelectedItem()
           if (item) {
             root.handleSmartEnter(item)
+          }
+          return
+        }
+        // The password row has always been labelled "Copy password (y / Enter)"
+        // and the detail screen has never handled Enter, so that half of the
+        // tooltip was a promise nothing kept. Enter copies the item's primary
+        // secret here, the same one `y` reaches: the password on a login, the
+        // number on a card. A note or an identity has no single such value, so
+        // Enter stays inert on those rather than guessing at one.
+        if (root.currentScreen === "detail") {
+          if (root.detailIsCard) {
+            if (root.detailCard && root.detailCard.number) {
+              root.copyToClipboard(root.detailCard.number, "Card number")
+            }
+          } else if (root.detailIsLoginLike && root.detailPassword) {
+            root.copyToClipboard(root.detailPassword, "Password")
           }
         }
       }

@@ -19,6 +19,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.buildCreatePayload = buildCreatePayload
   exports.buildEditPayload = buildEditPayload
   exports.matchesQuery = matchesQuery
+  exports.createItemCommand = createItemCommand
   exports.identityFullName = identityFullName
   exports.getItemCommand = getItemCommand
   exports.editItemCommand = editItemCommand
@@ -190,6 +191,44 @@ check("an edit that does carry card fields writes them",
 
 check("editing a card never turns it into a login",
   editedCard.type === 3 && editedCard.login === undefined, JSON.stringify(Object.keys(editedCard)))
+
+// --- the encoder swap --------------------------------------------------------
+//
+// `bw encode` base64-encodes stdin and does nothing else -- no vault, no
+// session, no network. It cost a full Bitwarden CLI startup, measured at 2.7
+// seconds, on every save, folder creation and Send. coreutils does it in about
+// two milliseconds. These assertions hold the two halves of that swap: the
+// output really is identical, and the payload still never reaches argv.
+
+const { execFileSync } = require("child_process")
+const encodeSamples = [
+  '{"name":"Test","type":3}',
+  '{"name":"unicode \u00e9\u00e5\u4e2d","notes":"line1\nline2"}',
+  '{"name":"' + "x".repeat(500) + '"}',
+  '{"password":"p@ss w/ spaces & $pecial \'quotes\'"}',
+]
+for (const sample of encodeSamples) {
+  const ours = execFileSync("bash", ["-c", 'printf "%s" "$P" | base64 -w0'],
+    { env: { ...process.env, P: sample } }).toString()
+  const node = Buffer.from(sample, "utf8").toString("base64")
+  check(`base64 -w0 matches a reference encoder for ${sample.slice(0, 28)}...`,
+    ours === node, `${ours}\n    !=\n    ${node}`)
+}
+
+check("base64 -w0 emits a single line, as the CLI's stdin requires",
+  !execFileSync("bash", ["-c", 'printf "%s" "$P" | base64 -w0'],
+    { env: { ...process.env, P: '{"name":"' + "y".repeat(400) + '"}' } }).toString().includes("\n"),
+  "a wrapped encoding would reach `bw` as several lines")
+
+for (const [label, cmd] of [
+  ["create item", Model.createItemCommand({ name: "x" })[2]],
+  ["edit item", Model.editItemCommand("id-1", 1)[2]],
+]) {
+  check(`${label} pipes the payload from the environment through base64`,
+    /printf '%s' "\$QSBW_ITEM" \| base64 -w0 \|/.test(cmd), cmd)
+  check(`${label} still keeps the payload out of argv`,
+    !cmd.includes("password") && !cmd.includes("cardholderName"), cmd)
+}
 
 // --- the fallback path still has to behave ----------------------------------
 

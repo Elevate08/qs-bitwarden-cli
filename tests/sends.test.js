@@ -43,7 +43,7 @@ const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
 // ever appear in a command line.
 const sendCmd = Model.createSendCommand("SESSIONTOKEN")[2]
 check("send create reads its payload from the environment",
-  sendCmd.includes('"$QSBW_SEND"') && sendCmd.includes("bw encode"), sendCmd)
+  sendCmd.includes('"$QSBW_SEND"') && /\|\s*base64 -w0\s*\|/.test(sendCmd), sendCmd)
 check("send create carries no payload in argv",
   !sendCmd.includes("password") && !sendCmd.includes("text"), sendCmd)
 
