@@ -251,9 +251,17 @@ check("drift is still fatal on a same-repository run",
 // with `no checks reported`. Both halves are asserted, because fixing one
 // leaves the hole open.
 check("CI runs against master, where the code now lands",
-  /push:\s*\n\s*branches:\s*\[master\]/.test(workflow)
-    && /pull_request:\s*\n\s*branches:\s*\[master\]/.test(workflow),
+  /push:\s*\n\s*branches:\s*\[master[,\]]/.test(workflow)
+    && /pull_request:\s*\n\s*branches:\s*\[master[,\]]/.test(workflow),
   "the workflow does not run on master pushes and master PRs")
+// A release is assembled on a release branch before it is tagged, so the same
+// gates have to cover it. Listing master alone let a PR into `release/1.7.0`
+// merge with `no checks reported` -- PR #13's hole reached through the base
+// branch instead of through a paths filter.
+check("CI runs against release branches too, where a release is assembled",
+  /push:\s*\n\s*branches:\s*\[[^\]]*'release\/\*\*'/.test(workflow)
+    && /pull_request:\s*\n\s*branches:\s*\[[^\]]*'release\/\*\*'/.test(workflow),
+  "the workflow does not run on release-branch pushes and PRs into them")
 check("no paths filter decides which changes are checked",
   !/^\s*paths:/m.test(workflow),
   "a paths filter is how the panel went unchecked; these gates are cheap enough to always run")
