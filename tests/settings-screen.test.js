@@ -58,13 +58,32 @@ check("the indicator is held rather than bound",
   /property var settingsStickyEntry: null/.test(panelSrc),
   "it depends on delegate geometry, which a binding cannot read without fighting layout")
 
-check("it names the last heading at or above the top of the viewport",
-  /if \(row\.y <= settingsViewportTop\(\) \+ 1\) found = entries\[i\]\s*\n\s*else break/.test(panelSrc),
-  "expected a scan that stops at the first heading below the fold")
+// The bar stands in for a heading that is gone. A heading still on screen can
+// be clicked where it is, and naming it in the bar as well just draws it twice
+// -- which is what happened when the rule pinned a heading the moment its top
+// reached the viewport top, so the first section was pinned and visible at
+// rest.
+check("a section is pinned only once its heading has scrolled out of view",
+  /if \(row\.y \+ row\.height > top\) break/.test(panelSrc),
+  "a heading still on screen must not be duplicated into the bar")
 
-check("above the first heading it still names a section rather than nothing",
-  /if \(!found\) \{[\s\S]{0,220}kind === "group"[\s\S]{0,80}break/.test(panelSrc),
-  "an empty bar at the top of the screen is the one position every user starts from")
+check("and only while part of that section is still on screen",
+  /if \(top < settingsSectionEnd\(i\)\)/.test(panelSrc),
+  "past the end of a section the bar must let go of it")
+
+check("a section's extent is the next heading, or the last row for the final one",
+  /function settingsSectionEnd\(index\)/.test(panelSrc)
+    && /if \(next\) return next\.y/.test(panelSrc)
+    && /if \(last\) return last\.y \+ last\.height/.test(panelSrc),
+  "expected both the between-headings and the final-section cases")
+
+// The trailing maintenance and danger-zone blocks are not foldable sections.
+// Leaving the last group pinned through them would offer to fold something the
+// user had scrolled past and could no longer see.
+check("the bar empties rather than naming a section that is no longer in view",
+  /var found = null/.test(panelSrc)
+    && !/if \(!found\) \{/.test(panelSrc),
+  "there must be no fallback that forces a section into an empty bar")
 
 // --- folding from the bar ----------------------------------------------------
 

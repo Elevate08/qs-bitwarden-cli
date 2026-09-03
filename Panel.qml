@@ -3206,26 +3206,50 @@ Panel {
   // The last group heading at or above the top of the viewport. Scrolling past
   // a heading makes it the current section; scrolling back above it hands the
   // section back to the one before.
+  // The bar stands in for a heading that has scrolled out of view, and only
+  // for that. A heading still on screen needs no proxy -- it can be clicked
+  // where it is -- and naming it in the bar as well simply draws it twice.
+  //
+  // So a section is pinned while both of these hold: its heading has gone off
+  // the top, and some part of the section is still on screen. The second half
+  // is what stops the last group from staying pinned through the maintenance
+  // and danger-zone rows below it, which are not sections and cannot be
+  // folded; the bar would otherwise offer to fold a section the user had
+  // scrolled well past and could no longer see.
   function updateSettingsSticky() {
     var entries = settingsEntries
+    var top = settingsViewportTop()
     var found = null
+
     for (var i = 0; i < entries.length; i++) {
       if (!entries[i] || entries[i].kind !== "group") continue
       var row = settingsRepeaterItem(i)
       if (!row) continue
-      // A heading exactly at the top still counts as the section you are in.
-      if (row.y <= settingsViewportTop() + 1) found = entries[i]
-      else break
-    }
-    // Before the first heading there is no section yet, so the bar shows the
-    // first one rather than nothing -- the alternative is an empty bar on the
-    // one screen position a user always starts from.
-    if (!found) {
-      for (var j = 0; j < entries.length; j++) {
-        if (entries[j] && entries[j].kind === "group") { found = entries[j]; break }
+      if (row.y + row.height > top) break
+
+      if (top < settingsSectionEnd(i)) {
+        found = entries[i]
+        break
       }
     }
     settingsStickyEntry = found
+  }
+
+  // Where the section beginning at `index` stops: the next heading, or for the
+  // last one, the bottom of the final row before the trailing action blocks.
+  function settingsSectionEnd(index) {
+    var entries = settingsEntries
+    for (var i = index + 1; i < entries.length; i++) {
+      if (!entries[i] || entries[i].kind !== "group") continue
+      var next = settingsRepeaterItem(i)
+      if (next) return next.y
+    }
+    for (var j = entries.length - 1; j > index; j--) {
+      var last = settingsRepeaterItem(j)
+      if (last) return last.y + last.height
+    }
+    var self = settingsRepeaterItem(index)
+    return self ? self.y + self.height : 0
   }
 
   // Folds the section the pinned bar is naming, and leaves the view looking at
