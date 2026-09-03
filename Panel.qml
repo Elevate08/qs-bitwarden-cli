@@ -157,12 +157,7 @@ Panel {
   property bool setupWasGated: false
   property string settingsFlash: ""
   property int settingsIndex: 0
-  // Which setting groups are folded shut. Session state, deliberately: it is
-  // not worth a key in shell.json, and a user who expands SSH Agent to change
-  // one thing has not said they want it open next week. Security starts open
-  // because it is what people come to this screen for.
-  property var collapsedGroups: Model.defaultCollapsedGroups()
-  readonly property var settingsEntries: Model.visibleSettings(dependencies, depsChecked, collapsedGroups)
+  readonly property var settingsEntries: Model.visibleSettings(dependencies, depsChecked)
 
   // Vault data
   property var items: []
@@ -3140,24 +3135,31 @@ Panel {
     return false
   }
 
+  // Group headings are rows in the list but not controls, so the cursor steps
+  // over them rather than stopping on one and doing nothing when activated.
   function moveSettingsCursor(delta) {
     var n = settingsEntries.length
     if (n === 0) return
-    settingsIndex = Math.max(0, Math.min(n - 1, settingsIndex + delta))
+    var step = delta < 0 ? -1 : 1
+    var i = settingsIndex + delta
+    while (i >= 0 && i < n && settingsEntries[i] && settingsEntries[i].kind === "group") i += step
+    // A heading at the far end leaves nowhere further to go in that direction;
+    // the cursor stays where it was rather than landing on the heading.
+    if (i < 0 || i >= n) return
+    settingsIndex = i
+  }
+
+  function firstSettingIndex() {
+    for (var i = 0; i < settingsEntries.length; i++) {
+      if (settingsEntries[i] && settingsEntries[i].kind === "setting") return i
+    }
+    return 0
   }
 
   // Left/right nudge a value: numbers by their step, switches off and on.
   function adjustSetting(direction) {
     var e = settingsEntries[settingsIndex]
-    if (!e) return
-    // Left folds, right unfolds -- the direction a disclosure triangle
-    // implies, and the same keys that nudge a value on a setting row.
-    if (e.kind === "group") {
-      if (direction < 0 && !e.collapsed) toggleSettingsGroup(e.group)
-      else if (direction > 0 && e.collapsed) toggleSettingsGroup(e.group)
-      return
-    }
-    if (settingBlocked(e)) return
+    if (!e || settingBlocked(e)) return
 
     if (e.type === "int") {
       var cur = Number(settingValue(e))
@@ -3173,6 +3175,12 @@ Panel {
     }
   }
 
+  // Which section the view is currently inside, named by the pinned indicator.
+  // Held rather than derived, because it depends on delegate geometry the
+  // Repeater only knows after layout, and a binding cannot read that without
+  // fighting it.
+  property var settingsStickyEntry: null
+
   // The settings view's two geometry questions, in one place. Everything else
   // that needs them goes through these rather than reaching into the Flickable
   // and the Repeater by id from across the file.
@@ -3181,40 +3189,14 @@ Panel {
     return settingsRepeater ? settingsRepeater.itemAt(i) : null
   }
 
-  // Puts a group's heading at the top of the view. Used after folding from the
-  // pinned bar, where the rows that were under the cursor have just gone.
-  function scrollSettingsToGroup(group) {
-    if (!settingsFlick) return
-    for (var i = 0; i < settingsEntries.length; i++) {
-      var e = settingsEntries[i]
-      if (!e || e.kind !== "group" || e.group !== group) continue
-      settingsIndex = i
-      var row = settingsRepeaterItem(i)
-      if (!row) return
-      settingsFlick.contentY = Math.max(0, Math.min(
-        Math.max(0, settingsFlick.contentHeight - settingsFlick.height),
-        row.y - Style.space(4)))
-      return
-    }
-  }
-
-  // Which group heading the scroll position is currently inside. Held rather
-  // than derived, because it depends on delegate geometry the Repeater only
-  // knows after layout, and a binding cannot read that without fighting it.
-  property var settingsStickyEntry: null
-
-  // The last group heading at or above the top of the viewport. Scrolling past
-  // a heading makes it the current section; scrolling back above it hands the
-  // section back to the one before.
   // The section the view is currently inside: the last heading at or above the
   // top of the viewport, while any part of its section is still on screen.
   //
   // Both halves matter. Without the first the bar sits empty until the user
   // has scrolled, which is the one position everybody starts from. Without the
-  // second the last group stays pinned through the maintenance and danger-zone
-  // rows below it -- and those are not foldable sections, so the bar would
-  // offer a chevron that folds something the user had scrolled past and could
-  // no longer see.
+  // second the last group stays named through the maintenance and danger-zone
+  // rows below it, which belong to no section and would leave the bar
+  // describing somewhere the user had already scrolled past.
   //
   // Drawing the heading twice is prevented at the other end: the in-list
   // heading of whichever section this names is drawn transparent, so it keeps
@@ -3253,39 +3235,9 @@ Panel {
     return self ? self.y + self.height : 0
   }
 
-  // Folds the section the pinned bar is naming, and leaves the view looking at
-  // that section's heading rather than wherever the removed rows left it.
-  function toggleStickySettingsGroup() {
-    var entry = settingsStickyEntry
-    if (!entry) return
-    var group = entry.group
-    toggleSettingsGroup(group)
-    // The rows this just added or removed have not been laid out yet, so the
-    // heading's y is still the old one. Ask again after the layout pass.
-    Qt.callLater(function() { root.scrollSettingsToGroup(group) })
-  }
-
-  function toggleSettingsGroup(group) {
-    if (!group) return
-    collapsedGroups = Model.toggleCollapsedGroup(collapsedGroups, group)
-    // The entry objects are rebuilt by that assignment, so the bar is holding
-    // a stale one -- it would keep drawing the old chevron and count.
-    Qt.callLater(updateSettingsSticky)
-    // Collapsing shortens the list under the cursor. Without this the cursor
-    // keeps an index that now points past the end, or at an unrelated row.
-    if (settingsIndex >= settingsEntries.length) {
-      settingsIndex = Math.max(0, settingsEntries.length - 1)
-    }
-  }
-
   function activateSettingRow() {
     var e = settingsEntries[settingsIndex]
-    if (!e) return
-    if (e.kind === "group") {
-      toggleSettingsGroup(e.group)
-      return
-    }
-    if (settingBlocked(e)) return
+    if (!e || settingBlocked(e)) return
 
     // These two open a form rather than flipping a value.
     if (e.action === "pin") {
@@ -3305,7 +3257,7 @@ Panel {
     closeFilterGroup()
     if (currentScreen !== "settings") screenBeforeSettings = currentScreen
     settingsFlash = ""
-    settingsIndex = 0
+    settingsIndex = firstSettingIndex()
     uwsmFlash = ""
     uwsmConfirmPending = false
     checkDependencies()
@@ -7857,22 +7809,14 @@ Panel {
             width: parent.width
             height: Style.space(26)
 
+            // An indicator, not a control. It says which section the view is
+            // inside; the heading it stands for is a plain heading too.
             Row {
               id: stickySection
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(6)
               visible: root.settingsStickyEntry !== null
-
-              Text {
-                textFormat: Text.PlainText
-                anchors.verticalCenter: parent.verticalCenter
-                text: (root.settingsStickyEntry && root.settingsStickyEntry.collapsed)
-                  ? "󰅂" : "󰅀"
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
 
               PanelSectionHeader {
                 textFormat: Text.PlainText
@@ -7882,26 +7826,6 @@ Panel {
                 foreground: root.fg
                 fontFamily: root.fontFamily
               }
-
-              Text {
-                textFormat: Text.PlainText
-                anchors.verticalCenter: parent.verticalCenter
-                visible: Boolean(root.settingsStickyEntry && root.settingsStickyEntry.collapsed)
-                text: root.settingsStickyEntry ? String(root.settingsStickyEntry.count) : ""
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-            }
-
-            MouseArea {
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              width: stickySection.width
-              height: parent.height
-              enabled: stickySection.visible
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.toggleStickySettingsGroup()
             }
 
             Row {
@@ -7987,9 +7911,11 @@ Panel {
                   height: visible ? Style.space(18) : 0
                 }
 
-                // A group heading is a row of its own, and it is the control
-                // that folds the group. Clicking the heading is the obvious
-                // gesture; Enter and left/right reach it from the keyboard.
+                // A group heading is a row of its own rather than a label on
+                // the first setting under it: the pinned indicator reads
+                // delegate geometry to tell which section the view is inside,
+                // and a heading carried by another row has no position of its
+                // own to be found at.
                 Item {
                   visible: isGroup
                   width: parent.width
@@ -8000,58 +7926,13 @@ Panel {
                   opacity: (root.settingsStickyEntry
                     && root.settingsStickyEntry.group === modelData.group) ? 0 : 1
 
-                  Rectangle {
+                  PanelSectionHeader {
+                    textFormat: Text.PlainText
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: Style.space(3)
-                    height: parent.height - Style.space(6)
-                    radius: width / 2
-                    color: Color.accent
-                    visible: cursored
-                  }
-
-                  Row {
-                    anchors.left: parent.left
-                    anchors.leftMargin: cursored ? Style.space(10) : 0
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: Style.space(6)
-
-                    Text {
-                      textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: modelData.collapsed ? "󰅂" : "󰅀"
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-
-                    PanelSectionHeader {
-                      textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: String(modelData.label || "").toUpperCase()
-                      foreground: root.fg
-                      fontFamily: root.fontFamily
-                    }
-
-                    // The count is what a folded group has instead of its rows.
-                    Text {
-                      textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      visible: modelData.collapsed
-                      text: String(modelData.count)
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-                  }
-
-                  MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      root.settingsIndex = index
-                      root.toggleSettingsGroup(modelData.group)
-                    }
+                    text: String(modelData.label || "").toUpperCase()
+                    foreground: root.fg
+                    fontFamily: root.fontFamily
                   }
                 }
 

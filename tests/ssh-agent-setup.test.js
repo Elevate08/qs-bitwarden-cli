@@ -22,8 +22,6 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.sshAgentSetupState = sshAgentSetupState
   exports.sshAgentApprovalWindowMax = sshAgentApprovalWindowMax
   exports.visibleSettings = visibleSettings
-  exports.defaultCollapsedGroups = defaultCollapsedGroups
-  exports.toggleCollapsedGroup = toggleCollapsedGroup
   exports.sshUiAvailable = sshUiAvailable
   exports.sshAgentSocketPath = sshAgentSocketPath
   exports.uwsmFragmentDisplayPath = uwsmFragmentDisplayPath
@@ -131,7 +129,7 @@ const supportedDeps = { items: [], sshCliStatus: "supported" }
 const oldDeps = { items: [], sshCliStatus: "unsupported" }
 const unknownDeps = { items: [], sshCliStatus: "unknown" }
 
-const shown = Model.visibleSettings(supportedDeps, true, {})
+const shown = Model.visibleSettings(supportedDeps, true)
 eq("a supported CLI shows every setting",
   shown.filter(e => e.kind === "setting").length, Model.SETTINGS_SCHEMA.length)
 check("a supported CLI shows the SSH group header",
@@ -147,7 +145,7 @@ for (const [label, deps, checked] of [
   // group foldable; the guarantee being checked is unchanged -- a hidden
   // group takes its heading with it, and each group that remains gets
   // exactly one.
-  const rows = Model.visibleSettings(deps, checked, {})
+  const rows = Model.visibleSettings(deps, checked)
   const settings = rows.filter(e => e.kind === "setting")
   const headers = rows.filter(e => e.kind === "group")
   eq(`${label} hides the SSH settings`, rows.filter(e => e.group === "sshAgent").length, 0)
@@ -164,59 +162,32 @@ check("hiding the group does not mutate the schema",
   Model.SETTINGS_SCHEMA.every(e => e.groupLabel === undefined && e.kind === undefined),
   "schema was mutated")
 
-// --- collapsing ------------------------------------------------------------
+// --- every section is drawn, always -----------------------------------------
 //
-// The panel walks this list with a single index, so a folded row has to be
-// absent from the list rather than merely invisible -- otherwise the keyboard
-// cursor traverses rows nobody can see.
+// The settings screen had collapsible sections for a while. They went: three
+// groups of three, seven and four rows do not need folding, and a fold is one
+// more state to be in and one more thing to leave shut by accident.
 
-const allDeps = supportedDeps
-const expanded = Model.visibleSettings(allDeps, true, {})
-const shut = Model.visibleSettings(allDeps, true, { security: true })
-
-check("a collapsed group keeps its heading",
-  shut.filter(e => e.kind === "group" && e.group === "security").length === 1,
-  JSON.stringify(shut.filter(e => e.kind === "group").map(e => e.group)))
-check("a collapsed group contributes no setting rows",
-  shut.filter(e => e.kind === "setting" && e.group === "security").length === 0,
-  JSON.stringify(shut.filter(e => e.group === "security")))
-check("collapsing removes rows from the list rather than hiding them",
-  shut.length < expanded.length, `${shut.length} vs ${expanded.length}`)
-check("a collapsed heading says how many settings it is holding",
-  shut.find(e => e.kind === "group" && e.group === "security").count
-    === expanded.filter(e => e.kind === "setting" && e.group === "security").length,
-  JSON.stringify(shut.find(e => e.kind === "group" && e.group === "security")))
-check("an expanded heading is not marked collapsed",
-  expanded.every(e => e.kind !== "group" || e.collapsed === false),
-  JSON.stringify(expanded.filter(e => e.kind === "group")))
-
-// Security is what people open this screen for; everything else is opened
-// deliberately.
-const defaults = Model.defaultCollapsedGroups()
-check("only Security starts expanded",
-  defaults.security === undefined
-    && Object.keys(defaults).every(g => g !== "security")
-    && Object.keys(defaults).length === Model.SETTINGS_GROUPS.length - 1,
-  JSON.stringify(defaults))
-check("the defaults are a fresh object each call, not a shared one",
-  Model.defaultCollapsedGroups() !== Model.defaultCollapsedGroups(), "same object returned twice")
-
-const toggledOpen = Model.toggleCollapsedGroup({ general: true }, "general")
-const toggledShut = Model.toggleCollapsedGroup({}, "general")
-check("toggling a collapsed group opens it", toggledOpen.general === undefined,
-  JSON.stringify(toggledOpen))
-check("toggling an open group collapses it", toggledShut.general === true,
-  JSON.stringify(toggledShut))
-check("toggling does not mutate the object it was given",
-  (() => { const before = { general: true }; Model.toggleCollapsedGroup(before, "general"); return before.general === true })(),
-  "the caller's object was mutated")
-
-// A caller that has never set collapse state gets everything open, so nothing
-// has to be initialised before the first read.
-check("an absent collapse map reads as every group expanded",
-  Model.visibleSettings(allDeps, true).filter(e => e.kind === "setting").length
-    === Model.visibleSettings(allDeps, true, {}).filter(e => e.kind === "setting").length,
-  "undefined and {} must agree")
+const allRows = Model.visibleSettings(supportedDeps, true)
+check("every setting in the schema is drawn",
+  allRows.filter(e => e.kind === "setting").length === Model.SETTINGS_SCHEMA.length,
+  `${allRows.filter(e => e.kind === "setting").length} of ${Model.SETTINGS_SCHEMA.length}`)
+check("each group is headed exactly once",
+  allRows.filter(e => e.kind === "group").length
+    === new Set(allRows.filter(e => e.kind === "setting").map(e => e.group)).size,
+  JSON.stringify(allRows.filter(e => e.kind === "group").map(e => e.label)))
+check("a heading comes before the settings it heads",
+  (() => {
+    let seen = null
+    return allRows.every(e => {
+      if (e.kind === "group") { seen = e.group; return true }
+      return e.group === seen
+    })
+  })(), JSON.stringify(allRows.map(e => e.kind === "group" ? `[${e.group}]` : e.group)))
+check("groups appear in the order the group list declares",
+  JSON.stringify(allRows.filter(e => e.kind === "group").map(e => e.group))
+    === JSON.stringify(Model.SETTINGS_GROUPS.map(g => g.id)),
+  JSON.stringify(allRows.filter(e => e.kind === "group").map(e => e.group)))
 
 // --- the status block belongs to its own section ----------------------------
 //
@@ -227,25 +198,20 @@ check("an absent collapse map reads as every group expanded",
 
 check("each group's last setting is marked, so a section can extend itself",
   (() => {
-    const rows = Model.visibleSettings(supportedDeps, true, {})
+    const rows = Model.visibleSettings(supportedDeps, true)
     const settings = rows.filter(e => e.kind === "setting")
     const groups = [...new Set(settings.map(e => e.group))]
     return groups.every(g => settings.filter(e => e.group === g && e.lastInGroup).length === 1)
   })(),
-  JSON.stringify(Model.visibleSettings(supportedDeps, true, {})
+  JSON.stringify(Model.visibleSettings(supportedDeps, true)
     .filter(e => e.lastInGroup).map(e => `${e.group}:${e.key}`)))
 
 check("the mark lands on the final setting of the group, not an earlier one",
   (() => {
-    const settings = Model.visibleSettings(supportedDeps, true, {}).filter(e => e.kind === "setting")
+    const settings = Model.visibleSettings(supportedDeps, true).filter(e => e.kind === "setting")
     const last = settings.filter(e => e.group === "sshAgent").pop()
     return last.lastInGroup === true
   })(), "the SSH group's last row is not marked")
-
-check("a collapsed group has no marked row, so its extra block goes with it",
-  Model.visibleSettings(supportedDeps, true, { sshAgent: true })
-    .filter(e => e.group === "sshAgent" && e.lastInGroup).length === 0,
-  "a folded section must take everything attached to it")
 
 const panelSrc = require("fs").readFileSync(
   require("path").join(__dirname, "..", "Panel.qml"), "utf8")

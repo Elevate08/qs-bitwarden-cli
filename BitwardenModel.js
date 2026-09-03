@@ -5185,18 +5185,12 @@ function groupedSettings() {
 // feature the installed `bw` cannot serve is worse than no toggle at all.
 //
 // A group heading is its own row rather than a label carried by the first
-// setting under it. That is what makes collapsing work: the panel walks this
-// list with one index, so a hidden row has to be absent from the list and not
-// merely invisible, or the keyboard cursor traverses rows nobody can see. A
-// heading that owned itself through another row would vanish with the last
-// setting it labelled, leaving a collapsed group with nothing left to click.
-//
-// `collapsed` is a plain object of group id to true. An unknown or missing
-// group reads as expanded, so a caller that has never set one gets every
-// group open and nothing has to be initialised.
-function visibleSettings(deps, checked, collapsed) {
+// setting under it. The panel walks this list with one index and reads
+// delegate geometry off it to tell which section the view is inside, and a
+// heading that belonged to another row would have neither a position of its
+// own nor an entry to be found at.
+function visibleSettings(deps, checked) {
   var showSsh = sshUiAvailable(deps, checked)
-  var shut = collapsed || {}
   var rows = groupedSettings().filter(function(entry) {
     return showSsh || entry.group !== "sshAgent"
   })
@@ -5210,12 +5204,9 @@ function visibleSettings(deps, checked, collapsed) {
       out.push({
         kind: "group",
         group: entry.group,
-        label: groupLabelFor(entry.group),
-        collapsed: Boolean(shut[entry.group]),
-        count: countSettingsInGroup(rows, entry.group)
+        label: groupLabelFor(entry.group)
       })
     }
-    if (shut[entry.group]) continue
     entry.kind = "setting"
     // The label lived on the first row of each group. It has a row of its own
     // now, and leaving the old field set would draw both.
@@ -5223,37 +5214,10 @@ function visibleSettings(deps, checked, collapsed) {
     // Marks where a group's settings end, so a section that has more to draw
     // than its toggles -- the SSH agent's status and routing block -- can be
     // attached to the end of the group it belongs to instead of trailing all
-    // four groups.
+    // the groups.
     entry.lastInGroup = (i + 1 >= rows.length) || rows[i + 1].group !== entry.group
     out.push(entry)
   }
-  return out
-}
-
-function countSettingsInGroup(rows, group) {
-  var n = 0
-  for (var i = 0; i < rows.length; i++) {
-    if (rows[i].group === group) n++
-  }
-  return n
-}
-
-// Which groups a freshly opened settings screen shows expanded. Security is
-// the one people come here for; the rest are opened deliberately. Returned
-// fresh each time so a caller cannot mutate a shared default.
-function defaultCollapsedGroups() {
-  var out = {}
-  for (var i = 0; i < SETTINGS_GROUPS.length; i++) {
-    if (SETTINGS_GROUPS[i].id !== "security") out[SETTINGS_GROUPS[i].id] = true
-  }
-  return out
-}
-
-function toggleCollapsedGroup(collapsed, group) {
-  var out = {}
-  for (var k in (collapsed || {})) out[k] = collapsed[k]
-  if (out[group]) delete out[group]
-  else out[group] = true
   return out
 }
 

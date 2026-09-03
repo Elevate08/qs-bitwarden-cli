@@ -93,27 +93,39 @@ check("the bar empties rather than naming a section that is no longer in view",
     && !/if \(!found\) \{/.test(panelSrc),
   "there must be no fallback that forces a section into an empty bar")
 
-// --- folding from the bar ----------------------------------------------------
+// --- the sections are not foldable ------------------------------------------
+//
+// They were, for a few commits. Three groups of three, seven and four rows do
+// not need folding, and a fold is one more state to be in and one more thing
+// to leave shut by accident. These assertions exist so it does not creep back
+// halfway -- a chevron with nothing behind it, or a heading that swallows a
+// click.
 
-check("the pinned section folds the section it names",
-  /function toggleStickySettingsGroup\(\)[\s\S]{0,400}toggleSettingsGroup\(group\)/.test(panelSrc),
-  "clicking the pinned heading must fold that group")
+check("no collapse state is kept",
+  !/collapsedGroups/.test(panelSrc), "settings sections are not foldable")
 
-check("folding from the bar leaves the view on that heading",
-  /Qt\.callLater\(function\(\) \{ root\.scrollSettingsToGroup\(group\) \}\)/.test(panelSrc),
-  "the rows under the cursor have just gone; the view must land somewhere deliberate")
+check("headings are not controls",
+  !/toggleSettingsGroup|toggleStickySettingsGroup/.test(panelSrc),
+  "a heading that folds nothing must not accept a click")
 
-check("the scroll-to runs after layout, not against stale geometry",
-  /\/\/ The rows this just added or removed have not been laid out yet/.test(panelSrc),
-  "expected the reason recorded next to the callLater")
+check("the pinned indicator carries no chevron or count",
+  !/settingsStickyEntry\.collapsed|settingsStickyEntry\.count/.test(panelSrc),
+  "the bar names the section and nothing more")
 
-check("the stale entry object is refreshed when the fold changes the model",
-  /collapsedGroups = Model\.toggleCollapsedGroup[\s\S]{0,260}Qt\.callLater\(updateSettingsSticky\)/.test(panelSrc),
-  "the bar holds an entry object that the toggle rebuilds")
+// A heading is in the list so the indicator has geometry to read, but it is
+// not something the cursor can act on -- stopping there and doing nothing on
+// Enter is worse than stepping over it.
+check("the keyboard cursor steps over headings",
+  /while \(i >= 0 && i < n && settingsEntries\[i\] && settingsEntries\[i\]\.kind === "group"\) i \+= step/.test(panelSrc),
+  "expected the cursor to skip group rows")
 
-check("opening the screen computes the indicator once",
-  /currentScreen = "settings"\s*\n\s*Qt\.callLater\(updateSettingsSticky\)/.test(panelSrc),
-  "the bar must be right before the user's first scroll")
+check("the screen opens on a setting, not on a heading",
+  /settingsIndex = firstSettingIndex\(\)/.test(panelSrc),
+  "the first row in the list is a heading")
+
+check("activation and adjustment have no group case left",
+  !/e\.kind === "group"/.test(panelSrc),
+  "the cursor can no longer land on a heading, so neither needs to handle one")
 
 // --- geometry access is funnelled ---------------------------------------------
 
