@@ -203,7 +203,31 @@ Panel {
   // Selected item detail
   property var detailItem: null
   property string detailPassword: ""
-  property bool passwordRevealed: false
+  // Which sensitive fields on the open item are currently shown, by field key.
+  //
+  // One flag used to serve all of them, which was invisible while a login had
+  // exactly one secret to hide. A card has two and an identity three, and
+  // revealing a card number also uncovered its security code -- and, on an
+  // identity, the social security, passport and licence numbers at once. The
+  // eye on each field now speaks only for that field.
+  property var revealedFields: ({})
+
+  function isFieldRevealed(key) { return Boolean(revealedFields[key]) }
+
+  function toggleFieldReveal(key) {
+    var next = {}
+    for (var k in revealedFields) next[k] = revealedFields[k]
+    if (next[key]) delete next[key]
+    else next[key] = true
+    revealedFields = next
+  }
+
+  // What `v` reaches: the one secret the open item is mostly about. A card has
+  // a number, a login has a password. An identity has three identifiers and no
+  // principal one, so `v` leaves it alone rather than picking arbitrarily --
+  // each field carries its own eye.
+  readonly property string primaryRevealKey:
+    detailIsCard ? "cardNumber" : (detailIsLoginLike ? "password" : "")
 
   // Which detail blocks the open item is entitled to. The login fields --
   // username, password, TOTP, website -- used to be gated on "not an SSH
@@ -1373,7 +1397,7 @@ Panel {
   function open() {
     errorMessage = ""
     flashMessage = ""
-    passwordRevealed = false
+    revealedFields = ({})
     cursorActive = true
     showDeleteConfirm = false
     totpFollowupActive = false
@@ -1392,7 +1416,7 @@ Panel {
 
   function close() {
     errorMessage = ""
-    passwordRevealed = false
+    revealedFields = ({})
     showDeleteConfirm = false
     totpFollowupActive = false
     isUnlocking = false
@@ -3665,7 +3689,7 @@ Panel {
     selectedCategory = "all"
     selectedIndex = 0
     detailItem = null
-    passwordRevealed = false
+    revealedFields = ({})
     attachmentSaved = ({})
     formIsEditing = false
     formItemId = ""
@@ -4317,7 +4341,7 @@ Panel {
     learnFromPick(item)
     isLoading = true
     errorMessage = ""
-    passwordRevealed = false
+    revealedFields = ({})
     showDeleteConfirm = false
     detailItem = null
     detailPassword = ""
@@ -6522,7 +6546,7 @@ Panel {
           } else if (lower === "x") {
             if (root.detailItem && root.detailItem.typeCode !== 5) root.showDeleteConfirm = true
           } else if (lower === "v") {
-            root.passwordRevealed = !root.passwordRevealed
+            if (root.primaryRevealKey !== "") root.toggleFieldReveal(root.primaryRevealKey)
           } else if (lower === "a") {
             root.saveAllAttachments()
           } else if (lower === "b" || lower === "q") {
@@ -9894,7 +9918,8 @@ Panel {
                     Text {
                       textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
-                      text: root.passwordRevealed ? root.detailPassword : Model.maskString(root.detailPassword || "password")
+                      text: root.isFieldRevealed("password")
+                        ? root.detailPassword : Model.maskString(root.detailPassword || "password")
                       color: root.fg
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.body
@@ -9908,10 +9933,10 @@ Panel {
                       spacing: Style.space(4)
 
                       PanelActionButton {
-                        iconText: root.passwordRevealed ? "󰈉" : "󰈈"
-                        tooltipText: root.passwordRevealed ? "Hide password (v)" : "Reveal password (v)"
+                        iconText: root.isFieldRevealed("password") ? "󰈉" : "󰈈"
+                        tooltipText: root.isFieldRevealed("password") ? "Hide password (v)" : "Reveal password (v)"
                         fontFamily: root.fontFamily
-                        onClicked: root.passwordRevealed = !root.passwordRevealed
+                        onClicked: root.toggleFieldReveal("password")
                       }
 
                       PanelActionButton {
@@ -10230,12 +10255,13 @@ Panel {
                 label: "Card Number"
                 copyLabel: "Card number"
                 shortcutHint: "n / Enter"
+                revealHint: "v"
                 sensitive: true
-                revealed: root.passwordRevealed
+                revealed: root.isFieldRevealed("cardNumber")
                 value: root.detailCard ? root.detailCard.number : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onRevealToggled: root.toggleFieldReveal("cardNumber")
                 onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.number : "", "Card number")
               }
 
@@ -10254,11 +10280,11 @@ Panel {
                 copyLabel: "Security code"
                 shortcutHint: "k"
                 sensitive: true
-                revealed: root.passwordRevealed
+                revealed: root.isFieldRevealed("cardCode")
                 value: root.detailCard ? root.detailCard.code : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onRevealToggled: root.toggleFieldReveal("cardCode")
                 onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.code : "", "Security code")
               }
 
@@ -10324,11 +10350,11 @@ Panel {
                 label: "Social Security Number"
                 copyLabel: "SSN"
                 sensitive: true
-                revealed: root.passwordRevealed
+                revealed: root.isFieldRevealed("ssn")
                 value: root.detailIdentity ? root.detailIdentity.ssn : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onRevealToggled: root.toggleFieldReveal("ssn")
                 onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.ssn : "", "SSN")
               }
 
@@ -10337,11 +10363,11 @@ Panel {
                 label: "Passport Number"
                 copyLabel: "Passport number"
                 sensitive: true
-                revealed: root.passwordRevealed
+                revealed: root.isFieldRevealed("passport")
                 value: root.detailIdentity ? root.detailIdentity.passportNumber : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onRevealToggled: root.toggleFieldReveal("passport")
                 onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.passportNumber : "", "Passport number")
               }
 
@@ -10350,11 +10376,11 @@ Panel {
                 label: "Licence Number"
                 copyLabel: "Licence number"
                 sensitive: true
-                revealed: root.passwordRevealed
+                revealed: root.isFieldRevealed("licence")
                 value: root.detailIdentity ? root.detailIdentity.licenseNumber : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.passwordRevealed = !root.passwordRevealed
+                onRevealToggled: root.toggleFieldReveal("licence")
                 onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.licenseNumber : "", "Licence number")
               }
 

@@ -35,6 +35,10 @@ Column {
   // Appended to the copy button's tooltip, e.g. "(n)". Empty when the field
   // has no key bound to it.
   property string shortcutHint: ""
+  // The same, for the reveal button. Separate because only one field per item
+  // is reachable by `v` -- promising it on the others would be a lie, and the
+  // reveal on each field is independent of every other.
+  property string revealHint: ""
   // The copy button's glyph. Defaults to a plain copy icon; callers pass a
   // semantic one where the detail view already had it, so a converted row
   // keeps the icon it has always drawn.
@@ -82,7 +86,8 @@ Column {
         PanelActionButton {
           visible: root.sensitive
           iconText: root.revealed ? "󰈉" : "󰈈"
-          tooltipText: (root.revealed ? "Hide " : "Reveal ") + root.copyLabel.toLowerCase() + " (v)"
+          tooltipText: (root.revealed ? "Hide " : "Reveal ") + root.copyLabel.toLowerCase()
+            + (root.revealHint === "" ? "" : " (" + root.revealHint + ")")
           fontFamily: root.fontFamily
           onClicked: root.revealToggled()
         }

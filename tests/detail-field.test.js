@@ -83,6 +83,46 @@ for (const label of ["Brand", "Cardholder Name", "Expires"]) {
     Boolean(use) && !/sensitive:\s*true/.test(use), use || `no DetailField labelled ${label}`)
 }
 
+// --- reveals are per field ---------------------------------------------------
+//
+// One shared flag served every masked field to begin with, which was invisible
+// while a login had exactly one secret. A card has two and an identity three,
+// so revealing a card number also uncovered its security code, and an identity
+// showed its social security, passport and licence numbers together.
+
+const revealKeys = uses
+  .filter(u => /sensitive:\s*true/.test(u))
+  .map(u => (u.match(/revealed: root\.isFieldRevealed\("([^"]+)"\)/) || [])[1])
+
+check("every masked field has a reveal key", revealKeys.every(Boolean),
+  JSON.stringify(revealKeys))
+check("no two masked fields share a reveal key",
+  new Set(revealKeys).size === revealKeys.length, JSON.stringify(revealKeys))
+check("each toggles only its own key",
+  uses.filter(u => /sensitive:\s*true/.test(u)).every(u => {
+    const shown = (u.match(/revealed: root\.isFieldRevealed\("([^"]+)"\)/) || [])[1]
+    const toggled = (u.match(/onRevealToggled: root\.toggleFieldReveal\("([^"]+)"\)/) || [])[1]
+    return shown && shown === toggled
+  }), "a field must reveal and hide the same key")
+
+check("no single shared reveal flag is left",
+  !/root\.passwordRevealed/.test(panelSrc),
+  "one flag for every masked field is what caused them to move together")
+
+check("toggling one key leaves the others alone",
+  /if \(next\[key\]\) delete next\[key\]\s*\n\s*else next\[key\] = true/.test(panelSrc),
+  "expected a per-key toggle over a copy of the map")
+
+// `v` cannot mean five things at once, so it reaches the one secret the item is
+// mostly about and the tooltips only advertise it there.
+check("v reaches the item's principal secret only",
+  /primaryRevealKey:\s*\n?\s*detailIsCard \? "cardNumber" : \(detailIsLoginLike \? "password" : ""\)/.test(panelSrc),
+  "expected a single primary key per item type")
+check("the reveal hint is a property rather than a hardcoded (v)",
+  /property string revealHint: ""/.test(fieldSrc)
+    && !/\+ " \(v\)"/.test(fieldSrc),
+  "every masked field claimed the v shortcut")
+
 // --- gating ------------------------------------------------------------------
 
 check("login fields are gated on the type, not on 'not an SSH key'",
