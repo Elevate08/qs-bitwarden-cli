@@ -321,12 +321,12 @@ check("leaving either authentication setup form cancels its in-flight write",
     && /invalidateEpochOperation\("pinStore"\)/.test(bodyOf("abandonPinSetup"))
     && /invalidateEpochOperation\("masterStore"\)/.test(bodyOf("abandonFingerprintSetup")),
   bodyOf("abandonPinSetup") + "\n" + bodyOf("abandonFingerprintSetup"))
-check("PIN completion requires a still-open submitted unlock",
-  /pinUnlockSubmitted\s*&&\s*opened\s*&&\s*status\s*===\s*"locked"/.test(bodyOf("onPinUnlockResult")),
+check("PIN completion requires a still-active submitted unlock",
+  /pinUnlockSubmitted\s*&&\s*sshAuthSurfaceActive\s*&&\s*status\s*===\s*"locked"/.test(bodyOf("onPinUnlockResult")),
   bodyOf("onPinUnlockResult"))
 check("fingerprint password retrieval requires a live verified attempt",
   /fingerprintAuthorized/.test(bodyOf("onFingerprintPasswordRetrieved"))
-    && /opened/.test(bodyOf("onFingerprintPasswordRetrieved"))
+    && /sshAuthSurfaceActive/.test(bodyOf("onFingerprintPasswordRetrieved"))
     && /status\s*!==\s*"locked"/.test(bodyOf("onFingerprintPasswordRetrieved")),
   bodyOf("onFingerprintPasswordRetrieved"))
 check("remembered-session stores are generation-stamped and stale stores are cleared",

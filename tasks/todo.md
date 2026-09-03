@@ -938,3 +938,96 @@ describe a panel that no longer exists in those areas.
 - [x] The full project Definition of Done passes.
 - [x] No task exceeded five files without being split and re-reviewed.
 - [x] Human approval is recorded before merge or release.
+
+## Task 21: Add the centered-prompt setting contract
+
+**Description:** Add the opt-in boolean consistently to the manifest, model
+schema, panel setting reader, and settings tests.
+
+**Acceptance criteria:**
+
+- [x] The setting is disabled by default and invalid values fail closed.
+- [x] Manifest, model schema, runtime reader, and settings UI agree on its key,
+      type, label, description, and default.
+- [x] Existing SSH settings remain available and retain their defaults.
+
+**Verification:** `node tests/ssh-agent-setup.test.js`
+
+**Dependencies:** Task 20
+
+**Files likely touched:** `manifest.json`, `BitwardenModel.js`, `Panel.qml`,
+`tests/ssh-agent-setup.test.js`
+
+## Task 22: Route approvals to a centered surface
+
+**Description:** Add a themed centered overlay and reuse the current approval
+screen while preserving the existing panel route when the setting is off.
+
+**Acceptance criteria:**
+
+- [x] Popup mode never opens or navigates the anchored panel for an SSH
+      approval; legacy mode remains unchanged.
+- [x] Approval, denial, cancellation, timeout, countdown, loading, and grants
+      call the existing request functions and remove the overlay afterward.
+- [x] Escape and outside click deny; bare Enter never approves.
+
+**Verification:** `node tests/ssh-agent-ui.test.js` and Qt6 `qmllint` on all
+changed QML files.
+
+**Dependencies:** Task 21
+
+**Files likely touched:** `Panel.qml`, `SshApprovalPopup.qml`,
+`SshApprovalScreen.qml`, `tests/ssh-agent-ui.test.js`
+
+## Checkpoint: Centered approval
+
+- [x] Focused and regression tests pass.
+- [x] Disabled mode is behaviorally unchanged.
+- [x] Popup mode is centered on the bar widget's output and releases focus on
+      every terminal request state.
+
+## Task 23: Keep locked-vault SSH requests inside the popup
+
+**Description:** Present unlock status and configured unlock methods in the
+same transient surface, then transition in place to the approval screen.
+
+**Acceptance criteria:**
+
+- [x] PIN, fingerprint, and master-password unlock use existing auth functions
+      while the anchored panel stays closed.
+- [x] Unlock success promotes signing requests to approval and leaves identity
+      listing requests in their loading state until released.
+- [x] Dismissal and failure scrub transient input and never authorize signing.
+
+**Verification:** `node tests/ssh-agent-ui.test.js`, the full JavaScript suite,
+and the QML test suite.
+
+**Dependencies:** Task 22
+
+**Files likely touched:** `Panel.qml`, `SshApprovalPopup.qml`,
+`SshUnlockScreen.qml`, `tests/ssh-agent-ui.test.js`
+
+## Task 24: Document and verify centered prompts
+
+**Description:** Document the opt-in behavior and run the complete repository
+gates plus a real locked-vault SSH request when the desktop environment is
+available.
+
+**Acceptance criteria:**
+
+- [x] README configuration and SSH approval documentation explain both modes.
+- [x] Full JavaScript/QML tests, QML lint, and plugin validation pass.
+- [x] Manual locked -> unlock -> approve and unlocked -> approve flows pass.
+
+**Verification:** Commands in `docs/ideas/ssh-approval-popup.md`.
+
+**Dependencies:** Task 23
+
+**Files likely touched:** `README.md`, `tasks/plan.md`, `tasks/todo.md`
+
+## Checkpoint: Centered SSH prompts complete
+
+- [x] Every success criterion in `docs/ideas/ssh-approval-popup.md` passes.
+- [x] No private key, password, session token, payload, or signature is added
+      to persistent QML state, logs, argv, files, or tests.
+- [x] Human review approves merge; no commit or push is performed automatically.

@@ -279,3 +279,40 @@ demand modes. CI must never use a real vault or credential.
   does not exist. Deployments are restricted to `v*` tags. CODEOWNERS names
   `@Elevate08` throughout, and calls out `/.github/workflows/release.yml`
   separately as the only workflow that can write, mint a token, or sign.
+
+## Follow-up Plan: Centered SSH Approval Popup
+
+The approved follow-up specification is
+`docs/ideas/ssh-approval-popup.md`. Add a disabled-by-default presentation
+choice without changing the companion protocol or authorization rules.
+
+### Dependency order
+
+```text
+setting contract
+  -> centered approval surface
+      -> locked-vault unlock surface
+          -> documentation and full verification
+```
+
+### Architecture decisions
+
+- Keep request and credential state in `Panel.qml`; popup components are views
+  that call the same approve, deny, PIN, fingerprint, and password functions.
+- Use a full-output transparent `PanelWindow`, `ExclusionMode.Ignore`, the
+  Wayland overlay layer, and a brief Exclusive-to-OnDemand focus prime,
+  matching Omarchy's centered transient surfaces.
+- Reuse `SshApprovalScreen.qml` between both presentation modes so the key,
+  process, grant, loading, and deadline semantics cannot drift.
+- Keep account login in the full panel. The centered prompt handles only the
+  signed-in locked/unlocked states involved in SSH requests.
+
+### Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Popup accidentally becomes a second authorization authority | It only calls existing `Panel.qml` request functions; helper checks remain unchanged. |
+| PIN/fingerprint results are discarded because the anchored panel is closed | Define one transient-auth-surface predicate used by all unlock acceptance checks. |
+| The invisible experience leaves a password or pending process behind | Dismissal denies the request and runs popup-specific credential/prewarm cleanup. |
+| A request label injects markup | Every request-derived `Text` remains `Text.PlainText`. |
+| Overlay traps input after the request ends | Visibility and Wayland keyboard focus bind directly to the live pending request. |

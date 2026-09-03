@@ -35,6 +35,7 @@ Panel {
   // touches a FIFO while this is false.
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
+  readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", false))
   readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
 
   // The SSH sections' own section header. PanelSectionHeader comes from the
@@ -569,11 +570,17 @@ Panel {
   // finishing an unlock -- and each of those would otherwise drop a prompt
   // that a blocked client is waiting on. Screen visibility binds to this
   // rather than to currentScreen, so no later assignment can hide a prompt.
-  readonly property string activeScreen: sshPrompt !== null ? "sshApproval" : currentScreen
+  readonly property string activeScreen: sshPrompt !== null && !sshAgentApprovalPopup ? "sshApproval" : currentScreen
 
   property var sshPrompt: null            // the approval_required being shown
   property var sshUnlockRequest: null     // the unlock_required being shown
   property var sshUnlockRaw: null         // its original message, to promote from
+  readonly property bool sshApprovalPopupOpen: sshAgentApprovalPopup
+    && (sshPrompt !== null || sshUnlockRequest !== null)
+  // Password, PIN, and fingerprint completion handlers must accept the
+  // transient overlay as a real authentication surface even while the
+  // anchored panel stays closed.
+  readonly property bool sshAuthSurfaceActive: opened || sshApprovalPopupOpen
   // What the companion last announced, and the live view of it. The
   // announcement is a snapshot; the view is that snapshot re-derived against
   // a ticking clock, so a grant counts down on screen and disappears when it
@@ -644,6 +651,10 @@ Panel {
     root.sshPrompt = Model.sshAgentPromptView(message, root.sshAgentApprovalWindowSec)
     root.sshPromptStartedMs = Date.now()
     root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
+    if (root.sshAgentApprovalPopup) {
+      root.sshPromptOpenedPanel = false
+      return
+    }
     if (root.currentScreen !== "sshApproval") root.screenBeforeSshApproval = root.currentScreen
     // Recorded before opening, because open() is what makes it true.
     if (!root.sshUnlockRaw) root.sshPromptOpenedPanel = !root.opened
@@ -654,8 +665,26 @@ Panel {
     root.currentScreen = "sshApproval"
   }
 
+  // shell.json hot-reloads. If the preference changes while a client is
+  // blocked, move the same request to the newly selected surface rather than
+  // making it invisible until its deadline expires.
+  onSshAgentApprovalPopupChanged: {
+    if (!(root.sshPrompt || root.sshUnlockRequest)) return
+    if (root.sshAgentApprovalPopup) {
+      var requestOpenedPanel = root.sshPromptOpenedPanel
+      root.sshPromptOpenedPanel = false
+      if (requestOpenedPanel && root.opened) root.close()
+      return
+    }
+
+    root.sshPromptOpenedPanel = !root.opened
+    if (!root.opened) root.open()
+    if (root.sshPrompt) root.currentScreen = "sshApproval"
+  }
+
   function dismissSshApproval() {
     var openedForThis = root.sshPromptOpenedPanel
+    var popupWasUsed = root.sshApprovalPopupOpen
     root.sshPrompt = null
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
@@ -664,10 +693,28 @@ Panel {
       root.currentScreen = root.screenBeforeSshApproval === "sshApproval"
         ? "main" : root.screenBeforeSshApproval
     }
+    if (popupWasUsed) clearSshPopupUnlockState()
     // Answered -- approved or denied alike -- so give the desktop back if the
     // request is what took it. A panel the user opened themselves stays open
     // on whatever screen they were using.
     if (openedForThis && root.opened) root.close()
+  }
+
+  // The popup is deliberately short lived. Do not let a dismissed or expired
+  // request leave a password, PIN, PAM conversation, or prewarmed CLI behind.
+  function clearSshPopupUnlockState() {
+    cancelFingerprintUnlock()
+    cancelAuthPrewarm()
+    if (pinUnlockProc.running) pinUnlockProc.running = false
+    root.pinUnlockSubmitted = false
+    root.pinBusy = false
+    root.masterPassword = ""
+    root.pendingUnlockPassword = ""
+    root.pendingUnlockFrom = ""
+    root.pinEntry = ""
+    root.pinError = ""
+    root.fingerprintMessage = ""
+    root.errorMessage = ""
   }
 
   function approveSshRequest(grantSeconds) {
@@ -758,6 +805,10 @@ Panel {
       root.sshUnlockRequest = Model.sshAgentPromptView(message, 0)
       root.sshPromptStartedMs = Date.now()
       root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
+      if (root.sshAgentApprovalPopup) {
+        root.sshPromptOpenedPanel = false
+        return
+      }
       root.sshPromptOpenedPanel = !root.opened
       if (!root.opened) root.open()
       return
@@ -1303,6 +1354,7 @@ Panel {
   // still focuses, because the field holding focus then belongs to the screen
   // being left rather than the one arriving.
   function focusAppropriateField() {
+    if (sshApprovalPopupOpen) return
     Qt.callLater(function() {
       // Setup has no field to type into, and the ones this would reach for are
       // on screens that are not showing.
@@ -1541,8 +1593,8 @@ Panel {
       status = "locked"
       currentScreen = "locked"
       focusAppropriateField()
-      if (opened) prepareUnlock()
-      if (opened) startFingerprintUnlock()
+      if (sshAuthSurfaceActive) prepareUnlock()
+      if (sshAuthSurfaceActive) startFingerprintUnlock()
     } else {
       cancelAuthPrewarm()
       if (vaultStatePresent()) {
@@ -1770,7 +1822,7 @@ Panel {
   }
 
   function prepareUnlock() {
-    if (!opened || status !== "locked" || unlockProc.running) return
+    if (!sshAuthSurfaceActive || status !== "locked" || unlockProc.running) return
     unlockSubmitted = false
     unlockProc.command = Model.unlockPrewarmCommand()
     unlockProc.running = true
@@ -2838,7 +2890,7 @@ Panel {
   }
 
   function submitPinUnlock() {
-    if (!pinReady || isUnlocking || pinBusy) return
+    if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
     if (String(pinEntry || "").length < Model.pinMinLength()) {
       pinError = "PIN must be at least " + Model.pinMinLength() + " digits"
       return
@@ -2851,7 +2903,7 @@ Panel {
   }
 
   function onPinUnlockResult(exitCode, password) {
-    var accepting = pinUnlockSubmitted && opened && status === "locked"
+    var accepting = pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"
     pinUnlockSubmitted = false
     pinBusy = false
     if (!accepting) {
@@ -3105,6 +3157,7 @@ Panel {
       case "pinUnlock": return pinUnlock && pinConfigured
       case "sshAgentEnabled": return sshAgentEnabled
       case "sshAgentUnlockOnDemand": return sshAgentUnlockOnDemand
+      case "sshAgentApprovalPopup": return sshAgentApprovalPopup
       case "sshAgentApprovalWindowSec": return sshAgentApprovalWindowSec
     }
     return entry.type === "bool" ? Model.boolSetting(entry.key, setting(entry.key, entry.defaultValue)) : Number(setting(entry.key, 0))
@@ -3116,7 +3169,7 @@ Panel {
 
   function onFingerprintStoredChecked(raw) {
     fingerprintStored = String(raw || "").trim() === "yes"
-    if (opened && status === "locked") startFingerprintUnlock()
+    if (sshAuthSurfaceActive && status === "locked") startFingerprintUnlock()
   }
 
   function startFingerprintUnlock() {
@@ -3144,7 +3197,7 @@ Panel {
   }
 
   function onFingerprintResult(result) {
-    var accepting = fingerprintScanning && opened && status === "locked"
+    var accepting = fingerprintScanning && sshAuthSurfaceActive && status === "locked"
     fingerprintScanning = false
     if (!accepting) return
 
@@ -3164,7 +3217,7 @@ Panel {
 
   // Only ever called after PamResult.Success.
   function onFingerprintPasswordRetrieved(raw) {
-    if (!fingerprintAuthorized || !opened || status !== "locked") {
+    if (!fingerprintAuthorized || !sshAuthSurfaceActive || status !== "locked") {
       fingerprintAuthorized = false
       clearProcessCollectorSoon(keyringLookupMasterProc)
       return
@@ -3419,7 +3472,7 @@ Panel {
     fingerprintMessage = ""
     flashNotification("Vault locked")
     focusAppropriateField()
-    if (opened) startFingerprintUnlock()
+    if (sshAuthSurfaceActive) startFingerprintUnlock()
   }
 
   function vaultStatePresent() {
@@ -5623,7 +5676,7 @@ Panel {
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(unlockProc)) {
-        if (root.opened && root.status === "locked") Qt.callLater(root.prepareUnlock)
+        if (root.sshAuthSurfaceActive && root.status === "locked") Qt.callLater(root.prepareUnlock)
         return
       }
       if (!root.unlockSubmitted) {
@@ -5980,6 +6033,11 @@ Panel {
   // -------------------------------------------------------------------------
   // Popup Window (KeyboardPanel)
   // -------------------------------------------------------------------------
+
+  SshApprovalPopup {
+    panel: root
+    anchorItem: button
+  }
 
   KeyboardPanel {
     id: panel
@@ -7963,7 +8021,7 @@ Panel {
           // Stays up through the load as well as the unlock: the request is
           // held across the vault read, so dropping the block the moment the
           // vault unlocks would leave the user watching nothing for seconds.
-          visible: root.sshUnlockRequest !== null
+          visible: !root.sshAgentApprovalPopup && root.sshUnlockRequest !== null
             && (root.status === "locked" || root.sshAgentLoadActive)
           width: parent.width
           spacing: Style.space(6)
@@ -8024,7 +8082,10 @@ Panel {
         }
 
         // SCREEN: SSH signing approval, in SshApprovalScreen.qml.
-        SshApprovalScreen { panel: root }
+        SshApprovalScreen {
+          panel: root
+          active: !root.sshAgentApprovalPopup && root.activeScreen === "sshApproval"
+        }
 
         // -------------------------------------------------------------------
         // SCREEN 1: LOGIN VIEW (When unauthenticated)

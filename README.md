@@ -109,7 +109,9 @@ not in a separate block:
           "lockOnSuspend": true,
           "clearClipboardSec": 30,
           "rememberSession": true,
-          "fingerprintUnlock": false
+          "fingerprintUnlock": false,
+          "sshAgentEnabled": false,
+          "sshAgentApprovalPopup": false
         }
       ]
     }
@@ -190,18 +192,20 @@ export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/qs-bitwarden-cli/ssh-agent.sock"
 
 Every signature asks first. The prompt names the key, its `SHA256:` fingerprint, and the program asking -- its name and the absolute path it ran from -- and gives you two minutes to answer. Not its pid: the number is gone by the time you could look it up, and the grant is not scoped to it.
 
+By default, that prompt opens in the Bitwarden panel. Turn on **Use centered approval popup** (`sshAgentApprovalPopup`) for the quieter mode: only a small card appears in the middle of the screen, and it disappears as soon as you answer, dismiss it, or the request expires. If the vault is locked, the card first explains that it must be unlocked and offers the configured PIN, fingerprint, and master-password methods. Unlocking does not approve anything; the same card then changes to the signing question. Escape or a click outside the card denies the request, and keyboard focus starts on **Deny** rather than an approval action.
+
 - **Approve once** signs this request and nothing further.
 - **Approve for this program · 2m** also covers later requests from the same executable with the same key, for `sshAgentApprovalWindowSec` seconds (default `120`, maximum `900`, `0` to ask every time). Git spawns a fresh `ssh-keygen -Y sign` for every commit it signs, so this is what makes a twenty-commit rebase one prompt instead of twenty. The grant matches on your UID, the executable path captured at approval, and the key -- deliberately not the pid, which changes with every commit.
 
 Live grants appear under **ACTIVE APPROVALS** with the program and time remaining, revocable one at a time or all at once, and are dropped on lock, logout, and helper exit. They are never written to disk.
 
-Two unanswered or refused prompts in a row start a five-minute cooldown during which signing requests are refused without raising the panel. A banner on every screen says so and counts down, because a silent multi-minute SSH outage is impossible to connect back to its cause -- and unattended requests, the case the cooldown exists for, are exactly the ones you were not watching. Approving cannot end a cooldown that is already running: it is the prompts an approval would answer that the cooldown is suppressing. **Resume Signing Now** on that banner is the way out, or wait the five minutes. A process that keeps asking neither shortens the window nor extends it; the refusals it collects are answered without a prompt and never counted.
+Two unanswered or refused prompts in a row start a five-minute cooldown during which signing requests are refused without raising an approval surface. A banner in the panel says so and counts down, because a silent multi-minute SSH outage is impossible to connect back to its cause -- and unattended requests, the case the cooldown exists for, are exactly the ones you were not watching. Approving cannot end a cooldown that is already running: it is the prompts an approval would answer that the cooldown is suppressing. **Resume Signing Now** on that banner is the way out, or wait the five minutes. A process that keeps asking neither shortens the window nor extends it; the refusals it collects are answered without a prompt and never counted.
 
 #### While the vault is locked
 
 Public identities stay advertised, so `ssh` can still offer them, but nothing is signed while the vault is locked. A signing request for a key the helper already knows raises the unlock prompt and holds the request rather than failing it: by that point a specific vault key has been chosen, and refusing a client that has no way to retry is worse than asking. Dismiss the prompt and the signature is refused at once. This does not depend on any setting.
 
-**Unlock on demand** governs a different moment -- the first connection of a session, before any key has been loaded. With no cache there is nothing to offer, and no signing request can ever follow to ask, so the setting lets the identity listing itself raise the unlock prompt. It is off by default because `ssh` asks the agent for identities on every connection -- including ones that go on to authenticate with an on-disk key -- so leaving it on opens the panel on the first `ssh` after every login.
+**Unlock on demand** governs a different moment -- the first connection of a session, before any key has been loaded. With no cache there is nothing to offer, and no signing request can ever follow to ask, so the setting lets the identity listing itself raise the unlock prompt. It is off by default because `ssh` asks the agent for identities on every connection -- including ones that go on to authenticate with an on-disk key -- so leaving it on raises the configured unlock surface on the first `ssh` after every login.
 
 #### Public key files, and Git signing
 
@@ -376,7 +380,7 @@ The cursor starts on the option already in effect, so <kbd>Enter</kbd> never cha
 
 - **SSH Agent** (opt-in, `sshAgentEnabled`):
   - Serves the SSH keys in your vault to `ssh`, `git` and `ssh-keygen -Y sign` while the vault is unlocked, from a separate helper process that holds the private keys in memory and drops them on lock, logout, or exit. They are never written to disk and never reach QML.
-  - Every signature is approved in the panel, with the key, its fingerprint and the program asking. One approval can cover a whole rebase; live approvals are listed and revocable, and repeated unanswered prompts fall back to a cooldown rather than pestering.
+  - Every signature shows the key, its fingerprint and the program asking. The default prompt lives in the panel; the opt-in centered popup makes the plugin otherwise disappear until a decision is needed. One approval can cover a whole rebase; live approvals are listed and revocable, and repeated unanswered prompts fall back to a cooldown rather than pestering.
   - Public keys are projected to files for Git signing, one file per item, public material only. See [SSH Agent](#7-optional-ssh-agent).
 
 - **Context-Aware Password Suggestions (Active Window / Browser Tab)**:
@@ -601,7 +605,8 @@ The following settings are read from the plugin's own entry in the
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see [Optional: Fingerprint Unlock](#6-optional-fingerprint-unlock). |
 | `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see [Optional: PIN Unlock](#5-optional-pin-unlock). |
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](#7-optional-ssh-agent). |
-| `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this opens the panel on the first `ssh` after every login. |
+| `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
+| `sshAgentApprovalPopup` | `boolean` | `false` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. A locked vault unlocks inside the card and then advances to the separate signing decision. Escape and outside click deny. |
 | `sshAgentApprovalWindowSec` | `number` | `120` | How long one approval keeps covering further signatures from the same program with the same key. Range `0`-`900`; `0` asks every time. Held in memory only and dropped on lock, logout or exit. |
 
 One further key, `twoFactorMethods`, is written to the same entry but is not a

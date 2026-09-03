@@ -319,11 +319,20 @@ if (typeof Model.sshAgentLoadingNote === "function") {
 // screen have their own, and Panel.qml keeps the rest. Reading only the first
 // would leave every "this must NOT appear" check below passing on content that
 // had simply moved.
-const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
-  .map(file => fs.readFileSync(path.join(repoRoot, file), "utf8"))
+const sshUiFiles = [
+  "Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml",
+  "SshApprovalPopup.qml", "SshUnlockScreen.qml"
+]
+const panelSrc = sshUiFiles
+  .map(file => fs.existsSync(path.join(repoRoot, file))
+    ? fs.readFileSync(path.join(repoRoot, file), "utf8") : "")
   .join("\n")
 const approvalSrc = fs.readFileSync(path.join(repoRoot, "SshApprovalScreen.qml"), "utf8")
 const settingsSrc = fs.readFileSync(path.join(repoRoot, "SshAgentSettings.qml"), "utf8")
+const popupSrc = fs.existsSync(path.join(repoRoot, "SshApprovalPopup.qml"))
+  ? fs.readFileSync(path.join(repoRoot, "SshApprovalPopup.qml"), "utf8") : ""
+const unlockSrc = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
+  ? fs.readFileSync(path.join(repoRoot, "SshUnlockScreen.qml"), "utf8") : ""
 
 // plainLabel() wraps its argument in a span when the text contains markup
 // characters, which a PlainText control then renders literally. The field is
@@ -357,8 +366,8 @@ check("an approval_required message raises the prompt",
 // claimed the screen first would be silently undone -- live state, blank
 // screen. Both halves of that ordering are pinned here because the failure is
 // invisible: everything reports healthy while nothing is drawn.
-check("the panel is opened before the approval screen is claimed",
-  /function showSshApproval\(message\)[\s\S]{0,900}?root\.open\(\)[\s\S]{0,200}?currentScreen = "sshApproval"/.test(panelSrc),
+check("the legacy panel is opened before its approval screen is claimed",
+  /function showSshApproval\(message\)[\s\S]{0,1200}?sshAgentApprovalPopup[\s\S]{0,400}?return[\s\S]{0,600}?root\.open\(\)[\s\S]{0,200}?currentScreen = "sshApproval"/.test(panelSrc),
   "the screen is claimed before opening, so opening resets it")
 // Pinned on the ordering rather than on a character distance: what matters is
 // that a live prompt claims the screen and returns before the branch that
@@ -381,7 +390,7 @@ check("a withdrawn prompt counts toward the cooldown",
 // before. Screen visibility binds to activeScreen, which a live request wins,
 // so no later assignment can hide a question a client is blocked on.
 check("a live prompt outranks navigation state",
-  /readonly property string activeScreen: sshPrompt !== null \? "sshApproval" : currentScreen/.test(panelSrc),
+  /readonly property string activeScreen: sshPrompt !== null && !sshAgentApprovalPopup \? "sshApproval" : currentScreen/.test(panelSrc),
   "no activeScreen; a stray currentScreen assignment can hide the prompt")
 check("no screen visibility still binds to currentScreen directly",
   panelSrc.split("\n").filter(l => l.trim().startsWith("visible:") && l.includes("root.currentScreen")).length === 0,
@@ -571,6 +580,69 @@ check("the key name is rendered literally by a PlainText control",
   /Text\s*\{[\s\S]{0,180}?textFormat:\s*Text\.PlainText[\s\S]{0,180}?(?:root|panel)\.sshPrompt\.keyName(?![A-Za-z0-9_])/
     .test(panelSrc),
   "the key name is not pinned to plain text")
+
+// -------------------------------------------------------------------------
+// Opt-in centered approval surface
+// -------------------------------------------------------------------------
+
+check("the panel reads the centered popup setting",
+  /readonly property bool sshAgentApprovalPopup:[^\n]*boolSetting\("sshAgentApprovalPopup"/.test(panelSrc),
+  "sshAgentApprovalPopup never reaches Panel.qml")
+check("the popup is an overlay layer surface centered independently of the bar",
+  /PanelWindow\s*\{/.test(popupSrc)
+    && /anchors\s*\{\s*top:\s*true\s*bottom:\s*true\s*left:\s*true\s*right:\s*true/.test(popupSrc)
+    && /WlrLayer\.Overlay/.test(popupSrc)
+    && /ExclusionMode\.Ignore/.test(popupSrc)
+    && /namespace:\s*"qs-bitwarden-ssh-approval"/.test(popupSrc),
+  "the popup is not a full-screen, non-exclusive overlay layer surface")
+check("the popup follows the panel's monitor",
+  /screen:[^\n]*anchorItem\.QsWindow\.window\.screen/.test(popupSrc),
+  "the popup has no screen affinity")
+check("the popup exists only for opted-in pending SSH work",
+  /sshAgentApprovalPopup\s*&&\s*\(panel\.sshPrompt !== null \|\| panel\.sshUnlockRequest !== null\)/.test(popupSrc),
+  "the popup is not gated by both the setting and a pending request")
+check("popup mode leaves the anchored panel closed for approvals",
+  /function showSshApproval\(message\)[\s\S]{0,900}?if \(root\.sshAgentApprovalPopup\)[\s\S]{0,240}?return/.test(panelSrc),
+  "showSshApproval always opens the panel")
+check("popup mode leaves the anchored panel closed for unlock requests",
+  /message\.type === "unlock_required"[\s\S]{0,1400}?if \(root\.sshAgentApprovalPopup\)[\s\S]{0,240}?return/.test(panelSrc),
+  "unlock_required always opens the panel")
+check("changing presentation mode cannot strand a live request off-screen",
+  /onSshAgentApprovalPopupChanged:[\s\S]{0,900}?sshPrompt \|\| root\.sshUnlockRequest[\s\S]{0,900}?root\.open\(\)/.test(panelSrc),
+  "turning popup mode off during a request leaves no visible approval surface")
+check("the popup moves from unlock to approval without changing windows",
+  /SshUnlockScreen\s*\{/.test(popupSrc) && /SshApprovalScreen\s*\{/.test(popupSrc),
+  "unlock and approval are not hosted by one popup")
+check("the popup unlock screen names the prerequisite",
+  /vault needs to be unlocked first/i.test(unlockSrc),
+  "the popup does not explain why it appeared")
+check("the popup can submit every configured unlock method",
+  /unlockVault\(/.test(unlockSrc)
+    && /submitPinUnlock\(/.test(unlockSrc)
+    && /startFingerprintUnlock\(/.test(unlockSrc),
+  "password, PIN, or fingerprint is missing from the popup")
+check("background click and Escape explicitly deny the pending request",
+  /MouseArea[\s\S]{0,500}?onClicked:\s*popup\.panel\.denySshRequest\(\)/.test(popupSrc)
+    && /Qt\.Key_Escape[\s\S]{0,160}?denySshRequest\(\)/.test(popupSrc),
+  "the modal can disappear without answering the helper")
+check("approval defaults keyboard focus to Deny",
+  /id:\s*denyButton/.test(approvalSrc)
+    && /function focusDefault\(\)[\s\S]{0,120}?denyButton\.forceActiveFocus\(\)/.test(approvalSrc),
+  "an approval can receive accidental affirmative focus")
+check("hidden panel fields cannot steal focus from the popup",
+  /function focusAppropriateField\(\)[\s\S]{0,120}?if \(sshApprovalPopupOpen\) return/.test(panelSrc),
+  "status and unlock handlers can focus an input in the closed panel")
+check("approval actions opt into keyboard focus",
+  (approvalSrc.match(/focusable:\s*true/g) || []).length >= 2,
+  "approval buttons cannot be reached by Tab")
+check("popup unlock is accepted while the anchored panel is closed",
+  /readonly property bool sshAuthSurfaceActive:\s*opened \|\| sshApprovalPopupOpen/.test(panelSrc)
+    && /function prepareUnlock\(\)[\s\S]{0,180}?!sshAuthSurfaceActive/.test(panelSrc),
+  "unlock handlers still require root.opened")
+check("closing the transient popup clears authentication state",
+  /function clearSshPopupUnlockState\(\)[\s\S]{0,700}?masterPassword = ""/.test(panelSrc)
+    && /function dismissSshApproval\(\)[\s\S]{0,900}?clearSshPopupUnlockState\(\)/.test(panelSrc),
+  "password/PIN state can survive a dismissed popup")
 
 if (failures.length) {
   console.error(`\n${failures.length} failed, ${pass} passed\n`)

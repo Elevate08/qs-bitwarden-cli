@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Centered SSH approval popup** (`sshAgentApprovalPopup`, off by default). Shows SSH unlock and signing requests in a transient card centered on the active screen instead of opening the full Bitwarden panel. If the vault is locked, the card presents configured unlock options (PIN, fingerprint, or master password) before transitioning to the signing approval once unlocked. Escape or clicking outside the card denies the request, and initial focus defaults to Deny.
+
 ## [1.6.0] - 2026-08-31
 
 ### Added
