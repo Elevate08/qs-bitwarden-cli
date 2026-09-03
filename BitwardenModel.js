@@ -5216,6 +5216,11 @@ function visibleSettings(deps, checked, collapsed) {
     // The label lived on the first row of each group. It has a row of its own
     // now, and leaving the old field set would draw both.
     entry.groupLabel = ""
+    // Marks where a group's settings end, so a section that has more to draw
+    // than its toggles -- the SSH agent's status and routing block -- can be
+    // attached to the end of the group it belongs to instead of trailing all
+    // four groups.
+    entry.lastInGroup = (i + 1 >= rows.length) || rows[i + 1].group !== entry.group
     out.push(entry)
   }
   return out

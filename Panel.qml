@@ -8009,12 +8009,26 @@ Panel {
               }
 
               PanelSeparator { width: parent.width }
+
+              // The SSH agent has more to say than its four toggles: what the
+              // helper is doing, and whether the user's terminals will reach
+              // it. That block used to sit after all four groups, which was
+              // survivable while nothing folded -- now it would leave a
+              // collapsed SSH Agent section with its status still on screen,
+              // attached to nothing. It loads at the end of the group it
+              // belongs to, so folding the section folds the whole section.
+              //
+              // A Loader rather than a visible binding: this delegate is
+              // instantiated for every row, and only one of them wants it.
+              Loader {
+                width: parent.width
+                active: !isGroup && modelData.group === "sshAgent"
+                  && modelData.lastInGroup === true
+                visible: active
+                sourceComponent: SshAgentSettings { panel: root }
+              }
             }
           }
-
-          // SSH agent status and client routing, in SshAgentSettings.qml.
-          // The approval screen stays below with the other screens.
-          SshAgentSettings { panel: root }
 
           Item { width: parent.width; height: Style.space(18) }
 

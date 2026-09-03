@@ -217,6 +217,42 @@ check("an absent collapse map reads as every group expanded",
     === Model.visibleSettings(allDeps, true, {}).filter(e => e.kind === "setting").length,
   "undefined and {} must agree")
 
+// --- the status block belongs to its own section ----------------------------
+//
+// The SSH agent's status and routing block used to be drawn after all four
+// setting groups. That was survivable while nothing folded; with folding it
+// would leave a collapsed SSH Agent section with its status still on screen,
+// attached to nothing above it.
+
+check("each group's last setting is marked, so a section can extend itself",
+  (() => {
+    const rows = Model.visibleSettings(supportedDeps, true, {})
+    const settings = rows.filter(e => e.kind === "setting")
+    const groups = [...new Set(settings.map(e => e.group))]
+    return groups.every(g => settings.filter(e => e.group === g && e.lastInGroup).length === 1)
+  })(),
+  JSON.stringify(Model.visibleSettings(supportedDeps, true, {})
+    .filter(e => e.lastInGroup).map(e => `${e.group}:${e.key}`)))
+
+check("the mark lands on the final setting of the group, not an earlier one",
+  (() => {
+    const settings = Model.visibleSettings(supportedDeps, true, {}).filter(e => e.kind === "setting")
+    const last = settings.filter(e => e.group === "sshAgent").pop()
+    return last.lastInGroup === true
+  })(), "the SSH group's last row is not marked")
+
+check("a collapsed group has no marked row, so its extra block goes with it",
+  Model.visibleSettings(supportedDeps, true, { sshAgent: true })
+    .filter(e => e.group === "sshAgent" && e.lastInGroup).length === 0,
+  "a folded section must take everything attached to it")
+
+const panelSrc = require("fs").readFileSync(
+  require("path").join(__dirname, "..", "Panel.qml"), "utf8")
+check("the SSH block is drawn inside the group rather than after every group",
+  /active: !isGroup && modelData\.group === "sshAgent"\s*\n\s*&& modelData\.lastInGroup === true/.test(panelSrc)
+    && (panelSrc.match(/SshAgentSettings \{ panel: root \}/g) || []).length === 1,
+  "expected exactly one SshAgentSettings, loaded off the group's last row")
+
 // -------------------------------------------------------------------------
 // Disabled / enabled / error setup state
 // -------------------------------------------------------------------------
