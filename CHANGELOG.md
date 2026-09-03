@@ -7,6 +7,11 @@
 - **Centered SSH approval popup** (`sshAgentApprovalPopup`, on by default). Shows SSH unlock and signing requests in a transient card centered on the active screen instead of opening the full Bitwarden panel. Users who prefer prompts in the anchored panel can disable the popup in Settings or config. If the vault is locked, the card presents configured unlock options (PIN, fingerprint, or master password) before transitioning to the signing approval once unlocked. Escape or clicking outside the card denies the request, and initial focus defaults to Deny.
 - **Concurrent SSH request queueing**. Multiple simultaneous SSH requests are sequentially queued in order (up to 4 deep, matching helper capacity) instead of dropping or overwriting in-flight prompts. The approval screen surfaces a `1 of N` queue counter, advances to the next request upon approval or denial, offers a `Deny all (N)` action (`Shift+Escape` in the popup), and automatically purges requests when clients cancel or time out.
 
+### Changed
+
+- **The settings screen folds.** It had grown into one scroll of fourteen settings, the SSH agent status block and a row of action buttons. Each group heading -- Security, SSH Agent, Behavior, Suggestions -- is now a row that collapses the settings under it, showing how many it is holding when folded. Security starts open because it is what the screen is usually opened for; the rest open on a click, `Enter`, or the arrow keys. The state lasts as long as the session and is not written to `shell.json`.
+- **Destructive actions have their own section.** **Remove Plugin Data** sat in a row visually identical to **Dependencies**, so the button that clears your keyring entries looked exactly as safe to press as the one that opens a checklist. The action buttons are now split under **MAINTENANCE** and a separated **DANGER ZONE**.
+
 ### Fixed
 
 - Transient status and error messages now float at the bottom of the panel instead of changing its measured height, so updates such as a successful unlock no longer shift the active screen down and back up. Errors use the same compact notice surface and can be dismissed in place.

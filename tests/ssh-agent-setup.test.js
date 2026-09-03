@@ -22,6 +22,8 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.sshAgentSetupState = sshAgentSetupState
   exports.sshAgentApprovalWindowMax = sshAgentApprovalWindowMax
   exports.visibleSettings = visibleSettings
+  exports.defaultCollapsedGroups = defaultCollapsedGroups
+  exports.toggleCollapsedGroup = toggleCollapsedGroup
   exports.sshUiAvailable = sshUiAvailable
   exports.sshAgentSocketPath = sshAgentSocketPath
   exports.uwsmFragmentDisplayPath = uwsmFragmentDisplayPath
@@ -129,26 +131,91 @@ const supportedDeps = { items: [], sshCliStatus: "supported" }
 const oldDeps = { items: [], sshCliStatus: "unsupported" }
 const unknownDeps = { items: [], sshCliStatus: "unknown" }
 
-const shown = Model.visibleSettings(supportedDeps, true)
-eq("a supported CLI shows every setting", shown.length, Model.SETTINGS_SCHEMA.length)
+const shown = Model.visibleSettings(supportedDeps, true, {})
+eq("a supported CLI shows every setting",
+  shown.filter(e => e.kind === "setting").length, Model.SETTINGS_SCHEMA.length)
 check("a supported CLI shows the SSH group header",
-  shown.filter(e => e.group === "sshAgent" && e.groupLabel).length === 1, "no header")
+  shown.filter(e => e.kind === "group" && e.group === "sshAgent").length === 1, "no header")
 
 for (const [label, deps, checked] of [
   ["an unsupported CLI", oldDeps, true],
   ["an unreadable CLI version", unknownDeps, true],
   ["an unfinished probe", supportedDeps, false]
 ]) {
-  const rows = Model.visibleSettings(deps, checked)
+  // Nothing collapsed, so every remaining setting is present as a row. The
+  // list also carries one heading row per group now, which is what makes a
+  // group foldable; the guarantee being checked is unchanged -- a hidden
+  // group takes its heading with it, and each group that remains gets
+  // exactly one.
+  const rows = Model.visibleSettings(deps, checked, {})
+  const settings = rows.filter(e => e.kind === "setting")
+  const headers = rows.filter(e => e.kind === "group")
   eq(`${label} hides the SSH settings`, rows.filter(e => e.group === "sshAgent").length, 0)
-  eq(`${label} keeps every other setting`, rows.length, Model.SETTINGS_SCHEMA.length - 4)
+  eq(`${label} keeps every other setting`, settings.length, Model.SETTINGS_SCHEMA.length - 4)
   check(`${label} still draws every remaining group header`,
-    rows.filter(e => e.groupLabel).length === new Set(rows.map(e => e.group)).size,
-    JSON.stringify(rows.filter(e => e.groupLabel).map(e => e.groupLabel)))
+    headers.length === new Set(settings.map(e => e.group)).size,
+    JSON.stringify(headers.map(e => e.label)))
+  check(`${label} draws no heading for a group it hid`,
+    headers.every(h => h.group !== "sshAgent"),
+    JSON.stringify(headers.map(e => e.group)))
 }
 
 check("hiding the group does not mutate the schema",
-  Model.SETTINGS_SCHEMA.every(e => e.groupLabel === undefined), "schema was mutated")
+  Model.SETTINGS_SCHEMA.every(e => e.groupLabel === undefined && e.kind === undefined),
+  "schema was mutated")
+
+// --- collapsing ------------------------------------------------------------
+//
+// The panel walks this list with a single index, so a folded row has to be
+// absent from the list rather than merely invisible -- otherwise the keyboard
+// cursor traverses rows nobody can see.
+
+const allDeps = supportedDeps
+const expanded = Model.visibleSettings(allDeps, true, {})
+const shut = Model.visibleSettings(allDeps, true, { security: true })
+
+check("a collapsed group keeps its heading",
+  shut.filter(e => e.kind === "group" && e.group === "security").length === 1,
+  JSON.stringify(shut.filter(e => e.kind === "group").map(e => e.group)))
+check("a collapsed group contributes no setting rows",
+  shut.filter(e => e.kind === "setting" && e.group === "security").length === 0,
+  JSON.stringify(shut.filter(e => e.group === "security")))
+check("collapsing removes rows from the list rather than hiding them",
+  shut.length < expanded.length, `${shut.length} vs ${expanded.length}`)
+check("a collapsed heading says how many settings it is holding",
+  shut.find(e => e.kind === "group" && e.group === "security").count
+    === expanded.filter(e => e.kind === "setting" && e.group === "security").length,
+  JSON.stringify(shut.find(e => e.kind === "group" && e.group === "security")))
+check("an expanded heading is not marked collapsed",
+  expanded.every(e => e.kind !== "group" || e.collapsed === false),
+  JSON.stringify(expanded.filter(e => e.kind === "group")))
+
+// Security is what people open this screen for; everything else is opened
+// deliberately.
+const defaults = Model.defaultCollapsedGroups()
+check("only Security starts expanded",
+  defaults.security === undefined && defaults.sshAgent === true
+    && defaults.behavior === true && defaults.suggestions === true,
+  JSON.stringify(defaults))
+check("the defaults are a fresh object each call, not a shared one",
+  Model.defaultCollapsedGroups() !== Model.defaultCollapsedGroups(), "same object returned twice")
+
+const toggledOpen = Model.toggleCollapsedGroup({ behavior: true }, "behavior")
+const toggledShut = Model.toggleCollapsedGroup({}, "behavior")
+check("toggling a collapsed group opens it", toggledOpen.behavior === undefined,
+  JSON.stringify(toggledOpen))
+check("toggling an open group collapses it", toggledShut.behavior === true,
+  JSON.stringify(toggledShut))
+check("toggling does not mutate the object it was given",
+  (() => { const before = { behavior: true }; Model.toggleCollapsedGroup(before, "behavior"); return before.behavior === true })(),
+  "the caller's object was mutated")
+
+// A caller that has never set collapse state gets everything open, so nothing
+// has to be initialised before the first read.
+check("an absent collapse map reads as every group expanded",
+  Model.visibleSettings(allDeps, true).filter(e => e.kind === "setting").length
+    === Model.visibleSettings(allDeps, true, {}).filter(e => e.kind === "setting").length,
+  "undefined and {} must agree")
 
 // -------------------------------------------------------------------------
 // Disabled / enabled / error setup state

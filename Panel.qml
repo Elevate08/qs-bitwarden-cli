@@ -157,7 +157,12 @@ Panel {
   property bool setupWasGated: false
   property string settingsFlash: ""
   property int settingsIndex: 0
-  readonly property var settingsEntries: Model.visibleSettings(dependencies, depsChecked)
+  // Which setting groups are folded shut. Session state, deliberately: it is
+  // not worth a key in shell.json, and a user who expands SSH Agent to change
+  // one thing has not said they want it open next week. Security starts open
+  // because it is what people come to this screen for.
+  property var collapsedGroups: Model.defaultCollapsedGroups()
+  readonly property var settingsEntries: Model.visibleSettings(dependencies, depsChecked, collapsedGroups)
 
   // Vault data
   property var items: []
@@ -3144,7 +3149,15 @@ Panel {
   // Left/right nudge a value: numbers by their step, switches off and on.
   function adjustSetting(direction) {
     var e = settingsEntries[settingsIndex]
-    if (!e || settingBlocked(e)) return
+    if (!e) return
+    // Left folds, right unfolds -- the direction a disclosure triangle
+    // implies, and the same keys that nudge a value on a setting row.
+    if (e.kind === "group") {
+      if (direction < 0 && !e.collapsed) toggleSettingsGroup(e.group)
+      else if (direction > 0 && e.collapsed) toggleSettingsGroup(e.group)
+      return
+    }
+    if (settingBlocked(e)) return
 
     if (e.type === "int") {
       var cur = Number(settingValue(e))
@@ -3160,9 +3173,24 @@ Panel {
     }
   }
 
+  function toggleSettingsGroup(group) {
+    if (!group) return
+    collapsedGroups = Model.toggleCollapsedGroup(collapsedGroups, group)
+    // Collapsing shortens the list under the cursor. Without this the cursor
+    // keeps an index that now points past the end, or at an unrelated row.
+    if (settingsIndex >= settingsEntries.length) {
+      settingsIndex = Math.max(0, settingsEntries.length - 1)
+    }
+  }
+
   function activateSettingRow() {
     var e = settingsEntries[settingsIndex]
-    if (!e || settingBlocked(e)) return
+    if (!e) return
+    if (e.kind === "group") {
+      toggleSettingsGroup(e.group)
+      return
+    }
+    if (settingBlocked(e)) return
 
     // These two open a form rather than flipping a value.
     if (e.action === "pin") {
@@ -7789,28 +7817,88 @@ Panel {
               spacing: Style.space(4)
               readonly property bool cursored: index === root.settingsIndex
 
-              // One header per group, drawn by the first entry in it.
+              readonly property bool isGroup: modelData.kind === "group"
+
+              // Breathing room above each heading, except the first.
               Item {
-                visible: modelData.groupLabel !== ""
+                visible: isGroup && index > 0
                 width: parent.width
                 height: visible ? Style.space(18) : 0
               }
 
-              PanelSectionHeader {
-                textFormat: Text.PlainText
-                visible: modelData.groupLabel !== ""
-                text: modelData.groupLabel === "" ? "" : modelData.groupLabel.toUpperCase()
-                foreground: root.fg
-                fontFamily: root.fontFamily
+              // A group heading is a row of its own, and it is the control
+              // that folds the group. Clicking the heading is the obvious
+              // gesture; Enter and left/right reach it from the keyboard.
+              Item {
+                visible: isGroup
+                width: parent.width
+                height: visible ? Style.space(22) : 0
+
+                Rectangle {
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(3)
+                  height: parent.height - Style.space(6)
+                  radius: width / 2
+                  color: Color.accent
+                  visible: cursored
+                }
+
+                Row {
+                  anchors.left: parent.left
+                  anchors.leftMargin: cursored ? Style.space(10) : 0
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(6)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: modelData.collapsed ? "󰅂" : "󰅀"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  PanelSectionHeader {
+                    textFormat: Text.PlainText
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(modelData.label || "").toUpperCase()
+                    foreground: root.fg
+                    fontFamily: root.fontFamily
+                  }
+
+                  // The count is what a folded group has instead of its rows.
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: modelData.collapsed
+                    text: String(modelData.count)
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.settingsIndex = index
+                    root.toggleSettingsGroup(modelData.group)
+                  }
+                }
               }
 
               // A setting whose dependency is missing is shown but inert, with
               // the reason stated rather than the control silently doing nothing.
-              readonly property bool blocked: root.settingBlocked(modelData)
+              readonly property bool blocked: !isGroup && root.settingBlocked(modelData)
 
               Item {
+                visible: !isGroup
                 width: parent.width
-                implicitHeight: Math.max(settingTextCol.implicitHeight, settingControlRow.implicitHeight, Style.space(32))
+                implicitHeight: visible
+                  ? Math.max(settingTextCol.implicitHeight, settingControlRow.implicitHeight, Style.space(32))
+                  : 0
 
                 // Keyboard cursor: a bar in the gutter, so the row it marks is
                 // unmistakable without recolouring the whole row.
@@ -7928,6 +8016,15 @@ Panel {
           // The approval screen stays below with the other screens.
           SshAgentSettings { panel: root }
 
+          Item { width: parent.width; height: Style.space(18) }
+
+          PanelSectionHeader {
+            textFormat: Text.PlainText
+            text: "MAINTENANCE"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+          }
+
           Row {
             width: parent.width
             spacing: Style.space(8)
@@ -7954,6 +8051,20 @@ Panel {
               fontSize: Style.font.bodySmall
               onClicked: root.forgetFingerprintUnlock()
             }
+          }
+
+          // Everything below this line destroys something. It was drawn in a
+          // row visually identical to the one above it, so "Dependencies" and
+          // "Remove Plugin Data" looked equally safe to press.
+          Item { width: parent.width; height: Style.space(18) }
+
+          PanelSeparator { width: parent.width }
+
+          PanelSectionHeader {
+            textFormat: Text.PlainText
+            text: "DANGER ZONE"
+            foreground: Color.urgent
+            fontFamily: root.fontFamily
           }
 
           // Its own row: this sits beside two buttons already, and a third

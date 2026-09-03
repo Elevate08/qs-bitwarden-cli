@@ -5179,19 +5179,73 @@ function groupedSettings() {
 // The settings the panel should actually draw. The SSH agent rows are held
 // back behind the same probe that hides the SSH type filter: a toggle for a
 // feature the installed `bw` cannot serve is worse than no toggle at all.
-// Group headers are recomputed after the filter, so a hidden group takes its
-// heading with it and the ones that remain still get exactly one each.
-function visibleSettings(deps, checked) {
+//
+// A group heading is its own row rather than a label carried by the first
+// setting under it. That is what makes collapsing work: the panel walks this
+// list with one index, so a hidden row has to be absent from the list and not
+// merely invisible, or the keyboard cursor traverses rows nobody can see. A
+// heading that owned itself through another row would vanish with the last
+// setting it labelled, leaving a collapsed group with nothing left to click.
+//
+// `collapsed` is a plain object of group id to true. An unknown or missing
+// group reads as expanded, so a caller that has never set one gets every
+// group open and nothing has to be initialised.
+function visibleSettings(deps, checked, collapsed) {
   var showSsh = sshUiAvailable(deps, checked)
+  var shut = collapsed || {}
   var rows = groupedSettings().filter(function(entry) {
     return showSsh || entry.group !== "sshAgent"
   })
+
+  var out = []
   var seen = {}
   for (var i = 0; i < rows.length; i++) {
-    rows[i].groupLabel = seen[rows[i].group] ? "" : groupLabelFor(rows[i].group)
-    seen[rows[i].group] = true
+    var entry = rows[i]
+    if (!seen[entry.group]) {
+      seen[entry.group] = true
+      out.push({
+        kind: "group",
+        group: entry.group,
+        label: groupLabelFor(entry.group),
+        collapsed: Boolean(shut[entry.group]),
+        count: countSettingsInGroup(rows, entry.group)
+      })
+    }
+    if (shut[entry.group]) continue
+    entry.kind = "setting"
+    // The label lived on the first row of each group. It has a row of its own
+    // now, and leaving the old field set would draw both.
+    entry.groupLabel = ""
+    out.push(entry)
   }
-  return rows
+  return out
+}
+
+function countSettingsInGroup(rows, group) {
+  var n = 0
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].group === group) n++
+  }
+  return n
+}
+
+// Which groups a freshly opened settings screen shows expanded. Security is
+// the one people come here for; the rest are opened deliberately. Returned
+// fresh each time so a caller cannot mutate a shared default.
+function defaultCollapsedGroups() {
+  var out = {}
+  for (var i = 0; i < SETTINGS_GROUPS.length; i++) {
+    if (SETTINGS_GROUPS[i].id !== "security") out[SETTINGS_GROUPS[i].id] = true
+  }
+  return out
+}
+
+function toggleCollapsedGroup(collapsed, group) {
+  var out = {}
+  for (var k in (collapsed || {})) out[k] = collapsed[k]
+  if (out[group]) delete out[group]
+  else out[group] = true
+  return out
 }
 
 function groupLabelFor(id) {
