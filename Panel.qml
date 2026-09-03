@@ -204,6 +204,16 @@ Panel {
   property var detailItem: null
   property string detailPassword: ""
   property bool passwordRevealed: false
+
+  // Which detail blocks the open item is entitled to. The login fields --
+  // username, password, TOTP, website -- used to be gated on "not an SSH
+  // key", which was the same question while logins and notes were the only
+  // other types. A card answers "not an SSH key" too, and would have drawn
+  // an empty password row under its number.
+  readonly property int detailTypeCode: detailItem ? Number(detailItem.typeCode || 1) : 1
+  readonly property bool detailIsLoginLike: detailTypeCode === 1 || detailTypeCode === 2
+  readonly property bool detailIsCard: detailTypeCode === 3
+  readonly property bool detailIsIdentity: detailTypeCode === 4
   property string liveTotp: ""
   property int totpSecRemaining: 30
   property string totpRequestItemId: ""
@@ -9621,46 +9631,16 @@ Panel {
               }
 
               // FIELD: Username
-              Column {
-                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.username !== "")
-                width: parent.width
-                spacing: Style.space(4)
-
-                PanelSectionHeader { text: "USERNAME / EMAIL" }
-
-                BorderSurface {
-                  width: parent.width
-                  implicitHeight: Style.space(34)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                  Row {
-                    anchors.fill: parent
-                    anchors.leftMargin: Style.space(10)
-                    anchors.rightMargin: Style.space(6)
-
-                    Text {
-                      textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: root.detailItem ? root.detailItem.username : ""
-                      color: root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                      elide: Text.ElideRight
-                      width: parent.width - copyUserBtn.width - Style.space(10)
-                    }
-
-                    PanelActionButton {
-                      id: copyUserBtn
-                      anchors.verticalCenter: parent.verticalCenter
-                      iconText: ""
-                      tooltipText: "Copy username (u)"
-                      fontFamily: root.fontFamily
-                      onClicked: root.copyToClipboard(root.detailItem ? root.detailItem.username : "", "Username")
-                    }
-                  }
-                }
+              DetailField {
+                visible: root.detailIsLoginLike && Boolean(root.detailItem) && root.detailItem.username !== ""
+                label: "Username / Email"
+                copyLabel: "Username"
+                shortcutHint: "u"
+                copyIcon: ""
+                value: root.detailItem ? root.detailItem.username : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailItem ? root.detailItem.username : "", "Username")
               }
 
               // FIELD: Password
