@@ -3175,11 +3175,20 @@ Panel {
     }
   }
 
-  // The width the vertical scrollbar occupies on the settings screen, kept
-  // clear of content. Read from the bar itself rather than guessed at, so a
-  // theme with a wider one does not put it back on top of the toggles; the
-  // floor covers the frames before it has an implicit width of its own.
-  readonly property real settingsScrollGutter:
+  // The lane every vertical scrollbar in this panel gets to itself.
+  //
+  // These bars are overlays: left alone they draw on top of whatever occupies
+  // the right edge of the view, which across these screens is toggles, number
+  // fields, copy buttons and the ends of elided text. Every scrolling view
+  // subtracts this from its content width, so the bar has somewhere to be and
+  // the right-hand edges of all of them line up.
+  //
+  // Measured from a real scrollbar rather than guessed at, so a theme with a
+  // wider one does not put it back over the controls. One bar stands in for
+  // all of them because they are the same control with the same style; the
+  // floor covers both a null reference and the frames before it has an
+  // implicit width of its own.
+  readonly property real scrollGutter:
     Math.max(settingsScrollBar ? settingsScrollBar.implicitWidth : 0, Style.space(10))
 
   // Which section the view is currently inside, named by the pinned indicator.
@@ -6657,7 +6666,7 @@ Panel {
 
           Column {
             id: sendCol
-            width: sendFlick.width
+            width: sendFlick.width - root.scrollGutter
             spacing: Style.space(10)
 
             PanelSeparator { width: parent.width }
@@ -6983,7 +6992,7 @@ Panel {
 
           Column {
             id: fpCol
-            width: fpFlick.width
+            width: fpFlick.width - root.scrollGutter
             spacing: Style.space(12)
 
             PanelSeparator { width: parent.width }
@@ -7097,7 +7106,7 @@ Panel {
 
           Column {
             id: genCol
-            width: genFlick.width
+            width: genFlick.width - root.scrollGutter
             spacing: Style.space(10)
 
             PanelSeparator { width: parent.width }
@@ -7470,7 +7479,7 @@ Panel {
 
           Column {
             id: pinCol
-            width: pinFlick.width
+            width: pinFlick.width - root.scrollGutter
           spacing: Style.space(12)
 
           PanelSeparator { width: parent.width }
@@ -7618,7 +7627,7 @@ Panel {
 
           Column {
             id: setupCol
-            width: setupFlick.width
+            width: setupFlick.width - root.scrollGutter
           spacing: Style.space(12)
 
           PanelSeparator { width: parent.width }
@@ -7840,7 +7849,7 @@ Panel {
               // Flush with the scrolling rows below, which stop short of the
               // scrollbar. Without this the Back button overhangs every
               // control it sits above.
-              anchors.rightMargin: root.settingsScrollGutter
+              anchors.rightMargin: root.scrollGutter
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(8)
 
@@ -7893,7 +7902,7 @@ Panel {
               // number field. Reserved unconditionally: the width would
               // otherwise change as the bar came and went, reflowing the rows
               // underneath it.
-              width: settingsFlick.width - root.settingsScrollGutter
+              width: settingsFlick.width - root.scrollGutter
             spacing: Style.space(10)
 
             Connections {
@@ -9161,7 +9170,7 @@ Panel {
                 readonly property bool isSelected: root.cursorActive && root.selectedIndex === index
                 readonly property bool isHovered: rowMouseArea.containsMouse
 
-                width: ListView.view.width
+                width: ListView.view.width - root.scrollGutter
                 implicitHeight: Style.space(46)
                 radius: Style.cornerRadius
                 color: isSelected
@@ -9482,7 +9491,7 @@ Panel {
 
               Column {
                 id: filterOptionsCol
-                width: filterOptionsList.width
+                width: filterOptionsList.width - root.scrollGutter
                 spacing: 0
 
                 Repeater {
@@ -9705,7 +9714,7 @@ Panel {
 
             Column {
               id: detailContentColumn
-              width: detailFlickable.width
+              width: detailFlickable.width - root.scrollGutter
               spacing: Style.space(12)
 
               // Item Header
@@ -10242,7 +10251,7 @@ Panel {
 
             Column {
               id: editFormCol
-              width: editFlickable.width
+              width: editFlickable.width - root.scrollGutter
               spacing: Style.space(10)
 
               // Item Type Selector (only for new items)
@@ -10316,7 +10325,7 @@ Panel {
 
                   Column {
                     id: folderPickCol
-                    width: folderPickList.width
+                    width: folderPickList.width - root.scrollGutter
                     spacing: Style.space(2)
 
                     FormPickerRow {
@@ -10404,7 +10413,7 @@ Panel {
 
                   Column {
                     id: orgPickCol
-                    width: orgPickList.width
+                    width: orgPickList.width - root.scrollGutter
                     spacing: Style.space(2)
 
                     FormPickerRow {
@@ -10479,7 +10488,7 @@ Panel {
 
                     Column {
                       id: collectionCol
-                      width: collectionList.width
+                      width: collectionList.width - root.scrollGutter
                       spacing: Style.space(2)
 
                       Text {

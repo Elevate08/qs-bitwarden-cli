@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// The settings screen's structure: what is pinned, what scrolls, and the
-// invariants the folding depends on.
+// The settings screen's structure -- what is pinned, what scrolls, how its
+// sections are drawn -- and the one invariant that is panel-wide rather than
+// settings-only: every scrolling view keeps its content clear of its own
+// scrollbar.
 //
 //   node tests/settings-screen.test.js
 
@@ -140,25 +142,45 @@ check("both helpers survive being called before the view exists",
     && /return settingsRepeater \? settingsRepeater\.itemAt\(i\) : null/.test(panelSrc),
   "openSettings runs before the screen is built")
 
-// --- the scrollbar gets a lane of its own -------------------------------------
+// --- every scrollbar gets a lane of its own ----------------------------------
 //
-// The bar is an overlay. Left to itself it sits on top of whatever is at the
-// right edge, which on this screen is every toggle and every number field.
+// These bars are overlays. Left alone each one draws on top of whatever is at
+// the right edge of its view -- toggles, number fields, copy buttons, the ends
+// of elided text. Every scrolling view subtracts one shared gutter, so no bar
+// covers a control and the right-hand edges line up across screens.
 
-check("the scrolling content stops short of the scrollbar",
-  /width: settingsFlick\.width - root\.settingsScrollGutter/.test(panelSrc),
-  "the column must not run under the bar")
-
-check("the gutter is read from the scrollbar, not guessed",
+check("the gutter is measured from a real scrollbar, not guessed",
   /settingsScrollBar \? settingsScrollBar\.implicitWidth : 0/.test(panelSrc),
-  "a theme with a wider bar would put it back over the toggles")
+  "a theme with a wider bar would put it back over the controls")
 
-check("the gutter has a floor for the frames before the bar has a width",
-  /Math\.max\(settingsScrollBar[\s\S]{0,80}Style\.space\(10\)\)/.test(panelSrc),
+check("the gutter has a floor for a null bar and for the frames before layout",
+  /Math\.max\(settingsScrollBar[\s\S]{0,120}Style\.space\(10\)\)/.test(panelSrc),
   "expected a minimum gutter")
 
-check("the pinned row is inset to match, so its right edge lines up",
-  /anchors\.rightMargin: root\.settingsScrollGutter/.test(panelSrc),
+// Every scrolling view in the panel, by the id its content width is bound to.
+const scrollViews = [
+  "sendFlick", "fpFlick", "genFlick", "pinFlick", "setupFlick", "settingsFlick",
+  "filterOptionsList", "detailFlickable", "editFlickable",
+  "folderPickList", "orgPickList", "collectionList",
+]
+for (const view of scrollViews) {
+  check(`${view} keeps its content clear of the scrollbar`,
+    new RegExp(`width: ${view}\\.width - root\\.scrollGutter`).test(panelSrc),
+    `${view} content runs under its own scrollbar`)
+}
+
+// The vault list is a ListView, so its delegate takes the width directly
+// rather than through a content column.
+check("the vault list's rows keep clear of the scrollbar too",
+  /width: ListView\.view\.width - root\.scrollGutter/.test(panelSrc),
+  "the item rows run under the bar")
+
+check("every scrolling view is accounted for",
+  (panelSrc.match(/ScrollBar\.vertical:/g) || []).length === scrollViews.length + 1,
+  `${(panelSrc.match(/ScrollBar\.vertical:/g) || []).length} scrollbars for ${scrollViews.length} views plus the list`)
+
+check("the pinned settings row is inset to match its rows",
+  /anchors\.rightMargin: root\.scrollGutter/.test(panelSrc),
   "Back would otherwise overhang every control beneath it")
 
 // Heading rows carry no description and no zeroLabel, and QML evaluates the
