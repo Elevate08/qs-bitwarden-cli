@@ -10,6 +10,7 @@
 ### Changed
 
 - **The settings screen folds.** It had grown into one scroll of fourteen settings, the SSH agent status block and a row of action buttons. Each group heading -- Security, SSH Agent, Behavior, Suggestions -- is now a row that collapses the settings under it, showing how many it is holding when folded. Security starts open because it is what the screen is usually opened for; the rest open on a click, `Enter`, or the arrow keys. The state lasts as long as the session and is not written to `shell.json`.
+- **The settings screen keeps its section heading and its way out in view.** Scrolling twenty rows into Security no longer means scrolling back to the top to fold it: the heading of whichever section you are in is pinned above the scroll area and folds that section where it stands. **Back (Esc)** is pinned alongside it, on the right.
 - The SSH agent's status and client-routing block now sits inside the **SSH Agent** section instead of after every group, so folding that section folds the whole of it rather than leaving its status on screen attached to nothing.
 - **Destructive actions have their own section.** **Remove Plugin Data** sat in a row visually identical to **Dependencies**, so the button that clears your keyring entries looked exactly as safe to press as the one that opens a checklist. The action buttons are now split under **MAINTENANCE** and a separated **DANGER ZONE**.
 
