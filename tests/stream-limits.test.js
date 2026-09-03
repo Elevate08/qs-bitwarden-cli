@@ -147,14 +147,22 @@ check("createFolderCommand caps stderr and response",
   flat(createFolderCmd).includes("exec 2> >(head -c 8192 >&2)") && flat(createFolderCmd).includes("head -c 65536"),
   flat(createFolderCmd))
 
+// The save commands cap their response the way sanitizedListCommand does:
+// read one byte past the ceiling, then refuse anything that reached it. A
+// bare `head -c <max>` cannot tell a stream that fit from one that was cut,
+// and these two now carry a sanitising stage whose output must be whole or
+// discarded. See the same idiom asserted for the item list in ssh-items.
+const capsResponse = cmd =>
+  flat(cmd).includes("head -c 65537") && flat(cmd).includes('-gt 65536')
+
 const createItemCmd = Model.createItemCommand({ organizationId: "org-1" })
 check("createItemCommand caps stderr and response",
-  flat(createItemCmd).includes("exec 2> >(head -c 8192 >&2)") && flat(createItemCmd).includes("head -c 65536"),
+  flat(createItemCmd).includes("exec 2> >(head -c 8192 >&2)") && capsResponse(createItemCmd),
   flat(createItemCmd))
 
 const editItemCmd = Model.editItemCommand("item-1")
 check("editItemCommand caps stderr and response",
-  flat(editItemCmd).includes("exec 2> >(head -c 8192 >&2)") && flat(editItemCmd).includes("head -c 65536"),
+  flat(editItemCmd).includes("exec 2> >(head -c 8192 >&2)") && capsResponse(editItemCmd),
   flat(editItemCmd))
 
 const deleteItemCmd = Model.deleteItemCommand("item-1")

@@ -20,6 +20,8 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.buildEditPayload = buildEditPayload
   exports.matchesQuery = matchesQuery
   exports.createItemCommand = createItemCommand
+  exports.spliceSavedItem = spliceSavedItem
+  exports.savedUnsanitizedMarker = savedUnsanitizedMarker
   exports.identityFullName = identityFullName
   exports.getItemCommand = getItemCommand
   exports.editItemCommand = editItemCommand
@@ -229,6 +231,96 @@ for (const [label, cmd] of [
   check(`${label} still keeps the payload out of argv`,
     !cmd.includes("password") && !cmd.includes("cardholderName"), cmd)
 }
+
+// --- splicing a save into the list ------------------------------------------
+//
+// A save used to be followed by re-listing and re-decrypting the whole vault
+// to learn about the one item just written. The save's own response is the
+// authoritative post-save state, so the list is brought up to date from that.
+// These assertions cover the ways that can go wrong, because a list that
+// quietly disagrees with the vault is worse than a slow one.
+
+const envelope = (...objs) => JSON.stringify({
+  sshCapability: "unconfirmed", items: objs, sshKeys: []
+})
+
+const listed3 = Model.parseItems(JSON.stringify([login, card, identity]))
+
+// An edit replaces in place and does not duplicate.
+const renamed = { ...card, name: "Amex" }
+const afterEdit = Model.spliceSavedItem(listed3, envelope(renamed))
+check("editing an item replaces it rather than adding a second copy",
+  afterEdit.length === listed3.length
+    && afterEdit.filter(i => i.id === card.id).length === 1,
+  JSON.stringify(afterEdit.map(i => i.name)))
+check("the replacement carries the saved values",
+  afterEdit.find(i => i.id === card.id).name === "Amex",
+  JSON.stringify(afterEdit.find(i => i.id === card.id)))
+
+// A create appends and sorts, rather than landing at the end of the list.
+const created = { object: "item", id: "44444444-4444-4444-4444-444444444444",
+  type: 1, name: "AAA First", favorite: false, login: { username: "a" } }
+const afterCreate = Model.spliceSavedItem(listed3, envelope(created))
+check("creating an item adds it", afterCreate.length === listed3.length + 1,
+  String(afterCreate.length))
+// The login fixture is a favourite, so it sorts above everything; the new
+// item is expected at the head of the non-favourites, not of the whole list.
+check("a created item lands in sort order, not at the end",
+  afterCreate.filter(i => !i.favorite)[0].name === "AAA First",
+  JSON.stringify(afterCreate.map(i => `${i.name}:${i.favorite}`)))
+
+// Favourites sort above everything, so toggling one has to move the row.
+const favourited = { ...card, favorite: true }
+const afterFav = Model.spliceSavedItem(listed3, envelope(favourited))
+check("favouriting an item moves it into the favourites block",
+  afterFav.filter(i => i.favorite).some(i => i.id === card.id)
+    && afterFav.findIndex(i => i.id === card.id) < afterFav.findIndex(i => !i.favorite),
+  JSON.stringify(afterFav.map(i => `${i.name}:${i.favorite}`)))
+
+// A rename has to re-sort too, or the row stays where its old name put it.
+const renamedFirst = { ...login, name: "AAA Renamed" }
+const afterRename = Model.spliceSavedItem(listed3, envelope(renamedFirst))
+check("renaming an item re-sorts it",
+  afterRename.filter(i => i.favorite)[0].name === "AAA Renamed",
+  JSON.stringify(afterRename.map(i => `${i.name}:${i.favorite}`)))
+
+// The spliced row must be a list row, not a raw cipher: the list draws
+// subtitles and copy buttons off these fields.
+const splicedCard = afterEdit.find(i => i.id === card.id)
+check("a spliced row is parsed into list shape, not left as a raw cipher",
+  splicedCard.typeCode === 3 && splicedCard.subtitle === "Visa •••• 1111"
+    && splicedCard.hasPassword === false,
+  JSON.stringify(splicedCard))
+
+// --- everything that must fall back to a full reload -------------------------
+
+check("an unrecognised envelope refuses to splice",
+  Model.spliceSavedItem(listed3, '{"not":"an envelope"}') === null, "expected null")
+check("malformed JSON refuses to splice",
+  Model.spliceSavedItem(listed3, "{oops") === null, "expected null")
+check("an envelope carrying more than one item refuses to splice",
+  Model.spliceSavedItem(listed3, envelope(renamed, created)) === null, "expected null")
+check("an empty envelope refuses to splice",
+  Model.spliceSavedItem(listed3, envelope()) === null, "expected null")
+check("an item with no id refuses to splice",
+  Model.spliceSavedItem(listed3, envelope({ ...card, id: "" })) === null, "expected null")
+
+check("the saved-but-unsanitized marker is a fixed sentinel the panel can test",
+  typeof Model.savedUnsanitizedMarker() === "string"
+    && Model.savedUnsanitizedMarker().length > 0
+    && Model.spliceSavedItem(listed3, Model.savedUnsanitizedMarker()) === null,
+  Model.savedUnsanitizedMarker())
+
+// The save pipeline must sanitize its response the same way the list does,
+// because a save returns a complete decrypted cipher just as `bw list` does.
+const createCmd = Model.createItemCommand({ name: "x" })[2]
+check("a save runs its response through the strict JSON validator",
+  createCmd.includes("TextDecoder") && createCmd.includes("Array.isArray"), createCmd.slice(0, 200))
+check("a save runs its response through the allowlisting filter",
+  createCmd.includes("ordinary item carries an SSH key subtree")
+    && createCmd.includes("sshCapability"), createCmd.slice(0, 200))
+check("a failed save is never reported as a success",
+  /if \[ "\$__rc" -ne 0 \]; then exit "\$__rc"; fi/.test(createCmd), createCmd)
 
 // --- the fallback path still has to behave ----------------------------------
 

@@ -3927,11 +3927,7 @@ Panel {
     sshCapability = Model.inspectSanitizedVault(rawJson)
     items = Model.parseSanitizedItems(rawJson)
     itemsLoadedAt = Date.now()
-    if (activeWindowData) {
-      handleActiveWindowDetected(activeWindowData)
-    } else {
-      rebuildFilter()
-    }
+    refreshDerivedFromItems()
     if (syncReloadPending) {
       syncReloadPending = false
       isSyncing = false
@@ -4715,13 +4711,32 @@ Panel {
     // the process that needed it has exited.
     itemPayloadJson = ""
     if (vaultReadIsStale("itemSave")) return
-    if (exitCode === 0) {
-      flashNotification(formIsEditing ? "Item updated successfully!" : "Item created successfully!")
-      currentScreen = "main"
-      loadItems()
-    } else {
+    if (exitCode !== 0) {
       errorMessage = stderrText || "Failed to save item"
+      return
     }
+
+    flashNotification(formIsEditing ? "Item updated successfully!" : "Item created successfully!")
+    currentScreen = "main"
+
+    // The save printed the item the vault now holds, so the list can be
+    // brought up to date from that instead of re-reading and re-decrypting
+    // every other item to learn about this one.
+    //
+    // Any doubt falls back to the full read. The command prints a marker when
+    // the item was stored but could not be sanitised, and spliceSavedItem
+    // returns null on an envelope it does not recognise; in both cases the
+    // item is in the vault and the list simply has to catch up the slow way.
+    // A list that quietly disagrees with the vault is worse than a slow one.
+    var spliced = String(stdoutText).indexOf(Model.savedUnsanitizedMarker()) === 0
+      ? null : Model.spliceSavedItem(items, stdoutText)
+    if (!spliced) {
+      loadItems()
+      return
+    }
+    items = spliced
+    itemsLoadedAt = Date.now()
+    refreshDerivedFromItems()
   }
 
   function deleteCurrentItem() {
@@ -4748,6 +4763,18 @@ Panel {
   // -------------------------------------------------------------------------
   // Filtering & Selection
   // -------------------------------------------------------------------------
+
+  // Everything downstream of `items`. Suggestions are derived from the item
+  // list too, so a change to it that only called rebuildFilter() would leave
+  // the suggested rows describing the vault as it was. Both the full load and
+  // a single spliced save come through here so they cannot drift.
+  function refreshDerivedFromItems() {
+    if (activeWindowData) {
+      handleActiveWindowDetected(activeWindowData)
+    } else {
+      rebuildFilter()
+    }
+  }
 
   function rebuildFilter() {
     var baseList = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg, selectedFolder)

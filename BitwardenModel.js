@@ -1216,6 +1216,45 @@ var STRICT_JSON_PASSTHROUGH = [
   "});"
 ].join("\n")
 
+// The same validator, for the one-item response `bw create item` and
+// `bw edit item` print. It differs only in the shape it accepts and the two
+// brackets it adds, so the sanitizing filter -- which is written against an
+// array and must stay that way -- can be reused unchanged on a save.
+//
+// The wrapping is done here rather than by a `jq -s` upstream of the filter,
+// because the whole point of this stage is that strict Node JSON is the first
+// thing to parse these bytes. Letting jq slurp them into an array first would
+// hand the lenient parser the untrusted input and validate what it produced.
+var STRICT_JSON_ONE_OBJECT = [
+  "const maxBytes = Number(process.argv[1]);",
+  "const chunks = [];",
+  "let byteLength = 0;",
+  "process.stdin.on(\"data\", function (chunk) {",
+  "  byteLength += chunk.length;",
+  "  chunks.push(chunk);",
+  "});",
+  "process.stdin.on(\"end\", function () {",
+  "  if (byteLength > maxBytes) process.exit(1);",
+  "  const raw = Buffer.concat(chunks, byteLength);",
+  "  try {",
+  "    const decoder = new (require(\"util\").TextDecoder)(\"utf-8\", { fatal: true });",
+  "    const parsed = JSON.parse(decoder.decode(raw));",
+  "    if (parsed === null || typeof parsed !== \"object\" || Array.isArray(parsed)) process.exit(1);",
+  "  } catch (error) {",
+  "    process.exit(1);",
+  "  }",
+  "  process.stdout.write(\"[\");",
+  "  process.stdout.write(raw);",
+  "  process.stdout.write(\"]\");",
+  "});"
+].join("\n")
+
+// Printed instead of an envelope when the save itself succeeded but the
+// sanitizing stage did not. The item is in the vault either way, so the panel
+// must not call this a failure -- it falls back to a full reload, which is
+// exactly what it did before any of this existed.
+var SAVED_UNSANITIZED_MARKER = "__QSBW_SAVED_UNSANITIZED__"
+
 var SANITIZED_LIST_ERROR = "Could not safely read vault items."
 var SANITIZED_LIST_SSH_FIX_HINT = " Bitwarden CLI before " + SSH_MALFORMED_ITEM_FIX_VERSION
   + " can fail on malformed SSH key items. Upgrading to " + SSH_MALFORMED_ITEM_FIX_VERSION
@@ -1425,16 +1464,55 @@ function itemEnvVar() {
   return ITEM_ENV
 }
 
+// `bw create item` and `bw edit item` both print the saved cipher. That is the
+// authoritative post-save state -- ids the server assigned, fields it
+// normalised -- and reading it is what lets the panel skip re-listing the
+// whole vault to learn about one item it just wrote.
+//
+// It arrives as a complete decrypted cipher, though, which is the exact thing
+// sanitizedListCommand() exists to keep out of QML. So it goes through the
+// same two stages the list does, in the same order: strict Node JSON first,
+// then the allowlisting jq filter, emitting the same envelope shape the list
+// produces. One item or a thousand, QML only ever sees output of that filter.
+//
+// The save's own exit status is captured before any of that runs. A failure in
+// the sanitising stage must not be reported as a failed save: the item is
+// already in the vault, and telling the user otherwise invites a duplicate.
+// That case prints a marker and the panel falls back to a full reload.
+function savePipelineScript(saveCommand) {
+  var maxPlusOne = MAX_MISC_BYTES + 1
+  // stderr stays its own stream, capped, exactly as cappedScript() left it.
+  // Folding it into the captured stdout would put any `bw` warning inside the
+  // JSON, and a warning would then quietly cost the optimisation on every save
+  // that produced one.
+  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); "
+  script += "export LC_ALL=C BW_NOINTERACTION=true; set -o pipefail; "
+  script += "__qsbw_saved=$(printf '%s' \"$" + ITEM_ENV + "\" | " + ENCODE_CMD
+    + " | " + saveCommand + " | head -c " + maxPlusOne + ")\n"
+  script += "__rc=$?\n"
+  script += "case \"$__rc\" in 141) __rc=0 ;; esac\n"
+  script += "if [ \"$__rc\" -ne 0 ]; then exit \"$__rc\"; fi\n"
+  // Saved. From here nothing may turn a stored item into a reported failure.
+  script += "__qsbw_env=$({ printf '%s' \"$__qsbw_saved\""
+    + " | node -e " + shellQuote(STRICT_JSON_ONE_OBJECT) + " " + MAX_MISC_BYTES
+    + " | jq -c " + shellQuote(SANITIZED_ITEMS_FILTER)
+    + " | head -c " + maxPlusOne + "; } 2>/dev/null)\n"
+  script += "if [ $? -ne 0 ] || [ -z \"$__qsbw_env\" ] || [ \"${#__qsbw_env}\" -gt " + MAX_MISC_BYTES + " ]; then\n"
+  script += "  printf '%s' " + shellQuote(SAVED_UNSANITIZED_MARKER) + "\n"
+  script += "  exit 0\n"
+  script += "fi\n"
+  script += "printf '%s' \"$__qsbw_env\""
+  return ["bash", "-c", script]
+}
+
 function createItemCommand(itemData) {
   var orgArg = (itemData && itemData.organizationId) ? (" --organizationid " + shellQuote(itemData.organizationId)) : ""
-  var script = "printf '%s' \"$" + ITEM_ENV + "\" | " + ENCODE_CMD + " | bw create item" + orgArg + " | head -c " + MAX_MISC_BYTES
-  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+  return savePipelineScript("bw create item" + orgArg)
 }
 
 function editItemCommand(itemId, typeCode) {
   if (Number(typeCode) === 5) return []
-  var script = "printf '%s' \"$" + ITEM_ENV + "\" | " + ENCODE_CMD + " | bw edit item -- " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
-  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+  return savePipelineScript("bw edit item -- " + shellQuote(itemId))
 }
 
 function deleteItemCommand(itemId, typeCode) {
@@ -2215,6 +2293,43 @@ function parseSanitizedEnvelope(raw) {
     sshKeys: sshKeys,
     sshCapability: expectedCapability
   }
+}
+
+// One item's worth of list state, from the envelope a save now returns.
+//
+// The saved cipher is authoritative -- the server assigns the id on a create
+// and normalises fields on both paths -- so this replaces by id when the item
+// is already known and inserts when it is not. Sorting is the list's own
+// comparator rather than a second copy of it, which is what makes a rename, a
+// favourite toggle or a folder move land in the right place without a reload.
+//
+// Returns null when the envelope is not one this filter produced, and the
+// caller reloads instead. Nothing here is a fallback worth improvising on: an
+// item list that quietly disagrees with the vault is worse than a slow one.
+function savedUnsanitizedMarker() { return SAVED_UNSANITIZED_MARKER }
+
+function spliceSavedItem(items, raw) {
+  var envelope = parseSanitizedEnvelope(raw)
+  if (!envelope) return null
+  var saved = envelope.items.concat(envelope.sshKeys)
+  if (saved.length !== 1) return null
+  var one = saved[0]
+  if (!one || !one.id) return null
+
+  var out = []
+  var replaced = false
+  var existing = toList(items)
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i] && existing[i].id === one.id) {
+      out.push(one)
+      replaced = true
+    } else {
+      out.push(existing[i])
+    }
+  }
+  if (!replaced) out.push(one)
+  out.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  return out
 }
 
 function parseSanitizedItems(raw) {
