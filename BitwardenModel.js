@@ -1216,6 +1216,45 @@ var STRICT_JSON_PASSTHROUGH = [
   "});"
 ].join("\n")
 
+// The same validator, for the one-item response `bw create item` and
+// `bw edit item` print. It differs only in the shape it accepts and the two
+// brackets it adds, so the sanitizing filter -- which is written against an
+// array and must stay that way -- can be reused unchanged on a save.
+//
+// The wrapping is done here rather than by a `jq -s` upstream of the filter,
+// because the whole point of this stage is that strict Node JSON is the first
+// thing to parse these bytes. Letting jq slurp them into an array first would
+// hand the lenient parser the untrusted input and validate what it produced.
+var STRICT_JSON_ONE_OBJECT = [
+  "const maxBytes = Number(process.argv[1]);",
+  "const chunks = [];",
+  "let byteLength = 0;",
+  "process.stdin.on(\"data\", function (chunk) {",
+  "  byteLength += chunk.length;",
+  "  chunks.push(chunk);",
+  "});",
+  "process.stdin.on(\"end\", function () {",
+  "  if (byteLength > maxBytes) process.exit(1);",
+  "  const raw = Buffer.concat(chunks, byteLength);",
+  "  try {",
+  "    const decoder = new (require(\"util\").TextDecoder)(\"utf-8\", { fatal: true });",
+  "    const parsed = JSON.parse(decoder.decode(raw));",
+  "    if (parsed === null || typeof parsed !== \"object\" || Array.isArray(parsed)) process.exit(1);",
+  "  } catch (error) {",
+  "    process.exit(1);",
+  "  }",
+  "  process.stdout.write(\"[\");",
+  "  process.stdout.write(raw);",
+  "  process.stdout.write(\"]\");",
+  "});"
+].join("\n")
+
+// Printed instead of an envelope when the save itself succeeded but the
+// sanitizing stage did not. The item is in the vault either way, so the panel
+// must not call this a failure -- it falls back to a full reload, which is
+// exactly what it did before any of this existed.
+var SAVED_UNSANITIZED_MARKER = "__QSBW_SAVED_UNSANITIZED__"
+
 var SANITIZED_LIST_ERROR = "Could not safely read vault items."
 var SANITIZED_LIST_SSH_FIX_HINT = " Bitwarden CLI before " + SSH_MALFORMED_ITEM_FIX_VERSION
   + " can fail on malformed SSH key items. Upgrading to " + SSH_MALFORMED_ITEM_FIX_VERSION
@@ -1373,8 +1412,19 @@ function folderPayload(name) {
   return JSON.stringify({ name: String(name || "").trim() })
 }
 
+// `bw encode` is base64 and nothing else -- it reads stdin, encodes it, and
+// never touches the vault or the session. Paying a full Bitwarden CLI startup
+// for that cost 2.7 seconds on every single save, measured, which was the
+// larger half of the time between pressing Save and seeing the item. coreutils
+// does the same job in about two milliseconds and produces byte-identical
+// output, which a test asserts rather than trusts.
+//
+// The payload still travels in the environment and is still piped rather than
+// interpolated, so nothing about where the password lives has changed.
+var ENCODE_CMD = "base64 -w0"
+
 function createFolderCommand() {
-  var script = "printf '%s' \"$" + FOLDER_ENV + "\" | bw encode | bw create folder | head -c " + MAX_MISC_BYTES
+  var script = "printf '%s' \"$" + FOLDER_ENV + "\" | " + ENCODE_CMD + " | bw create folder | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
@@ -1414,16 +1464,55 @@ function itemEnvVar() {
   return ITEM_ENV
 }
 
+// `bw create item` and `bw edit item` both print the saved cipher. That is the
+// authoritative post-save state -- ids the server assigned, fields it
+// normalised -- and reading it is what lets the panel skip re-listing the
+// whole vault to learn about one item it just wrote.
+//
+// It arrives as a complete decrypted cipher, though, which is the exact thing
+// sanitizedListCommand() exists to keep out of QML. So it goes through the
+// same two stages the list does, in the same order: strict Node JSON first,
+// then the allowlisting jq filter, emitting the same envelope shape the list
+// produces. One item or a thousand, QML only ever sees output of that filter.
+//
+// The save's own exit status is captured before any of that runs. A failure in
+// the sanitising stage must not be reported as a failed save: the item is
+// already in the vault, and telling the user otherwise invites a duplicate.
+// That case prints a marker and the panel falls back to a full reload.
+function savePipelineScript(saveCommand) {
+  var maxPlusOne = MAX_MISC_BYTES + 1
+  // stderr stays its own stream, capped, exactly as cappedScript() left it.
+  // Folding it into the captured stdout would put any `bw` warning inside the
+  // JSON, and a warning would then quietly cost the optimisation on every save
+  // that produced one.
+  var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); "
+  script += "export LC_ALL=C BW_NOINTERACTION=true; set -o pipefail; "
+  script += "__qsbw_saved=$(printf '%s' \"$" + ITEM_ENV + "\" | " + ENCODE_CMD
+    + " | " + saveCommand + " | head -c " + maxPlusOne + ")\n"
+  script += "__rc=$?\n"
+  script += "case \"$__rc\" in 141) __rc=0 ;; esac\n"
+  script += "if [ \"$__rc\" -ne 0 ]; then exit \"$__rc\"; fi\n"
+  // Saved. From here nothing may turn a stored item into a reported failure.
+  script += "__qsbw_env=$({ printf '%s' \"$__qsbw_saved\""
+    + " | node -e " + shellQuote(STRICT_JSON_ONE_OBJECT) + " " + MAX_MISC_BYTES
+    + " | jq -c " + shellQuote(SANITIZED_ITEMS_FILTER)
+    + " | head -c " + maxPlusOne + "; } 2>/dev/null)\n"
+  script += "if [ $? -ne 0 ] || [ -z \"$__qsbw_env\" ] || [ \"${#__qsbw_env}\" -gt " + MAX_MISC_BYTES + " ]; then\n"
+  script += "  printf '%s' " + shellQuote(SAVED_UNSANITIZED_MARKER) + "\n"
+  script += "  exit 0\n"
+  script += "fi\n"
+  script += "printf '%s' \"$__qsbw_env\""
+  return ["bash", "-c", script]
+}
+
 function createItemCommand(itemData) {
   var orgArg = (itemData && itemData.organizationId) ? (" --organizationid " + shellQuote(itemData.organizationId)) : ""
-  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw create item" + orgArg + " | head -c " + MAX_MISC_BYTES
-  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+  return savePipelineScript("bw create item" + orgArg)
 }
 
 function editItemCommand(itemId, typeCode) {
   if (Number(typeCode) === 5) return []
-  var script = "printf '%s' \"$" + ITEM_ENV + "\" | bw encode | bw edit item -- " + shellQuote(itemId) + " | head -c " + MAX_MISC_BYTES
-  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+  return savePipelineScript("bw edit item -- " + shellQuote(itemId))
 }
 
 function deleteItemCommand(itemId, typeCode) {
@@ -2039,15 +2128,33 @@ function identityDetail(identity) {
   return {
     title: String(identity.title || ""),
     firstName: String(identity.firstName || ""),
+    middleName: String(identity.middleName || ""),
     lastName: String(identity.lastName || ""),
+    username: String(identity.username || ""),
+    company: String(identity.company || ""),
     email: String(identity.email || ""),
     phone: String(identity.phone || ""),
+    ssn: String(identity.ssn || ""),
+    passportNumber: String(identity.passportNumber || ""),
+    licenseNumber: String(identity.licenseNumber || ""),
     address1: String(identity.address1 || ""),
+    address2: String(identity.address2 || ""),
+    address3: String(identity.address3 || ""),
     city: String(identity.city || ""),
     state: String(identity.state || ""),
     postalCode: String(identity.postalCode || ""),
     country: String(identity.country || "")
   }
+}
+
+// First, middle and last, with the gaps closed. An identity that carries only
+// a surname should read as that surname, not as two spaces and a surname.
+function identityFullName(identity) {
+  if (!identity) return ""
+  return [identity.title, identity.firstName, identity.middleName, identity.lastName]
+    .map(function(part) { return String(part || "").trim() })
+    .filter(function(part) { return part !== "" })
+    .join(" ")
 }
 
 function itemCustomFields(fields) {
@@ -2084,6 +2191,12 @@ function parseItems(raw) {
       cardSubtitle = (card.brand ? card.brand + " " : "") + (last4 ? "•••• " + last4 : "")
     }
 
+    var identity = it.identity || null
+    var identitySubtitle = ""
+    if (identity) {
+      identitySubtitle = identityFullName(identity) || String(identity.email || "")
+    }
+
     var subtitle = ""
     if (login.username) {
       subtitle = String(login.username)
@@ -2091,6 +2204,8 @@ function parseItems(raw) {
       subtitle = uris[0].replace(/^https?:\/\//, "").replace(/\/.*$/, "")
     } else if (cardSubtitle) {
       subtitle = cardSubtitle
+    } else if (identitySubtitle) {
+      subtitle = identitySubtitle
     } else if (it.type === 2) {
       subtitle = "Secure Note"
     }
@@ -2112,6 +2227,12 @@ function parseItems(raw) {
       attachments: attachments,
       hasAttachments: attachments.length > 0,
       subtitle: subtitle,
+      // The list row carries these so search can match a card by its brand or
+      // last four and an identity by name or email -- the same things the
+      // subtitle now shows. Without them the row displays a value the search
+      // box cannot find.
+      card: cardDetail(it.card),
+      identity: identityDetail(it.identity),
       notes: String(it.notes || ""),
       rawObject: it
     })
@@ -2172,6 +2293,102 @@ function parseSanitizedEnvelope(raw) {
     sshKeys: sshKeys,
     sshCapability: expectedCapability
   }
+}
+
+// One item's worth of list state, from the envelope a save now returns.
+//
+// The saved cipher is authoritative -- the server assigns the id on a create
+// and normalises fields on both paths -- so this replaces by id when the item
+// is already known and inserts when it is not. Sorting is the list's own
+// comparator rather than a second copy of it, which is what makes a rename, a
+// favourite toggle or a folder move land in the right place without a reload.
+//
+// Returns null when the envelope is not one this filter produced, and the
+// caller reloads instead. Nothing here is a fallback worth improvising on: an
+// item list that quietly disagrees with the vault is worse than a slow one.
+// The row to show while a save is in flight.
+//
+// Built from the payload on its way to `bw`, through the same parser the real
+// list uses, so an optimistic row and the row that replaces it are the same
+// shape and cannot disagree about how a card is subtitled or whether an item
+// has a password. It is the user's own input rendered back; the authoritative
+// version arrives a second or two later and replaces it.
+//
+// A create has no id yet -- the server assigns one -- so it carries a
+// provisional one that the save's response swaps out. The prefix is what
+// distinguishes it, and it cannot collide with a vault id because Bitwarden's
+// are UUIDs.
+var PENDING_ID_PREFIX = "qsbw-pending:"
+
+function pendingItemId(seed) { return PENDING_ID_PREFIX + String(seed) }
+function isPendingItemId(id) { return String(id || "").indexOf(PENDING_ID_PREFIX) === 0 }
+
+function findItemById(items, id) {
+  var existing = toList(items)
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i] && existing[i].id === id) return existing[i]
+  }
+  return null
+}
+
+function optimisticItem(payload, itemId) {
+  if (!payload) return null
+  var draft = JSON.parse(JSON.stringify(payload))
+  draft.id = String(itemId || "")
+  draft.object = "item"
+  var parsed = parseItems(JSON.stringify([draft]))
+  if (parsed.length !== 1) return null
+  parsed[0].pending = true
+  return parsed[0]
+}
+
+// Replace-or-insert by id, then sort -- the same operation spliceSavedItem
+// performs, without the envelope. Used to put an optimistic row in and to take
+// it back out again when a save fails.
+function replaceItemById(items, id, replacement) {
+  var out = []
+  var existing = toList(items)
+  var replaced = false
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i] && existing[i].id === id) {
+      if (replacement) out.push(replacement)
+      replaced = true
+    } else {
+      out.push(existing[i])
+    }
+  }
+  if (!replaced && replacement) out.push(replacement)
+  out.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  return out
+}
+
+function savedUnsanitizedMarker() { return SAVED_UNSANITIZED_MARKER }
+
+function spliceSavedItem(items, raw, replacingId) {
+  var envelope = parseSanitizedEnvelope(raw)
+  if (!envelope) return null
+  var saved = envelope.items.concat(envelope.sshKeys)
+  if (saved.length !== 1) return null
+  var one = saved[0]
+  if (!one || !one.id) return null
+
+  // On a create the row in the list is the provisional one, whose id the
+  // server has just replaced; `replacingId` is how the two are matched up.
+  var target = replacingId ? String(replacingId) : one.id
+  var out = []
+  var replaced = false
+  var existing = toList(items)
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i] && existing[i].id === target) {
+      out.push(one)
+      replaced = true
+    } else {
+      out.push(existing[i])
+    }
+  }
+  if (!replaced) out.push(one)
+  out.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  return out
 }
 
 function parseSanitizedItems(raw) {
@@ -2255,6 +2472,25 @@ function matchesQuery(item, query) {
   if (String(item.notes).toLowerCase().indexOf(q) !== -1) return true
   if (String(item.publicKey || "").toLowerCase().indexOf(q) !== -1) return true
   if (String(item.fingerprint || "").toLowerCase().indexOf(q) !== -1) return true
+
+  // A card row shows its brand and last four; an identity row shows a name or
+  // an email. Anything the list is willing to display, the search box has to
+  // be able to find -- otherwise the one visible handle on a card is the one
+  // thing you cannot type. Never the full number: a substring search over
+  // stored card numbers is a lookup nobody asked this box to perform.
+  if (item.card) {
+    if (String(item.card.brand || "").toLowerCase().indexOf(q) !== -1) return true
+    if (String(item.card.cardholderName || "").toLowerCase().indexOf(q) !== -1) return true
+    var digits = String(item.card.number || "").replace(/\D/g, "")
+    if (digits.length >= 4 && digits.slice(-4).indexOf(q.replace(/\D/g, "")) !== -1
+        && q.replace(/\D/g, "") !== "") return true
+  }
+  if (item.identity) {
+    if (identityFullName(item.identity).toLowerCase().indexOf(q) !== -1) return true
+    if (String(item.identity.email || "").toLowerCase().indexOf(q) !== -1) return true
+    if (String(item.identity.username || "").toLowerCase().indexOf(q) !== -1) return true
+    if (String(item.identity.company || "").toLowerCase().indexOf(q) !== -1) return true
+  }
 
   // toList, not Array.isArray: this item came back out of a QML `var`
   // property, and the array nested inside it did not survive that trip as one.
@@ -2348,7 +2584,37 @@ function updateLoginFields(login, username, password, totp) {
   login.totp = totp && totp.trim() ? totp.trim() : null
 }
 
-function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
+// Create and edit write these through the same pair, so a field the form can
+// set is a field both paths set the same way. `fields` is whatever the form
+// collected; anything absent from it is written as an empty string rather
+// than left undefined, because `bw edit` treats a missing key and an empty
+// one differently and the form's cleared box means cleared.
+function updateCardFields(card, fields) {
+  var f = fields || {}
+  card.cardholderName = String(f.cardholderName || "").trim()
+  card.brand = String(f.brand || "").trim()
+  card.number = String(f.number || "").trim()
+  card.expMonth = String(f.expMonth || "").trim()
+  card.expYear = String(f.expYear || "").trim()
+  card.code = String(f.code || "").trim()
+}
+
+function updateIdentityFields(identity, fields) {
+  var f = fields || {}
+  var keys = ["title", "firstName", "middleName", "lastName", "username",
+              "company", "email", "phone", "ssn", "passportNumber",
+              "licenseNumber", "address1", "address2", "address3",
+              "city", "state", "postalCode", "country"]
+  for (var i = 0; i < keys.length; i++) {
+    identity[keys[i]] = String(f[keys[i]] || "").trim()
+  }
+}
+
+// `typeFields` carries the card or identity boxes. It is a trailing object
+// rather than twenty-four more positional arguments: a card needs six and an
+// identity eighteen, and a call site that long is one transposed pair away
+// from writing an expiry year into a security code.
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields) {
   if (Number(typeCode) === 5) return null
   var payload = {
     type: Number(typeCode || 1),
@@ -2373,12 +2639,18 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
     payload.login = login
   } else if (Number(typeCode) === 2) { // Secure Note
     payload.secureNote = { type: 0 }
+  } else if (Number(typeCode) === 3) { // Card
+    payload.card = {}
+    updateCardFields(payload.card, typeFields)
+  } else if (Number(typeCode) === 4) { // Identity
+    payload.identity = {}
+    updateIdentityFields(payload.identity, typeFields)
   }
 
   return payload
 }
 
-function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds) {
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields) {
   if (existingItem && (Number(existingItem.typeCode || existingItem.type) === 5
       || (existingItem.rawObject && Number(existingItem.rawObject.type) === 5))) return null
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
@@ -2399,12 +2671,28 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
     delete payload.collectionIds
   }
 
+  // The payload started as a deep clone of the item as the vault holds it, so
+  // every sub-object the form does not expose is already correct. Each branch
+  // writes only its own type's fields; nothing here deletes another type's,
+  // because an item that arrived as a card leaves as a card.
+  //
+  // The `&& typeFields` is load-bearing. The writers set every key they know,
+  // so calling one with nothing to write blanks the lot -- an edit that only
+  // meant to rename a card would return it to the vault with its number,
+  // expiry and security code erased. A caller with no type fields to offer is
+  // saying "leave that sub-object alone", and the clone already has it right.
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}
     updateLoginFields(payload.login, username, password, totp)
     if (uri && uri.trim()) {
       payload.login.uris = [{ match: null, uri: uri.trim() }]
     }
+  } else if (payload.type === 3 && typeFields) {
+    if (!payload.card) payload.card = {}
+    updateCardFields(payload.card, typeFields)
+  } else if (payload.type === 4 && typeFields) {
+    if (!payload.identity) payload.identity = {}
+    updateIdentityFields(payload.identity, typeFields)
   }
 
   return payload
@@ -5641,7 +5929,7 @@ function sendEnvVar() {
 }
 
 function createSendCommand() {
-  var script = "printf '%s' \"$" + SEND_ENV + "\" | bw encode | bw send create | head -c " + MAX_MISC_BYTES
+  var script = "printf '%s' \"$" + SEND_ENV + "\" | " + ENCODE_CMD + " | bw send create | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 

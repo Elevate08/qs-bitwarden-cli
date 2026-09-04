@@ -282,7 +282,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 
 | Shortcut | Action |
 | :--- | :--- |
-| <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up) |
+| <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up), or open the item when there is no password to copy -- a card, an identity, a note, an SSH key |
 | <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
@@ -310,10 +310,12 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 
 | Shortcut | Action |
 | :--- | :--- |
-| <kbd>p</kbd> / <kbd>y</kbd> | Copy password |
-| <kbd>u</kbd> / <kbd>c</kbd> | Copy username |
+| <kbd>Enter</kbd> / <kbd>y</kbd> / <kbd>p</kbd> | Copy what the item is for: the password on a login, the number on a card |
+| <kbd>u</kbd> / <kbd>c</kbd> | Copy username; on an identity <kbd>u</kbd> is the username and <kbd>c</kbd> the email |
+| <kbd>n</kbd> | Copy a card's **n**umber |
+| <kbd>k</kbd> | Copy a card's security code |
 | <kbd>m</kbd> | Copy TOTP code |
-| <kbd>v</kbd> | Toggle re**v**eal / mask password |
+| <kbd>v</kbd> | Toggle re**v**eal on the item's principal secret -- the password on a login, the number on a card. Every other masked field has its own eye, and each reveals independently |
 | <kbd>a</kbd> | Save every **a**ttachment on this item |
 | <kbd>e</kbd> | Edit this item |
 | <kbd>x</kbd> | Delete this item (asks first) |
@@ -403,12 +405,19 @@ The cursor starts on the option already in effect, so <kbd>Enter</kbd> never cha
     - You can immediately paste the TOTP code into the 2FA prompt without ever reopening or refocusing the plugin!
     - If you prefer manual progression, pressing <kbd>Enter</kbd> or <kbd>t</kbd> while the follow-up banner is active also copies the code immediately.
 
+- **Every item type is readable, not just logins**:
+  - **Cards** show the cardholder, brand, number, expiry and security code. The number and the code are masked until revealed, and each reveals independently of the other -- an eye is a statement about the field it sits on.
+  - **Identities** show the name, username, company, email and phone, the social security, passport and licence numbers, and the address as a single copyable block rather than seven separate rows. Empty fields are not drawn, so a sparsely filled identity stays short. The three identifiers are masked for the reason a password is, with the difference that these cannot be rotated afterwards.
+  - Both are searchable by what the list shows them as: a card by brand, cardholder or last four digits, an identity by name, email, username or company. Deliberately **not** by the middle of a card number -- a substring search across stored card numbers is not a lookup this box should perform.
+  - **SSH keys** remain public records: the panel lists them, shows the public key and fingerprint, and serves them through the agent, but never draws or writes private material. See [ADR 0004](docs/decisions/0004-ssh-key-creation.md).
+
 - **Full Add, Edit & Delete (CRUD) Operations**:
-  - **Create Items (`n` key or `+` button)**: Add new **Logins** (`󰌋`) or **Secure Notes** (`󰈐`).
+  - **Create Items (`n` key or `+` button)**: Add new **Logins** (`󰌋`), **Secure Notes** (`󰈐`), **Cards** (`󰿯`) or **Identities** (``). SSH keys are read-only here -- see [ADR 0004](docs/decisions/0004-ssh-key-creation.md) for why the plugin does not create them.
   - **Password Generator**: A full generator screen (<kbd>g</kbd> or the `󰌆` button) mirroring the Bitwarden browser extension's options -- password (length, A-Z, a-z, 0-9, special, minimum numbers, minimum special, avoid ambiguous) or passphrase (word count, separator, capitalise, include number), with a live strength meter. Generation comes from Bitwarden's own generator rather than a reimplementation, and the item form's **Generate...** button opens this same screen and fills the password field in on the way back.
   - **It is fast.** A fresh `bw generate` costs about 2.9 seconds, almost none of it generation: roughly 0.9s is the CLI's Node bootstrap and 2s is Bitwarden's service container starting, and every option toggle paid it again. The panel now starts `bw serve` on loopback the first time you open the generator and asks that, which answers in about **2ms**. The server is deliberately started with **no session**, so it is a locked vault that can generate passwords and nothing else -- a loopback port has no authentication and is reachable by every user on the machine, so it must never hold an unlocked vault. The server is also only up while the generator screen is: `bw serve` answers `/status` with your account email and user id to anyone on the machine who asks, so it goes up with the screen and comes down with it rather than idling on a port for the whole session. And an answer on that port is not taken as proof the server is ours -- there is no authentication to lean on, so the port is probed before we start, and anything already answering means the panel uses `bw generate` for that visit instead of letting a stranger's server pick your password. If our own server later dies, any value it had already supplied is discarded rather than left on screen to be copied. **And no request to that port can hold the panel up, fill it, or leave loopback.** Every request runs through a managed child process with curl's config disabled, proxies bypassed, a two-second deadline, and a producer-side 64 KB cap. A request cut short counts as an occupied port, never a free one.
-  - **Edit Items (`e` key or Edit button)**: Modify titles, credentials, authenticator keys, URLs, and notes.
+  - **Edit Items (`e` key or Edit button)**: Modify titles, credentials, authenticator keys, URLs, notes, and every card and identity field. <kbd>Enter</kbd> saves from anywhere in the form, so a long item does not have to be scrolled to the bottom to be committed -- except while a folder, organization or collection picker is open, where <kbd>Enter</kbd> belongs to the list being picked from.
   - **Delete Items (`x` key or Delete button)**: Delete items with confirmation protection.
+  - **Saving and deleting do not hold the panel.** Both cost whatever `bw` costs -- a second or two of CLI startup, vault decryption and a round trip -- and the panel used to spend all of it on a frozen form. The form closes as soon as the command is launched and the list shows the item as it will be, its icon replaced by a spinner until the vault answers, at which point the authoritative version takes its place. An item still being saved cannot be edited or deleted, and a second save waits for the first. If the vault refuses one, the list goes straight back to what the vault actually holds and the message offers to reopen what you typed rather than costing you the edit.
 
 - **Bitwarden Send** (<kbd>Alt</kbd>+<kbd>S</kbd> or the `󰒗` button):
   - Share a secret through a link that expires on its own, so a credential need not live in a chat log.

@@ -1012,10 +1012,15 @@ does not prevent the rest of the Bitwarden plugin from loading.
   split approval, lifetime, and error handling across processes.
 - **A Bitwarden SDK or direct cloud API**: the CLI remains the vault boundary.
 - **Key generation or import**: those write private material and need a separate
-  design and security review.
+  design and security review. *Examined in
+  `docs/decisions/0004-ssh-key-creation.md`, which confirms the deferral and
+  records where the obstacle actually lies: the CLI can encrypt and create a
+  type-5 item, so the question is private-key custody, not CLI capability.*
 - **SSH item creation, editing, or cloning in QML**: the CLI edit contract
   round-trips the complete cipher, so these need an opaque metadata-patch design
-  that never exposes the existing private key to QML.
+  that never exposes the existing private key to QML. *That argument holds for
+  editing and cloning; it does not apply to creation, which has no stored
+  private key to expose. See `docs/decisions/0004-ssh-key-creation.md`.*
 - **Master-password re-prompt for agent keys**: show affected items in the
   public list but do not load or advertise them until a dedicated re-prompt
   authorization flow exists.
