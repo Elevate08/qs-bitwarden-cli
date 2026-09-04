@@ -248,12 +248,25 @@ check("drift is still fatal on a same-repository run",
 // trigger still named the SSH agent's feature branch after that work reached
 // master, and a paths filter of agent/** kept the panel -- Panel.qml,
 // BitwardenModel.js, tests/ -- entirely outside the workflow. PR #13 merged
-// with `no checks reported`. Both halves are asserted, because fixing one
-// leaves the hole open.
-check("CI runs against master, where the code now lands",
-  /push:\s*\n\s*branches:\s*\[master[,\]]/.test(workflow)
-    && /pull_request:\s*\n\s*branches:\s*\[master[,\]]/.test(workflow),
-  "the workflow does not run on master pushes and master PRs")
+// with `no checks reported`.
+//
+// This used to require master on both triggers. It no longer does, and the
+// guarantee it was protecting has not been given up -- it moved. Work reaches
+// master only by merging a release branch, and master's protection requires
+// that branch to be up to date first, so the tree master ends up with is the
+// tree these gates already passed on the release branch at the commit they
+// passed on. Re-running on the master push would check the same tree twice.
+//
+// So what has to be true is that the release branches really are gated, which
+// the next check asserts, and that master is not silently left with nothing at
+// all -- it gets publish-on-master.yml, asserted below. Master being absent
+// from these triggers is deliberate and is pinned here so that reintroducing
+// it is a decision rather than a reflex.
+check("master is deliberately not gated here; the release branch it comes from is",
+  !/push:\s*\n\s*branches:\s*\[[^\]]*master/.test(workflow)
+    && !/pull_request:\s*\n\s*branches:\s*\[[^\]]*master/.test(workflow),
+  "master is back in these triggers -- if that is intended, this check and the "
+    + "trigger comment both need updating, because it means the same tree is checked twice")
 // A release is assembled on a release branch before it is tagged, so the same
 // gates have to cover it. Listing master alone let a PR into `release/1.7.0`
 // merge with `no checks reported` -- PR #13's hole reached through the base
@@ -262,6 +275,26 @@ check("CI runs against release branches too, where a release is assembled",
   /push:\s*\n\s*branches:\s*\[[^\]]*'release\/\*\*'/.test(workflow)
     && /pull_request:\s*\n\s*branches:\s*\[[^\]]*'release\/\*\*'/.test(workflow),
   "the workflow does not run on release-branch pushes and PRs into them")
+// Master is not unwatched, it just has exactly one job. A release is built,
+// verified and attested on its release branch and left as a draft; reaching
+// master is what publishes it. If that workflow ever starts building or
+// testing, the reason master was taken off the gates above stops holding.
+const publish = read(".github/workflows/publish-on-master.yml")
+check("something does run on a master push, and it is the publish",
+  /push:\s*\n\s*branches:\s*\[master\]/.test(publish),
+  "nothing runs on master at all now")
+check("the publish only publishes -- it does not build or test",
+  !/cargo (build|test|clippy)|npm |node |qmltestrunner|build-agent\.sh/.test(publish),
+  "the master workflow has grown work that belongs on the release branch")
+check("the publish is the only thing granted write access",
+  /permissions:\s*\n\s*contents:\s*write/.test(publish)
+    && /permissions:\s*\n\s*contents:\s*read/.test(workflow),
+  "write access is not where it was expected")
+// Publishing from the tag announced a version before master contained it.
+check("the tag build leaves the release as a draft for master to publish",
+  /gh release create "\$TAG"[^\n]*--draft/.test(read(".github/workflows/release.yml")),
+  "release.yml publishes at tag time again, so master's merge is no longer what releases")
+
 check("no paths filter decides which changes are checked",
   !/^\s*paths:/m.test(workflow),
   "a paths filter is how the panel went unchecked; these gates are cheap enough to always run")
