@@ -187,18 +187,18 @@ would otherwise reach for. Checked against Bitwarden's documentation on
 | :--- | :---: | :---: | :---: |
 | **Lives in the Omarchy bar** | ✅ | ❌ | ❌ |
 | View logins, notes, cards, identities | ✅ | ✅ | ✅ |
-| Create / edit logins, notes, cards, identities | ✅ | ✅ [^cli-json] | ✅ |
+| Create / edit logins, notes, cards, identities [^cli-json] | ✅ | ✅ | ✅ |
 | View SSH key items | ✅ | ✅ | ✅ |
-| Create / import SSH keys | ❌ [^adr] | ❌ | ✅ [^ssh-clients] |
-| **SSH agent** | ✅ | ❌ [^ssh-desktop] | ✅ |
+| Create / import SSH keys [^adr] [^ssh-clients] | ❌ | ❌ | ✅ |
+| **SSH agent** [^ssh-desktop] | ✅ | ❌ | ✅ |
 | TOTP codes, auto-copied after the password [^totp] | ✅ | ❌ | ❌ |
 | Attachments | ✅ | ✅ | ✅ |
 | Bitwarden Send | ✅ | ✅ | ✅ |
 | Folders, collections, organizations | ✅ | ✅ | ✅ |
 | Password / passphrase generator | ✅ | ✅ | ✅ |
-| **Unlock with PIN** | ✅ | ❌ [^pin] | ✅ |
-| **Unlock with fingerprint** | ✅ [^fp] | ❌ [^bio] | ✅ [^bio-linux] |
-| Auto-lock on idle, screen lock, suspend | ✅ | ❌ [^cli-lock] | ✅ [^desk-lock] |
+| **Unlock with PIN** [^pin] | ✅ | ❌ | ✅ |
+| **Unlock with fingerprint** [^fp] [^bio] [^bio-linux] | ✅ | ❌ | ✅ |
+| Auto-lock on idle, screen lock, suspend [^cli-lock] [^desk-lock] | ✅ | ❌ | ✅ |
 | **Suggests by focused window / browser tab** | ✅ | ❌ | ❌ |
 | Self-hosted and Vaultwarden | ✅ | ✅ | ✅ |
 
@@ -206,8 +206,9 @@ would otherwise reach for. Checked against Bitwarden's documentation on
     edited before encoding, as its documentation describes -- "use a
     command-line JSON processor like jq to change a `.type=` attribute to
     create other item types."
-[^adr]: The CLI can encrypt a type-5 item, but generating a key means putting
-    private material somewhere this plugin has deliberately kept it out of.
+[^adr]: **This plugin** will not. The CLI can encrypt a type-5 item, but
+    generating a key means putting private material somewhere this plugin has
+    deliberately kept it out of.
     See [ADR 0004](docs/decisions/0004-ssh-key-creation.md).
 [^ssh-clients]: Bitwarden documents SSH keys as generated or imported "using
     the desktop app, web app, and browser extension", and generation is
@@ -216,8 +217,9 @@ would otherwise reach for. Checked against Bitwarden's documentation on
     not provide one.
 [^pin]: PIN unlock is documented for "mobile apps, browser extensions, and
     desktop apps".
-[^fp]: Through the same PAM stack as the Omarchy lock screen, so it works
-    wherever `omarchy setup security fingerprint` has been run.
+[^fp]: **This plugin** verifies through the same PAM stack as the Omarchy lock
+    screen, so it works wherever `omarchy setup security fingerprint` has been
+    run.
 [^bio]: Biometric unlock is documented for the desktop app, browser extensions
     and mobile apps -- not the CLI.
 [^bio-linux]: On Linux the desktop app's biometric unlock goes through a polkit
