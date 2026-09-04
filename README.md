@@ -180,8 +180,7 @@ through `omarchy bar set`, so Omarchy owns the file and the shell hot-reloads.
 ## How it compares
 
 What this plugin does, next to the two official Bitwarden clients a Linux user
-would otherwise reach for. Checked against Bitwarden's documentation on
-2026-09-03.
+would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-01.
 
 | | This plugin | Bitwarden CLI | Bitwarden Desktop |
 | :--- | :---: | :---: | :---: |
@@ -192,8 +191,8 @@ would otherwise reach for. Checked against Bitwarden's documentation on
 | Create / import SSH keys [^adr] [^ssh-clients] | ❌ | ❌ | ✅ |
 | **SSH agent** [^ssh-desktop] | ✅ | ❌ | ✅ |
 | TOTP codes, auto-copied after the password [^totp] | ✅ | ❌ | ❌ |
-| Attachments | ✅ | ✅ | ✅ |
-| Bitwarden Send | ✅ | ✅ | ✅ |
+| Download attachments | ✅ | ✅ | ✅ |
+| Bitwarden Send, text | ✅ | ✅ | ✅ |
 | Folders, collections, organizations | ✅ | ✅ | ✅ |
 | Password / passphrase generator | ✅ | ✅ | ✅ |
 | **Unlock with PIN** [^pin] | ✅ | ❌ | ✅ |
@@ -201,6 +200,12 @@ would otherwise reach for. Checked against Bitwarden's documentation on
 | Auto-lock on idle, screen lock, suspend [^cli-lock] [^desk-lock] | ✅ | ❌ | ✅ |
 | **Suggests by focused window / browser tab** | ✅ | ❌ | ❌ |
 | Self-hosted and Vaultwarden | ✅ | ✅ | ✅ |
+| Import / export your vault [^io] | ❌ | ✅ | ✅ |
+| Trash: restore a deleted item [^trash] | ❌ | ✅ | ✅ |
+| Upload attachments [^attach] | ❌ | ✅ | ✅ |
+| File Sends [^filesend] | ❌ | ✅ | ✅ |
+| Edit custom fields [^fields] | ❌ | ✅ | ✅ |
+| Organization admin: confirm members, approve devices [^orgadmin] | ❌ | ✅ | ❌ |
 
 [^cli-json]: The CLI creates a login by default; other types need the JSON
     edited before encoding, as its documentation describes -- "use a
@@ -232,6 +237,21 @@ would otherwise reach for. Checked against Bitwarden's documentation on
     stays valid until something locks it.
 [^desk-lock]: The desktop app offers time passed, on system idle, on system
     sleep, on system lock and on restart.
+
+[^io]: `bw import` and `bw export` on the CLI; the desktop app has both in its
+    UI. This plugin has neither -- it reads and writes single items, and a
+    vault export is a different kind of operation from the one it is for.
+[^trash]: A delete here is a delete. Bitwarden keeps deleted items in a trash
+    for 30 days and both official clients can restore from it (`bw restore`);
+    this plugin shows no trash and cannot restore.
+[^attach]: This plugin downloads attachments but cannot add one. The CLI has
+    `bw create attachment --file`.
+[^filesend]: This plugin creates text Sends only. Both official clients send
+    files too -- `bw send -f <path>`.
+[^fields]: This plugin shows an item's custom fields but does not edit them.
+[^orgadmin]: `bw confirm` and `bw device-approval` are CLI features; the
+    desktop app does not do this either, and it is otherwise the web vault's
+    job. Listed because the CLI is genuinely ahead of both here.
 
 Sources: [CLI](https://bitwarden.com/help/cli/) ·
 [SSH agent](https://bitwarden.com/help/ssh-agent/) ·
