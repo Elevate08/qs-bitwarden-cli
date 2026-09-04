@@ -60,6 +60,42 @@ Panel {
     wrapMode: Text.WordWrap
   }
 
+  // One of the three vault filters at the foot of the list, collapsed to its
+  // current value. Declared once so the three cannot drift apart and start
+  // reading as different kinds of control.
+  //
+  // The button names its filter as well as showing its value. The glyphs alone
+  // do not carry it: the three sit together reading "All", "All", "All" for as
+  // long as nothing is filtered, which is exactly when the value says least and
+  // the name says most. So the name stays, and the row is allowed to take a
+  // second line on the rarer occasions all three are set to something long.
+  //
+  // The value is still clipped. `Ui.Button` has no elide, so a folder named
+  // after a whole client engagement would make one button wider than the whole
+  // panel -- and a row that wraps can move a button to the next line but can
+  // never make one narrower than the panel it is in.
+  component VaultFilterButton: Button {
+    required property string group
+    required property string glyph
+    required property string name
+    required property string value
+    required property string shortcut
+
+    // Clipped first, then neutralized: plainLabel may return a <span>, and
+    // slicing that would cut the tag in half.
+    text: Model.plainLabel(name + ": " + Model.clipLabel(value, 20))
+    iconText: root.openFilterGroup === group ? "󰅀" : glyph
+    selected: root.openFilterGroup === group
+    accent: Color.accent
+    fontFamily: root.fontFamily
+    fontSize: Style.font.caption
+    horizontalPadding: Style.space(10)
+    // The full value, unclipped, is still one hover away -- and the tooltip is
+    // drawn by the kit's own auto-detecting Text, so it is neutralized too.
+    tooltipText: Model.plainLabel(name + " filter (" + shortcut + "): " + value)
+    onClicked: root.toggleFilterGroup(group)
+  }
+
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
   property string status: "checking"
@@ -9543,7 +9579,11 @@ Panel {
             color: Style.selectedFillFor(root.fg, Color.accent)
             borderSpec: Border.controlSpec("normal", Color.accent, Color.accent)
 
-            Row {
+            // A RowLayout, so the label can be told to take whatever the glyph
+            // and the dismiss button leave rather than a hand-measured slice of
+            // the banner. The name in it is a window title, so its length is
+            // not ours to predict.
+            RowLayout {
               anchors.fill: parent
               anchors.leftMargin: Style.space(8)
               anchors.rightMargin: Style.space(6)
@@ -9551,7 +9591,7 @@ Panel {
 
               Text {
                 textFormat: Text.PlainText
-                anchors.verticalCenter: parent.verticalCenter
+                Layout.alignment: Qt.AlignVCenter
                 text: "󰌠"
                 color: Color.accent
                 font.family: root.fontFamily
@@ -9560,20 +9600,18 @@ Panel {
 
               Text {
                 textFormat: Text.PlainText
-                anchors.verticalCenter: parent.verticalCenter
+                Layout.alignment: Qt.AlignVCenter
+                Layout.fillWidth: true
                 text: "Suggested for " + (root.detectedContext ? root.detectedContext.displayName : "active window")
                 color: Color.accent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 elide: Text.ElideRight
-                width: parent.width - Style.space(60)
               }
 
-              Item { Layout.fillWidth: true }
-
               PanelActionButton {
-                anchors.verticalCenter: parent.verticalCenter
+                Layout.alignment: Qt.AlignVCenter
                 iconText: "󰅖"
                 tooltipText: "Dismiss suggestion"
                 fontFamily: root.fontFamily
@@ -10032,34 +10070,55 @@ Panel {
           }
 
           // The three collapsed buttons. Identical shape, so none reads as a
-          // different kind of control from the others.
-          Row {
+          // different kind of control from the others -- which is why they are
+          // one component declared three times rather than three buttons.
+          //
+          // A Flow rather than a Row. Two of the three carry a vault name, so
+          // their width is whatever the user typed, and a Row can neither
+          // shrink a child nor start a second line -- it lays the overflow out
+          // past the panel edge, off both sides at once because the group is
+          // centred. `width` is the group's own combined width while the three
+          // share a line, which is what keeps it centred, and the panel's when
+          // they cannot. It reads the buttons' implicitWidth, never their
+          // width, so the layout's width never depends on its own result.
+          //
+          // This is what pays for the labels naming their filters: the three
+          // fit one line in the ordinary case and take a second when they do
+          // not, instead of the names having to be dropped to guarantee one.
+          Flow {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
+            readonly property real naturalWidth: folderFilterButton.implicitWidth
+              + organizationFilterButton.implicitWidth
+              + typeFilterButton.implicitWidth
+              + spacing * 2
+            width: Math.min(parent.width, naturalWidth)
 
-            Repeater {
-              model: [
-                { group: "folders", icon: "󰉋", name: "Folders", value: root.folderFilterLabel() },
-                { group: "organizations", icon: "󰦑", name: "Organizations", value: root.organizationFilterLabel() },
-                { group: "types",   icon: "󰀻", name: "Types",   value: root.typeFilterLabel() }
-              ]
+            VaultFilterButton {
+              id: folderFilterButton
+              group: "folders"
+              glyph: "󰉋"
+              name: "Folders"
+              value: root.folderFilterLabel()
+              shortcut: "f"
+            }
 
-              delegate: Button {
-                required property var modelData
-                // The value half is a vault folder/organization name, and
-                // Ui.Button renders it with an auto-detecting Text.
-                text: Model.plainLabel(modelData.name + ": " + modelData.value)
-                iconText: root.openFilterGroup === modelData.group ? "󰅀" : modelData.icon
-                selected: root.openFilterGroup === modelData.group
-                accent: Color.accent
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                horizontalPadding: Style.space(10)
-                tooltipText: modelData.name + " filter ("
-                  + (modelData.group === "folders" ? "f"
-                     : modelData.group === "organizations" ? "o" : "t") + ")"
-                onClicked: root.toggleFilterGroup(modelData.group)
-              }
+            VaultFilterButton {
+              id: organizationFilterButton
+              group: "organizations"
+              glyph: "󰦑"
+              name: "Organizations"
+              value: root.organizationFilterLabel()
+              shortcut: "o"
+            }
+
+            VaultFilterButton {
+              id: typeFilterButton
+              group: "types"
+              glyph: "󰀻"
+              name: "Types"
+              value: root.typeFilterLabel()
+              shortcut: "t"
             }
           }
 
@@ -10074,19 +10133,31 @@ Panel {
           spacing: Style.space(12)
 
           // Back Navigation & Action Header
-          Row {
+          //
+          // A Flow, not a Row, because how many buttons are here is decided at
+          // runtime: the suggestion button appears only on a recognised window,
+          // and it is the widest of the four. A Row cannot shrink a child or
+          // start a second line, so the fourth button was laid out past the
+          // panel's right edge and Delete simply left the panel -- worse still
+          // only once the suggestion was pinned, because "Suggested here" is a
+          // character wider than "Suggest here" and that character was the one
+          // that overflowed. The panel is also narrower than its 450 ask on a
+          // small screen (see fittedContentWidth), so no arrangement of fixed
+          // labels is safe; wrapping is. Everything still fits on one line at
+          // the default size, so this only shows itself when it has to.
+          Flow {
             width: parent.width
             spacing: Style.space(8)
 
             Button {
-              text: "Back to list (Esc)"
+              // "Back to list" spelled out cost more width than the row could
+              // spare, and the Sends screen already says just "Back (Esc)".
+              text: "Back (Esc)"
               iconText: "󰁍"
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.currentScreen = "main"
             }
-
-            Item { Layout.fillWidth: true }
 
             Button {
               visible: Boolean(root.detectedContext && root.detectedContext.displayName && root.detailItem && root.detailItem.typeCode !== 5)
@@ -10370,7 +10441,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(4)
 
-                Row {
+                RowLayout {
                   width: parent.width
                   PanelSectionHeader { text: "VERIFICATION CODE (TOTP)" }
                   Item { Layout.fillWidth: true }
@@ -10381,7 +10452,7 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     font.bold: true
-                    anchors.verticalCenter: parent.verticalCenter
+                    Layout.alignment: Qt.AlignVCenter
                   }
                 }
 
@@ -10494,7 +10565,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(4)
 
-                Row {
+                RowLayout {
                   width: parent.width
                   spacing: Style.space(6)
                   PanelSectionHeader { text: "ATTACHMENTS" }
@@ -10605,7 +10676,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(4)
 
-                Row {
+                RowLayout {
                   width: parent.width
                   PanelSectionHeader { text: "NOTES" }
                   Item { Layout.fillWidth: true }
@@ -10854,7 +10925,7 @@ Panel {
           width: parent.width
           spacing: Style.space(10)
 
-          Row {
+          RowLayout {
             width: parent.width
             spacing: Style.space(8)
 
@@ -10870,7 +10941,7 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              anchors.verticalCenter: parent.verticalCenter
+              Layout.alignment: Qt.AlignVCenter
               text: root.formIsEditing ? "Edit Item" : "New Vault Item"
               color: root.fg
               font.family: root.fontFamily
@@ -11210,7 +11281,7 @@ Panel {
                 visible: root.formTypeCode === 1
                 width: parent.width
                 spacing: Style.space(3)
-                Row {
+                RowLayout {
                   width: parent.width
                   Text { textFormat: Text.PlainText; text: "PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                   Item { Layout.fillWidth: true }

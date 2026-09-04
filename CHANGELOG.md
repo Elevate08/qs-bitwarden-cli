@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.1] - 2026-09-04
+
+### Fixed
+
+- **A button could be laid out past the edge of the panel and vanish.** Opening an item while the panel recognised the active window added a fourth button -- **Suggested here** -- to the detail header, and that header was a `Row`: a positioner that can neither shrink a control nor start a second line, so the fourth pushed **Delete** off the panel entirely. It went only once the suggestion was pinned, because "Suggested here" is one character wider than "Suggest here", and that character was the one that overflowed. The header wraps now rather than overflowing, and **Back to list (Esc)** is **Back (Esc)** -- what the Sends screen already called it, and enough on its own to keep all four on one line.
+- **The folder, organization and type filters had the same fault and worse odds.** Their labels carry vault names of no fixed length, and the row is centred, so a long folder or organization name spilled off both edges at once -- and it did not take an unusual name: *Unfiled / Personal / Favorites* was already over. The row wraps too, and stays centred while the three fit a line. A name past twenty characters is clipped, with the whole of it still in the tooltip: a wrapping row can move a button to the next line but can never make one narrower than the panel, so the clip is the only thing that bounds a single button.
+- The SSH agent's client-routing buttons in Settings could overflow the same way, if the four that share that row were ever shown together.
+- **Seven spacers meant to push a control to the right-hand edge were doing nothing at all.** `Item { Layout.fillWidth: true }` is a QtQuick.Layouts instruction, and these sat inside plain `Row`s, which ignore it -- so each laid out at zero width and the control after it stopped short. The countdown beside **VERIFICATION CODE (TOTP)** sat against the heading instead of at the margin, and so did the controls beside **ATTACHMENTS**, **NOTES** and **PASSWORD**. Those rows are `RowLayout`s now, which is what the spacers were written for.
+
 ## [1.7.0] - 2026-09-03
 
 ### Added
