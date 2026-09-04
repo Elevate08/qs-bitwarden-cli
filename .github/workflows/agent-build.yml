@@ -35,10 +35,24 @@ on:
   # only master's branch list covered would merge with `no checks
   # reported` -- the same hole reached through the base branch rather
   # than through a path.
+  #
+  # Master is deliberately NOT listed, and that is not the same mistake in
+  # reverse. Work reaches master only by merging a release branch, and master
+  # requires that branch to be up to date before it can -- so the tree master
+  # ends up with is the tree this workflow already passed on the release
+  # branch, at the commit it passed on. Running again on the push would check
+  # the same tree twice, and running on the pull request would check a merge
+  # preview of it that cannot differ. The one thing master does need is
+  # publication, which is publish-on-master.yml.
+  #
+  # The exposure this accepts, stated plainly: a pull request into master from
+  # something other than a release branch gets no checks. Nothing mechanically
+  # prevents one. It is the release branches that are gated, so that is the
+  # route work has to take.
   push:
-    branches: [master, 'release/**']
+    branches: ['release/**']
   pull_request:
-    branches: [master, 'release/**']
+    branches: ['release/**']
   workflow_dispatch:
   # Callable as a reusable workflow. release.yml is the only caller: it runs
   # every gate below against a release tag before anything is published.

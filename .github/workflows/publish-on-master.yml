@@ -1,0 +1,119 @@
+# The one thing that happens when work reaches master.
+#
+# A release is built, verified, attested and assembled on its release branch,
+# where the tag is pushed -- see release.yml, which leaves the result as a
+# draft. Nothing is rebuilt here and nothing is re-verified: the commit master
+# now holds is the commit that was already checked, and checking it a second
+# time would only prove the runner is deterministic.
+#
+# What is missing at that point is publication. A tag on a release branch is a
+# candidate; the same commit on master is the release. This flips the draft,
+# and does nothing else.
+#
+# It follows that master carries no other workflow. agent-build.yml runs on
+# release branches and on pull requests into them, not here.
+
+name: publish on master
+
+on:
+  push:
+    branches: [master]
+  # Publishing is idempotent -- an already-published release is left alone --
+  # so a run can be repeated by hand if a push happened while this was broken.
+  workflow_dispatch:
+
+# The only write this repository's CI does, and it writes releases rather than
+# code: no branch, no tag and no tracked file is touched from here.
+permissions:
+  contents: write
+
+concurrency:
+  # Two merges in quick succession must not race to publish the same draft.
+  # Never cancelled: a half-published release is worse than a queued one.
+  group: publish-on-master
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: take the release out of draft
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history and tags. The tag this is looking for is reachable
+          # from the merge, not pointing at it, and a shallow clone cannot see
+          # far enough back to find it.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Publish the release this merge brought in
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          # Which tagged commits did THIS push put on master? Answered by
+          # comparing what is reachable now with what was reachable before it,
+          # rather than by asking which tag is nearest.
+          #
+          # `git describe` was the obvious way and it is wrong here. Merging a
+          # release branch makes the tag a parent of master's new tip rather
+          # than the tip itself, and describe resolves the resulting tie by
+          # first-parent depth -- so on a merge commit it walks back into the
+          # base and reports the PREVIOUS release. It picked v1.0.0 over v1.7.1
+          # in exactly this shape. `git tag --points-at HEAD` fails the other
+          # way: it finds nothing at all unless the merge fast-forwarded.
+          #
+          # A reachability difference has neither failure. It is exact on a
+          # merge commit and on a fast-forward alike, and it publishes nothing
+          # that was already on master.
+          git tag --merged HEAD --list 'v*' | sort > /tmp/tags-now
+
+          if [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            git tag --merged "$BEFORE" --list 'v*' | sort > /tmp/tags-before
+          else
+            # First push to the branch, a force-push, or a dispatch run: there
+            # is no previous state to difference against. Fall back to every
+            # reachable tag and let the draft check below decide -- anything
+            # already published is left alone, so the worst case is a no-op.
+            echo "::notice::no usable before-state; considering every reachable tag"
+            : > /tmp/tags-before
+          fi
+
+          arrived="$(comm -23 /tmp/tags-now /tmp/tags-before)"
+          if [ -z "$arrived" ]; then
+            echo "::notice::this push brought no new v* tag onto master; nothing to publish"
+            exit 0
+          fi
+          echo "tags newly on master: $(echo $arrived)"
+
+          published=0
+          for tag in $arrived; do
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              # A tag can reach master with no release behind it -- an old one
+              # from before this workflow existed, or one pushed by hand. Not
+              # an error, and emphatically not something to invent a release
+              # for: the assets and the attestation are made on the release
+              # branch by release.yml, or not at all.
+              echo "::notice::no release exists for $tag; skipping"
+              continue
+            fi
+            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" != "true" ]; then
+              echo "::notice::release $tag is already published; skipping"
+              continue
+            fi
+            # A release is a claim about what the default branch contains.
+            # Belt and braces on top of the reachability difference above.
+            if ! git merge-base --is-ancestor "$tag^{commit}" HEAD; then
+              echo "::error::$tag is not an ancestor of master; refusing to publish"
+              exit 1
+            fi
+            gh release edit "$tag" --draft=false
+            gh release view "$tag" --json isDraft,url --jq '"published \(.url) (isDraft=\(.isDraft))"'
+            published=$((published + 1))
+          done
+          echo "::notice::published $published release(s)"

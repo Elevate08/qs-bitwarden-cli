@@ -340,10 +340,18 @@ jobs:
                   bin/x86_64-linux/qs-bitwarden-ssh-agent)
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          # Created as a draft. A tag is pushed on a release branch, before
+          # that work has reached master, and a published release at that
+          # moment would be announcing a version the default branch does not
+          # yet contain. publish-on-master.yml takes the draft public when the
+          # tagged commit lands on master, which is the moment the release is
+          # real. Everything that costs anything -- the gates, the reports, the
+          # attestation, the assets -- has already happened here, on the
+          # release branch, where it belongs.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::notice::release $TAG exists; uploading assets to it"
             gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$TAG" "${assets[@]}" \
+            gh release create "$TAG" "${assets[@]}" --draft \
               --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
           fi
