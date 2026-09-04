@@ -6036,3 +6036,25 @@ function plainLabel(value) {
     + text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     + "</span>"
 }
+
+// A vault value is any length the user typed, and Ui.Button sizes itself to
+// its label with no elide of its own -- so a folder named after a whole client
+// engagement makes one button wider than the panel, which a wrapping row
+// cannot rescue because it can only move a control to the next line, never
+// shrink one. Clip the value first, so the widest a button can get is bounded
+// by us rather than by the vault.
+//
+// Characters rather than pixels: the shell's font is `monospace` by default,
+// so a count is a width, and a clip that reads the font would have to run in
+// QML where it cannot be tested. The ellipsis is inside the budget, so `max`
+// is the true ceiling.
+//
+// Runs BEFORE plainLabel(). Afterwards the string may be wrapped in a <span>,
+// and slicing that would cut a tag in half and hand markup to the control.
+function clipLabel(value, max) {
+  var text = (value === undefined || value === null) ? "" : String(value)
+  var limit = Math.max(1, Math.floor(Number(max) || 0))
+  if (text.length <= limit) return text
+  if (limit <= 3) return text.slice(0, limit)
+  return text.slice(0, limit - 3) + "..."
+}

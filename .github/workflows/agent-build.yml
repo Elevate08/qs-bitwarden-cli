@@ -35,10 +35,24 @@ on:
   # only master's branch list covered would merge with `no checks
   # reported` -- the same hole reached through the base branch rather
   # than through a path.
+  #
+  # Master is deliberately NOT listed, and that is not the same mistake in
+  # reverse. Work reaches master only by merging a release branch, and master
+  # requires that branch to be up to date before it can -- so the tree master
+  # ends up with is the tree this workflow already passed on the release
+  # branch, at the commit it passed on. Running again on the push would check
+  # the same tree twice, and running on the pull request would check a merge
+  # preview of it that cannot differ. The one thing master does need is
+  # publication, which is publish-on-master.yml.
+  #
+  # The exposure this accepts, stated plainly: a pull request into master from
+  # something other than a release branch gets no checks. Nothing mechanically
+  # prevents one. It is the release branches that are gated, so that is the
+  # route work has to take.
   push:
-    branches: [master, 'release/**']
+    branches: ['release/**']
   pull_request:
-    branches: [master, 'release/**']
+    branches: ['release/**']
   workflow_dispatch:
   # Callable as a reusable workflow. release.yml is the only caller: it runs
   # every gate below against a release tag before anything is published.
@@ -217,8 +231,55 @@ jobs:
         # database, and an old copy fails to parse newer entries. It is
         # checking dependencies, not producing artifact bytes, so currency
         # matters more here than reproducibility.
+        #
+        # The published binary, not `cargo install`. Building this tool from
+        # source cost 1m58s of a 3m34s job -- more than half the critical path
+        # of every push and every PR -- to produce a checker that then ran in
+        # about a second. Downloading it takes well under one. Currency is
+        # unaffected: the advisory database is fetched at check time, not baked
+        # into the binary, so `latest` here means the same thing it meant when
+        # cargo built it.
+        #
+        # Resolved at run time rather than pinned, for that same currency, and
+        # verified against the digest published beside it. Upstream ships a
+        # static musl build, so it runs in this container regardless of what
+        # the container's glibc is.
+        #
+        # The version comes from the `releases/latest` redirect rather than
+        # from api.github.com. The API allows 60 unauthenticated calls an hour
+        # per address and GitHub-hosted runners share addresses, so that route
+        # fails on someone else's traffic and reports it as our dependency
+        # gate going down. The redirect carries no such budget.
+        #
+        # `shell: bash` is explicit because a job running in a container gets
+        # `sh -e` by default, which is dash here -- and dash has no `pipefail`,
+        # so the guard on the line below is itself what fails. Every other step
+        # in this job is a single command and never noticed.
+        shell: bash
         run: |
-          cargo install cargo-deny --locked
+          set -euo pipefail
+          latest="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+            https://github.com/EmbarkStudios/cargo-deny/releases/latest)"
+          version="${latest##*/}"
+          # A redirect that stopped redirecting would leave a path segment
+          # rather than a version, and the download would 404 with nothing
+          # saying why. Check the shape before trusting it.
+          case "$version" in
+            [0-9]*.[0-9]*) : ;;
+            *) echo "::error::could not resolve the latest cargo-deny release (got '$version' from '$latest')"; exit 1 ;;
+          esac
+          base="https://github.com/EmbarkStudios/cargo-deny/releases/download/$version"
+          archive="cargo-deny-$version-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$archive" "$base/$archive"
+          curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
+          # Upstream publishes the bare digest, so pair it with the filename
+          # before sha256sum will read it. A mismatch stops the job here.
+          echo "$(cat "$archive.sha256")  $archive" | sha256sum -c -
+          tar -xzf "$archive" --strip-components=1 -C /usr/local/cargo/bin \
+            "cargo-deny-$version-x86_64-unknown-linux-musl/cargo-deny"
+          # Say which build actually did the checking, the way the QML step
+          # records its Qt packages.
+          cargo-deny --version
           cargo deny --manifest-path agent/Cargo.toml --config deny.toml check
 
       - name: Tests
@@ -310,10 +371,18 @@ jobs:
           # -- but narrowly, loudly, and only for that reason: a gate that
           # quietly runs nothing is worse than no gate, and this file has
           # already been bitten twice by checks passing through absence.
+          #
+          # The match is on the `import` line, not on the path anywhere in the
+          # file. It used to be the latter, and that is a third way to pass
+          # through absence: tst_row_widths.qml only *mentions* the kit, in an
+          # optional check that reads Ui/Button.qml if it happens to be there
+          # and returns quietly if it is not. A substring match skipped the
+          # whole file, so the row-width gate silently stopped running on every
+          # runner while still reporting success.
           shopt -s nullglob
           run=() ; skipped=()
           for f in tests/qml/*.qml; do
-            if grep -q "/usr/share/omarchy/shell" "$f" && [ ! -d /usr/share/omarchy/shell/Ui ]; then
+            if grep -q 'import "file:/usr/share/omarchy/shell' "$f" && [ ! -d /usr/share/omarchy/shell/Ui ]; then
               skipped+=("$f")
             else
               run+=("$f")
@@ -327,9 +396,15 @@ jobs:
             exit 1
           fi
           echo "running ${#run[@]} QML test file(s), skipping ${#skipped[@]}"
+          # QML_XHR_ALLOW_FILE_READ lets a test read the repository's own QML
+          # back through XMLHttpRequest, which Qt refuses by default.
+          # tst_row_widths.qml needs it: it measures the real panel sources
+          # rather than a copy of them that could drift. Without it that file
+          # fails on its first check rather than measuring nothing.
           status=0
           for f in "${run[@]}"; do
-            QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input "$f" || status=1
+            QML_XHR_ALLOW_FILE_READ=1 QT_QPA_PLATFORM=offscreen \
+              /usr/lib/qt6/bin/qmltestrunner -input "$f" || status=1
           done
           exit $status
 

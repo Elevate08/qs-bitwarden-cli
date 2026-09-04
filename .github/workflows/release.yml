@@ -272,9 +272,21 @@ jobs:
     # what makes it safe to rehearse.
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
-    # The protection boundary. `release` requires a reviewer's approval before
-    # this job starts, and it is the only job in the repository that asks for
-    # anything beyond read.
+    # The protection boundary, and still the only job in the repository that
+    # asks for anything beyond read.
+    #
+    # It used to also require a reviewer to click approve here. That was a
+    # third human gate on a path that already has two, and the wrong two to
+    # add it to: the work was reviewed on the release branch, where the PRs
+    # are and where the gates run, and the tag that reaches this job is pushed
+    # deliberately. What this job produces is a draft, so approving it was not
+    # even the moment anything went public -- that is the merge to master,
+    # which is itself a pull request.
+    #
+    # The environment stays, for what it does rather than for the click: it
+    # scopes these permissions to this one job, records the deployment, and
+    # carries a branch policy that lets only `v*` tags reach it -- so a branch
+    # cannot deploy here however the workflow is triggered.
     environment:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
@@ -340,10 +352,18 @@ jobs:
                   bin/x86_64-linux/qs-bitwarden-ssh-agent)
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          # Created as a draft. A tag is pushed on a release branch, before
+          # that work has reached master, and a published release at that
+          # moment would be announcing a version the default branch does not
+          # yet contain. publish-on-master.yml takes the draft public when the
+          # tagged commit lands on master, which is the moment the release is
+          # real. Everything that costs anything -- the gates, the reports, the
+          # attestation, the assets -- has already happened here, on the
+          # release branch, where it belongs.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::notice::release $TAG exists; uploading assets to it"
             gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$TAG" "${assets[@]}" \
+            gh release create "$TAG" "${assets[@]}" --draft \
               --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
           fi

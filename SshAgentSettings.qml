@@ -152,7 +152,11 @@ Column {
     color: panel.fg
   }
 
-  Row {
+  // A Flow, because which of these four are showing is decided by the routing
+  // state: the idle pair and the confirming pair are each narrow enough, but
+  // nothing in a Row enforces that, and a Row answers a set that is too wide by
+  // laying the last button out past the panel edge rather than wrapping it.
+  Flow {
     width: parent.width
     spacing: Style.space(8)
 

@@ -12,6 +12,7 @@ const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
   .replace(/^\.pragma library\s*$/m, "") + `
   exports.plainLabel = plainLabel
+  exports.clipLabel = clipLabel
 `)(Model)
 
 let pass = 0
@@ -71,13 +72,53 @@ for (const file of ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"
 const panel = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml", "FormPickerRow.qml", "StatusNotice.qml", "DetailField.qml", "WheelScroll.qml"]
   .map(file => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
   .join("\n")
-for (const binding of ["formFolderLabel()", "formOrgLabel()", 'modelData.name + ": " + modelData.value']) {
+for (const binding of ["formFolderLabel()", "formOrgLabel()", "Model.clipLabel(value, 20)",
+                       'name + " filter (" + shortcut + "): " + value']) {
   const line = panel.split("\n").find(l => l.includes(binding) && /^\s*(text|tooltipText):/.test(l))
   check(`the button label built from ${binding} goes through plainLabel`,
     Boolean(line) && line.includes("Model.plainLabel("), String(line))
 }
+
+// Order matters, and only one order is safe. plainLabel may return a <span>
+// wrapper, so clipping its output could cut a tag in half and hand the control
+// the markup the wrapper exists to prevent. Clip the raw value, then neutralize.
+const clipLine = panel.split("\n").find(l => l.includes("Model.clipLabel("))
+check("the vault value is clipped before it is neutralized, never after",
+  Boolean(clipLine)
+    && clipLine.indexOf("Model.plainLabel(") >= 0
+    && clipLine.indexOf("Model.plainLabel(") < clipLine.indexOf("Model.clipLabel(")
+    && !/Model\.clipLabel\(\s*Model\.plainLabel\(/.test(clipLine),
+  String(clipLine))
 check("the suggestion tooltip neutralizes the window title it quotes",
   /tooltipText: Model\.plainLabel\(\(pinned/.test(panel), "expected Model.plainLabel around the tooltip")
+
+// --- clipping vault text to a width the panel can hold ---
+// Ui.Button has no elide, so a folder name decides how wide a button is. The
+// clip is what keeps that decision ours; the ellipsis lives inside the budget,
+// so `max` is a real ceiling and not a suggestion.
+check("a value already within the budget is returned untouched",
+  Model.clipLabel("Work", 20) === "Work", Model.clipLabel("Work", 20))
+check("a value exactly at the budget is not clipped",
+  Model.clipLabel("12345678901234567890", 20) === "12345678901234567890",
+  Model.clipLabel("12345678901234567890", 20))
+check("a longer value is cut to the budget, ellipsis included",
+  Model.clipLabel("123456789012345678901", 20) === "12345678901234567...",
+  Model.clipLabel("123456789012345678901", 20))
+for (const [value, max] of [["Client Projects 2026", 20], ["x".repeat(400), 20],
+                            ["short", 4], ["abc", 2], ["abcd", 3]]) {
+  check(`clipLabel(${JSON.stringify(value).slice(0, 24)}, ${max}) never exceeds its budget`,
+    Model.clipLabel(value, max).length <= max, Model.clipLabel(value, max))
+}
+check("a missing or unusable value clips to the empty string, never to \"null\"",
+  Model.clipLabel(null, 20) === "" && Model.clipLabel(undefined, 20) === "",
+  JSON.stringify([Model.clipLabel(null, 20), Model.clipLabel(undefined, 20)]))
+check("a nonsense budget still returns something drawable",
+  Model.clipLabel("Work", 0).length > 0 && Model.clipLabel("Work", -5).length > 0,
+  JSON.stringify([Model.clipLabel("Work", 0), Model.clipLabel("Work", -5)]))
+// The clip runs on raw vault text, so it must not be what introduces markup.
+check("clipping cannot manufacture markup that plainLabel then has to catch",
+  Model.plainLabel(Model.clipLabel("<img src=x onerror=alert(1)>", 20)).indexOf("<img") < 0,
+  Model.plainLabel(Model.clipLabel("<img src=x onerror=alert(1)>", 20)))
 
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
