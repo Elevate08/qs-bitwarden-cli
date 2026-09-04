@@ -14,9 +14,11 @@ WheelHandler {
   id: root
 
   required property Flickable view
-  // Pixels per wheel notch. A notch is 120 eighths-of-a-degree; this is about
-  // three times what Qt would move on its own.
-  property real step: 120
+  // Pixels per wheel notch. A notch is 120 eighths-of-a-degree. Roughly twice
+  // what Qt would move on its own -- enough that a screenful is a couple of
+  // turns rather than half a dozen, and not so much that a notch overshoots
+  // the thing being scrolled to. One number, one place; every view reads it.
+  property real step: 90
 
   acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
 
