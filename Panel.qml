@@ -295,6 +295,10 @@ Panel {
   // The save currently in flight, or null. Holds what the list showed before
   // it, and the form that produced it, so a failure can put both back.
   property var pendingSave: null
+  // The delete currently in flight, or null. Holds the row it removed so a
+  // refusal can put it back.
+  property var pendingDelete: null
+
   // A save that came back refused. The list has been restored to what the
   // vault actually holds; this is what the user typed, kept so it can be
   // reopened rather than retyped.
@@ -4881,26 +4885,62 @@ Panel {
     refreshDerivedFromItems()
   }
 
+  // A delete costs the same second or two of `bw` a save does, and used to
+  // spend it on a frozen detail screen and then spend more of it re-reading
+  // the whole vault to learn about the one row that had gone. The row goes
+  // now and the panel comes back; if the vault refuses, the row returns.
   function deleteCurrentItem() {
     if (!detailItem || !detailItem.id || detailItem.typeCode === 5) return
     if (detailItem.pending || Model.isPendingItemId(detailItem.id)) {
       errorMessage = "Still saving this item -- one moment"
       return
     }
-    isLoading = true
+    if (pendingDelete) {
+      errorMessage = "Still deleting " + pendingDelete.name + " -- one moment"
+      return
+    }
+
+    var id = detailItem.id
+    pendingDelete = {
+      id: id,
+      name: String(detailItem.name || "this item"),
+      // The row as the list holds it, so a refusal can put it back exactly.
+      previous: Model.findItemById(items, id)
+    }
+
     beginVaultRead("itemDelete")
-    deleteItemProc.command = Model.deleteItemCommand(detailItem.id, detailItem.typeCode)
+    deleteItemProc.command = Model.deleteItemCommand(id, detailItem.typeCode)
     deleteItemProc.running = true
+
+    showDeleteConfirm = false
+    items = Model.replaceItemById(items, id, null)
+    itemsLoadedAt = Date.now()
+    refreshDerivedFromItems()
+    currentScreen = "main"
   }
 
   function onDeleteItemFinished(exitCode, stdoutText, stderrText) {
     isLoading = false
     showDeleteConfirm = false
+
+    var removal = pendingDelete
+    pendingDelete = null
     if (vaultReadIsStale("itemDelete")) return
+
     if (exitCode === 0) {
+      // The row is already gone and nothing else about the vault changed, so
+      // there is nothing left to read.
       flashNotification("Item deleted")
-      currentScreen = "main"
-      loadItems()
+      return
+    }
+
+    // Still in the vault, so it belongs back in the list. Nothing was typed
+    // here, so putting the row back is the whole of the recovery.
+    if (removal && removal.previous) {
+      items = Model.replaceItemById(items, removal.id, removal.previous)
+      itemsLoadedAt = Date.now()
+      refreshDerivedFromItems()
+      errorMessage = "Could not delete " + removal.name + ". " + (stderrText || "")
     } else {
       errorMessage = stderrText || "Failed to delete item"
     }
@@ -6956,6 +6996,8 @@ Panel {
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+          WheelScroll { view: sendFlick }
+
           Column {
             id: sendCol
             width: sendFlick.width
@@ -7282,6 +7324,8 @@ Panel {
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+          WheelScroll { view: fpFlick }
+
           Column {
             id: fpCol
             width: fpFlick.width
@@ -7395,6 +7439,8 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          WheelScroll { view: genFlick }
 
           Column {
             id: genCol
@@ -7769,6 +7815,8 @@ Panel {
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+          WheelScroll { view: pinFlick }
+
           Column {
             id: pinCol
             width: pinFlick.width
@@ -7916,6 +7964,8 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          WheelScroll { view: setupFlick }
 
           Column {
             id: setupCol
@@ -8111,6 +8161,8 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          WheelScroll { view: settingsFlick }
 
           Column {
             id: settingsCol
@@ -9339,6 +9391,8 @@ Panel {
               currentIndex: root.selectedIndex
               ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+              WheelScroll { view: itemsListView }
+
               delegate: BorderSurface {
                 id: itemRow
                 required property var modelData
@@ -9378,13 +9432,20 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.title
                     width: Style.space(20)
+                    // The glyph is narrower than the column it sits in, so
+                    // without centring it the spin happens about the middle of
+                    // the box and the icon orbits that point instead of
+                    // turning on its own axis. Same shape the kit's own
+                    // spinning button icon uses.
+                    horizontalAlignment: Text.AlignHCenter
+                    transformOrigin: Item.Center
 
-                    RotationAnimator on rotation {
+                    RotationAnimation on rotation {
                       running: Boolean(itemData.pending)
                       loops: Animation.Infinite
                       from: 0
                       to: 360
-                      duration: 1200
+                      duration: 900
                     }
                   }
 
@@ -9666,6 +9727,8 @@ Panel {
               flickableDirection: Flickable.VerticalFlick
               ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+              WheelScroll { view: filterOptionsList }
+
               // Keep the keyboard cursor in view when it runs past the fold.
               function revealCursor() {
                 var y = root.filterOptionIndex * root.filterRowHeight
@@ -9902,6 +9965,8 @@ Panel {
             boundsBehavior: Flickable.StopAtBounds
             flickableDirection: Flickable.VerticalFlick
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            WheelScroll { view: detailFlickable }
 
             Column {
               id: detailContentColumn
@@ -10613,6 +10678,8 @@ Panel {
             flickableDirection: Flickable.VerticalFlick
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+            WheelScroll { view: editFlickable }
+
             Column {
               id: editFormCol
               width: editFlickable.width
@@ -10704,6 +10771,8 @@ Panel {
                   flickableDirection: Flickable.VerticalFlick
                   ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+                  WheelScroll { view: folderPickList }
+
                   Column {
                     id: folderPickCol
                     width: folderPickList.width
@@ -10792,6 +10861,8 @@ Panel {
                   flickableDirection: Flickable.VerticalFlick
                   ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+                  WheelScroll { view: orgPickList }
+
                   Column {
                     id: orgPickCol
                     width: orgPickList.width
@@ -10866,6 +10937,8 @@ Panel {
                     boundsBehavior: Flickable.StopAtBounds
                     flickableDirection: Flickable.VerticalFlick
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    WheelScroll { view: collectionList }
 
                     Column {
                       id: collectionCol
@@ -11311,10 +11384,26 @@ Panel {
                 }
               }
 
+              // Enter saves from anywhere in the form, so a long item does not
+              // have to be scrolled to the bottom to be committed.
+              //
+              // A Shortcut rather than `onAccepted` on each field: there are
+              // more than thirty of them and the next one added would silently
+              // not save. It is scoped tightly instead -- only on this screen,
+              // and not while a picker is open, where Enter belongs to the
+              // list being picked from.
+              Shortcut {
+                sequences: ["Return", "Enter"]
+                enabled: root.activeScreen === "edit" && root.formPicker === ""
+                onActivated: root.saveItemForm()
+              }
+
               // Save Action Button
               Button {
                 width: parent.width
-                text: root.isLoading ? "Saving..." : (root.formIsEditing ? "Save Changes" : "Create Item")
+                text: root.isLoading
+                  ? "Saving..."
+                  : (root.formIsEditing ? "Save Changes (Enter)" : "Create Item (Enter)")
                 iconText: root.isLoading ? "󰑐" : "󰄬"
                 iconSpinning: root.isLoading
                 selected: true
