@@ -185,22 +185,22 @@ would otherwise reach for. Checked against Bitwarden's documentation on
 
 | | This plugin | Bitwarden CLI | Bitwarden Desktop |
 | :--- | :---: | :---: | :---: |
-| **Lives in the Omarchy bar** | yes | no | no |
-| View logins, notes, cards, identities | yes | yes | yes |
-| Create / edit logins, notes, cards, identities | yes | yes[^cli-json] | yes |
-| View SSH key items | yes | yes | yes |
-| Create / import SSH keys | no[^adr] | no | yes[^ssh-clients] |
-| **SSH agent** | yes | no[^ssh-desktop] | yes |
-| TOTP codes | yes, auto-copy | yes | yes |
-| Attachments | yes | yes | yes |
-| Bitwarden Send | yes | yes | yes |
-| Folders, collections, organizations | yes | yes | yes |
-| Password / passphrase generator | yes | yes | yes |
-| **Unlock with PIN** | yes | no[^pin] | yes |
-| **Unlock with fingerprint** | yes[^fp] | no[^bio] | yes[^bio-linux] |
-| Auto-lock on idle, screen lock, suspend | yes | no[^cli-lock] | yes[^desk-lock] |
-| **Suggests by focused window / browser tab** | yes | no | no |
-| Self-hosted and Vaultwarden | yes | yes | yes |
+| **Lives in the Omarchy bar** | ✅ | ❌ | ❌ |
+| View logins, notes, cards, identities | ✅ | ✅ | ✅ |
+| Create / edit logins, notes, cards, identities | ✅ | ✅ [^cli-json] | ✅ |
+| View SSH key items | ✅ | ✅ | ✅ |
+| Create / import SSH keys | ❌ [^adr] | ❌ | ✅ [^ssh-clients] |
+| **SSH agent** | ✅ | ❌ [^ssh-desktop] | ✅ |
+| TOTP codes, auto-copied after the password [^totp] | ✅ | ❌ | ❌ |
+| Attachments | ✅ | ✅ | ✅ |
+| Bitwarden Send | ✅ | ✅ | ✅ |
+| Folders, collections, organizations | ✅ | ✅ | ✅ |
+| Password / passphrase generator | ✅ | ✅ | ✅ |
+| **Unlock with PIN** | ✅ | ❌ [^pin] | ✅ |
+| **Unlock with fingerprint** | ✅ [^fp] | ❌ [^bio] | ✅ [^bio-linux] |
+| Auto-lock on idle, screen lock, suspend | ✅ | ❌ [^cli-lock] | ✅ [^desk-lock] |
+| **Suggests by focused window / browser tab** | ✅ | ❌ | ❌ |
+| Self-hosted and Vaultwarden | ✅ | ✅ | ✅ |
 
 [^cli-json]: The CLI creates a login by default; other types need the JSON
     edited before encoding, as its documentation describes -- "use a
@@ -222,6 +222,10 @@ would otherwise reach for. Checked against Bitwarden's documentation on
     and mobile apps -- not the CLI.
 [^bio-linux]: On Linux the desktop app's biometric unlock goes through a polkit
     agent rather than a fingerprint reader directly.
+[^totp]: All three read TOTP codes -- `bw get totp` on the CLI. The check
+    here is for the follow-up: <kbd>Enter</kbd> copies the password and then
+    replaces it with the live code a few seconds later, so a login and its
+    second factor are one keystroke apart.
 [^cli-lock]: The CLI has `bw lock`, but no timeout of its own -- a session key
     stays valid until something locks it.
 [^desk-lock]: The desktop app offers time passed, on system idle, on system
