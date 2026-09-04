@@ -68,6 +68,31 @@ shot() { # shot <name>
   else rm -f "$OUT/.raw.png"; fi
 }
 
+# open_detail <search text>
+#
+# Narrows the list to one item and opens it. Typing the name is steadier than
+# counting Down presses: the list is sorted favourites-first and then by name,
+# so an added fixture would silently shift every offset.
+#
+# The Down is what hands focus back from the search field to the key catcher --
+# with one result it clamps to the only row -- and `e` on the list opens the
+# detail. (`e` again, on the detail, opens the form.)
+open_detail() {
+  wtype "/" 2>/dev/null; sleep 1
+  wtype "$1" 2>/dev/null; sleep 2
+  wtype -k Down 2>/dev/null; sleep 1
+  wtype "e" 2>/dev/null; sleep 2
+}
+
+# Back to an empty list from wherever open_detail left us.
+clear_search() {
+  wtype -k Escape 2>/dev/null; sleep 1
+  wtype "/" 2>/dev/null; sleep 1
+  wtype -M ctrl -k a -m ctrl 2>/dev/null
+  wtype -k BackSpace 2>/dev/null; sleep 1
+  wtype -k Down 2>/dev/null; sleep 1
+}
+
 # --- SSH signing approval ---------------------------------------------------
 #
 # The approval screen exists only while a real signing request is waiting, so
@@ -88,7 +113,7 @@ capture_ssh_approval() {
   while [ ! -S "$sock" ] || [ ! -f "$pub" ]; do
     sleep 1; waited=$((waited + 1))
     if [ "$waited" -ge 30 ]; then
-      echo "  skipped 07-ssh-approval: no agent socket or projected key after ${waited}s" >&2
+      echo "  skipped 14-ssh-approval: no agent socket or projected key after ${waited}s" >&2
       echo "  (is 'Act as your SSH agent' enabled in shell.json?)" >&2
       return 0
     fi
@@ -100,7 +125,7 @@ capture_ssh_approval() {
   SSH_AUTH_SOCK="$sock" ssh-add -T "$pub" >/dev/null 2>&1 &
   local asker=$!
   sleep "${QSBW_SSH_SETTLE:-4}"
-  shot 07-ssh-approval
+  shot 14-ssh-approval
   # Deny it. Escape is the approval screen's own deny, so nothing is signed.
   wtype -k Escape 2>/dev/null; sleep 1
   wait "$asker" 2>/dev/null || true
@@ -122,7 +147,16 @@ fi
 
 start_shell unauthenticated
 "${IPC[@]}" open >/dev/null 2>&1; sleep 4
-shot 06-login
+shot 12-login
+"${IPC[@]}" setup >/dev/null 2>&1; sleep 3
+shot 13-setup
+"${IPC[@]}" close >/dev/null 2>&1 || true
+
+# --- locked -----------------------------------------------------------------
+
+start_shell locked
+"${IPC[@]}" open >/dev/null 2>&1; sleep 4
+shot 11-locked
 "${IPC[@]}" close >/dev/null 2>&1 || true
 
 # --- unlocked, populated vault ----------------------------------------------
@@ -131,20 +165,42 @@ start_shell unlocked
 "${IPC[@]}" open >/dev/null 2>&1; sleep 4
 shot 01-vault-list
 
+# One of each item type the panel draws differently. A login has credentials
+# and a TOTP; a card and an identity have the field blocks added in 1.7.0, and
+# an identity is the one that shows the address as a single copyable block.
+open_detail "GitHub"
+shot 02-login-detail
+wtype "e" 2>/dev/null; sleep 2
+shot 03-edit-item
+wtype -k Escape 2>/dev/null; sleep 1
+clear_search
+
+open_detail "Demo Card"
+shot 04-card-detail
+clear_search
+
+open_detail "Dana Demo"
+shot 05-identity-detail
+clear_search
+
 wtype "f" 2>/dev/null; sleep 2
-shot 02-folder-drawer
+shot 06-folder-drawer
+wtype -k Escape 2>/dev/null; sleep 1
+
+wtype "t" 2>/dev/null; sleep 2
+shot 07-type-filter
 wtype -k Escape 2>/dev/null; sleep 1
 
 wtype "g" 2>/dev/null; sleep 5
-shot 03-generator
+shot 08-generator
 wtype -k Escape 2>/dev/null; sleep 1
 
 wtype -M alt -k s -m alt 2>/dev/null; sleep 3
-shot 04-sends
+shot 09-sends
 wtype -k Escape 2>/dev/null; sleep 1
 
 wtype -M alt -k comma -m alt 2>/dev/null; sleep 3
-shot 05-settings
+shot 10-settings
 
 "${IPC[@]}" close >/dev/null 2>&1 || true
 

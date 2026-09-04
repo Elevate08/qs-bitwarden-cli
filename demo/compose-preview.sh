@@ -71,13 +71,16 @@ TITLE_SIZE=96
 # Three columns, top to bottom. The vault list carries the folder drawer
 # because that shot shows both at once; the plain list would be redundant
 # beside it.
-# Grouped to keep the three columns near the same height -- the page is as
-# tall as its tallest column, and an unbalanced one leaves a corner of empty
-# black. Sends is short, so it pairs with the tall drawer; the approval screen
-# pairs with settings.
-COL1=(06-login 03-generator)
-COL2=(02-folder-drawer 04-sends)
-COL3=(05-settings 07-ssh-approval)
+# A selection, not the whole set. capture.sh takes a shot of every screen so
+# the documentation has one; this picks the handful that say what the plugin
+# is at a glance, and leaves out the ones that look like every other panel's
+# equivalent (login, setup, locked, the filter drawers).
+#
+# Grouped to keep the three columns near the same height -- the page is as tall
+# as its tallest column, and an unbalanced one leaves a corner of empty black.
+COL1=(01-vault-list 08-generator)
+COL2=(04-card-detail 09-sends)
+COL3=(10-settings 14-ssh-approval)
 
 # Not `magick ... | grep -q`: grep exits on the first match, magick takes a
 # SIGPIPE for it, and `set -o pipefail` reports the successful match as a
