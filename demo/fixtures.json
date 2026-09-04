@@ -210,12 +210,27 @@
       "organizationId": null,
       "folderId": null,
       "type": 4,
-      "name": "Demo Identity",
+      "name": "Dana Demo",
       "favorite": false,
       "identity": {
+        "title": "Ms",
         "firstName": "Dana",
+        "middleName": "R",
         "lastName": "Demo",
-        "email": "demo@example.com"
+        "username": "danademo",
+        "company": "Example Industries",
+        "email": "demo@example.com",
+        "phone": "+1 555 0100",
+        "ssn": "000-00-0000",
+        "passportNumber": "X1234567",
+        "licenseNumber": "D-0000-0000",
+        "address1": "1 Example Way",
+        "address2": "Suite 200",
+        "address3": "",
+        "city": "Springfield",
+        "state": "IL",
+        "postalCode": "62701",
+        "country": "US"
       }
     },
     {

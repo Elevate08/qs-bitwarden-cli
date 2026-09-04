@@ -807,9 +807,10 @@ to the final release job and require review for security-sensitive paths.
 - [x] Environment configured: `release`, required reviewer `@Elevate08`
       (self-review permitted -- single maintainer), deployments restricted to
       `v*` tags. Confirmed through the API after creation.
-- [ ] Workflow passes: execute a protected test tag/release in a staging target.
-      The publishing half is still unrun -- a tag publishes to a public
-      repository, so it is the maintainer's to push. Everything before it has
+- [x] Workflow passes: execute a protected test tag/release in a staging target.
+      Done for real rather than in staging: v1.5.0 and v1.6.0 were both cut
+      through this workflow and published with their full asset set. Everything
+      before it has
       now run on real CI twice, via a temporary branch trigger that was
       reverted immediately afterwards (`e696fb1` and its revert):
       gates, tag/manifest/changelog agreement, checksum and ELF checks, the
@@ -823,8 +824,9 @@ to the final release job and require review for security-sensitive paths.
       stage shared `agent-build.yml`'s concurrency group, letting a branch
       build and a release cancel each other. Both are fixed and both now have
       a test.
-- [ ] Provenance verifies: `gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent --repo Elevate08/qs-bitwarden-cli`
-      Waits on the first protected tag run: nothing has been attested yet.
+- [x] Provenance verifies: `gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent --repo Elevate08/qs-bitwarden-cli`
+      Passes against the tracked helper as of 2026-09-03. The first protected
+      tag run this was waiting on happened at v1.5.0.
 - [x] Manual check: audit permissions, environment protection, attestation
       subject/digest, SBOM, reports, and retention settings. Permissions and
       environment protection are audited by the tests above; the attestation
@@ -845,7 +847,10 @@ to the final release job and require review for security-sensitive paths.
 ## Checkpoint: Shippable Artifact (Tasks 18–19)
 
 - [x] Tracked bytes equal the protected clean build and pass native validation.
-- [ ] Provenance, checksum, SBOM, license, and permission checks pass.
+- [x] Provenance, checksum, SBOM, license, and permission checks pass. The
+      v1.6.0 release carries all of them: `SHA256SUMS`, the CycloneDX SBOM,
+      `dependency-licences.json`, `dependency-tree.txt`, and separated debug
+      symbols, alongside a verifying attestation.
 - [x] Human release-governance review approves the trust path.
 
 ## Task 20: Complete release documentation

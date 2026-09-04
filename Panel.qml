@@ -203,7 +203,72 @@ Panel {
   // Selected item detail
   property var detailItem: null
   property string detailPassword: ""
-  property bool passwordRevealed: false
+  // Which sensitive fields on the open item are currently shown, by field key.
+  //
+  // One flag used to serve all of them, which was invisible while a login had
+  // exactly one secret to hide. A card has two and an identity three, and
+  // revealing a card number also uncovered its security code -- and, on an
+  // identity, the social security, passport and licence numbers at once. The
+  // eye on each field now speaks only for that field.
+  property var revealedFields: ({})
+
+  function isFieldRevealed(key) { return Boolean(revealedFields[key]) }
+
+  function toggleFieldReveal(key) {
+    var next = {}
+    for (var k in revealedFields) next[k] = revealedFields[k]
+    if (next[key]) delete next[key]
+    else next[key] = true
+    revealedFields = next
+  }
+
+  // What `v` reaches: the one secret the open item is mostly about. A card has
+  // a number, a login has a password. An identity has three identifiers and no
+  // principal one, so `v` leaves it alone rather than picking arbitrarily --
+  // each field carries its own eye.
+  readonly property string primaryRevealKey:
+    detailIsCard ? "cardNumber" : (detailIsLoginLike ? "password" : "")
+
+  // Which detail blocks the open item is entitled to. The login fields --
+  // username, password, TOTP, website -- used to be gated on "not an SSH
+  // key", which was the same question while logins and notes were the only
+  // other types. A card answers "not an SSH key" too, and would have drawn
+  // an empty password row under its number.
+  readonly property int detailTypeCode: detailItem ? Number(detailItem.typeCode || 1) : 1
+  readonly property bool detailIsLoginLike: detailTypeCode === 1 || detailTypeCode === 2
+  readonly property bool detailIsCard: detailTypeCode === 3
+  readonly property bool detailIsIdentity: detailTypeCode === 4
+
+  readonly property var detailCard: detailItem ? (detailItem.card || null) : null
+  readonly property var detailIdentity: detailItem ? (detailItem.identity || null) : null
+
+  // Expiry reads as one value, so it is composed once here rather than in the
+  // binding that draws it. A card with only one half filled in shows that
+  // half rather than a stray slash.
+  readonly property string detailCardExpiry: {
+    if (!detailCard) return ""
+    var m = String(detailCard.expMonth || "").trim()
+    var y = String(detailCard.expYear || "").trim()
+    if (m && y) return m + " / " + y
+    return m || y
+  }
+
+  readonly property string detailIdentityName: detailIdentity ? Model.identityFullName(detailIdentity) : ""
+
+  // The postal parts, in the order an envelope wants them, with the empty
+  // lines left out instead of drawn as blanks.
+  readonly property string detailIdentityAddress: {
+    if (!detailIdentity) return ""
+    var street = [detailIdentity.address1, detailIdentity.address2, detailIdentity.address3]
+      .map(function(part) { return String(part || "").trim() })
+      .filter(function(part) { return part !== "" })
+    var locality = [detailIdentity.city, detailIdentity.state, detailIdentity.postalCode]
+      .map(function(part) { return String(part || "").trim() })
+      .filter(function(part) { return part !== "" })
+      .join(" ")
+    var country = String(detailIdentity.country || "").trim()
+    return street.concat(locality ? [locality] : []).concat(country ? [country] : []).join("\n")
+  }
   property string liveTotp: ""
   property int totpSecRemaining: 30
   property string totpRequestItemId: ""
@@ -227,6 +292,18 @@ Panel {
   property string totpFollowupCode: ""
   property bool totpFollowupActive: false
 
+  // The save currently in flight, or null. Holds what the list showed before
+  // it, and the form that produced it, so a failure can put both back.
+  property var pendingSave: null
+  // The delete currently in flight, or null. Holds the row it removed so a
+  // refusal can put it back.
+  property var pendingDelete: null
+
+  // A save that came back refused. The list has been restored to what the
+  // vault actually holds; this is what the user typed, kept so it can be
+  // reopened rather than retyped.
+  property var failedSave: null
+
   // Add / Edit Form State
   property bool formIsEditing: false
   property string formItemId: ""
@@ -241,6 +318,36 @@ Panel {
   property string formOrgId: ""
   property bool formPasswordRevealed: false
   property bool showDeleteConfirm: false
+
+  // Card and identity boxes. Flat strings rather than one object per type,
+  // because that is what every other field on this form is and what the
+  // TextField two-way binding above expects; formTypeFields() gathers them
+  // back into the shape the payload builders want.
+  property string formCardholderName: ""
+  property string formCardBrand: ""
+  property string formCardNumber: ""
+  property string formCardExpMonth: ""
+  property string formCardExpYear: ""
+  property string formCardCode: ""
+
+  property string formIdTitle: ""
+  property string formIdFirstName: ""
+  property string formIdMiddleName: ""
+  property string formIdLastName: ""
+  property string formIdUsername: ""
+  property string formIdCompany: ""
+  property string formIdEmail: ""
+  property string formIdPhone: ""
+  property string formIdSsn: ""
+  property string formIdPassport: ""
+  property string formIdLicense: ""
+  property string formIdAddress1: ""
+  property string formIdAddress2: ""
+  property string formIdAddress3: ""
+  property string formIdCity: ""
+  property string formIdState: ""
+  property string formIdPostalCode: ""
+  property string formIdCountry: ""
 
   // When the current auto-lock window started, in wall-clock terms, so a
   // suspend cannot hide from the countdown. See the autoLockWatchdog Timer.
@@ -1302,7 +1409,7 @@ Panel {
   function open() {
     errorMessage = ""
     flashMessage = ""
-    passwordRevealed = false
+    revealedFields = ({})
     cursorActive = true
     showDeleteConfirm = false
     totpFollowupActive = false
@@ -1321,7 +1428,7 @@ Panel {
 
   function close() {
     errorMessage = ""
-    passwordRevealed = false
+    revealedFields = ({})
     showDeleteConfirm = false
     totpFollowupActive = false
     isUnlocking = false
@@ -3594,11 +3701,12 @@ Panel {
     selectedCategory = "all"
     selectedIndex = 0
     detailItem = null
-    passwordRevealed = false
+    revealedFields = ({})
     attachmentSaved = ({})
     formIsEditing = false
     formItemId = ""
     formTypeCode = 1
+    clearTypeFields()
     formName = ""
     formUsername = ""
     formUri = ""
@@ -3855,11 +3963,7 @@ Panel {
     sshCapability = Model.inspectSanitizedVault(rawJson)
     items = Model.parseSanitizedItems(rawJson)
     itemsLoadedAt = Date.now()
-    if (activeWindowData) {
-      handleActiveWindowDetected(activeWindowData)
-    } else {
-      rebuildFilter()
-    }
+    refreshDerivedFromItems()
     if (syncReloadPending) {
       syncReloadPending = false
       isSyncing = false
@@ -4249,7 +4353,7 @@ Panel {
     learnFromPick(item)
     isLoading = true
     errorMessage = ""
-    passwordRevealed = false
+    revealedFields = ({})
     showDeleteConfirm = false
     detailItem = null
     detailPassword = ""
@@ -4476,11 +4580,86 @@ Panel {
   // CRUD Operations (Add, Edit, Delete)
   // -------------------------------------------------------------------------
 
+  // The card or identity boxes, in the shape buildCreatePayload and
+  // buildEditPayload want. Returns null for a login or a note, and null is
+  // exactly what tells buildEditPayload to leave an existing sub-object alone.
+  function formTypeFields() {
+    if (formTypeCode === 3) {
+      return {
+        cardholderName: formCardholderName, brand: formCardBrand,
+        number: formCardNumber, expMonth: formCardExpMonth,
+        expYear: formCardExpYear, code: formCardCode
+      }
+    }
+    if (formTypeCode === 4) {
+      return {
+        title: formIdTitle, firstName: formIdFirstName,
+        middleName: formIdMiddleName, lastName: formIdLastName,
+        username: formIdUsername, company: formIdCompany,
+        email: formIdEmail, phone: formIdPhone, ssn: formIdSsn,
+        passportNumber: formIdPassport, licenseNumber: formIdLicense,
+        address1: formIdAddress1, address2: formIdAddress2,
+        address3: formIdAddress3, city: formIdCity, state: formIdState,
+        postalCode: formIdPostalCode, country: formIdCountry
+      }
+    }
+    return null
+  }
+
+  // Every card and identity box, emptied. Called wherever the form resets so
+  // a new item never opens wearing the last one's card number.
+  function clearTypeFields() {
+    formCardholderName = ""; formCardBrand = ""; formCardNumber = ""
+    formCardExpMonth = ""; formCardExpYear = ""; formCardCode = ""
+    formIdTitle = ""; formIdFirstName = ""; formIdMiddleName = ""
+    formIdLastName = ""; formIdUsername = ""; formIdCompany = ""
+    formIdEmail = ""; formIdPhone = ""; formIdSsn = ""
+    formIdPassport = ""; formIdLicense = ""; formIdAddress1 = ""
+    formIdAddress2 = ""; formIdAddress3 = ""; formIdCity = ""
+    formIdState = ""; formIdPostalCode = ""; formIdCountry = ""
+  }
+
+  function loadTypeFields(item) {
+    clearTypeFields()
+    if (!item) return
+    var c = item.card || null
+    if (c) {
+      formCardholderName = String(c.cardholderName || "")
+      formCardBrand = String(c.brand || "")
+      formCardNumber = String(c.number || "")
+      formCardExpMonth = String(c.expMonth || "")
+      formCardExpYear = String(c.expYear || "")
+      formCardCode = String(c.code || "")
+    }
+    var d = item.identity || null
+    if (d) {
+      formIdTitle = String(d.title || "")
+      formIdFirstName = String(d.firstName || "")
+      formIdMiddleName = String(d.middleName || "")
+      formIdLastName = String(d.lastName || "")
+      formIdUsername = String(d.username || "")
+      formIdCompany = String(d.company || "")
+      formIdEmail = String(d.email || "")
+      formIdPhone = String(d.phone || "")
+      formIdSsn = String(d.ssn || "")
+      formIdPassport = String(d.passportNumber || "")
+      formIdLicense = String(d.licenseNumber || "")
+      formIdAddress1 = String(d.address1 || "")
+      formIdAddress2 = String(d.address2 || "")
+      formIdAddress3 = String(d.address3 || "")
+      formIdCity = String(d.city || "")
+      formIdState = String(d.state || "")
+      formIdPostalCode = String(d.postalCode || "")
+      formIdCountry = String(d.country || "")
+    }
+  }
+
   function startAddNewItem() {
     closeFilterGroup()
     formIsEditing = false
     formItemId = ""
     formTypeCode = 1
+    clearTypeFields()
     formName = ""
     formUsername = ""
     formPassword = ""
@@ -4500,9 +4679,60 @@ Panel {
     currentScreen = "edit"
   }
 
+  // The item form as one object, so a save that fails can be reopened exactly
+  // as it was rather than costing the user everything they typed.
+  function captureItemForm() {
+    return {
+      isEditing: formIsEditing, itemId: formItemId, typeCode: formTypeCode,
+      name: formName, username: formUsername, password: formPassword,
+      totp: formTotp, uri: formUri, notes: formNotes, favorite: formFavorite,
+      orgId: formOrgId, folderId: formFolderId,
+      collectionIds: (formCollectionIds || []).slice(),
+      typeFields: formTypeFields()
+    }
+  }
+
+  function restoreItemForm(f) {
+    if (!f) return
+    formIsEditing = f.isEditing
+    formItemId = f.itemId
+    formTypeCode = f.typeCode
+    formName = f.name
+    formUsername = f.username
+    formPassword = f.password
+    formTotp = f.totp
+    formUri = f.uri
+    formNotes = f.notes
+    formFavorite = f.favorite
+    formOrgId = f.orgId
+    formFolderId = f.folderId
+    formCollectionIds = (f.collectionIds || []).slice()
+    loadTypeFields({ card: f.typeCode === 3 ? f.typeFields : null,
+                     identity: f.typeCode === 4 ? f.typeFields : null })
+    formPicker = ""
+    formPasswordRevealed = false
+    if (formOrgId && formOrgId !== "personal") loadOrgCollections(formOrgId)
+    currentScreen = "edit"
+  }
+
+  // Reopens the form a refused save was made from.
+  function reopenFailedSave() {
+    if (!failedSave) return
+    var f = failedSave.form
+    failedSave = null
+    errorMessage = ""
+    restoreItemForm(f)
+  }
+
   function startEditItem(item) {
     if (!item || item.typeCode === 5) {
       if (item && item.typeCode === 5) errorMessage = "SSH keys are read-only public records"
+      return
+    }
+    // The vault has not answered about this row yet, and on a create it does
+    // not have an id to edit. Editing it would race the save it is waiting on.
+    if (item.pending) {
+      errorMessage = "Still saving this item -- one moment"
       return
     }
     formIsEditing = true
@@ -4523,13 +4753,31 @@ Panel {
     // Editing keeps whatever collections the item already has until changed.
     formCollectionIds = (item.rawObject && item.rawObject.collectionIds)
       ? item.rawObject.collectionIds.slice() : []
+    // The list row carries the parsed card and identity, so an edit opens with
+    // the real values in the boxes rather than blanks that would be written
+    // straight back over them on save.
+    loadTypeFields(item)
     if (formOrgId && formOrgId !== "personal") loadOrgCollections(formOrgId)
     formPasswordRevealed = false
     errorMessage = ""
     currentScreen = "edit"
   }
 
+  // A save takes as long as `bw` takes -- a second or two of CLI startup, vault
+  // decryption and a round trip, none of which this plugin can shorten. What it
+  // can do is stop making the user watch. The form closes as soon as the
+  // command is launched and the list shows the item as it will be, marked as
+  // saving, and the authoritative row replaces it when the vault answers.
+  //
+  // One at a time. There is a single process per kind, and starting a second
+  // command on a running one would lose the first; a save while one is in
+  // flight is refused with a reason rather than silently dropped.
   function saveItemForm() {
+    if (pendingSave) {
+      errorMessage = "Still saving " + pendingSave.name + " -- one moment"
+      return
+    }
+
     // Bitwarden refuses an organization item with no collection; say so here
     // rather than letting the CLI fail after the form is gone.
     var problem = Model.validateItemForm(formName, formOrgId, formCollectionIds)
@@ -4538,23 +4786,50 @@ Panel {
       return
     }
 
+    var editing = formIsEditing
+    var payload = editing
+      ? Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
+      : Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
+    if (!payload) {
+      errorMessage = editing ? "This item is read-only" : "This item type is read-only"
+      return
+    }
+
     errorMessage = ""
-    isLoading = true
     beginVaultRead("itemSave")
 
-    if (formIsEditing) {
-      var editPayload = Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
-      if (!editPayload) { isLoading = false; errorMessage = "This item is read-only"; return }
-      itemPayloadJson = JSON.stringify(editPayload)
+    // An edit keeps the item's id; a create has none until the server assigns
+    // one, so the row carries a provisional id the response swaps out.
+    var rowId = editing ? formItemId : Model.pendingItemId(Date.now())
+    var optimistic = Model.optimisticItem(payload, rowId)
+
+    pendingSave = {
+      id: rowId,
+      isCreate: !editing,
+      name: String(formName || "Untitled").trim(),
+      // What the list held before, so a failed save can put it back rather
+      // than leaving the panel showing something the vault never accepted.
+      previous: editing ? Model.findItemById(items, rowId) : null,
+      // The form as it was, so a failed save can be reopened and retried
+      // instead of costing the user everything they typed.
+      form: captureItemForm()
+    }
+
+    itemPayloadJson = JSON.stringify(payload)
+    if (editing) {
       editItemProc.command = Model.editItemCommand(formItemId, formTypeCode)
       editItemProc.running = true
     } else {
-      var createPayload = Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds)
-      if (!createPayload) { isLoading = false; errorMessage = "This item type is read-only"; return }
-      itemPayloadJson = JSON.stringify(createPayload)
-      createItemProc.command = Model.createItemCommand(createPayload)
+      createItemProc.command = Model.createItemCommand(payload)
       createItemProc.running = true
     }
+
+    if (optimistic) {
+      items = Model.replaceItemById(items, rowId, optimistic)
+      itemsLoadedAt = Date.now()
+      refreshDerivedFromItems()
+    }
+    currentScreen = "main"
   }
 
   function onSaveItemFinished(exitCode, stdoutText, stderrText) {
@@ -4563,32 +4838,109 @@ Panel {
     // Send payload does, so it goes the same way the Send one does: as soon as
     // the process that needed it has exited.
     itemPayloadJson = ""
+
+    var save = pendingSave
+    pendingSave = null
     if (vaultReadIsStale("itemSave")) return
-    if (exitCode === 0) {
-      flashNotification(formIsEditing ? "Item updated successfully!" : "Item created successfully!")
-      currentScreen = "main"
-      loadItems()
-    } else {
-      errorMessage = stderrText || "Failed to save item"
+
+    if (exitCode !== 0) {
+      // The vault refused it, so the list must stop showing it as though it
+      // had not. The optimistic row is taken back out -- replaced by what was
+      // there before on an edit, removed entirely on a create -- and what the
+      // user typed is kept so they can reopen it instead of retyping it.
+      if (save) {
+        items = Model.replaceItemById(items, save.id, save.previous)
+        itemsLoadedAt = Date.now()
+        refreshDerivedFromItems()
+        failedSave = { name: save.name, form: save.form }
+        errorMessage = "Could not save " + save.name + ". " + (stderrText || "")
+      } else {
+        errorMessage = stderrText || "Failed to save item"
+      }
+      return
     }
+
+    flashNotification(save && save.isCreate ? "Item created successfully!" : "Item updated successfully!")
+
+    // The save printed the item the vault now holds, so the list can be
+    // brought up to date from that instead of re-reading and re-decrypting
+    // every other item to learn about this one. On a create the row being
+    // replaced is the provisional one, whose id the server has just assigned.
+    //
+    // Any doubt falls back to the full read. The command prints a marker when
+    // the item was stored but could not be sanitised, and spliceSavedItem
+    // returns null on an envelope it does not recognise; in both cases the
+    // item is in the vault and the list simply has to catch up the slow way.
+    // A list that quietly disagrees with the vault is worse than a slow one.
+    var spliced = String(stdoutText).indexOf(Model.savedUnsanitizedMarker()) === 0
+      ? null : Model.spliceSavedItem(items, stdoutText, save ? save.id : "")
+    if (!spliced) {
+      // A provisional row must never survive a reload it is not part of.
+      if (save && save.isCreate) items = Model.replaceItemById(items, save.id, null)
+      loadItems()
+      return
+    }
+    items = spliced
+    itemsLoadedAt = Date.now()
+    refreshDerivedFromItems()
   }
 
+  // A delete costs the same second or two of `bw` a save does, and used to
+  // spend it on a frozen detail screen and then spend more of it re-reading
+  // the whole vault to learn about the one row that had gone. The row goes
+  // now and the panel comes back; if the vault refuses, the row returns.
   function deleteCurrentItem() {
     if (!detailItem || !detailItem.id || detailItem.typeCode === 5) return
-    isLoading = true
+    if (detailItem.pending || Model.isPendingItemId(detailItem.id)) {
+      errorMessage = "Still saving this item -- one moment"
+      return
+    }
+    if (pendingDelete) {
+      errorMessage = "Still deleting " + pendingDelete.name + " -- one moment"
+      return
+    }
+
+    var id = detailItem.id
+    pendingDelete = {
+      id: id,
+      name: String(detailItem.name || "this item"),
+      // The row as the list holds it, so a refusal can put it back exactly.
+      previous: Model.findItemById(items, id)
+    }
+
     beginVaultRead("itemDelete")
-    deleteItemProc.command = Model.deleteItemCommand(detailItem.id, detailItem.typeCode)
+    deleteItemProc.command = Model.deleteItemCommand(id, detailItem.typeCode)
     deleteItemProc.running = true
+
+    showDeleteConfirm = false
+    items = Model.replaceItemById(items, id, null)
+    itemsLoadedAt = Date.now()
+    refreshDerivedFromItems()
+    currentScreen = "main"
   }
 
   function onDeleteItemFinished(exitCode, stdoutText, stderrText) {
     isLoading = false
     showDeleteConfirm = false
+
+    var removal = pendingDelete
+    pendingDelete = null
     if (vaultReadIsStale("itemDelete")) return
+
     if (exitCode === 0) {
+      // The row is already gone and nothing else about the vault changed, so
+      // there is nothing left to read.
       flashNotification("Item deleted")
-      currentScreen = "main"
-      loadItems()
+      return
+    }
+
+    // Still in the vault, so it belongs back in the list. Nothing was typed
+    // here, so putting the row back is the whole of the recovery.
+    if (removal && removal.previous) {
+      items = Model.replaceItemById(items, removal.id, removal.previous)
+      itemsLoadedAt = Date.now()
+      refreshDerivedFromItems()
+      errorMessage = "Could not delete " + removal.name + ". " + (stderrText || "")
     } else {
       errorMessage = stderrText || "Failed to delete item"
     }
@@ -4597,6 +4949,18 @@ Panel {
   // -------------------------------------------------------------------------
   // Filtering & Selection
   // -------------------------------------------------------------------------
+
+  // Everything downstream of `items`. Suggestions are derived from the item
+  // list too, so a change to it that only called rebuildFilter() would leave
+  // the suggested rows describing the vault as it was. Both the full load and
+  // a single spliced save come through here so they cannot drift.
+  function refreshDerivedFromItems() {
+    if (activeWindowData) {
+      handleActiveWindowDetected(activeWindowData)
+    } else {
+      rebuildFilter()
+    }
+  }
 
   function rebuildFilter() {
     var baseList = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg, selectedFolder)
@@ -4770,9 +5134,26 @@ Panel {
   }
 
   // Smart sequential Enter handler: Copies Password, then arms and auto-copies TOTP
+  // Enter on a list row does the obvious thing for the item under it. For a
+  // login that is "copy the password", which is what this used to be and the
+  // only thing it did: every other type fell out of the guard below and Enter
+  // did nothing at all, on an item whose whole content was one keystroke away.
+  //
+  // A card, an identity, a note and an SSH key have no default secret to put
+  // on the clipboard, and neither does a login that was saved without a
+  // password. In all of those cases the useful answer is to open the item,
+  // which is what a user pressing Enter on a row they cannot copy from was
+  // reaching for anyway.
   function handleSmartEnter(item) {
     openFilterGroup = ""
-    if (!item || !Model.isLoginItem(item)) return
+    if (!item) return
+
+    var copyable = Model.isLoginItem(item)
+      && (item.hasPassword !== undefined ? item.hasPassword : Boolean(item.password))
+    if (!copyable) {
+      openDetail(item)
+      return
+    }
 
     // If already in active TOTP follow-up mode for this item, copy TOTP now!
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id) {
@@ -6259,6 +6640,22 @@ Panel {
           if (item) {
             root.handleSmartEnter(item)
           }
+          return
+        }
+        // The password row has always been labelled "Copy password (y / Enter)"
+        // and the detail screen has never handled Enter, so that half of the
+        // tooltip was a promise nothing kept. Enter copies the item's primary
+        // secret here, the same one `y` reaches: the password on a login, the
+        // number on a card. A note or an identity has no single such value, so
+        // Enter stays inert on those rather than guessing at one.
+        if (root.currentScreen === "detail") {
+          if (root.detailIsCard) {
+            if (root.detailCard && root.detailCard.number) {
+              root.copyToClipboard(root.detailCard.number, "Card number")
+            }
+          } else if (root.detailIsLoginLike && root.detailPassword) {
+            root.copyToClipboard(root.detailPassword, "Password")
+          }
         }
       }
       onTextKey: function(key) {
@@ -6273,10 +6670,37 @@ Panel {
           if (lower === "/") searchField.forceActiveFocus()
           else root.runShortcut(lower)
         } else if (root.currentScreen === "detail") {
+          // `y` is "copy the thing this item is for". On a login that is the
+          // password; on a card it is the number. Keeping one key for the
+          // primary secret is worth more than a key that means `password`
+          // everywhere and does nothing on two of the four types.
           if (lower === "y" || lower === "p") {
-            if (root.detailPassword) root.copyToClipboard(root.detailPassword, "Password")
+            if (root.detailIsCard) {
+              if (root.detailCard && root.detailCard.number) root.copyToClipboard(root.detailCard.number, "Card number")
+            } else if (root.detailPassword) {
+              root.copyToClipboard(root.detailPassword, "Password")
+            }
+          } else if (lower === "n") {
+            if (root.detailIsCard && root.detailCard && root.detailCard.number) {
+              root.copyToClipboard(root.detailCard.number, "Card number")
+            }
+          } else if (lower === "k") {
+            if (root.detailIsCard && root.detailCard && root.detailCard.code) {
+              root.copyToClipboard(root.detailCard.code, "Security code")
+            }
           } else if (lower === "u" || lower === "c") {
-            if (root.detailItem && root.detailItem.username) root.copyToClipboard(root.detailItem.username, "Username")
+            // `u` copies the identifier, `c` the contact address. On a login
+            // both land on the one username field, which is what they have
+            // always done.
+            if (root.detailIsIdentity && root.detailIdentity) {
+              if (lower === "c" && root.detailIdentity.email) {
+                root.copyToClipboard(root.detailIdentity.email, "Email")
+              } else if (root.detailIdentity.username) {
+                root.copyToClipboard(root.detailIdentity.username, "Username")
+              }
+            } else if (root.detailItem && root.detailItem.username) {
+              root.copyToClipboard(root.detailItem.username, "Username")
+            }
           } else if (lower === "m") {
             if (root.liveTotp) root.copyToClipboard(root.liveTotp, "TOTP")
           } else if (lower === "e") {
@@ -6284,7 +6708,7 @@ Panel {
           } else if (lower === "x") {
             if (root.detailItem && root.detailItem.typeCode !== 5) root.showDeleteConfirm = true
           } else if (lower === "v") {
-            root.passwordRevealed = !root.passwordRevealed
+            if (root.primaryRevealKey !== "") root.toggleFieldReveal(root.primaryRevealKey)
           } else if (lower === "a") {
             root.saveAllAttachments()
           } else if (lower === "b" || lower === "q") {
@@ -6571,6 +6995,8 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          WheelScroll { view: sendFlick }
 
           Column {
             id: sendCol
@@ -6898,6 +7324,8 @@ Panel {
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+          WheelScroll { view: fpFlick }
+
           Column {
             id: fpCol
             width: fpFlick.width
@@ -7011,6 +7439,8 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          WheelScroll { view: genFlick }
 
           Column {
             id: genCol
@@ -7385,6 +7815,8 @@ Panel {
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+          WheelScroll { view: pinFlick }
+
           Column {
             id: pinCol
             width: pinFlick.width
@@ -7532,6 +7964,8 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          WheelScroll { view: setupFlick }
 
           Column {
             id: setupCol
@@ -7727,6 +8161,8 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          WheelScroll { view: settingsFlick }
 
           Column {
             id: settingsCol
@@ -8955,6 +9391,8 @@ Panel {
               currentIndex: root.selectedIndex
               ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+              WheelScroll { view: itemsListView }
+
               delegate: BorderSurface {
                 id: itemRow
                 required property var modelData
@@ -8980,15 +9418,35 @@ Panel {
                   anchors.rightMargin: Style.space(8)
                   spacing: Style.space(10)
 
-                  // Type Icon
+                  // Type Icon, or a spinner while the vault is being told about
+                  // this row. The glyph is the row's identity, so the saving
+                  // state borrows it rather than adding a second marker and
+                  // reflowing everything beside it.
                   Text {
                     textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
-                    text: Model.itemTypeGlyph(itemData.typeCode)
-                    color: itemData.favorite ? Color.accent : root.fg
+                    text: itemData.pending ? "󰑐" : Model.itemTypeGlyph(itemData.typeCode)
+                    color: itemData.pending
+                      ? root.dim
+                      : (itemData.favorite ? Color.accent : root.fg)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.title
                     width: Style.space(20)
+                    // The glyph is narrower than the column it sits in, so
+                    // without centring it the spin happens about the middle of
+                    // the box and the icon orbits that point instead of
+                    // turning on its own axis. Same shape the kit's own
+                    // spinning button icon uses.
+                    horizontalAlignment: Text.AlignHCenter
+                    transformOrigin: Item.Center
+
+                    RotationAnimation on rotation {
+                      running: Boolean(itemData.pending)
+                      loops: Animation.Infinite
+                      from: 0
+                      to: 360
+                      duration: 900
+                    }
                   }
 
                   // Labels (Title + Subtitle + Org Tag)
@@ -9269,6 +9727,8 @@ Panel {
               flickableDirection: Flickable.VerticalFlick
               ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+              WheelScroll { view: filterOptionsList }
+
               // Keep the keyboard cursor in view when it runs past the fold.
               function revealCursor() {
                 var y = root.filterOptionIndex * root.filterRowHeight
@@ -9506,6 +9966,8 @@ Panel {
             flickableDirection: Flickable.VerticalFlick
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+            WheelScroll { view: detailFlickable }
+
             Column {
               id: detailContentColumn
               width: detailFlickable.width
@@ -9621,51 +10083,21 @@ Panel {
               }
 
               // FIELD: Username
-              Column {
-                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.username !== "")
-                width: parent.width
-                spacing: Style.space(4)
-
-                PanelSectionHeader { text: "USERNAME / EMAIL" }
-
-                BorderSurface {
-                  width: parent.width
-                  implicitHeight: Style.space(34)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                  Row {
-                    anchors.fill: parent
-                    anchors.leftMargin: Style.space(10)
-                    anchors.rightMargin: Style.space(6)
-
-                    Text {
-                      textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: root.detailItem ? root.detailItem.username : ""
-                      color: root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                      elide: Text.ElideRight
-                      width: parent.width - copyUserBtn.width - Style.space(10)
-                    }
-
-                    PanelActionButton {
-                      id: copyUserBtn
-                      anchors.verticalCenter: parent.verticalCenter
-                      iconText: ""
-                      tooltipText: "Copy username (u)"
-                      fontFamily: root.fontFamily
-                      onClicked: root.copyToClipboard(root.detailItem ? root.detailItem.username : "", "Username")
-                    }
-                  }
-                }
+              DetailField {
+                visible: root.detailIsLoginLike && Boolean(root.detailItem) && root.detailItem.username !== ""
+                label: "Username / Email"
+                copyLabel: "Username"
+                shortcutHint: "u"
+                copyIcon: ""
+                value: root.detailItem ? root.detailItem.username : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailItem ? root.detailItem.username : "", "Username")
               }
 
               // FIELD: Password
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && (root.detailPassword !== "" || root.detailItem.hasPassword))
+                visible: root.detailIsLoginLike && Boolean(root.detailItem) && (root.detailPassword !== "" || root.detailItem.hasPassword)
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -9686,7 +10118,8 @@ Panel {
                     Text {
                       textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
-                      text: root.passwordRevealed ? root.detailPassword : Model.maskString(root.detailPassword || "password")
+                      text: root.isFieldRevealed("password")
+                        ? root.detailPassword : Model.maskString(root.detailPassword || "password")
                       color: root.fg
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.body
@@ -9700,10 +10133,10 @@ Panel {
                       spacing: Style.space(4)
 
                       PanelActionButton {
-                        iconText: root.passwordRevealed ? "󰈉" : "󰈈"
-                        tooltipText: root.passwordRevealed ? "Hide password (v)" : "Reveal password (v)"
+                        iconText: root.isFieldRevealed("password") ? "󰈉" : "󰈈"
+                        tooltipText: root.isFieldRevealed("password") ? "Hide password (v)" : "Reveal password (v)"
                         fontFamily: root.fontFamily
-                        onClicked: root.passwordRevealed = !root.passwordRevealed
+                        onClicked: root.toggleFieldReveal("password")
                       }
 
                       PanelActionButton {
@@ -9719,7 +10152,7 @@ Panel {
 
               // FIELD: TOTP (2FA Code)
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.hasTotp)
+                visible: root.detailIsLoginLike && Boolean(root.detailItem) && root.detailItem.hasTotp
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -9786,7 +10219,7 @@ Panel {
 
               // FIELD: Website / URIs
               Column {
-                visible: Boolean(root.detailItem && root.detailItem.typeCode !== 5 && root.detailItem.uris && root.detailItem.uris.length > 0)
+                visible: root.detailIsLoginLike && Boolean(root.detailItem) && root.detailItem.uris && root.detailItem.uris.length > 0
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -9992,6 +10425,208 @@ Panel {
                 }
               }
 
+              // -----------------------------------------------------------
+              // FIELDS: Card
+              // -----------------------------------------------------------
+              // Expiry is one field rather than two. It is written, read and
+              // typed as a unit, and a vault that shows "04" above "2030" in
+              // two labelled boxes is describing its storage rather than the
+              // card in your hand.
+              DetailField {
+                visible: root.detailIsCard
+                label: "Cardholder Name"
+                value: root.detailCard ? root.detailCard.cardholderName : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.cardholderName : "", "Cardholder name")
+              }
+
+              DetailField {
+                visible: root.detailIsCard
+                label: "Brand"
+                value: root.detailCard ? root.detailCard.brand : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.brand : "", "Brand")
+              }
+
+              DetailField {
+                visible: root.detailIsCard
+                label: "Card Number"
+                copyLabel: "Card number"
+                shortcutHint: "n / Enter"
+                revealHint: "v"
+                sensitive: true
+                revealed: root.isFieldRevealed("cardNumber")
+                value: root.detailCard ? root.detailCard.number : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.toggleFieldReveal("cardNumber")
+                onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.number : "", "Card number")
+              }
+
+              DetailField {
+                visible: root.detailIsCard
+                label: "Expires"
+                value: root.detailCardExpiry
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailCardExpiry, "Expiry")
+              }
+
+              DetailField {
+                visible: root.detailIsCard
+                label: "Security Code"
+                copyLabel: "Security code"
+                shortcutHint: "k"
+                sensitive: true
+                revealed: root.isFieldRevealed("cardCode")
+                value: root.detailCard ? root.detailCard.code : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.toggleFieldReveal("cardCode")
+                onCopyRequested: root.copyToClipboard(root.detailCard ? root.detailCard.code : "", "Security code")
+              }
+
+              // -----------------------------------------------------------
+              // FIELDS: Identity
+              // -----------------------------------------------------------
+              // Every field an identity can carry is declared; DetailField
+              // hides the empty ones. Most identities fill in a handful, and
+              // the alternative -- deciding here which are worth drawing --
+              // is how the useful one for somebody ends up missing.
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Name"
+                value: root.detailIdentityName
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentityName, "Name")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Username"
+                shortcutHint: "u"
+                value: root.detailIdentity ? root.detailIdentity.username : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.username : "", "Username")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Company"
+                value: root.detailIdentity ? root.detailIdentity.company : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.company : "", "Company")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Email"
+                shortcutHint: "c"
+                value: root.detailIdentity ? root.detailIdentity.email : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.email : "", "Email")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Phone"
+                value: root.detailIdentity ? root.detailIdentity.phone : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.phone : "", "Phone")
+              }
+
+              // The three an identity item usually exists to hold. Masked for
+              // the same reason a password is: a shoulder is enough to lose
+              // them, and unlike a password they cannot be rotated.
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Social Security Number"
+                copyLabel: "SSN"
+                sensitive: true
+                revealed: root.isFieldRevealed("ssn")
+                value: root.detailIdentity ? root.detailIdentity.ssn : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.toggleFieldReveal("ssn")
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.ssn : "", "SSN")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Passport Number"
+                copyLabel: "Passport number"
+                sensitive: true
+                revealed: root.isFieldRevealed("passport")
+                value: root.detailIdentity ? root.detailIdentity.passportNumber : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.toggleFieldReveal("passport")
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.passportNumber : "", "Passport number")
+              }
+
+              DetailField {
+                visible: root.detailIsIdentity
+                label: "Licence Number"
+                copyLabel: "Licence number"
+                sensitive: true
+                revealed: root.isFieldRevealed("licence")
+                value: root.detailIdentity ? root.detailIdentity.licenseNumber : ""
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onRevealToggled: root.toggleFieldReveal("licence")
+                onCopyRequested: root.copyToClipboard(root.detailIdentity ? root.detailIdentity.licenseNumber : "", "Licence number")
+              }
+
+              PanelSectionHeader {
+                visible: root.detailIsIdentity && root.detailIdentityAddress !== ""
+                text: "ADDRESS"
+              }
+
+              // One block, not seven rows. An address is copied as an address.
+              BorderSurface {
+                visible: root.detailIsIdentity && root.detailIdentityAddress !== ""
+                width: parent.width
+                implicitHeight: addressText.implicitHeight + Style.space(16)
+                radius: Style.cornerRadius
+                color: Style.hoverFillFor(root.fg, Color.accent)
+                borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                Row {
+                  anchors.fill: parent
+                  anchors.margins: Style.space(8)
+                  spacing: Style.space(6)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: addressText
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.detailIdentityAddress
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    wrapMode: Text.Wrap
+                    width: parent.width - copyAddressBtn.width - Style.space(10)
+                  }
+
+                  PanelActionButton {
+                    id: copyAddressBtn
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconText: "󰈙"
+                    tooltipText: "Copy address"
+                    fontFamily: root.fontFamily
+                    onClicked: root.copyToClipboard(root.detailIdentityAddress, "Address")
+                  }
+                }
+              }
+
+
             }
           }
 
@@ -10043,6 +10678,8 @@ Panel {
             flickableDirection: Flickable.VerticalFlick
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+            WheelScroll { view: editFlickable }
+
             Column {
               id: editFormCol
               width: editFlickable.width
@@ -10069,6 +10706,23 @@ Panel {
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.formTypeCode = 2
+                }
+                Button {
+                  text: "Card"
+                  iconText: "󰿯"
+                  selected: root.formTypeCode === 3
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.formTypeCode = 3
+                }
+
+                Button {
+                  text: "Identity"
+                  iconText: ""
+                  selected: root.formTypeCode === 4
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.formTypeCode = 4
                 }
               }
 
@@ -10116,6 +10770,8 @@ Panel {
                   boundsBehavior: Flickable.StopAtBounds
                   flickableDirection: Flickable.VerticalFlick
                   ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                  WheelScroll { view: folderPickList }
 
                   Column {
                     id: folderPickCol
@@ -10205,6 +10861,8 @@ Panel {
                   flickableDirection: Flickable.VerticalFlick
                   ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+                  WheelScroll { view: orgPickList }
+
                   Column {
                     id: orgPickCol
                     width: orgPickList.width
@@ -10279,6 +10937,8 @@ Panel {
                     boundsBehavior: Flickable.StopAtBounds
                     flickableDirection: Flickable.VerticalFlick
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    WheelScroll { view: collectionList }
 
                     Column {
                       id: collectionCol
@@ -10399,6 +11059,305 @@ Panel {
                 }
               }
 
+              // -----------------------------------------------------------
+              // FORM FIELDS: Card
+              // -----------------------------------------------------------
+              // Expiry is split here, unlike the detail view, because these
+              // are two values the vault stores separately and a single box
+              // would have to guess where the boundary between them falls.
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "CARDHOLDER NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "Name as printed on the card"
+                  text: root.formCardholderName
+                  onTextChanged: root.formCardholderName = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "BRAND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "Visa, Mastercard, Amex..."
+                  text: root.formCardBrand
+                  onTextChanged: root.formCardBrand = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "CARD NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "1234 5678 9012 3456"
+                  text: root.formCardNumber
+                  onTextChanged: root.formCardNumber = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "EXPIRY MONTH"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "MM"
+                  text: root.formCardExpMonth
+                  onTextChanged: root.formCardExpMonth = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "EXPIRY YEAR"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "YYYY"
+                  text: root.formCardExpYear
+                  onTextChanged: root.formCardExpYear = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 3
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "SECURITY CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "CVV / CVC"
+                  text: root.formCardCode
+                  onTextChanged: root.formCardCode = text
+                }
+              }
+
+              // -----------------------------------------------------------
+              // FORM FIELDS: Identity
+              // -----------------------------------------------------------
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "TITLE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "Mr, Ms, Dr..."
+                  text: root.formIdTitle
+                  onTextChanged: root.formIdTitle = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "FIRST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdFirstName
+                  onTextChanged: root.formIdFirstName = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "MIDDLE NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdMiddleName
+                  onTextChanged: root.formIdMiddleName = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "LAST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdLastName
+                  onTextChanged: root.formIdLastName = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "USERNAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdUsername
+                  onTextChanged: root.formIdUsername = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "COMPANY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdCompany
+                  onTextChanged: root.formIdCompany = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: "name@example.com"
+                  text: root.formIdEmail
+                  onTextChanged: root.formIdEmail = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "PHONE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdPhone
+                  onTextChanged: root.formIdPhone = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "SOCIAL SECURITY NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdSsn
+                  onTextChanged: root.formIdSsn = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "PASSPORT NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdPassport
+                  onTextChanged: root.formIdPassport = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "LICENCE NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdLicense
+                  onTextChanged: root.formIdLicense = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 1"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdAddress1
+                  onTextChanged: root.formIdAddress1 = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 2"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdAddress2
+                  onTextChanged: root.formIdAddress2 = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 3"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdAddress3
+                  onTextChanged: root.formIdAddress3 = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "CITY / TOWN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdCity
+                  onTextChanged: root.formIdCity = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "STATE / COUNTY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdState
+                  onTextChanged: root.formIdState = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "POSTAL CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdPostalCode
+                  onTextChanged: root.formIdPostalCode = text
+                }
+              }
+              Column {
+                visible: root.formTypeCode === 4
+                width: parent.width
+                spacing: Style.space(3)
+                Text { textFormat: Text.PlainText; text: "COUNTRY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                TextField {
+                  width: parent.width
+                  placeholderText: ""
+                  text: root.formIdCountry
+                  onTextChanged: root.formIdCountry = text
+                }
+              }
+
               // FIELD: Notes
               Column {
                 width: parent.width
@@ -10425,10 +11384,26 @@ Panel {
                 }
               }
 
+              // Enter saves from anywhere in the form, so a long item does not
+              // have to be scrolled to the bottom to be committed.
+              //
+              // A Shortcut rather than `onAccepted` on each field: there are
+              // more than thirty of them and the next one added would silently
+              // not save. It is scoped tightly instead -- only on this screen,
+              // and not while a picker is open, where Enter belongs to the
+              // list being picked from.
+              Shortcut {
+                sequences: ["Return", "Enter"]
+                enabled: root.activeScreen === "edit" && root.formPicker === ""
+                onActivated: root.saveItemForm()
+              }
+
               // Save Action Button
               Button {
                 width: parent.width
-                text: root.isLoading ? "Saving..." : (root.formIsEditing ? "Save Changes" : "Create Item")
+                text: root.isLoading
+                  ? "Saving..."
+                  : (root.formIsEditing ? "Save Changes (Enter)" : "Create Item (Enter)")
                 iconText: root.isLoading ? "󰑐" : "󰄬"
                 iconSpinning: root.isLoading
                 selected: true
@@ -10458,7 +11433,17 @@ Panel {
         accentColor: root.accent
         urgentColor: root.urgent
         fontFamily: root.fontFamily
-        onErrorDismissed: root.errorMessage = ""
+        actionLabel: root.failedSave ? "Reopen " + root.failedSave.name : ""
+        onActionRequested: root.reopenFailedSave()
+        onErrorDismissed: {
+          // Dismissing the message drops the recovery with it: the list is
+          // already back to what the vault holds, so what is being discarded
+          // is the attempt, and leaving a Reopen behind an invisible message
+          // would be a button for something the user has said they are done
+          // with.
+          root.failedSave = null
+          root.errorMessage = ""
+        }
       }
     }
   }
