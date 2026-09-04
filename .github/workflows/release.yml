@@ -272,9 +272,21 @@ jobs:
     # what makes it safe to rehearse.
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
-    # The protection boundary. `release` requires a reviewer's approval before
-    # this job starts, and it is the only job in the repository that asks for
-    # anything beyond read.
+    # The protection boundary, and still the only job in the repository that
+    # asks for anything beyond read.
+    #
+    # It used to also require a reviewer to click approve here. That was a
+    # third human gate on a path that already has two, and the wrong two to
+    # add it to: the work was reviewed on the release branch, where the PRs
+    # are and where the gates run, and the tag that reaches this job is pushed
+    # deliberately. What this job produces is a draft, so approving it was not
+    # even the moment anything went public -- that is the merge to master,
+    # which is itself a pull request.
+    #
+    # The environment stays, for what it does rather than for the click: it
+    # scopes these permissions to this one job, records the deployment, and
+    # carries a branch policy that lets only `v*` tags reach it -- so a branch
+    # cannot deploy here however the workflow is triggered.
     environment:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
