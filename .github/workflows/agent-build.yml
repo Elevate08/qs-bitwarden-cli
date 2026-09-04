@@ -217,8 +217,55 @@ jobs:
         # database, and an old copy fails to parse newer entries. It is
         # checking dependencies, not producing artifact bytes, so currency
         # matters more here than reproducibility.
+        #
+        # The published binary, not `cargo install`. Building this tool from
+        # source cost 1m58s of a 3m34s job -- more than half the critical path
+        # of every push and every PR -- to produce a checker that then ran in
+        # about a second. Downloading it takes well under one. Currency is
+        # unaffected: the advisory database is fetched at check time, not baked
+        # into the binary, so `latest` here means the same thing it meant when
+        # cargo built it.
+        #
+        # Resolved at run time rather than pinned, for that same currency, and
+        # verified against the digest published beside it. Upstream ships a
+        # static musl build, so it runs in this container regardless of what
+        # the container's glibc is.
+        #
+        # The version comes from the `releases/latest` redirect rather than
+        # from api.github.com. The API allows 60 unauthenticated calls an hour
+        # per address and GitHub-hosted runners share addresses, so that route
+        # fails on someone else's traffic and reports it as our dependency
+        # gate going down. The redirect carries no such budget.
+        #
+        # `shell: bash` is explicit because a job running in a container gets
+        # `sh -e` by default, which is dash here -- and dash has no `pipefail`,
+        # so the guard on the line below is itself what fails. Every other step
+        # in this job is a single command and never noticed.
+        shell: bash
         run: |
-          cargo install cargo-deny --locked
+          set -euo pipefail
+          latest="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+            https://github.com/EmbarkStudios/cargo-deny/releases/latest)"
+          version="${latest##*/}"
+          # A redirect that stopped redirecting would leave a path segment
+          # rather than a version, and the download would 404 with nothing
+          # saying why. Check the shape before trusting it.
+          case "$version" in
+            [0-9]*.[0-9]*) : ;;
+            *) echo "::error::could not resolve the latest cargo-deny release (got '$version' from '$latest')"; exit 1 ;;
+          esac
+          base="https://github.com/EmbarkStudios/cargo-deny/releases/download/$version"
+          archive="cargo-deny-$version-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$archive" "$base/$archive"
+          curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
+          # Upstream publishes the bare digest, so pair it with the filename
+          # before sha256sum will read it. A mismatch stops the job here.
+          echo "$(cat "$archive.sha256")  $archive" | sha256sum -c -
+          tar -xzf "$archive" --strip-components=1 -C /usr/local/cargo/bin \
+            "cargo-deny-$version-x86_64-unknown-linux-musl/cargo-deny"
+          # Say which build actually did the checking, the way the QML step
+          # records its Qt packages.
+          cargo-deny --version
           cargo deny --manifest-path agent/Cargo.toml --config deny.toml check
 
       - name: Tests
