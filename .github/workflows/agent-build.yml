@@ -310,10 +310,18 @@ jobs:
           # -- but narrowly, loudly, and only for that reason: a gate that
           # quietly runs nothing is worse than no gate, and this file has
           # already been bitten twice by checks passing through absence.
+          #
+          # The match is on the `import` line, not on the path anywhere in the
+          # file. It used to be the latter, and that is a third way to pass
+          # through absence: tst_row_widths.qml only *mentions* the kit, in an
+          # optional check that reads Ui/Button.qml if it happens to be there
+          # and returns quietly if it is not. A substring match skipped the
+          # whole file, so the row-width gate silently stopped running on every
+          # runner while still reporting success.
           shopt -s nullglob
           run=() ; skipped=()
           for f in tests/qml/*.qml; do
-            if grep -q "/usr/share/omarchy/shell" "$f" && [ ! -d /usr/share/omarchy/shell/Ui ]; then
+            if grep -q 'import "file:/usr/share/omarchy/shell' "$f" && [ ! -d /usr/share/omarchy/shell/Ui ]; then
               skipped+=("$f")
             else
               run+=("$f")
@@ -327,9 +335,15 @@ jobs:
             exit 1
           fi
           echo "running ${#run[@]} QML test file(s), skipping ${#skipped[@]}"
+          # QML_XHR_ALLOW_FILE_READ lets a test read the repository's own QML
+          # back through XMLHttpRequest, which Qt refuses by default.
+          # tst_row_widths.qml needs it: it measures the real panel sources
+          # rather than a copy of them that could drift. Without it that file
+          # fails on its first check rather than measuring nothing.
           status=0
           for f in "${run[@]}"; do
-            QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input "$f" || status=1
+            QML_XHR_ALLOW_FILE_READ=1 QT_QPA_PLATFORM=offscreen \
+              /usr/lib/qt6/bin/qmltestrunner -input "$f" || status=1
           done
           exit $status
 

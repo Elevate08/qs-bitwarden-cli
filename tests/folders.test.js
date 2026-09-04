@@ -104,5 +104,26 @@ check("the folder writer receives its payload through the private environment bi
     && /id:\s*createFolderProc[\s\S]{0,100}environment:\s*root\.folderEnv\(\)/.test(panelSrc),
   "createFolderProc is not bound to folderEnv()")
 
+// --- the collapsed filter buttons ---
+// Each button names its own keyboard shortcut in its tooltip, and the key that
+// actually opens the drawer lives in runShortcut(). Two places, so they can
+// disagree -- and a tooltip promising a key that does nothing is worse than no
+// tooltip. Pin them to each other.
+const filterButtons = [...panelSrc.matchAll(
+  /VaultFilterButton\s*\{[\s\S]*?group:\s*"([a-z]+)"[\s\S]*?shortcut:\s*"([a-z])"/g)]
+  .map(m => ({ group: m[1], shortcut: m[2] }))
+check("all three vault filter buttons are declared",
+  filterButtons.length === 3, JSON.stringify(filterButtons))
+for (const { group, shortcut } of filterButtons) {
+  const dispatch = new RegExp(`case "${shortcut}":\\s*toggleFilterGroup\\("${group}"\\)`)
+  check(`the "${shortcut}" in the ${group} filter tooltip is the key that opens it`,
+    dispatch.test(panelSrc), `no runShortcut case pairing "${shortcut}" with "${group}"`)
+}
+// The label is the vault value alone now, so the group name survives only in
+// the tooltip -- which is the one place still telling you what you are looking at.
+check("each filter button still names its group somewhere the user can reach",
+  /tooltipText: Model\.plainLabel\(name \+ " filter \(" \+ shortcut \+ "\): " \+ value\)/.test(panelSrc),
+  "the filter tooltip no longer carries the group name and value")
+
 console.log(`${pass} passed, ${failures.length} failed`)
 if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }

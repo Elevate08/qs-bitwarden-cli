@@ -75,13 +75,26 @@ to result; after a three-second prewarm while the password screen was already
 open, it took 1,026 ms -- a 1,615 ms / 61.1% reduction. These figures are a
 same-machine comparison, not a universal latency promise.
 
-Two suites need Qt rather than Node -- which any machine running the plugin
-already has. One checks that Escape reaches the panel from inside a text
-field; the other checks how Qt itself decides to draw a string, which is what
-makes a vault value markup or text:
+Some suites need Qt rather than Node -- which any machine running the plugin
+already has. They cover the things only a real Qt can answer: that Escape
+reaches the panel from inside a text field, how Qt itself decides to draw a
+string (which is what makes a vault value markup or text), and how wide the
+kit's Button actually renders a given label in the shell's font.
+
+That last one, `tst_row_widths.qml`, reads the panel's own QML and measures
+every row of buttons against the width of the panel they sit in. It needs to
+read those files from inside QML, which Qt gates behind an env var:
 
 ```bash
-QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml
+QML_XHR_ALLOW_FILE_READ=1 QT_QPA_PLATFORM=offscreen \
+  /usr/lib/qt6/bin/qmltestrunner -input tests/qml
 ```
+
+Note the **Qt6** binary. A bare `qmltestrunner` on Arch is the Qt5 one from
+`qt5-declarative`; it reports `Library import requires a version` and exits 1
+with no test output at all. If a run prints nothing whatsoever, that is why.
+
+`QT_ASSUME_STDERR_HAS_CONSOLE=1` is worth adding while debugging a QML test --
+without it `console.log()` from inside QML is silently dropped.
 
 ---
