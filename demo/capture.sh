@@ -113,7 +113,7 @@ capture_ssh_approval() {
   while [ ! -S "$sock" ] || [ ! -f "$pub" ]; do
     sleep 1; waited=$((waited + 1))
     if [ "$waited" -ge 30 ]; then
-      echo "  skipped 14-ssh-approval: no agent socket or projected key after ${waited}s" >&2
+      echo "  skipped 13-ssh-approval: no agent socket or projected key after ${waited}s" >&2
       echo "  (is 'Act as your SSH agent' enabled in shell.json?)" >&2
       return 0
     fi
@@ -125,7 +125,7 @@ capture_ssh_approval() {
   SSH_AUTH_SOCK="$sock" ssh-add -T "$pub" >/dev/null 2>&1 &
   local asker=$!
   sleep "${QSBW_SSH_SETTLE:-4}"
-  shot 14-ssh-approval
+  shot 13-ssh-approval
   # Deny it. Escape is the approval screen's own deny, so nothing is signed.
   wtype -k Escape 2>/dev/null; sleep 1
   wait "$asker" 2>/dev/null || true
@@ -145,11 +145,15 @@ fi
 
 # --- logged out -------------------------------------------------------------
 
+# No setup shot. The wizard appears only while a required tool is missing, and
+# it watches for the install and moves on by itself the moment one lands. The
+# fixture environment has every dependency -- that is what makes the rest of
+# these shots work -- so the screen correctly advances straight past itself.
+# Photographing it means deliberately hiding `jq` or `bw` from the shell's
+# PATH, which breaks the vault reads every other shot depends on.
 start_shell unauthenticated
 "${IPC[@]}" open >/dev/null 2>&1; sleep 4
 shot 12-login
-"${IPC[@]}" setup >/dev/null 2>&1; sleep 3
-shot 13-setup
 "${IPC[@]}" close >/dev/null 2>&1 || true
 
 # --- locked -----------------------------------------------------------------

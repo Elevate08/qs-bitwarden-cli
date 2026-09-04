@@ -80,7 +80,7 @@ TITLE_SIZE=96
 # as its tallest column, and an unbalanced one leaves a corner of empty black.
 COL1=(01-vault-list 08-generator)
 COL2=(04-card-detail 09-sends)
-COL3=(10-settings 14-ssh-approval)
+COL3=(10-settings 13-ssh-approval)
 
 # Not `magick ... | grep -q`: grep exits on the first match, magick takes a
 # SIGPIPE for it, and `set -o pipefail` reports the successful match as a
