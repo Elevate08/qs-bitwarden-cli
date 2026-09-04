@@ -7933,9 +7933,22 @@ Panel {
 
                 readonly property bool isGroup: modelData.kind === "group"
 
+              // This heading is the one the pinned bar is currently drawing.
+              // The bar stands in for it completely, so the row gives up its
+              // space rather than sitting there empty -- a transparent row
+              // left a heading-sized hole directly under the bar.
+              //
+              // Exactly one heading is ever in this state, so the content
+              // height does not change as the pinned section changes: the
+              // heading taking over collapses at the same moment the previous
+              // one is restored, and the view does not jump.
+              readonly property bool yieldsToBar: isGroup
+                && Boolean(root.settingsStickyEntry)
+                && root.settingsStickyEntry.group === modelData.group
+
                 // Breathing room above each heading, except the first.
                 Item {
-                  visible: isGroup && index > 0
+                  visible: isGroup && index > 0 && !yieldsToBar
                   width: parent.width
                   height: visible ? Style.space(18) : 0
                 }
@@ -7946,14 +7959,9 @@ Panel {
                 // and a heading carried by another row has no position of its
                 // own to be found at.
                 Item {
-                  visible: isGroup
+                  visible: isGroup && !yieldsToBar
                   width: parent.width
                   height: visible ? Style.space(22) : 0
-                  // The pinned bar is already drawing this one. Transparent
-                  // rather than hidden: removing it would shorten the content
-                  // and jump the view at the moment a heading reached the top.
-                  opacity: (root.settingsStickyEntry
-                    && root.settingsStickyEntry.group === modelData.group) ? 0 : 1
 
                   PanelSectionHeader {
                     textFormat: Text.PlainText
