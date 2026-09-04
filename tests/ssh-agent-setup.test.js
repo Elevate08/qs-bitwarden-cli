@@ -130,25 +130,95 @@ const oldDeps = { items: [], sshCliStatus: "unsupported" }
 const unknownDeps = { items: [], sshCliStatus: "unknown" }
 
 const shown = Model.visibleSettings(supportedDeps, true)
-eq("a supported CLI shows every setting", shown.length, Model.SETTINGS_SCHEMA.length)
+eq("a supported CLI shows every setting",
+  shown.filter(e => e.kind === "setting").length, Model.SETTINGS_SCHEMA.length)
 check("a supported CLI shows the SSH group header",
-  shown.filter(e => e.group === "sshAgent" && e.groupLabel).length === 1, "no header")
+  shown.filter(e => e.kind === "group" && e.group === "sshAgent").length === 1, "no header")
 
 for (const [label, deps, checked] of [
   ["an unsupported CLI", oldDeps, true],
   ["an unreadable CLI version", unknownDeps, true],
   ["an unfinished probe", supportedDeps, false]
 ]) {
+  // Nothing collapsed, so every remaining setting is present as a row. The
+  // list also carries one heading row per group now, which is what makes a
+  // group foldable; the guarantee being checked is unchanged -- a hidden
+  // group takes its heading with it, and each group that remains gets
+  // exactly one.
   const rows = Model.visibleSettings(deps, checked)
+  const settings = rows.filter(e => e.kind === "setting")
+  const headers = rows.filter(e => e.kind === "group")
   eq(`${label} hides the SSH settings`, rows.filter(e => e.group === "sshAgent").length, 0)
-  eq(`${label} keeps every other setting`, rows.length, Model.SETTINGS_SCHEMA.length - 4)
+  eq(`${label} keeps every other setting`, settings.length, Model.SETTINGS_SCHEMA.length - 4)
   check(`${label} still draws every remaining group header`,
-    rows.filter(e => e.groupLabel).length === new Set(rows.map(e => e.group)).size,
-    JSON.stringify(rows.filter(e => e.groupLabel).map(e => e.groupLabel)))
+    headers.length === new Set(settings.map(e => e.group)).size,
+    JSON.stringify(headers.map(e => e.label)))
+  check(`${label} draws no heading for a group it hid`,
+    headers.every(h => h.group !== "sshAgent"),
+    JSON.stringify(headers.map(e => e.group)))
 }
 
 check("hiding the group does not mutate the schema",
-  Model.SETTINGS_SCHEMA.every(e => e.groupLabel === undefined), "schema was mutated")
+  Model.SETTINGS_SCHEMA.every(e => e.groupLabel === undefined && e.kind === undefined),
+  "schema was mutated")
+
+// --- every section is drawn, always -----------------------------------------
+//
+// The settings screen had collapsible sections for a while. They went: three
+// groups of three, seven and four rows do not need folding, and a fold is one
+// more state to be in and one more thing to leave shut by accident.
+
+const allRows = Model.visibleSettings(supportedDeps, true)
+check("every setting in the schema is drawn",
+  allRows.filter(e => e.kind === "setting").length === Model.SETTINGS_SCHEMA.length,
+  `${allRows.filter(e => e.kind === "setting").length} of ${Model.SETTINGS_SCHEMA.length}`)
+check("each group is headed exactly once",
+  allRows.filter(e => e.kind === "group").length
+    === new Set(allRows.filter(e => e.kind === "setting").map(e => e.group)).size,
+  JSON.stringify(allRows.filter(e => e.kind === "group").map(e => e.label)))
+check("a heading comes before the settings it heads",
+  (() => {
+    let seen = null
+    return allRows.every(e => {
+      if (e.kind === "group") { seen = e.group; return true }
+      return e.group === seen
+    })
+  })(), JSON.stringify(allRows.map(e => e.kind === "group" ? `[${e.group}]` : e.group)))
+check("groups appear in the order the group list declares",
+  JSON.stringify(allRows.filter(e => e.kind === "group").map(e => e.group))
+    === JSON.stringify(Model.SETTINGS_GROUPS.map(g => g.id)),
+  JSON.stringify(allRows.filter(e => e.kind === "group").map(e => e.group)))
+
+// --- the status block belongs to its own section ----------------------------
+//
+// The SSH agent's status and routing block used to be drawn after all four
+// setting groups. That was survivable while nothing folded; with folding it
+// would leave a collapsed SSH Agent section with its status still on screen,
+// attached to nothing above it.
+
+check("each group's last setting is marked, so a section can extend itself",
+  (() => {
+    const rows = Model.visibleSettings(supportedDeps, true)
+    const settings = rows.filter(e => e.kind === "setting")
+    const groups = [...new Set(settings.map(e => e.group))]
+    return groups.every(g => settings.filter(e => e.group === g && e.lastInGroup).length === 1)
+  })(),
+  JSON.stringify(Model.visibleSettings(supportedDeps, true)
+    .filter(e => e.lastInGroup).map(e => `${e.group}:${e.key}`)))
+
+check("the mark lands on the final setting of the group, not an earlier one",
+  (() => {
+    const settings = Model.visibleSettings(supportedDeps, true).filter(e => e.kind === "setting")
+    const last = settings.filter(e => e.group === "sshAgent").pop()
+    return last.lastInGroup === true
+  })(), "the SSH group's last row is not marked")
+
+const panelSrc = require("fs").readFileSync(
+  require("path").join(__dirname, "..", "Panel.qml"), "utf8")
+check("the SSH block is drawn inside the group rather than after every group",
+  /active: !isGroup && modelData\.group === "sshAgent"\s*\n\s*&& modelData\.lastInGroup === true/.test(panelSrc)
+    && (panelSrc.match(/SshAgentSettings \{ panel: root \}/g) || []).length === 1,
+  "expected exactly one SshAgentSettings, loaded off the group's last row")
 
 // -------------------------------------------------------------------------
 // Disabled / enabled / error setup state

@@ -10,6 +10,13 @@
 - Cards and identities are searchable by whatever the list shows them as: a card by brand, cardholder or last four digits, an identity by name, email, username or company. Deliberately not by the middle of a card number.
 - Detail shortcuts cover the new types. `y` copies what an item is for -- the password on a login, the number on a card -- while `n` and `k` reach a card's number and security code directly, and `u` and `c` split into username and email on an identity.
 
+### Changed
+
+- **The settings screen is organised into sections.** It had grown into one undifferentiated scroll of fourteen settings, the SSH agent status block and a row of action buttons. The settings are now grouped under **General**, **Security** and **SSH Agent** headings, with Behavior and Suggestions -- one and two rows each -- merged into General, and the SSH agent's status and client-routing block moved inside the section it describes rather than trailing every group.
+- **The section you are reading is named above the scroll area, and stays there as you scroll.** Its own heading in the list yields to it, so nothing is drawn twice, and it clears once you scroll past the last section into the maintenance rows. **Back (Esc)** is pinned alongside it on the right, instead of scrolling out of reach with everything else.
+- Scrollbars have a lane of their own throughout the panel rather than floating over the right edge of the content. They were overlays drawn on top of whatever was under them -- toggles and number fields on the settings screen, copy buttons on an item, the ends of elided names in the vault list. Every scrolling view now reserves the same width, so nothing is covered and the right-hand edges line up from screen to screen.
+- **Destructive actions have their own section.** **Remove Plugin Data** sat in a row visually identical to **Dependencies**, so the button that clears your keyring entries looked exactly as safe to press as the one that opens a checklist. The action buttons are now split under **MAINTENANCE** and a separated **DANGER ZONE**.
+
 ### Fixed
 
 - **Deleting an item no longer holds the panel either.** It cost the same second or two of `bw`, spent on a frozen detail screen, and then re-read the whole vault to learn about the one row that had gone. The row goes immediately and the panel comes back; if the vault refuses, the row returns with the reason.

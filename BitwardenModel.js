@@ -5398,11 +5398,15 @@ function fingerprintSetupCommand() {
 // file directly, so Omarchy owns the parsing, merging and formatting, and the
 // shell picks the change up on its usual hot reload.
 
+// Order is the screen's order. General leads: it is three short rows about how
+// the panel behaves day to day, and they were previously split across two
+// one-and-two-row sections stranded below the SSH agent's block, which is by
+// far the tallest thing on this screen. Security follows and is the group that
+// opens expanded, because it is what the screen is usually opened for.
 var SETTINGS_GROUPS = [
+  { id: "general", label: "General" },
   { id: "security", label: "Security" },
-  { id: "sshAgent", label: "SSH Agent" },
-  { id: "behavior", label: "Behavior" },
-  { id: "suggestions", label: "Suggestions" }
+  { id: "sshAgent", label: "SSH Agent" }
 ]
 
 var SETTINGS_SCHEMA = [
@@ -5435,13 +5439,13 @@ var SETTINGS_SCHEMA = [
     min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
 
-  { key: "closeOnCopy", group: "behavior", type: "bool", label: "Close panel on copy", defaultValue: true,
+  { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
-  { key: "autoCopyTotpSec", group: "behavior", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
+  { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
     min: 0, max: 30, step: 1, zeroLabel: "Off", defaultValue: 3,
     description: "Replace the clipboard with the 2FA code this long after the password." },
 
-  { key: "suggestOnOpen", group: "suggestions", type: "bool", label: "Suggest for active window", defaultValue: true,
+  { key: "suggestOnOpen", group: "general", type: "bool", label: "Suggest for active window", defaultValue: true,
     description: "Match the focused window or browser tab against your vault." }
 ]
 
@@ -5467,19 +5471,42 @@ function groupedSettings() {
 // The settings the panel should actually draw. The SSH agent rows are held
 // back behind the same probe that hides the SSH type filter: a toggle for a
 // feature the installed `bw` cannot serve is worse than no toggle at all.
-// Group headers are recomputed after the filter, so a hidden group takes its
-// heading with it and the ones that remain still get exactly one each.
+//
+// A group heading is its own row rather than a label carried by the first
+// setting under it. The panel walks this list with one index and reads
+// delegate geometry off it to tell which section the view is inside, and a
+// heading that belonged to another row would have neither a position of its
+// own nor an entry to be found at.
 function visibleSettings(deps, checked) {
   var showSsh = sshUiAvailable(deps, checked)
   var rows = groupedSettings().filter(function(entry) {
     return showSsh || entry.group !== "sshAgent"
   })
+
+  var out = []
   var seen = {}
   for (var i = 0; i < rows.length; i++) {
-    rows[i].groupLabel = seen[rows[i].group] ? "" : groupLabelFor(rows[i].group)
-    seen[rows[i].group] = true
+    var entry = rows[i]
+    if (!seen[entry.group]) {
+      seen[entry.group] = true
+      out.push({
+        kind: "group",
+        group: entry.group,
+        label: groupLabelFor(entry.group)
+      })
+    }
+    entry.kind = "setting"
+    // The label lived on the first row of each group. It has a row of its own
+    // now, and leaving the old field set would draw both.
+    entry.groupLabel = ""
+    // Marks where a group's settings end, so a section that has more to draw
+    // than its toggles -- the SSH agent's status and routing block -- can be
+    // attached to the end of the group it belongs to instead of trailing all
+    // the groups.
+    entry.lastInGroup = (i + 1 >= rows.length) || rows[i + 1].group !== entry.group
+    out.push(entry)
   }
-  return rows
+  return out
 }
 
 function groupLabelFor(id) {

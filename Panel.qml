@@ -3242,10 +3242,25 @@ Panel {
     return false
   }
 
+  // Group headings are rows in the list but not controls, so the cursor steps
+  // over them rather than stopping on one and doing nothing when activated.
   function moveSettingsCursor(delta) {
     var n = settingsEntries.length
     if (n === 0) return
-    settingsIndex = Math.max(0, Math.min(n - 1, settingsIndex + delta))
+    var step = delta < 0 ? -1 : 1
+    var i = settingsIndex + delta
+    while (i >= 0 && i < n && settingsEntries[i] && settingsEntries[i].kind === "group") i += step
+    // A heading at the far end leaves nowhere further to go in that direction;
+    // the cursor stays where it was rather than landing on the heading.
+    if (i < 0 || i >= n) return
+    settingsIndex = i
+  }
+
+  function firstSettingIndex() {
+    for (var i = 0; i < settingsEntries.length; i++) {
+      if (settingsEntries[i] && settingsEntries[i].kind === "setting") return i
+    }
+    return 0
   }
 
   // Left/right nudge a value: numbers by their step, switches off and on.
@@ -3265,6 +3280,82 @@ Panel {
       var want = direction > 0
       if (Boolean(settingValue(e)) !== want) activateSettingRow()
     }
+  }
+
+  // The lane every vertical scrollbar in this panel gets to itself.
+  //
+  // These bars are overlays: left alone they draw on top of whatever occupies
+  // the right edge of the view, which across these screens is toggles, number
+  // fields, copy buttons and the ends of elided text. Every scrolling view
+  // subtracts this from its content width, so the bar has somewhere to be and
+  // the right-hand edges of all of them line up.
+  //
+  // Measured from a real scrollbar rather than guessed at, so a theme with a
+  // wider one does not put it back over the controls. One bar stands in for
+  // all of them because they are the same control with the same style; the
+  // floor covers both a null reference and the frames before it has an
+  // implicit width of its own.
+  readonly property real scrollGutter:
+    Math.max(settingsScrollBar ? settingsScrollBar.implicitWidth : 0, Style.space(10))
+
+  // Which section the view is currently inside, named by the pinned indicator.
+  // Held rather than derived, because it depends on delegate geometry the
+  // Repeater only knows after layout, and a binding cannot read that without
+  // fighting it.
+  property var settingsStickyEntry: null
+
+  // The settings view's two geometry questions, in one place. Everything else
+  // that needs them goes through these rather than reaching into the Flickable
+  // and the Repeater by id from across the file.
+  function settingsViewportTop() { return settingsFlick ? settingsFlick.contentY : 0 }
+  function settingsRepeaterItem(i) {
+    return settingsRepeater ? settingsRepeater.itemAt(i) : null
+  }
+
+  // The section the view is currently inside: the last heading at or above the
+  // top of the viewport, while any part of its section is still on screen.
+  //
+  // Both halves matter. Without the first the bar sits empty until the user
+  // has scrolled, which is the one position everybody starts from. Without the
+  // second the last group stays named through the maintenance and danger-zone
+  // rows below it, which belong to no section and would leave the bar
+  // describing somewhere the user had already scrolled past.
+  //
+  // Drawing the heading twice is prevented at the other end: the in-list
+  // heading of whichever section this names is drawn transparent, so it keeps
+  // its place in the layout without appearing alongside its own copy.
+  function updateSettingsSticky() {
+    var entries = settingsEntries
+    var top = settingsViewportTop()
+    var found = null
+
+    for (var i = 0; i < entries.length; i++) {
+      if (!entries[i] || entries[i].kind !== "group") continue
+      var row = settingsRepeaterItem(i)
+      if (!row) continue
+      // Still below the top edge: the section before this one is the one the
+      // view is in.
+      if (row.y > top + 1) break
+      if (top < settingsSectionEnd(i)) found = entries[i]
+    }
+    settingsStickyEntry = found
+  }
+
+  // Where the section beginning at `index` stops: the next heading, or for the
+  // last one, the bottom of the final row before the trailing action blocks.
+  function settingsSectionEnd(index) {
+    var entries = settingsEntries
+    for (var i = index + 1; i < entries.length; i++) {
+      if (!entries[i] || entries[i].kind !== "group") continue
+      var next = settingsRepeaterItem(i)
+      if (next) return next.y
+    }
+    for (var j = entries.length - 1; j > index; j--) {
+      var last = settingsRepeaterItem(j)
+      if (last) return last.y + last.height
+    }
+    var self = settingsRepeaterItem(index)
+    return self ? self.y + self.height : 0
   }
 
   function activateSettingRow() {
@@ -3289,12 +3380,13 @@ Panel {
     closeFilterGroup()
     if (currentScreen !== "settings") screenBeforeSettings = currentScreen
     settingsFlash = ""
-    settingsIndex = 0
+    settingsIndex = firstSettingIndex()
     uwsmFlash = ""
     uwsmConfirmPending = false
     checkDependencies()
     inspectUwsmFragment()
     currentScreen = "settings"
+    Qt.callLater(updateSettingsSticky)
   }
 
   function closeSettings() {
@@ -7000,7 +7092,7 @@ Panel {
 
           Column {
             id: sendCol
-            width: sendFlick.width
+            width: sendFlick.width - root.scrollGutter
             spacing: Style.space(10)
 
             PanelSeparator { width: parent.width }
@@ -7328,7 +7420,7 @@ Panel {
 
           Column {
             id: fpCol
-            width: fpFlick.width
+            width: fpFlick.width - root.scrollGutter
             spacing: Style.space(12)
 
             PanelSeparator { width: parent.width }
@@ -7444,7 +7536,7 @@ Panel {
 
           Column {
             id: genCol
-            width: genFlick.width
+            width: genFlick.width - root.scrollGutter
             spacing: Style.space(10)
 
             PanelSeparator { width: parent.width }
@@ -7819,7 +7911,7 @@ Panel {
 
           Column {
             id: pinCol
-            width: pinFlick.width
+            width: pinFlick.width - root.scrollGutter
           spacing: Style.space(12)
 
           PanelSeparator { width: parent.width }
@@ -7969,7 +8061,7 @@ Panel {
 
           Column {
             id: setupCol
-            width: setupFlick.width
+            width: setupFlick.width - root.scrollGutter
           spacing: Style.space(12)
 
           PanelSeparator { width: parent.width }
@@ -8150,322 +8242,444 @@ Panel {
         // -------------------------------------------------------------------
         // Scrolls rather than overflowing the panel: this screen is taller
         // than the popup's height cap on smaller displays.
-        Flickable {
-          id: settingsFlick
+        Column {
+          id: settingsScreen
           visible: root.activeScreen === "settings"
           width: parent.width
-          height: Math.min(Style.space(520), settingsCol.implicitHeight)
-          contentWidth: width
-          contentHeight: settingsCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: settingsFlick }
-
-          Column {
-            id: settingsCol
-            width: settingsFlick.width
           spacing: Style.space(10)
 
           PanelSeparator { width: parent.width }
 
-          Row {
+          // Pinned above the scroll area rather than scrolling with it. The
+          // right half is the way out, which should never require scrolling to
+          // find. The left half is the section the view is currently inside,
+          // and it folds that section -- so a user twenty rows into Security
+          // can shut it without first scrolling back to its heading.
+          Item {
             width: parent.width
-            spacing: Style.space(8)
+            height: Style.space(26)
 
-            Button {
-              text: "Back (Esc)"
-              iconText: "󰁍"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.closeSettings()
-            }
-
-            Item {
-              width: parent.width - Style.space(220)
-              height: 1
-            }
-
-            Text {
-              textFormat: Text.PlainText
+            // An indicator, not a control. It says which section the view is
+            // inside; the heading it stands for is a plain heading too.
+            Row {
+              id: stickySection
+              anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              visible: root.settingsFlash !== ""
-              text: "󰄬 " + root.settingsFlash
-              color: Color.accent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
-
-          Connections {
-            target: root
-            function onSettingsIndexChanged() {
-              var row = settingsRepeater.itemAt(root.settingsIndex)
-              if (!row) return
-              if (row.y < settingsFlick.contentY) {
-                settingsFlick.contentY = Math.max(0, row.y - Style.space(8))
-              } else if (row.y + row.height > settingsFlick.contentY + settingsFlick.height) {
-                settingsFlick.contentY = Math.min(
-                  Math.max(0, settingsFlick.contentHeight - settingsFlick.height),
-                  row.y + row.height - settingsFlick.height + Style.space(8))
-              }
-            }
-          }
-
-          Repeater {
-            id: settingsRepeater
-            model: root.settingsEntries
-
-            delegate: Column {
-              required property var modelData
-              required property int index
-              width: parent.width
-              spacing: Style.space(4)
-              readonly property bool cursored: index === root.settingsIndex
-
-              // One header per group, drawn by the first entry in it.
-              Item {
-                visible: modelData.groupLabel !== ""
-                width: parent.width
-                height: visible ? Style.space(18) : 0
-              }
+              spacing: Style.space(6)
+              visible: root.settingsStickyEntry !== null
 
               PanelSectionHeader {
                 textFormat: Text.PlainText
-                visible: modelData.groupLabel !== ""
-                text: modelData.groupLabel === "" ? "" : modelData.groupLabel.toUpperCase()
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.settingsStickyEntry
+                  ? String(root.settingsStickyEntry.label || "").toUpperCase() : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
               }
+            }
 
-              // A setting whose dependency is missing is shown but inert, with
-              // the reason stated rather than the control silently doing nothing.
-              readonly property bool blocked: root.settingBlocked(modelData)
-
-              Item {
-                width: parent.width
-                implicitHeight: Math.max(settingTextCol.implicitHeight, settingControlRow.implicitHeight, Style.space(32))
-
-                // Keyboard cursor: a bar in the gutter, so the row it marks is
-                // unmistakable without recolouring the whole row.
-                Rectangle {
-                  anchors.left: parent.left
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(3)
-                  height: parent.height - Style.space(6)
-                  radius: width / 2
-                  color: Color.accent
-                  visible: cursored
-                }
-
-                Column {
-                  id: settingTextCol
-                  anchors.left: parent.left
-                  anchors.leftMargin: cursored ? Style.space(10) : 0
-                  anchors.right: settingControlRow.left
-                  anchors.rightMargin: Style.space(12)
-                  anchors.verticalCenter: parent.verticalCenter
-                  spacing: Style.space(2)
-
-                  Text {
-                    textFormat: Text.PlainText
-                    width: parent.width
-                    text: modelData.label
-                    color: blocked ? root.dim : root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-
-                  Text {
-                    textFormat: Text.PlainText
-                    width: parent.width
-                    text: blocked
-                      ? "Needs fingerprint setup -- see Dependencies below."
-                      : modelData.description
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
-                  }
-                }
-
-                Row {
-                  id: settingControlRow
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
-                  spacing: Style.space(8)
-
-                  ToggleSwitch {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: modelData.type === "bool"
-                    checked: modelData.type === "bool" && root.settingValue(modelData)
-                    interactive: !blocked
-                    foreground: root.fg
-                    accent: Color.accent
-                    onToggled: {
-                      if (blocked) return
-                      // A PIN cannot simply be switched on: it has to be chosen,
-                      // and encrypting it needs the master password.
-                      if (modelData.action === "pin") {
-                        if (checked) root.disablePinUnlock()
-                        else root.beginPinSetup()
-                        return
-                      }
-                      if (modelData.action === "fingerprint") {
-                        if (checked) root.forgetFingerprintUnlock()
-                        else root.beginFingerprintSetup()
-                        return
-                      }
-                      root.writeSetting(modelData.key, !checked, "bool")
-                    }
-                  }
-
-                  Text {
-                    textFormat: Text.PlainText
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: modelData.type === "int" && !!modelData.unit
-                    text: modelData.unit || ""
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-
-                  NumberField {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: modelData.type === "int"
-                    value: modelData.type === "int" ? root.settingValue(modelData) : 0
-                    from: modelData.min || 0
-                    to: modelData.max || 100
-                    stepSize: modelData.step || 1
-                    foreground: root.fg
-                    accent: Color.accent
-                    fontFamily: root.fontFamily
-                    onModified: function(v) { root.writeSetting(modelData.key, v, "int") }
-                  }
-                }
-              }
+            Row {
+              anchors.right: parent.right
+              // Flush with the scrolling rows below, which stop short of the
+              // scrollbar. Without this the Back button overhangs every
+              // control it sits above.
+              anchors.rightMargin: root.scrollGutter
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(8)
 
               Text {
                 textFormat: Text.PlainText
-                visible: modelData.type === "int" && root.settingValue(modelData) === 0 && !!modelData.zeroLabel
-                text: modelData.zeroLabel + " -- this is disabled."
-                color: root.urgent
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.settingsFlash !== ""
+                text: "󰄬 " + root.settingsFlash
+                color: Color.accent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
 
-              PanelSeparator { width: parent.width }
+              Button {
+                text: "Back (Esc)"
+                iconText: "󰁍"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.closeSettings()
+              }
             }
           }
 
-          // SSH agent status and client routing, in SshAgentSettings.qml.
-          // The approval screen stays below with the other screens.
-          SshAgentSettings { panel: root }
 
-          Row {
+          Flickable {
+            id: settingsFlick
             width: parent.width
-            spacing: Style.space(8)
+            height: Math.min(Style.space(520), settingsCol.implicitHeight)
+            contentWidth: width
+            contentHeight: settingsCol.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            ScrollBar.vertical: ScrollBar {
+              id: settingsScrollBar
+              policy: ScrollBar.AsNeeded
+            }
 
-            Button {
-              text: "Dependencies"
-              iconText: "󰏗"
-              tooltipText: "Check the tools this plugin needs"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: {
-                root.setupDismissed = false
-                root.checkDependencies()
-                root.currentScreen = "setup"
+            WheelScroll { view: settingsFlick }
+
+            // The pinned bar names the section the view is inside, so it has to
+            // be recomputed as the view moves and whenever the content resizes.
+            // The height case runs a frame later, after layout.
+            onContentYChanged: root.updateSettingsSticky()
+            onContentHeightChanged: Qt.callLater(root.updateSettingsSticky)
+
+            Column {
+              id: settingsCol
+              // Short of the scrollbar rather than under it. The bar is an
+              // overlay, so without this it sits on top of whatever is at the
+              // right edge -- which on this screen is every toggle and every
+              // number field. Reserved unconditionally: the width would
+              // otherwise change as the bar came and went, reflowing the rows
+              // underneath it.
+              width: settingsFlick.width - root.scrollGutter
+            spacing: Style.space(10)
+
+            Connections {
+              target: root
+              function onSettingsIndexChanged() {
+                var row = settingsRepeater.itemAt(root.settingsIndex)
+                if (!row) return
+                if (row.y < settingsFlick.contentY) {
+                  settingsFlick.contentY = Math.max(0, row.y - Style.space(8))
+                } else if (row.y + row.height > settingsFlick.contentY + settingsFlick.height) {
+                  settingsFlick.contentY = Math.min(
+                    Math.max(0, settingsFlick.contentHeight - settingsFlick.height),
+                    row.y + row.height - settingsFlick.height + Style.space(8))
+                }
               }
             }
 
-            Button {
-              visible: root.fingerprintStored
-              text: "Forget Fingerprint"
-              iconText: "󰈷"
-              tooltipText: "Remove the stored master password from the OS keyring"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.forgetFingerprintUnlock()
-            }
-          }
+            Repeater {
+              id: settingsRepeater
+              model: root.settingsEntries
 
-          // Its own row: this sits beside two buttons already, and a third
-          // one plus the two the confirmation adds overflow the panel width
-          // and elide their labels -- "Remove Plugin Data" reading as
-          // "Remove Plugin" is a considerably more alarming button.
-          Row {
-            width: parent.width
-            spacing: Style.space(8)
+              delegate: Column {
+                required property var modelData
+                required property int index
+                width: parent.width
+                spacing: Style.space(4)
+                readonly property bool cursored: index === root.settingsIndex
 
-            Button {
-              visible: !root.pluginDataConfirmPending
-              text: "Remove Plugin Data"
-              iconText: "󰩹"
-              tooltipText: "Clear the keyring entries, learned suggestions and exported public keys this plugin stored"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              enabled: !root.pluginDataBusy
-              onClicked: root.beginPluginDataRemoval()
-            }
+                readonly property bool isGroup: modelData.kind === "group"
 
-            Button {
-              visible: root.pluginDataConfirmPending
-              text: "Remove Everything"
-              iconText: "󰩹"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              enabled: !root.pluginDataBusy
-              onClicked: root.beginPluginDataRemoval()
-            }
+              // This heading is the one the pinned bar is currently drawing.
+              // The bar stands in for it completely, so the row gives up its
+              // space rather than sitting there empty -- a transparent row
+              // left a heading-sized hole directly under the bar.
+              //
+              // Exactly one heading is ever in this state, so the content
+              // height does not change as the pinned section changes: the
+              // heading taking over collapses at the same moment the previous
+              // one is restored, and the view does not jump.
+              readonly property bool yieldsToBar: isGroup
+                && Boolean(root.settingsStickyEntry)
+                && root.settingsStickyEntry.group === modelData.group
 
-            Button {
-              visible: root.pluginDataConfirmPending
-              text: "Cancel"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.cancelPluginDataRemoval()
-            }
-          }
+                // Breathing room above each heading, except the first.
+                Item {
+                  visible: isGroup && index > 0 && !yieldsToBar
+                  width: parent.width
+                  height: visible ? Style.space(18) : 0
+                }
 
-          // Run this before removing the plugin: once the folder is gone
-          // there is no code left to do it, and `omarchy plugin remove` has
-          // no uninstall hook to call.
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
-            visible: root.pluginDataConfirmPending
-            text: "This clears the stored master password, learned suggestions and exported public keys. "
-              + "Settings and your vault are untouched. It cannot be undone."
-            color: root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
+                // A group heading is a row of its own rather than a label on
+                // the first setting under it: the pinned indicator reads
+                // delegate geometry to tell which section the view is inside,
+                // and a heading carried by another row has no position of its
+                // own to be found at.
+                Item {
+                  visible: isGroup && !yieldsToBar
+                  width: parent.width
+                  height: visible ? Style.space(22) : 0
 
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
-            visible: root.pluginDataFlash !== ""
-            text: root.pluginDataFlash
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
-            text: "Saved to the plugin's entry in ~/.config/omarchy/shell.json via `omarchy bar set`."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
+                  PanelSectionHeader {
+                    textFormat: Text.PlainText
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(modelData.label || "").toUpperCase()
+                    foreground: root.fg
+                    fontFamily: root.fontFamily
                   }
+                }
+
+                // A setting whose dependency is missing is shown but inert, with
+                // the reason stated rather than the control silently doing nothing.
+                readonly property bool blocked: !isGroup && root.settingBlocked(modelData)
+
+                Item {
+                  visible: !isGroup
+                  width: parent.width
+                  implicitHeight: visible
+                    ? Math.max(settingTextCol.implicitHeight, settingControlRow.implicitHeight, Style.space(32))
+                    : 0
+
+                  // Keyboard cursor: a bar in the gutter, so the row it marks is
+                  // unmistakable without recolouring the whole row.
+                  Rectangle {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(3)
+                    height: parent.height - Style.space(6)
+                    radius: width / 2
+                    color: Color.accent
+                    visible: cursored
+                  }
+
+                  Column {
+                    id: settingTextCol
+                    anchors.left: parent.left
+                    anchors.leftMargin: cursored ? Style.space(10) : 0
+                    anchors.right: settingControlRow.left
+                    anchors.rightMargin: Style.space(12)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(2)
+
+                    Text {
+                      textFormat: Text.PlainText
+                      width: parent.width
+                      text: modelData.label
+                      color: blocked ? root.dim : root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                    }
+
+                    Text {
+                      textFormat: Text.PlainText
+                      width: parent.width
+                      // `|| ""` because this binding also runs for the heading
+                      // rows, which carry no description: an invisible item's
+                      // bindings are evaluated all the same, and undefined
+                      // reaches a QString property as a warning per frame.
+                      text: blocked
+                        ? "Needs fingerprint setup -- see Dependencies below."
+                        : (modelData.description || "")
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+                  }
+
+                  Row {
+                    id: settingControlRow
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(8)
+
+                    ToggleSwitch {
+                      anchors.verticalCenter: parent.verticalCenter
+                      visible: modelData.type === "bool"
+                      checked: modelData.type === "bool" && root.settingValue(modelData)
+                      interactive: !blocked
+                      foreground: root.fg
+                      accent: Color.accent
+                      onToggled: {
+                        if (blocked) return
+                        // A PIN cannot simply be switched on: it has to be chosen,
+                        // and encrypting it needs the master password.
+                        if (modelData.action === "pin") {
+                          if (checked) root.disablePinUnlock()
+                          else root.beginPinSetup()
+                          return
+                        }
+                        if (modelData.action === "fingerprint") {
+                          if (checked) root.forgetFingerprintUnlock()
+                          else root.beginFingerprintSetup()
+                          return
+                        }
+                        root.writeSetting(modelData.key, !checked, "bool")
+                      }
+                    }
+
+                    Text {
+                      textFormat: Text.PlainText
+                      anchors.verticalCenter: parent.verticalCenter
+                      visible: modelData.type === "int" && !!modelData.unit
+                      text: modelData.unit || ""
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    NumberField {
+                      anchors.verticalCenter: parent.verticalCenter
+                      visible: modelData.type === "int"
+                      value: modelData.type === "int" ? root.settingValue(modelData) : 0
+                      from: modelData.min || 0
+                      to: modelData.max || 100
+                      stepSize: modelData.step || 1
+                      foreground: root.fg
+                      accent: Color.accent
+                      fontFamily: root.fontFamily
+                      onModified: function(v) { root.writeSetting(modelData.key, v, "int") }
+                    }
+                  }
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  visible: modelData.type === "int" && root.settingValue(modelData) === 0 && !!modelData.zeroLabel
+                  text: (modelData.zeroLabel || "") + " -- this is disabled."
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                PanelSeparator { width: parent.width }
+
+                // The SSH agent has more to say than its four toggles: what the
+                // helper is doing, and whether the user's terminals will reach
+                // it. That block used to sit after all four groups, which was
+                // survivable while nothing folded -- now it would leave a
+                // collapsed SSH Agent section with its status still on screen,
+                // attached to nothing. It loads at the end of the group it
+                // belongs to, so folding the section folds the whole section.
+                //
+                // A Loader rather than a visible binding: this delegate is
+                // instantiated for every row, and only one of them wants it.
+                Loader {
+                  width: parent.width
+                  active: !isGroup && modelData.group === "sshAgent"
+                    && modelData.lastInGroup === true
+                  visible: active
+                  sourceComponent: SshAgentSettings { panel: root }
+                }
+              }
+            }
+
+            Item { width: parent.width; height: Style.space(18) }
+
+            PanelSectionHeader {
+              textFormat: Text.PlainText
+              text: "MAINTENANCE"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                text: "Dependencies"
+                iconText: "󰏗"
+                tooltipText: "Check the tools this plugin needs"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: {
+                  root.setupDismissed = false
+                  root.checkDependencies()
+                  root.currentScreen = "setup"
+                }
+              }
+
+              Button {
+                visible: root.fingerprintStored
+                text: "Forget Fingerprint"
+                iconText: "󰈷"
+                tooltipText: "Remove the stored master password from the OS keyring"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.forgetFingerprintUnlock()
+              }
+            }
+
+            // Everything below this line destroys something. It was drawn in a
+            // row visually identical to the one above it, so "Dependencies" and
+            // "Remove Plugin Data" looked equally safe to press.
+            Item { width: parent.width; height: Style.space(18) }
+
+            PanelSeparator { width: parent.width }
+
+            PanelSectionHeader {
+              textFormat: Text.PlainText
+              text: "DANGER ZONE"
+              foreground: Color.urgent
+              fontFamily: root.fontFamily
+            }
+
+            // Its own row: this sits beside two buttons already, and a third
+            // one plus the two the confirmation adds overflow the panel width
+            // and elide their labels -- "Remove Plugin Data" reading as
+            // "Remove Plugin" is a considerably more alarming button.
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                visible: !root.pluginDataConfirmPending
+                text: "Remove Plugin Data"
+                iconText: "󰩹"
+                tooltipText: "Clear the keyring entries, learned suggestions and exported public keys this plugin stored"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                enabled: !root.pluginDataBusy
+                onClicked: root.beginPluginDataRemoval()
+              }
+
+              Button {
+                visible: root.pluginDataConfirmPending
+                text: "Remove Everything"
+                iconText: "󰩹"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                enabled: !root.pluginDataBusy
+                onClicked: root.beginPluginDataRemoval()
+              }
+
+              Button {
+                visible: root.pluginDataConfirmPending
+                text: "Cancel"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.cancelPluginDataRemoval()
+              }
+            }
+
+            // Run this before removing the plugin: once the folder is gone
+            // there is no code left to do it, and `omarchy plugin remove` has
+            // no uninstall hook to call.
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              visible: root.pluginDataConfirmPending
+              text: "This clears the stored master password, learned suggestions and exported public keys. "
+                + "Settings and your vault are untouched. It cannot be undone."
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              visible: root.pluginDataFlash !== ""
+              text: root.pluginDataFlash
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: "Saved to the plugin's entry in ~/.config/omarchy/shell.json via `omarchy bar set`."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+                    }
+          }
         }
 
         // An SSH request waiting on an unlock. Shown above whatever unlock
@@ -9402,7 +9616,7 @@ Panel {
                 readonly property bool isSelected: root.cursorActive && root.selectedIndex === index
                 readonly property bool isHovered: rowMouseArea.containsMouse
 
-                width: ListView.view.width
+                width: ListView.view.width - root.scrollGutter
                 implicitHeight: Style.space(46)
                 radius: Style.cornerRadius
                 color: isSelected
@@ -9745,7 +9959,7 @@ Panel {
 
               Column {
                 id: filterOptionsCol
-                width: filterOptionsList.width
+                width: filterOptionsList.width - root.scrollGutter
                 spacing: 0
 
                 Repeater {
@@ -9970,7 +10184,7 @@ Panel {
 
             Column {
               id: detailContentColumn
-              width: detailFlickable.width
+              width: detailFlickable.width - root.scrollGutter
               spacing: Style.space(12)
 
               // Item Header
@@ -10682,7 +10896,7 @@ Panel {
 
             Column {
               id: editFormCol
-              width: editFlickable.width
+              width: editFlickable.width - root.scrollGutter
               spacing: Style.space(10)
 
               // Item Type Selector (only for new items)
@@ -10775,7 +10989,7 @@ Panel {
 
                   Column {
                     id: folderPickCol
-                    width: folderPickList.width
+                    width: folderPickList.width - root.scrollGutter
                     spacing: Style.space(2)
 
                     FormPickerRow {
@@ -10865,7 +11079,7 @@ Panel {
 
                   Column {
                     id: orgPickCol
-                    width: orgPickList.width
+                    width: orgPickList.width - root.scrollGutter
                     spacing: Style.space(2)
 
                     FormPickerRow {
@@ -10942,7 +11156,7 @@ Panel {
 
                     Column {
                       id: collectionCol
-                      width: collectionList.width
+                      width: collectionList.width - root.scrollGutter
                       spacing: Style.space(2)
 
                       Text {
