@@ -236,6 +236,12 @@ jobs:
         # per address and GitHub-hosted runners share addresses, so that route
         # fails on someone else's traffic and reports it as our dependency
         # gate going down. The redirect carries no such budget.
+        #
+        # `shell: bash` is explicit because a job running in a container gets
+        # `sh -e` by default, which is dash here -- and dash has no `pipefail`,
+        # so the guard on the line below is itself what fails. Every other step
+        # in this job is a single command and never noticed.
+        shell: bash
         run: |
           set -euo pipefail
           latest="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
