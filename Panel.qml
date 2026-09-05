@@ -28,6 +28,7 @@ Panel {
   readonly property bool rememberSession: Model.boolSetting("rememberSession", setting("rememberSession", true))
   readonly property int autoCopyTotpSec: Model.intSetting("autoCopyTotpSec", setting("autoCopyTotpSec"))
   readonly property bool closeOnCopy: Model.boolSetting("closeOnCopy", setting("closeOnCopy", true))
+  readonly property bool colorizeIcon: Model.boolSetting("colorizeIcon", setting("colorizeIcon", false))
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
@@ -6517,16 +6518,12 @@ Panel {
       anchors.fill: parent
 
       // Constant Base Shield
-      Text {
-        textFormat: Text.PlainText
-        anchors.centerIn: parent
+      OpticalGlyph {
+        anchors.fill: parent
         text: "󰞀"
-        font.family: root.fontFamily
-        font.pixelSize: Style.bar.iconFont
-        color: bar ? bar.barForeground : Color.foreground
-        renderType: Text.NativeRendering
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
+        fontFamily: root.fontFamily
+        fontSize: Style.bar.iconFont
+        color: root.colorizeIcon ? Color.accent : (bar ? bar.barForeground : Color.foreground)
       }
 
       // Mini Install Badge in the same corner while a required tool is absent.

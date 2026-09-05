@@ -26,6 +26,7 @@
       "rememberSession": true,
       "autoCopyTotpSec": 3,
       "closeOnCopy": true,
+      "colorizeIcon": false,
       "suggestOnOpen": true,
       "fingerprintUnlock": false,
       "pinUnlock": false,
@@ -92,6 +93,13 @@
         "label": "Close panel on Enter copy",
         "description": "Automatically close panel after selecting an item with Enter",
         "defaultValue": true
+      },
+      {
+        "key": "colorizeIcon",
+        "type": "boolean",
+        "label": "Colorize menu-bar icon",
+        "description": "Use the active Omarchy theme accent for the primary menu-bar icon.",
+        "defaultValue": false
       },
       {
         "key": "suggestOnOpen",

@@ -21,6 +21,30 @@ const flickAt = panelSrc.indexOf("id: settingsFlick")
 const colAt = panelSrc.indexOf("id: settingsCol")
 const screen = screenAt < 0 ? "" : panelSrc.slice(screenAt, panelSrc.indexOf("SCREEN 1", screenAt))
 
+const shieldAt = panelSrc.indexOf("id: shieldIconComp")
+const statusBarAt = panelSrc.indexOf("// Status Bar Button", shieldAt)
+const shield = shieldAt < 0 ? "" : panelSrc.slice(shieldAt, statusBarAt)
+
+// --- colorized menu-bar icon ------------------------------------------------
+
+check("colorized icon reads the persisted boolean setting",
+  /readonly property bool colorizeIcon: Model\.boolSetting\("colorizeIcon", setting\("colorizeIcon", false\)\)/.test(panelSrc),
+  "expected a false-safe colorizeIcon setting property")
+
+check("colorized icon uses the theme accent only when enabled",
+  /color:\s*root\.colorizeIcon \? Color\.accent : \(bar \? bar\.barForeground : Color\.foreground\)/.test(shield),
+  "expected the primary shield to select Color.accent or its existing foreground")
+
+check("colorized icon leaves status badges independent",
+  shield.includes("color: bar ? bar.urgent : Color.urgent")
+    && shield.includes("color: bar ? bar.barForeground : Color.foreground"),
+  "expected urgent and locked badge colors to remain independently bound")
+
+check("custom shield uses Omarchy's optical glyph renderer",
+  shield.includes("OpticalGlyph")
+    && shield.includes("fontSize: Style.bar.iconFont"),
+  "expected the primary shield to share BarIconButton's OpticalGlyph path")
+
 check("the settings screen has a wrapper outside the scroll area", screenAt >= 0,
   "expected a settingsScreen Column")
 

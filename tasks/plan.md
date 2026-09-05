@@ -316,3 +316,206 @@ setting contract
 | The invisible experience leaves a password or pending process behind | Dismissal denies the request and runs popup-specific credential/prewarm cleanup. |
 | A request label injects markup | Every request-derived `Text` remains `Text.PlainText`. |
 | Overlay traps input after the request ends | Visibility and Wayland keyboard focus bind directly to the live pending request. |
+
+---
+
+# Implementation Plan: Colorized Menu-Bar Icon
+
+## Overview
+
+Add an opt-in `colorizeIcon` boolean setting to the Bitwarden panel. When
+enabled, the primary menu-bar shield follows Omarchy's live `Color.accent`
+theme color; when disabled, it keeps the current bar foreground color. The
+locked padlock, missing-dependency badge, and urgent/error indicators remain
+unchanged so color personalization does not erase status meaning.
+
+The existing settings renderer already turns boolean schema entries into
+keyboard-operable toggle rows. No custom color picker, palette model, new
+dependency, or arbitrary color persistence is required.
+
+## Architecture Decisions
+
+- Store only `colorizeIcon: boolean`; derive the actual color from
+  `Color.accent` at render time so theme changes are inherited automatically.
+- Default the setting to `false` so existing installations retain their current
+  appearance.
+- Apply the setting only to the primary shield glyph in `shieldIconComp`.
+  Leave the padlock and setup/error badges on their existing bindings.
+- Put the row in the General settings group, using the existing schema-driven
+  toggle and `omarchy bar set` persistence path.
+- Treat malformed external values as `false`, using the existing strict
+  boolean-setting behavior.
+
+## Dependency Graph
+
+```text
+manifest default/schema + model schema
+              │
+              ├── settings persistence/value lookup tests
+              │
+              └── Panel color binding + schema-driven General toggle
+                              │
+                              └── QML/static checks + runtime/theme verification
+```
+
+## Task List
+
+### Phase 1: Settings Contract
+
+- [x] Task 1: Add the colorization setting contract
+
+### Checkpoint: Settings Contract
+
+- [x] `colorizeIcon` exists in both `manifest.json` and `BitwardenModel.js`
+      with boolean type and a `false` default.
+- [x] Valid booleans round-trip through the existing writer, while malformed
+      values resolve to `false`.
+- [x] Focused settings/model tests pass before UI wiring begins.
+
+### Phase 2: Vertical UI Slice
+
+- [x] Task 2: Wire the theme-accent shield and General toggle
+
+### Checkpoint: Colorized Icon Behavior
+
+- [x] With the setting off, the primary shield still uses the bar foreground.
+- [x] With the setting on, the primary shield uses `Color.accent`.
+- [x] Lock/setup/error badges retain their existing foreground or urgent colors.
+- [x] The settings row is keyboard-operable and persists through the existing
+      shell reload path.
+
+### Phase 3: Verification and Documentation
+
+- [~] Task 3: Add regression coverage and document the setting
+
+### Checkpoint: Complete
+
+- [x] Focused and full JavaScript tests pass.
+- [x] QML tests/lint and plugin validation pass where the Omarchy environment is
+      available.
+- [ ] Manual verification covers both toggle states, a theme accent change,
+      locked state, setup-required state, and an error/urgent state.
+- [x] README or user-facing feature documentation explains the toggle and its
+      theme-derived behavior.
+- [ ] Human review approves the implementation before merge; no commit or push
+      is performed automatically.
+
+## Task Details
+
+### Task 1: Add the colorization setting contract
+
+**Description:** Register `colorizeIcon` as a General boolean setting in the
+manifest and model schema, expose its default through the widget defaults, and
+ensure the existing settings value/read/write paths recognize it without
+special-case persistence code.
+
+**Acceptance criteria:**
+
+- [x] The manifest and model declare the same `colorizeIcon` key, boolean type,
+      label, description, and `false` default.
+- [x] `boolSetting("colorizeIcon", true)` returns true; malformed values such
+      as strings and numbers fall back to false.
+- [x] The setting is grouped under General and included in visible settings
+      without changing existing group ordering or setting semantics.
+
+**Verification:**
+
+- [x] Tests pass: `node tests/setup-settings.test.js`
+- [x] Tests pass: `node tests/lock-state.test.js`
+- [x] Static check confirms manifest/model schema parity.
+
+**Dependencies:** None
+
+**Files likely touched:**
+
+- `manifest.json`
+- `BitwardenModel.js`
+- `tests/setup-settings.test.js`
+- `tests/lock-state.test.js`
+
+**Estimated scope:** Medium: 3–4 files
+
+### Task 2: Wire the theme-accent shield and General toggle
+
+**Description:** Add the root property that reads `colorizeIcon`, use it only
+for the primary shield glyph in the menu-bar icon component, and rely on the
+existing schema-driven settings delegate to render and persist the toggle.
+Add focused static assertions for the binding and for the unchanged status
+badge color paths.
+
+**Acceptance criteria:**
+
+- [x] `colorizeIcon` is read from the live setting with a false-safe default.
+- [x] The primary shield resolves to `Color.accent` when enabled and the
+      existing bar foreground when disabled.
+- [x] The padlock, missing-tool badge, and urgent/error color bindings are not
+      redirected through the new preference.
+
+**Verification:**
+
+- [x] Tests pass: `node tests/settings-screen.test.js`
+- [x] Focused source assertions pass for shield color precedence and badge
+      independence.
+- [x] QML lint passes for `Panel.qml` with the repository's Omarchy import path.
+
+**Dependencies:** Task 1
+
+**Files likely touched:**
+
+- `Panel.qml`
+- `tests/settings-screen.test.js`
+
+**Estimated scope:** Small: 1–2 files
+
+### Task 3: Add regression coverage and document the setting
+
+**Description:** Complete the feature's regression matrix and user-facing
+documentation. Verify that persistence survives the shell reload path and that
+the selected accent is inherited from the active theme while status indicators
+remain recognizable.
+
+**Acceptance criteria:**
+
+- [x] Tests cover default-off behavior, enabling/disabling through the settings
+      path, malformed persisted values, and preservation of badge colors.
+- [x] User-facing documentation says the toggle follows the active Omarchy
+      theme accent and does not offer arbitrary color selection.
+- [x] No unrelated panel colors or status semantics change.
+
+**Verification:**
+
+- [x] Full JavaScript suite passes:
+      `for test_file in tests/*.test.js; do node "$test_file" || exit 1; done`
+- [x] QML suite passes:
+      `env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORMTHEME QML_XHR_ALLOW_FILE_READ=1 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml`
+- [x] Plugin validation passes: `omarchy plugin validate .`
+- [ ] Manual runtime check confirms both toggle states and theme-derived color
+      behavior when the desktop environment is available.
+
+**Dependencies:** Task 2
+
+**Files likely touched:**
+
+- `README.md` or the relevant feature documentation
+- `tests/setup-settings.test.js`
+- `tests/settings-screen.test.js`
+- `tests/lock-state.test.js`
+
+**Estimated scope:** Medium: 3–4 files
+
+## Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Accent color has poor contrast on a supported theme | Medium | Check light/dark themes manually; retain the existing bar foreground as the safe default and do not alter urgent badges. |
+| The setting is added to one schema but not the other | Medium | Keep manifest/model parity assertions in the focused settings tests. |
+| The setting accidentally recolors status badges | High | Limit the binding change to the primary shield `Text` and assert badge bindings remain independent. |
+| Shell reload does not refresh the bar icon immediately | Low | Verify the existing `omarchy bar set` hot-reload behavior; do not add a second persistence mechanism. |
+
+## Open Questions
+
+- Confirm final user-facing label: **Colorize menu-bar icon** versus **Use
+  theme accent for icon**. The plan assumes the former.
+- Confirm which user-facing documentation file should receive the short setting
+  note; `README.md` is the default unless project conventions prefer
+  `docs/features.md`.
