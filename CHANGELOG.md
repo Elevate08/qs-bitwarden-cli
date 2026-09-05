@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.8.1] - 2026-09-05
+
+### Added
+
+- **Colorized menu-bar icon.** The primary Bitwarden shield can follow the
+  active Omarchy theme accent, while locked, setup and urgent indicators keep
+  their status colors.
+
+### Fixed
+
+- **The panel-open underline stays centered under the shield.** The custom
+  glyph now preserves fractional positioning at non-integer display scales,
+  while the indicator keeps Omarchy's standard width.
+
 ## [1.7.1] - 2026-09-04
 
 ### Fixed
