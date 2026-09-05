@@ -5441,6 +5441,8 @@ var SETTINGS_SCHEMA = [
 
   { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
+  { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
+    description: "Use the active Omarchy theme accent for the primary menu-bar icon." },
   { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
     min: 0, max: 30, step: 1, zeroLabel: "Off", defaultValue: 3,
     description: "Replace the clipboard with the 2FA code this long after the password." },

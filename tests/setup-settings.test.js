@@ -198,6 +198,21 @@ for (const [label, raw] of [["empty", ""], ["garbage", "???\n=\nbw\n"]]) {
 // assertions read the script rather than an argv list.
 const writeScript = (k, v, t) => Model.settingWriteCommand(k, v, t)[2]
 
+// --- colorized menu-bar icon setting ----------------------------------------
+const colorizeIcon = Model.SETTINGS_SCHEMA.find(e => e.key === "colorizeIcon")
+check("colorized icon setting is declared in General", !!colorizeIcon
+  && colorizeIcon.group === "general"
+  && colorizeIcon.type === "bool",
+  JSON.stringify(colorizeIcon))
+check("colorized icon defaults off", !!colorizeIcon && colorizeIcon.defaultValue === false,
+  JSON.stringify(colorizeIcon))
+check("colorized icon accepts only actual booleans",
+  Model.boolSetting("colorizeIcon", true) === true
+    && Model.boolSetting("colorizeIcon", false) === false
+    && Model.boolSetting("colorizeIcon", "true") === false
+    && Model.boolSetting("colorizeIcon", 1) === false,
+  "malformed colorizeIcon input was accepted")
+
 check("boolean settings accept actual JSON booleans",
   Model.boolSetting("fingerprintUnlock", true) === true
     && Model.boolSetting("fingerprintUnlock", false) === false,
@@ -239,6 +254,15 @@ for (const entry of Model.SETTINGS_SCHEMA) {
   check(`schema key '${entry.key}' exists in manifest.json`,
     manifestKeys.has(entry.key), `manifest has [${[...manifestKeys]}]`)
 }
+const colorizeManifest = manifest.barWidget.schema.find(e => e.key === "colorizeIcon")
+check("manifest colorized icon schema matches the model contract",
+  !!colorizeManifest
+    && colorizeManifest.type === "boolean"
+    && colorizeManifest.label === colorizeIcon.label
+    && colorizeManifest.description === colorizeIcon.description
+    && colorizeManifest.defaultValue === false
+    && manifest.barWidget.defaults.colorizeIcon === false,
+  JSON.stringify({ model: colorizeIcon, manifest: colorizeManifest }))
 
 // --- install command --------------------------------------------------------
 check("no packages yields no command", Model.installPackagesCommand([]) === null, "expected null")

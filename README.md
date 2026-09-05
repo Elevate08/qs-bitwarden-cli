@@ -4,7 +4,7 @@ Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
 every item type without opening a browser.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.7.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.8.1-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -172,6 +172,10 @@ their own **DANGER ZONE** heading.
 
 Changes are written to the plugin's entry in `~/.config/omarchy/shell.json`
 through `omarchy bar set`, so Omarchy owns the file and the shell hot-reloads.
+
+The General settings include **Colorize menu-bar icon**, which makes the
+primary Bitwarden shield follow the active Omarchy theme accent. It is off by
+default; lock and setup/error indicators keep their existing status colors.
 
 <br clear="all">
 
