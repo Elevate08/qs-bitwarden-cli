@@ -40,10 +40,16 @@ check("colorized icon leaves status badges independent",
     && shield.includes("color: bar ? bar.barForeground : Color.foreground"),
   "expected urgent and locked badge colors to remain independently bound")
 
-check("custom shield uses Omarchy's optical glyph renderer",
-  shield.includes("OpticalGlyph")
-    && shield.includes("fontSize: Style.bar.iconFont"),
-  "expected the primary shield to share BarIconButton's OpticalGlyph path")
+check("panel-open indicator keeps Omarchy's standard width",
+  !panelSrc.includes("openPanelIndicatorWidth"),
+  "expected no plugin-specific width override for the panel-open indicator")
+
+check("custom shield preserves fractional positioning through the scene graph",
+  shield.includes("id: shieldGlyphMetrics")
+    && shield.includes("shieldGlyphMetrics.tightBoundingRect")
+    && shield.includes("anchors.horizontalCenterOffset")
+    && shield.includes("renderType: Text.QtRendering"),
+  "expected a scene-graph-rendered shield with corrected painted side bearings")
 
 check("the settings screen has a wrapper outside the scroll area", screenAt >= 0,
   "expected a settingsScreen Column")
