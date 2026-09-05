@@ -173,6 +173,10 @@ their own **DANGER ZONE** heading.
 Changes are written to the plugin's entry in `~/.config/omarchy/shell.json`
 through `omarchy bar set`, so Omarchy owns the file and the shell hot-reloads.
 
+The General settings include **Colorize menu-bar icon**, which makes the
+primary Bitwarden shield follow the active Omarchy theme accent. It is off by
+default; lock and setup/error indicators keep their existing status colors.
+
 <br clear="all">
 
 ---

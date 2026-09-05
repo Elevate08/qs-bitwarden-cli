@@ -1036,3 +1036,56 @@ available.
 - [x] No private key, password, session token, payload, or signature is added
       to persistent QML state, logs, argv, files, or tests.
 - [x] Human review approves merge; no commit or push is performed automatically.
+
+---
+
+# Task List: Colorized Menu-Bar Icon
+
+Source design: `docs/ideas/colorized-menu-bar-icon.md`.
+Implementation plan: `tasks/plan.md`, “Colorized Menu-Bar Icon”.
+
+## Task 1: Add the colorization setting contract
+
+- [x] Add `colorizeIcon` to the manifest defaults/schema and the model settings
+      schema as a General boolean with a false default.
+- [x] Extend focused settings tests for schema parity and strict false fallback
+      on malformed values.
+- [x] Verify with `node tests/setup-settings.test.js` and
+      `node tests/lock-state.test.js`.
+
+**Dependencies:** None
+
+## Task 2: Wire the theme-accent shield and General toggle
+
+- [x] Read `colorizeIcon` from the live setting in `Panel.qml`.
+- [x] Use `Color.accent` only for the primary shield when enabled; preserve the
+      existing foreground/urgent badge bindings.
+- [x] Add focused settings-screen/source assertions and run QML lint.
+
+**Dependencies:** Task 1
+
+## Checkpoint: Colorized Icon Behavior
+
+- [x] Off state matches the current bar icon.
+- [x] On state uses the active theme accent.
+- [x] Locked, setup-required, and error states retain their status indicators.
+- [ ] Human review confirms the UI label and behavior before final verification.
+
+## Task 3: Add regression coverage and document the setting
+
+- [x] Complete the focused and full regression coverage.
+- [x] Document the General toggle and theme-derived behavior in the chosen
+      user-facing documentation file.
+- [x] Run the full JavaScript/QML suites and `omarchy plugin validate .`.
+- [ ] Perform the manual runtime/theme verification when the desktop
+      environment is available.
+
+**Dependencies:** Task 2
+
+## Checkpoint: Colorized Menu-Bar Icon Complete
+
+- [x] All acceptance criteria in `docs/ideas/colorized-menu-bar-icon.md` and
+      `tasks/plan.md` pass.
+- [x] No unrelated icon, badge, or panel colors changed.
+- [ ] Human review approves the implementation; no commit or push is performed
+      automatically.
