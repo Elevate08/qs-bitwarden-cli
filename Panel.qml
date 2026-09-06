@@ -6528,9 +6528,15 @@ Panel {
       Text {
         textFormat: Text.PlainText
         id: shieldGlyph
-        // Native text is snapped before fractional output scaling. Keep this
-        // glyph in Qt's scene graph so its corrected painted center stays on
-        // the same logical centerline as the bar's panel-open indicator.
+        // The centering below is what holds the glyph on the same logical
+        // centerline as the bar's panel-open indicator; the renderer does not
+        // enter into it. Measured at scale 1.3333, QtRendering and
+        // NativeRendering put the painted center on the same pixel -- but
+        // QtRendering came out with saturated colour on the glyph edges, blue
+        // down one side and gold down the other, which no other icon in the bar
+        // has. So this matches what Omarchy uses everywhere else
+        // (Ui/OpticalGlyph.qml, Ui/WidgetButton.qml) and the plugin's own lock
+        // and install badges below.
         anchors.centerIn: parent
         anchors.horizontalCenterOffset: shieldGlyph.implicitWidth / 2
           - (shieldGlyphMetrics.tightBoundingRect.x
@@ -6539,7 +6545,7 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.bar.iconFont
         color: root.colorizeIcon ? Color.accent : (bar ? bar.barForeground : Color.foreground)
-        renderType: Text.QtRendering
+        renderType: Text.NativeRendering
       }
 
       // Mini Install Badge in the same corner while a required tool is absent.
