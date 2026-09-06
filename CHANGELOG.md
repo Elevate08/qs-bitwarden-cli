@@ -13,6 +13,12 @@
 - **The panel-open underline stays centered under the shield.** The custom
   glyph now preserves fractional positioning at non-integer display scales,
   while the indicator keeps Omarchy's standard width.
+- **The shield no longer renders with coloured edges.** The glyph was drawn
+  through a different text renderer than the rest of the bar, which left
+  saturated blue and gold along its edges -- visible against every theme, and
+  on no other icon. It now uses the renderer Omarchy uses everywhere else. The
+  centering above is unaffected: both renderers place the painted center on the
+  same pixel at fractional scales.
 
 ## [1.7.1] - 2026-09-04
 

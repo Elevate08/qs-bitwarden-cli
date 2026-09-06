@@ -44,12 +44,21 @@ check("panel-open indicator keeps Omarchy's standard width",
   !panelSrc.includes("openPanelIndicatorWidth"),
   "expected no plugin-specific width override for the panel-open indicator")
 
-check("custom shield preserves fractional positioning through the scene graph",
+check("custom shield corrects its painted side bearings",
   shield.includes("id: shieldGlyphMetrics")
     && shield.includes("shieldGlyphMetrics.tightBoundingRect")
-    && shield.includes("anchors.horizontalCenterOffset")
-    && shield.includes("renderType: Text.QtRendering"),
-  "expected a scene-graph-rendered shield with corrected painted side bearings")
+    && shield.includes("anchors.horizontalCenterOffset"),
+  "expected corrected painted side bearings on the shield")
+
+// The centering above is what aligns the glyph with the panel-open indicator;
+// the renderer is not part of it -- both put the painted center on the same
+// pixel at scale 1.3333. QtRendering additionally drew saturated colour along
+// the glyph edges, which no other icon in the bar has, so the shield renders
+// the way the rest of Omarchy does.
+check("shield renders the way the rest of the bar does",
+  shield.includes("renderType: Text.NativeRendering")
+    && !shield.includes("renderType: Text.QtRendering"),
+  "expected the shield to use Text.NativeRendering, as Omarchy's own glyphs do")
 
 check("the settings screen has a wrapper outside the scroll area", screenAt >= 0,
   "expected a settingsScreen Column")
