@@ -1047,7 +1047,14 @@ function sleepMonitorCommand() {
   // started and stopped by the panel and by nothing else, so every path that
   // could fail waits before trying again instead of returning and inviting a
   // restart -- a monitor that cannot start must not become a hot loop.
-  var script = "while :; do "
+  // Quickshell kills only its direct child on reload, not that child's tree.
+  // Keep a watcher on its stdin pipe: even SIGKILL of the owner closes the
+  // pipe, so the watcher can kill our private process group. setsid below
+  // makes $$ the group id; never run this script in the shell's own group.
+  // Explicit stdin redirection keeps Bash from giving the background watcher
+  // /dev/null. The panel must keep stdinEnabled true for the owner's lifetime.
+  var script = "(while IFS= read -r _; do :; done; kill -KILL -- -$$) <&0 & "
+    + "while :; do "
     + "command -v gdbus >/dev/null 2>&1 || { sleep 300; continue; }; "
     + "if systemd-inhibit --what=sleep --mode=delay"
     + " --who=" + shellQuote("Bitwarden")
@@ -1057,7 +1064,7 @@ function sleepMonitorCommand() {
     + "echo " + shellQuote(WAKE_SIGNAL_TOKEN) + "; "
     + "else sleep 5; fi; "
     + "done"
-  return ["bash", "-c", script]
+  return ["setsid", "bash", "-c", script]
 }
 
 function activeWindowCommand() {

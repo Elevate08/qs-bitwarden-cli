@@ -54,6 +54,8 @@ node tests/lock-state.test.js       # the auto-lock survives a suspend, the timi
                                     # is refused rather than rendered
 node tests/lock-triggers.test.js    # locking on screen lock and on suspend, and the window in
                                     # which a terminal login's session key is accepted
+node tests/sleep-monitor-lifetime.test.js # stdin closure and owner/direct-child TERM/KILL cleanup
+                                         # Linux /proc; stubbed logind and inhibitors
 node tests/hardening.test.js        # `--` before every server-chosen id, the custom-server check,
                                     # and that logging out takes the learned suggestions with it
 node tests/buffer-scrub.test.js     # emptying the pipe buffers a lock used to leave full, and the

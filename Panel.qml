@@ -5725,6 +5725,8 @@ Panel {
   Process {
     id: sleepMonitorProc
     running: root.lockOnSuspend
+    // Closing this pipe tears down the monitor's entire process group.
+    stdinEnabled: true
     command: Model.sleepMonitorCommand()
     stdout: SplitParser {
       onRead: function(line) { root.onSleepSignal(line) }
