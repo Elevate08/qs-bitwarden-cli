@@ -14,6 +14,7 @@ const read = f => fs.existsSync(path.join(__dirname, "..", f))
 
 const fieldSrc = read("DetailField.qml")
 const panelSrc = read("Panel.qml")
+const customEditorSrc = read("CustomFieldsEditor.qml")
 
 let pass = 0
 const failures = []
@@ -123,11 +124,32 @@ check("custom fields are rendered from the parsed detail collection",
     && /value:\s*modelData\.value/.test(customUse),
   customUse)
 check("hidden custom fields are masked and reveal independently",
-  /sensitive:\s*Number\(modelData\.type\)\s*===\s*1/.test(customUse)
+  /sensitive:\s*Boolean\(modelData\.sensitive\)/.test(customUse)
     && /revealKey:\s*"customField:"\s*\+\s*index/.test(customUse)
     && /revealed:\s*root\.isFieldRevealed\(revealKey\)/.test(customUse)
     && /onRevealToggled:\s*root\.toggleFieldReveal\(revealKey\)/.test(customUse),
   customUse)
+
+check("the item form edits the custom-field collection",
+  /CustomFieldsEditor\s*\{[\s\S]{0,100}panel:\s*root/.test(panelSrc)
+    && /id:\s*customFieldEditorRepeater/.test(customEditorSrc)
+    && /model:\s*editor\.panel\.formCustomFields/.test(customEditorSrc)
+    && /onTextChanged:\s*fieldRow\.modelData\.name\s*=\s*text/.test(customEditorSrc)
+    && /onTextChanged:\s*fieldRow\.modelData\.value\s*=\s*text/.test(customEditorSrc),
+  customEditorSrc)
+check("the form offers Bitwarden's type-aware custom-field controls",
+  /text:\s*"Text"/.test(customEditorSrc)
+    && /text:\s*"Hidden"/.test(customEditorSrc)
+    && /text:\s*"Boolean"/.test(customEditorSrc)
+    && /text:\s*"Linked"/.test(customEditorSrc)
+    && /password:\s*Number\(fieldRow\.modelData\.type\)\s*===\s*1/.test(customEditorSrc)
+    && /fieldRow\.booleanValue\s*=\s*!fieldRow\.booleanValue/.test(customEditorSrc),
+  customEditorSrc)
+check("custom fields can be added and removed from the form",
+  /onClicked:\s*editor\.panel\.removeFormCustomField\(fieldRow\.index\)/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.formPicker\s*=\s*"customAdd"/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.addFormCustomField\(\)/.test(customEditorSrc),
+  customEditorSrc)
 check("custom-field copies use the panel's guarded clipboard path",
   /onCopyRequested:\s*root\.copyToClipboard\(modelData\.value,\s*modelData\.name\)/.test(customUse),
   customUse)

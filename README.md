@@ -208,7 +208,7 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
 | Trash: restore a deleted item [^trash] | ❌ | ✅ | ✅ |
 | Upload attachments [^attach] | ❌ | ✅ | ✅ |
 | File Sends [^filesend] | ❌ | ✅ | ✅ |
-| Edit custom fields [^fields] | ❌ | ✅ | ✅ |
+| View / edit custom fields [^fields] | ✅ | ✅ | ✅ |
 | Organization admin: confirm members, approve devices [^orgadmin] | ❌ | ✅ | ❌ |
 
 [^cli-json]: The CLI creates a login by default; other types need the JSON
@@ -252,7 +252,9 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
     `bw create attachment --file`.
 [^filesend]: This plugin creates text Sends only. Both official clients send
     files too -- `bw send -f <path>`.
-[^fields]: This plugin shows an item's custom fields but does not edit them.
+[^fields]: Text, hidden, boolean and linked fields follow the same type model
+    as Bitwarden's browser extension. Secure Notes have no linked native field,
+    so the linked type is offered only for logins, cards and identities.
 [^orgadmin]: `bw confirm` and `bw device-approval` are CLI features; the
     desktop app does not do this either, and it is otherwise the web vault's
     job. Listed because the CLI is genuinely ahead of both here.

@@ -2157,18 +2157,58 @@ function identityFullName(identity) {
     .join(" ")
 }
 
-function itemCustomFields(fields) {
+// Linked fields do not store their own value. They point at one of the
+// cipher's native fields, using the stable ids from Bitwarden's LinkedIdType
+// enum. Resolve that value for the detail screen while retaining linkedId so
+// an edit can write the relationship back unchanged.
+function linkedCustomFieldValue(item, linkedId) {
+  var it = item || {}
+  var login = it.login || {}
+  var card = it.card || {}
+  var identity = it.identity || {}
+  var id = Number(linkedId)
+  var values = {
+    100: login.username, 101: login.password,
+    300: card.cardholderName, 301: card.expMonth, 302: card.expYear,
+    303: card.code, 304: card.brand, 305: card.number,
+    400: identity.title, 401: identity.middleName,
+    402: identity.address1, 403: identity.address2, 404: identity.address3,
+    405: identity.city, 406: identity.state, 407: identity.postalCode,
+    408: identity.country, 409: identity.company, 410: identity.email,
+    411: identity.phone, 412: identity.ssn, 413: identity.username,
+    414: identity.passportNumber, 415: identity.licenseNumber,
+    416: identity.firstName, 417: identity.lastName,
+    418: identityFullName(identity)
+  }
+  var value = values[id]
+  return value === undefined || value === null ? "" : String(value)
+}
+
+function linkedCustomFieldIsSensitive(linkedId) {
+  var id = Number(linkedId)
+  return id === 101 || id === 303 || id === 305
+    || id === 412 || id === 414 || id === 415
+}
+
+function itemCustomFields(fields, item) {
   var customFields = []
   var rawFields = toList(fields)
   for (var i = 0; i < rawFields.length; i++) {
     var field = rawFields[i]
     if (!field || !field.name) continue
+    var type = Number(field.type || 0)
+    var linkedId = field.linkedId === undefined || field.linkedId === null
+      ? null : Number(field.linkedId)
     customFields.push({
       name: String(field.name || ""),
       // Keep an explicit false from a boolean field. `false || ""` erased it
       // and left the detail row with no value to draw.
-      value: field.value === undefined || field.value === null ? "" : String(field.value),
-      type: Number(field.type || 0) // 0: text, 1: hidden, 2: boolean, 3: linked
+      value: type === 3
+        ? linkedCustomFieldValue(item, linkedId)
+        : (field.value === undefined || field.value === null ? "" : String(field.value)),
+      type: type, // 0: text, 1: hidden, 2: boolean, 3: linked
+      linkedId: linkedId,
+      sensitive: type === 1 || (type === 3 && linkedCustomFieldIsSensitive(linkedId))
     })
   }
   return customFields
@@ -2455,7 +2495,7 @@ function itemDetailFromObject(it) {
     hasAttachments: attachments.length > 0,
     card: cardDetail(it.card),
     identity: identityDetail(it.identity),
-    fields: itemCustomFields(it.fields),
+    fields: itemCustomFields(it.fields, it),
     rawObject: it
   }
 }
@@ -2540,11 +2580,17 @@ function filterItems(items, query, category, selectedOrg, selectedFolder) {
 }
 
 // Returns "" when the form is savable, or the reason it is not.
-function validateItemForm(name, organizationId, collectionIds) {
+function validateItemForm(name, organizationId, collectionIds, customFields) {
   if (!String(name || "").trim()) return "Item title is required"
   var isOrg = organizationId && organizationId !== "personal" && organizationId !== "all"
   if (isOrg && (!Array.isArray(collectionIds) || collectionIds.length === 0)) {
     return "Pick at least one collection for an organization item"
+  }
+  var fields = toList(customFields)
+  for (var i = 0; i < fields.length; i++) {
+    if (!fields[i] || !String(fields[i].name || "").trim()) {
+      return "Custom field " + (i + 1) + " needs a label"
+    }
   }
   return ""
 }
@@ -2612,11 +2658,39 @@ function updateIdentityFields(identity, fields) {
   }
 }
 
+// Strip the form-only reveal flag and normalize values to the representation
+// the Bitwarden clients write. Booleans are strings in cipher JSON, while a
+// linked field stores its target id and deliberately has no independent value.
+function customFieldsPayload(fields) {
+  var raw = toList(fields)
+  var out = []
+  for (var i = 0; i < raw.length; i++) {
+    var field = raw[i]
+    if (!field || !String(field.name || "").trim()) continue
+    var type = Number(field.type)
+    if (type < 0 || type > 3 || isNaN(type)) type = 0
+    var clean = { name: String(field.name), type: type }
+    if (type === 3) {
+      clean.value = null
+      if (field.linkedId !== undefined && field.linkedId !== null) {
+        clean.linkedId = Number(field.linkedId)
+      }
+    } else if (type === 2) {
+      clean.value = field.value === true || String(field.value).toLowerCase() === "true"
+        ? "true" : "false"
+    } else {
+      clean.value = field.value === undefined || field.value === null ? "" : String(field.value)
+    }
+    out.push(clean)
+  }
+  return out
+}
+
 // `typeFields` carries the card or identity boxes. It is a trailing object
 // rather than twenty-four more positional arguments: a card needs six and an
 // identity eighteen, and a call site that long is one transposed pair away
 // from writing an expiry year into a security code.
-function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields) {
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (Number(typeCode) === 5) return null
   var payload = {
     type: Number(typeCode || 1),
@@ -2649,10 +2723,12 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
     updateIdentityFields(payload.identity, typeFields)
   }
 
+  if (customFields !== undefined) payload.fields = customFieldsPayload(customFields)
+
   return payload
 }
 
-function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields) {
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (existingItem && (Number(existingItem.typeCode || existingItem.type) === 5
       || (existingItem.rawObject && Number(existingItem.rawObject.type) === 5))) return null
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
@@ -2696,6 +2772,12 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
     if (!payload.identity) payload.identity = {}
     updateIdentityFields(payload.identity, typeFields)
   }
+
+  // Undefined means an older/non-form caller had no custom-field state and
+  // therefore wants the cloned fields left alone. An explicit array, including
+  // an empty one, is the edit form's authoritative value and can add, change,
+  // reorder, or remove fields.
+  if (customFields !== undefined) payload.fields = customFieldsPayload(customFields)
 
   return payload
 }
