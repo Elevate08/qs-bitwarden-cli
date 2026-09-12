@@ -143,7 +143,7 @@ Column {
           ? "" : String(fieldRow.modelData.value)
         rightPadding: Number(fieldRow.modelData.type) === 1
           ? revealButton.width + Style.space(12) : horizontalPadding
-        onTextChanged: fieldRow.modelData.value = text
+        onTextChanged: editor.panel.setFormCustomFieldValue(fieldRow.index, text)
 
         Button {
           id: revealButton
@@ -173,7 +173,7 @@ Column {
         fontSize: Style.font.bodySmall
         onClicked: {
           fieldRow.booleanValue = !fieldRow.booleanValue
-          fieldRow.modelData.value = fieldRow.booleanValue
+          editor.panel.setFormCustomFieldValue(fieldRow.index, fieldRow.booleanValue)
         }
       }
 
@@ -209,7 +209,7 @@ Column {
             picked: fieldRow.linkedTarget === Number(modelData.id)
             onActivated: {
               fieldRow.linkedTarget = Number(modelData.id)
-              fieldRow.modelData.linkedId = Number(modelData.id)
+              editor.panel.setFormCustomFieldLinkedId(fieldRow.index, modelData.id)
               editor.panel.formPicker = ""
             }
           }

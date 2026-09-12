@@ -4815,6 +4815,22 @@ Panel {
     formPicker = ""
   }
 
+  // A Repeater may expose an object model row as a delegate-local QVariantMap.
+  // Writing `modelData.value` can therefore update what the row draws without
+  // updating the array saveItemForm later serializes. Always write through the
+  // form's authoritative array. No property-change signal is needed here: the
+  // editor already owns the value it just drew, and avoiding an array reassign
+  // keeps focus stable while the user types.
+  function setFormCustomFieldValue(index, value) {
+    if (index < 0 || index >= formCustomFields.length) return
+    formCustomFields[index].value = value
+  }
+
+  function setFormCustomFieldLinkedId(index, linkedId) {
+    if (index < 0 || index >= formCustomFields.length) return
+    formCustomFields[index].linkedId = Number(linkedId)
+  }
+
   function removeFormCustomField(index) {
     if (index < 0 || index >= formCustomFields.length) return
     var next = formCustomFields.slice()

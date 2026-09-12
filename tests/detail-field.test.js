@@ -134,7 +134,13 @@ check("the item form edits the custom-field collection",
   /CustomFieldsEditor\s*\{[\s\S]{0,100}panel:\s*root/.test(panelSrc)
     && /id:\s*customFieldEditorRepeater/.test(customEditorSrc)
     && /model:\s*editor\.panel\.formCustomFields/.test(customEditorSrc)
-    && /onTextChanged:\s*fieldRow\.modelData\.value\s*=\s*text/.test(customEditorSrc),
+    && /onTextChanged:\s*editor\.panel\.setFormCustomFieldValue\(fieldRow\.index,\s*text\)/.test(customEditorSrc),
+  customEditorSrc)
+check("value changes write through to the form array rather than a delegate copy",
+  !/fieldRow\.modelData\.(?:value|linkedId)\s*=(?!=)/.test(customEditorSrc)
+    && /formCustomFields\[index\]\.value\s*=\s*value/.test(panelSrc)
+    && /setFormCustomFieldValue\(fieldRow\.index,\s*fieldRow\.booleanValue\)/.test(customEditorSrc)
+    && /setFormCustomFieldLinkedId\(fieldRow\.index,\s*modelData\.id\)/.test(customEditorSrc),
   customEditorSrc)
 check("field labels are read-only until their own edit button is pressed",
   !/onTextChanged:\s*fieldRow\.modelData\.name\s*=\s*text/.test(customEditorSrc)
