@@ -6673,7 +6673,7 @@ Panel {
         ? keyCatcher
         : (root.status === "unauthenticated"
           ? (root.show2faField ? code2faField : emailField)
-          : passField))
+          : (root.pinReady ? pinField : passField)))
     contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.filterDrawerHeight)
 
