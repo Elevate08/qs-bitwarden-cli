@@ -47,6 +47,10 @@ check("field text is pinned to plain text",
 check("long values elide rather than pushing the row wider",
   /elide:\s*Text\.ElideRight/.test(fieldSrc), fieldSrc)
 
+check("unbounded custom-field names wrap within the detail width",
+  /PanelSectionHeader\s*\{[\s\S]{0,180}width:\s*parent\.width[\s\S]{0,100}wrapMode:\s*Text\.Wrap/.test(fieldSrc),
+  fieldSrc)
+
 // --- how the detail screen uses it -------------------------------------------
 
 const uses = panelSrc.match(/DetailField \{[\s\S]*?\n              \}/g) || []
@@ -104,6 +108,29 @@ check("each toggles only its own key",
     const toggled = (u.match(/onRevealToggled: root\.toggleFieldReveal\("([^"]+)"\)/) || [])[1]
     return shown && shown === toggled
   }), "a field must reveal and hide the same key")
+
+// --- custom fields ----------------------------------------------------------
+
+const customAt = panelSrc.indexOf("id: customFieldsSection")
+const customUse = customAt === -1 ? "" : panelSrc.slice(customAt, customAt + 1800)
+check("the detail screen has a custom-fields section",
+  customAt !== -1 && /text:\s*"CUSTOM FIELDS"/.test(customUse), customUse)
+check("custom fields are rendered from the parsed detail collection",
+  /id:\s*customFieldRepeater/.test(customUse)
+    && /model:\s*root\.detailItem\s*\?\s*root\.detailItem\.fields\s*:\s*\[\]/.test(customUse)
+    && /delegate:\s*DetailField/.test(customUse)
+    && /label:\s*modelData\.name/.test(customUse)
+    && /value:\s*modelData\.value/.test(customUse),
+  customUse)
+check("hidden custom fields are masked and reveal independently",
+  /sensitive:\s*Number\(modelData\.type\)\s*===\s*1/.test(customUse)
+    && /revealKey:\s*"customField:"\s*\+\s*index/.test(customUse)
+    && /revealed:\s*root\.isFieldRevealed\(revealKey\)/.test(customUse)
+    && /onRevealToggled:\s*root\.toggleFieldReveal\(revealKey\)/.test(customUse),
+  customUse)
+check("custom-field copies use the panel's guarded clipboard path",
+  /onCopyRequested:\s*root\.copyToClipboard\(modelData\.value,\s*modelData\.name\)/.test(customUse),
+  customUse)
 
 check("no single shared reveal flag is left",
   !/root\.passwordRevealed/.test(panelSrc),

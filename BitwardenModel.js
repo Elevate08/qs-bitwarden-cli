@@ -2165,7 +2165,9 @@ function itemCustomFields(fields) {
     if (!field || !field.name) continue
     customFields.push({
       name: String(field.name || ""),
-      value: String(field.value || ""),
+      // Keep an explicit false from a boolean field. `false || ""` erased it
+      // and left the detail row with no value to draw.
+      value: field.value === undefined || field.value === null ? "" : String(field.value),
       type: Number(field.type || 0) // 0: text, 1: hidden, 2: boolean, 3: linked
     })
   }

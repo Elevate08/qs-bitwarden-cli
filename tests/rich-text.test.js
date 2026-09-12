@@ -72,6 +72,7 @@ for (const file of ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"
 const panel = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml", "FormPickerRow.qml", "StatusNotice.qml", "DetailField.qml", "WheelScroll.qml"]
   .map(file => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
   .join("\n")
+const detailField = fs.readFileSync(path.join(__dirname, "..", "DetailField.qml"), "utf8")
 for (const binding of ["formFolderLabel()", "formOrgLabel()", "Model.clipLabel(value, 20)",
                        'name + " filter (" + shortcut + "): " + value']) {
   const line = panel.split("\n").find(l => l.includes(binding) && /^\s*(text|tooltipText):/.test(l))
@@ -91,6 +92,10 @@ check("the vault value is clipped before it is neutralized, never after",
   String(clipLine))
 check("the suggestion tooltip neutralizes the window title it quotes",
   /tooltipText: Model\.plainLabel\(\(pinned/.test(panel), "expected Model.plainLabel around the tooltip")
+check("custom-field names are neutralized before reaching action tooltips",
+  /tooltipText:\s*Model\.plainLabel\([\s\S]{0,180}root\.copyLabel\.toLowerCase\(\)/.test(detailField)
+    && (detailField.match(/tooltipText:\s*Model\.plainLabel\(/g) || []).length >= 2,
+  "both DetailField action tooltips must neutralize their dynamic label")
 
 // --- clipping vault text to a width the panel can hold ---
 // Ui.Button has no elide, so a folder name decides how wide a button is. The

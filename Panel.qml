@@ -10930,6 +10930,44 @@ Panel {
                 }
               }
 
+              // -----------------------------------------------------------
+              // FIELDS: Custom
+              // -----------------------------------------------------------
+              // Custom fields belong to every ordinary vault item type. The
+              // model has always preserved them; this is the detail renderer
+              // that makes them visible. Hidden fields use the same per-field
+              // reveal and clipboard paths as the built-in secrets.
+              Column {
+                id: customFieldsSection
+                visible: Boolean(root.detailItem && root.detailItem.fields
+                  && root.detailItem.fields.length > 0)
+                width: parent.width
+                spacing: Style.space(8)
+
+                PanelSectionHeader { text: "CUSTOM FIELDS" }
+
+                Repeater {
+                  id: customFieldRepeater
+                  model: root.detailItem ? root.detailItem.fields : []
+
+                  delegate: DetailField {
+                    required property var modelData
+                    required property int index
+                    readonly property string revealKey: "customField:" + index
+
+                    label: modelData.name
+                    copyLabel: modelData.name
+                    value: modelData.value
+                    sensitive: Number(modelData.type) === 1
+                    revealed: root.isFieldRevealed(revealKey)
+                    foreground: root.fg
+                    fontFamily: root.fontFamily
+                    onRevealToggled: root.toggleFieldReveal(revealKey)
+                    onCopyRequested: root.copyToClipboard(modelData.value, modelData.name)
+                  }
+                }
+              }
+
 
             }
           }

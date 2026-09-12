@@ -50,6 +50,17 @@ const login = {
   fields: [{ name: "recovery", value: "abcd-efgh", type: 1 }]
 }
 
+const secureNote = {
+  object: "item", id: "44444444-4444-4444-4444-444444444444",
+  type: 2, name: "Operations", notes: "Runbook", favorite: false,
+  secureNote: { type: 0 },
+  fields: [
+    { name: "Region", value: "eu-west", type: 0 },
+    { name: "API key", value: "not-a-real-secret", type: 1 },
+    { name: "Enabled", value: false, type: 2 }
+  ]
+}
+
 const card = {
   object: "item", id: "22222222-2222-2222-2222-222222222222",
   type: 3, name: "Visa", notes: "", favorite: false,
@@ -86,7 +97,7 @@ check("generic write and private-read commands reject SSH", Model.buildCreatePay
 
 // --- the equivalence the optimisation rests on ------------------------------
 
-for (const raw of [login, card, identity]) {
+for (const raw of [login, secureNote, card, identity]) {
   const viaGetItem = Model.parseItemDetail(JSON.stringify(raw))
   const viaList = Model.itemDetailFromObject(raw)
   check(`${raw.name}: the list-built detail matches the get-item-built detail`,
@@ -96,7 +107,7 @@ for (const raw of [login, card, identity]) {
 
 // --- parseItems keeps what the detail view needs ----------------------------
 
-const listed = Model.parseItems(JSON.stringify([login, card, identity]))
+const listed = Model.parseItems(JSON.stringify([login, secureNote, card, identity]))
 check("every listed item carries its raw object", listed.every(i => i.rawObject), "missing rawObject")
 
 const listedLogin = listed.find(i => i.id === login.id)
@@ -109,6 +120,17 @@ check("so do custom fields, which the list view itself never shows",
     && detail.fields[0].value === "abcd-efgh", JSON.stringify(detail.fields))
 check("so do notes", detail.notes === "recovery codes in the safe", detail.notes)
 check("so do URIs", detail.uris[0] === "https://github.com/login", JSON.stringify(detail.uris))
+
+const listedSecureNote = listed.find(i => i.id === secureNote.id)
+const secureNoteDetail = Model.itemDetailFromObject(listedSecureNote.rawObject)
+check("secure-note custom fields survive into the detail model",
+  secureNoteDetail.fields.length === 3
+    && secureNoteDetail.fields[0].name === "Region"
+    && secureNoteDetail.fields[1].type === 1,
+  JSON.stringify(secureNoteDetail.fields))
+check("an explicit false boolean custom field is not erased as empty",
+  secureNoteDetail.fields[2].value === "false",
+  JSON.stringify(secureNoteDetail.fields[2]))
 
 const listedCard = listed.find(i => i.id === card.id)
 const cardDetail = Model.itemDetailFromObject(listedCard.rawObject)
