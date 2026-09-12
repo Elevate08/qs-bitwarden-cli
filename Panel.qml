@@ -227,8 +227,9 @@ Panel {
     : Style.space(30) + Math.min(currentFilterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
   property string formFolderId: ""
   property string newFolderName: ""
-  // Which picker in the item form is expanded. Custom-field pickers use
-  // "customAdd" or "customLinked:<row>" alongside folder/organization.
+  // Which picker in the item form is expanded. Custom-field controls use
+  // "customAdd", "customLabel:<row>" or "customLinked:<row>" alongside
+  // folder/organization.
   property string formPicker: ""
   property var formCollections: []
   property var formCollectionIds: []
@@ -358,6 +359,7 @@ Panel {
   property var formCustomFields: []
   property int formNewCustomFieldType: 0
   property string formNewCustomFieldName: ""
+  property string formCustomFieldLabelDraft: ""
   property bool showDeleteConfirm: false
 
   // Card and identity boxes. Flat strings rather than one object per type,
@@ -3847,6 +3849,7 @@ Panel {
     formCustomFields = []
     formNewCustomFieldType = 0
     formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     formFavorite = false
     formOrgId = ""
     formFolderId = ""
@@ -3896,6 +3899,7 @@ Panel {
     formTotp = ""
     formCustomFields = []
     formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     itemPayloadJson = ""
     sends = []
     sendPayloadJson = ""
@@ -4786,17 +4790,29 @@ Panel {
     return out
   }
 
-  function setFormCustomField(index, key, value) {
+  function beginCustomFieldLabelEdit(index) {
     if (index < 0 || index >= formCustomFields.length) return
+    formCustomFieldLabelDraft = String(formCustomFields[index].name || "")
+    formPicker = "customLabel:" + index
+  }
+
+  function saveCustomFieldLabel(index) {
+    var label = String(formCustomFieldLabelDraft || "").trim()
+    if (!label || index < 0 || index >= formCustomFields.length) return
     var next = formCustomFields.slice()
-    var old = next[index] || {}
-    var changed = {
-      name: old.name, value: old.value, type: old.type,
+    var old = next[index]
+    next[index] = {
+      name: label, value: old.value, type: old.type,
       linkedId: old.linkedId, revealed: old.revealed
     }
-    changed[key] = value
-    next[index] = changed
     formCustomFields = next
+    formCustomFieldLabelDraft = ""
+    formPicker = ""
+  }
+
+  function cancelCustomFieldLabelEdit() {
+    formCustomFieldLabelDraft = ""
+    formPicker = ""
   }
 
   function removeFormCustomField(index) {
@@ -4804,7 +4820,8 @@ Panel {
     var next = formCustomFields.slice()
     next.splice(index, 1)
     formCustomFields = next
-    if (formPicker.indexOf("customLinked:") === 0) formPicker = ""
+    formCustomFieldLabelDraft = ""
+    if (formPicker.indexOf("custom") === 0) formPicker = ""
   }
 
   function addFormCustomField() {
@@ -4823,6 +4840,7 @@ Panel {
     })
     formCustomFields = next
     formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     formNewCustomFieldType = 0
     formPicker = ""
   }
@@ -4940,6 +4958,7 @@ Panel {
     formCustomFields = []
     formNewCustomFieldType = 0
     formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     formFavorite = false
     formOrgId = selectedOrg !== "all" ? selectedOrg : ""
     formFolderId = (selectedFolder !== "all" && selectedFolder !== "none") ? selectedFolder : ""
@@ -4985,6 +5004,7 @@ Panel {
     formCustomFields = copyCustomFieldsForForm(f.customFields)
     formNewCustomFieldType = 0
     formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     loadTypeFields({ card: f.typeCode === 3 ? f.typeFields : null,
                      identity: f.typeCode === 4 ? f.typeFields : null })
     formPicker = ""
@@ -5035,6 +5055,7 @@ Panel {
       item.rawObject && item.rawObject.fields ? item.rawObject.fields : item.fields)
     formNewCustomFieldType = 0
     formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     // The list row carries the parsed card and identity, so an edit opens with
     // the real values in the boxes rather than blanks that would be written
     // straight back over them on save.
@@ -11909,7 +11930,7 @@ Panel {
                 selected: true
                 accent: Color.accent
                 fontFamily: root.fontFamily
-                enabled: !root.isLoading
+                enabled: !root.isLoading && root.formPicker === ""
                 onClicked: root.saveItemForm()
               }
 

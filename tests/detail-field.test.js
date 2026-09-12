@@ -134,8 +134,14 @@ check("the item form edits the custom-field collection",
   /CustomFieldsEditor\s*\{[\s\S]{0,100}panel:\s*root/.test(panelSrc)
     && /id:\s*customFieldEditorRepeater/.test(customEditorSrc)
     && /model:\s*editor\.panel\.formCustomFields/.test(customEditorSrc)
-    && /onTextChanged:\s*fieldRow\.modelData\.name\s*=\s*text/.test(customEditorSrc)
     && /onTextChanged:\s*fieldRow\.modelData\.value\s*=\s*text/.test(customEditorSrc),
+  customEditorSrc)
+check("field labels are read-only until their own edit button is pressed",
+  !/onTextChanged:\s*fieldRow\.modelData\.name\s*=\s*text/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.beginCustomFieldLabelEdit\(fieldRow\.index\)/.test(customEditorSrc)
+    && /visible:\s*fieldRow\.editingLabel/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.saveCustomFieldLabel\(fieldRow\.index\)/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.cancelCustomFieldLabelEdit\(\)/.test(customEditorSrc),
   customEditorSrc)
 check("the form offers Bitwarden's type-aware custom-field controls",
   /text:\s*"Text"/.test(customEditorSrc)

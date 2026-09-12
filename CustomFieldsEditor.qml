@@ -5,7 +5,8 @@ import "BitwardenModel.js" as Model
 
 // Item-form custom fields. Bitwarden fixes a field's type when it is added;
 // the value control then follows that type (text, masked, checkbox, or linked
-// native field) while its label remains editable.
+// native field). Its label is read-only until the row's pencil action opens
+// the separate rename controls, matching Bitwarden's browser form.
 Column {
   id: editor
 
@@ -32,43 +33,109 @@ Column {
       property bool hiddenRevealed: Boolean(modelData.revealed)
       property int linkedTarget: modelData.linkedId === undefined || modelData.linkedId === null
         ? -1 : Number(modelData.linkedId)
+      readonly property bool editingLabel: editor.panel.formPicker === "customLabel:" + index
       width: editor.width
       spacing: Style.space(4)
 
       Row {
+        visible: !fieldRow.editingLabel
         width: parent.width
         spacing: Style.space(6)
 
+        Column {
+          width: parent.width - editLabelButton.width - Style.space(6)
+          spacing: Style.space(2)
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: String(fieldRow.modelData.name || "")
+            color: editor.panel.fg
+            font.family: editor.panel.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            text: editor.panel.customFieldTypeLabel(fieldRow.modelData.type) + " field"
+            color: editor.panel.dim
+            font.family: editor.panel.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        Button {
+          id: editLabelButton
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: "󰏫"
+          tooltipText: Model.plainLabel("Edit label for " + String(fieldRow.modelData.name || "custom field"))
+          fontFamily: editor.panel.fontFamily
+          fontSize: Style.font.caption
+          onClicked: editor.panel.beginCustomFieldLabelEdit(fieldRow.index)
+        }
+      }
+
+      Column {
+        visible: fieldRow.editingLabel
+        width: parent.width
+        spacing: Style.space(5)
+
         Text {
           textFormat: Text.PlainText
-          width: parent.width - removeButton.width - Style.space(6)
-          anchors.verticalCenter: parent.verticalCenter
-          text: editor.panel.customFieldTypeLabel(fieldRow.modelData.type) + " field"
+          text: "EDIT FIELD LABEL"
           color: editor.panel.dim
           font.family: editor.panel.fontFamily
           font.pixelSize: Style.font.caption
           font.bold: true
         }
 
-        Button {
-          id: removeButton
-          iconText: "󰆴"
-          tooltipText: Model.plainLabel("Delete " + String(fieldRow.modelData.name || "custom field"))
-          fontFamily: editor.panel.fontFamily
-          fontSize: Style.font.caption
-          onClicked: editor.panel.removeFormCustomField(fieldRow.index)
+        TextField {
+          width: parent.width
+          placeholderText: "Field label"
+          text: editor.panel.formCustomFieldLabelDraft
+          onTextChanged: editor.panel.formCustomFieldLabelDraft = text
+          onAccepted: editor.panel.saveCustomFieldLabel(fieldRow.index)
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(5)
+
+          Button {
+            text: "Save label"
+            iconText: "󰄬"
+            selected: true
+            accent: Color.accent
+            enabled: editor.panel.formCustomFieldLabelDraft.trim() !== ""
+            fontFamily: editor.panel.fontFamily
+            fontSize: Style.font.caption
+            onClicked: editor.panel.saveCustomFieldLabel(fieldRow.index)
+          }
+
+          Button {
+            text: "Cancel"
+            fontFamily: editor.panel.fontFamily
+            fontSize: Style.font.caption
+            onClicked: editor.panel.cancelCustomFieldLabelEdit()
+          }
+
+          Item { width: Style.space(4); height: 1 }
+
+          Button {
+            iconText: "󰆴"
+            tooltipText: Model.plainLabel("Delete " + String(fieldRow.modelData.name || "custom field"))
+            fontFamily: editor.panel.fontFamily
+            fontSize: Style.font.caption
+            onClicked: editor.panel.removeFormCustomField(fieldRow.index)
+          }
         }
       }
 
       TextField {
-        width: parent.width
-        placeholderText: "Field label"
-        text: String(fieldRow.modelData.name || "")
-        onTextChanged: fieldRow.modelData.name = text
-      }
-
-      TextField {
-        visible: Number(fieldRow.modelData.type) === 0 || Number(fieldRow.modelData.type) === 1
+        visible: !fieldRow.editingLabel
+          && (Number(fieldRow.modelData.type) === 0 || Number(fieldRow.modelData.type) === 1)
         width: parent.width
         placeholderText: Number(fieldRow.modelData.type) === 1 ? "Hidden value" : "Value"
         password: Number(fieldRow.modelData.type) === 1 && !fieldRow.hiddenRevealed
@@ -95,7 +162,7 @@ Column {
       }
 
       Button {
-        visible: Number(fieldRow.modelData.type) === 2
+        visible: !fieldRow.editingLabel && Number(fieldRow.modelData.type) === 2
         width: parent.width
         text: fieldRow.booleanValue ? "Checked" : "Unchecked"
         iconText: fieldRow.booleanValue ? "󰄲" : "󰄱"
@@ -111,7 +178,7 @@ Column {
       }
 
       Button {
-        visible: Number(fieldRow.modelData.type) === 3
+        visible: !fieldRow.editingLabel && Number(fieldRow.modelData.type) === 3
         width: parent.width
         text: editor.panel.customFieldLinkedLabel(fieldRow.linkedTarget)
         iconText: editor.panel.formPicker === "customLinked:" + fieldRow.index
@@ -125,7 +192,7 @@ Column {
       }
 
       Column {
-        visible: Number(fieldRow.modelData.type) === 3
+        visible: !fieldRow.editingLabel && Number(fieldRow.modelData.type) === 3
           && editor.panel.formPicker === "customLinked:" + fieldRow.index
         width: parent.width
         spacing: Style.space(2)
