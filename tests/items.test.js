@@ -130,6 +130,11 @@ check("linked secrets stay sensitive in the detail model",
   Model.itemDetailFromObject({ type: 1, name: "linked", login: { password: "secret" },
     fields: [{ name: "Password alias", type: 3, linkedId: 101 }] }).fields[0].sensitive === true,
   JSON.stringify(detail.fields))
+check("the detail says whether there is a password, as the list row does",
+  detail.hasPassword === true
+    && Model.itemDetailFromObject({ type: 1, name: "no password", login: { username: "u" } }).hasPassword === false
+    && Model.itemDetailFromObject({ type: 5, name: "key", sshKey: {} }).hasPassword === false,
+  "hasPassword must be a boolean on every detail")
 check("so do notes", detail.notes === "recovery codes in the safe", detail.notes)
 check("so do URIs", detail.uris[0] === "https://github.com/login", JSON.stringify(detail.uris))
 

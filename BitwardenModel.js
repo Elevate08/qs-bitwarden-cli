@@ -2479,7 +2479,7 @@ function itemDetailFromObject(it) {
     return { id: String(it.id || ""), organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null, name: String(it.name || "Untitled"),
       type: "sshKey", typeCode: 5, favorite: Boolean(it.favorite), notes: "",
-      username: "", password: "", hasTotp: false, totpKey: "", uris: [], attachments: [],
+      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [], attachments: [],
       hasAttachments: false, card: null, identity: null, fields: [],
       publicKey: String(sshKey.publicKey || it.publicKey || ""),
       fingerprint: String(sshKey.fingerprint || sshKey.keyFingerprint || it.fingerprint || it.keyFingerprint || ""), rawObject: it }
@@ -2500,6 +2500,9 @@ function itemDetailFromObject(it) {
     notes: String(it.notes || ""),
     username: String(login.username || ""),
     password: String(login.password || ""),
+    // The detail view's password row reads this when the password itself is
+    // empty. Missing, it made that `visible` binding undefined.
+    hasPassword: Boolean(login.password),
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
