@@ -7,6 +7,7 @@
 //   node tests/ssh-agent-lifecycle.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
 const repoRoot = path.join(__dirname, "..")
@@ -169,7 +170,7 @@ eq("a lock with no live helper waits for no acknowledgment", lockNoHelper.awaitL
 // approval screen have their own. A check that reads only the largest one
 // silently narrows as markup moves out of it.
 const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
-  .map(file => fs.readFileSync(path.join(repoRoot, file), "utf8"))
+  .map(readPluginSource)
   .join("\n")
 const lockVault = panelSrc.slice(panelSrc.indexOf("function lockVault()"),
   panelSrc.indexOf("function lockVault()") + 1400)

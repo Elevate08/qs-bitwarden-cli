@@ -9,6 +9,7 @@
 //   node tests/ssh-agent-control.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { spawn } = require("child_process")
@@ -498,7 +499,7 @@ async function processTests() {
 // approval screen have their own. A check that reads only the largest one
 // silently narrows as markup moves out of it.
 const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
-  .map(file => fs.readFileSync(path.join(repoRoot, file), "utf8"))
+  .map(readPluginSource)
   .join("\n")
 check("the supervisor Process is tracked, not detached",
   !/execDetached\([^)]*sshAgent/i.test(panelSrc), "found execDetached for the ssh agent")

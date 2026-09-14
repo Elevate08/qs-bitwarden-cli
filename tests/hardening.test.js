@@ -13,6 +13,7 @@
 //     so logging out has to remove it.
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { execFileSync } = require("child_process")
@@ -190,7 +191,7 @@ try {
 // approval screen have their own. A check that reads only the largest one
 // silently narrows as markup moves out of it.
 const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
-  .map(file => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+  .map(readPluginSource)
   .join("\n")
 const bodyOf = name => {
   const start = panelSrc.indexOf(`function ${name}(`)

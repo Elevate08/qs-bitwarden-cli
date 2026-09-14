@@ -12,9 +12,11 @@ PanelWindow {
   id: popup
 
   required property var panel
+  // The vault this panel shows (Service.qml); `panel` is the view that draws it.
+  required property var vault
   required property Item anchorItem
 
-  readonly property bool open: panel.sshAgentApprovalPopup && (panel.sshPrompt !== null || panel.sshUnlockRequest !== null)
+  readonly property bool open: vault.sshAgentApprovalPopup && (vault.sshPrompt !== null || vault.sshUnlockRequest !== null)
   property bool focusPrimed: false
   readonly property var anchorWindow: anchorItem ? anchorItem.QsWindow.window : null
   readonly property int cardWidth: Math.max(1, Math.min(Style.space(460), width - Style.gapsOut * 2))
@@ -30,7 +32,7 @@ PanelWindow {
     if (!open) return
     Qt.callLater(function() {
       if (!popup.open) return
-      if (popup.panel.sshPrompt) approvalScreen.focusDefault()
+      if (popup.vault.sshPrompt) approvalScreen.focusDefault()
       else unlockScreen.focusDefault()
     })
   }
@@ -68,7 +70,7 @@ PanelWindow {
   }
 
   Connections {
-    target: popup.panel
+    target: popup.vault
     function onSshPromptChanged() { popup.refocus() }
     function onSshUnlockRequestChanged() { popup.refocus() }
     function onStatusChanged() { popup.refocus() }
@@ -91,7 +93,7 @@ PanelWindow {
 
   MouseArea {
     anchors.fill: parent
-    onClicked: popup.panel.denySshRequest()
+    onClicked: popup.vault.denySshRequest()
   }
 
   BorderSurface {
@@ -122,10 +124,10 @@ PanelWindow {
       Keys.onPressed: function(event) {
         if (event.key === Qt.Key_Escape) {
           if (!(event.modifiers & ~Qt.KeypadModifier)) {
-            popup.panel.denySshRequest()
+            popup.vault.denySshRequest()
             event.accepted = true
           } else if (event.modifiers & Qt.ShiftModifier) {
-            popup.panel.denyAllSshRequests()
+            popup.vault.denyAllSshRequests()
             event.accepted = true
           }
         }
@@ -148,13 +150,15 @@ PanelWindow {
           SshUnlockScreen {
             id: unlockScreen
             panel: popup.panel
-            active: popup.open && popup.panel.sshPrompt === null
+            vault: popup.vault
+            active: popup.open && popup.vault.sshPrompt === null
           }
 
           SshApprovalScreen {
             id: approvalScreen
             panel: popup.panel
-            active: popup.open && popup.panel.sshPrompt !== null
+            vault: popup.vault
+            active: popup.open && popup.vault.sshPrompt !== null
           }
         }
       }

@@ -8,6 +8,7 @@
 //   node tests/auth.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { execFileSync, spawnSync } = require("child_process")
@@ -596,7 +597,7 @@ fs.rmSync(keyringStub, { recursive: true, force: true })
 
 // The command is only half of it: the panel has to run it, and run it without
 // first asking a flag for permission. Both gates below were the bug.
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSrc = readPluginSource("Panel.qml")
 const bodyOf = (name) => {
   const start = panelSrc.indexOf(`function ${name}(`)
   if (start === -1) return ""
@@ -635,11 +636,24 @@ const pendingSecondFactor = bodyOf("pendingSecondFactorLogin")
 const suspendPending = bodyOf("suspendPendingLogin")
 const panelOpened = bodyOf("onPanelOpened")
 // The logic asks every view to re-point its fields; each view does the writing.
-const syncFields = bodyOf("syncLoginFields")
+// View contract functions are read from the view: the vault carries no-op
+// stand-ins of the same names for when no view is attached.
+const viewBodyOf = (name) => {
+  const view = panelSrc.slice(panelSrc.indexOf("\n  // View\n"))
+  const start = view.indexOf(`function ${name}(`)
+  if (start === -1) return ""
+  let depth = 0
+  for (let i = view.indexOf("{", start); i < view.length; i++) {
+    if (view[i] === "{") depth++
+    else if (view[i] === "}" && --depth === 0) return view.slice(start, i + 1)
+  }
+  return ""
+}
+const syncFields = viewBodyOf("syncLoginFields")
 const syncFieldsToState = bodyOf("syncLoginFieldsToState")
 const submitDevice = bodyOf("submitDeviceVerification")
 const startDevice = bodyOf("startDeviceVerificationLogin")
-const loginFieldFocus = bodyOf("loginFieldHasFocus")
+const loginFieldFocus = viewBodyOf("loginFieldHasFocus")
 const resolvedLoginServer = bodyOf("resolvedLoginServerUrl")
 const terminalLoginUi = panelSrc.slice(panelSrc.indexOf("// METHOD B: API Key"),
   panelSrc.indexOf("// SCREEN 2: LOCKED VIEW"))
@@ -776,7 +790,7 @@ check("syncing reaches every view's fields, not only the one presenting",
   /eachView\(function\(view\) \{ view\.syncLoginFields\(\) \}\)/.test(syncFieldsToState),
   syncFieldsToState)
 check("the fields are synced from the state, never the other way round",
-  /code2faField\.text = login2faCode/.test(syncFields)
+  /code2faField\.text = root\.login2faCode/.test(syncFields)
     && !/login2faCode = code2faField/.test(syncFields),
   syncFields)
 check("every path that clears login state syncs the fields it is behind",

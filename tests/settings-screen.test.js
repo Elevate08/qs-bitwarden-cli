@@ -7,9 +7,10 @@
 //   node tests/settings-screen.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSrc = readPluginSource("Panel.qml")
 
 let pass = 0
 const failures = []

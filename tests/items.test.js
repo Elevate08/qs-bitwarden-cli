@@ -6,6 +6,7 @@
 //   node tests/items.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
@@ -514,7 +515,7 @@ check("an unrecognised type is drawn as a login, not as the unreachable shield",
 // rather than by count, because what broke this was a bulk glyph replacement
 // that meant to touch one new button and silently rewrote every other use of
 // the same codepoint. A count alone would have moved with it.
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSrc = readPluginSource("Panel.qml")
 const KEY = String.fromCodePoint(0xF0306)
 const passwordButtons = [
   ['tooltipText: "Password generator (g)"', "the generator button"],

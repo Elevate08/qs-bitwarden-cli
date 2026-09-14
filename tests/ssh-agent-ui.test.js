@@ -9,6 +9,7 @@
 //   node tests/ssh-agent-ui.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
 const repoRoot = path.join(__dirname, "..")
@@ -327,15 +328,14 @@ const sshUiFiles = [
   "SshApprovalPopup.qml", "SshUnlockScreen.qml"
 ]
 const panelSrc = sshUiFiles
-  .map(file => fs.existsSync(path.join(repoRoot, file))
-    ? fs.readFileSync(path.join(repoRoot, file), "utf8") : "")
+  .map(file => fs.existsSync(path.join(repoRoot, file)) ? readPluginSource(file) : "")
   .join("\n")
-const approvalSrc = fs.readFileSync(path.join(repoRoot, "SshApprovalScreen.qml"), "utf8")
-const settingsSrc = fs.readFileSync(path.join(repoRoot, "SshAgentSettings.qml"), "utf8")
+const approvalSrc = readPluginSource("SshApprovalScreen.qml")
+const settingsSrc = readPluginSource("SshAgentSettings.qml")
 const popupSrc = fs.existsSync(path.join(repoRoot, "SshApprovalPopup.qml"))
-  ? fs.readFileSync(path.join(repoRoot, "SshApprovalPopup.qml"), "utf8") : ""
+  ? readPluginSource("SshApprovalPopup.qml") : ""
 const unlockSrc = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
-  ? fs.readFileSync(path.join(repoRoot, "SshUnlockScreen.qml"), "utf8") : ""
+  ? readPluginSource("SshUnlockScreen.qml") : ""
 
 // plainLabel() wraps its argument in a span when the text contains markup
 // characters, which a PlainText control then renders literally. The field is

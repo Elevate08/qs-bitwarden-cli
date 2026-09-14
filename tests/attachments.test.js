@@ -9,8 +9,9 @@
 //   node tests/attachments.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSrc = readPluginSource("Panel.qml")
 const bodyOf = (name) => {
   const start = panelSrc.indexOf(`function ${name}(`)
   if (start === -1) return ""

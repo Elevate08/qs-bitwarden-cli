@@ -6,6 +6,7 @@
 //   node tests/auth-prewarm.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { execFileSync } = require("child_process")
@@ -251,7 +252,7 @@ printf '%s %s' "$parent_stopped" "$child_stopped"
 
 // The QML lifecycle is part of the security boundary: start early, write only
 // on submit, and stop a waiting process when the panel closes.
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSrc = readPluginSource("Panel.qml")
 const bodyOf = name => {
   const start = panelSrc.indexOf(`function ${name}(`)
   if (start === -1) return ""

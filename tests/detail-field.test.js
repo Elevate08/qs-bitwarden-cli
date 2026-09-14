@@ -7,14 +7,15 @@
 //   node tests/detail-field.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
 const read = f => fs.existsSync(path.join(__dirname, "..", f))
   ? fs.readFileSync(path.join(__dirname, "..", f), "utf8") : ""
 
 const fieldSrc = read("DetailField.qml")
-const panelSrc = read("Panel.qml")
-const customEditorSrc = read("CustomFieldsEditor.qml")
+const panelSrc = readPluginSource("Panel.qml")
+const customEditorSrc = readPluginSource("CustomFieldsEditor.qml")
 
 let pass = 0
 const failures = []
