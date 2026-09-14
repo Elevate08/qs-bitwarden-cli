@@ -227,7 +227,9 @@ Panel {
     : Style.space(30) + Math.min(currentFilterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
   property string formFolderId: ""
   property string newFolderName: ""
-  // Which picker in the item form is expanded: "" | "folder" | "organization"
+  // Which picker in the item form is expanded. Custom-field controls use
+  // "customAdd", "customLabel:<row>" or "customLinked:<row>" alongside
+  // folder/organization.
   property string formPicker: ""
   property var formCollections: []
   property var formCollectionIds: []
@@ -354,6 +356,10 @@ Panel {
   property bool formFavorite: false
   property string formOrgId: ""
   property bool formPasswordRevealed: false
+  property var formCustomFields: []
+  property int formNewCustomFieldType: 0
+  property string formNewCustomFieldName: ""
+  property string formCustomFieldLabelDraft: ""
   property bool showDeleteConfirm: false
 
   // Card and identity boxes. Flat strings rather than one object per type,
@@ -3840,6 +3846,10 @@ Panel {
     formUsername = ""
     formUri = ""
     formNotes = ""
+    formCustomFields = []
+    formNewCustomFieldType = 0
+    formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     formFavorite = false
     formOrgId = ""
     formFolderId = ""
@@ -3887,6 +3897,9 @@ Panel {
     genValue = ""
     formPassword = ""
     formTotp = ""
+    formCustomFields = []
+    formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     itemPayloadJson = ""
     sends = []
     sendPayloadJson = ""
@@ -4709,6 +4722,169 @@ Panel {
   // CRUD Operations (Add, Edit, Delete)
   // -------------------------------------------------------------------------
 
+  function customFieldTypeLabel(type) {
+    switch (Number(type)) {
+      case 1: return "Hidden"
+      case 2: return "Boolean"
+      case 3: return "Linked"
+      default: return "Text"
+    }
+  }
+
+  function customFieldBooleanValue(value) {
+    return value === true || String(value).toLowerCase() === "true"
+  }
+
+  // These ids are Bitwarden's LinkedIdType values. Secure Notes intentionally
+  // return no choices, matching the browser extension: there is no native
+  // username, card, or identity field for a note to point at.
+  function customFieldLinkedOptions(typeCode) {
+    if (Number(typeCode) === 1) return [
+      { id: 100, label: "Username" }, { id: 101, label: "Password" }
+    ]
+    if (Number(typeCode) === 3) return [
+      { id: 300, label: "Cardholder name" }, { id: 304, label: "Brand" },
+      { id: 305, label: "Number" }, { id: 301, label: "Expiry month" },
+      { id: 302, label: "Expiry year" }, { id: 303, label: "Security code" }
+    ]
+    if (Number(typeCode) === 4) return [
+      { id: 400, label: "Title" }, { id: 416, label: "First name" },
+      { id: 401, label: "Middle name" }, { id: 417, label: "Last name" },
+      { id: 418, label: "Full name" }, { id: 413, label: "Username" },
+      { id: 409, label: "Company" }, { id: 410, label: "Email" },
+      { id: 411, label: "Phone" }, { id: 412, label: "Social security number" },
+      { id: 414, label: "Passport number" }, { id: 415, label: "Licence number" },
+      { id: 402, label: "Address line 1" }, { id: 403, label: "Address line 2" },
+      { id: 404, label: "Address line 3" }, { id: 405, label: "City / town" },
+      { id: 406, label: "State / county" }, { id: 407, label: "Postal code" },
+      { id: 408, label: "Country" }
+    ]
+    return []
+  }
+
+  function customFieldLinkedLabel(linkedId) {
+    var options = customFieldLinkedOptions(formTypeCode)
+    for (var i = 0; i < options.length; i++) {
+      if (Number(options[i].id) === Number(linkedId)) return options[i].label
+    }
+    return "Choose a field"
+  }
+
+  function copyCustomFieldsForForm(fields) {
+    var source = fields || []
+    var out = []
+    for (var i = 0; i < source.length; i++) {
+      var field = source[i]
+      if (!field) continue
+      out.push({
+        name: String(field.name || ""),
+        value: Number(field.type) === 2
+          ? customFieldBooleanValue(field.value)
+          : (field.value === undefined || field.value === null ? "" : String(field.value)),
+        type: Number(field.type || 0),
+        linkedId: field.linkedId === undefined || field.linkedId === null
+          ? null : Number(field.linkedId),
+        revealed: false
+      })
+    }
+    return out
+  }
+
+  function beginCustomFieldLabelEdit(index) {
+    if (index < 0 || index >= formCustomFields.length) return
+    formCustomFieldLabelDraft = String(formCustomFields[index].name || "")
+    formPicker = "customLabel:" + index
+  }
+
+  function saveCustomFieldLabel(index) {
+    var label = String(formCustomFieldLabelDraft || "").trim()
+    if (!label || index < 0 || index >= formCustomFields.length) return
+    var next = formCustomFields.slice()
+    var old = next[index]
+    next[index] = {
+      name: label, value: old.value, type: old.type,
+      linkedId: old.linkedId, revealed: old.revealed
+    }
+    formCustomFields = next
+    formCustomFieldLabelDraft = ""
+    formPicker = ""
+  }
+
+  function cancelCustomFieldLabelEdit() {
+    formCustomFieldLabelDraft = ""
+    formPicker = ""
+  }
+
+  // A Repeater may expose an object model row as a delegate-local QVariantMap.
+  // Writing `modelData.value` can therefore update what the row draws without
+  // updating the array saveItemForm later serializes. Always write through the
+  // form's authoritative array. No property-change signal is needed here: the
+  // editor already owns the value it just drew, and avoiding an array reassign
+  // keeps focus stable while the user types.
+  function setFormCustomFieldValue(index, value) {
+    if (index < 0 || index >= formCustomFields.length) return
+    formCustomFields[index].value = value
+  }
+
+  function setFormCustomFieldLinkedId(index, linkedId) {
+    if (index < 0 || index >= formCustomFields.length) return
+    formCustomFields[index].linkedId = Number(linkedId)
+  }
+
+  function removeFormCustomField(index) {
+    if (index < 0 || index >= formCustomFields.length) return
+    var next = formCustomFields.slice()
+    next.splice(index, 1)
+    formCustomFields = next
+    formCustomFieldLabelDraft = ""
+    if (formPicker.indexOf("custom") === 0) formPicker = ""
+  }
+
+  function addFormCustomField() {
+    var label = String(formNewCustomFieldName || "").trim()
+    if (!label) return
+    var type = Number(formNewCustomFieldType)
+    var options = customFieldLinkedOptions(formTypeCode)
+    if (type === 3 && options.length === 0) type = 0
+    var next = formCustomFields.slice()
+    next.push({
+      name: label,
+      value: type === 2 ? false : "",
+      type: type,
+      linkedId: type === 3 ? options[0].id : null,
+      revealed: false
+    })
+    formCustomFields = next
+    formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
+    formNewCustomFieldType = 0
+    formPicker = ""
+  }
+
+  function changeFormType(typeCode) {
+    var nextType = Number(typeCode)
+    if (nextType === formTypeCode) return
+    formTypeCode = nextType
+    formPicker = ""
+    // A linked field belongs to its cipher type. When a new item changes type,
+    // retain its label but reset the link to a valid target; a Secure Note has
+    // no target, so the field becomes ordinary text instead of an invalid link.
+    var options = customFieldLinkedOptions(nextType)
+    if (formNewCustomFieldType === 3 && options.length === 0) formNewCustomFieldType = 0
+    var next = copyCustomFieldsForForm(formCustomFields)
+    for (var i = 0; i < next.length; i++) {
+      if (next[i].type !== 3) continue
+      if (options.length === 0) {
+        next[i].type = 0
+        next[i].linkedId = null
+        next[i].value = ""
+      } else {
+        next[i].linkedId = options[0].id
+      }
+    }
+    formCustomFields = next
+  }
+
   // The card or identity boxes, in the shape buildCreatePayload and
   // buildEditPayload want. Returns null for a login or a note, and null is
   // exactly what tells buildEditPayload to leave an existing sub-object alone.
@@ -4795,6 +4971,10 @@ Panel {
     formTotp = ""
     formUri = ""
     formNotes = ""
+    formCustomFields = []
+    formNewCustomFieldType = 0
+    formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     formFavorite = false
     formOrgId = selectedOrg !== "all" ? selectedOrg : ""
     formFolderId = (selectedFolder !== "all" && selectedFolder !== "none") ? selectedFolder : ""
@@ -4817,7 +4997,8 @@ Panel {
       totp: formTotp, uri: formUri, notes: formNotes, favorite: formFavorite,
       orgId: formOrgId, folderId: formFolderId,
       collectionIds: (formCollectionIds || []).slice(),
-      typeFields: formTypeFields()
+      typeFields: formTypeFields(),
+      customFields: copyCustomFieldsForForm(formCustomFields)
     }
   }
 
@@ -4836,6 +5017,10 @@ Panel {
     formOrgId = f.orgId
     formFolderId = f.folderId
     formCollectionIds = (f.collectionIds || []).slice()
+    formCustomFields = copyCustomFieldsForForm(f.customFields)
+    formNewCustomFieldType = 0
+    formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     loadTypeFields({ card: f.typeCode === 3 ? f.typeFields : null,
                      identity: f.typeCode === 4 ? f.typeFields : null })
     formPicker = ""
@@ -4882,6 +5067,11 @@ Panel {
     // Editing keeps whatever collections the item already has until changed.
     formCollectionIds = (item.rawObject && item.rawObject.collectionIds)
       ? item.rawObject.collectionIds.slice() : []
+    formCustomFields = copyCustomFieldsForForm(
+      item.rawObject && item.rawObject.fields ? item.rawObject.fields : item.fields)
+    formNewCustomFieldType = 0
+    formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
     // The list row carries the parsed card and identity, so an edit opens with
     // the real values in the boxes rather than blanks that would be written
     // straight back over them on save.
@@ -4909,7 +5099,7 @@ Panel {
 
     // Bitwarden refuses an organization item with no collection; say so here
     // rather than letting the CLI fail after the form is gone.
-    var problem = Model.validateItemForm(formName, formOrgId, formCollectionIds)
+    var problem = Model.validateItemForm(formName, formOrgId, formCollectionIds, formCustomFields)
     if (problem) {
       errorMessage = problem
       return
@@ -4917,8 +5107,8 @@ Panel {
 
     var editing = formIsEditing
     var payload = editing
-      ? Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
-      : Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields())
+      ? Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields(), formCustomFields)
+      : Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields(), formCustomFields)
     if (!payload) {
       errorMessage = editing ? "This item is read-only" : "This item type is read-only"
       return
@@ -10932,6 +11122,44 @@ Panel {
                 }
               }
 
+              // -----------------------------------------------------------
+              // FIELDS: Custom
+              // -----------------------------------------------------------
+              // Custom fields belong to every ordinary vault item type. The
+              // model has always preserved them; this is the detail renderer
+              // that makes them visible. Hidden fields use the same per-field
+              // reveal and clipboard paths as the built-in secrets.
+              Column {
+                id: customFieldsSection
+                visible: Boolean(root.detailItem && root.detailItem.fields
+                  && root.detailItem.fields.length > 0)
+                width: parent.width
+                spacing: Style.space(8)
+
+                PanelSectionHeader { text: "CUSTOM FIELDS" }
+
+                Repeater {
+                  id: customFieldRepeater
+                  model: root.detailItem ? root.detailItem.fields : []
+
+                  delegate: DetailField {
+                    required property var modelData
+                    required property int index
+                    readonly property string revealKey: "customField:" + index
+
+                    label: modelData.name
+                    copyLabel: modelData.name
+                    value: modelData.value
+                    sensitive: Boolean(modelData.sensitive)
+                    revealed: root.isFieldRevealed(revealKey)
+                    foreground: root.fg
+                    fontFamily: root.fontFamily
+                    onRevealToggled: root.toggleFieldReveal(revealKey)
+                    onCopyRequested: root.copyToClipboard(modelData.value, modelData.name)
+                  }
+                }
+              }
+
 
             }
           }
@@ -11002,7 +11230,7 @@ Panel {
                   selected: root.formTypeCode === 1
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: root.formTypeCode = 1
+                  onClicked: root.changeFormType(1)
                 }
 
                 Button {
@@ -11011,7 +11239,7 @@ Panel {
                   selected: root.formTypeCode === 2
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: root.formTypeCode = 2
+                  onClicked: root.changeFormType(2)
                 }
                 Button {
                   text: "Card"
@@ -11019,7 +11247,7 @@ Panel {
                   selected: root.formTypeCode === 3
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: root.formTypeCode = 3
+                  onClicked: root.changeFormType(3)
                 }
 
                 Button {
@@ -11028,7 +11256,7 @@ Panel {
                   selected: root.formTypeCode === 4
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: root.formTypeCode = 4
+                  onClicked: root.changeFormType(4)
                 }
               }
 
@@ -11664,6 +11892,11 @@ Panel {
                 }
               }
 
+              CustomFieldsEditor {
+                width: parent.width
+                panel: root
+              }
+
               // FIELD: Notes
               Column {
                 width: parent.width
@@ -11715,7 +11948,7 @@ Panel {
                 selected: true
                 accent: Color.accent
                 fontFamily: root.fontFamily
-                enabled: !root.isLoading
+                enabled: !root.isLoading && root.formPicker === ""
                 onClicked: root.saveItemForm()
               }
 

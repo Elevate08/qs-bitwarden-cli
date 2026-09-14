@@ -14,6 +14,7 @@ const read = f => fs.existsSync(path.join(__dirname, "..", f))
 
 const fieldSrc = read("DetailField.qml")
 const panelSrc = read("Panel.qml")
+const customEditorSrc = read("CustomFieldsEditor.qml")
 
 let pass = 0
 const failures = []
@@ -46,6 +47,10 @@ check("field text is pinned to plain text",
 
 check("long values elide rather than pushing the row wider",
   /elide:\s*Text\.ElideRight/.test(fieldSrc), fieldSrc)
+
+check("unbounded custom-field names wrap within the detail width",
+  /PanelSectionHeader\s*\{[\s\S]{0,180}width:\s*parent\.width[\s\S]{0,100}wrapMode:\s*Text\.Wrap/.test(fieldSrc),
+  fieldSrc)
 
 // --- how the detail screen uses it -------------------------------------------
 
@@ -104,6 +109,62 @@ check("each toggles only its own key",
     const toggled = (u.match(/onRevealToggled: root\.toggleFieldReveal\("([^"]+)"\)/) || [])[1]
     return shown && shown === toggled
   }), "a field must reveal and hide the same key")
+
+// --- custom fields ----------------------------------------------------------
+
+const customAt = panelSrc.indexOf("id: customFieldsSection")
+const customUse = customAt === -1 ? "" : panelSrc.slice(customAt, customAt + 1800)
+check("the detail screen has a custom-fields section",
+  customAt !== -1 && /text:\s*"CUSTOM FIELDS"/.test(customUse), customUse)
+check("custom fields are rendered from the parsed detail collection",
+  /id:\s*customFieldRepeater/.test(customUse)
+    && /model:\s*root\.detailItem\s*\?\s*root\.detailItem\.fields\s*:\s*\[\]/.test(customUse)
+    && /delegate:\s*DetailField/.test(customUse)
+    && /label:\s*modelData\.name/.test(customUse)
+    && /value:\s*modelData\.value/.test(customUse),
+  customUse)
+check("hidden custom fields are masked and reveal independently",
+  /sensitive:\s*Boolean\(modelData\.sensitive\)/.test(customUse)
+    && /revealKey:\s*"customField:"\s*\+\s*index/.test(customUse)
+    && /revealed:\s*root\.isFieldRevealed\(revealKey\)/.test(customUse)
+    && /onRevealToggled:\s*root\.toggleFieldReveal\(revealKey\)/.test(customUse),
+  customUse)
+
+check("the item form edits the custom-field collection",
+  /CustomFieldsEditor\s*\{[\s\S]{0,100}panel:\s*root/.test(panelSrc)
+    && /id:\s*customFieldEditorRepeater/.test(customEditorSrc)
+    && /model:\s*editor\.panel\.formCustomFields/.test(customEditorSrc)
+    && /onTextChanged:\s*editor\.panel\.setFormCustomFieldValue\(fieldRow\.index,\s*text\)/.test(customEditorSrc),
+  customEditorSrc)
+check("value changes write through to the form array rather than a delegate copy",
+  !/fieldRow\.modelData\.(?:value|linkedId)\s*=(?!=)/.test(customEditorSrc)
+    && /formCustomFields\[index\]\.value\s*=\s*value/.test(panelSrc)
+    && /setFormCustomFieldValue\(fieldRow\.index,\s*fieldRow\.booleanValue\)/.test(customEditorSrc)
+    && /setFormCustomFieldLinkedId\(fieldRow\.index,\s*modelData\.id\)/.test(customEditorSrc),
+  customEditorSrc)
+check("field labels are read-only until their own edit button is pressed",
+  !/onTextChanged:\s*fieldRow\.modelData\.name\s*=\s*text/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.beginCustomFieldLabelEdit\(fieldRow\.index\)/.test(customEditorSrc)
+    && /visible:\s*fieldRow\.editingLabel/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.saveCustomFieldLabel\(fieldRow\.index\)/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.cancelCustomFieldLabelEdit\(\)/.test(customEditorSrc),
+  customEditorSrc)
+check("the form offers Bitwarden's type-aware custom-field controls",
+  /text:\s*"Text"/.test(customEditorSrc)
+    && /text:\s*"Hidden"/.test(customEditorSrc)
+    && /text:\s*"Boolean"/.test(customEditorSrc)
+    && /text:\s*"Linked"/.test(customEditorSrc)
+    && /password:\s*Number\(fieldRow\.modelData\.type\)\s*===\s*1/.test(customEditorSrc)
+    && /fieldRow\.booleanValue\s*=\s*!fieldRow\.booleanValue/.test(customEditorSrc),
+  customEditorSrc)
+check("custom fields can be added and removed from the form",
+  /onClicked:\s*editor\.panel\.removeFormCustomField\(fieldRow\.index\)/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.formPicker\s*=\s*"customAdd"/.test(customEditorSrc)
+    && /onClicked:\s*editor\.panel\.addFormCustomField\(\)/.test(customEditorSrc),
+  customEditorSrc)
+check("custom-field copies use the panel's guarded clipboard path",
+  /onCopyRequested:\s*root\.copyToClipboard\(modelData\.value,\s*modelData\.name\)/.test(customUse),
+  customUse)
 
 check("no single shared reveal flag is left",
   !/root\.passwordRevealed/.test(panelSrc),

@@ -53,7 +53,11 @@ Column {
   width: parent ? parent.width : 0
   spacing: Style.space(4)
 
-  PanelSectionHeader { text: root.label.toUpperCase() }
+  PanelSectionHeader {
+    text: root.label.toUpperCase()
+    width: parent.width
+    wrapMode: Text.Wrap
+  }
 
   BorderSurface {
     width: parent.width
@@ -86,16 +90,17 @@ Column {
         PanelActionButton {
           visible: root.sensitive
           iconText: root.revealed ? "󰈉" : "󰈈"
-          tooltipText: (root.revealed ? "Hide " : "Reveal ") + root.copyLabel.toLowerCase()
-            + (root.revealHint === "" ? "" : " (" + root.revealHint + ")")
+          tooltipText: Model.plainLabel((root.revealed ? "Hide " : "Reveal ")
+            + root.copyLabel.toLowerCase()
+            + (root.revealHint === "" ? "" : " (" + root.revealHint + ")"))
           fontFamily: root.fontFamily
           onClicked: root.revealToggled()
         }
 
         PanelActionButton {
           iconText: root.copyIcon
-          tooltipText: "Copy " + root.copyLabel.toLowerCase()
-            + (root.shortcutHint === "" ? "" : " (" + root.shortcutHint + ")")
+          tooltipText: Model.plainLabel("Copy " + root.copyLabel.toLowerCase()
+            + (root.shortcutHint === "" ? "" : " (" + root.shortcutHint + ")"))
           fontFamily: root.fontFamily
           onClicked: root.copyRequested()
         }
