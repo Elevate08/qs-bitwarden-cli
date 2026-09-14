@@ -711,10 +711,15 @@ function authPasswordWriteCommand(channel) {
 
   var script = "test -n \"${XDG_RUNTIME_DIR:-}\" || exit 1; "
   script += "__auth_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
-  script += "[ -d \"$__auth_dir\" ] && [ ! -L \"$__auth_dir\" ] || exit 1; "
   script += "__auth_fifo=\"$__auth_dir/" + fifoName + "\"; "
+  // The reader creates the directory and then the FIFO, and this writer is
+  // started alongside it, so on the first login after boot (the runtime dir
+  // is tmpfs) neither may exist yet. Wait for both inside the same window
+  // instead of failing on the missing directory before the reader has had
+  // its first millisecond -- that failure surfaced as "Could not deliver the
+  // password" on the first unlock of every session.
   script += "for __auth_wait in {1..200}; do "
-  script += "if [ -p \"$__auth_fifo\" ] && [ ! -L \"$__auth_fifo\" ]; then "
+  script += "if [ -d \"$__auth_dir\" ] && [ ! -L \"$__auth_dir\" ] && [ -p \"$__auth_fifo\" ] && [ ! -L \"$__auth_fifo\" ]; then "
   script += "exec timeout 10s bash -c 'printf \"%s\" \"$" + PASSWORD_ENV + "\" > \"$1\"' _ \"$__auth_fifo\"; "
   script += "fi; sleep 0.01; done; exit 1"
   return ["bash", "-c", script]
