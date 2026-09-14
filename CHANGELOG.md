@@ -30,6 +30,22 @@
   process group and is torn down with it. Needs `setsid` (util-linux). Monitors
   already orphaned by an earlier version are cleared by a reboot, and the fix
   takes effect after a full shell restart rather than a plugin reload. (#29)
+- **Several monitors now share one vault.** Omarchy draws its bar once per
+  monitor, and every copy of the widget used to run a vault of its own: its own
+  session, lock timers, IPC handler and SSH agent supervisor. Unlocking on one
+  monitor left the others locked, and the copies raced for the SSH agent's
+  socket -- the loser reported that the helper "keeps failing to start" while
+  the winner served it fine. The vault now lives in a service the shell loads
+  once, and each monitor's widget is a view of it: unlock and lock apply
+  everywhere, there is one agent and one sleep inhibitor, the panel moves to the
+  monitor whose icon is clicked, and signing prompts appear where you are. A
+  single monitor behaves as before. (#30)
+- **Another process serving the SSH agent is no longer reported as a crash.**
+  When something else already holds the agent's socket -- a second shell, say --
+  settings now say so and retry every 30 seconds instead of counting it toward
+  the crash-loop limit.
+- An item with no password no longer logs "Unable to assign [undefined] to
+  bool" when its detail view opens.
 
 ## [1.8.1] - 2026-09-05
 

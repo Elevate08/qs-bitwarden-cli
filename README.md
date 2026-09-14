@@ -479,6 +479,29 @@ Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/as
 
 ---
 
+## Multiple monitors
+
+Omarchy draws its bar once per monitor, so the widget appears on every one of
+them -- but there is one vault behind them all:
+
+- Unlocking or locking on any monitor applies to all of them, and every bar's
+  icon shows the same state.
+- The panel opens on the monitor whose icon you click, and moving to another
+  monitor's icon moves the open panel there, where you left it. A keyboard
+  summon lands on the focused monitor, or on the panel if it is already open.
+- There is one SSH agent, one sleep inhibitor and one IPC target however many
+  monitors are attached. A signing request appears on the monitor with the open
+  panel, or otherwise the focused one.
+- Unplugging a monitor, even the one showing the panel, leaves the vault and the
+  agent running.
+
+If something else on the machine is already serving the agent's socket -- a
+second Omarchy shell, for example -- the SSH agent settings say so and wait for
+it to stop, rather than reporting a helper that keeps failing to start.
+
+A bar other than Omarchy's own cannot share one vault between its copies, so on
+a replacement bar each monitor's widget keeps a vault of its own, as before.
+
 ## IPC & Scripting Interface
 
 You can control and query the Bitwarden plugin from the terminal, scripts, or window manager bindings. The form is `omarchy-shell <target> <method>`:
@@ -501,6 +524,9 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli sync         # -> "syncing"
 
 # Query vault state
 omarchy-shell io.github.elevate08.qs-bitwarden-cli status       # -> "unlocked" | "locked" | "unauthenticated"
+
+# Which vault the bars share, and which monitor presents it (non-secret)
+omarchy-shell io.github.elevate08.qs-bitwarden-cli vaultHost    # -> {"host":"shared","views":2,"presenter":"DP-1",...}
 ```
 
 `open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
