@@ -634,7 +634,9 @@ const statusFinished = bodyOf("onStatusFinished")
 const pendingSecondFactor = bodyOf("pendingSecondFactorLogin")
 const suspendPending = bodyOf("suspendPendingLogin")
 const panelOpened = bodyOf("onPanelOpened")
-const syncFields = bodyOf("syncLoginFieldsToState")
+// The logic asks every view to re-point its fields; each view does the writing.
+const syncFields = bodyOf("syncLoginFields")
+const syncFieldsToState = bodyOf("syncLoginFieldsToState")
 const submitDevice = bodyOf("submitDeviceVerification")
 const startDevice = bodyOf("startDeviceVerificationLogin")
 const loginFieldFocus = bodyOf("loginFieldHasFocus")
@@ -678,11 +680,11 @@ check("Enter on the password submits the first stage, then advances to the revea
   /id:\s*loginPassField[\s\S]{0,1200}onAccepted:\s*root\.show2faField\s*\?\s*code2faField\.forceActiveFocus\(\)\s*:\s*root\.submitLogin\(\)/.test(emailLoginUi),
   emailLoginUi)
 check("the second stage cannot resubmit without a verification code",
-  /show2faField[\s\S]{0,180}login2faCode[\s\S]{0,220}code2faField\.forceActiveFocus\(\)[\s\S]{0,80}return/.test(submitLogin),
+  /show2faField[\s\S]{0,180}login2faCode[\s\S]{0,220}presenter\.focusField\("code2fa"\)[\s\S]{0,80}return/.test(submitLogin),
   submitLogin)
 check("a Bitwarden second-factor challenge reveals and focuses the code field",
   /show2faField\s*=\s*true/.test(loginOutput)
-    && /code2faField\.forceActiveFocus\(\)/.test(loginOutput),
+    && /presenter\.focusField\("code2fa"\)/.test(loginOutput),
   loginOutput)
 check("restarting email login clears both the second-factor stage and its code",
   /show2faField\s*=\s*false/.test(resetSecondFactor)
@@ -700,7 +702,7 @@ check("device verification is decided before the second-factor prompt is raised"
   loginOutput)
 check("the device-verification branch stops asking for a code and does not focus the field",
   /loginNeedsDeviceVerification[\s\S]{0,400}resetEmailLoginSecondFactor\(\)[\s\S]{0,120}loginDeviceVerification\s*=\s*true[\s\S]{0,600}return/.test(loginOutput)
-    && loginOutput.indexOf("code2faField.forceActiveFocus")
+    && loginOutput.indexOf('presenter.focusField("code2fa")')
        > loginOutput.indexOf("loginNeedsSecondFactor"),
   loginOutput)
 check("every email login attempt records whether it carried a code",
@@ -770,6 +772,9 @@ check("clearing a login field's property clears the field with it",
    "apiClientIdField", "apiClientSecretField"]
     .every((f) => new RegExp(`${f}\\.text =`).test(syncFields)),
   syncFields)
+check("syncing reaches every view's fields, not only the one presenting",
+  /eachView\(function\(view\) \{ view\.syncLoginFields\(\) \}\)/.test(syncFieldsToState),
+  syncFieldsToState)
 check("the fields are synced from the state, never the other way round",
   /code2faField\.text = login2faCode/.test(syncFields)
     && !/login2faCode = code2faField/.test(syncFields),
@@ -878,8 +883,8 @@ check("reopening past the window starts over rather than resuming",
   /!Model\.secondFactorWindowOpen\(secondFactorStartedAt[\s\S]{0,80}abandonAuthSecrets\(\)/.test(panelOpened),
   panelOpened)
 check("reopening inside the window lands on the field that is waiting",
-  /showDeviceCodeField\) deviceCodeField\.forceActiveFocus\(\)/.test(focusField)
-    && /show2faField\) code2faField\.forceActiveFocus\(\)/.test(focusField),
+  /showDeviceCodeField\) presenter\.focusField\("deviceCode"\)/.test(focusField)
+    && /show2faField\) presenter\.focusField\("code2fa"\)/.test(focusField),
   focusField)
 check("the window expires on its own, even while the panel is not on screen",
   /running:\s*root\.secondFactorStartedAt > 0[\s\S]{0,300}abandonAuthSecrets\(\)/.test(panelSrc),
@@ -915,7 +920,7 @@ check("bw's status already reports lastSync, so nothing new has to be parsed for
 // --- new-device verification, in the panel ----------------------------------
 check("a confirmed device challenge collects the code in the panel, not in a terminal",
   /loginNeedsDeviceVerification[\s\S]{0,400}showDeviceCodeField\s*=\s*true/.test(loginOutput)
-    && /deviceCodeField\.forceActiveFocus/.test(loginOutput),
+    && /presenter\.focusField\("deviceCode"\)/.test(loginOutput),
   loginOutput)
 
 // The interactive login's output is a prompt session, not one of bw's one-line
@@ -935,7 +940,7 @@ check("a timeout or an unanswerable prompt falls back to the terminal login",
   /exitCode === 124 \|\| Model\.loginPromptRanOutOfInput\(out, err\)[\s\S]{0,200}showDeviceCodeField\s*=\s*false/.test(loginOutput),
   loginOutput)
 check("a rejected code keeps the field so it can be retried",
-  /showDeviceCodeField\s*=\s*true[\s\S]{0,300}deviceCodeField\.forceActiveFocus/.test(loginOutput),
+  /showDeviceCodeField\s*=\s*true[\s\S]{0,300}presenter\.focusField\("deviceCode"\)/.test(loginOutput),
   loginOutput)
 check("the failing code is dropped before its stderr is turned into a message",
   loginOutput.indexOf("sanitizeInteractiveStderr(err, loginDeviceCode)")
@@ -983,7 +988,7 @@ check("the shared submit button stays out of the stages that do not use it",
 check("a login screen that already has the cursor keeps it",
   /loginFieldHasFocus\(\)[\s\S]{0,40}return/.test(focusField)
     && /unlockFieldHasFocus\(\)[\s\S]{0,40}return/.test(focusField)
-    && /!searchField\.activeFocus/.test(focusField),
+    && /!presenter\.fieldHasFocus\("search"\)/.test(focusField),
   focusField)
 check("the guard covers every field on the login screen, not just the visible stage",
   ["emailField", "loginPassField", "code2faField", "serverUrlField",
@@ -995,7 +1000,7 @@ check("every field the guard names exists on the login screen",
     .every((f) => new RegExp(`id:\\s*${f}\\b`).test(panelSrc)),
   "the guard must not silently reference a field that was never given an id")
 check("closing the panel releases the cursor, so reopening is not read as typing",
-  /abandonAuthSecrets\(\)[\s\S]{0,220}keyCatcher\.forceActiveFocus\(\)/.test(panelSrc),
+  /abandonAuthSecrets\(\)[\s\S]{0,220}presenter\.focusField\("keyCatcher"\)/.test(panelSrc),
   panelSrc.slice(panelSrc.indexOf("onOpenedChanged"), panelSrc.indexOf("onOpenedChanged") + 500))
 
 // --- the two-step method question, in the panel -----------------------------

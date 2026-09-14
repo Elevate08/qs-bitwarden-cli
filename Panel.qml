@@ -14,9 +14,6 @@ Panel {
   ipcTarget: "io.github.elevate08.qs-bitwarden-cli"
   manageIpc: false
 
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
-
   // Configuration settings from shell.json. The numbers go through the schema
   // on the way in as well as on the way out -- nothing validates shell.json,
   // and a bad minute count does not fail loudly, it just stops the vault ever
@@ -38,64 +35,6 @@ Panel {
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
   readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", true))
   readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
-
-  // The SSH sections' own section header. PanelSectionHeader comes from the
-  // Omarchy shell, and its defaults are the global theme's -- `Color.foreground`
-  // and `Style.font.family` -- while everything around it here follows the bar's
-  // own foreground and font family. Stating them once keeps the headers matching
-  // the captions beneath them, and keeps `textFormat` explicit, which this
-  // panel requires of every text element whether or not its text is constant
-  // today.
-  component SshSectionHeader: PanelSectionHeader {
-    textFormat: Text.PlainText
-    foreground: root.fg
-    fontFamily: root.fontFamily
-  }
-
-  component SshCaption: Text {
-    textFormat: Text.PlainText
-    width: parent ? parent.width : 0
-    color: root.dim
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
-  }
-
-  // One of the three vault filters at the foot of the list, collapsed to its
-  // current value. Declared once so the three cannot drift apart and start
-  // reading as different kinds of control.
-  //
-  // The button names its filter as well as showing its value. The glyphs alone
-  // do not carry it: the three sit together reading "All", "All", "All" for as
-  // long as nothing is filtered, which is exactly when the value says least and
-  // the name says most. So the name stays, and the row is allowed to take a
-  // second line on the rarer occasions all three are set to something long.
-  //
-  // The value is still clipped. `Ui.Button` has no elide, so a folder named
-  // after a whole client engagement would make one button wider than the whole
-  // panel -- and a row that wraps can move a button to the next line but can
-  // never make one narrower than the panel it is in.
-  component VaultFilterButton: Button {
-    required property string group
-    required property string glyph
-    required property string name
-    required property string value
-    required property string shortcut
-
-    // Clipped first, then neutralized: plainLabel may return a <span>, and
-    // slicing that would cut the tag in half.
-    text: Model.plainLabel(name + ": " + Model.clipLabel(value, 20))
-    iconText: root.openFilterGroup === group ? "󰅀" : glyph
-    selected: root.openFilterGroup === group
-    accent: Color.accent
-    fontFamily: root.fontFamily
-    fontSize: Style.font.caption
-    horizontalPadding: Style.space(10)
-    // The full value, unclipped, is still one hover away -- and the tooltip is
-    // drawn by the kit's own auto-detecting Text, so it is neutralized too.
-    tooltipText: Model.plainLabel(name + " filter (" + shortcut + "): " + value)
-    onClicked: root.toggleFilterGroup(group)
-  }
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -544,80 +483,6 @@ Panel {
   property int logoutCredentialsExitCode: 0
   readonly property bool logoutCleanupFailed: logoutPending && logoutCredentialsDone
     && logoutCredentialsExitCode !== 0
-
-  // Visual styles
-  readonly property color fg: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
-  readonly property color accent: Color.accent
-  readonly property color dim: Qt.darker(fg, 1.5)
-  readonly property color barIconColor: {
-    var base = bar ? bar.barForeground : Color.foreground
-    if (status === "unlocked") return Color.accent
-    if (status === "locked" || status === "checking") return base
-    return bar ? bar.urgent : Color.urgent
-  }
-  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-
-  // -------------------------------------------------------------------------
-  // Vault host
-  // -------------------------------------------------------------------------
-  //
-  // This widget is built once per monitor; the vault it shows is Service.qml,
-  // built once per shell. `vault` is the shared service when the shell hands it
-  // over, or a private one this view creates when it will not -- see
-  // Model.vaultHostDecision() for why "not yet" is a wait rather than a
-  // failure.
-  property var vault: null
-  // "pending" until decided, then "shared" or "private" -- or "failed" when a
-  // private vault could not be created, which is logged once and not retried.
-  property string vaultHost: "pending"
-  property double vaultResolveStartedMs: 0
-
-  function resolveVault() {
-    if (root.vault) return
-    if (root.vaultResolveStartedMs === 0) root.vaultResolveStartedMs = Date.now()
-    var host = root.bar ? root.bar.shell : null
-    var shared = host && typeof host.serviceFor === "function"
-      ? host.serviceFor(root.moduleName) : null
-    var decision = Model.vaultHostDecision(!!shared,
-      Date.now() - root.vaultResolveStartedMs, Model.vaultHostTimeoutMs())
-    if (decision === "wait") return
-    if (decision === "shared") {
-      root.vault = shared
-    } else {
-      var component = Qt.createComponent("Service.qml", Component.PreferSynchronous)
-      root.vault = component.status === Component.Ready
-        ? component.createObject(null, { privateHost: true }) : null
-      if (!root.vault) {
-        root.vaultHost = "failed"
-        console.warn("qs-bitwarden-cli: could not create a private vault: " + component.errorString())
-        return
-      }
-    }
-    root.vaultHost = decision
-    root.vault.attachView(root)
-  }
-
-  // Polled rather than bound: serviceFor() is a function call, so nothing
-  // notifies a binding when the shell publishes the service.
-  Timer {
-    id: vaultResolveTimer
-    interval: 50
-    repeat: true
-    running: root.vault === null && root.vaultHost === "pending"
-    triggeredOnStart: true
-    onTriggered: root.resolveVault()
-  }
-
-  onSettingsChanged: if (root.vault) root.vault.updateSettings(root.settings)
-
-  Component.onDestruction: {
-    if (!root.vault) return
-    root.vault.detachView(root)
-    // A private vault belongs to this view alone and goes with it. The shared
-    // one belongs to the shell and outlives any monitor.
-    if (root.vaultHost === "private") root.vault.destroy()
-  }
 
   Component.onCompleted: {
     // The dependency probe goes first, and the status probe follows from it in
@@ -1526,7 +1391,7 @@ Panel {
     // and that signal will not fire -- otherwise every open did its startup
     // work twice, including two `bw status` calls at ~3s each.
     var wasOpen = opened
-    root.controller.show()
+    presenter.showPopout()
     if (wasOpen) onPanelOpened()
   }
 
@@ -1546,7 +1411,7 @@ Panel {
     cancelFingerprintUnlock()
     cancelAttachmentDownloads()
     stopGeneratorServe()
-    root.controller.hide()
+    eachView(function(view) { view.hidePopout() })
   }
 
   function toggle() {
@@ -1623,20 +1488,6 @@ Panel {
     rebuildFilter()
   }
 
-  // Every field on the login screen, and every field on the unlock screen.
-  // focusAppropriateField() consults these before it moves the cursor.
-  function loginFieldHasFocus() {
-    return emailField.activeFocus || loginPassField.activeFocus
-      || code2faField.activeFocus || deviceCodeField.activeFocus
-      || serverUrlField.activeFocus
-      || apiClientIdField.activeFocus || apiClientSecretField.activeFocus
-      || apiMasterField.activeFocus
-  }
-
-  function unlockFieldHasFocus() {
-    return passField.activeFocus || pinField.activeFocus
-  }
-
   // Put the cursor somewhere sensible when a screen appears -- not hold it
   // there. Those are the same thing right up until something announces a
   // screen the user is already typing on, and something does: a logout sets
@@ -1657,18 +1508,18 @@ Panel {
       // on screens that are not showing.
       if (currentScreen === "setup") return
       if (status === "unlocked" && currentScreen === "main") {
-        if (!searchField.activeFocus) searchField.forceActiveFocus()
+        if (!presenter.fieldHasFocus("search")) presenter.focusField("search")
       } else if (status === "locked" || status === "checking") {
-        if (unlockFieldHasFocus()) return
-        if (pinReady) pinField.forceActiveFocus()
-        else passField.forceActiveFocus()
+        if (presenter.unlockFieldHasFocus()) return
+        if (pinReady) presenter.focusField("pin")
+        else presenter.focusField("pass")
       } else if (status === "unauthenticated") {
-        if (loginFieldHasFocus()) return
+        if (presenter.loginFieldHasFocus()) return
         // A login resumed on a challenge opens on the field that is waiting,
         // not back at the top of the form.
-        if (showDeviceCodeField) deviceCodeField.forceActiveFocus()
-        else if (show2faField) code2faField.forceActiveFocus()
-        else if (!show2faMethodPicker) emailField.forceActiveFocus()
+        if (showDeviceCodeField) presenter.focusField("deviceCode")
+        else if (show2faField) presenter.focusField("code2fa")
+        else if (!show2faMethodPicker) presenter.focusField("email")
       }
     })
   }
@@ -1682,7 +1533,7 @@ Panel {
       else abandonAuthSecrets()
       // A closed panel must not keep a field focused, or the next open would
       // count as "already typing here" and skip the field the screen opens on.
-      keyCatcher.forceActiveFocus()
+      presenter.focusField("keyCatcher")
     }
   }
 
@@ -1974,13 +1825,13 @@ Panel {
     var code = String(loginDeviceCode || "").trim()
     if (!code) {
       errorMessage = "Enter the code Bitwarden emailed you."
-      Qt.callLater(function() { deviceCodeField.forceActiveFocus() })
+      Qt.callLater(function() { presenter.focusField("deviceCode") })
       return
     }
     if (!String(loginPassword || "")) {
       errorMessage = "Your master password is needed again for this step."
       resetEmailLoginSecondFactor()
-      Qt.callLater(function() { loginPassField.forceActiveFocus() })
+      Qt.callLater(function() { presenter.focusField("loginPass") })
       return
     }
     errorMessage = ""
@@ -2022,23 +1873,30 @@ Panel {
     return Model.secondFactorWindowOpen(secondFactorStartedAt, Date.now())
   }
 
-  // Typing into a TextField assigns to its own `text`, which breaks the binding
-  // back to the property behind it. After that the two are independent, and
-  // clearing the property alone leaves the field showing what was typed --
-  // while every submit reads the property. That is exactly how a login came to
-  // be sent with no code at all while the user was looking at a filled-in
-  // field: bw answered "Code is required.", the panel reported the code as
-  // rejected, and retyping it repaired the property so the next click worked.
+  // -------------------------------------------------------------------------
+  // Presenter
+  // -------------------------------------------------------------------------
   //
-  // So a field is never cleared by clearing what is behind it. These go
-  // together, always.
+  // The logic never touches a control by id. What it needs from the screen --
+  // focus a field, show or hide the popout, keep the selection in view -- it
+  // asks of the presenter, the one view that should act, or of every view
+  // through eachView() when each copy of a control has to agree (the login
+  // fields' text, the settings header). The contract is at the top of the View
+  // section below.
+  //
+  // Here the logic still lives in this widget, so the presenter is the widget
+  // itself. When the logic moves into Service.qml the service chooses among its
+  // attached views instead.
+  readonly property var presenter: root
+
+  function eachView(fn) {
+    fn(root)
+  }
+
+  // Every view's login fields, re-pointed at the state behind them. See
+  // syncLoginFields() in the View section for why this is never skipped.
   function syncLoginFieldsToState() {
-    code2faField.text = login2faCode
-    deviceCodeField.text = loginDeviceCode
-    loginPassField.text = loginPassword
-    apiMasterField.text = loginPassword
-    apiClientIdField.text = loginClientId
-    apiClientSecretField.text = loginClientSecret
+    eachView(function(view) { view.syncLoginFields() })
   }
 
   // Closing on a challenge keeps the stage and the password, and drops the
@@ -2243,7 +2101,7 @@ Panel {
       }
       if (show2faField && !String(login2faCode || "").trim()) {
         errorMessage = "Two-step verification code is required"
-        Qt.callLater(function() { code2faField.forceActiveFocus() })
+        Qt.callLater(function() { presenter.focusField("code2fa") })
         return
       }
 
@@ -2338,7 +2196,7 @@ Panel {
       errorMessage = detail
         ? "Device verification failed: " + detail
         : "That verification code was not accepted. Use the newest email and try again."
-      Qt.callLater(function() { deviceCodeField.forceActiveFocus() })
+      Qt.callLater(function() { presenter.focusField("deviceCode") })
       return
     }
 
@@ -2353,7 +2211,7 @@ Panel {
       markSecondFactorStage()
       errorMessage = "Bitwarden needs to verify this device. Enter the code it emailed you."
       logLogin("device-verification", out, err, exitCode)
-      Qt.callLater(function() { deviceCodeField.forceActiveFocus() })
+      Qt.callLater(function() { presenter.focusField("deviceCode") })
       return
     }
 
@@ -2429,7 +2287,7 @@ Panel {
       errorMessage = secondFactorWasVisible
         ? "That two-step verification code was not accepted. Please try again."
         : "Two-step verification is required. Enter your code to continue."
-      Qt.callLater(function() { code2faField.forceActiveFocus() })
+      Qt.callLater(function() { presenter.focusField("code2fa") })
       return
     }
 
@@ -2793,7 +2651,7 @@ Panel {
     sendFormPassword = ""
     sendError = ""
     sendMode = "create"
-    Qt.callLater(function() { sendNameField.forceActiveFocus() })
+    Qt.callLater(function() { presenter.focusField("sendName") })
   }
 
   function submitCreateSend() {
@@ -2887,7 +2745,7 @@ Panel {
     currentScreen = generatorReturnScreen
     generatorReturnScreen = "main"
     // Land back on the field the trip was about, filled in or not.
-    if (toForm) Qt.callLater(function() { formPassField.forceActiveFocus() })
+    if (toForm) Qt.callLater(function() { presenter.focusField("formPass") })
   }
 
   // The whole point of the round trip: put the value in the field the caller
@@ -3137,7 +2995,7 @@ Panel {
     pinError = ""
     screenBeforeSettings = "main"
     currentScreen = "pin"
-    Qt.callLater(function() { pinSetupPinField.forceActiveFocus() })
+    Qt.callLater(function() { presenter.focusField("pinSetupPin") })
   }
 
   function abandonPinSetup() {
@@ -3386,82 +3244,6 @@ Panel {
     }
   }
 
-  // The lane every vertical scrollbar in this panel gets to itself.
-  //
-  // These bars are overlays: left alone they draw on top of whatever occupies
-  // the right edge of the view, which across these screens is toggles, number
-  // fields, copy buttons and the ends of elided text. Every scrolling view
-  // subtracts this from its content width, so the bar has somewhere to be and
-  // the right-hand edges of all of them line up.
-  //
-  // Measured from a real scrollbar rather than guessed at, so a theme with a
-  // wider one does not put it back over the controls. One bar stands in for
-  // all of them because they are the same control with the same style; the
-  // floor covers both a null reference and the frames before it has an
-  // implicit width of its own.
-  readonly property real scrollGutter:
-    Math.max(settingsScrollBar ? settingsScrollBar.implicitWidth : 0, Style.space(10))
-
-  // Which section the view is currently inside, named by the pinned indicator.
-  // Held rather than derived, because it depends on delegate geometry the
-  // Repeater only knows after layout, and a binding cannot read that without
-  // fighting it.
-  property var settingsStickyEntry: null
-
-  // The settings view's two geometry questions, in one place. Everything else
-  // that needs them goes through these rather than reaching into the Flickable
-  // and the Repeater by id from across the file.
-  function settingsViewportTop() { return settingsFlick ? settingsFlick.contentY : 0 }
-  function settingsRepeaterItem(i) {
-    return settingsRepeater ? settingsRepeater.itemAt(i) : null
-  }
-
-  // The section the view is currently inside: the last heading at or above the
-  // top of the viewport, while any part of its section is still on screen.
-  //
-  // Both halves matter. Without the first the bar sits empty until the user
-  // has scrolled, which is the one position everybody starts from. Without the
-  // second the last group stays named through the maintenance and danger-zone
-  // rows below it, which belong to no section and would leave the bar
-  // describing somewhere the user had already scrolled past.
-  //
-  // Drawing the heading twice is prevented at the other end: the in-list
-  // heading of whichever section this names is drawn transparent, so it keeps
-  // its place in the layout without appearing alongside its own copy.
-  function updateSettingsSticky() {
-    var entries = settingsEntries
-    var top = settingsViewportTop()
-    var found = null
-
-    for (var i = 0; i < entries.length; i++) {
-      if (!entries[i] || entries[i].kind !== "group") continue
-      var row = settingsRepeaterItem(i)
-      if (!row) continue
-      // Still below the top edge: the section before this one is the one the
-      // view is in.
-      if (row.y > top + 1) break
-      if (top < settingsSectionEnd(i)) found = entries[i]
-    }
-    settingsStickyEntry = found
-  }
-
-  // Where the section beginning at `index` stops: the next heading, or for the
-  // last one, the bottom of the final row before the trailing action blocks.
-  function settingsSectionEnd(index) {
-    var entries = settingsEntries
-    for (var i = index + 1; i < entries.length; i++) {
-      if (!entries[i] || entries[i].kind !== "group") continue
-      var next = settingsRepeaterItem(i)
-      if (next) return next.y
-    }
-    for (var j = entries.length - 1; j > index; j--) {
-      var last = settingsRepeaterItem(j)
-      if (last) return last.y + last.height
-    }
-    var self = settingsRepeaterItem(index)
-    return self ? self.y + self.height : 0
-  }
-
   function activateSettingRow() {
     var e = settingsEntries[settingsIndex]
     if (!e || settingBlocked(e)) return
@@ -3490,7 +3272,7 @@ Panel {
     checkDependencies()
     inspectUwsmFragment()
     currentScreen = "settings"
-    Qt.callLater(updateSettingsSticky)
+    Qt.callLater(function() { eachView(function(view) { view.updateSettingsSticky() }) })
   }
 
   function closeSettings() {
@@ -3630,7 +3412,7 @@ Panel {
     fpSetupMaster = ""
     fpError = ""
     currentScreen = "fingerprint"
-    Qt.callLater(function() { fpMasterField.forceActiveFocus() })
+    Qt.callLater(function() { presenter.focusField("fpMaster") })
   }
 
   function abandonFingerprintSetup() {
@@ -4427,14 +4209,14 @@ Panel {
     Qt.callLater(function() {
       if (status !== "unlocked") { focusAppropriateField(); return }
       switch (currentScreen) {
-        case "main": searchField.forceActiveFocus(); return
-        case "edit": formNameField.forceActiveFocus(); return
+        case "main": presenter.focusField("search"); return
+        case "edit": presenter.focusField("formName"); return
         // These open through a function that focuses their own first field.
         case "pin": case "fingerprint": return
         case "sends": if (sendMode === "create") return; break
       }
       // Everything else is keyboard-navigated rather than typed into.
-      keyCatcher.forceActiveFocus()
+      presenter.focusField("keyCatcher")
     })
   }
 
@@ -5446,9 +5228,7 @@ Panel {
     // the way rather than leaving it covering the results.
     openFilterGroup = ""
     selectedIndex = Math.max(0, Math.min(filteredItems.length - 1, selectedIndex + delta))
-    if (itemsListView) {
-      itemsListView.positionViewAtIndex(selectedIndex, ListView.Contain)
-    }
+    presenter.revealListIndex(selectedIndex)
   }
 
   function getSelectedItem() {
@@ -6771,6 +6551,309 @@ Panel {
         cooldownActive: Model.sshAgentCooldownActive(root.sshCooldown, Date.now())
       })
     }
+  }
+
+  // =========================================================================
+  // View
+  // =========================================================================
+  //
+  // Everything below draws. Everything above is the vault: state, commands,
+  // timers and IPC, which Service.qml will own once per shell. The boundary is
+  // load-bearing -- tests/service-host.test.js fails if anything above it names
+  // a control declared below it.
+
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
+  // -------------------------------------------------------------------------
+  // View contract
+  // -------------------------------------------------------------------------
+  //
+  // What the logic may ask of a view. Nothing above the View boundary names a
+  // control by id; it goes through `presenter` or eachView(), and these are the
+  // only things either may call. tests/service-host.test.js enforces both
+  // halves.
+
+  // The monitor this copy of the bar is on, for choosing a presenter.
+  readonly property string screenName: root.QsWindow && root.QsWindow.window && root.QsWindow.window.screen
+    ? String(root.QsWindow.window.screen.name || "") : ""
+
+  function showPopout() { root.controller.show() }
+  function hidePopout() { root.controller.hide() }
+
+  // The controls the logic moves the cursor to, by name.
+  function fieldFor(name) {
+    switch (name) {
+      case "search": return searchField
+      case "pass": return passField
+      case "pin": return pinField
+      case "email": return emailField
+      case "loginPass": return loginPassField
+      case "code2fa": return code2faField
+      case "deviceCode": return deviceCodeField
+      case "sendName": return sendNameField
+      case "formName": return formNameField
+      case "formPass": return formPassField
+      case "pinSetupPin": return pinSetupPinField
+      case "fpMaster": return fpMasterField
+      case "keyCatcher": return keyCatcher
+    }
+    return null
+  }
+
+  function focusField(name) {
+    var field = fieldFor(name)
+    if (field) field.forceActiveFocus()
+  }
+
+  function fieldHasFocus(name) {
+    var field = fieldFor(name)
+    return !!field && field.activeFocus
+  }
+
+  function revealListIndex(index) {
+    if (itemsListView) itemsListView.positionViewAtIndex(index, ListView.Contain)
+  }
+
+  // Every field on the login screen, and every field on the unlock screen.
+  // focusAppropriateField() consults these before it moves the cursor.
+  function loginFieldHasFocus() {
+    return emailField.activeFocus || loginPassField.activeFocus
+      || code2faField.activeFocus || deviceCodeField.activeFocus
+      || serverUrlField.activeFocus
+      || apiClientIdField.activeFocus || apiClientSecretField.activeFocus
+      || apiMasterField.activeFocus
+  }
+
+  function unlockFieldHasFocus() {
+    return passField.activeFocus || pinField.activeFocus
+  }
+
+  // Typing into a TextField assigns to its own `text`, which breaks the binding
+  // back to the property behind it. After that the two are independent, and
+  // clearing the property alone leaves the field showing what was typed --
+  // while every submit reads the property. That is exactly how a login came to
+  // be sent with no code at all while the user was looking at a filled-in
+  // field: bw answered "Code is required.", the panel reported the code as
+  // rejected, and retyping it repaired the property so the next click worked.
+  //
+  // So a field is never cleared by clearing what is behind it. These go
+  // together, always.
+  function syncLoginFields() {
+    code2faField.text = login2faCode
+    deviceCodeField.text = loginDeviceCode
+    loginPassField.text = loginPassword
+    apiMasterField.text = loginPassword
+    apiClientIdField.text = loginClientId
+    apiClientSecretField.text = loginClientSecret
+  }
+
+  // Visual styles
+  readonly property color fg: bar ? bar.foreground : Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color accent: Color.accent
+  readonly property color dim: Qt.darker(fg, 1.5)
+  readonly property color barIconColor: {
+    var base = bar ? bar.barForeground : Color.foreground
+    if (status === "unlocked") return Color.accent
+    if (status === "locked" || status === "checking") return base
+    return bar ? bar.urgent : Color.urgent
+  }
+  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+
+  // -------------------------------------------------------------------------
+  // Vault host
+  // -------------------------------------------------------------------------
+  //
+  // This widget is built once per monitor; the vault it shows is Service.qml,
+  // built once per shell. `vault` is the shared service when the shell hands it
+  // over, or a private one this view creates when it will not -- see
+  // Model.vaultHostDecision() for why "not yet" is a wait rather than a
+  // failure.
+  property var vault: null
+  // "pending" until decided, then "shared" or "private" -- or "failed" when a
+  // private vault could not be created, which is logged once and not retried.
+  property string vaultHost: "pending"
+  property double vaultResolveStartedMs: 0
+
+  function resolveVault() {
+    if (root.vault) return
+    if (root.vaultResolveStartedMs === 0) root.vaultResolveStartedMs = Date.now()
+    var host = root.bar ? root.bar.shell : null
+    var shared = host && typeof host.serviceFor === "function"
+      ? host.serviceFor(root.moduleName) : null
+    var decision = Model.vaultHostDecision(!!shared,
+      Date.now() - root.vaultResolveStartedMs, Model.vaultHostTimeoutMs())
+    if (decision === "wait") return
+    if (decision === "shared") {
+      root.vault = shared
+    } else {
+      var component = Qt.createComponent("Service.qml", Component.PreferSynchronous)
+      root.vault = component.status === Component.Ready
+        ? component.createObject(null, { privateHost: true }) : null
+      if (!root.vault) {
+        root.vaultHost = "failed"
+        console.warn("qs-bitwarden-cli: could not create a private vault: " + component.errorString())
+        return
+      }
+    }
+    root.vaultHost = decision
+    root.vault.attachView(root)
+  }
+
+  // Polled rather than bound: serviceFor() is a function call, so nothing
+  // notifies a binding when the shell publishes the service.
+  Timer {
+    id: vaultResolveTimer
+    interval: 50
+    repeat: true
+    running: root.vault === null && root.vaultHost === "pending"
+    triggeredOnStart: true
+    onTriggered: root.resolveVault()
+  }
+
+  onSettingsChanged: if (root.vault) root.vault.updateSettings(root.settings)
+
+  Component.onDestruction: {
+    if (!root.vault) return
+    root.vault.detachView(root)
+    // A private vault belongs to this view alone and goes with it. The shared
+    // one belongs to the shell and outlives any monitor.
+    if (root.vaultHost === "private") root.vault.destroy()
+  }
+
+  // The lane every vertical scrollbar in this panel gets to itself.
+  //
+  // These bars are overlays: left alone they draw on top of whatever occupies
+  // the right edge of the view, which across these screens is toggles, number
+  // fields, copy buttons and the ends of elided text. Every scrolling view
+  // subtracts this from its content width, so the bar has somewhere to be and
+  // the right-hand edges of all of them line up.
+  //
+  // Measured from a real scrollbar rather than guessed at, so a theme with a
+  // wider one does not put it back over the controls. One bar stands in for
+  // all of them because they are the same control with the same style; the
+  // floor covers both a null reference and the frames before it has an
+  // implicit width of its own.
+  readonly property real scrollGutter:
+    Math.max(settingsScrollBar ? settingsScrollBar.implicitWidth : 0, Style.space(10))
+
+  // Which section the view is currently inside, named by the pinned indicator.
+  // Held rather than derived, because it depends on delegate geometry the
+  // Repeater only knows after layout, and a binding cannot read that without
+  // fighting it.
+  property var settingsStickyEntry: null
+
+  // The settings view's two geometry questions, in one place. Everything else
+  // that needs them goes through these rather than reaching into the Flickable
+  // and the Repeater by id from across the file.
+  function settingsViewportTop() { return settingsFlick ? settingsFlick.contentY : 0 }
+  function settingsRepeaterItem(i) {
+    return settingsRepeater ? settingsRepeater.itemAt(i) : null
+  }
+
+  // The section the view is currently inside: the last heading at or above the
+  // top of the viewport, while any part of its section is still on screen.
+  //
+  // Both halves matter. Without the first the bar sits empty until the user
+  // has scrolled, which is the one position everybody starts from. Without the
+  // second the last group stays named through the maintenance and danger-zone
+  // rows below it, which belong to no section and would leave the bar
+  // describing somewhere the user had already scrolled past.
+  //
+  // Drawing the heading twice is prevented at the other end: the in-list
+  // heading of whichever section this names is drawn transparent, so it keeps
+  // its place in the layout without appearing alongside its own copy.
+  function updateSettingsSticky() {
+    var entries = settingsEntries
+    var top = settingsViewportTop()
+    var found = null
+
+    for (var i = 0; i < entries.length; i++) {
+      if (!entries[i] || entries[i].kind !== "group") continue
+      var row = settingsRepeaterItem(i)
+      if (!row) continue
+      // Still below the top edge: the section before this one is the one the
+      // view is in.
+      if (row.y > top + 1) break
+      if (top < settingsSectionEnd(i)) found = entries[i]
+    }
+    settingsStickyEntry = found
+  }
+
+  // Where the section beginning at `index` stops: the next heading, or for the
+  // last one, the bottom of the final row before the trailing action blocks.
+  function settingsSectionEnd(index) {
+    var entries = settingsEntries
+    for (var i = index + 1; i < entries.length; i++) {
+      if (!entries[i] || entries[i].kind !== "group") continue
+      var next = settingsRepeaterItem(i)
+      if (next) return next.y
+    }
+    for (var j = entries.length - 1; j > index; j--) {
+      var last = settingsRepeaterItem(j)
+      if (last) return last.y + last.height
+    }
+    var self = settingsRepeaterItem(index)
+    return self ? self.y + self.height : 0
+  }
+
+  // The SSH sections' own section header. PanelSectionHeader comes from the
+  // Omarchy shell, and its defaults are the global theme's -- `Color.foreground`
+  // and `Style.font.family` -- while everything around it here follows the bar's
+  // own foreground and font family. Stating them once keeps the headers matching
+  // the captions beneath them, and keeps `textFormat` explicit, which this
+  // panel requires of every text element whether or not its text is constant
+  // today.
+  component SshSectionHeader: PanelSectionHeader {
+    textFormat: Text.PlainText
+    foreground: root.fg
+    fontFamily: root.fontFamily
+  }
+
+  component SshCaption: Text {
+    textFormat: Text.PlainText
+    width: parent ? parent.width : 0
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
+  // One of the three vault filters at the foot of the list, collapsed to its
+  // current value. Declared once so the three cannot drift apart and start
+  // reading as different kinds of control.
+  //
+  // The button names its filter as well as showing its value. The glyphs alone
+  // do not carry it: the three sit together reading "All", "All", "All" for as
+  // long as nothing is filtered, which is exactly when the value says least and
+  // the name says most. So the name stays, and the row is allowed to take a
+  // second line on the rarer occasions all three are set to something long.
+  //
+  // The value is still clipped. `Ui.Button` has no elide, so a folder named
+  // after a whole client engagement would make one button wider than the whole
+  // panel -- and a row that wraps can move a button to the next line but can
+  // never make one narrower than the panel it is in.
+  component VaultFilterButton: Button {
+    required property string group
+    required property string glyph
+    required property string name
+    required property string value
+    required property string shortcut
+
+    // Clipped first, then neutralized: plainLabel may return a <span>, and
+    // slicing that would cut the tag in half.
+    text: Model.plainLabel(name + ": " + Model.clipLabel(value, 20))
+    iconText: root.openFilterGroup === group ? "󰅀" : glyph
+    selected: root.openFilterGroup === group
+    accent: Color.accent
+    fontFamily: root.fontFamily
+    fontSize: Style.font.caption
+    horizontalPadding: Style.space(10)
+    // The full value, unclipped, is still one hover away -- and the tooltip is
+    // drawn by the kit's own auto-detecting Text, so it is neutralized too.
+    tooltipText: Model.plainLabel(name + " filter (" + shortcut + "): " + value)
+    onClicked: root.toggleFilterGroup(group)
   }
 
   Component {

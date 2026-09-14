@@ -6190,3 +6190,31 @@ function vaultHostDecision(found, elapsedMs, timeoutMs) {
   if (!(limit >= 0)) limit = VAULT_HOST_TIMEOUT_MS
   return Number(elapsedMs) >= limit ? "private" : "wait"
 }
+
+// Which attached view should act when the vault needs the screen: raise the
+// popout, move the cursor, show an SSH prompt. `views` is one summary per view
+// in attach order, `{ opened, screen }`; `focusedScreen` is the monitor
+// Hyprland has focused.
+//
+//   1. a view whose popout is already open -- the user is looking at it, and a
+//      prompt raised anywhere else would land behind their back;
+//   2. otherwise the view on the focused monitor, which is where a keyboard-
+//      summoned panel belongs;
+//   3. otherwise the first view, so there is always somewhere to show it --
+//      including before Hyprland has reported a focused monitor at all.
+//
+// -1 only when there is no view.
+function presenterIndex(views, focusedScreen) {
+  var list = Array.isArray(views) ? views : []
+  if (list.length === 0) return -1
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].opened === true) return i
+  }
+  var focused = String(focusedScreen || "")
+  if (focused) {
+    for (var j = 0; j < list.length; j++) {
+      if (list[j] && String(list[j].screen || "") === focused) return j
+    }
+  }
+  return 0
+}

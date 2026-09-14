@@ -17,6 +17,7 @@ const Model = {}
 new Function("exports", read("BitwardenModel.js").replace(/^\.pragma library\s*$/m, "") + `
   exports.vaultHostDecision = vaultHostDecision
   exports.vaultHostTimeoutMs = vaultHostTimeoutMs
+  exports.presenterIndex = presenterIndex
 `)(Model)
 
 let pass = 0
@@ -91,6 +92,62 @@ check("an attaching view brings its settings",
 check("detaching an unknown view is a no-op",
   /function detachView\(view\)\s*\{\s*var index = views\.indexOf\(view\)\s*if \(index === -1\) return/.test(service),
   "detachView must ignore a view it does not have")
+
+// --- choosing the presenter -------------------------------------------------
+
+const P = Model.presenterIndex
+check("no views, no presenter", P([], "eDP-1") === -1 && P(null, "eDP-1") === -1, "expected -1")
+check("a single view presents whatever is focused",
+  P([{ opened: false, screen: "eDP-1" }], "DP-1") === 0, "expected 0")
+check("an open popout outranks the focused monitor",
+  P([{ opened: false, screen: "eDP-1" }, { opened: true, screen: "DP-1" }], "eDP-1") === 1, "expected 1")
+check("otherwise the view on the focused monitor presents",
+  P([{ opened: false, screen: "eDP-1" }, { opened: false, screen: "DP-1" }], "DP-1") === 1, "expected 1")
+check("with no focused monitor reported, the first view presents",
+  P([{ opened: false, screen: "eDP-1" }, { opened: false, screen: "DP-1" }], "") === 0, "expected 0")
+check("a focused monitor with no bar on it falls back to the first view",
+  P([{ opened: false, screen: "eDP-1" }, { opened: false, screen: "DP-1" }], "HDMI-A-1") === 0, "expected 0")
+check("only a real true counts as open",
+  P([{ opened: "true", screen: "eDP-1" }, { opened: false, screen: "DP-1" }], "DP-1") === 1, "expected 1")
+
+check("the service follows Hyprland's focused monitor",
+  /Hyprland\.focusedMonitor/.test(service) && /Model\.presenterIndex\(summaries, focusedScreen\)/.test(service),
+  "presenter must be derived from the views and the focused monitor")
+check("each view reports the monitor it is on",
+  /readonly property string screenName:/.test(panel), "screenName missing from the view")
+
+// --- the View boundary --------------------------------------------------------
+//
+// Panel.qml is split at the View banner: the vault above, drawing below. The
+// logic must reach the screen only through the presenter contract, so that
+// moving it into Service.qml is a move and not a rewrite.
+
+const boundary = panel.indexOf("\n  // View\n")
+check("Panel.qml has a View boundary", boundary > 0, "the '// View' banner is missing")
+const logicSrc = panel.slice(0, boundary)
+const viewSrc = panel.slice(boundary)
+
+// Strip strings and comments so prose like "the panel" is not read as the id.
+const code = src => src
+  .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+  .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+  .replace(/\/\/[^\n]*/g, "")
+
+const viewIds = [...viewSrc.matchAll(/^\s+id:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/gm)].map(m => m[1])
+check("the view declares the controls", viewIds.length > 50, String(viewIds.length))
+const logicCode = code(logicSrc)
+const leaked = viewIds.filter(id => new RegExp(`\\b${id}\\b`).test(logicCode))
+check("nothing above the View boundary names a control declared below it",
+  leaked.length === 0, "logic references: " + leaked.join(", "))
+
+const viewCode = code(viewSrc)
+const defined = new Set([...viewCode.matchAll(/function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)].map(m => m[1]))
+const asked = new Set([...logicCode.matchAll(/\b(?:presenter|view)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)].map(m => m[1]))
+const missing = [...asked].filter(name => !defined.has(name))
+check("every call the logic makes on a view is part of the View contract",
+  asked.size > 0 && missing.length === 0, "not defined in the View section: " + missing.join(", "))
+const asksNames = [...logicCode.matchAll(/presenter\.(?:focusField|fieldHasFocus)\(""\)/g)].length
+check("the logic asks for fields by name, never by control", asksNames > 10, String(asksNames))
 
 console.log(`\n${pass} passed, ${failures.length} failed`)
 if (failures.length) {

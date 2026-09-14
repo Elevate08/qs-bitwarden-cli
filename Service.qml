@@ -1,4 +1,6 @@
 import QtQuick
+import Quickshell.Hyprland
+import "BitwardenModel.js" as Model
 
 // The vault, once per shell.
 //
@@ -37,6 +39,20 @@ Item {
     if (!view || views.indexOf(view) !== -1) return
     views = views.concat([view])
     if (view.settings) updateSettings(view.settings)
+  }
+
+  // The view that acts when the vault needs the screen -- see
+  // Model.presenterIndex(). Re-evaluated whenever a view attaches or detaches,
+  // opens or closes its popout, or Hyprland moves focus to another monitor.
+  readonly property string focusedScreen: Hyprland.focusedMonitor
+    ? String(Hyprland.focusedMonitor.name || "") : ""
+  readonly property var presenter: {
+    var summaries = []
+    for (var i = 0; i < views.length; i++) {
+      summaries.push({ opened: views[i].opened === true, screen: views[i].screenName })
+    }
+    var index = Model.presenterIndex(summaries, focusedScreen)
+    return index >= 0 ? views[index] : null
   }
 
   function detachView(view) {
