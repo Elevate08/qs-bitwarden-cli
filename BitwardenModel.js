@@ -2479,7 +2479,7 @@ function itemDetailFromObject(it) {
     return { id: String(it.id || ""), organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null, name: String(it.name || "Untitled"),
       type: "sshKey", typeCode: 5, favorite: Boolean(it.favorite), notes: "",
-      username: "", password: "", hasTotp: false, totpKey: "", uris: [], attachments: [],
+      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [], attachments: [],
       hasAttachments: false, card: null, identity: null, fields: [],
       publicKey: String(sshKey.publicKey || it.publicKey || ""),
       fingerprint: String(sshKey.fingerprint || sshKey.keyFingerprint || it.fingerprint || it.keyFingerprint || ""), rawObject: it }
@@ -2500,6 +2500,9 @@ function itemDetailFromObject(it) {
     notes: String(it.notes || ""),
     username: String(login.username || ""),
     password: String(login.password || ""),
+    // The detail view's password row reads this when the password itself is
+    // empty. Missing, it made that `visible` binding undefined.
+    hasPassword: Boolean(login.password),
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
@@ -4061,6 +4064,36 @@ function sshAgentRestartDelayMs(failures) {
 // unit, a TTY login, or an incoming SSH session can each differ and are all
 // invisible from here.
 
+// How long to wait before trying again when another process holds the agent's
+// runtime lock. Not a backoff step: nothing is broken, so it neither grows nor
+// counts toward the crash-loop bound, and it is slow because the usual holder
+// -- another shell, during a restart -- goes away on its own.
+var SSH_AGENT_ELSEWHERE_RETRY_MS = 30 * 1000
+
+function sshAgentElsewhereRetryMs() {
+  return SSH_AGENT_ELSEWHERE_RETRY_MS
+}
+
+// Whether another process holds the helper's runtime lock, asked without the
+// helper. It exits 1 for every startup failure, lost lock included, and a
+// distinct code would mean rebuilding the committed binary.
+//
+// `flock -n` on the same file answers exactly that, and releases at once. The
+// file is tested first because flock(1) creates what it cannot find, and the
+// helper refuses a lock file it did not make 0600 itself; a symlink is never
+// followed. Exit 75 is held; anything else, including a missing file, is not.
+function sshAgentLockProbeCommand(runtimeDir) {
+  if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return null
+  var lock = runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.lock"
+  return ["bash", "-c",
+    "[ -f \"$1\" ] && [ ! -L \"$1\" ] || exit 0; exec flock -n -E 75 \"$1\" true",
+    "_", lock]
+}
+
+function sshAgentLockHeld(exitCode) {
+  return Number(exitCode) === 75
+}
+
 function sshAgentSocketPath(runtimeDir) {
   if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return ""
   return runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.sock"
@@ -5206,6 +5239,8 @@ function sshAgentSetupState(opts) {
 //   "ready"       handshake complete; this is the only phase with an open gate
 //   "restarting"  a failure was detected mid-run; waiting for the child to go
 //   "backoff"     a restart timer is armed
+//   "elsewhere"   the helper lost the runtime lock to another process; a slow
+//                 retry is armed and nothing counts as a failure
 //   "failed"      the restart cap was reached; the feature is off until it is
 //                 explicitly re-enabled, and the rest of the plugin is untouched
 function sshAgentInitialState() {
@@ -5244,7 +5279,9 @@ var SSH_AGENT_ERROR_MESSAGES = {
   PROTOCOL: "The SSH agent helper broke its side of the control protocol.",
   HANDSHAKE_TIMEOUT: "The SSH agent helper did not finish starting up.",
   EXITED: "The SSH agent helper stopped unexpectedly.",
-  CRASH_LOOP: "The SSH agent helper keeps failing to start, so it has been left off."
+  CRASH_LOOP: "The SSH agent helper keeps failing to start, so it has been left off.",
+  ELSEWHERE: "Another process is already serving the SSH agent on this machine -- another "
+    + "Omarchy shell, most likely. This one is standing by and will take over when it stops."
 }
 
 // Every message the user can see is a fixed string chosen by a stable code.
@@ -5380,11 +5417,26 @@ function sshAgentReduce(state, event) {
     }
 
     case "exited":
+      // A start that never reached `ready` may have lost the runtime lock to
+      // another process rather than failed. The panel probes the lock before
+      // reporting such an exit; a held lock is a wait, not a crash, and must
+      // not walk the supervisor toward CRASH_LOOP.
+      if (ev.lockHeld === true && current.readyAtMs === 0) {
+        next.gateOpen = false
+        next.socketPath = ""
+        next.fifoPath = ""
+        next.agentVersion = ""
+        next.phase = "elsewhere"
+        next.errorCode = "ELSEWHERE"
+        next.errorMessage = sshAgentErrorMessage("ELSEWHERE")
+        action.restartInMs = SSH_AGENT_ELSEWHERE_RETRY_MS
+        return { state: next, action: action }
+      }
       sshAgentFailOnExit(current, next, action, nowMs)
       return { state: next, action: action }
 
     case "restartTimer":
-      if (current.phase !== "backoff") return { state: next, action: action }
+      if (current.phase !== "backoff" && current.phase !== "elsewhere") return { state: next, action: action }
       next.phase = "starting"
       action.start = true
       return { state: next, action: action }
@@ -6155,4 +6207,66 @@ function clipLabel(value, max) {
   if (text.length <= limit) return text
   if (limit <= 3) return text.slice(0, limit)
   return text.slice(0, limit - 3) + "..."
+}
+
+// -------------------------------------------------------------------------
+// Vault host
+// -------------------------------------------------------------------------
+//
+// The bar is built once per monitor, so this plugin's bar widget is too. The
+// vault -- session, SSH agent supervisor, lock triggers, IPC -- lives in
+// Service.qml, which the shell loads once per shell and every bar copy reaches
+// through `bar.shell.serviceFor()`. A copy that cannot reach it (a replacement
+// bar hands widgets a service-less facade; the standalone QML tests have no
+// shell) hosts a private Service of its own, which is exactly the one-vault-
+// per-widget behaviour the plugin had before the service existed.
+//
+// The shared service is not guaranteed to be there the moment a view asks:
+// `bar` and its shell facade are injected just after the widget is created,
+// and a service that loads asynchronously is published a little later still.
+// So "not found yet" is a wait, and only a wait that outlasts the timeout is
+// taken as "there is no shared service". Choosing private too early would
+// start a second vault next to the shared one -- the contention this exists to
+// remove.
+var VAULT_HOST_TIMEOUT_MS = 3000
+
+function vaultHostTimeoutMs() {
+  return VAULT_HOST_TIMEOUT_MS
+}
+
+// "shared" | "private" | "wait". `found` is whether the shared service was
+// returned on this attempt; `elapsedMs` is how long this view has been asking.
+function vaultHostDecision(found, elapsedMs, timeoutMs) {
+  if (found) return "shared"
+  var limit = Number(timeoutMs)
+  if (!(limit >= 0)) limit = VAULT_HOST_TIMEOUT_MS
+  return Number(elapsedMs) >= limit ? "private" : "wait"
+}
+
+// Which attached view should act when the vault needs the screen: raise the
+// popout, move the cursor, show an SSH prompt. `views` is one summary per view
+// in attach order, `{ opened, screen }`; `focusedScreen` is the monitor
+// Hyprland has focused.
+//
+//   1. a view whose popout is already open -- the user is looking at it, and a
+//      prompt raised anywhere else would land behind their back;
+//   2. otherwise the view on the focused monitor, which is where a keyboard-
+//      summoned panel belongs;
+//   3. otherwise the first view, so there is always somewhere to show it --
+//      including before Hyprland has reported a focused monitor at all.
+//
+// -1 only when there is no view.
+function presenterIndex(views, focusedScreen) {
+  var list = Array.isArray(views) ? views : []
+  if (list.length === 0) return -1
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].opened === true) return i
+  }
+  var focused = String(focusedScreen || "")
+  if (focused) {
+    for (var j = 0; j < list.length; j++) {
+      if (list[j] && String(list[j].screen || "") === focused) return j
+    }
+  }
+  return 0
 }

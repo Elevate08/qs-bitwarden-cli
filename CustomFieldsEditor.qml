@@ -11,6 +11,8 @@ Column {
   id: editor
 
   required property var panel
+  // The vault this panel shows (Service.qml); `panel` is the view that draws it.
+  required property var vault
 
   spacing: Style.space(7)
 
@@ -23,17 +25,17 @@ Column {
 
   Repeater {
     id: customFieldEditorRepeater
-    model: editor.panel.formCustomFields
+    model: editor.vault.formCustomFields
 
     delegate: Column {
       id: fieldRow
       required property var modelData
       required property int index
-      property bool booleanValue: editor.panel.customFieldBooleanValue(modelData.value)
+      property bool booleanValue: editor.vault.customFieldBooleanValue(modelData.value)
       property bool hiddenRevealed: Boolean(modelData.revealed)
       property int linkedTarget: modelData.linkedId === undefined || modelData.linkedId === null
         ? -1 : Number(modelData.linkedId)
-      readonly property bool editingLabel: editor.panel.formPicker === "customLabel:" + index
+      readonly property bool editingLabel: editor.vault.formPicker === "customLabel:" + index
       width: editor.width
       spacing: Style.space(4)
 
@@ -59,7 +61,7 @@ Column {
 
           Text {
             textFormat: Text.PlainText
-            text: editor.panel.customFieldTypeLabel(fieldRow.modelData.type) + " field"
+            text: editor.vault.customFieldTypeLabel(fieldRow.modelData.type) + " field"
             color: editor.panel.dim
             font.family: editor.panel.fontFamily
             font.pixelSize: Style.font.caption
@@ -73,7 +75,7 @@ Column {
           tooltipText: Model.plainLabel("Edit label for " + String(fieldRow.modelData.name || "custom field"))
           fontFamily: editor.panel.fontFamily
           fontSize: Style.font.caption
-          onClicked: editor.panel.beginCustomFieldLabelEdit(fieldRow.index)
+          onClicked: editor.vault.beginCustomFieldLabelEdit(fieldRow.index)
         }
       }
 
@@ -94,9 +96,9 @@ Column {
         TextField {
           width: parent.width
           placeholderText: "Field label"
-          text: editor.panel.formCustomFieldLabelDraft
-          onTextChanged: editor.panel.formCustomFieldLabelDraft = text
-          onAccepted: editor.panel.saveCustomFieldLabel(fieldRow.index)
+          text: editor.vault.formCustomFieldLabelDraft
+          onTextChanged: editor.vault.formCustomFieldLabelDraft = text
+          onAccepted: editor.vault.saveCustomFieldLabel(fieldRow.index)
         }
 
         Row {
@@ -108,17 +110,17 @@ Column {
             iconText: "󰄬"
             selected: true
             accent: Color.accent
-            enabled: editor.panel.formCustomFieldLabelDraft.trim() !== ""
+            enabled: editor.vault.formCustomFieldLabelDraft.trim() !== ""
             fontFamily: editor.panel.fontFamily
             fontSize: Style.font.caption
-            onClicked: editor.panel.saveCustomFieldLabel(fieldRow.index)
+            onClicked: editor.vault.saveCustomFieldLabel(fieldRow.index)
           }
 
           Button {
             text: "Cancel"
             fontFamily: editor.panel.fontFamily
             fontSize: Style.font.caption
-            onClicked: editor.panel.cancelCustomFieldLabelEdit()
+            onClicked: editor.vault.cancelCustomFieldLabelEdit()
           }
 
           Item { width: Style.space(4); height: 1 }
@@ -128,7 +130,7 @@ Column {
             tooltipText: Model.plainLabel("Delete " + String(fieldRow.modelData.name || "custom field"))
             fontFamily: editor.panel.fontFamily
             fontSize: Style.font.caption
-            onClicked: editor.panel.removeFormCustomField(fieldRow.index)
+            onClicked: editor.vault.removeFormCustomField(fieldRow.index)
           }
         }
       }
@@ -143,7 +145,7 @@ Column {
           ? "" : String(fieldRow.modelData.value)
         rightPadding: Number(fieldRow.modelData.type) === 1
           ? revealButton.width + Style.space(12) : horizontalPadding
-        onTextChanged: editor.panel.setFormCustomFieldValue(fieldRow.index, text)
+        onTextChanged: editor.vault.setFormCustomFieldValue(fieldRow.index, text)
 
         Button {
           id: revealButton
@@ -173,32 +175,32 @@ Column {
         fontSize: Style.font.bodySmall
         onClicked: {
           fieldRow.booleanValue = !fieldRow.booleanValue
-          editor.panel.setFormCustomFieldValue(fieldRow.index, fieldRow.booleanValue)
+          editor.vault.setFormCustomFieldValue(fieldRow.index, fieldRow.booleanValue)
         }
       }
 
       Button {
         visible: !fieldRow.editingLabel && Number(fieldRow.modelData.type) === 3
         width: parent.width
-        text: editor.panel.customFieldLinkedLabel(fieldRow.linkedTarget)
-        iconText: editor.panel.formPicker === "customLinked:" + fieldRow.index
+        text: editor.vault.customFieldLinkedLabel(fieldRow.linkedTarget)
+        iconText: editor.vault.formPicker === "customLinked:" + fieldRow.index
           ? "\u{F0140}" : "\u{F0337}"
-        selected: editor.panel.formPicker === "customLinked:" + fieldRow.index
+        selected: editor.vault.formPicker === "customLinked:" + fieldRow.index
         accent: Color.accent
         leftAlign: true
         fontFamily: editor.panel.fontFamily
         fontSize: Style.font.bodySmall
-        onClicked: editor.panel.toggleFormPicker("customLinked:" + fieldRow.index)
+        onClicked: editor.vault.toggleFormPicker("customLinked:" + fieldRow.index)
       }
 
       Column {
         visible: !fieldRow.editingLabel && Number(fieldRow.modelData.type) === 3
-          && editor.panel.formPicker === "customLinked:" + fieldRow.index
+          && editor.vault.formPicker === "customLinked:" + fieldRow.index
         width: parent.width
         spacing: Style.space(2)
 
         Repeater {
-          model: editor.panel.customFieldLinkedOptions(editor.panel.formTypeCode)
+          model: editor.vault.customFieldLinkedOptions(editor.vault.formTypeCode)
           delegate: FormPickerRow {
             required property var modelData
             width: fieldRow.width
@@ -209,8 +211,8 @@ Column {
             picked: fieldRow.linkedTarget === Number(modelData.id)
             onActivated: {
               fieldRow.linkedTarget = Number(modelData.id)
-              editor.panel.setFormCustomFieldLinkedId(fieldRow.index, modelData.id)
-              editor.panel.formPicker = ""
+              editor.vault.setFormCustomFieldLinkedId(fieldRow.index, modelData.id)
+              editor.vault.formPicker = ""
             }
           }
         }
@@ -221,16 +223,16 @@ Column {
   }
 
   Button {
-    visible: editor.panel.formPicker !== "customAdd"
+    visible: editor.vault.formPicker !== "customAdd"
     text: "Add custom field"
     iconText: "\u{F0415}"
     fontFamily: editor.panel.fontFamily
     fontSize: Style.font.bodySmall
-    onClicked: editor.panel.formPicker = "customAdd"
+    onClicked: editor.vault.formPicker = "customAdd"
   }
 
   Column {
-    visible: editor.panel.formPicker === "customAdd"
+    visible: editor.vault.formPicker === "customAdd"
     width: parent.width
     spacing: Style.space(6)
 
@@ -249,32 +251,32 @@ Column {
 
       Button {
         text: "Text"
-        selected: editor.panel.formNewCustomFieldType === 0
+        selected: editor.vault.formNewCustomFieldType === 0
         fontFamily: editor.panel.fontFamily
         fontSize: Style.font.caption
-        onClicked: editor.panel.formNewCustomFieldType = 0
+        onClicked: editor.vault.formNewCustomFieldType = 0
       }
       Button {
         text: "Hidden"
-        selected: editor.panel.formNewCustomFieldType === 1
+        selected: editor.vault.formNewCustomFieldType === 1
         fontFamily: editor.panel.fontFamily
         fontSize: Style.font.caption
-        onClicked: editor.panel.formNewCustomFieldType = 1
+        onClicked: editor.vault.formNewCustomFieldType = 1
       }
       Button {
         text: "Boolean"
-        selected: editor.panel.formNewCustomFieldType === 2
+        selected: editor.vault.formNewCustomFieldType === 2
         fontFamily: editor.panel.fontFamily
         fontSize: Style.font.caption
-        onClicked: editor.panel.formNewCustomFieldType = 2
+        onClicked: editor.vault.formNewCustomFieldType = 2
       }
       Button {
-        visible: editor.panel.customFieldLinkedOptions(editor.panel.formTypeCode).length > 0
+        visible: editor.vault.customFieldLinkedOptions(editor.vault.formTypeCode).length > 0
         text: "Linked"
-        selected: editor.panel.formNewCustomFieldType === 3
+        selected: editor.vault.formNewCustomFieldType === 3
         fontFamily: editor.panel.fontFamily
         fontSize: Style.font.caption
-        onClicked: editor.panel.formNewCustomFieldType = 3
+        onClicked: editor.vault.formNewCustomFieldType = 3
       }
     }
 
@@ -285,9 +287,9 @@ Column {
       TextField {
         width: parent.width - addButton.width - Style.space(6)
         placeholderText: "Field label"
-        text: editor.panel.formNewCustomFieldName
-        onTextChanged: editor.panel.formNewCustomFieldName = text
-        onAccepted: editor.panel.addFormCustomField()
+        text: editor.vault.formNewCustomFieldName
+        onTextChanged: editor.vault.formNewCustomFieldName = text
+        onAccepted: editor.vault.addFormCustomField()
       }
 
       Button {
@@ -298,8 +300,8 @@ Column {
         accent: Color.accent
         fontFamily: editor.panel.fontFamily
         fontSize: Style.font.caption
-        enabled: editor.panel.formNewCustomFieldName.trim() !== ""
-        onClicked: editor.panel.addFormCustomField()
+        enabled: editor.vault.formNewCustomFieldName.trim() !== ""
+        onClicked: editor.vault.addFormCustomField()
       }
     }
 
@@ -308,9 +310,9 @@ Column {
       fontFamily: editor.panel.fontFamily
       fontSize: Style.font.caption
       onClicked: {
-        editor.panel.formNewCustomFieldName = ""
-        editor.panel.formNewCustomFieldType = 0
-        editor.panel.formPicker = ""
+        editor.vault.formNewCustomFieldName = ""
+        editor.vault.formNewCustomFieldType = 0
+        editor.vault.formPicker = ""
       }
     }
   }

@@ -7,6 +7,7 @@
 //   node tests/rich-text.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
@@ -70,7 +71,7 @@ for (const file of ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"
 // strings we hand it have to arrive already neutralized.
 // Every QML file that draws vault-derived text, not just the largest one.
 const panel = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml", "FormPickerRow.qml", "StatusNotice.qml", "DetailField.qml", "WheelScroll.qml"]
-  .map(file => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+  .map(readPluginSource)
   .join("\n")
 const detailField = fs.readFileSync(path.join(__dirname, "..", "DetailField.qml"), "utf8")
 for (const binding of ["formFolderLabel()", "formOrgLabel()", "Model.clipLabel(value, 20)",

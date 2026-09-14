@@ -3,6 +3,7 @@
 // and inhibitor commands are stubs; these tests never inhibit or suspend Linux.
 const assert = require("node:assert/strict")
 const fs = require("node:fs")
+const { readPluginSource } = require("./plugin-source")
 const os = require("node:os")
 const path = require("node:path")
 const { spawn } = require("node:child_process")
@@ -11,7 +12,7 @@ const root = path.join(__dirname, "..")
 const model = fs.readFileSync(path.join(root, "BitwardenModel.js"), "utf8")
 const command = new Function(model.replace(/^\.pragma library\s*$/m, "")
   + "\nreturn sleepMonitorCommand()")()
-const panel = fs.readFileSync(path.join(root, "Panel.qml"), "utf8")
+const panel = readPluginSource("Panel.qml")
 assert.match(panel.slice(panel.indexOf("id: sleepMonitorProc"),
   panel.indexOf("command: Model.sleepMonitorCommand()")), /stdinEnabled:\s*true/)
 
