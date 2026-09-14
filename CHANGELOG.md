@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.9.0] - 2026-09-14
+
+### Added
+
+- **Custom fields are shown and can be edited.** An item's custom fields were
+  parsed but never drawn, so they could only be seen with `bw get item`. They
+  now appear on the detail screen -- hidden fields masked and revealed one at a
+  time, linked fields showing the value they point at -- and the item form can
+  add, rename, edit and delete text, hidden, boolean and linked fields. Types,
+  link targets, order and boolean values are written back the way Bitwarden's
+  own clients write them, so an item edited here still autofills in the browser
+  extension. A linked field whose target is empty is not shown on the detail
+  screen. (#34, closes #31)
+
+### Fixed
+
+- **The first unlock after a reboot no longer fails with "Could not deliver the
+  password".** The password writer gave up at once if the plugin's runtime
+  directory did not exist yet, and after a reboot it usually started before the
+  reader had created it. It now waits for the directory and the FIFO together,
+  within the same two-second window. Setups where the SSH agent had already
+  created the directory never saw this. (#35)
+- **Opening a locked vault focuses the PIN field when PIN unlock is set up**,
+  rather than the master password field. (#33, closes #32)
+- **Reloading the plugin no longer leaves suspend monitors behind.** Each reload
+  orphaned the previous monitor's `systemd-inhibit`, `gdbus` and `sed`, and they
+  accumulated for the life of the session. The monitor now runs in its own
+  process group and is torn down with it. Needs `setsid` (util-linux). Monitors
+  already orphaned by an earlier version are cleared by a reboot, and the fix
+  takes effect after a full shell restart rather than a plugin reload. (#29)
+
 ## [1.8.1] - 2026-09-05
 
 ### Added
