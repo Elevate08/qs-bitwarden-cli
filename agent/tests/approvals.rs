@@ -56,7 +56,7 @@ fn a_client_waits_longer_than_the_human_is_given_to_answer() {
     assert_eq!(
         qs_bitwarden_ssh_agent::approvals::REQUEST_LIFETIME_MS,
         120_000,
-        "see docs/decisions/0003-request-deadline.md"
+        "a person reading a fingerprint needs minutes, not thirty seconds"
     );
 }
 
@@ -130,8 +130,8 @@ fn approval_is_single_use_and_old_epoch_fails_at_final_check() {
 /// fresh `ssh-keygen` for every commit it signs, so a grant tied to a PID
 /// never matches the case grants exist for -- a rebase would prompt once per
 /// commit regardless. Scoping to the executable path is what makes the
-/// feature do its job; see docs/decisions/0002-grant-scope.md for the
-/// exposure this accepts.
+/// feature do its job, at the cost of trusting every process that runs the
+/// same program with the same key.
 #[test]
 fn grants_are_capped_and_bound_to_key_and_executable() {
     let (_, key) = loaded_store(3);

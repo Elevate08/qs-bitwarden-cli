@@ -336,8 +336,8 @@ check("apt packages are not pinned by version string",
   "hard version pins break when Ubuntu drops the superseded package")
 check("advisories are denied rather than warned about",
   /yanked = "deny"/.test(deny), "yanked crates are tolerated")
-check("the one accepted advisory says why and where it is argued",
-  /RUSTSEC-2023-0071[\s\S]{0,400}?0001-ssh-agent-dependencies/.test(deny),
+check("the one accepted advisory says why, next to the exception itself",
+  /RUSTSEC-2023-0071[\s\S]{0,300}?Accepted for these reasons[\s\S]{0,1200}?id = "RUSTSEC-2023-0071", reason = "[^"]{40,}"/.test(deny),
   "an ignored advisory with no recorded reasoning is just a silenced alarm")
 check("only permissive licences are allowed",
   /allow = \[[\s\S]*?"MIT"/.test(deny) && !/GPL/.test(deny.split("[bans]")[0]),

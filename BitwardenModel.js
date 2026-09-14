@@ -4751,7 +4751,8 @@ function parseSshExportResult(exitCode, stdout) {
 // Matches REQUEST_LIFETIME_MS in the companion. The panel only draws the
 // countdown; the companion is what actually expires the request. Two minutes
 // rather than thirty seconds because this waits on a person reading a
-// fingerprint, not on a machine -- see docs/decisions/0003-request-deadline.md.
+// fingerprint, not on a machine: thirty seconds expired under users who were
+// simply reading the prompt, and each expiry counted toward the denial cooldown.
 var SSH_AGENT_REQUEST_DEADLINE_MS = 120 * 1000
 
 // Bounds on anything drawn from a vault item or another process. A name comes
@@ -4848,7 +4849,6 @@ function sshAgentPromptView(message, approvalWindowSec) {
     // "program", not "process": a grant matches the executable path and the
     // key, so a fresh process running the same program rides it. That is what
     // makes it useful for Git signing, which spawns one ssh-keygen per commit.
-    // See docs/decisions/0002-grant-scope.md.
     grantLabel: grantOffered ? "Approve for this program · " + formatDuration(window) : "",
     forwardedWarning: forwarded ? SSH_AGENT_FORWARDED_WARNING : "",
     provenanceNote: SSH_AGENT_PROVENANCE_NOTE

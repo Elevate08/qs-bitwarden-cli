@@ -7,9 +7,9 @@ license = "MIT"
 publish = false
 description = "Headless SSH-agent companion for the qs-bitwarden-cli Quickshell panel"
 
-# Why each dependency is here, and why its features are cut this far down, is
-# recorded in docs/decisions/0001-ssh-agent-dependencies.md. Anything added
-# here needs the same review: this process holds decrypted private keys.
+# Each dependency and its feature set was reviewed deliberately, and the
+# comments below say why each is here. Anything added needs the same review:
+# this process holds decrypted private keys.
 [dependencies]
 # Key parsing, public blobs, fingerprints, and the signing primitives. Default
 # features are off so ECDSA, DSA, and OpenSSH key encryption never compile in:

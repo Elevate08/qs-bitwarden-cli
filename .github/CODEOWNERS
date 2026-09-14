@@ -25,5 +25,3 @@
 # because a reviewer scanning this file should not have to infer it.
 /.github/workflows/release.yml @Elevate08
 
-# Decisions that were argued once and should not drift silently.
-/docs/decisions/        @Elevate08

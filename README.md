@@ -218,7 +218,6 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
 [^adr]: **This plugin** will not. The CLI can encrypt a type-5 item, but
     generating a key means putting private material somewhere this plugin has
     deliberately kept it out of.
-    See [ADR 0004](docs/decisions/0004-ssh-key-creation.md).
 [^ssh-clients]: Bitwarden documents SSH keys as generated or imported "using
     the desktop app, web app, and browser extension", and generation is
     Ed25519 only.
@@ -574,7 +573,6 @@ check that covers that, which is why the rebuild stays a human step.
 - **[SSH agent](docs/ssh-agent.md)** -- setup, verification, threat model.
 - **[Uninstall](docs/uninstall.md)** -- including what to clear before removing the plugin.
 - **[Development](docs/development.md)** -- linting and the test suite.
-- **[Decisions](docs/decisions/)** -- the arguments that were had once and should not drift.
 
 ---
 

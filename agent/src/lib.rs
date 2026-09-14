@@ -3,8 +3,8 @@
 //! The panel owns `bw` and `BW_SESSION`; this process never sees either. It
 //! receives already-decrypted private keys on a private FIFO, holds them only
 //! while the vault is unlocked, and signs only against a live approval. The
-//! full design is in `docs/ideas/ssh-agent.md`, and the dependency set below is
-//! justified in `docs/decisions/0001-ssh-agent-dependencies.md`.
+//! dependency set below was reviewed deliberately before it was pinned, and
+//! anything added to it needs the same review.
 //!
 //! At this stage the crate is the dependency spike itself: it pins the crates
 //! the agent will be built from and proves, in tests that need no vault, no
@@ -52,8 +52,8 @@ pub fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
 /// dependency, drop RSA from v1, or build the private key here from the same
 /// components. This crate takes the third: it is a dozen lines against a
 /// stable API, it needs no fork or patch section in Cargo.toml, and it drops
-/// out the day a fixed 0.6.x or 0.7.0 is released. See
-/// `docs/decisions/0001-ssh-agent-dependencies.md`.
+/// out the day a fixed 0.6.x or 0.7.0 is released.
+///
 pub mod rsa_keys {
     use rsa::pkcs1v15;
     use rsa::traits::PublicKeyParts;

@@ -2,3 +2,8 @@
 agent/target/
 docs/screenshots/.preview-base.png
 docs/screenshots/.preview-base.png.anchor
+
+# Planning notes, design ideas and decision records are local working files.
+/tasks/
+/docs/decisions/
+/docs/ideas/
