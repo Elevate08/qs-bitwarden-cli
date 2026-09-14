@@ -7,10 +7,12 @@
   "license": "MIT",
   "description": "Bitwarden password manager integration for the Omarchy status bar and quick access panel.",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "service"
   ],
   "entryPoints": {
-    "barWidget": "Panel.qml"
+    "barWidget": "Panel.qml",
+    "service": "Service.qml"
   },
   "barWidget": {
     "displayName": "Bitwarden",

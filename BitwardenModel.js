@@ -6156,3 +6156,37 @@ function clipLabel(value, max) {
   if (limit <= 3) return text.slice(0, limit)
   return text.slice(0, limit - 3) + "..."
 }
+
+// -------------------------------------------------------------------------
+// Vault host
+// -------------------------------------------------------------------------
+//
+// The bar is built once per monitor, so this plugin's bar widget is too. The
+// vault -- session, SSH agent supervisor, lock triggers, IPC -- lives in
+// Service.qml, which the shell loads once per shell and every bar copy reaches
+// through `bar.shell.serviceFor()`. A copy that cannot reach it (a replacement
+// bar hands widgets a service-less facade; the standalone QML tests have no
+// shell) hosts a private Service of its own, which is exactly the one-vault-
+// per-widget behaviour the plugin had before the service existed.
+//
+// The shared service is not guaranteed to be there the moment a view asks:
+// `bar` and its shell facade are injected just after the widget is created,
+// and a service that loads asynchronously is published a little later still.
+// So "not found yet" is a wait, and only a wait that outlasts the timeout is
+// taken as "there is no shared service". Choosing private too early would
+// start a second vault next to the shared one -- the contention this exists to
+// remove.
+var VAULT_HOST_TIMEOUT_MS = 3000
+
+function vaultHostTimeoutMs() {
+  return VAULT_HOST_TIMEOUT_MS
+}
+
+// "shared" | "private" | "wait". `found` is whether the shared service was
+// returned on this attempt; `elapsedMs` is how long this view has been asking.
+function vaultHostDecision(found, elapsedMs, timeoutMs) {
+  if (found) return "shared"
+  var limit = Number(timeoutMs)
+  if (!(limit >= 0)) limit = VAULT_HOST_TIMEOUT_MS
+  return Number(elapsedMs) >= limit ? "private" : "wait"
+}

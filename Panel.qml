@@ -558,6 +558,67 @@ Panel {
   }
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // -------------------------------------------------------------------------
+  // Vault host
+  // -------------------------------------------------------------------------
+  //
+  // This widget is built once per monitor; the vault it shows is Service.qml,
+  // built once per shell. `vault` is the shared service when the shell hands it
+  // over, or a private one this view creates when it will not -- see
+  // Model.vaultHostDecision() for why "not yet" is a wait rather than a
+  // failure.
+  property var vault: null
+  // "pending" until decided, then "shared" or "private" -- or "failed" when a
+  // private vault could not be created, which is logged once and not retried.
+  property string vaultHost: "pending"
+  property double vaultResolveStartedMs: 0
+
+  function resolveVault() {
+    if (root.vault) return
+    if (root.vaultResolveStartedMs === 0) root.vaultResolveStartedMs = Date.now()
+    var host = root.bar ? root.bar.shell : null
+    var shared = host && typeof host.serviceFor === "function"
+      ? host.serviceFor(root.moduleName) : null
+    var decision = Model.vaultHostDecision(!!shared,
+      Date.now() - root.vaultResolveStartedMs, Model.vaultHostTimeoutMs())
+    if (decision === "wait") return
+    if (decision === "shared") {
+      root.vault = shared
+    } else {
+      var component = Qt.createComponent("Service.qml", Component.PreferSynchronous)
+      root.vault = component.status === Component.Ready
+        ? component.createObject(null, { privateHost: true }) : null
+      if (!root.vault) {
+        root.vaultHost = "failed"
+        console.warn("qs-bitwarden-cli: could not create a private vault: " + component.errorString())
+        return
+      }
+    }
+    root.vaultHost = decision
+    root.vault.attachView(root)
+  }
+
+  // Polled rather than bound: serviceFor() is a function call, so nothing
+  // notifies a binding when the shell publishes the service.
+  Timer {
+    id: vaultResolveTimer
+    interval: 50
+    repeat: true
+    running: root.vault === null && root.vaultHost === "pending"
+    triggeredOnStart: true
+    onTriggered: root.resolveVault()
+  }
+
+  onSettingsChanged: if (root.vault) root.vault.updateSettings(root.settings)
+
+  Component.onDestruction: {
+    if (!root.vault) return
+    root.vault.detachView(root)
+    // A private vault belongs to this view alone and goes with it. The shared
+    // one belongs to the shell and outlives any monitor.
+    if (root.vaultHost === "private") root.vault.destroy()
+  }
+
   Component.onCompleted: {
     // The dependency probe goes first, and the status probe follows from it in
     // onDependenciesChecked. On a machine that already has `bw` the two are a
@@ -6648,6 +6709,15 @@ Panel {
     }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
+    // Which vault this view is showing and how many views share it. Non-secret:
+    // it exists so a multi-monitor report can be checked from a terminal.
+    function vaultHost(): string {
+      return JSON.stringify({
+        host: root.vaultHost,
+        views: root.vault ? root.vault.viewCount : 0,
+        privateHost: root.vault ? root.vault.privateHost : false
+      })
+    }
     // Non-secret diagnostics for the SSH agent. No key material, no
     // fingerprints, no process paths -- just enough to tell why a signature
     // was or was not answered.
