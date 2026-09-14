@@ -15,9 +15,10 @@
 //     checked in tests/generator.test.js.
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
-const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSource = readPluginSource("Panel.qml")
 const panelBodyOf = (name) => {
   const start = panelSource.indexOf(`function ${name}(`)
   if (start === -1) return ""

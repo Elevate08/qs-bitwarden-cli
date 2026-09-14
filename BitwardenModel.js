@@ -711,10 +711,15 @@ function authPasswordWriteCommand(channel) {
 
   var script = "test -n \"${XDG_RUNTIME_DIR:-}\" || exit 1; "
   script += "__auth_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
-  script += "[ -d \"$__auth_dir\" ] && [ ! -L \"$__auth_dir\" ] || exit 1; "
   script += "__auth_fifo=\"$__auth_dir/" + fifoName + "\"; "
+  // The reader creates the directory and then the FIFO, and this writer is
+  // started alongside it, so on the first login after boot (the runtime dir
+  // is tmpfs) neither may exist yet. Wait for both inside the same window
+  // instead of failing on the missing directory before the reader has had
+  // its first millisecond -- that failure surfaced as "Could not deliver the
+  // password" on the first unlock of every session.
   script += "for __auth_wait in {1..200}; do "
-  script += "if [ -p \"$__auth_fifo\" ] && [ ! -L \"$__auth_fifo\" ]; then "
+  script += "if [ -d \"$__auth_dir\" ] && [ ! -L \"$__auth_dir\" ] && [ -p \"$__auth_fifo\" ] && [ ! -L \"$__auth_fifo\" ]; then "
   script += "exec timeout 10s bash -c 'printf \"%s\" \"$" + PASSWORD_ENV + "\" > \"$1\"' _ \"$__auth_fifo\"; "
   script += "fi; sleep 0.01; done; exit 1"
   return ["bash", "-c", script]
@@ -1047,7 +1052,14 @@ function sleepMonitorCommand() {
   // started and stopped by the panel and by nothing else, so every path that
   // could fail waits before trying again instead of returning and inviting a
   // restart -- a monitor that cannot start must not become a hot loop.
-  var script = "while :; do "
+  // Quickshell kills only its direct child on reload, not that child's tree.
+  // Keep a watcher on its stdin pipe: even SIGKILL of the owner closes the
+  // pipe, so the watcher can kill our private process group. setsid below
+  // makes $$ the group id; never run this script in the shell's own group.
+  // Explicit stdin redirection keeps Bash from giving the background watcher
+  // /dev/null. The panel must keep stdinEnabled true for the owner's lifetime.
+  var script = "(while IFS= read -r _; do :; done; kill -KILL -- -$$) <&0 & "
+    + "while :; do "
     + "command -v gdbus >/dev/null 2>&1 || { sleep 300; continue; }; "
     + "if systemd-inhibit --what=sleep --mode=delay"
     + " --who=" + shellQuote("Bitwarden")
@@ -1057,7 +1069,7 @@ function sleepMonitorCommand() {
     + "echo " + shellQuote(WAKE_SIGNAL_TOKEN) + "; "
     + "else sleep 5; fi; "
     + "done"
-  return ["bash", "-c", script]
+  return ["setsid", "bash", "-c", script]
 }
 
 function activeWindowCommand() {
@@ -2157,16 +2169,58 @@ function identityFullName(identity) {
     .join(" ")
 }
 
-function itemCustomFields(fields) {
+// Linked fields do not store their own value. They point at one of the
+// cipher's native fields, using the stable ids from Bitwarden's LinkedIdType
+// enum. Resolve that value for the detail screen while retaining linkedId so
+// an edit can write the relationship back unchanged.
+function linkedCustomFieldValue(item, linkedId) {
+  var it = item || {}
+  var login = it.login || {}
+  var card = it.card || {}
+  var identity = it.identity || {}
+  var id = Number(linkedId)
+  var values = {
+    100: login.username, 101: login.password,
+    300: card.cardholderName, 301: card.expMonth, 302: card.expYear,
+    303: card.code, 304: card.brand, 305: card.number,
+    400: identity.title, 401: identity.middleName,
+    402: identity.address1, 403: identity.address2, 404: identity.address3,
+    405: identity.city, 406: identity.state, 407: identity.postalCode,
+    408: identity.country, 409: identity.company, 410: identity.email,
+    411: identity.phone, 412: identity.ssn, 413: identity.username,
+    414: identity.passportNumber, 415: identity.licenseNumber,
+    416: identity.firstName, 417: identity.lastName,
+    418: identityFullName(identity)
+  }
+  var value = values[id]
+  return value === undefined || value === null ? "" : String(value)
+}
+
+function linkedCustomFieldIsSensitive(linkedId) {
+  var id = Number(linkedId)
+  return id === 101 || id === 303 || id === 305
+    || id === 412 || id === 414 || id === 415
+}
+
+function itemCustomFields(fields, item) {
   var customFields = []
   var rawFields = toList(fields)
   for (var i = 0; i < rawFields.length; i++) {
     var field = rawFields[i]
     if (!field || !field.name) continue
+    var type = Number(field.type || 0)
+    var linkedId = field.linkedId === undefined || field.linkedId === null
+      ? null : Number(field.linkedId)
     customFields.push({
       name: String(field.name || ""),
-      value: String(field.value || ""),
-      type: Number(field.type || 0) // 0: text, 1: hidden, 2: boolean, 3: linked
+      // Keep an explicit false from a boolean field. `false || ""` erased it
+      // and left the detail row with no value to draw.
+      value: type === 3
+        ? linkedCustomFieldValue(item, linkedId)
+        : (field.value === undefined || field.value === null ? "" : String(field.value)),
+      type: type, // 0: text, 1: hidden, 2: boolean, 3: linked
+      linkedId: linkedId,
+      sensitive: type === 1 || (type === 3 && linkedCustomFieldIsSensitive(linkedId))
     })
   }
   return customFields
@@ -2425,7 +2479,7 @@ function itemDetailFromObject(it) {
     return { id: String(it.id || ""), organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null, name: String(it.name || "Untitled"),
       type: "sshKey", typeCode: 5, favorite: Boolean(it.favorite), notes: "",
-      username: "", password: "", hasTotp: false, totpKey: "", uris: [], attachments: [],
+      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [], attachments: [],
       hasAttachments: false, card: null, identity: null, fields: [],
       publicKey: String(sshKey.publicKey || it.publicKey || ""),
       fingerprint: String(sshKey.fingerprint || sshKey.keyFingerprint || it.fingerprint || it.keyFingerprint || ""), rawObject: it }
@@ -2446,6 +2500,9 @@ function itemDetailFromObject(it) {
     notes: String(it.notes || ""),
     username: String(login.username || ""),
     password: String(login.password || ""),
+    // The detail view's password row reads this when the password itself is
+    // empty. Missing, it made that `visible` binding undefined.
+    hasPassword: Boolean(login.password),
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
@@ -2453,7 +2510,7 @@ function itemDetailFromObject(it) {
     hasAttachments: attachments.length > 0,
     card: cardDetail(it.card),
     identity: identityDetail(it.identity),
-    fields: itemCustomFields(it.fields),
+    fields: itemCustomFields(it.fields, it),
     rawObject: it
   }
 }
@@ -2538,11 +2595,17 @@ function filterItems(items, query, category, selectedOrg, selectedFolder) {
 }
 
 // Returns "" when the form is savable, or the reason it is not.
-function validateItemForm(name, organizationId, collectionIds) {
+function validateItemForm(name, organizationId, collectionIds, customFields) {
   if (!String(name || "").trim()) return "Item title is required"
   var isOrg = organizationId && organizationId !== "personal" && organizationId !== "all"
   if (isOrg && (!Array.isArray(collectionIds) || collectionIds.length === 0)) {
     return "Pick at least one collection for an organization item"
+  }
+  var fields = toList(customFields)
+  for (var i = 0; i < fields.length; i++) {
+    if (!fields[i] || !String(fields[i].name || "").trim()) {
+      return "Custom field " + (i + 1) + " needs a label"
+    }
   }
   return ""
 }
@@ -2610,11 +2673,39 @@ function updateIdentityFields(identity, fields) {
   }
 }
 
+// Strip the form-only reveal flag and normalize values to the representation
+// the Bitwarden clients write. Booleans are strings in cipher JSON, while a
+// linked field stores its target id and deliberately has no independent value.
+function customFieldsPayload(fields) {
+  var raw = toList(fields)
+  var out = []
+  for (var i = 0; i < raw.length; i++) {
+    var field = raw[i]
+    if (!field || !String(field.name || "").trim()) continue
+    var type = Number(field.type)
+    if (type < 0 || type > 3 || isNaN(type)) type = 0
+    var clean = { name: String(field.name), type: type }
+    if (type === 3) {
+      clean.value = null
+      if (field.linkedId !== undefined && field.linkedId !== null) {
+        clean.linkedId = Number(field.linkedId)
+      }
+    } else if (type === 2) {
+      clean.value = field.value === true || String(field.value).toLowerCase() === "true"
+        ? "true" : "false"
+    } else {
+      clean.value = field.value === undefined || field.value === null ? "" : String(field.value)
+    }
+    out.push(clean)
+  }
+  return out
+}
+
 // `typeFields` carries the card or identity boxes. It is a trailing object
 // rather than twenty-four more positional arguments: a card needs six and an
 // identity eighteen, and a call site that long is one transposed pair away
 // from writing an expiry year into a security code.
-function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields) {
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (Number(typeCode) === 5) return null
   var payload = {
     type: Number(typeCode || 1),
@@ -2647,10 +2738,12 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
     updateIdentityFields(payload.identity, typeFields)
   }
 
+  if (customFields !== undefined) payload.fields = customFieldsPayload(customFields)
+
   return payload
 }
 
-function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields) {
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (existingItem && (Number(existingItem.typeCode || existingItem.type) === 5
       || (existingItem.rawObject && Number(existingItem.rawObject.type) === 5))) return null
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
@@ -2694,6 +2787,12 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
     if (!payload.identity) payload.identity = {}
     updateIdentityFields(payload.identity, typeFields)
   }
+
+  // Undefined means an older/non-form caller had no custom-field state and
+  // therefore wants the cloned fields left alone. An explicit array, including
+  // an empty one, is the edit form's authoritative value and can add, change,
+  // reorder, or remove fields.
+  if (customFields !== undefined) payload.fields = customFieldsPayload(customFields)
 
   return payload
 }
@@ -3965,6 +4064,36 @@ function sshAgentRestartDelayMs(failures) {
 // unit, a TTY login, or an incoming SSH session can each differ and are all
 // invisible from here.
 
+// How long to wait before trying again when another process holds the agent's
+// runtime lock. Not a backoff step: nothing is broken, so it neither grows nor
+// counts toward the crash-loop bound, and it is slow because the usual holder
+// -- another shell, during a restart -- goes away on its own.
+var SSH_AGENT_ELSEWHERE_RETRY_MS = 30 * 1000
+
+function sshAgentElsewhereRetryMs() {
+  return SSH_AGENT_ELSEWHERE_RETRY_MS
+}
+
+// Whether another process holds the helper's runtime lock, asked without the
+// helper. It exits 1 for every startup failure, lost lock included, and a
+// distinct code would mean rebuilding the committed binary.
+//
+// `flock -n` on the same file answers exactly that, and releases at once. The
+// file is tested first because flock(1) creates what it cannot find, and the
+// helper refuses a lock file it did not make 0600 itself; a symlink is never
+// followed. Exit 75 is held; anything else, including a missing file, is not.
+function sshAgentLockProbeCommand(runtimeDir) {
+  if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return null
+  var lock = runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.lock"
+  return ["bash", "-c",
+    "[ -f \"$1\" ] && [ ! -L \"$1\" ] || exit 0; exec flock -n -E 75 \"$1\" true",
+    "_", lock]
+}
+
+function sshAgentLockHeld(exitCode) {
+  return Number(exitCode) === 75
+}
+
 function sshAgentSocketPath(runtimeDir) {
   if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return ""
   return runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.sock"
@@ -4655,7 +4784,8 @@ function parseSshExportResult(exitCode, stdout) {
 // Matches REQUEST_LIFETIME_MS in the companion. The panel only draws the
 // countdown; the companion is what actually expires the request. Two minutes
 // rather than thirty seconds because this waits on a person reading a
-// fingerprint, not on a machine -- see docs/decisions/0003-request-deadline.md.
+// fingerprint, not on a machine: thirty seconds expired under users who were
+// simply reading the prompt, and each expiry counted toward the denial cooldown.
 var SSH_AGENT_REQUEST_DEADLINE_MS = 120 * 1000
 
 // Bounds on anything drawn from a vault item or another process. A name comes
@@ -4752,7 +4882,6 @@ function sshAgentPromptView(message, approvalWindowSec) {
     // "program", not "process": a grant matches the executable path and the
     // key, so a fresh process running the same program rides it. That is what
     // makes it useful for Git signing, which spawns one ssh-keygen per commit.
-    // See docs/decisions/0002-grant-scope.md.
     grantLabel: grantOffered ? "Approve for this program · " + formatDuration(window) : "",
     forwardedWarning: forwarded ? SSH_AGENT_FORWARDED_WARNING : "",
     provenanceNote: SSH_AGENT_PROVENANCE_NOTE
@@ -5110,6 +5239,8 @@ function sshAgentSetupState(opts) {
 //   "ready"       handshake complete; this is the only phase with an open gate
 //   "restarting"  a failure was detected mid-run; waiting for the child to go
 //   "backoff"     a restart timer is armed
+//   "elsewhere"   the helper lost the runtime lock to another process; a slow
+//                 retry is armed and nothing counts as a failure
 //   "failed"      the restart cap was reached; the feature is off until it is
 //                 explicitly re-enabled, and the rest of the plugin is untouched
 function sshAgentInitialState() {
@@ -5148,7 +5279,9 @@ var SSH_AGENT_ERROR_MESSAGES = {
   PROTOCOL: "The SSH agent helper broke its side of the control protocol.",
   HANDSHAKE_TIMEOUT: "The SSH agent helper did not finish starting up.",
   EXITED: "The SSH agent helper stopped unexpectedly.",
-  CRASH_LOOP: "The SSH agent helper keeps failing to start, so it has been left off."
+  CRASH_LOOP: "The SSH agent helper keeps failing to start, so it has been left off.",
+  ELSEWHERE: "Another process is already serving the SSH agent on this machine -- another "
+    + "Omarchy shell, most likely. This one is standing by and will take over when it stops."
 }
 
 // Every message the user can see is a fixed string chosen by a stable code.
@@ -5284,11 +5417,26 @@ function sshAgentReduce(state, event) {
     }
 
     case "exited":
+      // A start that never reached `ready` may have lost the runtime lock to
+      // another process rather than failed. The panel probes the lock before
+      // reporting such an exit; a held lock is a wait, not a crash, and must
+      // not walk the supervisor toward CRASH_LOOP.
+      if (ev.lockHeld === true && current.readyAtMs === 0) {
+        next.gateOpen = false
+        next.socketPath = ""
+        next.fifoPath = ""
+        next.agentVersion = ""
+        next.phase = "elsewhere"
+        next.errorCode = "ELSEWHERE"
+        next.errorMessage = sshAgentErrorMessage("ELSEWHERE")
+        action.restartInMs = SSH_AGENT_ELSEWHERE_RETRY_MS
+        return { state: next, action: action }
+      }
       sshAgentFailOnExit(current, next, action, nowMs)
       return { state: next, action: action }
 
     case "restartTimer":
-      if (current.phase !== "backoff") return { state: next, action: action }
+      if (current.phase !== "backoff" && current.phase !== "elsewhere") return { state: next, action: action }
       next.phase = "starting"
       action.start = true
       return { state: next, action: action }
@@ -6059,4 +6207,66 @@ function clipLabel(value, max) {
   if (text.length <= limit) return text
   if (limit <= 3) return text.slice(0, limit)
   return text.slice(0, limit - 3) + "..."
+}
+
+// -------------------------------------------------------------------------
+// Vault host
+// -------------------------------------------------------------------------
+//
+// The bar is built once per monitor, so this plugin's bar widget is too. The
+// vault -- session, SSH agent supervisor, lock triggers, IPC -- lives in
+// Service.qml, which the shell loads once per shell and every bar copy reaches
+// through `bar.shell.serviceFor()`. A copy that cannot reach it (a replacement
+// bar hands widgets a service-less facade; the standalone QML tests have no
+// shell) hosts a private Service of its own, which is exactly the one-vault-
+// per-widget behaviour the plugin had before the service existed.
+//
+// The shared service is not guaranteed to be there the moment a view asks:
+// `bar` and its shell facade are injected just after the widget is created,
+// and a service that loads asynchronously is published a little later still.
+// So "not found yet" is a wait, and only a wait that outlasts the timeout is
+// taken as "there is no shared service". Choosing private too early would
+// start a second vault next to the shared one -- the contention this exists to
+// remove.
+var VAULT_HOST_TIMEOUT_MS = 3000
+
+function vaultHostTimeoutMs() {
+  return VAULT_HOST_TIMEOUT_MS
+}
+
+// "shared" | "private" | "wait". `found` is whether the shared service was
+// returned on this attempt; `elapsedMs` is how long this view has been asking.
+function vaultHostDecision(found, elapsedMs, timeoutMs) {
+  if (found) return "shared"
+  var limit = Number(timeoutMs)
+  if (!(limit >= 0)) limit = VAULT_HOST_TIMEOUT_MS
+  return Number(elapsedMs) >= limit ? "private" : "wait"
+}
+
+// Which attached view should act when the vault needs the screen: raise the
+// popout, move the cursor, show an SSH prompt. `views` is one summary per view
+// in attach order, `{ opened, screen }`; `focusedScreen` is the monitor
+// Hyprland has focused.
+//
+//   1. a view whose popout is already open -- the user is looking at it, and a
+//      prompt raised anywhere else would land behind their back;
+//   2. otherwise the view on the focused monitor, which is where a keyboard-
+//      summoned panel belongs;
+//   3. otherwise the first view, so there is always somewhere to show it --
+//      including before Hyprland has reported a focused monitor at all.
+//
+// -1 only when there is no view.
+function presenterIndex(views, focusedScreen) {
+  var list = Array.isArray(views) ? views : []
+  if (list.length === 0) return -1
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].opened === true) return i
+  }
+  var focused = String(focusedScreen || "")
+  if (focused) {
+    for (var j = 0; j < list.length; j++) {
+      if (list[j] && String(list[j].screen || "") === focused) return j
+    }
+  }
+  return 0
 }

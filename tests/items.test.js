@@ -6,6 +6,7 @@
 //   node tests/items.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
@@ -18,6 +19,7 @@ new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenMod
   exports.filterItems = filterItems
   exports.buildCreatePayload = buildCreatePayload
   exports.buildEditPayload = buildEditPayload
+  exports.validateItemForm = validateItemForm
   exports.matchesQuery = matchesQuery
   exports.createItemCommand = createItemCommand
   exports.spliceSavedItem = spliceSavedItem
@@ -47,7 +49,21 @@ const login = {
     username: "octocat", password: "s3cr3t-p4ss", totp: "JBSWY3DPEHPK3PXP",
     uris: [{ match: null, uri: "https://github.com/login" }]
   },
-  fields: [{ name: "recovery", value: "abcd-efgh", type: 1 }]
+  fields: [
+    { name: "recovery", value: "abcd-efgh", type: 1 },
+    { name: "Account name", value: null, type: 3, linkedId: 100 }
+  ]
+}
+
+const secureNote = {
+  object: "item", id: "44444444-4444-4444-4444-444444444444",
+  type: 2, name: "Operations", notes: "Runbook", favorite: false,
+  secureNote: { type: 0 },
+  fields: [
+    { name: "Region", value: "eu-west", type: 0 },
+    { name: "API key", value: "not-a-real-secret", type: 1 },
+    { name: "Enabled", value: false, type: 2 }
+  ]
 }
 
 const card = {
@@ -86,7 +102,7 @@ check("generic write and private-read commands reject SSH", Model.buildCreatePay
 
 // --- the equivalence the optimisation rests on ------------------------------
 
-for (const raw of [login, card, identity]) {
+for (const raw of [login, secureNote, card, identity]) {
   const viaGetItem = Model.parseItemDetail(JSON.stringify(raw))
   const viaList = Model.itemDetailFromObject(raw)
   check(`${raw.name}: the list-built detail matches the get-item-built detail`,
@@ -96,7 +112,7 @@ for (const raw of [login, card, identity]) {
 
 // --- parseItems keeps what the detail view needs ----------------------------
 
-const listed = Model.parseItems(JSON.stringify([login, card, identity]))
+const listed = Model.parseItems(JSON.stringify([login, secureNote, card, identity]))
 check("every listed item carries its raw object", listed.every(i => i.rawObject), "missing rawObject")
 
 const listedLogin = listed.find(i => i.id === login.id)
@@ -105,10 +121,33 @@ check("the password survives the round trip through the list",
   detail.password === "s3cr3t-p4ss", detail.password)
 check("so does the TOTP key", detail.totpKey === "JBSWY3DPEHPK3PXP", detail.totpKey)
 check("so do custom fields, which the list view itself never shows",
-  detail.fields.length === 1 && detail.fields[0].name === "recovery"
+  detail.fields.length === 2 && detail.fields[0].name === "recovery"
     && detail.fields[0].value === "abcd-efgh", JSON.stringify(detail.fields))
+check("linked custom fields resolve their native value and retain their target id",
+  detail.fields[1].value === "octocat" && detail.fields[1].linkedId === 100,
+  JSON.stringify(detail.fields[1]))
+check("linked secrets stay sensitive in the detail model",
+  Model.itemDetailFromObject({ type: 1, name: "linked", login: { password: "secret" },
+    fields: [{ name: "Password alias", type: 3, linkedId: 101 }] }).fields[0].sensitive === true,
+  JSON.stringify(detail.fields))
+check("the detail says whether there is a password, as the list row does",
+  detail.hasPassword === true
+    && Model.itemDetailFromObject({ type: 1, name: "no password", login: { username: "u" } }).hasPassword === false
+    && Model.itemDetailFromObject({ type: 5, name: "key", sshKey: {} }).hasPassword === false,
+  "hasPassword must be a boolean on every detail")
 check("so do notes", detail.notes === "recovery codes in the safe", detail.notes)
 check("so do URIs", detail.uris[0] === "https://github.com/login", JSON.stringify(detail.uris))
+
+const listedSecureNote = listed.find(i => i.id === secureNote.id)
+const secureNoteDetail = Model.itemDetailFromObject(listedSecureNote.rawObject)
+check("secure-note custom fields survive into the detail model",
+  secureNoteDetail.fields.length === 3
+    && secureNoteDetail.fields[0].name === "Region"
+    && secureNoteDetail.fields[1].type === 1,
+  JSON.stringify(secureNoteDetail.fields))
+check("an explicit false boolean custom field is not erased as empty",
+  secureNoteDetail.fields[2].value === "false",
+  JSON.stringify(secureNoteDetail.fields[2]))
 
 const listedCard = listed.find(i => i.id === card.id)
 const cardDetail = Model.itemDetailFromObject(listedCard.rawObject)
@@ -198,6 +237,49 @@ check("an edit that does carry card fields writes them",
 
 check("editing a card never turns it into a login",
   editedCard.type === 3 && editedCard.login === undefined, JSON.stringify(Object.keys(editedCard)))
+
+const createdNoteWithFields = Model.buildCreatePayload(2, "Runbook", "", "", "", "", "", false,
+  null, null, null, null, [
+    { name: "Region", value: "eu-west", type: 0, revealed: true },
+    { name: "API key", value: "secret", type: 1, revealed: true },
+    { name: "Enabled", value: false, type: 2, revealed: true }
+  ])
+check("creating a note writes all editable custom-field types",
+  createdNoteWithFields.fields.length === 3
+    && createdNoteWithFields.fields[0].value === "eu-west"
+    && createdNoteWithFields.fields[1].type === 1
+    && createdNoteWithFields.fields[2].value === "false",
+  JSON.stringify(createdNoteWithFields.fields))
+check("form-only reveal state never enters cipher JSON",
+  createdNoteWithFields.fields.every(field => !("revealed" in field)),
+  JSON.stringify(createdNoteWithFields.fields))
+
+const editedNoteFields = Model.buildEditPayload({ typeCode: 2, rawObject: secureNote },
+  "Operations", "", "", "", "", "Runbook", false, null, null, null, null,
+  [{ name: "Environment", value: "production", type: 0 }])
+check("an edit can add, change, and remove custom fields authoritatively",
+  editedNoteFields.fields.length === 1
+    && editedNoteFields.fields[0].name === "Environment"
+    && editedNoteFields.fields[0].value === "production",
+  JSON.stringify(editedNoteFields.fields))
+
+const unchangedNoteFields = Model.buildEditPayload({ typeCode: 2, rawObject: secureNote },
+  "Operations renamed", "", "", "", "", "Runbook", false, null, null, null, null)
+check("callers that omit custom-field state preserve the original array",
+  JSON.stringify(unchangedNoteFields.fields) === JSON.stringify(secureNote.fields),
+  JSON.stringify(unchangedNoteFields.fields))
+
+const linkedCard = Model.buildCreatePayload(3, "Card", "", "", "", "", "", false,
+  null, null, null, { number: "4111111111111111" },
+  [{ name: "Payment number", value: "must-not-be-copied", type: 3, linkedId: 305 }])
+check("linked fields store an id rather than duplicating the native secret",
+  linkedCard.fields[0].linkedId === 305 && linkedCard.fields[0].value === null,
+  JSON.stringify(linkedCard.fields[0]))
+
+check("a blank custom-field label blocks the save with a useful row number",
+  Model.validateItemForm("Runbook", null, [], [{ name: "Region" }, { name: "   " }])
+    === "Custom field 2 needs a label",
+  Model.validateItemForm("Runbook", null, [], [{ name: "Region" }, { name: "   " }]))
 
 // --- the encoder swap --------------------------------------------------------
 //
@@ -438,7 +520,7 @@ check("an unrecognised type is drawn as a login, not as the unreachable shield",
 // rather than by count, because what broke this was a bulk glyph replacement
 // that meant to touch one new button and silently rewrote every other use of
 // the same codepoint. A count alone would have moved with it.
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSrc = readPluginSource("Panel.qml")
 const KEY = String.fromCodePoint(0xF0306)
 const passwordButtons = [
   ['tooltipText: "Password generator (g)"', "the generator button"],

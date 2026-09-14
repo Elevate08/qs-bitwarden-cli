@@ -10,7 +10,7 @@ const MAX_PENDING: usize = 4;
 /// user has to notice it, read a fingerprint, and decide. Thirty seconds --
 /// the figure the original design carried -- turned out to be shorter than
 /// that takes in practice, and expired prompts under a user who was simply
-/// reading them. See docs/decisions/0003-request-deadline.md.
+/// reading them, and each expiry counted toward the denial cooldown.
 ///
 /// The bound that actually reclaims resources promptly is the client
 /// disconnect, which the server watches for while a request is pending.

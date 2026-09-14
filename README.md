@@ -4,7 +4,7 @@ Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
 every item type without opening a browser.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.8.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.9.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -208,7 +208,7 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
 | Trash: restore a deleted item [^trash] | ❌ | ✅ | ✅ |
 | Upload attachments [^attach] | ❌ | ✅ | ✅ |
 | File Sends [^filesend] | ❌ | ✅ | ✅ |
-| Edit custom fields [^fields] | ❌ | ✅ | ✅ |
+| View / edit custom fields [^fields] | ✅ | ✅ | ✅ |
 | Organization admin: confirm members, approve devices [^orgadmin] | ❌ | ✅ | ❌ |
 
 [^cli-json]: The CLI creates a login by default; other types need the JSON
@@ -218,7 +218,6 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
 [^adr]: **This plugin** will not. The CLI can encrypt a type-5 item, but
     generating a key means putting private material somewhere this plugin has
     deliberately kept it out of.
-    See [ADR 0004](docs/decisions/0004-ssh-key-creation.md).
 [^ssh-clients]: Bitwarden documents SSH keys as generated or imported "using
     the desktop app, web app, and browser extension", and generation is
     Ed25519 only.
@@ -252,7 +251,9 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
     `bw create attachment --file`.
 [^filesend]: This plugin creates text Sends only. Both official clients send
     files too -- `bw send -f <path>`.
-[^fields]: This plugin shows an item's custom fields but does not edit them.
+[^fields]: Text, hidden, boolean and linked fields follow the same type model
+    as Bitwarden's browser extension. Secure Notes have no linked native field,
+    so the linked type is offered only for logins, cards and identities.
 [^orgadmin]: `bw confirm` and `bw device-approval` are CLI features; the
     desktop app does not do this either, and it is otherwise the web vault's
     job. Listed because the CLI is genuinely ahead of both here.
@@ -451,7 +452,7 @@ The following settings are read from the plugin's own entry in the
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
 | `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
-| `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor for about a second so the lock finishes first. Needs `gdbus` (glib2) and `systemd-inhibit`; without them the setting is simply inert. |
+| `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor for about a second so the lock finishes first. Needs `gdbus` (glib2), `systemd-inhibit` and `setsid` (util-linux). The monitor and its children stop when the plugin unloads; without these tools the setting is inert. |
 | `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. |
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
@@ -478,6 +479,29 @@ Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/as
 
 ---
 
+## Multiple monitors
+
+Omarchy draws its bar once per monitor, so the widget appears on every one of
+them -- but there is one vault behind them all:
+
+- Unlocking or locking on any monitor applies to all of them, and every bar's
+  icon shows the same state.
+- The panel opens on the monitor whose icon you click, and moving to another
+  monitor's icon moves the open panel there, where you left it. A keyboard
+  summon lands on the focused monitor, or on the panel if it is already open.
+- There is one SSH agent, one sleep inhibitor and one IPC target however many
+  monitors are attached. A signing request appears on the monitor with the open
+  panel, or otherwise the focused one.
+- Unplugging a monitor, even the one showing the panel, leaves the vault and the
+  agent running.
+
+If something else on the machine is already serving the agent's socket -- a
+second Omarchy shell, for example -- the SSH agent settings say so and wait for
+it to stop, rather than reporting a helper that keeps failing to start.
+
+A bar other than Omarchy's own cannot share one vault between its copies, so on
+a replacement bar each monitor's widget keeps a vault of its own, as before.
+
 ## IPC & Scripting Interface
 
 You can control and query the Bitwarden plugin from the terminal, scripts, or window manager bindings. The form is `omarchy-shell <target> <method>`:
@@ -500,6 +524,9 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli sync         # -> "syncing"
 
 # Query vault state
 omarchy-shell io.github.elevate08.qs-bitwarden-cli status       # -> "unlocked" | "locked" | "unauthenticated"
+
+# Which vault the bars share, and which monitor presents it (non-secret)
+omarchy-shell io.github.elevate08.qs-bitwarden-cli vaultHost    # -> {"host":"shared","views":2,"presenter":"DP-1",...}
 ```
 
 `open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
@@ -572,7 +599,6 @@ check that covers that, which is why the rebuild stays a human step.
 - **[SSH agent](docs/ssh-agent.md)** -- setup, verification, threat model.
 - **[Uninstall](docs/uninstall.md)** -- including what to clear before removing the plugin.
 - **[Development](docs/development.md)** -- linting and the test suite.
-- **[Decisions](docs/decisions/)** -- the arguments that were had once and should not drift.
 
 ---
 

@@ -15,7 +15,9 @@ Column {
   id: screen
 
   required property var panel
-  property bool active: panel.activeScreen === "sshApproval"
+  // The vault this panel shows (Service.qml); `panel` is the view that draws it.
+  required property var vault
+  property bool active: vault.activeScreen === "sshApproval"
 
   // A signing decision should never open with an affirmative action focused.
   // Both the anchored panel and the centered popup can call this after their
@@ -42,12 +44,12 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  visible: active && panel.sshPrompt !== null
+  visible: active && vault.sshPrompt !== null
   width: parent.width
   spacing: Style.space(12)
 
   PanelSeparator {
-    visible: !screen.panel.sshAgentApprovalPopup
+    visible: !screen.vault.sshAgentApprovalPopup
     width: parent.width
   }
 
@@ -73,13 +75,13 @@ Column {
       font.pixelSize: Style.font.body
     }
 
-    Item { width: Math.max(0, parent.width - Style.space(panel.sshPendingCount > 1 ? 290 : 230)); height: 1 }
+    Item { width: Math.max(0, parent.width - Style.space(vault.sshPendingCount > 1 ? 290 : 230)); height: 1 }
 
     Text {
       textFormat: Text.PlainText
-      visible: panel.sshPendingCount > 1
+      visible: vault.sshPendingCount > 1
       anchors.verticalCenter: parent.verticalCenter
-      text: "1 of " + panel.sshPendingCount
+      text: "1 of " + vault.sshPendingCount
       color: Color.accent
       font.family: panel.fontFamily
       font.pixelSize: Style.font.caption
@@ -89,8 +91,8 @@ Column {
     Text {
       textFormat: Text.PlainText
       anchors.verticalCenter: parent.verticalCenter
-      text: panel.sshPromptRemainingSec + "s left"
-      color: panel.sshPromptRemainingSec <= 5 ? panel.urgent : panel.dim
+      text: vault.sshPromptRemainingSec + "s left"
+      color: vault.sshPromptRemainingSec <= 5 ? panel.urgent : panel.dim
       font.family: panel.fontFamily
       font.pixelSize: Style.font.caption
     }
@@ -100,13 +102,13 @@ Column {
   // called out rather than shown as ordinary context, because the
   // process named would not be the one using the signature.
   SshCaption {
-    visible: panel.sshPrompt && panel.sshPrompt.forwardedWarning !== ""
-    text: panel.sshPrompt ? panel.sshPrompt.forwardedWarning : ""
+    visible: vault.sshPrompt && vault.sshPrompt.forwardedWarning !== ""
+    text: vault.sshPrompt ? vault.sshPrompt.forwardedWarning : ""
     color: panel.urgent
   }
 
   SshCaption {
-    visible: panel.sshAgentLoadActive
+    visible: vault.sshAgentLoadActive
     text: Model.sshAgentLoadingNote()
   }
 
@@ -117,7 +119,7 @@ Column {
   Text {
     textFormat: Text.PlainText
     width: parent.width
-    text: panel.sshPrompt ? panel.sshPrompt.keyName : ""
+    text: vault.sshPrompt ? vault.sshPrompt.keyName : ""
     color: panel.fg
     font.family: panel.fontFamily
     font.pixelSize: Style.font.body
@@ -127,7 +129,7 @@ Column {
   // The fingerprint is the value worth checking, so it is shown whole
   // rather than elided.
   SshCaption {
-    text: panel.sshPrompt ? panel.sshPrompt.fingerprint : ""
+    text: vault.sshPrompt ? vault.sshPrompt.fingerprint : ""
     wrapMode: Text.WrapAnywhere
   }
 
@@ -138,8 +140,8 @@ Column {
   Text {
     textFormat: Text.PlainText
     width: parent.width
-    text: panel.sshPrompt
-      ? panel.sshPrompt.processName
+    text: vault.sshPrompt
+      ? vault.sshPrompt.processName
       : ""
     color: panel.fg
     font.family: panel.fontFamily
@@ -148,16 +150,16 @@ Column {
   }
 
   SshCaption {
-    text: panel.sshPrompt ? panel.sshPrompt.processPath : ""
+    text: vault.sshPrompt ? vault.sshPrompt.processPath : ""
     wrapMode: Text.WrapAnywhere
   }
 
   SshCaption {
-    text: panel.sshPrompt ? panel.sshPrompt.provenanceNote : ""
+    text: vault.sshPrompt ? vault.sshPrompt.provenanceNote : ""
   }
 
   PanelSeparator {
-    visible: !screen.panel.sshAgentApprovalPopup
+    visible: !screen.vault.sshAgentApprovalPopup
     width: parent.width
   }
 
@@ -174,17 +176,17 @@ Column {
       fontFamily: panel.fontFamily
       fontSize: Style.font.bodySmall
       focusable: true
-      onClicked: panel.denySshRequest()
+      onClicked: vault.denySshRequest()
     }
 
     Button {
-      visible: panel.sshPendingCount > 1
-      text: "Deny all (" + panel.sshPendingCount + ")"
+      visible: vault.sshPendingCount > 1
+      text: "Deny all (" + vault.sshPendingCount + ")"
       iconText: "󰅙"
       fontFamily: panel.fontFamily
       fontSize: Style.font.bodySmall
       focusable: true
-      onClicked: panel.denyAllSshRequests()
+      onClicked: vault.denyAllSshRequests()
     }
 
     Button {
@@ -193,18 +195,18 @@ Column {
       fontFamily: panel.fontFamily
       fontSize: Style.font.bodySmall
       focusable: true
-      onClicked: panel.approveSshRequest(0)
+      onClicked: vault.approveSshRequest(0)
     }
   }
 
   Button {
-    visible: panel.sshPrompt && panel.sshPrompt.grantOffered
-    text: panel.sshPrompt ? panel.sshPrompt.grantLabel : ""
+    visible: vault.sshPrompt && vault.sshPrompt.grantOffered
+    text: vault.sshPrompt ? vault.sshPrompt.grantLabel : ""
     iconText: "󰔟"
     tooltipText: "Sign further requests from this same program with this key, without asking again, until the window expires"
     fontFamily: panel.fontFamily
     fontSize: Style.font.bodySmall
     focusable: true
-    onClicked: panel.approveSshRequest(panel.sshPrompt ? panel.sshPrompt.grantSeconds : 0)
+    onClicked: vault.approveSshRequest(vault.sshPrompt ? vault.sshPrompt.grantSeconds : 0)
   }
 }

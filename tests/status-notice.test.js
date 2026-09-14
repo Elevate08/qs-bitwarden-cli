@@ -6,9 +6,10 @@
 //   node tests/status-notice.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
-const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSrc = readPluginSource("Panel.qml")
 const noticeSrc = fs.existsSync(path.join(__dirname, "..", "StatusNotice.qml"))
   ? fs.readFileSync(path.join(__dirname, "..", "StatusNotice.qml"), "utf8")
   : ""

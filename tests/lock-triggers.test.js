@@ -68,7 +68,7 @@ check("screen lock poll is a sane interval",
 // Suspend
 // -------------------------------------------------------------------------
 
-const sleepScript = Model.sleepMonitorCommand()[2]
+const sleepScript = Model.sleepMonitorCommand().at(-1)
 
 check("suspend is taken from logind's PrepareForSleep",
   sleepScript.includes("PrepareForSleep") && sleepScript.includes("org.freedesktop.login1"),
@@ -127,9 +127,10 @@ exit $rc
   let out = ""
   try {
     out = execFileSync("bash", ["-c",
-      `PATH=${work}:$PATH timeout 4 bash ${script}`], { encoding: "utf8" })
+      `PATH=${work}:$PATH timeout 8 bash -c 'sleep 4 | setsid bash "$1"' _ ${script}`], { encoding: "utf8" })
   } catch (e) {
-    out = String(e.stdout || "")   // timeout always kills it; that is the point
+    // stdin is held open for four seconds, then EOF tears down the group.
+    out = String(e.stdout || "")
   }
 
   const tokens = out.split("\n").map(s => s.trim()).filter(Boolean)

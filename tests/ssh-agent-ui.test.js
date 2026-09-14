@@ -9,6 +9,7 @@
 //   node tests/ssh-agent-ui.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
 const repoRoot = path.join(__dirname, "..")
@@ -112,7 +113,7 @@ eq("the prompt derives the process name from the path", view.processName, "ssh")
 eq("the prompt shows the pid", view.pid, 48213)
 eq("the prompt offers a grant", view.grantOffered, true)
 check("the grant button states its window", /2m|120/.test(view.grantLabel), view.grantLabel)
-// A grant covers one program, not one process (docs/decisions/0002-grant-scope.md).
+// A grant covers one program, not one process.
 // The button has to say so, or it promises a narrower thing than it does.
 check("the grant button says what it actually covers",
   /program/i.test(view.grantLabel) && !/this process/i.test(view.grantLabel), view.grantLabel)
@@ -155,8 +156,7 @@ check("an absurd key name is bounded", huge.keyName.length <= 256, String(huge.k
 check("an absurd path is bounded", huge.processPath.length <= 512, String(huge.processPath.length))
 
 // The panel's countdown has to agree with the companion's deadline, or it
-// counts down to a moment nothing happens at. See
-// docs/decisions/0003-request-deadline.md for the figure.
+// counts down to a moment nothing happens at.
 eq("the request deadline matches the companion's", Model.sshAgentRequestDeadlineMs(), 120000)
 const agentSrc = fs.readFileSync(path.join(repoRoot, "agent", "src", "approvals.rs"), "utf8")
 const agentDeadline = /pub const REQUEST_LIFETIME_MS: u64 = ([0-9_]+);/.exec(agentSrc)
@@ -328,15 +328,14 @@ const sshUiFiles = [
   "SshApprovalPopup.qml", "SshUnlockScreen.qml"
 ]
 const panelSrc = sshUiFiles
-  .map(file => fs.existsSync(path.join(repoRoot, file))
-    ? fs.readFileSync(path.join(repoRoot, file), "utf8") : "")
+  .map(file => fs.existsSync(path.join(repoRoot, file)) ? readPluginSource(file) : "")
   .join("\n")
-const approvalSrc = fs.readFileSync(path.join(repoRoot, "SshApprovalScreen.qml"), "utf8")
-const settingsSrc = fs.readFileSync(path.join(repoRoot, "SshAgentSettings.qml"), "utf8")
+const approvalSrc = readPluginSource("SshApprovalScreen.qml")
+const settingsSrc = readPluginSource("SshAgentSettings.qml")
 const popupSrc = fs.existsSync(path.join(repoRoot, "SshApprovalPopup.qml"))
-  ? fs.readFileSync(path.join(repoRoot, "SshApprovalPopup.qml"), "utf8") : ""
+  ? readPluginSource("SshApprovalPopup.qml") : ""
 const unlockSrc = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
-  ? fs.readFileSync(path.join(repoRoot, "SshUnlockScreen.qml"), "utf8") : ""
+  ? readPluginSource("SshUnlockScreen.qml") : ""
 
 // plainLabel() wraps its argument in a span when the text contains markup
 // characters, which a PlainText control then renders literally. The field is

@@ -9,7 +9,7 @@ import path contains a directory named `qs`:
 
 ```bash
 mkdir -p /tmp/qs-imports && ln -sfn /usr/share/omarchy/shell /tmp/qs-imports/qs
-/usr/lib/qt6/bin/qmllint -I /tmp/qs-imports Panel.qml FormPickerRow.qml
+/usr/lib/qt6/bin/qmllint -I /tmp/qs-imports Service.qml Panel.qml FormPickerRow.qml
 ```
 
 Remaining `unqualified` and `missing-property` warnings are baseline Quickshell
@@ -30,6 +30,9 @@ omarchy plugin validate .
 Regression suites require Node; the SSH-items boundary suite also exercises jq:
 
 ```bash
+node tests/service-host.test.js     # one vault per shell: the service entry point, how each bar finds
+                                    # it or falls back to its own, the presenter, and the line between
+                                    # Service.qml (the vault) and Panel.qml (a per-monitor view of it)
 node tests/auth.test.js             # unlock/login commands, and that no credential reaches argv
 node tests/auth-prewarm.test.js     # private FIFO lifecycle, byte-exact password delivery, and cancellation
 node tests/context-match.test.js    # window-title matching and learned suggestions
@@ -54,12 +57,30 @@ node tests/lock-state.test.js       # the auto-lock survives a suspend, the timi
                                     # is refused rather than rendered
 node tests/lock-triggers.test.js    # locking on screen lock and on suspend, and the window in
                                     # which a terminal login's session key is accepted
+node tests/sleep-monitor-lifetime.test.js # stdin closure and owner/direct-child TERM/KILL cleanup
+                                         # Linux /proc; stubbed logind and inhibitors
 node tests/hardening.test.js        # `--` before every server-chosen id, the custom-server check,
                                     # and that logging out takes the learned suggestions with it
 node tests/buffer-scrub.test.js     # emptying the pipe buffers a lock used to leave full, and the
                                     # deadline and size ceiling on every generator-port request
 node tests/initial-load.test.js     # items render before folders, organizations and status refresh
 node tests/performance.test.js      # deterministic small/typical/large/stress vault guardrails
+```
+
+The vault lives in `Service.qml`, which the shell loads once, and `Panel.qml`
+is the bar widget drawn on each monitor. Suites that read the QML as text get it
+through `tests/plugin-source.js`, which returns the vault followed by the view
+with the view's `root.vault.` qualifier folded back; `service-host.test.js` is
+what keeps that fold exact.
+
+Multi-monitor behaviour can be checked on a single screen with a headless
+output, which gives the shell a second bar and the plugin a second view:
+
+```bash
+hyprctl output create headless QSBWTEST
+omarchy-shell io.github.elevate08.qs-bitwarden-cli vaultHost   # views: 2
+hyprctl dispatch 'hl.dsp.focus({ monitor = "QSBWTEST" })'       # move focus there
+hyprctl output remove QSBWTEST
 ```
 
 The performance suite generates invented 100-item/0.25 MiB, 500-item/1 MiB,

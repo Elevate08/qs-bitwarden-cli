@@ -8,7 +8,9 @@
 //   node tests/setup-settings.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
+const panelSrc = readPluginSource("Panel.qml")
 
 const Model = {}
 new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
@@ -46,6 +48,12 @@ const dependencyProbe = Model.dependencyCheckCommand()[2]
 const sshCliSupport = (version) => typeof Model.sshCliSupport === "function"
   ? Model.sshCliSupport(version)
   : "__missing__"
+
+// KeyboardPanel applies focusTarget after the panel's own open handler. Keep
+// that final open-time choice aligned with the locked screen's PIN-first UI.
+check("a locked panel focuses its configured PIN field before the password field",
+  /focusTarget:[\s\S]{0,700}root\.pinReady\s*\?\s*pinField\s*:\s*passField/.test(panelSrc),
+  "the KeyboardPanel focusTarget must select pinField when pinReady")
 
 // --- everything present -----------------------------------------------------
 const all = Model.parseDependencies(

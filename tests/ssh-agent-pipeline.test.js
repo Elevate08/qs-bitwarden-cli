@@ -8,6 +8,7 @@
 //   node tests/ssh-agent-pipeline.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { spawnSync, execFileSync } = require("child_process")
@@ -282,7 +283,7 @@ for (const [label, contents] of [
   check("a failing bw produces no item list", run.result.stdout.trim() === "", run.result.stdout.slice(0, 200))
   eq("a failed read is framed as a failed load", Model.sshAgentLoadEndLine(7, false),
     JSON.stringify({ v: 1, type: "key_load_end", epoch: 7, status: "failed" }) + "\n")
-  const panelSrc = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
+  const panelSrc = readPluginSource("Panel.qml")
   check("the panel closes every load window with the read's real outcome",
     /endSshAgentLoad\(exitCode === 0\)/.test(panelSrc), "the exit handler does not close the load window")
   check("the panel closes the window on paths that abandon a load",

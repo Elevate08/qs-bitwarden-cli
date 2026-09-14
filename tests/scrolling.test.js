@@ -9,12 +9,13 @@
 //   node tests/scrolling.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
 const read = f => fs.existsSync(path.join(__dirname, "..", f))
   ? fs.readFileSync(path.join(__dirname, "..", f), "utf8") : ""
 
-const panelSrc = read("Panel.qml")
+const panelSrc = readPluginSource("Panel.qml")
 const wheelSrc = read("WheelScroll.qml")
 
 let pass = 0

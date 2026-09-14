@@ -7,6 +7,7 @@
 //   node tests/ssh-agent-setup.test.js
 
 const fs = require("fs")
+const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
 const repoRoot = path.join(__dirname, "..")
@@ -213,11 +214,10 @@ check("the mark lands on the final setting of the group, not an earlier one",
     return last.lastInGroup === true
   })(), "the SSH group's last row is not marked")
 
-const panelSrc = require("fs").readFileSync(
-  require("path").join(__dirname, "..", "Panel.qml"), "utf8")
+const panelSrc = readPluginSource("Panel.qml")
 check("the SSH block is drawn inside the group rather than after every group",
   /active: !isGroup && modelData\.group === "sshAgent"\s*\n\s*&& modelData\.lastInGroup === true/.test(panelSrc)
-    && (panelSrc.match(/SshAgentSettings \{ panel: root \}/g) || []).length === 1,
+    && (panelSrc.match(/SshAgentSettings \{ panel: root; vault: root\.vault \}/g) || []).length === 1,
   "expected exactly one SshAgentSettings, loaded off the group's last row")
 
 // -------------------------------------------------------------------------
