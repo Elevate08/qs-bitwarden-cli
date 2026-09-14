@@ -99,6 +99,20 @@ check("detaching an unknown view is a no-op",
   /function detachView\(view\)\s*\{\s*var index = views\.indexOf\(view\)\s*if \(index === -1\) return/.test(service),
   "detachView must ignore a view it does not have")
 
+// --- more than one monitor --------------------------------------------------------
+
+check("a popout switch to this plugin on another monitor hides only the copy being replaced",
+  /function closeForPopoutSwitch\(\) \{\s*root\.popoutSwitchClosing = true\s*root\.hidePopout\(\)\s*if \(!root\.vault\.opened\) root\.vault\.close\(\)/.test(panel),
+  "closeForPopoutSwitch must not close the vault while another view is open")
+const popupSrc = read("SshApprovalPopup.qml")
+check("only the presenting view shows the SSH approval popup",
+  /readonly property bool presenting: vault\.presenter === panel/.test(popupSrc)
+    && /readonly property bool open: presenting && /.test(popupSrc),
+  "every monitor's popup would open and take keyboard focus")
+check("vaultHost reports which monitor presents and which popouts are open",
+  /presenter: root\.presenter\.screenName/.test(service) && /screens\.push\(\{ screen: root\.views\[i\]\.screenName, opened:/.test(service),
+  "vaultHost diagnostics missing")
+
 // --- an unattached vault is inert ----------------------------------------------
 //
 // Every bar carries a standby Service, and the shared one exists before any bar

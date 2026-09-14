@@ -176,6 +176,18 @@ Panel {
   function close() { root.vault.close() }
   function toggle() { root.vault.toggle(root) }
 
+  // The bar calls this on the popout being replaced when another one opens.
+  // When the one opening is this plugin on another monitor, the vault is moving
+  // there, not closing: only this copy goes, and a full close() here would hide
+  // the copy that just opened. Anything else taking over closes the vault as
+  // before.
+  function closeForPopoutSwitch() {
+    root.popoutSwitchClosing = true
+    root.hidePopout()
+    if (!root.vault.opened) root.vault.close()
+    Qt.callLater(function() { root.popoutSwitchClosing = false })
+  }
+
   // The shared vault belongs to the shell and outlives any monitor; a private
   // one is this view's own child and goes with it.
   Component.onDestruction: if (root.resolvedVault) root.resolvedVault.detachView(root)

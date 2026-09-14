@@ -16,7 +16,12 @@ PanelWindow {
   required property var vault
   required property Item anchorItem
 
-  readonly property bool open: vault.sshAgentApprovalPopup && (vault.sshPrompt !== null || vault.sshUnlockRequest !== null)
+  // Every monitor's bar carries this popup, and all of them read the same vault,
+  // so only the presenting view -- the open popout, else the focused monitor --
+  // shows it. Two would each take exclusive keyboard focus.
+  readonly property bool presenting: vault.presenter === panel
+  readonly property bool open: presenting && vault.sshAgentApprovalPopup
+    && (vault.sshPrompt !== null || vault.sshUnlockRequest !== null)
   property bool focusPrimed: false
   readonly property var anchorWindow: anchorItem ? anchorItem.QsWindow.window : null
   readonly property int cardWidth: Math.max(1, Math.min(Style.space(460), width - Style.gapsOut * 2))

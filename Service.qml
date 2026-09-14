@@ -6599,10 +6599,18 @@ Item {
     // Which vault this view is showing and how many views share it. Non-secret:
     // it exists so a multi-monitor report can be checked from a terminal.
     function vaultHost(): string {
+      var screens = []
+      for (var i = 0; i < root.views.length; i++) {
+        screens.push({ screen: root.views[i].screenName, opened: root.views[i].opened === true })
+      }
       return JSON.stringify({
         host: root.privateHost ? "private" : "shared",
         views: root.viewCount,
-        privateHost: root.privateHost
+        privateHost: root.privateHost,
+        opened: root.opened,
+        presenter: root.presenter.screenName,
+        focusedScreen: root.focusedScreen,
+        screens: screens
       })
     }
     // Non-secret diagnostics for the SSH agent. No key material, no
