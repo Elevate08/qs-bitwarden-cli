@@ -4064,6 +4064,36 @@ function sshAgentRestartDelayMs(failures) {
 // unit, a TTY login, or an incoming SSH session can each differ and are all
 // invisible from here.
 
+// How long to wait before trying again when another process holds the agent's
+// runtime lock. Not a backoff step: nothing is broken, so it neither grows nor
+// counts toward the crash-loop bound, and it is slow because the usual holder
+// -- another shell, during a restart -- goes away on its own.
+var SSH_AGENT_ELSEWHERE_RETRY_MS = 30 * 1000
+
+function sshAgentElsewhereRetryMs() {
+  return SSH_AGENT_ELSEWHERE_RETRY_MS
+}
+
+// Whether another process holds the helper's runtime lock, asked without the
+// helper. It exits 1 for every startup failure, lost lock included, and a
+// distinct code would mean rebuilding the committed binary.
+//
+// `flock -n` on the same file answers exactly that, and releases at once. The
+// file is tested first because flock(1) creates what it cannot find, and the
+// helper refuses a lock file it did not make 0600 itself; a symlink is never
+// followed. Exit 75 is held; anything else, including a missing file, is not.
+function sshAgentLockProbeCommand(runtimeDir) {
+  if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return null
+  var lock = runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.lock"
+  return ["bash", "-c",
+    "[ -f \"$1\" ] && [ ! -L \"$1\" ] || exit 0; exec flock -n -E 75 \"$1\" true",
+    "_", lock]
+}
+
+function sshAgentLockHeld(exitCode) {
+  return Number(exitCode) === 75
+}
+
 function sshAgentSocketPath(runtimeDir) {
   if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return ""
   return runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.sock"
@@ -5209,6 +5239,8 @@ function sshAgentSetupState(opts) {
 //   "ready"       handshake complete; this is the only phase with an open gate
 //   "restarting"  a failure was detected mid-run; waiting for the child to go
 //   "backoff"     a restart timer is armed
+//   "elsewhere"   the helper lost the runtime lock to another process; a slow
+//                 retry is armed and nothing counts as a failure
 //   "failed"      the restart cap was reached; the feature is off until it is
 //                 explicitly re-enabled, and the rest of the plugin is untouched
 function sshAgentInitialState() {
@@ -5247,7 +5279,9 @@ var SSH_AGENT_ERROR_MESSAGES = {
   PROTOCOL: "The SSH agent helper broke its side of the control protocol.",
   HANDSHAKE_TIMEOUT: "The SSH agent helper did not finish starting up.",
   EXITED: "The SSH agent helper stopped unexpectedly.",
-  CRASH_LOOP: "The SSH agent helper keeps failing to start, so it has been left off."
+  CRASH_LOOP: "The SSH agent helper keeps failing to start, so it has been left off.",
+  ELSEWHERE: "Another process is already serving the SSH agent on this machine -- another "
+    + "Omarchy shell, most likely. This one is standing by and will take over when it stops."
 }
 
 // Every message the user can see is a fixed string chosen by a stable code.
@@ -5383,11 +5417,26 @@ function sshAgentReduce(state, event) {
     }
 
     case "exited":
+      // A start that never reached `ready` may have lost the runtime lock to
+      // another process rather than failed. The panel probes the lock before
+      // reporting such an exit; a held lock is a wait, not a crash, and must
+      // not walk the supervisor toward CRASH_LOOP.
+      if (ev.lockHeld === true && current.readyAtMs === 0) {
+        next.gateOpen = false
+        next.socketPath = ""
+        next.fifoPath = ""
+        next.agentVersion = ""
+        next.phase = "elsewhere"
+        next.errorCode = "ELSEWHERE"
+        next.errorMessage = sshAgentErrorMessage("ELSEWHERE")
+        action.restartInMs = SSH_AGENT_ELSEWHERE_RETRY_MS
+        return { state: next, action: action }
+      }
       sshAgentFailOnExit(current, next, action, nowMs)
       return { state: next, action: action }
 
     case "restartTimer":
-      if (current.phase !== "backoff") return { state: next, action: action }
+      if (current.phase !== "backoff" && current.phase !== "elsewhere") return { state: next, action: action }
       next.phase = "starting"
       action.start = true
       return { state: next, action: action }

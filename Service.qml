@@ -722,6 +722,33 @@ Item {
     if (action.message) root.onSshAgentMessage(action.message)
   }
 
+  // A helper that exits before its handshake may have found the runtime lock
+  // already held -- by another shell, say -- rather than failed. It exits 1
+  // either way, so the lock is asked directly before the exit is reported, and
+  // a held lock parks the supervisor instead of counting toward CRASH_LOOP.
+  // An exit after `ready`, or while stopping, is reported at once.
+  property int sshAgentPendingExitCode: 0
+
+  function onSshAgentHelperExited(exitCode) {
+    var command = Model.sshAgentLockProbeCommand(root.sshAgentRuntimeDir)
+    if ((root.sshAgentPhase !== "starting" && root.sshAgentPhase !== "handshaking")
+        || !command || sshAgentLockProbeProc.running) {
+      root.applySshAgentEvent({ kind: "exited", exitCode: exitCode, nowMs: Date.now() })
+      return
+    }
+    root.sshAgentPendingExitCode = exitCode
+    sshAgentLockProbeProc.command = command
+    sshAgentLockProbeProc.running = true
+  }
+
+  Process {
+    id: sshAgentLockProbeProc
+    onExited: function(exitCode) {
+      root.applySshAgentEvent({ kind: "exited", exitCode: root.sshAgentPendingExitCode,
+        lockHeld: Model.sshAgentLockHeld(exitCode), nowMs: Date.now() })
+    }
+  }
+
   function startSshAgentHelper() {
     sshAgentTerminateTimer.stop()
     // A previous stop closed this. The control channel is the helper's only
@@ -5791,7 +5818,7 @@ Item {
     onStarted: root.applySshAgentEvent({ kind: "started", nowMs: Date.now() })
     onExited: function(exitCode) {
       sshAgentTerminateTimer.stop()
-      root.applySshAgentEvent({ kind: "exited", exitCode: exitCode, nowMs: Date.now() })
+      root.onSshAgentHelperExited(exitCode)
     }
   }
 
