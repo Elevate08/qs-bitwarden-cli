@@ -6,6 +6,7 @@
 const KEYRING_SERVICE = "qs-bitwarden-cli"
 const KEYRING_ACCOUNT = "session"
 const KEYRING_MASTER = "master_password"
+const KEYRING_FIDO = "fido_password"
 
 // `secret-tool store` reads its secret from stdin until EOF, and Quickshell's
 // Process.write() cannot close stdin -- writing a value alone leaves the process
@@ -1630,6 +1631,36 @@ function keyringHasMasterPasswordCommand() {
 }
 
 // -------------------------------------------------------------------------
+// FIDO2 Unlock
+// -------------------------------------------------------------------------
+//
+// A FIDO2 key proves presence just as a fingerprint does, so it gates the same
+// kind of secret in the same way: the master password is kept in the login
+// keyring and a verified key touch is the only gate on reading it back. It is
+// a separate entry from the fingerprint's rather than a shared one, so the two
+// methods have independent lifecycles -- enabling or forgetting one never
+// reaches into the other's state. The encryption is the keyring's, not ours:
+// this blob is the password in the clear behind the keyring's own lock, which
+// is what let the fingerprint path keep its simple shape too.
+
+function keyringStoreFidoPasswordCommand() {
+  return ["bash", "-c", keyringStoreScript("Bitwarden Master Password (FIDO2 unlock)", KEYRING_FIDO)]
+}
+
+function keyringLookupFidoPasswordCommand() {
+  return keyringLookupEntryCommand(KEYRING_FIDO)
+}
+
+function keyringClearFidoPasswordCommand() {
+  return keyringClearEntryCommand(KEYRING_FIDO)
+}
+
+// Presence check that never puts the secret on stdout.
+function keyringHasFidoPasswordCommand() {
+  return keyringHasEntryCommand(KEYRING_FIDO)
+}
+
+// -------------------------------------------------------------------------
 // PIN Unlock
 // -------------------------------------------------------------------------
 //
@@ -1724,7 +1755,7 @@ function keyringHasPinCommand() {
 // credential hidden in a locked collection. Search first, request unlock of
 // every match, clear, then search again. Logout succeeds only when that final
 // search proves no matching item remains.
-var KEYRING_ALL_ACCOUNTS = [KEYRING_ACCOUNT, KEYRING_MASTER, KEYRING_PIN]
+var KEYRING_ALL_ACCOUNTS = [KEYRING_ACCOUNT, KEYRING_MASTER, KEYRING_FIDO, KEYRING_PIN]
 
 function keyringSearchStateScript(account, resultVar) {
   // Consume the complete search output with wc instead of capturing it: for an
@@ -5573,6 +5604,9 @@ var SETTINGS_SCHEMA = [
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint", defaultValue: false,
     requires: "fprintd", action: "fingerprint",
     description: "Store the master password in the OS keyring, gated behind a fingerprint." },
+  { key: "fidoUnlock", group: "security", type: "bool", label: "Unlock with FIDO2 key", defaultValue: false,
+    action: "fido",
+    description: "Store the master password in the OS keyring, gated behind a FIDO2 key touch. Requires 'omarchy setup security fido2'; the same registration also serves sudo and polkit." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "Encrypt the master password with a key derived from a PIN. Use 6 digits or more; 4 is the floor and is flagged as weak." },

@@ -485,6 +485,7 @@ Panel {
       : ((root.vault.status === "unlocked"
           && root.vault.currentScreen !== "edit"
           && root.vault.currentScreen !== "pin"
+          && root.vault.currentScreen !== "fido"
           && root.vault.currentScreen !== "fingerprint")
         ? keyCatcher
         : (root.vault.status === "unauthenticated"
@@ -544,6 +545,7 @@ Panel {
         || pinField.activeFocus
         || (root.vault.currentScreen === "edit")
         || (root.vault.currentScreen === "pin")
+        || (root.vault.currentScreen === "fido")
         || (root.vault.currentScreen === "fingerprint")
         || (root.vault.currentScreen === "sends" && root.vault.sendMode === "create")
 
@@ -1383,6 +1385,14 @@ Panel {
               }
             }
           }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 0g: FIDO2 SETUP, in FidoSetupScreen.qml.
+        // -------------------------------------------------------------------
+        FidoSetupScreen {
+          panel: root
+          vault: root.vault
         }
 
         // -------------------------------------------------------------------
@@ -2365,6 +2375,11 @@ Panel {
                           else root.vault.beginFingerprintSetup()
                           return
                         }
+                        if (modelData.action === "fido") {
+                          if (checked) root.vault.forgetFidoUnlock()
+                          else root.vault.beginFidoSetup()
+                          return
+                        }
                         root.vault.writeSetting(modelData.key, !checked, "bool")
                       }
                     }
@@ -2459,6 +2474,24 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.forgetFingerprintUnlock()
+              }
+            }
+
+            // Its own row for the same reason the destructive block has one: a
+            // third button beside the other two would elide a label rather than
+            // fit.
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                visible: root.vault.fidoStored
+                text: "Forget FIDO2 Key"
+                iconText: "󰟵"
+                tooltipText: "Remove the stored master password from the OS keyring"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.vault.forgetFidoUnlock()
               }
             }
 
@@ -2631,7 +2664,7 @@ Panel {
         // SCREEN 1: LOGIN VIEW (When unauthenticated)
         // -------------------------------------------------------------------
         Column {
-          visible: root.vault.status === "unauthenticated" && root.vault.activeScreen !== "settings" && root.vault.activeScreen !== "setup" && root.vault.activeScreen !== "pin" && root.vault.activeScreen !== "fingerprint"
+          visible: root.vault.status === "unauthenticated" && root.vault.activeScreen !== "settings" && root.vault.activeScreen !== "setup" && root.vault.activeScreen !== "pin" && root.vault.activeScreen !== "fido" && root.vault.activeScreen !== "fingerprint"
           width: parent.width
           spacing: Style.space(12)
 
@@ -3114,7 +3147,7 @@ Panel {
         // -------------------------------------------------------------------
         Column {
           visible: (root.vault.status === "locked" || root.vault.status === "checking")
-            && root.vault.currentScreen !== "settings" && root.vault.currentScreen !== "setup" && root.vault.currentScreen !== "pin" && root.vault.currentScreen !== "fingerprint"
+            && root.vault.currentScreen !== "settings" && root.vault.currentScreen !== "setup" && root.vault.currentScreen !== "pin" && root.vault.currentScreen !== "fido" && root.vault.currentScreen !== "fingerprint"
           width: parent.width
           spacing: Style.space(14)
 
@@ -3129,14 +3162,14 @@ Panel {
             Text {
               textFormat: Text.PlainText
               anchors.horizontalCenter: parent.horizontalCenter
-              text: root.vault.fingerprintScanning ? "󰈷" : "󰌋"
-              color: root.vault.fingerprintScanning ? Color.accent : root.fg
+              text: root.vault.fidoScanning ? "󰟵" : (root.vault.fingerprintScanning ? "󰈷" : "󰌋")
+              color: (root.vault.fingerprintScanning || root.vault.fidoScanning) ? Color.accent : root.fg
               opacity: 0.85
               font.family: root.fontFamily
               font.pixelSize: Style.space(38)
 
               SequentialAnimation on opacity {
-                running: root.vault.fingerprintScanning
+                running: root.vault.fingerprintScanning || root.vault.fidoScanning
                 loops: Animation.Infinite
                 NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
                 NumberAnimation { to: 0.95; duration: 700; easing.type: Easing.InOutQuad }
@@ -3147,7 +3180,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               anchors.horizontalCenter: parent.horizontalCenter
-              text: root.vault.fingerprintReady ? "Unlock Vault" : "Enter Master Password"
+              text: (root.vault.fingerprintReady || root.vault.fidoReady) ? "Unlock Vault" : "Enter Master Password"
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
@@ -3185,6 +3218,32 @@ Panel {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             text: "󰈷  Unlock once with your master password to enable fingerprint unlock."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          // FIDO2 status / prompt, and the same "unlock once" hint the reader
+          // gets when the option is on but nothing is stored behind it.
+          Text {
+            textFormat: Text.PlainText
+            visible: root.vault.fidoMessage !== ""
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: root.vault.fidoMessage
+            color: root.vault.fidoScanning ? Color.accent : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: root.vault.fidoUnlock && root.vault.fidoAvailable && !root.vault.fidoStored
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: "󰟵  Unlock once with your master password to enable FIDO2 unlock."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -3277,6 +3336,18 @@ Panel {
               onClicked: root.vault.startFingerprintUnlock()
             }
 
+            Button {
+              visible: root.vault.fidoReady
+              width: parent.width
+              text: root.vault.fidoScanning ? "Waiting for your key..." : "Unlock with FIDO2 Key"
+              iconText: "󰟵"
+              selected: true
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              enabled: !root.vault.isUnlocking && !root.vault.fidoScanning
+              onClicked: root.vault.startFidoUnlock()
+            }
+
             Row {
               width: parent.width
               spacing: Style.space(8)
@@ -3338,6 +3409,21 @@ Panel {
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.forgetFingerprintUnlock()
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              visible: root.vault.fidoStored
+              text: "Forget FIDO2 Key"
+              iconText: "󰟵"
+              tooltipText: "Remove the stored master password from the OS keyring"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.vault.forgetFidoUnlock()
             }
           }
         }

@@ -33,7 +33,7 @@ Column {
   function focusDefault() {
     if (!screen.active || !screen.visible) return
     screen.vault.prepareUnlock()
-    if (screen.vault.fingerprintReady) screen.vault.startFingerprintUnlock()
+    screen.vault.armPresenceUnlock()
     Qt.callLater(function() {
       if (!screen.active || screen.vault.status !== "locked") return
       if (screen.vault.pinReady) pinField.forceActiveFocus()
@@ -50,14 +50,14 @@ Column {
       id: fingerprintIcon
       textFormat: Text.PlainText
       anchors.horizontalCenter: parent.horizontalCenter
-      text: screen.vault.fingerprintScanning ? "󰈷" : "󰌋"
-      color: screen.vault.fingerprintScanning ? Color.accent : screen.panel.fg
+      text: screen.vault.fidoScanning ? "󰟵" : (screen.vault.fingerprintScanning ? "󰈷" : "󰌋")
+      color: (screen.vault.fingerprintScanning || screen.vault.fidoScanning) ? Color.accent : screen.panel.fg
       opacity: 0.85
       font.family: screen.panel.fontFamily
       font.pixelSize: Style.space(38)
 
       SequentialAnimation on opacity {
-        running: screen.vault.fingerprintScanning
+        running: screen.vault.fingerprintScanning || screen.vault.fidoScanning
         loops: Animation.Infinite
         NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
         NumberAnimation { to: 0.95; duration: 700; easing.type: Easing.InOutQuad }
@@ -70,7 +70,7 @@ Column {
       anchors.horizontalCenter: parent.horizontalCenter
       text: screen.vault.status === "unlocked"
         ? "Loading SSH keys"
-        : (screen.vault.fingerprintReady ? "Unlock Vault" : "Enter Master Password")
+        : ((screen.vault.fingerprintReady || screen.vault.fidoReady) ? "Unlock Vault" : "Enter Master Password")
       color: screen.panel.fg
       font.family: screen.panel.fontFamily
       font.pixelSize: Style.font.title
@@ -127,6 +127,31 @@ Column {
     width: parent.width
     horizontalAlignment: Text.AlignHCenter
     text: "󰈷  Unlock once with your master password to enable fingerprint unlock."
+    color: screen.panel.dim
+    font.family: screen.panel.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
+  // FIDO2 status / prompt, and the same "unlock once" hint the reader gets.
+  Text {
+    textFormat: Text.PlainText
+    visible: screen.vault.fidoMessage !== ""
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: screen.vault.fidoMessage
+    color: screen.vault.fidoScanning ? Color.accent : screen.panel.dim
+    font.family: screen.panel.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
+  Text {
+    textFormat: Text.PlainText
+    visible: screen.vault.fidoUnlock && screen.vault.fidoAvailable && !screen.vault.fidoStored
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: "󰟵  Unlock once with your master password to enable FIDO2 unlock."
     color: screen.panel.dim
     font.family: screen.panel.fontFamily
     font.pixelSize: Style.font.caption
@@ -239,6 +264,19 @@ Column {
       focusable: true
       enabled: !screen.vault.isUnlocking && !screen.vault.fingerprintScanning
       onClicked: screen.vault.startFingerprintUnlock()
+    }
+
+    Button {
+      visible: screen.vault.fidoReady
+      width: parent.width
+      text: screen.vault.fidoScanning ? "Waiting for your key..." : "Unlock with FIDO2 Key"
+      iconText: "󰟵"
+      selected: true
+      accent: Color.accent
+      fontFamily: screen.panel.fontFamily
+      focusable: true
+      enabled: !screen.vault.isUnlocking && !screen.vault.fidoScanning
+      onClicked: screen.vault.startFidoUnlock()
     }
 
     Row {

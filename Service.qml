@@ -140,6 +140,7 @@ Item {
   readonly property bool colorizeIcon: Model.boolSetting("colorizeIcon", setting("colorizeIcon", false))
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
+  readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
   // The SSH agent is opt-in. Nothing starts a helper, creates a socket, or
   // touches a FIFO while this is false.
@@ -483,6 +484,21 @@ Item {
   property bool fingerprintScanning: false
   property bool fingerprintAuthorized: false // a live PAM success may consume one keyring lookup
   property string fingerprintMessage: ""
+  // FIDO2 unlock state. The gate itself lives in FidoUnlock.qml, which reaches
+  // the vault only for the setting it runs on and for the password a verified
+  // touch releases; these forward what the locked screen and the settings row
+  // read, the same way the fingerprint's own state is read. Its stored entry is
+  // its own (account=fido_password), so this never borrows the fingerprint's.
+  readonly property bool fidoReady: fidoUnlocker.ready
+  readonly property bool fidoAvailable: fidoUnlocker.available
+  readonly property bool fidoStored: fidoUnlocker.stored
+  readonly property bool fidoScanning: fidoUnlocker.scanning
+  readonly property string fidoMessage: fidoUnlocker.message
+  // Writable through to the setup form in FidoUnlock.qml: the screen edits the
+  // field, and the controller owns what the value means.
+  property alias fidoSetupMaster: fidoUnlocker.setupMaster
+  property alias fidoError: fidoUnlocker.error
+  property alias fidoBusy: fidoUnlocker.busy
   property string pendingUnlockPassword: ""   // held only until the unlock lands
   // Authentication processes are started before submission and wait on a
   // private FIFO. These flags distinguish that harmless waiting state from an
@@ -505,7 +521,7 @@ Item {
   property string fpError: ""
   property bool fpBusy: false
   // Which credential source drove the in-flight unlock, so a stale stored
-  // secret can be discarded rather than retried forever. "" | "fingerprint" | "pin"
+  // secret can be discarded rather than retried forever. "" | "fingerprint" | "fido" | "pin"
   property string pendingUnlockFrom: ""
 
   // Send state
@@ -1707,7 +1723,7 @@ Item {
       // panel locked, which is precisely when the handoff matters.
       refreshStatus()
       prepareUnlock()
-      startFingerprintUnlock()
+      armPresenceUnlock()
     } else {
       refreshStatus()
     }
@@ -1888,7 +1904,7 @@ Item {
       currentScreen = "locked"
       focusAppropriateField()
       if (sshAuthSurfaceActive) prepareUnlock()
-      if (sshAuthSurfaceActive) startFingerprintUnlock()
+      if (sshAuthSurfaceActive) armPresenceUnlock()
     } else {
       cancelAuthPrewarm()
       if (vaultStatePresent()) {
@@ -2634,6 +2650,7 @@ Item {
     cancelFingerprintUnlock()
     fingerprintStored = false
     fingerprintMessage = ""
+    fidoUnlocker.reset()
     pinConfigured = false
     pinEntry = ""
     pinAttempts = 0
@@ -3385,6 +3402,11 @@ Item {
       else beginFingerprintSetup()
       return
     }
+    if (e.action === "fido") {
+      if (fidoStored) forgetFidoUnlock()
+      else beginFidoSetup()
+      return
+    }
     if (e.type === "bool") writeSetting(e.key, !settingValue(e), "bool")
   }
 
@@ -3450,6 +3472,7 @@ Item {
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
+      case "fidoUnlock": return fidoUnlock && fidoStored
       // The toggle reflects a PIN actually being set, not just the flag.
       case "pinUnlock": return pinUnlock && pinConfigured
       case "sshAgentEnabled": return sshAgentEnabled
@@ -3462,11 +3485,14 @@ Item {
 
   function refreshFingerprintAvailability() {
     checkDependencies()
+    // FIDO2 readiness comes from its own probe, run here so the setup form
+    // opens on the right branch rather than flipping once the probe answers.
+    fidoUnlocker.refresh()
   }
 
   function onFingerprintStoredChecked(raw) {
     fingerprintStored = String(raw || "").trim() === "yes"
-    if (sshAuthSurfaceActive && status === "locked") startFingerprintUnlock()
+    if (sshAuthSurfaceActive && status === "locked") armPresenceUnlock()
   }
 
   function startFingerprintUnlock() {
@@ -3619,6 +3645,31 @@ Item {
   }
 
   // -------------------------------------------------------------------------
+  // FIDO2 Unlock
+  // -------------------------------------------------------------------------
+  //
+  // FidoUnlock.qml owns the whole gate -- its PAM stack, its probe, its
+  // keyring entry and the setup form. These are the names the locked screen and
+  // the settings row use, kept parallel to the fingerprint's so the two methods
+  // read the same way from the outside (and so both halves of the settings
+  // screen can dispatch on a single action name).
+
+  function startFidoUnlock() { fidoUnlocker.startUnlock() }
+  function cancelFidoUnlock() { fidoUnlocker.cancelUnlock() }
+  function beginFidoSetup() { fidoUnlocker.beginSetup() }
+  function submitFidoSetup() { fidoUnlocker.submitSetup() }
+  function runFidoSetup() { fidoUnlocker.runOmarchySetup() }
+  function forgetFidoUnlock() { fidoUnlocker.forget("") }
+
+  // Which presence gate arms when the vault needs the screen: the FIDO2 key
+  // when one is plugged in and ready, the reader otherwise. Both buttons remain
+  // available either way -- this only decides which is already waiting.
+  function armPresenceUnlock() {
+    if (fidoReady) startFidoUnlock()
+    else startFingerprintUnlock()
+  }
+
+  // -------------------------------------------------------------------------
   // Vault Unlock & Lock
   // -------------------------------------------------------------------------
 
@@ -3661,6 +3712,14 @@ Item {
         requestMasterCredentialClear()
         fingerprintStored = false
         fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
+        errorMessage = ""
+        focusAppropriateField()
+        Qt.callLater(prepareUnlock)
+        return
+      }
+      if (pendingUnlockFrom === "fido") {
+        pendingUnlockFrom = ""
+        fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
@@ -3899,6 +3958,7 @@ Item {
     fpSetupMaster = ""
     masterToStore = ""
     pendingAssociationsJson = ""
+    fidoUnlocker.dropSecrets()
     scrubSecretBuffers()
   }
 
@@ -3918,7 +3978,7 @@ Item {
       copyPasswordProc,
       createItemProc, editItemProc, deleteItemProc, createFolderProc, attachmentProc,
       associationsReadProc, generateServeRequestProc
-    ]
+    ].concat(fidoUnlocker.secretProcesses())
   }
 
   function scrubSecretBuffers() {
@@ -4291,6 +4351,9 @@ Item {
     } else if (currentScreen === "fingerprint") {
       fpError = ""
       currentScreen = "settings"
+    } else if (currentScreen === "fido") {
+      fidoUnlocker.error = ""
+      currentScreen = "settings"
     } else if (currentScreen === "pin") {
       pinError = ""
       currentScreen = "settings"
@@ -4328,6 +4391,7 @@ Item {
     // here rather than at each of the ways out.
     if (currentScreen !== "pin") abandonPinSetup()
     if (currentScreen !== "fingerprint") abandonFingerprintSetup()
+    if (currentScreen !== "fido") fidoUnlocker.abandonSetup()
     restoreScreenFocus()
   }
 
@@ -4338,7 +4402,7 @@ Item {
         case "main": presenter.focusField("search"); return
         case "edit": presenter.focusField("formName"); return
         // These open through a function that focuses their own first field.
-        case "pin": case "fingerprint": return
+        case "pin": case "fingerprint": case "fido": return
         case "sends": if (sendMode === "create") return; break
       }
       // Everything else is keyboard-navigated rather than typed into.
@@ -6369,6 +6433,20 @@ Item {
       root.fingerprintScanning = false
       root.fingerprintAuthorized = false
       root.fingerprintMessage = "Fingerprint verification unavailable"
+    }
+  }
+
+  // FIDO2 unlock, in its own file. It is handed the vault and the setting and
+  // gives back a password once a key touch has been verified; everything else
+  // FIDO2 -- its PAM stack, its probe, its keyring entry -- stays in there.
+  FidoUnlock {
+    id: fidoUnlocker
+    vault: root
+    armed: root.fidoUnlock
+
+    onUnlocked: function(password) {
+      root.pendingUnlockFrom = "fido"
+      root.unlockVaultWithPassword(password)
     }
   }
 
