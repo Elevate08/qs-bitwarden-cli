@@ -15,10 +15,10 @@ Panel {
   // View
   // =========================================================================
   //
-  // Everything below draws. Everything above is the vault: state, commands,
-  // timers and IPC, which Service.qml will own once per shell. The boundary is
-  // load-bearing -- tests/service-host.test.js fails if anything above it names
-  // a control declared below it.
+  // Everything here draws. The vault -- state, commands, timers and IPC --
+  // lives in Service.qml, once per shell. The boundary is load-bearing --
+  // tests/service-host.test.js fails if this file names a control from the
+  // vault, or the vault names a control declared here.
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -43,8 +43,8 @@ Panel {
   function fieldFor(name) {
     switch (name) {
       case "search": return searchField
-      case "pass": return passField
-      case "pin": return pinField
+      case "pass": return unlockForm.passwordField
+      case "pin": return unlockForm.pinField
       case "email": return emailField
       case "loginPass": return loginPassField
       case "code2fa": return code2faField
@@ -84,26 +84,40 @@ Panel {
   }
 
   function unlockFieldHasFocus() {
-    return passField.activeFocus || pinField.activeFocus
+    return unlockForm.passwordField.activeFocus || unlockForm.pinField.activeFocus
   }
 
-  // Typing into a TextField assigns to its own `text`, which breaks the binding
-  // back to the property behind it. After that the two are independent, and
-  // clearing the property alone leaves the field showing what was typed --
-  // while every submit reads the property. That is exactly how a login came to
-  // be sent with no code at all while the user was looking at a filled-in
-  // field: bw answered "Code is required.", the panel reported the code as
-  // rejected, and retyping it repaired the property so the next click worked.
+  // A field whose `text` has lost its binding to the property behind it keeps
+  // showing what was typed after the property is cleared -- while every submit
+  // reads the property. That is how a login came to be sent with no code at
+  // all while the user was looking at a filled-in field: bw answered "Code is
+  // required.", the panel reported the code as rejected, and retyping it
+  // repaired the property so the next click worked.
   //
-  // So a field is never cleared by clearing what is behind it. These go
-  // together, always.
+  // Typing keeps the binding; an imperative `field.text = value` is what drops
+  // it, after which the field never follows the property again. So these
+  // re-point each field with Qt.binding rather than copying a value: the field
+  // is refreshed now and keeps following afterwards. Never assign a plain
+  // value here -- tests/qml/tst_field_binding.qml pins why.
   function syncLoginFields() {
-    code2faField.text = root.vault.login2faCode
-    deviceCodeField.text = root.vault.loginDeviceCode
-    loginPassField.text = root.vault.loginPassword
-    apiMasterField.text = root.vault.loginPassword
-    apiClientIdField.text = root.vault.loginClientId
-    apiClientSecretField.text = root.vault.loginClientSecret
+    code2faField.text = Qt.binding(function() { return root.vault.login2faCode })
+    deviceCodeField.text = Qt.binding(function() { return root.vault.loginDeviceCode })
+    loginPassField.text = Qt.binding(function() { return root.vault.loginPassword })
+    apiMasterField.text = Qt.binding(function() { return root.vault.loginPassword })
+    apiClientIdField.text = Qt.binding(function() { return root.vault.loginClientId })
+    apiClientSecretField.text = Qt.binding(function() { return root.vault.loginClientSecret })
+  }
+
+  // The same guarantee for the unlock, item-form and Send secrets.
+  function syncSensitiveFields() {
+    syncLoginFields()
+    unlockForm.syncFromVault()
+    sshApprovalPopup.unlockScreen.syncFromVault()
+    formPassField.text = Qt.binding(function() { return root.vault.formPassword })
+    formNameField.text = Qt.binding(function() { return root.vault.formName })
+    sendNameField.text = Qt.binding(function() { return root.vault.sendFormName })
+    sendTextField.text = Qt.binding(function() { return root.vault.sendFormText })
+    sendPasswordField.text = Qt.binding(function() { return root.vault.sendFormPassword })
   }
 
   // Visual styles
@@ -266,28 +280,6 @@ Panel {
     }
     var self = settingsRepeaterItem(index)
     return self ? self.y + self.height : 0
-  }
-
-  // The SSH sections' own section header. PanelSectionHeader comes from the
-  // Omarchy shell, and its defaults are the global theme's -- `Color.foreground`
-  // and `Style.font.family` -- while everything around it here follows the bar's
-  // own foreground and font family. Stating them once keeps the headers matching
-  // the captions beneath them, and keeps `textFormat` explicit, which this
-  // panel requires of every text element whether or not its text is constant
-  // today.
-  component SshSectionHeader: PanelSectionHeader {
-    textFormat: Text.PlainText
-    foreground: root.fg
-    fontFamily: root.fontFamily
-  }
-
-  component SshCaption: Text {
-    textFormat: Text.PlainText
-    width: parent ? parent.width : 0
-    color: root.dim
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
   }
 
   // One of the three vault filters at the foot of the list, collapsed to its
@@ -464,6 +456,7 @@ Panel {
   // -------------------------------------------------------------------------
 
   SshApprovalPopup {
+    id: sshApprovalPopup
     panel: root
     vault: root.vault
     anchorItem: button
@@ -489,7 +482,7 @@ Panel {
         ? keyCatcher
         : (root.vault.status === "unauthenticated"
           ? (root.vault.show2faField ? code2faField : emailField)
-          : (root.vault.pinReady ? pinField : passField)))
+          : (root.vault.pinReady ? unlockForm.pinField : unlockForm.passwordField)))
     contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.vault.filterDrawerHeight)
 
@@ -540,8 +533,8 @@ Panel {
         || emailField.activeFocus
         || loginPassField.activeFocus
         || code2faField.activeFocus
-        || passField.activeFocus
-        || pinField.activeFocus
+        || unlockForm.passwordField.activeFocus
+        || unlockForm.pinField.activeFocus
         || (root.vault.currentScreen === "edit")
         || (root.vault.currentScreen === "pin")
         || (root.vault.currentScreen === "fingerprint")
@@ -1159,6 +1152,7 @@ Panel {
 
               Text { textFormat: Text.PlainText; text: "TEXT TO SEND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
+                id: sendTextField
                 width: parent.width
                 placeholderText: "The secret to share..."
                 text: root.vault.sendFormText
@@ -1249,6 +1243,7 @@ Panel {
 
               Text { textFormat: Text.PlainText; text: "PASSWORD (OPTIONAL)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
               TextField {
+                id: sendPasswordField
                 width: parent.width
                 placeholderText: "Recipient must enter this to open the Send..."
                 password: true
@@ -2577,6 +2572,7 @@ Panel {
           }
 
           SshCaption {
+            panel: root
             text: !root.vault.sshUnlockRequest
               ? ""
               : (root.vault.sshUnlockRequest.keyName !== ""
@@ -2591,6 +2587,7 @@ Panel {
           }
 
           SshCaption {
+            panel: root
             text: root.vault.sshAgentLoadActive
               ? Model.sshAgentLoadingNote()
               : "Unlocking loads your keys. You will still be asked before anything is signed."
@@ -3122,200 +3119,10 @@ Panel {
 
           Item { height: Style.space(8); width: 1 }
 
-          Column {
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: Style.space(6)
-
-            Text {
-              textFormat: Text.PlainText
-              anchors.horizontalCenter: parent.horizontalCenter
-              text: root.vault.fingerprintScanning ? "󰈷" : "󰌋"
-              color: root.vault.fingerprintScanning ? Color.accent : root.fg
-              opacity: 0.85
-              font.family: root.fontFamily
-              font.pixelSize: Style.space(38)
-
-              SequentialAnimation on opacity {
-                running: root.vault.fingerprintScanning
-                loops: Animation.Infinite
-                NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
-                NumberAnimation { to: 0.95; duration: 700; easing.type: Easing.InOutQuad }
-                onStopped: parent.opacity = 0.85
-              }
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              anchors.horizontalCenter: parent.horizontalCenter
-              text: root.vault.fingerprintReady ? "Unlock Vault" : "Enter Master Password"
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              visible: root.vault.userEmail !== ""
-              anchors.horizontalCenter: parent.horizontalCenter
-              text: root.vault.userEmail
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-            }
-          }
-
-          // Fingerprint status / prompt
-          Text {
-            textFormat: Text.PlainText
-            visible: root.vault.fingerprintMessage !== ""
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: root.vault.fingerprintMessage
-            color: root.vault.fingerprintScanning ? Color.accent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
-          }
-
-          // Offered when fingerprint unlock is on but nothing is stored yet.
-          Text {
-            textFormat: Text.PlainText
-            visible: root.vault.fingerprintUnlock && root.vault.fingerprintAvailable && !root.vault.fingerprintStored
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: "󰈷  Unlock once with your master password to enable fingerprint unlock."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-
-          // PIN entry, offered above the password field when one is set.
-          Column {
-            visible: root.vault.pinReady
-            width: parent.width
-            spacing: Style.space(8)
-
-            Text { textFormat: Text.PlainText; text: "PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-
-            Row {
-              width: parent.width
-              spacing: Style.space(8)
-
-              TextField {
-                id: pinField
-                width: parent.width - pinUnlockBtn.width - Style.space(8)
-                placeholderText: "Enter your PIN..."
-                password: true
-                text: root.vault.pinEntry
-                onTextChanged: root.vault.pinEntry = text.replace(/[^0-9]/g, "")
-                onAccepted: root.vault.submitPinUnlock()
-                enabled: !root.vault.pinBusy && !root.vault.isUnlocking
-              }
-
-              Button {
-                id: pinUnlockBtn
-                text: root.vault.pinBusy ? "Checking..." : "Unlock"
-                iconText: root.vault.pinBusy ? "󰑐" : "󰌿"
-                iconSpinning: root.vault.pinBusy
-                selected: true
-                accent: Color.accent
-                fontFamily: root.fontFamily
-                enabled: !root.vault.pinBusy && !root.vault.isUnlocking
-                onClicked: root.vault.submitPinUnlock()
-              }
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              visible: root.vault.pinError !== ""
-              width: parent.width
-              text: root.vault.pinError
-              color: root.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              text: "or use your master password below"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
-
-          // A PIN was set but the vault rejected it -- surfaced even once
-          // pinReady has gone false, so the reason is not lost.
-          Text {
-            textFormat: Text.PlainText
-            visible: !root.vault.pinReady && root.vault.pinError !== ""
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: root.vault.pinError
-            color: root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
-          }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(10)
-
-            Button {
-              visible: root.vault.fingerprintReady
-              width: parent.width
-              text: root.vault.fingerprintScanning ? "Waiting for fingerprint..." : "Unlock with Fingerprint"
-              iconText: "󰈷"
-              selected: true
-              accent: Color.accent
-              fontFamily: root.fontFamily
-              enabled: !root.vault.isUnlocking && !root.vault.fingerprintScanning
-              onClicked: root.vault.startFingerprintUnlock()
-            }
-
-            Row {
-              width: parent.width
-              spacing: Style.space(8)
-
-              TextField {
-                id: passField
-                width: parent.width - eyeBtnUnlock.width - Style.space(8)
-                placeholderText: "Master password..."
-                password: !eyeBtnUnlock.revealed
-                text: root.vault.masterPassword
-                onTextChanged: root.vault.masterPassword = text
-                onActiveFocusChanged: {
-                  if (activeFocus) root.vault.prepareUnlock()
-                }
-                onAccepted: root.vault.unlockVault()
-                enabled: !root.vault.isUnlocking
-              }
-
-              Button {
-                id: eyeBtnUnlock
-                property bool revealed: false
-                iconText: revealed ? "󰈉" : "󰈈"
-                tooltipText: revealed ? "Hide password" : "Show password"
-                fontFamily: root.fontFamily
-                onClicked: revealed = !revealed
-              }
-            }
-
-            Button {
-              width: parent.width
-              text: root.vault.isUnlocking ? "Unlocking..." : "Unlock Vault"
-              iconText: root.vault.isUnlocking ? "󰑐" : "󰌋"
-              iconSpinning: root.vault.isUnlocking
-              selected: true
-              accent: Color.accent
-              fontFamily: root.fontFamily
-              enabled: !root.vault.isUnlocking
-              onClicked: root.vault.unlockVault()
-            }
+          UnlockForm {
+            id: unlockForm
+            panel: root
+            vault: root.vault
           }
 
           Row {
@@ -5598,7 +5405,9 @@ Panel {
         accentColor: root.accent
         urgentColor: root.urgent
         fontFamily: root.fontFamily
-        actionLabel: root.vault.failedSave ? "Reopen " + root.vault.failedSave.name : ""
+        actionLabel: root.vault.failedSave
+          ? Model.plainLabel("Reopen " + Model.clipLabel(root.vault.failedSave.name, 24))
+          : ""
         onActionRequested: root.vault.reopenFailedSave()
         onErrorDismissed: {
           // Dismissing the message drops the recovery with it: the list is

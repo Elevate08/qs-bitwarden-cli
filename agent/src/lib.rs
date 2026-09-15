@@ -3,14 +3,10 @@
 //! The panel owns `bw` and `BW_SESSION`; this process never sees either. It
 //! receives already-decrypted private keys on a private FIFO, holds them only
 //! while the vault is unlocked, and signs only against a live approval. The
-//! dependency set below was reviewed deliberately before it was pinned, and
-//! anything added to it needs the same review.
-//!
-//! At this stage the crate is the dependency spike itself: it pins the crates
-//! the agent will be built from and proves, in tests that need no vault, no
-//! network, and no socket, that they can do the two things the design cannot
-//! compromise on -- sign what v1 promises to sign, and wipe private key memory
-//! when it is dropped.
+//! binary speaks the SSH agent protocol on a per-user socket and the panel's
+//! NDJSON control protocol on stdin/stdout. The dependency set below was
+//! reviewed deliberately before it was pinned, and anything added to it needs
+//! the same review.
 
 use zeroize::ZeroizeOnDrop;
 

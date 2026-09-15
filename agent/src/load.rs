@@ -1,6 +1,6 @@
 //! One-shot nonce-framed candidate payload decoding.
 
-use crate::keystore::{CandidateItem, CandidateLoad, KeyStore, LoadError};
+use crate::keystore::{CandidateItem, CandidateLoad, KeyStore, LoadError, MAX_FILTERED_BYTES};
 use serde::Deserialize;
 use std::fmt;
 use zeroize::Zeroizing;
@@ -27,10 +27,19 @@ struct Envelope {
 struct Item {
     item_id: String,
     name: String,
-    private_key: String,
+    #[serde(deserialize_with = "deserialize_pem")]
+    private_key: Zeroizing<Vec<u8>>,
     public_key: String,
     fingerprint: String,
     requires_reprompt: bool,
+}
+
+fn deserialize_pem<'de, D>(deserializer: D) -> Result<Zeroizing<Vec<u8>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(Zeroizing::new(value.into_bytes()))
 }
 
 /// A single armed load nonce. Every decode attempt consumes the window.
@@ -55,28 +64,33 @@ impl LoadWindow {
     }
 
     /// Decode one complete bounded JSON payload and build an unpublished
-    /// candidate. Raw JSON and each moved PEM allocation wipe on drop.
+    /// candidate. Raw JSON and each PEM allocation wipe on drop. The nonce is
+    /// checked before `begin_load`, so a rejected payload cannot wipe a live
+    /// private set.
     pub fn decode(
         &mut self,
         bytes: Zeroizing<Vec<u8>>,
         store: &mut KeyStore,
     ) -> Result<CandidateLoad, PayloadError> {
         let expected = self.nonce.take().ok_or(PayloadError::Closed)?;
-        let mut candidate = store
-            .begin_load(self.epoch, bytes.len())
-            .map_err(PayloadError::Load)?;
+        if bytes.len() > MAX_FILTERED_BYTES {
+            return Err(PayloadError::Load(LoadError::FilteredPayloadTooLarge));
+        }
         let envelope: Envelope =
             serde_json::from_slice(bytes.as_slice()).map_err(|_| PayloadError::Malformed)?;
         let supplied = parse_nonce(&envelope.load_id).map_err(|_| PayloadError::NonceMismatch)?;
         if !constant_time_eq(&supplied, &expected) {
             return Err(PayloadError::NonceMismatch);
         }
+        let mut candidate = store
+            .begin_load(self.epoch, bytes.len())
+            .map_err(PayloadError::Load)?;
         for item in envelope.items {
             candidate
                 .add(CandidateItem {
                     item_id: item.item_id,
                     name: item.name,
-                    private_key_pem: Zeroizing::new(item.private_key.into_bytes()),
+                    private_key_pem: item.private_key,
                     public_key: item.public_key,
                     fingerprint: item.fingerprint,
                     requires_reprompt: item.requires_reprompt,

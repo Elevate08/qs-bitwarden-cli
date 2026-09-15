@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.9.1] - 2026-09-14
+
+### Fixed
+
+- **The SSH agent no longer dies after loading 17 or more keys.** Public-key
+  announcements filled a 16-slot control channel on a runtime that could not
+  drain it mid-loop, so a successful load of a larger vault took the helper
+  down and dropped `SSH_AUTH_SOCK`. The channel is now sized for the largest
+  burst one load can produce: a full 128-key vault plus every held sign
+  request released at once.
+- **A bad key-load payload no longer kills the helper.** A timeout, truncated
+  JSON, or nonce mismatch now locks and keeps serving instead of leaving
+  clients with a dead socket, and the panel retries the load once.
+- **Secret fields stay attached to the vault after a sync.** Syncing a field
+  wrote a plain value into its `text`, which detached it from the property
+  behind it for good, so a later clear that skipped a sync could leave stale
+  text on screen. Syncs now re-point each field at the vault instead of
+  copying a value. The unlock, PIN, item-form, and Send fields get the same
+  sync as the login form.
+- **The panel lock screen's password eye resets when the screen hides**, so
+  relocking no longer shows a revealed master password field. The SSH unlock
+  popup already did this.
+- **A failed save's Reopen action no longer treats the item name as HTML**, and
+  the notice no longer overflows when that button is shown.
+- **The SSH unlock popup now shows why a stored PIN was rejected**, matching
+  the panel lock screen. Those two UIs share one form so they cannot drift
+  again.
+- **A generic login error from `bw` is sanitized** before it is drawn, the
+  same way device-verification errors already were.
+- **An SSH identity listing waiting on unlock-on-demand is withdrawn** when
+  every waiting client disconnects, instead of leaving the prompt up for the
+  full deadline.
+
+### Changed
+
+- The SSH helper's protocol unit tests no longer expose a signing path on the
+  production library surface.
+
 ## [1.9.0] - 2026-09-14
 
 ### Added

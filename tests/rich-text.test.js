@@ -55,24 +55,30 @@ check("plainLabel is idempotent in the sense that re-running it cannot inject",
 // Text defaults to Text.AutoText. Vault names, usernames, URIs, notes and Send
 // names all land in one of these, so every one of them has to say otherwise --
 // including the ones that only render a constant today.
-for (const file of ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml", "FormPickerRow.qml", "StatusNotice.qml", "DetailField.qml", "WheelScroll.qml"]) {
-  const src = fs.readFileSync(path.join(__dirname, "..", file), "utf8").split("\n")
+const qmlFiles = fs.readdirSync(path.join(__dirname, ".."))
+  .filter((name) => name.endsWith(".qml"))
+for (const file of qmlFiles) {
+  const src = fs.readFileSync(path.join(__dirname, "..", file), "utf8")
   const bare = []
-  src.forEach((line, i) => {
-    if (!/(?<![A-Za-z0-9_.])Text\s*\{/.test(line)) return
-    const body = line.slice(line.search(/(?<![A-Za-z0-9_.])Text\s*\{/))
-    const declared = body.includes("textFormat:") || (src[i + 1] || "").includes("textFormat:")
-    if (!declared) bare.push(`${file}:${i + 1}`)
-  })
+  // The element's own body, not a line window: a window lets a bare Text pass
+  // on a neighbour's textFormat. Nested blocks are left out for the same reason.
+  for (const m of src.matchAll(/(?<![A-Za-z0-9_.])Text\s*\{/g)) {
+    let depth = 0
+    let own = ""
+    for (let i = src.indexOf("{", m.index); i < src.length; i++) {
+      if (src[i] === "{") depth++
+      else if (src[i] === "}" && --depth === 0) break
+      else if (depth === 1) own += src[i]
+    }
+    if (!own.includes("textFormat:")) bare.push(`${file}:${src.slice(0, m.index).split("\n").length}`)
+  }
   check(`every Text in ${file} pins textFormat`, bare.length === 0, bare.join(", "))
 }
 
 // The kit's Button builds its own Text and exposes no textFormat, so the
 // strings we hand it have to arrive already neutralized.
 // Every QML file that draws vault-derived text, not just the largest one.
-const panel = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml", "FormPickerRow.qml", "StatusNotice.qml", "DetailField.qml", "WheelScroll.qml"]
-  .map(readPluginSource)
-  .join("\n")
+const panel = qmlFiles.map(readPluginSource).join("\n")
 const detailField = fs.readFileSync(path.join(__dirname, "..", "DetailField.qml"), "utf8")
 for (const binding of ["formFolderLabel()", "formOrgLabel()", "Model.clipLabel(value, 20)",
                        'name + " filter (" + shortcut + "): " + value']) {

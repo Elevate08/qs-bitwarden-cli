@@ -58,8 +58,12 @@ check("an error can offer a recovery alongside the dismiss",
     && /visible: root\.showsError && root\.actionLabel !== ""/.test(noticeSrc),
   noticeSrc)
 check("the recovery is offered only when there is one",
-  /actionLabel: root\.failedSave \? "Reopen " \+ root\.failedSave\.name : ""/.test(noticeUse),
+  /actionLabel: root\.failedSave/.test(noticeUse)
+    && /Model\.plainLabel\("Reopen " \+ Model\.clipLabel\(root\.failedSave\.name, 24\)\)/.test(noticeUse),
   noticeUse)
+check("the message column subtracts both trailing buttons",
+  /width: parent\.width - noticeIcon[\s\S]{0,500}noticeActionButton\.visible[\s\S]{0,300}dismissNoticeButton\.visible/.test(noticeSrc),
+  noticeSrc)
 check("dismissing the message discards the recovery with it",
   /root\.failedSave = null\s*\n\s*root\.errorMessage = ""/.test(noticeUse),
   "a Reopen button behind an invisible message is a button for nothing")

@@ -1,8 +1,10 @@
-use qs_bitwarden_ssh_agent::approvals::{ApprovalManager, RequestId, Submit};
+use qs_bitwarden_ssh_agent::approvals::{
+    ApprovalManager, Authorization, RequestId, Submit, MAX_PENDING,
+};
 use qs_bitwarden_ssh_agent::control::{
     parse_control_line, ControlMessage, LoadStatus, MAX_CONTROL_LINE,
 };
-use qs_bitwarden_ssh_agent::keystore::KeyStore;
+use qs_bitwarden_ssh_agent::keystore::{KeyStore, MAX_KEYS};
 use qs_bitwarden_ssh_agent::lifecycle::harden_process;
 use qs_bitwarden_ssh_agent::load::LoadWindow;
 use qs_bitwarden_ssh_agent::protocol::{self, AgentRequest};
@@ -46,6 +48,14 @@ enum Output {
         grant_offered: bool,
     },
     Locked {
+        v: u8,
+        epoch: u64,
+    },
+    /// A candidate load was refused. Distinct from `locked`: that message
+    /// acknowledges `vault_locked`. Confusing the two left an unlocked vault
+    /// with no keys, because the panel treated a failed load as a lock-ack
+    /// and never started another.
+    LoadFailed {
         v: u8,
         epoch: u64,
     },
@@ -209,6 +219,15 @@ impl ControlReader {
     }
 }
 
+/// Control output is `try_send`, and the writer task cannot run on the
+/// current-thread runtime until the select loop yields, so the channel must
+/// hold the largest burst one loop iteration produces. That is a successful
+/// load: a `public_key` per key and `keys_loaded`, then for every held sign
+/// request a `request_cancelled` and an `approval_required`, then the held
+/// identity listing's `request_cancelled`. A full channel fails `emit`, and a
+/// failed `emit` ends the helper.
+const CONTROL_OUTPUT_CAPACITY: usize = MAX_KEYS + 1 + 2 * MAX_PENDING + 1 + 8;
+
 fn emit(output: &mpsc::Sender<Output>, message: Output) -> Result<(), ()> {
     output.try_send(message).map_err(|_| ())
 }
@@ -271,6 +290,7 @@ async fn main() {
         std::process::exit(code);
     }
     if run().await.is_err() {
+        eprintln!("qs-bitwarden-ssh-agent: exiting");
         std::process::exit(1);
     }
 }
@@ -282,7 +302,7 @@ async fn run() -> Result<(), ()> {
         .ok_or(())?;
     let runtime = ServiceRuntime::acquire(&runtime_root).map_err(|_| ())?;
     let listener = runtime.bind_socket().map_err(|_| ())?;
-    let (output_tx, output_rx) = mpsc::channel(16);
+    let (output_tx, output_rx) = mpsc::channel(CONTROL_OUTPUT_CAPACITY);
     let output_task = tokio::spawn(write_output(output_rx));
     let (events_tx, mut events_rx) = mpsc::channel::<ClientEvent>(8);
     let (load_tx, mut load_rx) = mpsc::channel(1);
@@ -345,11 +365,12 @@ async fn run() -> Result<(), ()> {
                             continue;
                         }
                         let Some(sign) = pending.remove(&request_id) else { continue };
-                        let response = approvals.approve(request_id, grant_seconds, elapsed_ms(started)).ok()
-                            .and_then(|authorization| authorization.finalize(&store))
-                            .and_then(|permit| store.sign(&permit, &sign.message, sign.flags))
-                            .and_then(protocol::signature_response)
-                            .unwrap_or_else(protocol::failure_response);
+                        let response = approvals
+                            .approve(request_id, grant_seconds, elapsed_ms(started))
+                            .map(|authorization| {
+                                authorized_signature(&store, authorization, &sign.message, sign.flags)
+                            })
+                            .unwrap_or_else(|_| protocol::failure_response());
                         let _ = sign.reply.send(response);
                     }
                     ControlMessage::Deny { request_id, .. } | ControlMessage::UnlockCancelled { request_id, .. } => {
@@ -391,11 +412,16 @@ async fn run() -> Result<(), ()> {
                             release_held_identities(&mut held_identities, &store, &output_tx, "load-failed")?;
                         } else {
                             load.end_received = true;
-                            finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, &output_tx)?;
-                            if gate_open {
-                                release_held(&mut held, &store, &mut approvals, &mut pending, started, &output_tx)?;
-                                release_held_identities(&mut held_identities, &store, &output_tx, "released")?;
-                            }
+                            settle_load(
+                                finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, &output_tx)?,
+                                &mut held,
+                                &mut held_identities,
+                                &store,
+                                &mut approvals,
+                                &mut pending,
+                                started,
+                                &output_tx,
+                            )?;
                         }
                     }
                 }
@@ -405,11 +431,16 @@ async fn run() -> Result<(), ()> {
                 let Some(load) = active_load.as_mut() else { continue };
                 if load.epoch != epoch { continue; }
                 load.payload = Some(result);
-                finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, &output_tx)?;
-                if gate_open {
-                    release_held(&mut held, &store, &mut approvals, &mut pending, started, &output_tx)?;
-                    release_held_identities(&mut held_identities, &store, &output_tx, "released")?;
-                }
+                settle_load(
+                    finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, &output_tx)?,
+                    &mut held,
+                    &mut held_identities,
+                    &store,
+                    &mut approvals,
+                    &mut pending,
+                    started,
+                    &output_tx,
+                )?;
             }
             _ = tick.tick() => {
                 let now = elapsed_ms(started);
@@ -427,7 +458,9 @@ async fn run() -> Result<(), ()> {
                     if let Some(request) = held.remove(&id) { let _ = request.reply.send(protocol::failure_response()); }
                     emit(&output_tx, Output::RequestCancelled { v: 1, request_id: id, reason: "withdrawn" })?;
                 }
-                if held_identities.as_ref().is_some_and(|w| w.deadline_ms <= now) {
+                if held_identities.as_ref().is_some_and(|w| {
+                    w.deadline_ms <= now || w.waiting.iter().all(|reply| reply.is_closed())
+                }) {
                     release_held_identities(&mut held_identities, &store, &output_tx, "withdrawn")?;
                 }
                 emit_grants_if_changed(&mut grant_snapshot, &approvals, &store, now, &output_tx)?;
@@ -574,11 +607,7 @@ fn handle_client(
                 elapsed_ms(started),
             ) {
                 Ok(Submit::Granted(authorization)) => {
-                    let response = authorization
-                        .finalize(store)
-                        .and_then(|permit| store.sign(&permit, &message, flags))
-                        .and_then(protocol::signature_response)
-                        .unwrap_or_else(protocol::failure_response);
+                    let response = authorized_signature(store, authorization, &message, flags);
                     let _ = event.reply.send(response);
                 }
                 Ok(Submit::Pending(id)) => {
@@ -663,18 +692,15 @@ fn release_held(
                 request.peer.clone(),
                 elapsed_ms(started),
             ) {
-                Ok(Submit::Granted(authorization)) => authorization
-                    .finalize(store)
-                    .and_then(|permit| store.sign(&permit, &request.message, request.flags))
-                    .and_then(protocol::signature_response)
-                    .unwrap_or_else(protocol::failure_response),
+                Ok(Submit::Granted(authorization)) => {
+                    authorized_signature(store, authorization, &request.message, request.flags)
+                }
                 Ok(Submit::Pending(id)) => approvals
                     .approve(id, grant_seconds, elapsed_ms(started))
-                    .ok()
-                    .and_then(|authorization| authorization.finalize(store))
-                    .and_then(|permit| store.sign(&permit, &request.message, request.flags))
-                    .and_then(protocol::signature_response)
-                    .unwrap_or_else(protocol::failure_response),
+                    .map(|authorization| {
+                        authorized_signature(store, authorization, &request.message, request.flags)
+                    })
+                    .unwrap_or_else(|_| protocol::failure_response()),
                 Err(_) => protocol::failure_response(),
             };
             let _ = request.reply.send(response);
@@ -687,11 +713,8 @@ fn release_held(
             elapsed_ms(started),
         ) {
             Ok(Submit::Granted(authorization)) => {
-                let response = authorization
-                    .finalize(store)
-                    .and_then(|permit| store.sign(&permit, &request.message, request.flags))
-                    .and_then(protocol::signature_response)
-                    .unwrap_or_else(protocol::failure_response);
+                let response =
+                    authorized_signature(store, authorization, &request.message, request.flags);
                 let _ = request.reply.send(response);
             }
             Ok(Submit::Pending(id)) => {
@@ -834,17 +857,47 @@ fn cancel_load(active: &mut Option<ActiveLoad>) {
     }
 }
 
+enum LoadOutcome {
+    Pending,
+    Published,
+    Failed,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn settle_load(
+    outcome: LoadOutcome,
+    held: &mut HashMap<RequestId, HeldSign>,
+    held_identities: &mut Option<HeldIdentities>,
+    store: &KeyStore,
+    approvals: &mut ApprovalManager,
+    pending: &mut HashMap<RequestId, PendingSign>,
+    started: Instant,
+    output: &mpsc::Sender<Output>,
+) -> Result<(), ()> {
+    match outcome {
+        LoadOutcome::Pending => Ok(()),
+        LoadOutcome::Published => {
+            release_held(held, store, approvals, pending, started, output)?;
+            release_held_identities(held_identities, store, output, "released")
+        }
+        LoadOutcome::Failed => {
+            cancel_held(held, "load-failed", output)?;
+            release_held_identities(held_identities, store, output, "load-failed")
+        }
+    }
+}
+
 fn finish_load_if_ready(
     active: &mut Option<ActiveLoad>,
     store: &mut KeyStore,
     gate_open: &mut bool,
     output: &mpsc::Sender<Output>,
-) -> Result<(), ()> {
+) -> Result<LoadOutcome, ()> {
     let ready = active
         .as_ref()
         .is_some_and(|load| load.end_received && load.payload.is_some());
     if !ready {
-        return Ok(());
+        return Ok(LoadOutcome::Pending);
     }
     let mut load = active.take().ok_or(())?;
     load.task.abort();
@@ -880,14 +933,39 @@ fn finish_load_if_ready(
                     epoch: load.epoch,
                     key_count: report.loaded,
                 },
-            )
+            )?;
+            Ok(LoadOutcome::Published)
         }
         Err(()) => {
+            // A bad FIFO payload is a failed load, not a dead helper. Emit
+            // load_failed rather than locked so the panel can retry instead of
+            // treating this as a lock acknowledgment.
             store.lock(load.epoch);
             *gate_open = false;
-            Err(())
+            eprintln!("qs-bitwarden-ssh-agent: key load failed");
+            emit(
+                output,
+                Output::LoadFailed {
+                    v: 1,
+                    epoch: load.epoch,
+                },
+            )?;
+            Ok(LoadOutcome::Failed)
         }
     }
+}
+
+fn authorized_signature(
+    store: &KeyStore,
+    authorization: Authorization,
+    message: &[u8],
+    flags: u32,
+) -> Vec<u8> {
+    authorization
+        .finalize(store)
+        .and_then(|permit| store.sign(&permit, message, flags))
+        .and_then(protocol::signature_response)
+        .unwrap_or_else(protocol::failure_response)
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

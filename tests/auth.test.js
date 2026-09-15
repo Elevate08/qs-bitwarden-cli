@@ -650,6 +650,7 @@ const viewBodyOf = (name) => {
   return ""
 }
 const syncFields = viewBodyOf("syncLoginFields")
+const syncSensitive = viewBodyOf("syncSensitiveFields")
 const syncFieldsToState = bodyOf("syncLoginFieldsToState")
 const submitDevice = bodyOf("submitDeviceVerification")
 const startDevice = bodyOf("startDeviceVerificationLogin")
@@ -775,23 +776,50 @@ check("the guard sits ahead of every branch that cancels or drops state",
 
 // --- a cleared property must never leave a filled-in field ------------------
 //
-// Typing into a TextField assigns to its own `text`, which breaks the binding
-// back to the property behind it. Clearing the property then leaves the field
-// showing what was typed, while every submit reads the property -- so the panel
-// sent a login with no code at all while the user looked at a filled-in code
-// field, bw answered "Code is required.", and retyping the code repaired the
-// property so the next click worked. That was the double Verify.
+// A field whose text binding is gone keeps showing what was typed after the
+// property behind it is cleared, while every submit reads the property -- so
+// the panel sent a login with no code at all while the user looked at a
+// filled-in code field, bw answered "Code is required.", and retyping the code
+// repaired the property so the next click worked. That was the double Verify.
+//
+// Typing keeps the binding; `field.text = value` drops it for good (pinned in
+// tests/qml/tst_field_binding.qml). So a sync must re-point with Qt.binding,
+// or the first sync is what leaves the field stale from then on.
+const rebinds = (body, field, prop) => new RegExp(
+  `${field}\\.text = Qt\\.binding\\(function\\(\\) \\{ return (root|form)\\.(vault\\.)?${prop} \\}\\)`
+).test(body)
+const unlockFormSrc = fs.readFileSync(path.join(__dirname, "..", "UnlockForm.qml"), "utf8")
+const syncFromVault = unlockFormSrc.slice(unlockFormSrc.indexOf("function syncFromVault("))
 check("clearing a login field's property clears the field with it",
-  ["code2faField", "deviceCodeField", "loginPassField",
-   "apiClientIdField", "apiClientSecretField"]
-    .every((f) => new RegExp(`${f}\\.text =`).test(syncFields)),
+  [["code2faField", "login2faCode"], ["deviceCodeField", "loginDeviceCode"],
+   ["loginPassField", "loginPassword"], ["apiMasterField", "loginPassword"],
+   ["apiClientIdField", "loginClientId"], ["apiClientSecretField", "loginClientSecret"]]
+    .every(([f, p]) => rebinds(syncFields, f, p)),
   syncFields)
 check("syncing reaches every view's fields, not only the one presenting",
-  /eachView\(function\(view\) \{ view\.syncLoginFields\(\) \}\)/.test(syncFieldsToState),
+  /view\.syncSensitiveFields\(\)/.test(syncFieldsToState),
   syncFieldsToState)
+check("unlock, item-form and Send fields are re-pointed the same way as login",
+  /unlockForm\.syncFromVault\(\)/.test(syncSensitive)
+    && /unlockScreen\.syncFromVault\(\)/.test(syncSensitive)
+    && [["formPassField", "formPassword"], ["formNameField", "formName"],
+        ["sendNameField", "sendFormName"], ["sendTextField", "sendFormText"],
+        ["sendPasswordField", "sendFormPassword"]]
+      .every(([f, p]) => rebinds(syncSensitive, f, p))
+    && rebinds(syncFromVault, "pinField", "pinEntry")
+    && rebinds(syncFromVault, "passwordField", "masterPassword"),
+  syncSensitive + "\n" + syncFromVault)
+check("no view assigns a plain value to a field's text",
+  ["Panel.qml", "UnlockForm.qml", "SshUnlockScreen.qml", "SshApprovalScreen.qml",
+   "SshAgentSettings.qml", "CustomFieldsEditor.qml"]
+    .flatMap((file) => readPluginSource(file).split("\n")
+      .map((line, i) => [file, i + 1, line]))
+    .filter(([, , line]) => /\b\w+Field\.text = (?!Qt\.binding\(|"")/.test(line))
+    .map(([file, n]) => `${file}:${n}`)
+    .length === 0,
+  "re-point with Qt.binding instead")
 check("the fields are synced from the state, never the other way round",
-  /code2faField\.text = root\.login2faCode/.test(syncFields)
-    && !/login2faCode = code2faField/.test(syncFields),
+  !/login2faCode = code2faField/.test(syncFields),
   syncFields)
 check("every path that clears login state syncs the fields it is behind",
   ["suspendPendingLogin", "resetEmailLoginSecondFactor", "abandonAuthSecrets"]
@@ -812,6 +840,9 @@ check("a clean exit with no session reports instead of falling through to unlock
   loginOutput)
 check("every branch of the login result says which one it was",
   (loginOutput.match(/logLogin\("/g) || []).length >= 9, loginOutput)
+check("a generic bw error is sanitized before it is shown",
+  /logLogin\("bw-error"[\s\S]{0,200}sanitizeInteractiveStderr/.test(loginOutput),
+  loginOutput)
 
 // The diagnostic is the shape of an attempt, never its content: a session
 // token is counted rather than printed.

@@ -95,6 +95,33 @@ fn refuses_stale_wrong_type_symlink_and_insecure_directory() {
 }
 
 #[test]
+fn a_wrong_nonce_does_not_wipe_the_live_private_set() {
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    let bytes = payload(NONCE, vec![item_json("one", &key)]);
+    let mut window = LoadWindow::new(7, NONCE).unwrap();
+    let mut store = KeyStore::new();
+    let candidate = window.decode(Zeroizing::new(bytes), &mut store).unwrap();
+    assert_eq!(store.publish(candidate).unwrap().loaded, 1);
+    assert!(store.authorize(&public_blob).is_some());
+
+    let mut rejected = LoadWindow::new(8, NONCE).unwrap();
+    assert_eq!(
+        rejected
+            .decode(
+                Zeroizing::new(payload("ffffffffffffffffffffffffffffffff", vec![])),
+                &mut store
+            )
+            .unwrap_err(),
+        PayloadError::NonceMismatch
+    );
+    assert!(
+        store.authorize(&public_blob).is_some(),
+        "a rejected payload must not drop the live private set"
+    );
+}
+
+#[test]
 fn valid_nonce_payload_publishes_disposable_keys_once() {
     let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
     let bytes = payload(NONCE, vec![item_json("one", &key)]);

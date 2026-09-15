@@ -93,6 +93,7 @@ Item {
     function loginFieldHasFocus() { return false }
     function unlockFieldHasFocus() { return false }
     function syncLoginFields() {}
+    function syncSensitiveFields() {}
     function revealListIndex(index) {}
     function updateSettingsSticky() {}
   }
@@ -180,7 +181,7 @@ Item {
   property int login2faMethod: rememberedTwoFactorMethod
   // Whether that method came from the user picking it in this login rather
   // than from the remembered setting. A remembered method can be stale -- it
-  // is not scoped to an account -- so an unconfirmed one is dropped and
+  // is remembered per email -- so an unconfirmed one is dropped and
   // retried without, where a confirmed one is reported as not configured.
   property bool login2faMethodConfirmed: false
   property bool show2faMethodPicker: false
@@ -222,7 +223,10 @@ Item {
   // the minutes after this; see sessionHandoffReadCommand().
   property double terminalLoginStartedAt: 0
 
-  // Screens: "main" | "detail" | "edit" | "locked" | "login" | "settings" | "setup"
+  // Navigation: "main" | "detail" | "edit" | "settings" | "setup" | "pin" |
+  // "fingerprint" | "generator" | "sends" | "sshApproval" | "locked". Lock and
+  // login visibility follow `status`; "locked" is set on a lock but nothing
+  // reads it, so it only moves the panel off whatever screen was open.
   property string currentScreen: "main"
   property string screenBeforeSettings: "main"
 
@@ -774,11 +778,6 @@ Item {
     sshAgentTerminateTimer.restart()
   }
 
-  // Live companion events. Task 10 supervises the channel; the vault
-  // lifecycle, approval UI and key loading that consume these arrive with
-  // Tasks 12-14. Until then an unhandled event is deliberately inert rather
-  // than an error: it is a valid v1 message the panel simply has no use for
-  // yet.
   // -------------------------------------------------------------------------
   // Signing authorization
   // -------------------------------------------------------------------------
@@ -967,6 +966,7 @@ Item {
     root.pinError = ""
     root.fingerprintMessage = ""
     root.errorMessage = ""
+    syncLoginFieldsToState()
   }
 
   function approveSshRequest(grantSeconds) {
@@ -1152,9 +1152,21 @@ Item {
     if (message.type === "keys_loaded") {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
       root.sshAgentKeysLoadedAt = Date.now()
+      root.sshAgentLoadFailStreak = 0
       // The set is complete: every public_key for this epoch arrived ahead of
       // this message.
       if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
+      return
+    }
+    if (message.type === "load_failed") {
+      // The helper dropped its private set and kept serving. Distinct from
+      // `locked`, which is the ack for vault_locked and must not start a load.
+      // A failure for an older load is stale: a newer one has already begun
+      // and marked its epoch, and clearing that would read the vault again.
+      if (message.epoch !== root.sshAgentEpoch) return
+      root.sshAgentLoadFailStreak += 1
+      root.sshAgentLoadedForVaultEpoch = -1
+      if (root.sshAgentLoadFailStreak === 1) maybeStartupLoad()
       return
     }
     if (message.type === "locked") {
@@ -1168,9 +1180,7 @@ Item {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
       return
     }
-    // unlock_required, approval_required and grants_changed are the signing
-    // UX, and arrive with Task 14. Ignoring a valid v1 message is deliberate
-    // here; an unknown *type* is a protocol failure and never reaches this.
+    // An unknown *type* is a protocol failure and never reaches this.
   }
 
   // -------------------------------------------------------------------------
@@ -1209,6 +1219,9 @@ Item {
   // advances vaultEpoch on every lock and logout, so this is what tells a
   // startup load apart from one that has already happened for this session.
   property int sshAgentLoadedForVaultEpoch: -1
+  // Auto-retries of a failed FIFO load. One extra attempt; a persistently
+  // bad payload must not relaunch the item list forever.
+  property int sshAgentLoadFailStreak: 0
 
   function primeSshAgentLoadId() {
     if (loadIdProc.running || sshAgentNextLoadId !== "") return
@@ -1218,6 +1231,8 @@ Item {
   function onSshAgentLoadIdRead(raw) {
     var candidate = String(raw || "").trim()
     root.sshAgentNextLoadId = Model.isValidLoadId(candidate) ? candidate : ""
+    // A load that was owed while no nonce was ready waited for this one.
+    if (root.sshAgentNextLoadId !== "") maybeStartupLoad()
   }
 
   // Close an open load window. Called on success, on failure, and on a lock
@@ -1302,6 +1317,7 @@ Item {
     // restarted or re-enabled helper eligible for a load, instead of leaving
     // it keyless until something unrelated happens to bump the epoch.
     root.sshAgentLoadedForVaultEpoch = -1
+    root.sshAgentLoadFailStreak = 0
     primeSshAgentLoadId()
     // Startup is not evidence that the vault is locked: rememberSession can
     // restore a session key, so the panel can already be unlocked when the
@@ -1329,6 +1345,14 @@ Item {
     // carries no agent branch. onListFinished() calls back here once it lands.
     if (sshAgentLoadActive || listProc.running) return
     if (sshAgentLoadedForVaultEpoch === root.vaultEpoch) return
+    // Without a nonce the read would run with no agent branch, load nothing,
+    // and still spend the attempt. The nonce is re-primed as each load closes,
+    // so a retry right after a failure usually lands here first;
+    // onSshAgentLoadIdRead() calls back once it is ready.
+    if (!Model.isValidLoadId(sshAgentNextLoadId)) {
+      primeSshAgentLoadId()
+      return
+    }
     // Marked before the attempt, not after it, so one failed attempt cannot
     // turn into a read that relaunches itself.
     sshAgentLoadedForVaultEpoch = root.vaultEpoch
@@ -2022,7 +2046,7 @@ Item {
   // Every view's login fields, re-pointed at the state behind them. See
   // syncLoginFields() in the View section for why this is never skipped.
   function syncLoginFieldsToState() {
-    eachView(function(view) { view.syncLoginFields() })
+    eachView(function(view) { view.syncSensitiveFields() })
   }
 
   // Closing on a challenge keeps the stage and the password, and drops the
@@ -2428,7 +2452,7 @@ Item {
 
     if (err) {
       logLogin("bw-error", out, err, exitCode)
-      errorMessage = err
+      errorMessage = Model.sanitizeInteractiveStderr(err, "") || "Login failed. Please check your credentials."
     } else if (exitCode !== 0) {
       logLogin("failed-no-stderr", out, err, exitCode)
       errorMessage = "Login failed. Please check your credentials."
@@ -3789,6 +3813,7 @@ Item {
     cancelAttachmentDownloads()
     session = ""
     vaultEpoch += 1
+    sshAgentLoadFailStreak = 0
     readEpochs = ({})
     masterPassword = ""
     itemsLoadedAt = 0

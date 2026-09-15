@@ -74,6 +74,9 @@ BorderSurface {
     Column {
       anchors.verticalCenter: parent.verticalCenter
       width: parent.width - noticeIcon.implicitWidth - Style.space(8)
+        - (noticeActionButton.visible
+          ? noticeActionButton.implicitWidth + Style.space(8)
+          : 0)
         - (dismissNoticeButton.visible
           ? dismissNoticeButton.implicitWidth + Style.space(8)
           : 0)

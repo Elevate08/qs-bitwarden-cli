@@ -20,24 +20,6 @@ Column {
   // The vault this panel shows (Service.qml); `panel` is the view that draws it.
   required property var vault
 
-  // The bar's foreground and font family, not the global theme's -- the same
-  // values the rest of the panel draws with. PanelSectionHeader and Text both
-  // default to the globals, so every text element here states them.
-  component SshSectionHeader: PanelSectionHeader {
-    textFormat: Text.PlainText
-    foreground: section.panel.fg
-    fontFamily: section.panel.fontFamily
-  }
-
-  component SshCaption: Text {
-    textFormat: Text.PlainText
-    width: parent ? parent.width : 0
-    color: section.panel.dim
-    font.family: section.panel.fontFamily
-    font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
-  }
-
   visible: vault.sshUiAvailable
   width: parent.width
   spacing: Style.space(6)
@@ -45,6 +27,7 @@ Column {
   Item { width: parent.width; height: Style.space(10) }
 
   SshSectionHeader {
+    panel: section.panel
     text: "SSH AGENT STATUS"
   }
 
@@ -66,6 +49,7 @@ Column {
     }
 
     SshCaption {
+      panel: section.panel
       width: parent.width - Style.space(30)
       text: vault.sshAgentSetup.message
       color: vault.sshAgentSetup.state === "error" ? panel.urgent : panel.dim
@@ -76,6 +60,7 @@ Column {
   // user on a release see the same panel otherwise, and confusing
   // the two wastes an afternoon.
   SshCaption {
+    panel: section.panel
     visible: vault.sshAgentHelper.source !== ""
     text: "Using " + Model.sshAgentHelperSourceLabel(vault.sshAgentHelper.source)
       + (vault.sshAgentHelper.checksum === "match" ? " (checksum verified)" : "")
@@ -86,6 +71,7 @@ Column {
   // failures a real clone produces: a stale binary, a dropped file
   // mode, an LFS placeholder.
   SshCaption {
+    panel: section.panel
     visible: vault.sshAgentEnabled && vault.sshAgentHelper.message !== ""
     text: vault.sshAgentHelper.message
     color: panel.urgent
@@ -95,6 +81,7 @@ Column {
   // and the quickest way to tell a stale bundled binary apart from
   // a working one.
   SshCaption {
+    panel: section.panel
     visible: vault.sshAgentVersion !== ""
     text: "Helper version " + vault.sshAgentVersion
   }
@@ -104,6 +91,7 @@ Column {
   // block a user reads first, and decided by the routing file rather than by
   // this session's SSH_AUTH_SOCK -- see sshAgentRoutingNotice for why.
   SshCaption {
+    panel: section.panel
     visible: vault.sshAgentSetup.state === "enabled" && !vault.sshAgentSetup.busy
       && vault.sshRoutingNotice.text !== ""
     text: vault.sshRoutingNotice.text
@@ -113,10 +101,12 @@ Column {
   Item { width: parent.width; height: Style.space(10) }
 
   SshSectionHeader {
+    panel: section.panel
     text: "CLIENT ROUTING"
   }
 
   SshCaption {
+    panel: section.panel
     text: vault.sshRouting.message
     color: vault.sshRouting.state === "matches" ? panel.dim : panel.fg
   }
@@ -134,6 +124,7 @@ Column {
   }
 
   SshCaption {
+    panel: section.panel
     text: vault.uwsmFragment.message
   }
 
@@ -141,6 +132,7 @@ Column {
   // conflict is stated and confirmed rather than absorbed by the
   // first click.
   SshCaption {
+    panel: section.panel
     visible: vault.uwsmConfirmPending
     text: "This will make Bitwarden your session's SSH agent at the next login, replacing "
       + (vault.sshRouting.owner !== "" ? vault.sshRouting.owner : "the one you have now")
@@ -149,6 +141,7 @@ Column {
   }
 
   SshCaption {
+    panel: section.panel
     visible: vault.uwsmFlash !== ""
     text: vault.uwsmFlash
     color: panel.fg
@@ -210,6 +203,7 @@ Column {
   }
 
   SshSectionHeader {
+    panel: section.panel
     visible: vault.sshGrants.length > 0
     text: "ACTIVE APPROVALS"
   }
@@ -226,6 +220,7 @@ Column {
       spacing: Style.space(8)
 
       SshCaption {
+        panel: section.panel
         width: parent.width - Style.space(110)
         text: modelData.keyName + "  ·  "
           + modelData.processName

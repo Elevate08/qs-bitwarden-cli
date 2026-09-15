@@ -325,7 +325,8 @@ if (typeof Model.sshAgentLoadingNote === "function") {
 // had simply moved.
 const sshUiFiles = [
   "Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml",
-  "SshApprovalPopup.qml", "SshUnlockScreen.qml"
+  "SshApprovalPopup.qml", "SshUnlockScreen.qml", "UnlockForm.qml",
+  "SshCaption.qml", "SshSectionHeader.qml"
 ]
 const panelSrc = sshUiFiles
   .map(file => fs.existsSync(path.join(repoRoot, file)) ? readPluginSource(file) : "")
@@ -334,8 +335,14 @@ const approvalSrc = readPluginSource("SshApprovalScreen.qml")
 const settingsSrc = readPluginSource("SshAgentSettings.qml")
 const popupSrc = fs.existsSync(path.join(repoRoot, "SshApprovalPopup.qml"))
   ? readPluginSource("SshApprovalPopup.qml") : ""
-const unlockSrc = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
-  ? readPluginSource("SshUnlockScreen.qml") : ""
+const unlockSrc = ["SshUnlockScreen.qml", "UnlockForm.qml"]
+  .filter(file => fs.existsSync(path.join(repoRoot, file)))
+  .map(readPluginSource)
+  .join("\n")
+const unlockFormSrc = fs.existsSync(path.join(repoRoot, "UnlockForm.qml"))
+  ? fs.readFileSync(path.join(repoRoot, "UnlockForm.qml"), "utf8") : ""
+const sshUnlockOnly = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
+  ? fs.readFileSync(path.join(repoRoot, "SshUnlockScreen.qml"), "utf8") : ""
 
 // plainLabel() wraps its argument in a span when the text contains markup
 // characters, which a PlainText control then renders literally. The field is
@@ -624,6 +631,33 @@ check("the popup can submit every configured unlock method",
     && /submitPinUnlock\(/.test(unlockSrc)
     && /startFingerprintUnlock\(/.test(unlockSrc),
   "password, PIN, or fingerprint is missing from the popup")
+const fieldsOfferedExpr = (unlockFormSrc.match(/property bool fieldsOffered:([^\n]*)/) || [])[1] || ""
+check("unlock fields are offered while locked or still checking, and not once unlocked",
+  /status === "locked"/.test(fieldsOfferedExpr)
+    && /status === "checking"/.test(fieldsOfferedExpr)
+    && !/unlocked/.test(fieldsOfferedExpr)
+    && (unlockFormSrc.match(/visible:\s*form\.fieldsOffered/g) || []).length >= 2,
+  fieldsOfferedExpr || "fieldsOffered is missing from UnlockForm.qml")
+check("the SSH popup offers unlock fields only once the vault is known to be locked",
+  /UnlockForm \{[\s\S]{0,600}?fieldsOffered:\s*screen\.vault\.status === "locked"\s*\n/.test(sshUnlockOnly),
+  "before bw status answers, a password has no unlock process to reach and a PIN result is dropped")
+check("the SSH popup focuses the fields when they appear",
+  /UnlockForm \{[\s\S]{0,800}?onFieldsOfferedChanged:\s*if \(fieldsOffered\) screen\.focusDefault\(\)/.test(sshUnlockOnly),
+  "a popup open when status resolves leaves the new field unfocused")
+check("UnlockForm resets the eye when it hides, whichever screen hides it",
+  /onVisibleChanged:\s*if \(!visible\) resetReveal\(\)/.test(unlockFormSrc),
+  "visible is effective visibility, so the form's own handler covers an ancestor hiding")
+check("dismissing the popup re-points every view's secret fields at the vault",
+  /function clearSshPopupUnlockState\(\)[\s\S]{0,900}?syncLoginFieldsToState\(\)/.test(panelSrc),
+  "the popup clears masterPassword and pinEntry; the fields must follow them")
+check("popup unlock buttons opt into focus; the panel lock screen does not",
+  /property bool buttonsFocusable:\s*false/.test(unlockFormSrc)
+    && /focusable:\s*form\.buttonsFocusable/.test(unlockFormSrc)
+    && /buttonsFocusable:\s*true/.test(sshUnlockOnly)
+    && !/UnlockForm \{[\s\S]{0,120}buttonsFocusable:\s*true/.test(
+      panelSrc.slice(panelSrc.indexOf("id: unlockForm"), panelSrc.indexOf("id: unlockForm") + 200)
+    ),
+  "sharing the form must not Tab-focus fingerprint/Unlock on the bar lock screen")
 check("background click and Escape explicitly deny the pending request",
   /MouseArea[\s\S]{0,500}?onClicked:\s*popup\.panel\.denySshRequest\(\)/.test(popupSrc)
     && /Qt\.Key_Escape[\s\S]{0,160}?denySshRequest\(\)/.test(popupSrc),

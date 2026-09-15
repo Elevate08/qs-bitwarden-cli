@@ -45,6 +45,8 @@ fn control_contract_accepts_every_allowlisted_message() {
         r#"{"v":1,"type":"deny","requestId":42}"#,
         r#"{"v":1,"type":"unlock_cancelled","requestId":41,"reason":"user-cancelled"}"#,
         r#"{"v":1,"type":"revoke_grants"}"#,
+        r#"{"v":1,"type":"revoke_grant","grantId":1}"#,
+        r#"{"v":1,"type":"options","unlockOnDemand":true}"#,
         r#"{"v":1,"type":"shutdown"}"#,
     ];
     for message in messages {
@@ -637,6 +639,127 @@ fn concurrent_identity_listings_coalesce_into_one_unlock() {
     agent.shutdown();
 }
 
+/// A vault with more keys than the old 16-slot control channel must still
+/// finish loading. PublicKey messages are try_send'd on a current-thread
+/// runtime that cannot drain until the emit loop returns.
+#[test]
+fn a_load_of_more_than_sixteen_keys_still_reports_keys_loaded() {
+    let mut agent = TestAgent::start();
+    let keys: Vec<_> = (0..17)
+        .map(|_| PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap())
+        .collect();
+    assert_eq!(
+        agent.load_keys(&keys, 1, "0123456789abcdef0123456789abcdef"),
+        17
+    );
+    assert_eq!(identity_count(&agent.socket), 17);
+    agent.shutdown();
+}
+
+/// The largest burst one load can produce: every key at the cap announced,
+/// plus each held sign request withdrawn and re-raised as an approval. None of
+/// it can drain before the burst ends, so the channel has to hold all of it.
+#[test]
+fn a_full_load_releasing_every_held_request_keeps_the_helper_alive() {
+    let mut agent = TestAgent::start();
+    let keys: Vec<_> = (0..128)
+        .map(|_| PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap())
+        .collect();
+    agent.load_keys(&keys, 1, "0123456789abcdef0123456789abcdef");
+    agent.send("{\"v\":1,\"type\":\"vault_locked\",\"epoch\":1}");
+    assert_eq!(agent.read()["type"], "locked");
+
+    let mut clients = Vec::new();
+    for key in keys.iter().take(4) {
+        let socket = agent.socket.clone();
+        let blob = key.public_key().to_bytes().unwrap();
+        clients.push(std::thread::spawn(move || {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream.write_all(&sign_request(&blob)).unwrap();
+            read_agent_frame(&mut stream)
+        }));
+        assert_eq!(agent.read()["type"], "unlock_required");
+    }
+
+    assert_eq!(
+        agent.load_keys(&keys, 2, "fedcba9876543210fedcba9876543210"),
+        128
+    );
+    let mut approval_ids = Vec::new();
+    for _ in 0..8 {
+        let message = agent.read();
+        match message["type"].as_str().unwrap() {
+            "request_cancelled" => assert_eq!(message["reason"], "released"),
+            "approval_required" => approval_ids.push(message["requestId"].as_u64().unwrap()),
+            other => panic!("unexpected {other} after the load"),
+        }
+    }
+    assert_eq!(approval_ids.len(), 4);
+    for id in approval_ids {
+        agent.send(&format!("{{\"v\":1,\"type\":\"deny\",\"requestId\":{id}}}"));
+    }
+    for client in clients {
+        assert_eq!(client.join().unwrap()[4], 5, "a denied request fails");
+    }
+    agent.shutdown();
+}
+
+/// A malformed FIFO payload must lock and keep serving, not take SSH_AUTH_SOCK
+/// down. The panel retries a failed load; a dead helper cannot. `load_failed`
+/// is distinct from `locked` so a lock acknowledgment is not confused with it.
+#[test]
+fn a_malformed_load_leaves_the_helper_running_and_accepts_a_retry() {
+    let mut agent = TestAgent::start();
+    let nonce = "0123456789abcdef0123456789abcdef";
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"key_load_begin\",\"epoch\":1,\"loadId\":\"{nonce}\"}}"
+    ));
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .open(&agent.fifo)
+        .unwrap();
+    writer.write_all(b"{not json}\n").unwrap();
+    drop(writer);
+    agent.send("{\"v\":1,\"type\":\"key_load_end\",\"epoch\":1,\"status\":\"ok\"}");
+    let failed = agent.read();
+    assert_eq!(failed["type"], "load_failed");
+    assert_eq!(failed["epoch"], 1);
+
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    assert_eq!(
+        agent.load_keys(
+            std::slice::from_ref(&key),
+            2,
+            "fedcba9876543210fedcba9876543210"
+        ),
+        1
+    );
+    assert_eq!(identity_count(&agent.socket), 1);
+    agent.shutdown();
+}
+
+/// Identity listings waiting on unlock-on-demand must drop the prompt when
+/// every waiter disconnects, same as a sign request.
+#[test]
+fn a_disconnected_identity_listing_withdraws_its_unlock_prompt() {
+    let mut agent = TestAgent::start();
+    agent.send("{\"v\":1,\"type\":\"options\",\"unlockOnDemand\":true}");
+    agent.drain_control();
+
+    let mut stream = UnixStream::connect(&agent.socket).unwrap();
+    stream.write_all(&[0_u8, 0, 0, 1, 11]).unwrap();
+    let unlock = agent.read();
+    assert_eq!(unlock["type"], "unlock_required");
+    assert_eq!(unlock["reason"], "list-identities");
+    let request_id = unlock["requestId"].as_u64().unwrap();
+
+    drop(stream);
+    let cancelled = agent.read();
+    assert_eq!(cancelled["type"], "request_cancelled");
+    assert_eq!(cancelled["requestId"], request_id);
+    agent.shutdown();
+}
+
 /// A client that walks away leaves a prompt on screen with nothing behind it.
 /// The companion says so rather than letting it sit until its deadline.
 #[test]
@@ -885,16 +1008,30 @@ impl TestAgent {
     }
 
     fn load_key(&mut self, key: &PrivateKey, epoch: u64, nonce: &str) {
+        self.load_keys(std::slice::from_ref(key), epoch, nonce);
+    }
+
+    /// Load `keys` at `epoch` and return how many public_key messages preceded
+    /// keys_loaded.
+    fn load_keys(&mut self, keys: &[PrivateKey], epoch: u64, nonce: &str) -> usize {
         self.send(&format!(
             "{{\"v\":1,\"type\":\"key_load_begin\",\"epoch\":{epoch},\"loadId\":\"{nonce}\"}}"
         ));
-        let payload = serde_json::json!({"loadId": nonce, "items": [{
-            "itemId": "disposable", "name": "Disposable test key",
-            "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
-            "publicKey": key.public_key().to_openssh().unwrap(),
-            "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
-            "requiresReprompt": false
-        }]});
+        let items: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                serde_json::json!({
+                    "itemId": format!("disposable-{index}"),
+                    "name": format!("Disposable test key {index}"),
+                    "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
+                    "publicKey": key.public_key().to_openssh().unwrap(),
+                    "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
+                    "requiresReprompt": false
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({"loadId": nonce, "items": items});
         let mut writer = fs::OpenOptions::new().write(true).open(&self.fifo).unwrap();
         writer
             .write_all(&serde_json::to_vec(&payload).unwrap())
@@ -907,10 +1044,12 @@ impl TestAgent {
         // The validated public set arrives one message per key ahead of
         // keys_loaded, so the panel holds the whole projection before it is
         // told the load finished. Skip past them to the completion.
+        let mut public_keys = 0;
         loop {
             let message = self.read();
             if message["type"] == "keys_loaded" {
-                break;
+                assert_eq!(message["keyCount"], keys.len());
+                return public_keys;
             }
             assert_eq!(
                 message["type"], "public_key",
@@ -923,6 +1062,7 @@ impl TestAgent {
                     .contains("PRIVATE"),
                 "a public_key message must never carry private material"
             );
+            public_keys += 1;
         }
     }
 
