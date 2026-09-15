@@ -229,6 +229,11 @@ check("the toggle reflects a stored FIDO password, not just the setting",
   /case "fidoUnlock": return fidoUnlock && fidoStored/.test(panelSrc),
   "settingValue has no fido case")
 const rawPanel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+check("the locked screen's Forget FIDO2 Key is centred under the row above it",
+  /Row \{\s*anchors\.horizontalCenter: parent\.horizontalCenter\s*spacing: Style\.space\(8\)\s*Button \{\s*visible: root\.vault\.fidoStored[\s\S]{0,120}Forget FIDO2 Key/
+    .test(rawPanel),
+  "the maintenance actions must read as one centred block, not a stray left-aligned button")
+
 const rawSshUnlock = fs.readFileSync(path.join(__dirname, "..", "SshUnlockScreen.qml"), "utf8")
 check("the locked screen offers the key only when it can actually unlock",
   /visible: root\.vault\.fidoReady[\s\S]{0,700}onClicked: root\.vault\.startFidoUnlock\(\)/.test(rawPanel),

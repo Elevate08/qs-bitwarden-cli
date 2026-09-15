@@ -3412,8 +3412,11 @@ Panel {
             }
           }
 
+          // Sits under the row above and centres the same way, so the three
+          // maintenance actions read as one balanced block rather than a pair
+          // with a stray button hung off the left edge.
           Row {
-            width: parent.width
+            anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(8)
 
             Button {
