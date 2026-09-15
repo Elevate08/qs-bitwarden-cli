@@ -4,6 +4,15 @@
 
 ### Added
 
+- **The fingerprint option steps aside when the laptop lid is closed.** The
+  reader sits on the laptop body, so with the lid shut -- clamshell mode, or a
+  lid simply closed on a docked machine -- the locked screen hides **Unlock with
+  Fingerprint**, the SSH prompt hides it too, and the reader is not armed on
+  open. Nothing is forgotten: the stored password and the settings toggle are
+  untouched, and the option is back when the lid opens. Omarchy's own detector
+  (`omarchy-hw-laptop-closed`) decides, so a machine with no lid never reports
+  one; a FIDO2 key on a cable is unaffected.
+
 - **Unlock with a FIDO2 key** (opt-in, `fidoUnlock`). A YubiKey or any other
   FIDO2 authenticator can now unlock the vault, beside the fingerprint reader
   and the PIN. It reuses the registration `omarchy setup security fido2` writes

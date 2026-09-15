@@ -27,6 +27,7 @@ Every feature the plugin has, and why each one works the way it does. The
   - Verifies through the same PAM stack as the Omarchy lock screen (`/etc/pam.d/omarchy-lock-fingerprint`), so it works wherever `omarchy setup security fingerprint` has been run.
   - Enrolling asks for your master password up front in the settings screen, rather than quietly capturing it on some later unlock.
   - The reader is armed automatically whenever you open the panel on a locked vault; the master password field always stays available as a fallback.
+  - A closed lid takes the option off the screen: the reader is on the laptop body, so with the lid shut (clamshell mode, or a lid closed on a docked machine) the unlock button is hidden and the reader is not armed, on the locked screen and in the SSH prompt alike. Nothing is forgotten -- the stored password and the settings toggle are untouched, and the option returns when the lid opens. Omarchy's `omarchy-hw-laptop-closed` decides.
   - See [Optional: Fingerprint Unlock](../README.md#fingerprint-unlock) for the security trade-off before enabling it.
 
 - **FIDO2 Key Unlock** (opt-in, `fidoUnlock`):

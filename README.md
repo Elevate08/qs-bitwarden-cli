@@ -388,6 +388,8 @@ PAM can prove that you are present, but it cannot produce your Bitwarden master 
 
 The stored password is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, log out of the account, or when the vault rejects it (for example after a master password change, which then prompts you for the new one).
 
+**A closed lid takes the option off the screen.** The reader is on the laptop body, so with the lid shut -- clamshell mode, or simply closed on a docked machine -- there is nothing to touch. While it is down, the locked screen hides **Unlock with Fingerprint**, the SSH prompt does the same, and the reader is not armed on open; the note asking you to unlock once with your master password stays, because that is still true. Omarchy's own detector (`omarchy-hw-laptop-closed`) decides, and a machine with no lid never reports one. Nothing is forgotten: the stored password stays in the keyring, the settings toggle is unchanged, and the option is back the moment the lid opens. A FIDO2 key on a cable is unaffected.
+
 ### FIDO2 key unlock
 
 Set `fidoUnlock` to `true` to unlock the vault with a FIDO2 authenticator (a YubiKey or any other compliant key) instead of your master password.

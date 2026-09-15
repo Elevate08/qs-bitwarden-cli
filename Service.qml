@@ -585,7 +585,15 @@ Item {
   // on the PIN field during setup; see pinWeakWarning() in BitwardenModel.js.
   readonly property bool pinSetupWeak: Model.isPinWeak(pinSetupPin)
   readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME") || ""
-  readonly property bool fingerprintReady: fingerprintUnlock && fingerprintAvailable && fingerprintStored
+  // The fingerprint reader is on the laptop body, so a closed lid puts it out
+  // of reach and the option must not be offered. Omarchy's detector decides;
+  // see LidState.qml. The FIDO2 key on a cable is unaffected either way.
+  readonly property bool lidClosed: lidState.closed
+  // Whether the vault can be unlocked with a finger *right now*: enrolled,
+  // stored, and with the reader within reach. Everything that offers the option
+  // -- the locked screen's button, the SSH prompt's, and the auto-arm -- reads
+  // this, so gating it here is what hides them all.
+  readonly property bool fingerprintReady: fingerprintUnlock && fingerprintAvailable && fingerprintStored && !lidClosed
 
   // Contextual suggestions state
   property var activeWindowData: null
@@ -6434,6 +6442,13 @@ Item {
       root.fingerprintAuthorized = false
       root.fingerprintMessage = "Fingerprint verification unavailable"
     }
+  }
+
+  // The lid, for the fingerprint reader's reachability. Its own file; the vault
+  // reads only whether the lid is shut.
+  LidState {
+    id: lidState
+    vault: root
   }
 
   // FIDO2 unlock, in its own file. It is handed the vault and the setting and
