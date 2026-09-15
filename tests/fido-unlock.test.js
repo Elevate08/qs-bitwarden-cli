@@ -229,10 +229,18 @@ check("the toggle reflects a stored FIDO password, not just the setting",
   /case "fidoUnlock": return fidoUnlock && fidoStored/.test(panelSrc),
   "settingValue has no fido case")
 const rawPanel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
-check("the locked screen's Forget FIDO2 Key is centred under the row above it",
-  /Row \{\s*anchors\.horizontalCenter: parent\.horizontalCenter\s*spacing: Style\.space\(8\)\s*Button \{\s*visible: root\.vault\.fidoStored[\s\S]{0,120}Forget FIDO2 Key/
+check("the locked screen's Forget FIDO2 Key is declared once and placed twice",
+  (rawPanel.match(/ForgetFidoButton \{/g) || []).length === 2
+    && /component ForgetFidoButton: Button \{[\s\S]{0,300}Forget FIDO2 Key[\s\S]{0,220}onClicked: root\.vault\.forgetFidoUnlock\(\)/
+      .test(rawPanel),
+  "both slots must share one declaration")
+check("with a Forget Fingerprint beside it, it takes its own centred line",
+  /anchors\.horizontalCenter: parent\.horizontalCenter\s*spacing: Style\.space\(8\)\s*ForgetFidoButton \{\s*visible: root\.vault\.fidoStored && root\.vault\.fingerprintStored/
     .test(rawPanel),
-  "the maintenance actions must read as one centred block, not a stray left-aligned button")
+  "the three must read as one centred block")
+check("without one, it takes the empty slot inline instead",
+  /ForgetFidoButton \{\s*visible: root\.vault\.fidoStored && !root\.vault\.fingerprintStored/.test(rawPanel),
+  "a machine with no fingerprint configured must not strand the button on its own line")
 
 const rawSshUnlock = fs.readFileSync(path.join(__dirname, "..", "SshUnlockScreen.qml"), "utf8")
 check("the locked screen offers the key only when it can actually unlock",

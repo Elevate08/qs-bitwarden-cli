@@ -290,6 +290,19 @@ Panel {
     wrapMode: Text.WordWrap
   }
 
+  // The FIDO2 half of the locked screen's maintenance pair. It has two slots:
+  // inline beside Switch / Log Out, where Forget Fingerprint sits when there is
+  // one, and on its own centred line under the pair when there is not. Declared
+  // once so the two slots cannot drift apart.
+  component ForgetFidoButton: Button {
+    text: "Forget FIDO2 Key"
+    iconText: "󰟵"
+    tooltipText: "Remove the stored master password from the OS keyring"
+    fontFamily: root.fontFamily
+    fontSize: Style.font.caption
+    onClicked: root.vault.forgetFidoUnlock()
+  }
+
   // One of the three vault filters at the foot of the list, collapsed to its
   // current value. Declared once so the three cannot drift apart and start
   // reading as different kinds of control.
@@ -3410,23 +3423,24 @@ Panel {
               fontSize: Style.font.caption
               onClicked: root.vault.forgetFingerprintUnlock()
             }
+
+            // Takes the slot Forget Fingerprint would have used, so the row
+            // keeps its shape on a machine with no fingerprint configured
+            // instead of leaving the button stranded on a line of its own.
+            ForgetFidoButton {
+              visible: root.vault.fidoStored && !root.vault.fingerprintStored
+            }
           }
 
-          // Sits under the row above and centres the same way, so the three
-          // maintenance actions read as one balanced block rather than a pair
-          // with a stray button hung off the left edge.
+          // Only when Forget Fingerprint is there to be balanced against. Sits
+          // under the pair and centres the same way, so the three read as one
+          // block rather than a pair with a stray button hung off the edge.
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(8)
 
-            Button {
-              visible: root.vault.fidoStored
-              text: "Forget FIDO2 Key"
-              iconText: "󰟵"
-              tooltipText: "Remove the stored master password from the OS keyring"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.vault.forgetFidoUnlock()
+            ForgetFidoButton {
+              visible: root.vault.fidoStored && root.vault.fingerprintStored
             }
           }
         }
