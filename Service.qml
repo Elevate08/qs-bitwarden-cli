@@ -980,6 +980,7 @@ Item {
   // request leave a password, PIN, PAM conversation, or prewarmed CLI behind.
   function clearSshPopupUnlockState() {
     cancelFingerprintUnlock()
+    cancelFidoUnlock()
     cancelAuthPrewarm()
     if (pinUnlockProc.running) pinUnlockProc.running = false
     root.pinUnlockSubmitted = false
@@ -1579,6 +1580,7 @@ Item {
     abandonPinSetup()
     abandonFingerprintSetup()
     cancelFingerprintUnlock()
+    cancelFidoUnlock()
     cancelAttachmentDownloads()
     stopGeneratorServe()
     eachView(function(view) { view.hidePopout() })
@@ -1698,6 +1700,7 @@ Item {
     if (opened) onPanelOpened()
     else {
       cancelFingerprintUnlock()
+      cancelFidoUnlock()
       cancelAuthPrewarm()
       if (pendingSecondFactorLogin()) suspendPendingLogin()
       else abandonAuthSecrets()
@@ -3693,6 +3696,7 @@ Item {
       return
     }
     cancelFingerprintUnlock()
+    cancelFidoUnlock()
     errorMessage = ""
     isUnlocking = true
     // Kept only until the unlock result is known; cleared on both paths below.
@@ -3853,6 +3857,7 @@ Item {
     initialSyncAttempted = false
     pinUnlockSubmitted = false
     cancelFingerprintUnlock()
+    cancelFidoUnlock()
     cancelAttachmentDownloads()
     session = ""
     vaultEpoch += 1

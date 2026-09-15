@@ -260,6 +260,29 @@ check("no lookup run is left depending on the scrub's leftover command",
   !/if \(!lookupProc\.running\) lookupProc\.running = true/.test(controllerSrc),
   "a bare `running = true` re-runs the empty scrub command and reads nothing")
 
+// --- the PAM conversation is torn down with the fingerprint's -----------------
+//
+// A FIDO2 authenticator answers one conversation at a time, so a conversation
+// left waiting for a touch from a closed panel makes the next one fail -- and
+// the panel says so, with "Key not recognised". Every place the vault drops a
+// pending fingerprint attempt has to drop the FIDO2 one beside it.
+const serviceSrc = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+const cancelSites = [
+  ["the panel closing", /function close\(\)[\s\S]*?cancelFingerprintUnlock\(\)\s*cancelFidoUnlock\(\)/],
+  ["the panel closing from onOpenedChanged", /onOpenedChanged:[\s\S]*?cancelFingerprintUnlock\(\)\s*cancelFidoUnlock\(\)/],
+  ["the SSH popup unloading", /function clearSshPopupUnlockState\(\)[\s\S]*?cancelFingerprintUnlock\(\)\s*cancelFidoUnlock\(\)/],
+  ["a password unlock taking over", /function unlockVaultWithPassword\([\s\S]*?cancelFingerprintUnlock\(\)\s*cancelFidoUnlock\(\)/],
+  ["dropping the vault state on lock", /function dropVaultState\(\)[\s\S]*?cancelFingerprintUnlock\(\)\s*cancelFidoUnlock\(\)/],
+]
+for (const [where, re] of cancelSites) {
+  check(`the FIDO2 attempt is cancelled when ${where}`,
+    re.test(serviceSrc),
+    "a conversation left waiting holds the authenticator and breaks the next one")
+}
+check("logging out drops the FIDO2 attempt too",
+  /function forgetStoredCredentials\(\)[\s\S]*?fidoUnlocker\.reset\(\)/.test(serviceSrc),
+  "reset() cancels a live conversation and clears the state")
+
 if (failures.length) {
   console.error(`FAIL ${failures.length}\n`)
   for (const f of failures) console.error(`  x ${f}\n`)
