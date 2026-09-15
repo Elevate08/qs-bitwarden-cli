@@ -240,6 +240,26 @@ check("the setup screen hands off to Omarchy when no key is registered",
   /vault\.runFidoSetup\(\)/.test(fs.readFileSync(path.join(__dirname, "..", "FidoSetupScreen.qml"), "utf8")),
   "FidoSetupScreen has no Omarchy hand-off")
 
+// --- the lock-time scrub, and re-arming after it ------------------------------
+//
+// Locking the vault empties every collector that could hold a secret by running
+// that process once with an empty command, and the replacement stays in place.
+// A read that is not re-armed before its next run therefore prints nothing --
+// which is exactly how FIDO2 unlock came to sit on "Key verified, unlocking..."
+// forever while the keyring was never read. The fingerprint path re-arms its
+// own lookup for the same reason; this pins that FIDO2 does too.
+const controllerSrc = fs.readFileSync(path.join(__dirname, "..", "FidoUnlock.qml"), "utf8")
+check("the FIDO lookup's collector is scrubbed on lock, like every other secret read",
+  /function secretProcesses\(\)\s*\{\s*return \[lookupProc\]/.test(controllerSrc),
+  "lookupProc must be scrubbed, or the master password would outlive the lock in its buffer")
+check("and the command is re-armed before the lookup is run again",
+  /lookupProc\.command = Model\.keyringLookupFidoPasswordCommand\(\)[\s\S]{0,140}lookupProc\.running = true/
+    .test(controllerSrc),
+  "onResult must restore the lookup command before re-running it; the scrub left it empty")
+check("no lookup run is left depending on the scrub's leftover command",
+  !/if \(!lookupProc\.running\) lookupProc\.running = true/.test(controllerSrc),
+  "a bare `running = true` re-runs the empty scrub command and reads nothing")
+
 if (failures.length) {
   console.error(`FAIL ${failures.length}\n`)
   for (const f of failures) console.error(`  x ${f}\n`)

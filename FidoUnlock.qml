@@ -124,7 +124,16 @@ Item {
     if (result === PamResult.Success) {
       authorized = true
       message = "󰟵  Key verified, unlocking..."
-      if (!lookupProc.running) lookupProc.running = true
+      if (!lookupProc.running) {
+        // Restore the command first. Locking the vault scrubs this process's
+        // collector by running it once with an empty command, and that
+        // replacement stays in place: without re-arming it the "lookup" would
+        // print nothing, the keyring would never be read, and the vault would
+        // sit on "Key verified, unlocking..." forever. The fingerprint path
+        // re-arms its own lookup the same way, for the same reason.
+        lookupProc.command = Model.keyringLookupFidoPasswordCommand()
+        lookupProc.running = true
+      }
     } else if (result === PamResult.MaxTries) {
       message = "Too many key attempts. Use your master password."
     } else {
