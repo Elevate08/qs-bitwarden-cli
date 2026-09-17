@@ -307,7 +307,7 @@ check("abandoning authentication clears every typed or staged auth secret",
 check("handoff, external unlock, and panel hide purge abandoned auth secrets",
   /cancelAuthPrewarm\(\)[\s\S]{0,100}abandonAuthSecrets\(\)/.test(bodyOf("onSessionHandoff"))
     && /if\s*\(st\.unlocked\)[\s\S]{0,120}abandonAuthSecrets\(\)/.test(bodyOf("onStatusFinished"))
-    && /onOpenedChanged:[\s\S]{0,180}else[\s\S]{0,120}abandonAuthSecrets\(\)/.test(panelSrc),
+    && /onOpenedChanged:[\s\S]{0,180}else[\s\S]{0,220}abandonAuthSecrets\(\)/.test(panelSrc),
   bodyOf("onSessionHandoff") + "\n" + bodyOf("onStatusFinished"))
 check("closing the panel invalidates PIN and fingerprint unlock completions",
   /abandonAuthSecrets\(\)/.test(bodyOf("close"))

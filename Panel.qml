@@ -282,6 +282,19 @@ Panel {
     return self ? self.y + self.height : 0
   }
 
+  // The FIDO2 half of the locked screen's maintenance pair. It has two slots:
+  // inline beside Switch / Log Out, where Forget Fingerprint sits when there is
+  // one, and on its own centred line under the pair when there is not. Declared
+  // once so the two slots cannot drift apart.
+  component ForgetFidoButton: Button {
+    text: "Forget FIDO2 Key"
+    iconText: "󰟵"
+    tooltipText: "Remove the stored master password from the OS keyring"
+    fontFamily: root.fontFamily
+    fontSize: Style.font.caption
+    onClicked: root.vault.forgetFidoUnlock()
+  }
+
   // One of the three vault filters at the foot of the list, collapsed to its
   // current value. Declared once so the three cannot drift apart and start
   // reading as different kinds of control.
@@ -478,6 +491,7 @@ Panel {
       : ((root.vault.status === "unlocked"
           && root.vault.currentScreen !== "edit"
           && root.vault.currentScreen !== "pin"
+          && root.vault.currentScreen !== "fido"
           && root.vault.currentScreen !== "fingerprint")
         ? keyCatcher
         : (root.vault.status === "unauthenticated"
@@ -537,6 +551,7 @@ Panel {
         || unlockForm.pinField.activeFocus
         || (root.vault.currentScreen === "edit")
         || (root.vault.currentScreen === "pin")
+        || (root.vault.currentScreen === "fido")
         || (root.vault.currentScreen === "fingerprint")
         || (root.vault.currentScreen === "sends" && root.vault.sendMode === "create")
 
@@ -1378,6 +1393,14 @@ Panel {
               }
             }
           }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 0g: FIDO2 SETUP, in FidoSetupScreen.qml.
+        // -------------------------------------------------------------------
+        FidoSetupScreen {
+          panel: root
+          vault: root.vault
         }
 
         // -------------------------------------------------------------------
@@ -2360,6 +2383,11 @@ Panel {
                           else root.vault.beginFingerprintSetup()
                           return
                         }
+                        if (modelData.action === "fido") {
+                          if (checked) root.vault.forgetFidoUnlock()
+                          else root.vault.beginFidoSetup()
+                          return
+                        }
                         root.vault.writeSetting(modelData.key, !checked, "bool")
                       }
                     }
@@ -2454,6 +2482,24 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.forgetFingerprintUnlock()
+              }
+            }
+
+            // Its own row for the same reason the destructive block has one: a
+            // third button beside the other two would elide a label rather than
+            // fit.
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                visible: root.vault.fidoStored
+                text: "Forget FIDO2 Key"
+                iconText: "󰟵"
+                tooltipText: "Remove the stored master password from the OS keyring"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.vault.forgetFidoUnlock()
               }
             }
 
@@ -2628,7 +2674,7 @@ Panel {
         // SCREEN 1: LOGIN VIEW (When unauthenticated)
         // -------------------------------------------------------------------
         Column {
-          visible: root.vault.status === "unauthenticated" && root.vault.activeScreen !== "settings" && root.vault.activeScreen !== "setup" && root.vault.activeScreen !== "pin" && root.vault.activeScreen !== "fingerprint"
+          visible: root.vault.status === "unauthenticated" && root.vault.activeScreen !== "settings" && root.vault.activeScreen !== "setup" && root.vault.activeScreen !== "pin" && root.vault.activeScreen !== "fido" && root.vault.activeScreen !== "fingerprint"
           width: parent.width
           spacing: Style.space(12)
 
@@ -3111,7 +3157,7 @@ Panel {
         // -------------------------------------------------------------------
         Column {
           visible: (root.vault.status === "locked" || root.vault.status === "checking")
-            && root.vault.currentScreen !== "settings" && root.vault.currentScreen !== "setup" && root.vault.currentScreen !== "pin" && root.vault.currentScreen !== "fingerprint"
+            && root.vault.currentScreen !== "settings" && root.vault.currentScreen !== "setup" && root.vault.currentScreen !== "pin" && root.vault.currentScreen !== "fido" && root.vault.currentScreen !== "fingerprint"
           width: parent.width
           spacing: Style.space(14)
 
@@ -3143,6 +3189,25 @@ Panel {
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.forgetFingerprintUnlock()
+            }
+
+            // Takes the slot Forget Fingerprint would have used, so the row
+            // keeps its shape on a machine with no fingerprint configured
+            // instead of leaving the button stranded on a line of its own.
+            ForgetFidoButton {
+              visible: root.vault.fidoStored && !root.vault.fingerprintStored
+            }
+          }
+
+          // Only when Forget Fingerprint is there to be balanced against. Sits
+          // under the pair and centres the same way, so the three read as one
+          // block rather than a pair with a stray button hung off the edge.
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(8)
+
+            ForgetFidoButton {
+              visible: root.vault.fidoStored && root.vault.fingerprintStored
             }
           }
         }

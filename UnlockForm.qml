@@ -25,23 +25,28 @@ Column {
   // request context here so the title stays on top; the panel passes nothing.
   property alias context: contextSlot.data
 
-  // One method at a time. Fingerprint leads when it is enrolled, then a
-  // configured PIN, then the master password -- which is always there, and so
-  // is the last stop. `chosen` is what the "use X instead" button set; it is
+  // One method at a time. A plugged-in FIDO2 key leads -- it is the one the
+  // user chose to have in their hand -- then the fingerprint reader, then a
+  // configured PIN, then the master password, which is always there and so is
+  // the last stop. `chosen` is what the "use X instead" button set; it is
   // ignored the moment that method stops being available, which is how an
-  // exhausted PIN (the vault clears it after too many attempts) hands over
-  // without anything having to watch for the failure.
+  // exhausted PIN (the vault clears it after too many attempts) or a closed
+  // lid hands over without anything having to watch for the failure.
   property string chosen: ""
   readonly property string method: chosen !== "" && methodAvailable(chosen)
     ? chosen
-    : (methodAvailable("fingerprint") ? "fingerprint"
-      : (methodAvailable("pin") ? "pin" : "password"))
+    : (methodAvailable("fido") ? "fido"
+      : (methodAvailable("fingerprint") ? "fingerprint"
+        : (methodAvailable("pin") ? "pin" : "password")))
   readonly property string nextMethod: nextMethodAfter(method)
   // The field this method types into, for the panel's focus target and the
   // popup's focusDefault(). Fingerprint has none.
   readonly property var focusField: method === "pin"
     ? pinField
     : (method === "password" ? passwordField : null)
+  // A FIDO2 attempt, on the same three phases as the fingerprint's.
+  readonly property bool fidoBusy: form.vault.fidoScanning
+    || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fido")
   // A fingerprint attempt, from the touch prompt to the unlock it starts:
   // scanning, then authorized while the keyring is read, then the unlock the
   // stored password drives.
@@ -66,13 +71,14 @@ Column {
   }
 
   function methodAvailable(name) {
+    if (name === "fido") return form.vault.fidoReady
     if (name === "fingerprint") return form.vault.fingerprintReady
     if (name === "pin") return form.vault.pinReady
     return name === "password"
   }
 
   function nextMethodAfter(name) {
-    var order = ["fingerprint", "pin", "password"]
+    var order = ["fido", "fingerprint", "pin", "password"]
     var from = order.indexOf(name)
     for (var step = 1; step < order.length; step++) {
       var candidate = order[(from + step) % order.length]
@@ -82,6 +88,7 @@ Column {
   }
 
   function methodLabel(name) {
+    if (name === "fido") return "your FIDO2 key"
     if (name === "fingerprint") return "fingerprint"
     if (name === "pin") return "PIN"
     return "master password"
@@ -90,11 +97,16 @@ Column {
   function useMethod(name) {
     if (name === "" || !methodAvailable(name)) return
     form.chosen = name
+    form.vault.cancelFingerprintUnlock()
+    form.vault.cancelFidoUnlock()
     if (name === "fingerprint") {
       form.vault.startFingerprintUnlock()
       return
     }
-    form.vault.cancelFingerprintUnlock()
+    if (name === "fido") {
+      form.vault.startFidoUnlock()
+      return
+    }
     if (form.focusField) form.focusField.forceActiveFocus()
   }
 
@@ -122,7 +134,7 @@ Column {
       id: fingerprintIcon
       textFormat: Text.PlainText
       anchors.horizontalCenter: parent.horizontalCenter
-      text: form.fingerprintBusy ? "󰈷" : "󰌋"
+      text: form.method === "fido" ? "󰟵" : (form.fingerprintBusy ? "󰈷" : "󰌋")
       // Accent whichever glyph is showing: the key over the PIN and password
       // screens reads as part of the same prompt as the fingerprint does.
       color: Color.accent
@@ -131,7 +143,7 @@ Column {
       font.pixelSize: Style.space(38)
 
       SequentialAnimation on opacity {
-        running: form.vault.fingerprintScanning
+        running: form.vault.fingerprintScanning || form.vault.fidoScanning
         loops: Animation.Infinite
         NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
         NumberAnimation { to: 0.95; duration: 700; easing.type: Easing.InOutQuad }
@@ -144,7 +156,9 @@ Column {
       anchors.horizontalCenter: parent.horizontalCenter
       text: form.vault.status === "unlocked"
         ? "Loading SSH keys"
-        : (form.vault.fingerprintReady ? "Unlock Vault" : "Enter Master Password")
+        : ((form.vault.fidoReady || form.vault.fingerprintReady)
+          ? "Unlock Vault"
+          : "Enter Master Password")
       color: form.panel.fg
       font.family: form.panel.fontFamily
       font.pixelSize: Style.font.title
@@ -169,6 +183,20 @@ Column {
     spacing: Style.space(12)
   }
 
+  // Only on the FIDO2 screen, for the reason the fingerprint prompt is scoped
+  // to its own: no other screen has a key to touch.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.method === "fido" && form.vault.fidoMessage !== ""
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: form.vault.fidoMessage
+    color: form.fidoBusy ? Color.accent : form.panel.dim
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
   // Only on the fingerprint screen: a PIN or password screen has no reader to
   // touch, and the prompt outlives the scan the lock screen starts by itself.
   Text {
@@ -181,6 +209,20 @@ Column {
     // line is the same thought as the touch prompt and should not fade into an
     // ordinary note halfway through.
     color: form.fingerprintBusy ? Color.accent : form.panel.dim
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
+  // Why the last FIDO2 attempt failed, on every screen, for the same reason a
+  // failed fingerprint travels: an unreadable key is when the user moves on.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.vault.fidoError !== ""
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: form.vault.fidoError
+    color: form.panel.urgent
     font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
     wrapMode: Text.WordWrap
@@ -248,6 +290,22 @@ Column {
     focusable: form.buttonsFocusable
     enabled: !form.vault.isUnlocking && !form.vault.fingerprintScanning
     onClicked: form.vault.startFingerprintUnlock()
+  }
+
+  Button {
+    visible: form.fieldsOffered && form.method === "fido"
+    width: parent.width
+    text: form.vault.isUnlocking
+      ? "Unlocking..."
+      : (form.vault.fidoScanning ? "Waiting for your key..." : "Unlock with FIDO2 Key")
+    iconText: form.vault.isUnlocking ? "󰑐" : "󰟵"
+    iconSpinning: form.vault.isUnlocking
+    selected: true
+    accent: Color.accent
+    fontFamily: form.panel.fontFamily
+    focusable: form.buttonsFocusable
+    enabled: !form.vault.isUnlocking && !form.vault.fidoScanning
+    onClicked: form.vault.startFidoUnlock()
   }
 
   Column {
@@ -318,7 +376,7 @@ Column {
   // One Unlock Vault button for both typed methods, so the PIN and the master
   // password are submitted the same way.
   Button {
-    visible: form.fieldsOffered && form.method !== "fingerprint"
+    visible: form.fieldsOffered && form.method !== "fingerprint" && form.method !== "fido"
     width: parent.width
     text: form.busy ? (form.method === "pin" ? "Checking..." : "Unlocking...") : "Unlock Vault"
     iconText: form.busy ? "󰑐" : "󰌋"
@@ -337,7 +395,9 @@ Column {
     visible: form.fieldsOffered && form.nextMethod !== ""
     width: parent.width
     text: "Use " + form.methodLabel(form.nextMethod) + " instead"
-    iconText: form.nextMethod === "fingerprint" ? "󰈷" : (form.nextMethod === "pin" ? "󰌿" : "󰌋")
+    iconText: form.nextMethod === "fido"
+      ? "󰟵"
+      : (form.nextMethod === "fingerprint" ? "󰈷" : (form.nextMethod === "pin" ? "󰌿" : "󰌋"))
     fontFamily: form.panel.fontFamily
     fontSize: Style.font.bodySmall
     focusable: form.buttonsFocusable

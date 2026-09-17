@@ -675,8 +675,8 @@ check("a failed fingerprint keeps its reason on whichever screen follows",
   "an unreadable finger is when the user moves to the PIN or password")
 check("the fingerprint prompt and glyph belong to the fingerprint screen only",
   /visible: form\.method === "fingerprint" && form\.vault\.fingerprintMessage !== ""/.test(unlockFormSrc)
-    && /text: form\.fingerprintBusy \? "\u{f0237}" : "\u{f030b}"/u.test(unlockFormSrc)
-    && /text: form\.fingerprintBusy[\s\S]{0,200}?color: Color\.accent/.test(unlockFormSrc),
+    && /text: form\.method === "fido" \? "\u{f07f5}" : \(form\.fingerprintBusy \? "\u{f0237}" : "\u{f030b}"\)/u.test(unlockFormSrc)
+    && /text: form\.method === "fido"[\s\S]{0,400}?color: Color\.accent/.test(unlockFormSrc),
   "a PIN or password screen has no reader to touch; the header glyph stays accent on every method")
 check("the fingerprint button says what the vault is doing once the finger is read",
   /form\.method === "fingerprint"[\s\S]{0,400}?text: form\.vault\.isUnlocking\s*\n?\s*\?\s*"Unlocking\.\.\."[\s\S]{0,200}?fingerprintScanning \? "Waiting for fingerprint\.\.\." : "Unlock with Fingerprint"/.test(unlockFormSrc),

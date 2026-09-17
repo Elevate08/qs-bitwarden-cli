@@ -2,6 +2,29 @@
 
 ## [1.10.0] - 2026-09-17
 
+### Added
+
+- **The fingerprint option steps aside when the laptop lid is closed.** The
+  reader sits on the laptop body, so with the lid shut -- clamshell mode, or a
+  lid simply closed on a docked machine -- the locked screen hides **Unlock with
+  Fingerprint**, the SSH prompt hides it too, and the reader is not armed on
+  open. Nothing is forgotten: the stored password and the settings toggle are
+  untouched, and the option is back when the lid opens. Omarchy's own detector
+  (`omarchy-hw-laptop-closed`) decides, so a machine with no lid never reports
+  one; a FIDO2 key on a cable is unaffected.
+
+- **Unlock with a FIDO2 key** (opt-in, `fidoUnlock`). A YubiKey or any other
+  FIDO2 authenticator can now unlock the vault, beside the fingerprint reader
+  and the PIN. It reuses the registration `omarchy setup security fido2` writes
+  to `/etc/fido2/fido2` -- the same one that already serves `sudo` and polkit --
+  and verifies the key through a PAM stack shipped inside the plugin and loaded
+  from the plugin's own directory (Quickshell's `configDirectory`), so enabling
+  it needs no privileged change to `/etc/pam.d`. Like fingerprint unlock, the
+  master password is kept in the OS login keyring behind the verified touch,
+  under its own `account=fido_password` entry; the trade-off is the same and is
+  documented alongside the fingerprint's. When both are set up, the key is armed
+  on lock if one is plugged in and the reader otherwise.
+
 ### Fixed
 
 - **The SSH agent no longer dies after loading 17 or more keys.** Public-key
@@ -56,7 +79,6 @@
   approved separately.
 - The SSH helper's protocol unit tests no longer expose a signing path on the
   production library surface.
-
 ## [1.9.0] - 2026-09-14
 
 ### Added

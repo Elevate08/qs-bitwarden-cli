@@ -30,7 +30,7 @@ Column {
   function focusDefault() {
     if (!screen.active || !screen.visible) return
     screen.vault.prepareUnlock()
-    if (screen.vault.fingerprintReady) screen.vault.startFingerprintUnlock()
+    screen.vault.armPresenceUnlock()
     Qt.callLater(function() {
       if (!screen.active || !unlockForm.fieldsOffered) return
       if (unlockForm.focusField) unlockForm.focusField.forceActiveFocus()
