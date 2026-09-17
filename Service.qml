@@ -487,6 +487,11 @@ Item {
   property bool fingerprintScanning: false
   property bool fingerprintAuthorized: false // a live PAM success may consume one keyring lookup
   property string fingerprintMessage: ""
+  // Why the last fingerprint attempt failed. Separate from fingerprintMessage,
+  // which is the progress of an attempt in front of the reader: the reason a
+  // scan failed still has to be readable on the PIN or password screen the
+  // user moves to, where there is no reader and no attempt.
+  property string fingerprintError: ""
   property string pendingUnlockPassword: ""   // held only until the unlock lands
   // Authentication processes are started before submission and wait on a
   // private FIFO. These flags distinguish that harmless waiting state from an
@@ -965,6 +970,7 @@ Item {
     root.pinEntry = ""
     root.pinError = ""
     root.fingerprintMessage = ""
+    root.fingerprintError = ""
     root.errorMessage = ""
     syncLoginFieldsToState()
   }
@@ -1116,11 +1122,19 @@ Item {
       // The request was cancelled by the client, timed out, or released on unlock.
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
-        if (message.reason !== "released") {
+        if (message.reason === "released") {
+          // A released sign request returns immediately as an approval, so the
+          // popup stays up and becomes that. A released identity listing has
+          // just been answered from the freshly loaded keys -- nothing follows
+          // it, and leaving the prompt up strands it on screen with the client
+          // already served.
+          var listingAnswered = root.sshUnlockRequest !== null
+            && root.sshUnlockRaw !== null
+            && root.sshUnlockRaw.reason === "list-identities"
+          if (!listingAnswered) return
+        } else {
           root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "timeout", Date.now())
           noteSshCooldown()
-        } else {
-          return
         }
         if (root.sshPrompt && root.sshPromptQueue.length > 0) advanceSshPrompt()
         else if (root.sshUnlockRequest && root.sshUnlockQueue.length > 0) advanceSshUnlock()
@@ -1554,6 +1568,7 @@ Item {
     isUnlocking = false
     suggestionsDismissed = false
     fingerprintMessage = ""
+    fingerprintError = ""
 
     // controller.show() flips `opened`, which runs onPanelOpened via
     // onOpenedChanged. Only drive it directly when the panel was already open
@@ -2658,6 +2673,7 @@ Item {
     cancelFingerprintUnlock()
     fingerprintStored = false
     fingerprintMessage = ""
+    fingerprintError = ""
     pinConfigured = false
     pinEntry = ""
     pinAttempts = 0
@@ -3497,17 +3513,19 @@ Item {
     if (!fingerprintReady || status !== "locked" || isUnlocking) return
     if (fingerprintScanning || fingerprintPam.active) return
     if (!userName) {
-      fingerprintMessage = "Cannot determine current user for fingerprint verification"
+      fingerprintError = "Cannot determine current user for fingerprint verification"
       return
     }
 
     errorMessage = ""
+    fingerprintError = ""
     fingerprintAuthorized = false
     fingerprintScanning = true
     fingerprintMessage = "󰈷  Touch the fingerprint reader..."
     if (!fingerprintPam.start()) {
       fingerprintScanning = false
-      fingerprintMessage = "Could not start fingerprint verification"
+      fingerprintMessage = ""
+      fingerprintError = "Could not start fingerprint verification"
     }
   }
 
@@ -3524,15 +3542,18 @@ Item {
 
     if (result === PamResult.Success) {
       fingerprintAuthorized = true
-      fingerprintMessage = "󰈷  Fingerprint verified, unlocking..."
+      // The button under this says "Unlocking..." on its own now.
+      fingerprintMessage = "󰈷  Fingerprint verified"
       if (!keyringLookupMasterProc.running) {
         keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
         keyringLookupMasterProc.running = true
       }
     } else if (result === PamResult.MaxTries) {
-      fingerprintMessage = "Too many fingerprint attempts. Use your master password."
+      fingerprintMessage = ""
+      fingerprintError = "Too many fingerprint attempts. Use your master password."
     } else {
-      fingerprintMessage = "Fingerprint not recognised. Try again or use your master password."
+      fingerprintMessage = ""
+      fingerprintError = "Fingerprint not recognised. Try again or use your master password."
     }
   }
 
@@ -3549,7 +3570,8 @@ Item {
     var pw = String(raw || "")
     if (!pw) {
       fingerprintStored = false
-      fingerprintMessage = "No stored master password. Unlock with your password once to enable this."
+      fingerprintMessage = ""
+      fingerprintError = "No stored master password. Unlock with your password once to enable this."
       return
     }
     pendingUnlockFrom = "fingerprint"
@@ -3625,6 +3647,7 @@ Item {
     fingerprintStored = false
     cancelFingerprintUnlock()
     fingerprintMessage = ""
+    fingerprintError = ""
     flashNotification("Fingerprint unlock forgotten")
   }
 
@@ -3632,6 +3655,7 @@ Item {
     if (!fingerprintUnlock) {
       cancelFingerprintUnlock()
       fingerprintMessage = ""
+    fingerprintError = ""
       // Not `if (fingerprintStored)`. That flag is false whenever the reader
       // or fprintd is missing, which says nothing about whether the master
       // password is still sitting in the keyring -- and turning the feature
@@ -3764,6 +3788,7 @@ Item {
     pinAttempts = 0
     pinError = ""
     fingerprintMessage = ""
+    fingerprintError = ""
 
     beginInitialVaultLoad(true, false)
     resetAutoLockTimer()
@@ -3791,6 +3816,7 @@ Item {
     status = "locked"
     currentScreen = "locked"
     fingerprintMessage = ""
+    fingerprintError = ""
     flashNotification("Vault locked")
     focusAppropriateField()
     if (sshAuthSurfaceActive) startFingerprintUnlock()

@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.9.1] - 2026-09-14
+## [1.10.0] - 2026-09-17
 
 ### Fixed
 
@@ -22,6 +22,10 @@
 - **The panel lock screen's password eye resets when the screen hides**, so
   relocking no longer shows a revealed master password field. The SSH unlock
   popup already did this.
+- **An SSH identity listing no longer leaves its prompt on screen** after the
+  unlock that answered it. The panel keeps a released prompt open because a
+  released signing request comes straight back as an approval; a listing is
+  simply answered, and its prompt now closes with the keys it returned.
 - **A failed save's Reopen action no longer treats the item name as HTML**, and
   the notice no longer overflows when that button is shown.
 - **The SSH unlock popup now shows why a stored PIN was rejected**, matching
@@ -35,6 +39,21 @@
 
 ### Changed
 
+- **The lock screen offers one unlock method at a time.** Fingerprint leads
+  when it is enrolled, then a configured PIN, then the master password, and a
+  button moves to the next one that is set up. PIN and password share a single
+  **Unlock Vault** button; fingerprint asks for a finger and nothing else. Too
+  many PIN attempts clears the PIN, so that screen hands over on its own, and a
+  rejected PIN or an unreadable finger keeps its reason on the screen that
+  follows. The panel and the SSH popup share the form, so both behave alike.
+- **The fingerprint prompt says what is happening.** The button reads
+  "Waiting for fingerprint...", then "Unlocking..." once the finger is read
+  rather than inviting another touch, and the glyph and message hold the accent
+  colour for the whole attempt. The touch prompt no longer follows you to the
+  PIN or password screen.
+- **The SSH unlock popup is shorter**: one line naming the key and the process
+  asking, without restating that the vault is locked or that signing is
+  approved separately.
 - The SSH helper's protocol unit tests no longer expose a signing path on the
   production library surface.
 

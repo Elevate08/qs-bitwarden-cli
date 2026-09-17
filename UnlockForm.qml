@@ -25,12 +25,83 @@ Column {
   // request context here so the title stays on top; the panel passes nothing.
   property alias context: contextSlot.data
 
+  // One method at a time. Fingerprint leads when it is enrolled, then a
+  // configured PIN, then the master password -- which is always there, and so
+  // is the last stop. `chosen` is what the "use X instead" button set; it is
+  // ignored the moment that method stops being available, which is how an
+  // exhausted PIN (the vault clears it after too many attempts) hands over
+  // without anything having to watch for the failure.
+  property string chosen: ""
+  readonly property string method: chosen !== "" && methodAvailable(chosen)
+    ? chosen
+    : (methodAvailable("fingerprint") ? "fingerprint"
+      : (methodAvailable("pin") ? "pin" : "password"))
+  readonly property string nextMethod: nextMethodAfter(method)
+  // The field this method types into, for the panel's focus target and the
+  // popup's focusDefault(). Fingerprint has none.
+  readonly property var focusField: method === "pin"
+    ? pinField
+    : (method === "password" ? passwordField : null)
+  // A fingerprint attempt, from the touch prompt to the unlock it starts:
+  // scanning, then authorized while the keyring is read, then the unlock the
+  // stored password drives.
+  readonly property bool fingerprintBusy: form.vault.fingerprintScanning
+    || form.vault.fingerprintAuthorized
+    || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fingerprint")
+  readonly property bool busy: method === "pin"
+    ? (form.vault.pinBusy || form.vault.isUnlocking)
+    : form.vault.isUnlocking
+
   width: parent ? parent.width : 0
   spacing: Style.space(14)
 
   // `visible` is effective visibility, so this also runs when SCREEN 2 or the
-  // SSH unlock screen hides the form (tests/qml/tst_visibility.qml).
-  onVisibleChanged: if (!visible) resetReveal()
+  // SSH unlock screen hides the form (tests/qml/tst_visibility.qml). A method
+  // picked by hand lasts as long as the screen that offered it.
+  onVisibleChanged: {
+    if (!visible) {
+      resetReveal()
+      form.chosen = ""
+    }
+  }
+
+  function methodAvailable(name) {
+    if (name === "fingerprint") return form.vault.fingerprintReady
+    if (name === "pin") return form.vault.pinReady
+    return name === "password"
+  }
+
+  function nextMethodAfter(name) {
+    var order = ["fingerprint", "pin", "password"]
+    var from = order.indexOf(name)
+    for (var step = 1; step < order.length; step++) {
+      var candidate = order[(from + step) % order.length]
+      if (methodAvailable(candidate)) return candidate
+    }
+    return ""
+  }
+
+  function methodLabel(name) {
+    if (name === "fingerprint") return "fingerprint"
+    if (name === "pin") return "PIN"
+    return "master password"
+  }
+
+  function useMethod(name) {
+    if (name === "" || !methodAvailable(name)) return
+    form.chosen = name
+    if (name === "fingerprint") {
+      form.vault.startFingerprintUnlock()
+      return
+    }
+    form.vault.cancelFingerprintUnlock()
+    if (form.focusField) form.focusField.forceActiveFocus()
+  }
+
+  function submitCurrentMethod() {
+    if (form.method === "pin") form.vault.submitPinUnlock()
+    else form.vault.unlockVault()
+  }
 
   // Re-point, never copy: see syncLoginFields() in Panel.qml.
   function syncFromVault() {
@@ -51,8 +122,10 @@ Column {
       id: fingerprintIcon
       textFormat: Text.PlainText
       anchors.horizontalCenter: parent.horizontalCenter
-      text: form.vault.fingerprintScanning ? "󰈷" : "󰌋"
-      color: form.vault.fingerprintScanning ? Color.accent : form.panel.fg
+      text: form.fingerprintBusy ? "󰈷" : "󰌋"
+      // Accent whichever glyph is showing: the key over the PIN and password
+      // screens reads as part of the same prompt as the fingerprint does.
+      color: Color.accent
       opacity: 0.85
       font.family: form.panel.fontFamily
       font.pixelSize: Style.space(38)
@@ -96,21 +169,43 @@ Column {
     spacing: Style.space(12)
   }
 
+  // Only on the fingerprint screen: a PIN or password screen has no reader to
+  // touch, and the prompt outlives the scan the lock screen starts by itself.
   Text {
     textFormat: Text.PlainText
-    visible: form.vault.fingerprintMessage !== ""
+    visible: form.method === "fingerprint" && form.vault.fingerprintMessage !== ""
     width: parent.width
     horizontalAlignment: Text.AlignHCenter
     text: form.vault.fingerprintMessage
-    color: form.vault.fingerprintScanning ? Color.accent : form.panel.dim
+    // Accent for the whole fingerprint attempt, not only the scan: the verified
+    // line is the same thought as the touch prompt and should not fade into an
+    // ordinary note halfway through.
+    color: form.fingerprintBusy ? Color.accent : form.panel.dim
     font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
     wrapMode: Text.WordWrap
   }
 
+  // Why the last fingerprint attempt failed, on every screen: an unreadable
+  // finger is exactly when the user moves to the PIN or password, and the
+  // reason has to come with them.
   Text {
     textFormat: Text.PlainText
-    visible: form.vault.fingerprintUnlock && form.vault.fingerprintAvailable && !form.vault.fingerprintStored
+    visible: form.vault.fingerprintError !== ""
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: form.vault.fingerprintError
+    color: form.panel.urgent
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
+  // Offered on the master-password screen, which is the one that can enrol.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.method === "password" && form.vault.fingerprintUnlock
+      && form.vault.fingerprintAvailable && !form.vault.fingerprintStored
     width: parent.width
     horizontalAlignment: Text.AlignHCenter
     text: "󰈷  Unlock once with your master password to enable fingerprint unlock."
@@ -120,8 +215,43 @@ Column {
     wrapMode: Text.WordWrap
   }
 
+  // A PIN the vault rejected, kept on screen after the PIN method has gone --
+  // an exhausted PIN clears itself, and the reason must survive that.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && form.method !== "pin" && form.vault.pinError !== ""
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: form.vault.pinError
+    color: form.panel.urgent
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
+  // Fingerprint asks for a finger and nothing else: no field, and no Unlock
+  // button to press afterwards.
+  Button {
+    visible: form.fieldsOffered && form.method === "fingerprint"
+    width: parent.width
+    // A read finger ends the scan and starts the unlock, and the button went
+    // back to inviting a touch that was already given. It says what the vault
+    // is doing instead, the same way the typed methods do.
+    text: form.vault.isUnlocking
+      ? "Unlocking..."
+      : (form.vault.fingerprintScanning ? "Waiting for fingerprint..." : "Unlock with Fingerprint")
+    iconText: form.vault.isUnlocking ? "󰑐" : "󰈷"
+    iconSpinning: form.vault.isUnlocking
+    selected: true
+    accent: Color.accent
+    fontFamily: form.panel.fontFamily
+    focusable: form.buttonsFocusable
+    enabled: !form.vault.isUnlocking && !form.vault.fingerprintScanning
+    onClicked: form.vault.startFingerprintUnlock()
+  }
+
   Column {
-    visible: form.fieldsOffered && form.vault.pinReady
+    visible: form.fieldsOffered && form.method === "pin"
     width: parent.width
     spacing: Style.space(8)
 
@@ -134,33 +264,15 @@ Column {
       font.bold: true
     }
 
-    Row {
+    TextField {
+      id: pinField
       width: parent.width
-      spacing: Style.space(8)
-
-      TextField {
-        id: pinField
-        width: parent.width - pinUnlockBtn.width - Style.space(8)
-        placeholderText: "Enter your PIN..."
-        password: true
-        text: form.vault.pinEntry
-        onTextChanged: form.vault.pinEntry = text.replace(/[^0-9]/g, "")
-        onAccepted: form.vault.submitPinUnlock()
-        enabled: !form.vault.pinBusy && !form.vault.isUnlocking
-      }
-
-      Button {
-        id: pinUnlockBtn
-        text: form.vault.pinBusy ? "Checking..." : "Unlock"
-        iconText: form.vault.pinBusy ? "󰑐" : "󰌿"
-        iconSpinning: form.vault.pinBusy
-        selected: true
-        accent: Color.accent
-        fontFamily: form.panel.fontFamily
-        focusable: form.buttonsFocusable
-        enabled: !form.vault.pinBusy && !form.vault.isUnlocking
-        onClicked: form.vault.submitPinUnlock()
-      }
+      placeholderText: "Enter your PIN..."
+      password: true
+      text: form.vault.pinEntry
+      onTextChanged: form.vault.pinEntry = text.replace(/[^0-9]/g, "")
+      onAccepted: form.vault.submitPinUnlock()
+      enabled: !form.vault.pinBusy && !form.vault.isUnlocking
     }
 
     Text {
@@ -173,86 +285,62 @@ Column {
       font.pixelSize: Style.font.bodySmall
       wrapMode: Text.WordWrap
     }
-
-    Text {
-      textFormat: Text.PlainText
-      text: "or use your master password below"
-      color: form.panel.dim
-      font.family: form.panel.fontFamily
-      font.pixelSize: Style.font.caption
-    }
   }
 
-  // A PIN was set but the vault rejected it -- surfaced even once pinReady
-  // has gone false, so the reason is not lost on the popup path either.
-  Text {
-    textFormat: Text.PlainText
-    visible: form.fieldsOffered && !form.vault.pinReady && form.vault.pinError !== ""
+  Row {
+    visible: form.fieldsOffered && form.method === "password"
     width: parent.width
-    horizontalAlignment: Text.AlignHCenter
-    text: form.vault.pinError
-    color: form.panel.urgent
-    font.family: form.panel.fontFamily
-    font.pixelSize: Style.font.bodySmall
-    wrapMode: Text.WordWrap
-  }
+    spacing: Style.space(8)
 
-  Column {
-    visible: form.fieldsOffered
-    width: parent.width
-    spacing: Style.space(10)
-
-    Button {
-      visible: form.vault.fingerprintReady
-      width: parent.width
-      text: form.vault.fingerprintScanning ? "Waiting for fingerprint..." : "Unlock with Fingerprint"
-      iconText: "󰈷"
-      selected: true
-      accent: Color.accent
-      fontFamily: form.panel.fontFamily
-      focusable: form.buttonsFocusable
-      enabled: !form.vault.isUnlocking && !form.vault.fingerprintScanning
-      onClicked: form.vault.startFingerprintUnlock()
-    }
-
-    Row {
-      width: parent.width
-      spacing: Style.space(8)
-
-      TextField {
-        id: passwordField
-        width: parent.width - eyeBtnUnlock.width - Style.space(8)
-        placeholderText: "Master password..."
-        password: !eyeBtnUnlock.revealed
-        text: form.vault.masterPassword
-        onTextChanged: form.vault.masterPassword = text
-        onActiveFocusChanged: if (activeFocus) form.vault.prepareUnlock()
-        onAccepted: form.vault.unlockVault()
-        enabled: !form.vault.isUnlocking
-      }
-
-      Button {
-        id: eyeBtnUnlock
-        property bool revealed: false
-        iconText: revealed ? "󰈉" : "󰈈"
-        tooltipText: revealed ? "Hide password" : "Show password"
-        fontFamily: form.panel.fontFamily
-        focusable: form.buttonsFocusable
-        onClicked: revealed = !revealed
-      }
-    }
-
-    Button {
-      width: parent.width
-      text: form.vault.isUnlocking ? "Unlocking..." : "Unlock Vault"
-      iconText: form.vault.isUnlocking ? "󰑐" : "󰌋"
-      iconSpinning: form.vault.isUnlocking
-      selected: true
-      accent: Color.accent
-      fontFamily: form.panel.fontFamily
-      focusable: form.buttonsFocusable
+    TextField {
+      id: passwordField
+      width: parent.width - eyeBtnUnlock.width - Style.space(8)
+      placeholderText: "Master password..."
+      password: !eyeBtnUnlock.revealed
+      text: form.vault.masterPassword
+      onTextChanged: form.vault.masterPassword = text
+      onActiveFocusChanged: if (activeFocus) form.vault.prepareUnlock()
+      onAccepted: form.vault.unlockVault()
       enabled: !form.vault.isUnlocking
-      onClicked: form.vault.unlockVault()
     }
+
+    Button {
+      id: eyeBtnUnlock
+      property bool revealed: false
+      iconText: revealed ? "󰈉" : "󰈈"
+      tooltipText: revealed ? "Hide password" : "Show password"
+      fontFamily: form.panel.fontFamily
+      focusable: form.buttonsFocusable
+      onClicked: revealed = !revealed
+    }
+  }
+
+  // One Unlock Vault button for both typed methods, so the PIN and the master
+  // password are submitted the same way.
+  Button {
+    visible: form.fieldsOffered && form.method !== "fingerprint"
+    width: parent.width
+    text: form.busy ? (form.method === "pin" ? "Checking..." : "Unlocking...") : "Unlock Vault"
+    iconText: form.busy ? "󰑐" : "󰌋"
+    iconSpinning: form.busy
+    selected: true
+    accent: Color.accent
+    fontFamily: form.panel.fontFamily
+    focusable: form.buttonsFocusable
+    enabled: !form.busy
+    onClicked: form.submitCurrentMethod()
+  }
+
+  // The way back to anything else that is set up. One button rather than a
+  // list: with two methods it is a toggle, with three it cycles.
+  Button {
+    visible: form.fieldsOffered && form.nextMethod !== ""
+    width: parent.width
+    text: "Use " + form.methodLabel(form.nextMethod) + " instead"
+    iconText: form.nextMethod === "fingerprint" ? "󰈷" : (form.nextMethod === "pin" ? "󰌿" : "󰌋")
+    fontFamily: form.panel.fontFamily
+    fontSize: Style.font.bodySmall
+    focusable: form.buttonsFocusable
+    onClicked: form.useMethod(form.nextMethod)
   }
 }

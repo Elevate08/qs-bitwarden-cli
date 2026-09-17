@@ -33,8 +33,7 @@ Column {
     if (screen.vault.fingerprintReady) screen.vault.startFingerprintUnlock()
     Qt.callLater(function() {
       if (!screen.active || !unlockForm.fieldsOffered) return
-      if (screen.vault.pinReady) unlockForm.pinField.forceActiveFocus()
-      else unlockForm.passwordField.forceActiveFocus()
+      if (unlockForm.focusField) unlockForm.focusField.forceActiveFocus()
     })
   }
 
@@ -54,23 +53,19 @@ Column {
     onFieldsOfferedChanged: if (fieldsOffered) screen.focusDefault()
 
     context: [
+      // The one line of context: who is asking, and for what. The popup only
+      // ever appears for a locked vault, so saying so again is noise.
       UnlockCaption {
         text: {
           var request = screen.vault.sshUnlockRequest
-          var prefix = "Vault needs to be unlocked first: "
-          if (!request) return "Vault needs to be unlocked first."
+          if (!request) return ""
           if (request.keyName !== "") {
-            return prefix + request.keyName + " is needed by " + request.processName + "."
+            return request.keyName + " is needed by " + request.processName + "."
           }
-          return prefix + request.processName + " is asking which SSH keys are available."
+          return request.processName + " is asking which SSH keys are available."
         }
         horizontalAlignment: Text.AlignHCenter
         color: screen.panel.fg
-      },
-
-      UnlockCaption {
-        text: "Unlocking only loads the key. You will still approve the signing request separately."
-        horizontalAlignment: Text.AlignHCenter
       },
 
       Rectangle {

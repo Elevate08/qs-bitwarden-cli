@@ -482,7 +482,7 @@ Panel {
         ? keyCatcher
         : (root.vault.status === "unauthenticated"
           ? (root.vault.show2faField ? code2faField : emailField)
-          : (root.vault.pinReady ? unlockForm.pinField : unlockForm.passwordField)))
+          : (unlockForm.focusField ? unlockForm.focusField : keyCatcher)))
     contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.vault.filterDrawerHeight)
 
@@ -3116,8 +3116,6 @@ Panel {
           spacing: Style.space(14)
 
           PanelSeparator { width: parent.width }
-
-          Item { height: Style.space(8); width: 1 }
 
           UnlockForm {
             id: unlockForm

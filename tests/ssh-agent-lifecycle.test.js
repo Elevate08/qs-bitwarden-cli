@@ -254,6 +254,9 @@ check("a startup load waits for a nonce instead of spending the attempt without 
 check("a nonce arriving picks up a load that was waiting for it",
   /function onSshAgentLoadIdRead\(raw\)[\s\S]{0,300}?maybeStartupLoad\(\)/.test(panelSrc),
   "nothing resumes the load once the nonce is ready")
+check("an answered identity listing takes its prompt down",
+  /request_cancelled[\s\S]{0,900}?reason === "released"[\s\S]{0,600}?list-identities[\s\S]{0,300}?if \(!listingAnswered\) return/.test(messageHandler),
+  "a released listing is answered, not re-raised as an approval, so the prompt must close")
 check("a failed load retries once, not in a loop",
   /property int sshAgentLoadFailStreak/.test(panelSrc)
     && /sshAgentLoadFailStreak \+= 1/.test(messageHandler)
