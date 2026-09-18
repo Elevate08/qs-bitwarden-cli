@@ -690,8 +690,9 @@ check("the fallback cycles to the next method that is set up",
     && /visible: form\.fieldsOffered && form\.nextMethod !== ""/.test(unlockFormSrc),
   "with one other method it is a toggle; with two it cycles")
 check("a rejected PIN keeps its reason after the PIN method is gone",
-  /visible: form\.fieldsOffered && form\.method !== "pin" && form\.vault\.pinError !== ""/.test(unlockFormSrc),
-  "an exhausted PIN clears itself, so the reason has to outlive it")
+  /visible: form\.fieldsOffered && form\.method !== "pin" && form\.vault\.pinUnlockError !== ""/.test(unlockFormSrc)
+    && !/form\.vault\.pinError/.test(unlockFormSrc),
+  "an exhausted PIN clears itself, so the reason has to outlive it -- but a setup-form error is not that reason")
 check("a hand-picked method lasts only as long as the screen",
   /onVisibleChanged:\s*\{[\s\S]{0,200}?form\.chosen = ""/.test(unlockFormSrc),
   "a reopened lock screen starts at the leading method again")

@@ -25,6 +25,20 @@
   documented alongside the fingerprint's. When both are set up, the key is armed
   on lock if one is plugged in and the reader otherwise.
 
+  The lock screen offers the key first when one is plugged in, and arms it
+  wherever it is offered -- including a lock taken with the panel already open,
+  which used to arm the reader instead and send the touch to the focused
+  password field. Readiness is probed on startup rather than only when the
+  setting changes, so a key present at login is offered without a visit to
+  settings. Exactly one gate is ever armed, and a method that stops being
+  offered -- a key unplugged, a lid shut -- takes its device with it.
+
+  A key holds an abandoned request until its own presence timeout, and nothing
+  on the host can cancel it, so closing the panel no longer abandons one: the
+  conversation is kept, a touch with no panel up is discarded rather than
+  opening the vault, and reopening adopts the request instead of asking a busy
+  authenticator for a second one.
+
 ### Fixed
 
 - **The SSH agent no longer dies after loading 17 or more keys.** Public-key

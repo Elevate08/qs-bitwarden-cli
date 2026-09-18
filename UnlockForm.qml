@@ -46,6 +46,7 @@ Column {
     : (method === "password" ? passwordField : null)
   // A FIDO2 attempt, on the same three phases as the fingerprint's.
   readonly property bool fidoBusy: form.vault.fidoScanning
+    || form.vault.fidoAuthorized
     || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fido")
   // A fingerprint attempt, from the touch prompt to the unlock it starts:
   // scanning, then authorized while the keyring is read, then the unlock the
@@ -67,8 +68,32 @@ Column {
     if (!visible) {
       resetReveal()
       form.chosen = ""
+      return
     }
+    armOfferedMethod()
   }
+
+  // A method that stops being offered -- a key unplugged, a lid shut, a PIN
+  // spent -- must not leave its reader or key waiting behind the screen that
+  // replaced it.
+  onMethodChanged: {
+    if (method !== "fido") form.vault.releaseFidoUnlock()
+    if (method !== "fingerprint") form.vault.cancelFingerprintUnlock()
+    armOfferedMethod()
+  }
+
+  // The offered method is the armed one. Every path that puts this form on
+  // screen goes through here, so none of them has to remember to arm anything
+  // -- and a presence method is never offered without something waiting behind
+  // it, which is what leaves a key blinking or a touch going to a text field.
+  function armOfferedMethod() {
+    if (!visible || !fieldsOffered || form.vault.status !== "locked") return
+    if (form.vault.isUnlocking) return
+    if (method === "fido") form.vault.startFidoUnlock()
+    else if (method === "fingerprint") form.vault.startFingerprintUnlock()
+  }
+
+  onFieldsOfferedChanged: armOfferedMethod()
 
   function methodAvailable(name) {
     if (name === "fido") return form.vault.fidoReady
@@ -98,7 +123,7 @@ Column {
     if (name === "" || !methodAvailable(name)) return
     form.chosen = name
     form.vault.cancelFingerprintUnlock()
-    form.vault.cancelFidoUnlock()
+    form.vault.releaseFidoUnlock()
     if (name === "fingerprint") {
       form.vault.startFingerprintUnlock()
       return
@@ -261,10 +286,10 @@ Column {
   // an exhausted PIN clears itself, and the reason must survive that.
   Text {
     textFormat: Text.PlainText
-    visible: form.fieldsOffered && form.method !== "pin" && form.vault.pinError !== ""
+    visible: form.fieldsOffered && form.method !== "pin" && form.vault.pinUnlockError !== ""
     width: parent.width
     horizontalAlignment: Text.AlignHCenter
-    text: form.vault.pinError
+    text: form.vault.pinUnlockError
     color: form.panel.urgent
     font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
@@ -295,11 +320,11 @@ Column {
   Button {
     visible: form.fieldsOffered && form.method === "fido"
     width: parent.width
-    text: form.vault.isUnlocking
+    text: (form.vault.fidoAuthorized || form.vault.isUnlocking)
       ? "Unlocking..."
       : (form.vault.fidoScanning ? "Waiting for your key..." : "Unlock with FIDO2 Key")
-    iconText: form.vault.isUnlocking ? "󰑐" : "󰟵"
-    iconSpinning: form.vault.isUnlocking
+    iconText: (form.vault.fidoAuthorized || form.vault.isUnlocking) ? "󰑐" : "󰟵"
+    iconSpinning: form.vault.fidoAuthorized || form.vault.isUnlocking
     selected: true
     accent: Color.accent
     fontFamily: form.panel.fontFamily
@@ -335,9 +360,9 @@ Column {
 
     Text {
       textFormat: Text.PlainText
-      visible: form.vault.pinError !== ""
+      visible: form.vault.pinUnlockError !== ""
       width: parent.width
-      text: form.vault.pinError
+      text: form.vault.pinUnlockError
       color: form.panel.urgent
       font.family: form.panel.fontFamily
       font.pixelSize: Style.font.bodySmall

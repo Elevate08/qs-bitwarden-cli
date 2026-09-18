@@ -502,6 +502,9 @@ Item {
   readonly property bool fidoAvailable: fidoUnlocker.available
   readonly property bool fidoStored: fidoUnlocker.stored
   readonly property bool fidoScanning: fidoUnlocker.scanning
+  // True between a verified touch and the unlock it starts, so the button can
+  // say "Unlocking..." rather than re-inviting a touch already given.
+  readonly property bool fidoAuthorized: fidoUnlocker.authorized
   readonly property string fidoMessage: fidoUnlocker.message
   // Writable through to the setup form in FidoUnlock.qml: the screen edits the
   // field, and the controller owns what the value means.
@@ -586,7 +589,14 @@ Item {
   property string pinEntry: ""              // locked-screen input
   property int pinAttempts: 0
   readonly property int pinMaxAttempts: 5
+  // The PIN setup form's own error: a PIN that is too short to save, a missing
+  // master password, a keyring that refused the write.
   property string pinError: ""
+  // Why an unlock with the PIN failed, which is a different thing from the
+  // above and is read on whatever screen the user moves to next. Keeping the
+  // two apart is what stops a half-finished setup putting "PIN must be at
+  // least N digits" on a screen with no PIN on it.
+  property string pinUnlockError: ""
   property string pinSetupPin: ""
   property string pinSetupConfirm: ""
   property string pinSetupMaster: ""
@@ -1002,6 +1012,7 @@ Item {
     root.pendingUnlockFrom = ""
     root.pinEntry = ""
     root.pinError = ""
+    root.pinUnlockError = ""
     root.fingerprintMessage = ""
     root.fingerprintError = ""
     root.errorMessage = ""
@@ -1627,7 +1638,9 @@ Item {
     abandonPinSetup()
     abandonFingerprintSetup()
     cancelFingerprintUnlock()
-    cancelFidoUnlock()
+    // Released, not cancelled: closing the panel must leave the key's request
+    // adoptable, or reopening asks a busy authenticator for a second one.
+    releaseFidoUnlock()
     cancelAttachmentDownloads()
     stopGeneratorServe()
     eachView(function(view) { view.hidePopout() })
@@ -1747,7 +1760,9 @@ Item {
     if (opened) onPanelOpened()
     else {
       cancelFingerprintUnlock()
-      cancelFidoUnlock()
+      // Not a cancel: see releaseSurface() in FidoUnlock.qml. The key keeps the
+      // request either way, so the conversation is kept to consume the touch.
+      fidoUnlocker.releaseSurface()
       cancelAuthPrewarm()
       if (pendingSecondFactorLogin()) suspendPendingLogin()
       else abandonAuthSecrets()
@@ -1935,6 +1950,11 @@ Item {
 
     if (st.unlocked) {
       cancelAuthPrewarm()
+      // A vault unlocked from another monitor, a terminal handoff, or the CLI
+      // leaves a presence gate waiting on a touch that can no longer unlock
+      // anything -- a key blinking for an interaction nobody asked for.
+      cancelFingerprintUnlock()
+      cancelFidoUnlock()
       abandonAuthSecrets()
       status = "unlocked"
       currentScreen = "main"
@@ -2714,6 +2734,7 @@ Item {
     pinEntry = ""
     pinAttempts = 0
     pinError = ""
+    pinUnlockError = ""
     if (pinUnlock) writeSetting("pinUnlock", false, "bool")
   }
 
@@ -3195,6 +3216,7 @@ Item {
     pinSetupConfirm = ""
     pinSetupMaster = ""
     pinError = ""
+    pinUnlockError = ""
     screenBeforeSettings = "main"
     currentScreen = "pin"
     Qt.callLater(function() { presenter.focusField("pinSetupPin") })
@@ -3217,6 +3239,7 @@ Item {
     if (!pinSetupMaster) { pinError = "Master password is required to encrypt the PIN"; return }
 
     pinError = ""
+    pinUnlockError = ""
     pinBusy = true
     beginEpochOperation("pinStore")
     pinStoreProc.running = true
@@ -3249,10 +3272,10 @@ Item {
   function submitPinUnlock() {
     if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
     if (String(pinEntry || "").length < Model.pinMinLength()) {
-      pinError = "PIN must be at least " + Model.pinMinLength() + " digits"
+      pinUnlockError = "PIN must be at least " + Model.pinMinLength() + " digits"
       return
     }
-    pinError = ""
+    pinUnlockError = ""
     pinBusy = true
     pinUnlockSubmitted = true
     pinUnlockProc.command = Model.pinUnlockCommand()
@@ -3276,9 +3299,9 @@ Item {
         // Refuse to keep serving guesses at the UI. The ciphertext goes too,
         // so re-enabling requires the master password again.
         clearPin()
-        pinError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
+        pinUnlockError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
       } else {
-        pinError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
+        pinUnlockError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
       }
       return
     }
@@ -3299,6 +3322,7 @@ Item {
   function disablePinUnlock() {
     clearPin()
     pinError = ""
+    pinUnlockError = ""
     flashNotification("PIN unlock removed")
   }
 
@@ -3557,6 +3581,9 @@ Item {
   function startFingerprintUnlock() {
     if (!fingerprintReady || status !== "locked" || isUnlocking) return
     if (fingerprintScanning || fingerprintPam.active) return
+    // Release rather than cancel: the key holds its request regardless, and
+    // keeping the conversation lets a return to the key adopt it.
+    fidoUnlocker.releaseSurface()
     if (!userName) {
       fingerprintError = "Cannot determine current user for fingerprint verification"
       return
@@ -3700,7 +3727,7 @@ Item {
     if (!fingerprintUnlock) {
       cancelFingerprintUnlock()
       fingerprintMessage = ""
-    fingerprintError = ""
+      fingerprintError = ""
       // Not `if (fingerprintStored)`. That flag is false whenever the reader
       // or fprintd is missing, which says nothing about whether the master
       // password is still sitting in the keyring -- and turning the feature
@@ -3721,8 +3748,15 @@ Item {
   // read the same way from the outside (and so both halves of the settings
   // screen can dispatch on a single action name).
 
-  function startFidoUnlock() { fidoUnlocker.startUnlock() }
+  // One gate at a time: two armed conversations mean two devices waiting, and
+  // whichever answers second is a touch given to nothing.
+  function startFidoUnlock() {
+    cancelFingerprintUnlock()
+    fidoUnlocker.startUnlock()
+  }
   function cancelFidoUnlock() { fidoUnlocker.cancelUnlock() }
+  // Step back from the key without abandoning the request it is holding.
+  function releaseFidoUnlock() { fidoUnlocker.releaseSurface() }
   function beginFidoSetup() { fidoUnlocker.beginSetup() }
   function submitFidoSetup() { fidoUnlocker.submitSetup() }
   function runFidoSetup() { fidoUnlocker.runOmarchySetup() }
@@ -3732,8 +3766,15 @@ Item {
   // when one is plugged in and ready, the reader otherwise. Both buttons remain
   // available either way -- this only decides which is already waiting.
   function armPresenceUnlock() {
-    if (fidoReady) startFidoUnlock()
-    else startFingerprintUnlock()
+    if (fidoReady) {
+      startFidoUnlock()
+      return
+    }
+    // A key plugged in since the last probe is not ready yet as far as this
+    // knows, and the answer arrives too late to choose from. Ask now: the
+    // probe arms the key itself when it lands on a locked vault.
+    if (fidoUnlock) fidoUnlocker.refresh()
+    startFingerprintUnlock()
   }
 
   // -------------------------------------------------------------------------
@@ -3796,7 +3837,7 @@ Item {
       if (pendingUnlockFrom === "pin") {
         pendingUnlockFrom = ""
         clearPin()
-        pinError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
+        pinUnlockError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
@@ -3866,6 +3907,7 @@ Item {
     pinEntry = ""
     pinAttempts = 0
     pinError = ""
+    pinUnlockError = ""
     fingerprintMessage = ""
     fingerprintError = ""
 
@@ -3898,7 +3940,10 @@ Item {
     fingerprintError = ""
     flashNotification("Vault locked")
     focusAppropriateField()
-    if (sshAuthSurfaceActive) startFingerprintUnlock()
+    // Whichever gate the lock screen is about to offer, not the reader every
+    // time: locking from an open panel with a key plugged in used to arm the
+    // fingerprint, so a touch went to the focused field instead of to PAM.
+    if (sshAuthSurfaceActive) armPresenceUnlock()
   }
 
   function vaultStatePresent() {
@@ -4428,6 +4473,7 @@ Item {
       currentScreen = "settings"
     } else if (currentScreen === "pin") {
       pinError = ""
+      pinUnlockError = ""
       currentScreen = "settings"
     } else if (currentScreen === "settings") {
       closeSettings()

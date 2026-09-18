@@ -257,6 +257,58 @@ check("a plugged-in key leads, then the reader, then PIN, then the password",
   /var order = \["fido", "fingerprint", "pin", "password"\]/.test(rawUnlockForm)
     && /methodAvailable\("fido"\) \? "fido"/.test(rawUnlockForm),
   "the key the user is holding should not sit behind another method")
+const rawFidoUnlock = fs.readFileSync(path.join(__dirname, "..", "FidoUnlock.qml"), "utf8")
+const rawService = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+check("readiness is probed on startup, not only when the setting changes",
+  /Component\.onCompleted: if \(armed\) refresh\(\)/.test(rawFidoUnlock),
+  "a setting already true at build time fires no onArmedChanged, so nothing would probe")
+check("arming re-probes when the key is not known to be ready",
+  /function armPresenceUnlock\(\)[\s\S]{0,500}?if \(fidoUnlock\) fidoUnlocker\.refresh\(\)/.test(rawService),
+  "a key plugged in since the last probe must not be missed by the lock screen")
+check("a verified key says the vault is unlocking rather than asking again",
+  /message = "[^"]*Key verified"/.test(rawFidoUnlock)
+    && !/message = "[^"]*Key verified, unlocking/.test(rawFidoUnlock)
+    && /readonly property bool fidoAuthorized: fidoUnlocker\.authorized/.test(rawService),
+  "the button has to cover the gap between the touch and the unlock")
+// A key holds an abandoned request until its own presence timeout, so opening
+// the panel again inside that window meets a device that is simply busy.
+check("a failure too fast to be an answer is retried, not reported",
+  /function deviceStillBusy\(\)[\s\S]{0,400}?busyRetries < busyRetryLimit[\s\S]{0,200}?startedAtMs\) < busyFailureMs[\s\S]{0,200}?abandonedAtMs\) < busyWindowMs/.test(rawFidoUnlock)
+    && /if \(result !== PamResult\.Success && deviceStillBusy\(\)\)[\s\S]{0,80}?retryAfterBusy\(\)/.test(rawFidoUnlock),
+  "pam_u2f reports a busy key as 'not recognised', which is not what happened")
+check("only an abandoned conversation starts that window",
+  /function cancelUnlock\(\)[\s\S]{0,300}?if \(pam\.active\) abandonedAtMs = Date\.now\(\)/.test(rawFidoUnlock),
+  "a conversation that ended on its own leaves the key free")
+check("the retry stops when the screen that wanted it is gone",
+  /id: busyRetryTimer[\s\S]{0,500}?status !== "locked"[\s\S]{0,120}?sshAuthSurfaceActive[\s\S]{0,120}?busyRetries = 0/.test(rawFidoUnlock),
+  "a closed panel must not keep re-arming the key")
+check("a verified touch clears the busy state",
+  /busyRetries = 0[\s\S]{0,80}?abandonedAtMs = 0[\s\S]{0,80}?authorized = true/.test(rawFidoUnlock),
+  "the next lock must start from a clean count")
+check("locking with the panel open arms whichever gate is about to be offered",
+  /function lockVault\(\)[\s\S]{0,1200}?if \(sshAuthSurfaceActive\) armPresenceUnlock\(\)/.test(rawService)
+    && !/function lockVault\(\)[\s\S]{0,1200}?if \(sshAuthSurfaceActive\) startFingerprintUnlock\(\)/.test(rawService),
+  "arming the reader with a key plugged in sends the touch to the focused field")
+check("the form arms the method it offers, so no caller has to remember to",
+  /function armOfferedMethod\(\)[\s\S]{0,400}?startFidoUnlock\(\)[\s\S]{0,120}?startFingerprintUnlock\(\)/
+    .test(fs.readFileSync(path.join(__dirname, "..", "UnlockForm.qml"), "utf8")),
+  "a presence method on screen with nothing waiting behind it is the bug this prevents")
+check("only one presence gate is ever armed",
+  /function startFidoUnlock\(\)[\s\S]{0,300}?cancelFingerprintUnlock\(\)/.test(rawService)
+    && /function startFingerprintUnlock\(\)[\s\S]{0,500}?fidoUnlocker\.releaseSurface\(\)/.test(rawService),
+  "two armed gates mean two devices waiting, and the second touch answers nothing")
+check("a method that stops being offered takes its device with it",
+  /onMethodChanged:[\s\S]{0,300}?releaseFidoUnlock\(\)[\s\S]{0,120}?cancelFingerprintUnlock\(\)/
+    .test(fs.readFileSync(path.join(__dirname, "..", "UnlockForm.qml"), "utf8")),
+  "an unplugged key or a shut lid must not leave a reader waiting behind the next screen")
+check("stepping back from the key keeps its conversation but drops the touch",
+  /function releaseSurface\(\)[\s\S]{0,700}?scanning = false[\s\S]{0,120}?authorized = false/.test(rawFidoUnlock)
+    && /onOpenedChanged[\s\S]{0,400}?fidoUnlocker\.releaseSurface\(\)/.test(rawService)
+    && !/onOpenedChanged[\s\S]{0,400}?cancelFidoUnlock\(\)/.test(rawService),
+  "aborting buys nothing -- the key holds the request either way -- and loses the touch")
+check("a returning screen adopts the conversation rather than asking twice",
+  /function startUnlock\(\)[\s\S]{0,500}?if \(pam\.active\) \{[\s\S]{0,200}?scanning = true/.test(rawFidoUnlock),
+  "a second request to a key already holding one is refused by the device")
 check("the setup screen hands off to Omarchy when no key is registered",
   /vault\.runFidoSetup\(\)/.test(fs.readFileSync(path.join(__dirname, "..", "FidoSetupScreen.qml"), "utf8")),
   "FidoSetupScreen has no Omarchy hand-off")

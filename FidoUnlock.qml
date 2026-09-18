@@ -60,6 +60,24 @@ Item {
 
   readonly property bool ready: armed && available && stored
 
+  // A key answers one request at a time, and an abandoned request lives on in
+  // the authenticator until its own presence timeout -- roughly half a minute
+  // during which it blinks and refuses the next one. Closing the panel and
+  // opening it again lands in exactly that window, and pam_u2f comes back with
+  // "not recognised" for a key that is simply still busy. So a failure that
+  // arrives too fast to have been a real answer, soon after a request was
+  // abandoned, is retried rather than reported.
+  property double abandonedAtMs: 0
+  property double startedAtMs: 0
+  property int busyRetries: 0
+  readonly property int busyRetryMs: 2000
+  // Long enough to outlast the authenticator's presence timeout.
+  readonly property int busyWindowMs: 40000
+  // A real touch cannot arrive this fast, so a failure inside it is the device
+  // refusing rather than the user being rejected.
+  readonly property int busyFailureMs: 1500
+  readonly property int busyRetryLimit: 15
+
   // Emitted only after a verified touch and a successful keyring read. The
   // vault decides what to do with the password; here it is only the gate.
   signal unlocked(string password)
@@ -67,6 +85,12 @@ Item {
   // -------------------------------------------------------------------------
   // Readiness
   // -------------------------------------------------------------------------
+
+  // The setting is usually already true when this is built, so onArmedChanged
+  // never fires and nothing else would probe. Without this the option is not
+  // offered until something else happens to refresh it, and the lock screen
+  // leads with another method while the key sits plugged in.
+  Component.onCompleted: if (armed) refresh()
 
   function refresh() {
     if (!probeProc.running) probeProc.running = true
@@ -101,7 +125,16 @@ Item {
 
   function startUnlock() {
     if (!ready || !vault || vault.status !== "locked" || vault.isUnlocking) return
-    if (scanning || pam.active) return
+    // A conversation left running by a closed panel is still waiting on the
+    // same key. Adopt it rather than asking the authenticator for a second
+    // request it would refuse.
+    if (pam.active) {
+      scanning = true
+      failure = ""
+      if (message === "") message = "󰟵  Touch your FIDO2 key..."
+      return
+    }
+    if (scanning) return
     if (!vault.userName) {
       failure = "Cannot determine current user for FIDO2 verification"
       return
@@ -109,7 +142,10 @@ Item {
     authorized = false
     failure = ""
     scanning = true
-    message = "󰟵  Touch your FIDO2 key..."
+    startedAtMs = Date.now()
+    message = busyRetries > 0
+      ? "󰟵  Your key is finishing an earlier request -- touch it to clear it, or wait a moment..."
+      : "󰟵  Touch your FIDO2 key..."
     if (!pam.start()) {
       scanning = false
       message = ""
@@ -117,10 +153,53 @@ Item {
     }
   }
 
+  // Let go of the screen without letting go of the key.
+  //
+  // Aborting kills our side, but the authenticator keeps the request it was
+  // already given until a touch or its own presence timeout -- so an abort
+  // buys nothing and costs the ability to consume the touch when it comes.
+  // The conversation is left running instead: if the key is touched while no
+  // panel is up, onResult() sees no auth surface and drops the result (the
+  // vault stays locked), and the key is free again. Re-opening the panel finds
+  // the conversation still armed and simply keeps waiting.
+  function releaseSurface() {
+    busyRetryTimer.stop()
+    busyRetries = 0
+    if (!pam.active) {
+      cancelUnlock()
+      return
+    }
+    // Live, but no longer this screen's. A touch that lands now is dropped by
+    // onResult() -- the vault must not open behind a panel nobody has up --
+    // and the key is free again either way.
+    scanning = false
+    authorized = false
+    message = ""
+  }
+
   function cancelUnlock() {
+    busyRetryTimer.stop()
+    // Only an aborted conversation leaves the authenticator holding a request.
+    if (pam.active) abandonedAtMs = Date.now()
     scanning = false
     authorized = false
     if (pam.active) pam.abort()
+  }
+
+  // A failure too fast to be an answer, while the key is still holding the
+  // request this panel abandoned a moment ago.
+  function deviceStillBusy() {
+    var now = Date.now()
+    return busyRetries < busyRetryLimit
+      && (now - startedAtMs) < busyFailureMs
+      && (now - abandonedAtMs) < busyWindowMs
+  }
+
+  function retryAfterBusy() {
+    busyRetries += 1
+    failure = ""
+    message = "󰟵  Your key is finishing an earlier request -- touch it to clear it, or wait a moment..."
+    busyRetryTimer.restart()
   }
 
   function onResult(result) {
@@ -128,9 +207,17 @@ Item {
     scanning = false
     if (!accepting) return
 
+    if (result !== PamResult.Success && deviceStillBusy()) {
+      retryAfterBusy()
+      return
+    }
+
     if (result === PamResult.Success) {
+      busyRetries = 0
+      abandonedAtMs = 0
       authorized = true
-      message = "󰟵  Key verified, unlocking..."
+      // The button under this says "Unlocking..." on its own.
+      message = "󰟵  Key verified"
       if (!lookupProc.running) {
         // Restore the command first. Locking the vault scrubs this process's
         // collector by running it once with an empty command, and that
@@ -205,6 +292,8 @@ Item {
   // State only, no keyring touch: logging out already swept the keyring.
   function reset() {
     cancelUnlock()
+    busyRetries = 0
+    abandonedAtMs = 0
     stored = false
     message = ""
     failure = ""
@@ -362,6 +451,23 @@ Item {
     }
   }
 
+  // Re-arms once the authenticator has had a moment to finish what it was
+  // holding. Gated on the same conditions as an ordinary arm, so a panel closed
+  // in the meantime stops the retries rather than reviving them.
+  Timer {
+    id: busyRetryTimer
+    interval: fido.busyRetryMs
+    repeat: false
+    onTriggered: {
+      if (!fido.ready || !fido.vault || fido.vault.status !== "locked"
+          || !fido.vault.sshAuthSurfaceActive) {
+        fido.busyRetries = 0
+        return
+      }
+      fido.startUnlock()
+    }
+  }
+
   PamContext {
     id: pam
     config: Fido.fidoPamConfigName()
@@ -374,6 +480,10 @@ Item {
     onError: function(error) {
       fido.scanning = false
       fido.authorized = false
+      if (fido.deviceStillBusy()) {
+        fido.retryAfterBusy()
+        return
+      }
       fido.message = ""
       fido.failure = "FIDO2 verification unavailable"
     }
