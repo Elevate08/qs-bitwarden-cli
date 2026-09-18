@@ -32,7 +32,7 @@ Every feature the plugin has, and why each one works the way it does. The
 
 - **FIDO2 Key Unlock** (opt-in, `fidoUnlock`):
   - Unlock the vault with a FIDO2 authenticator -- a YubiKey or any compliant key -- instead of retyping your master password.
-  - Reuses the registration Omarchy's own setup writes (`omarchy setup security fido2` to `/etc/fido2/fido2`), so one registration serves `sudo`, polkit and the vault. The setup screen offers that command when no key is registered yet.
+  - Reuses the registration Omarchy's own setup writes (`omarchy setup security fido2` to `/etc/fido2/fido2`), so one registration serves the vault and the system's own authentication prompts alike. The setup screen offers that command when no key is registered yet.
   - Verifies the key through a PAM stack **shipped inside the plugin** and loaded from the plugin's own directory (Quickshell's `configDirectory`), so enabling it needs no privileged change to `/etc/pam.d`. pam-u2f is asked only for user presence, so a touch is all it takes.
   - Enrolling asks for your master password up front, and stores it in the keyring under its own `account=fido_password`, separate from the fingerprint's entry. The key is armed automatically on lock when one is plugged in; the fingerprint reader is the fallback, and the master password field always stays available.
   - See [FIDO2 key unlock](../README.md#fido2-key-unlock) for the security trade-off before enabling it.

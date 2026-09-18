@@ -26,8 +26,8 @@
 //    pam_start_confdir, so no privileged step is needed to enable the option.
 //
 //  * The credential is not registered here. Omarchy's own FIDO2 setup writes it
-//    to the global authfile, and that one registration serves sudo, polkit and
-//    this plugin alike. Only a device that is actually plugged in at unlock
+//    to the global authfile, and that one registration serves this plugin and
+//    the system's own authentication prompts alike. Only a device that is actually plugged in at unlock
 //    time can answer an assertion.
 
 // Relative to FidoUnlock.qml. Quickshell resolves a non-absolute
@@ -38,8 +38,8 @@
 var FIDO_PAM_DIR = "pam"
 var FIDO_PAM_CONFIG = "qs-bitwarden-fido2"
 // Omarchy's global registration. root:root 0644, so a user-run PAM stack can
-// read it -- and it must be the very file /etc/pam.d/sudo already names, or a
-// single touch would no longer answer for both.
+// read it -- and it must be the very file the system's own PAM stacks already
+// name, or a single touch would no longer answer for both.
 var FIDO_AUTHFILE = "/etc/fido2/fido2"
 // A probe answer is a handful of `key=value` lines; the cap is the same shape
 // every other stream this shell buffers uses.
@@ -51,9 +51,9 @@ function fidoAuthfile() { return FIDO_AUTHFILE }
 
 // Omarchy owns the enrolment end to end, exactly as it does for the reader:
 // `omarchy setup security fido2` installs libfido2/pam-u2f, checks the device,
-// registers it, wires sudo and polkit, and tests it. It runs in the same
-// floating terminal as an install, since it is interactive (sudo, then a
-// touch). There is no `pkg add pam-u2f` button for the same reason there is no
+// registers it, wires the system's own authentication prompts, and tests it.
+// It runs in the same floating terminal as an install, since it is interactive
+// (an administrator prompt, then a touch). There is no `pkg add pam-u2f` button for the same reason there is no
 // `pkg add fprintd` one: installing the package alone leaves the option
 // exactly as unconfigured as it was.
 function fidoSetupCommand() {
@@ -62,8 +62,8 @@ function fidoSetupCommand() {
 }
 
 // Why `omarchy remove security fido2` is the only supported way to turn this
-// off again: it is what removes the authfile the stack reads and unwires sudo
-// and polkit. Unregistering here would leave those two broken.
+// off again: it is what removes the authfile the stack reads and unwires the
+// system's own prompts. Unregistering here would leave those broken.
 function fidoRemoveCommand() {
   return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
     "omarchy remove security fido2"]

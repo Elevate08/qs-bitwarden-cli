@@ -70,7 +70,8 @@ check("the rule asks pam-u2f to cue the touch prompt",
   /\bcue\b/.test(pamRules[0] || ""),
   pamRules[0])
 // The relying party must stay pam-u2f's default, because that is what Omarchy's
-// single registration was created for; pinning it here would break sudo's too.
+// single registration was created for; pinning it here would break the
+// system's own prompts too.
 check("the rule pins no origin/appid",
   !/\borigin=|\bappid=/.test(pamRules[0] || ""),
   pamRules[0])
@@ -138,7 +139,7 @@ check("setup hands off to Omarchy's own FIDO2 installer in a floating terminal",
     && setup.slice(6).join(" ") === "omarchy setup security fido2",
   setup.join(" "))
 const remove = Fido.fidoRemoveCommand()
-check("removal hands off to Omarchy too, so sudo and polkit are unwired with it",
+check("removal hands off to Omarchy too, so the system's own prompts are unwired with it",
   remove.slice(6).join(" ") === "omarchy remove security fido2",
   remove.join(" "))
 

@@ -396,7 +396,7 @@ Set `fidoUnlock` to `true` to unlock the vault with a FIDO2 authenticator (a Yub
 
 **Requirements**
 
-- A FIDO2 key registered through `omarchy setup security fido2`. That one command detects the key, installs `libfido2`/`pam-u2f`, registers it, and wires it for `sudo` and polkit; the plugin reads the same registration (`/etc/fido2/fido2`) and offers the command itself when no key is registered yet. The option stays hidden on a machine with no key.
+- A FIDO2 key registered through `omarchy setup security fido2`. That one command detects the key, installs `libfido2`/`pam-u2f`, registers it, and wires it for the system's own authentication prompts; the plugin reads the same registration (`/etc/fido2/fido2`) and offers the command itself when no key is registered yet. The option stays hidden on a machine with no key.
 - A running, unlocked OS keyring, as used by `rememberSession`.
 
 Unlike the fingerprint stack, the PAM configuration is shipped **inside the plugin** and loaded from the plugin's own directory (Quickshell's `configDirectory`, i.e. Linux-PAM's `pam_start_confdir`), so enabling FIDO2 unlock needs no privileged change to `/etc/pam.d`.
@@ -411,7 +411,7 @@ Unlike the fingerprint stack, the PAM configuration is shipped **inside the plug
 
 The same one the fingerprint section states, and for the same reason: a FIDO2 key can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. FIDO2 unlock therefore keeps your master password in the OS login keyring and treats a verified key touch as the gate on reading it back, so **anyone who can read your unlocked login keyring can read your master password**. It is off by default.
 
-The stored password is removed when you turn the setting off, press **Forget FIDO2 Key** on the locked screen, log out of the account, or when the vault rejects it. `omarchy remove security fido2` unregisters the key for `sudo` and polkit as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
+The stored password is removed when you turn the setting off, press **Forget FIDO2 Key** on the locked screen, log out of the account, or when the vault rejects it. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
 
 ### SSH agent
 

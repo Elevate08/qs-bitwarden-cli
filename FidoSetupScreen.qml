@@ -13,7 +13,8 @@ import qs.Ui
 //
 // When Omarchy has not registered a key on this machine yet, the form stands
 // down and hands off to Omarchy's own setup, which registers the key and wires
-// it for sudo and polkit as well -- the same registration this vault reads.
+// it for the system's own authentication prompts as well -- the same
+// registration this vault reads.
 //
 // `panel` is the Panel root; `vault` is the Service.qml the panel draws. The
 // screen holds no state: it edits the vault's setup fields and calls back.
@@ -84,7 +85,7 @@ Column {
     Text {
       textFormat: Text.PlainText
       width: parent.width
-      text: "No FIDO2 key is registered on this machine yet. Omarchy's setup detects the key, registers it, and wires it for sudo and polkit too -- the same registration this vault uses."
+      text: "No FIDO2 key is registered on this machine yet. Omarchy's setup detects the key, registers it, and wires it for the system's own authentication prompts too -- the same registration this vault uses."
       color: panel.dim
       font.family: panel.fontFamily
       font.pixelSize: Style.font.bodySmall

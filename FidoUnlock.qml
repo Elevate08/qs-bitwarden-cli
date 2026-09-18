@@ -334,8 +334,9 @@ Item {
   }
 
   // Omarchy owns the enrolment end to end (`omarchy setup security fido2`:
-  // install, detect, register, wire sudo and polkit, test). This only opens it
-  // in the same floating terminal an install uses -- it needs sudo and a touch.
+  // install, detect, register, wire the system's own authentication prompts,
+  // test). This only opens it in the same floating terminal an install uses --
+  // it needs an administrator prompt and a touch.
   function runOmarchySetup() {
     Quickshell.execDetached(Fido.fidoSetupCommand())
     if (vault) vault.flashNotification("FIDO2 setup opened -- this screen updates itself")
