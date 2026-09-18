@@ -9,7 +9,7 @@ import path contains a directory named `qs`:
 
 ```bash
 mkdir -p /tmp/qs-imports && ln -sfn /usr/share/omarchy/shell /tmp/qs-imports/qs
-/usr/lib/qt6/bin/qmllint -I /tmp/qs-imports Service.qml Panel.qml FormPickerRow.qml
+/usr/lib/qt6/bin/qmllint -I /tmp/qs-imports Service.qml Panel.qml FormPickerRow.qml UnlockForm.qml SshUnlockScreen.qml SshApprovalScreen.qml SshCaption.qml SshSectionHeader.qml
 ```
 
 Remaining `unqualified` and `missing-property` warnings are baseline Quickshell

@@ -51,9 +51,9 @@ const sshCliSupport = (version) => typeof Model.sshCliSupport === "function"
 
 // KeyboardPanel applies focusTarget after the panel's own open handler. Keep
 // that final open-time choice aligned with the locked screen's PIN-first UI.
-check("a locked panel focuses its configured PIN field before the password field",
-  /focusTarget:[\s\S]{0,700}root\.pinReady\s*\?\s*pinField\s*:\s*passField/.test(panelSrc),
-  "the KeyboardPanel focusTarget must select pinField when pinReady")
+check("a locked panel focuses whichever field the offered unlock method uses",
+  /focusTarget:[\s\S]{0,800}unlockForm\.focusField\s*\?\s*unlockForm\.focusField\s*:\s*keyCatcher/.test(panelSrc),
+  "focusTarget must follow UnlockForm.focusField, which is the PIN field when PIN unlock leads")
 
 // --- everything present -----------------------------------------------------
 const all = Model.parseDependencies(

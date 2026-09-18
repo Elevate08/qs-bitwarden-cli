@@ -1,5 +1,98 @@
 # Changelog
 
+## [1.10.0] - 2026-09-17
+
+### Added
+
+- **The fingerprint option steps aside when the laptop lid is closed.** The
+  reader sits on the laptop body, so with the lid shut -- clamshell mode, or a
+  lid simply closed on a docked machine -- the locked screen hides **Unlock with
+  Fingerprint**, the SSH prompt hides it too, and the reader is not armed on
+  open. Nothing is forgotten: the stored password and the settings toggle are
+  untouched, and the option is back when the lid opens. Omarchy's own detector
+  (`omarchy-hw-laptop-closed`) decides, so a machine with no lid never reports
+  one; a FIDO2 key on a cable is unaffected.
+
+- **Unlock with a FIDO2 key** (opt-in, `fidoUnlock`). A YubiKey or any other
+  FIDO2 authenticator can now unlock the vault, beside the fingerprint reader
+  and the PIN. It reuses the registration `omarchy setup security fido2` writes
+  to `/etc/fido2/fido2` -- the same one that already serves `sudo` and polkit --
+  and verifies the key through a PAM stack shipped inside the plugin and loaded
+  from the plugin's own directory (Quickshell's `configDirectory`), so enabling
+  it needs no privileged change to `/etc/pam.d`. Like fingerprint unlock, the
+  master password is kept in the OS login keyring behind the verified touch,
+  under its own `account=fido_password` entry; the trade-off is the same and is
+  documented alongside the fingerprint's. When both are set up, the key is armed
+  on lock if one is plugged in and the reader otherwise.
+
+  The lock screen offers the key first when one is plugged in, and arms it
+  wherever it is offered -- including a lock taken with the panel already open,
+  which used to arm the reader instead and send the touch to the focused
+  password field. Readiness is probed on startup rather than only when the
+  setting changes, so a key present at login is offered without a visit to
+  settings. Exactly one gate is ever armed, and a method that stops being
+  offered -- a key unplugged, a lid shut -- takes its device with it.
+
+  A key holds an abandoned request until its own presence timeout, and nothing
+  on the host can cancel it, so closing the panel no longer abandons one: the
+  conversation is kept, a touch with no panel up is discarded rather than
+  opening the vault, and reopening adopts the request instead of asking a busy
+  authenticator for a second one.
+
+### Fixed
+
+- **The SSH agent no longer dies after loading 17 or more keys.** Public-key
+  announcements filled a 16-slot control channel on a runtime that could not
+  drain it mid-loop, so a successful load of a larger vault took the helper
+  down and dropped `SSH_AUTH_SOCK`. The channel is now sized for the largest
+  burst one load can produce: a full 128-key vault plus every held sign
+  request released at once.
+- **A bad key-load payload no longer kills the helper.** A timeout, truncated
+  JSON, or nonce mismatch now locks and keeps serving instead of leaving
+  clients with a dead socket, and the panel retries the load once.
+- **Secret fields stay attached to the vault after a sync.** Syncing a field
+  wrote a plain value into its `text`, which detached it from the property
+  behind it for good, so a later clear that skipped a sync could leave stale
+  text on screen. Syncs now re-point each field at the vault instead of
+  copying a value. The unlock, PIN, item-form, and Send fields get the same
+  sync as the login form.
+- **The panel lock screen's password eye resets when the screen hides**, so
+  relocking no longer shows a revealed master password field. The SSH unlock
+  popup already did this.
+- **An SSH identity listing no longer leaves its prompt on screen** after the
+  unlock that answered it. The panel keeps a released prompt open because a
+  released signing request comes straight back as an approval; a listing is
+  simply answered, and its prompt now closes with the keys it returned.
+- **A failed save's Reopen action no longer treats the item name as HTML**, and
+  the notice no longer overflows when that button is shown.
+- **The SSH unlock popup now shows why a stored PIN was rejected**, matching
+  the panel lock screen. Those two UIs share one form so they cannot drift
+  again.
+- **A generic login error from `bw` is sanitized** before it is drawn, the
+  same way device-verification errors already were.
+- **An SSH identity listing waiting on unlock-on-demand is withdrawn** when
+  every waiting client disconnects, instead of leaving the prompt up for the
+  full deadline.
+
+### Changed
+
+- **The lock screen offers one unlock method at a time.** Fingerprint leads
+  when it is enrolled, then a configured PIN, then the master password, and a
+  button moves to the next one that is set up. PIN and password share a single
+  **Unlock Vault** button; fingerprint asks for a finger and nothing else. Too
+  many PIN attempts clears the PIN, so that screen hands over on its own, and a
+  rejected PIN or an unreadable finger keeps its reason on the screen that
+  follows. The panel and the SSH popup share the form, so both behave alike.
+- **The fingerprint prompt says what is happening.** The button reads
+  "Waiting for fingerprint...", then "Unlocking..." once the finger is read
+  rather than inviting another touch, and the glyph and message hold the accent
+  colour for the whole attempt. The touch prompt no longer follows you to the
+  PIN or password screen.
+- **The SSH unlock popup is shorter**: one line naming the key and the process
+  asking, without restating that the vault is locked or that signing is
+  approved separately.
+- The SSH helper's protocol unit tests no longer expose a signing path on the
+  production library surface.
 ## [1.9.0] - 2026-09-14
 
 ### Added

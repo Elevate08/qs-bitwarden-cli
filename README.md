@@ -4,7 +4,7 @@ Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
 every item type without opening a browser.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.9.0-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.10.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -201,6 +201,7 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
 | Password / passphrase generator | ✅ | ✅ | ✅ |
 | **Unlock with PIN** [^pin] | ✅ | ❌ | ✅ |
 | **Unlock with fingerprint** [^fp] [^bio] [^bio-linux] | ✅ | ❌ | ✅ |
+| **Unlock with FIDO2 key** [^fido] | ✅ | ❌ | ❌ |
 | Auto-lock on idle, screen lock, suspend [^cli-lock] [^desk-lock] | ✅ | ❌ | ✅ |
 | **Suggests by focused window / browser tab** | ✅ | ❌ | ❌ |
 | Self-hosted and Vaultwarden | ✅ | ✅ | ✅ |
@@ -232,6 +233,10 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
     and mobile apps -- not the CLI.
 [^bio-linux]: On Linux the desktop app's biometric unlock goes through a polkit
     agent rather than a fingerprint reader directly.
+[^fido]: **This plugin** verifies the key itself through its own PAM stack,
+    loaded from the plugin directory, against the registration
+    `omarchy setup security fido2` writes. No Bitwarden client offers FIDO2
+    unlock, so there is no upstream column to match.
 [^totp]: All three read TOTP codes -- `bw get totp` on the CLI. The check
     here is for the follow-up: <kbd>Enter</kbd> copies the password and then
     replaces it with the live code a few seconds later, so a login and its
@@ -383,6 +388,31 @@ PAM can prove that you are present, but it cannot produce your Bitwarden master 
 
 The stored password is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, log out of the account, or when the vault rejects it (for example after a master password change, which then prompts you for the new one).
 
+**A closed lid takes the option off the screen.** The reader is on the laptop body, so with the lid shut -- clamshell mode, or simply closed on a docked machine -- there is nothing to touch. While it is down, the locked screen hides **Unlock with Fingerprint**, the SSH prompt does the same, and the reader is not armed on open; the note asking you to unlock once with your master password stays, because that is still true. Omarchy's own detector (`omarchy-hw-laptop-closed`) decides, and a machine with no lid never reports one. Nothing is forgotten: the stored password stays in the keyring, the settings toggle is unchanged, and the option is back the moment the lid opens. A FIDO2 key on a cable is unaffected.
+
+### FIDO2 key unlock
+
+Set `fidoUnlock` to `true` to unlock the vault with a FIDO2 authenticator (a YubiKey or any other compliant key) instead of your master password.
+
+**Requirements**
+
+- A FIDO2 key registered through `omarchy setup security fido2`. That one command detects the key, installs `libfido2`/`pam-u2f`, registers it, and wires it for `sudo` and polkit; the plugin reads the same registration (`/etc/fido2/fido2`) and offers the command itself when no key is registered yet. The option stays hidden on a machine with no key.
+- A running, unlocked OS keyring, as used by `rememberSession`.
+
+Unlike the fingerprint stack, the PAM configuration is shipped **inside the plugin** and loaded from the plugin's own directory (Quickshell's `configDirectory`, i.e. Linux-PAM's `pam_start_confdir`), so enabling FIDO2 unlock needs no privileged change to `/etc/pam.d`.
+
+**How it works**
+
+1. Switch **Unlock with FIDO2 key** on in the settings screen. If no key is registered, it first hands off to `omarchy setup security fido2`; otherwise it asks for your master password once -- the same way setting a PIN or a fingerprint does -- and stores it in the login keyring under `service=qs-bitwarden-cli, account=fido_password`.
+2. On every later lock, opening the panel arms the key if one is plugged in (falling back to the fingerprint reader otherwise). A verified key touch releases the stored password to `bw unlock`; the password field remains available as a fallback at all times.
+3. Unlocking with your master password afterwards refreshes the stored copy.
+
+**Security trade-off -- read before enabling**
+
+The same one the fingerprint section states, and for the same reason: a FIDO2 key can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. FIDO2 unlock therefore keeps your master password in the OS login keyring and treats a verified key touch as the gate on reading it back, so **anyone who can read your unlocked login keyring can read your master password**. It is off by default.
+
+The stored password is removed when you turn the setting off, press **Forget FIDO2 Key** on the locked screen, log out of the account, or when the vault rejects it. `omarchy remove security fido2` unregisters the key for `sudo` and polkit as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
+
 ### SSH agent
 
 Off by default. See **[docs/ssh-agent.md](docs/ssh-agent.md)** for setup, the
@@ -415,6 +445,7 @@ not in a separate block:
           "clearClipboardSec": 30,
           "rememberSession": true,
           "fingerprintUnlock": false,
+          "fidoUnlock": false,
           "sshAgentEnabled": false,
           "sshAgentApprovalPopup": true
         }
@@ -458,6 +489,7 @@ The following settings are read from the plugin's own entry in the
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see [Optional: Fingerprint Unlock](#fingerprint-unlock). |
+| `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator. Reuses the registration `omarchy setup security fido2` writes and stores your master password in the OS login keyring -- see [FIDO2 key unlock](#fido2-key-unlock). |
 | `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see [Optional: PIN Unlock](#pin-unlock). |
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](docs/ssh-agent.md). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |

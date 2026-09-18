@@ -26,24 +26,6 @@ Column {
     if (screen.active && screen.visible) denyButton.forceActiveFocus()
   }
 
-  // The bar's foreground and font family rather than the global theme's, the
-  // same as every other text element in this panel. Text defaults to AutoText,
-  // so the format is stated even where the string is constant today.
-  component SshSectionHeader: PanelSectionHeader {
-    textFormat: Text.PlainText
-    foreground: screen.panel.fg
-    fontFamily: screen.panel.fontFamily
-  }
-
-  component SshCaption: Text {
-    textFormat: Text.PlainText
-    width: parent ? parent.width : 0
-    color: screen.panel.dim
-    font.family: screen.panel.fontFamily
-    font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
-  }
-
   visible: active && vault.sshPrompt !== null
   width: parent.width
   spacing: Style.space(12)
@@ -102,17 +84,20 @@ Column {
   // called out rather than shown as ordinary context, because the
   // process named would not be the one using the signature.
   SshCaption {
+    panel: screen.panel
     visible: vault.sshPrompt && vault.sshPrompt.forwardedWarning !== ""
     text: vault.sshPrompt ? vault.sshPrompt.forwardedWarning : ""
     color: panel.urgent
   }
 
   SshCaption {
+    panel: screen.panel
     visible: vault.sshAgentLoadActive
     text: Model.sshAgentLoadingNote()
   }
 
   SshSectionHeader {
+    panel: screen.panel
     text: "KEY"
   }
 
@@ -129,11 +114,13 @@ Column {
   // The fingerprint is the value worth checking, so it is shown whole
   // rather than elided.
   SshCaption {
+    panel: screen.panel
     text: vault.sshPrompt ? vault.sshPrompt.fingerprint : ""
     wrapMode: Text.WrapAnywhere
   }
 
   SshSectionHeader {
+    panel: screen.panel
     text: "REQUESTED BY"
   }
 
@@ -150,11 +137,13 @@ Column {
   }
 
   SshCaption {
+    panel: screen.panel
     text: vault.sshPrompt ? vault.sshPrompt.processPath : ""
     wrapMode: Text.WrapAnywhere
   }
 
   SshCaption {
+    panel: screen.panel
     text: vault.sshPrompt ? vault.sshPrompt.provenanceNote : ""
   }
 

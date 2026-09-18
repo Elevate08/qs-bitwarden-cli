@@ -221,6 +221,15 @@ const passthrough = drive(reachReady(0).state, [{
 eq("a live event stays ready", passthrough.state.phase, "ready")
 eq("a live event reaches the panel", passthrough.last.message.type, "keys_loaded")
 
+const loadFailed = drive(reachReady(0).state, [{
+  kind: "line", nowMs: 100,
+  line: JSON.stringify({ v: 1, type: "load_failed", epoch: 7 })
+}])
+eq("a load failure stays ready so the panel can retry", loadFailed.state.phase, "ready")
+eq("a load failure reaches the panel", loadFailed.last.message.type, "load_failed")
+check("a load failure does not close the signing gate", loadFailed.state.gateOpen === true,
+  JSON.stringify(loadFailed.state))
+
 const secondReady = drive(reachReady(0).state, [{ kind: "line", line: readyLine, nowMs: 100 }])
 eq("a duplicate ready is a protocol violation", secondReady.state.errorCode, "PROTOCOL")
 check("a duplicate ready closes the gate", secondReady.state.gateOpen === false,

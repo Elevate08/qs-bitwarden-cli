@@ -216,7 +216,7 @@ check("Panel.qml reaches every vault member through root.vault",
   unqualified.length === 0, "reached another way: " + unqualified.join(", "))
 
 for (const file of ["CustomFieldsEditor.qml", "SshAgentSettings.qml", "SshApprovalPopup.qml",
-                    "SshApprovalScreen.qml", "SshUnlockScreen.qml"]) {
+                    "SshApprovalScreen.qml", "SshUnlockScreen.qml", "UnlockForm.qml"]) {
   const src = code(read(file))
   const viaPanel = [...src.matchAll(/\bpanel\.([A-Za-z_]\w*)/g)].map(m => m[1])
     .filter(n => vaultMembers.has(n) && !shared.has(n))
@@ -230,7 +230,8 @@ for (const file of ["CustomFieldsEditor.qml", "SshAgentSettings.qml", "SshApprov
 const handlerTargets = []
 for (const [file, src, vaultRef] of [["Panel.qml", panel, "root.vault"], ["CustomFieldsEditor.qml", read("CustomFieldsEditor.qml"), null],
     ["SshAgentSettings.qml", read("SshAgentSettings.qml"), null], ["SshApprovalPopup.qml", read("SshApprovalPopup.qml"), null],
-    ["SshApprovalScreen.qml", read("SshApprovalScreen.qml"), null], ["SshUnlockScreen.qml", read("SshUnlockScreen.qml"), null]]) {
+    ["SshApprovalScreen.qml", read("SshApprovalScreen.qml"), null], ["SshUnlockScreen.qml", read("SshUnlockScreen.qml"), null],
+    ["UnlockForm.qml", read("UnlockForm.qml"), null]]) {
   for (const m of code(src).matchAll(/Connections \{\s*target: ([\w.]+)([\s\S]*?)\n\s*\}/g)) {
     const listened = [...m[2].matchAll(/function on([A-Z]\w*)Changed\(/g)]
       .map(h => h[1][0].toLowerCase() + h[1].slice(1)).filter(n => vaultMembers.has(n))
@@ -271,7 +272,8 @@ const vaultApi = new Set([
 const unreachable = []
 for (const [file, src] of [["Panel.qml", panel], ["CustomFieldsEditor.qml", read("CustomFieldsEditor.qml")],
     ["SshAgentSettings.qml", read("SshAgentSettings.qml")], ["SshApprovalPopup.qml", read("SshApprovalPopup.qml")],
-    ["SshApprovalScreen.qml", read("SshApprovalScreen.qml")], ["SshUnlockScreen.qml", read("SshUnlockScreen.qml")]]) {
+    ["SshApprovalScreen.qml", read("SshApprovalScreen.qml")], ["SshUnlockScreen.qml", read("SshUnlockScreen.qml")],
+    ["UnlockForm.qml", read("UnlockForm.qml")]]) {
   for (const m of code(src).matchAll(/\bvault\.([A-Za-z_]\w*)/g)) {
     if (!vaultApi.has(m[1])) unreachable.push(`${file}: vault.${m[1]}`)
   }

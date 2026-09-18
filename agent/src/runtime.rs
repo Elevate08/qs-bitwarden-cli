@@ -234,9 +234,6 @@ impl ServiceRuntime {
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
     }
-    pub fn runtime_mut(&mut self) -> &mut Runtime {
-        &mut self.runtime
-    }
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }

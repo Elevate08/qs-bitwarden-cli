@@ -325,7 +325,8 @@ if (typeof Model.sshAgentLoadingNote === "function") {
 // had simply moved.
 const sshUiFiles = [
   "Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml",
-  "SshApprovalPopup.qml", "SshUnlockScreen.qml"
+  "SshApprovalPopup.qml", "SshUnlockScreen.qml", "UnlockForm.qml",
+  "SshCaption.qml", "SshSectionHeader.qml"
 ]
 const panelSrc = sshUiFiles
   .map(file => fs.existsSync(path.join(repoRoot, file)) ? readPluginSource(file) : "")
@@ -334,8 +335,14 @@ const approvalSrc = readPluginSource("SshApprovalScreen.qml")
 const settingsSrc = readPluginSource("SshAgentSettings.qml")
 const popupSrc = fs.existsSync(path.join(repoRoot, "SshApprovalPopup.qml"))
   ? readPluginSource("SshApprovalPopup.qml") : ""
-const unlockSrc = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
-  ? readPluginSource("SshUnlockScreen.qml") : ""
+const unlockSrc = ["SshUnlockScreen.qml", "UnlockForm.qml"]
+  .filter(file => fs.existsSync(path.join(repoRoot, file)))
+  .map(readPluginSource)
+  .join("\n")
+const unlockFormSrc = fs.existsSync(path.join(repoRoot, "UnlockForm.qml"))
+  ? fs.readFileSync(path.join(repoRoot, "UnlockForm.qml"), "utf8") : ""
+const sshUnlockOnly = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
+  ? fs.readFileSync(path.join(repoRoot, "SshUnlockScreen.qml"), "utf8") : ""
 
 // plainLabel() wraps its argument in a span when the text contains markup
 // characters, which a PlainText control then renders literally. The field is
@@ -384,9 +391,9 @@ check("opening the panel does not discard a live request",
   /if \(sshPrompt\)[\s\S]{0,160}?currentScreen = "sshApproval"[\s\S]{0,40}?return/.test(openedBody)
     && openedBody.indexOf("sshPrompt") < openedBody.indexOf('status === "unlocked"'),
   "onPanelOpened resets away from a live prompt")
-check("a withdrawn prompt counts toward the cooldown",
-  /message\.reason !== "released"[\s\S]{0,200}?sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(panelSrc),
-  "an unanswered prompt never feeds the cooldown")
+check("a withdrawn prompt counts toward the cooldown, an answered one does not",
+  /message\.reason === "released"[\s\S]{0,800}?\} else \{[\s\S]{0,200}?sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(panelSrc),
+  "an unanswered prompt never feeds the cooldown, and a released one must not")
 
 // The panel resets currentScreen in several of its own flows -- opening the
 // panel, finishing an unlock -- each of which silently dropped a live prompt
@@ -420,7 +427,7 @@ check("a panel the user already had open is restored, not closed",
   "answering does not restore the previous screen")
 
 check("a withdrawn request takes its prompt down",
-  /message\.type === "request_cancelled"[\s\S]{0,900}?dismissSshApproval\(\)/.test(panelSrc),
+  /message\.type === "request_cancelled"[\s\S]{0,1500}?dismissSshApproval\(\)/.test(panelSrc),
   "request_cancelled is ignored")
 // The approval decision depends on the key identity and the requesting
 // program, both known before the vault read finishes. Waiting for the read
@@ -616,14 +623,90 @@ check("changing presentation mode cannot strand a live request off-screen",
 check("the popup moves from unlock to approval without changing windows",
   /SshUnlockScreen\s*\{/.test(popupSrc) && /SshApprovalScreen\s*\{/.test(popupSrc),
   "unlock and approval are not hosted by one popup")
-check("the popup unlock screen names the prerequisite",
-  /vault needs to be unlocked first/i.test(unlockSrc),
-  "the popup does not explain why it appeared")
+check("the popup unlock screen names who is asking and for what",
+  /is needed by " \+ request\.processName/.test(sshUnlockOnly)
+    && /is asking which SSH keys are available/.test(sshUnlockOnly),
+  "the popup does not say what raised it")
 check("the popup can submit every configured unlock method",
   /unlockVault\(/.test(unlockSrc)
     && /submitPinUnlock\(/.test(unlockSrc)
     && /startFingerprintUnlock\(/.test(unlockSrc),
   "password, PIN, or fingerprint is missing from the popup")
+const fieldsOfferedExpr = (unlockFormSrc.match(/property bool fieldsOffered:([^\n]*)/) || [])[1] || ""
+check("unlock fields are offered while locked or still checking, and not once unlocked",
+  /status === "locked"/.test(fieldsOfferedExpr)
+    && /status === "checking"/.test(fieldsOfferedExpr)
+    && !/unlocked/.test(fieldsOfferedExpr)
+    && (unlockFormSrc.match(/visible:\s*form\.fieldsOffered/g) || []).length >= 2,
+  fieldsOfferedExpr || "fieldsOffered is missing from UnlockForm.qml")
+check("the SSH popup offers unlock fields only once the vault is known to be locked",
+  /UnlockForm \{[\s\S]{0,600}?fieldsOffered:\s*screen\.vault\.status === "locked"\s*\n/.test(sshUnlockOnly),
+  "before bw status answers, a password has no unlock process to reach and a PIN result is dropped")
+check("the SSH popup focuses the fields when they appear",
+  /UnlockForm \{[\s\S]{0,800}?onFieldsOfferedChanged:\s*if \(fieldsOffered\) screen\.focusDefault\(\)/.test(sshUnlockOnly),
+  "a popup open when status resolves leaves the new field unfocused")
+check("UnlockForm resets the eye when it hides, whichever screen hides it",
+  /onVisibleChanged:\s*\{[\s\S]{0,200}?resetReveal\(\)/.test(unlockFormSrc),
+  "visible is effective visibility, so the form's own handler covers an ancestor hiding")
+
+// --- one unlock method at a time --------------------------------------------
+//
+// Fingerprint leads when enrolled, then a configured PIN, then the master
+// password, which is always available and so is the last stop. A method that
+// stops being available drops out on its own: too many PIN attempts clears the
+// PIN, `pinReady` goes false, and the form moves on without watching for it.
+check("the offered method is the first one that is actually set up",
+  /method:\s*chosen[\s\S]{0,400}?methodAvailable\("fingerprint"\)\s*\?\s*"fingerprint"[\s\S]{0,120}?methodAvailable\("pin"\)\s*\?\s*"pin"\s*:\s*"password"/.test(unlockFormSrc),
+  "fingerprint, then PIN, then master password")
+check("availability is what the vault says, so an exhausted PIN hands over by itself",
+  /function methodAvailable\(name\)[\s\S]{0,300}?fingerprintReady[\s\S]{0,120}?pinReady[\s\S]{0,120}?name === "password"/.test(unlockFormSrc),
+  "a method must not stay offered once the vault has dropped it")
+check("each method draws on its own, so only one is on screen",
+  ['fingerprint', 'pin', 'password']
+    .every((name) => new RegExp(`visible: form\\.fieldsOffered && form\\.method === "${name}"`).test(unlockFormSrc)),
+  unlockFormSrc)
+check("one Unlock Vault button submits whichever typed method is offered",
+  /visible: form\.fieldsOffered && form\.method !== "fingerprint"[\s\S]{0,400}?text: form\.busy \?[\s\S]{0,200}?: "Unlock Vault"[\s\S]{0,300}?onClicked: form\.submitCurrentMethod\(\)/.test(unlockFormSrc)
+    && /function submitCurrentMethod\(\)[\s\S]{0,200}?submitPinUnlock\(\)[\s\S]{0,120}?unlockVault\(\)/.test(unlockFormSrc),
+  "the PIN and the master password must be submitted the same way")
+check("a failed fingerprint keeps its reason on whichever screen follows",
+  /visible: form\.vault\.fingerprintError !== ""/.test(unlockFormSrc)
+    && !/fingerprintError[\s\S]{0,120}?form\.method/.test(unlockFormSrc),
+  "an unreadable finger is when the user moves to the PIN or password")
+check("the fingerprint prompt and glyph belong to the fingerprint screen only",
+  /visible: form\.method === "fingerprint" && form\.vault\.fingerprintMessage !== ""/.test(unlockFormSrc)
+    && /text: form\.method === "fido" \? "\u{f07f5}" : \(form\.fingerprintBusy \? "\u{f0237}" : "\u{f030b}"\)/u.test(unlockFormSrc)
+    && /text: form\.method === "fido"[\s\S]{0,400}?color: Color\.accent/.test(unlockFormSrc),
+  "a PIN or password screen has no reader to touch; the header glyph stays accent on every method")
+check("the fingerprint button says what the vault is doing once the finger is read",
+  /form\.method === "fingerprint"[\s\S]{0,400}?text: form\.vault\.isUnlocking\s*\n?\s*\?\s*"Unlocking\.\.\."[\s\S]{0,200}?fingerprintScanning \? "Waiting for fingerprint\.\.\." : "Unlock with Fingerprint"/.test(unlockFormSrc),
+  "a read finger ends the scan and starts the unlock; the button must not re-invite a touch")
+check("fingerprint offers no field and no separate submit",
+  !/form\.method === "fingerprint"[\s\S]{0,400}?TextField/.test(unlockFormSrc),
+  "fingerprint asks for a finger, nothing else")
+check("the fallback cycles to the next method that is set up",
+  /nextMethod:\s*nextMethodAfter\(method\)/.test(unlockFormSrc)
+    && /text: "Use " \+ form\.methodLabel\(form\.nextMethod\) \+ " instead"/.test(unlockFormSrc)
+    && /visible: form\.fieldsOffered && form\.nextMethod !== ""/.test(unlockFormSrc),
+  "with one other method it is a toggle; with two it cycles")
+check("a rejected PIN keeps its reason after the PIN method is gone",
+  /visible: form\.fieldsOffered && form\.method !== "pin" && form\.vault\.pinUnlockError !== ""/.test(unlockFormSrc)
+    && !/form\.vault\.pinError/.test(unlockFormSrc),
+  "an exhausted PIN clears itself, so the reason has to outlive it -- but a setup-form error is not that reason")
+check("a hand-picked method lasts only as long as the screen",
+  /onVisibleChanged:\s*\{[\s\S]{0,200}?form\.chosen = ""/.test(unlockFormSrc),
+  "a reopened lock screen starts at the leading method again")
+check("dismissing the popup re-points every view's secret fields at the vault",
+  /function clearSshPopupUnlockState\(\)[\s\S]{0,900}?syncLoginFieldsToState\(\)/.test(panelSrc),
+  "the popup clears masterPassword and pinEntry; the fields must follow them")
+check("popup unlock buttons opt into focus; the panel lock screen does not",
+  /property bool buttonsFocusable:\s*false/.test(unlockFormSrc)
+    && /focusable:\s*form\.buttonsFocusable/.test(unlockFormSrc)
+    && /buttonsFocusable:\s*true/.test(sshUnlockOnly)
+    && !/UnlockForm \{[\s\S]{0,120}buttonsFocusable:\s*true/.test(
+      panelSrc.slice(panelSrc.indexOf("id: unlockForm"), panelSrc.indexOf("id: unlockForm") + 200)
+    ),
+  "sharing the form must not Tab-focus fingerprint/Unlock on the bar lock screen")
 check("background click and Escape explicitly deny the pending request",
   /MouseArea[\s\S]{0,500}?onClicked:\s*popup\.panel\.denySshRequest\(\)/.test(popupSrc)
     && /Qt\.Key_Escape[\s\S]{0,160}?denySshRequest\(\)/.test(popupSrc),

@@ -234,6 +234,39 @@ const messageHandler = panelSrc.slice(
 check("the companion's own events are consumed rather than ignored",
   /message\.type === "locked"/.test(messageHandler) && /message\.type === "keys_loaded"/.test(messageHandler),
   "onSshAgentMessage ignores the lock acknowledgment or the load result")
+check("a failed load is not treated as a lock acknowledgment",
+  /message\.type === "load_failed"/.test(messageHandler)
+    && !/"load_failed"[\s\S]{0,200}sshAgentLockAckTimer\.stop/.test(messageHandler),
+  "load_failed must not stop the lock-ack timer; that timer is for vault_locked")
+check("a failed load clears the startup-load guard so an unlocked vault can retry",
+  /load_failed[\s\S]{0,500}sshAgentLoadedForVaultEpoch = -1/.test(messageHandler)
+    && /load_failed[\s\S]{0,700}maybeStartupLoad\(\)/.test(messageHandler),
+  "without clearing the epoch, maybeStartupLoad refuses a second attempt")
+check("a load_failed for an older load is ignored",
+  /message\.type === "load_failed"[\s\S]{0,400}?message\.epoch !== root\.sshAgentEpoch\) return[\s\S]{0,200}?sshAgentLoadFailStreak \+= 1/.test(messageHandler),
+  "a stale failure clears the epoch a newer load already marked")
+const startupLoad = panelSrc.slice(panelSrc.indexOf("function maybeStartupLoad()"),
+  panelSrc.indexOf("onStatusChanged:", panelSrc.indexOf("function maybeStartupLoad()")))
+check("a startup load waits for a nonce instead of spending the attempt without one",
+  /isValidLoadId\(sshAgentNextLoadId\)[\s\S]{0,120}?return/.test(startupLoad)
+    && startupLoad.indexOf("isValidLoadId") < startupLoad.indexOf("sshAgentLoadedForVaultEpoch = root.vaultEpoch"),
+  startupLoad)
+check("a nonce arriving picks up a load that was waiting for it",
+  /function onSshAgentLoadIdRead\(raw\)[\s\S]{0,300}?maybeStartupLoad\(\)/.test(panelSrc),
+  "nothing resumes the load once the nonce is ready")
+check("an answered identity listing takes its prompt down",
+  /request_cancelled[\s\S]{0,900}?reason === "released"[\s\S]{0,600}?list-identities[\s\S]{0,300}?if \(!listingAnswered\) return/.test(messageHandler),
+  "a released listing is answered, not re-raised as an approval, so the prompt must close")
+check("a failed load retries once, not in a loop",
+  /property int sshAgentLoadFailStreak/.test(panelSrc)
+    && /sshAgentLoadFailStreak \+= 1/.test(messageHandler)
+    && /sshAgentLoadFailStreak === 1/.test(messageHandler),
+  "a persistently bad FIFO must not relaunch the item list forever")
+check("a successful load or a new helper clears the fail streak",
+  /keys_loaded[\s\S]{0,600}sshAgentLoadFailStreak = 0/.test(messageHandler)
+    && /onSshAgentGateOpenChanged[\s\S]{0,900}sshAgentLoadFailStreak = 0/.test(panelSrc)
+    && /function dropVaultState\(\)[\s\S]{0,1200}sshAgentLoadFailStreak = 0/.test(panelSrc),
+  "a later sync after recovery would inherit a spent retry")
 
 // Turning the feature off stops the helper through the supervisor, which is a
 // different path from the lifecycle table -- so the table's clearPublic has to

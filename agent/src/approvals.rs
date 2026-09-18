@@ -3,7 +3,8 @@
 use crate::keystore::{AuthorizationPermit, KeyStore};
 use crate::peer::PeerContext;
 
-const MAX_PENDING: usize = 4;
+/// Requests pending approval and held for an unlock, counted together.
+pub const MAX_PENDING: usize = 4;
 /// How long a person has to answer a prompt before the request is abandoned.
 ///
 /// This is a human deadline, not a machine one: the panel has to open, the

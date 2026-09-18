@@ -93,6 +93,7 @@ Item {
     function loginFieldHasFocus() { return false }
     function unlockFieldHasFocus() { return false }
     function syncLoginFields() {}
+    function syncSensitiveFields() {}
     function revealListIndex(index) {}
     function updateSettingsSticky() {}
   }
@@ -140,6 +141,7 @@ Item {
   readonly property bool colorizeIcon: Model.boolSetting("colorizeIcon", setting("colorizeIcon", false))
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
+  readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
   // The SSH agent is opt-in. Nothing starts a helper, creates a socket, or
   // touches a FIFO while this is false.
@@ -180,7 +182,7 @@ Item {
   property int login2faMethod: rememberedTwoFactorMethod
   // Whether that method came from the user picking it in this login rather
   // than from the remembered setting. A remembered method can be stale -- it
-  // is not scoped to an account -- so an unconfirmed one is dropped and
+  // is remembered per email -- so an unconfirmed one is dropped and
   // retried without, where a confirmed one is reported as not configured.
   property bool login2faMethodConfirmed: false
   property bool show2faMethodPicker: false
@@ -222,7 +224,10 @@ Item {
   // the minutes after this; see sessionHandoffReadCommand().
   property double terminalLoginStartedAt: 0
 
-  // Screens: "main" | "detail" | "edit" | "locked" | "login" | "settings" | "setup"
+  // Navigation: "main" | "detail" | "edit" | "settings" | "setup" | "pin" |
+  // "fingerprint" | "generator" | "sends" | "sshApproval" | "locked". Lock and
+  // login visibility follow `status`; "locked" is set on a lock but nothing
+  // reads it, so it only moves the panel off whatever screen was open.
   property string currentScreen: "main"
   property string screenBeforeSettings: "main"
 
@@ -483,6 +488,32 @@ Item {
   property bool fingerprintScanning: false
   property bool fingerprintAuthorized: false // a live PAM success may consume one keyring lookup
   property string fingerprintMessage: ""
+  // Why the last fingerprint attempt failed. Separate from fingerprintMessage,
+  // which is the progress of an attempt in front of the reader: the reason a
+  // scan failed still has to be readable on the PIN or password screen the
+  // user moves to, where there is no reader and no attempt.
+  property string fingerprintError: ""
+  // FIDO2 unlock state. The gate itself lives in FidoUnlock.qml, which reaches
+  // the vault only for the setting it runs on and for the password a verified
+  // touch releases; these forward what the locked screen and the settings row
+  // read, the same way the fingerprint's own state is read. Its stored entry is
+  // its own (account=fido_password), so this never borrows the fingerprint's.
+  readonly property bool fidoReady: fidoUnlocker.ready
+  readonly property bool fidoAvailable: fidoUnlocker.available
+  readonly property bool fidoStored: fidoUnlocker.stored
+  readonly property bool fidoScanning: fidoUnlocker.scanning
+  // True between a verified touch and the unlock it starts, so the button can
+  // say "Unlocking..." rather than re-inviting a touch already given.
+  readonly property bool fidoAuthorized: fidoUnlocker.authorized
+  readonly property string fidoMessage: fidoUnlocker.message
+  // Writable through to the setup form in FidoUnlock.qml: the screen edits the
+  // field, and the controller owns what the value means.
+  property alias fidoSetupMaster: fidoUnlocker.setupMaster
+  // The setup form's error, not a failed touch: fidoError below is the
+  // fingerprint's counterpart, read by the unlock form on every method.
+  property alias fidoSetupError: fidoUnlocker.error
+  property alias fidoBusy: fidoUnlocker.busy
+  readonly property string fidoError: fidoUnlocker.failure
   property string pendingUnlockPassword: ""   // held only until the unlock lands
   // Authentication processes are started before submission and wait on a
   // private FIFO. These flags distinguish that harmless waiting state from an
@@ -505,7 +536,7 @@ Item {
   property string fpError: ""
   property bool fpBusy: false
   // Which credential source drove the in-flight unlock, so a stale stored
-  // secret can be discarded rather than retried forever. "" | "fingerprint" | "pin"
+  // secret can be discarded rather than retried forever. "" | "fingerprint" | "fido" | "pin"
   property string pendingUnlockFrom: ""
 
   // Send state
@@ -558,7 +589,14 @@ Item {
   property string pinEntry: ""              // locked-screen input
   property int pinAttempts: 0
   readonly property int pinMaxAttempts: 5
+  // The PIN setup form's own error: a PIN that is too short to save, a missing
+  // master password, a keyring that refused the write.
   property string pinError: ""
+  // Why an unlock with the PIN failed, which is a different thing from the
+  // above and is read on whatever screen the user moves to next. Keeping the
+  // two apart is what stops a half-finished setup putting "PIN must be at
+  // least N digits" on a screen with no PIN on it.
+  property string pinUnlockError: ""
   property string pinSetupPin: ""
   property string pinSetupConfirm: ""
   property string pinSetupMaster: ""
@@ -569,7 +607,20 @@ Item {
   // on the PIN field during setup; see pinWeakWarning() in BitwardenModel.js.
   readonly property bool pinSetupWeak: Model.isPinWeak(pinSetupPin)
   readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME") || ""
-  readonly property bool fingerprintReady: fingerprintUnlock && fingerprintAvailable && fingerprintStored
+  // The fingerprint reader is on the laptop body, so a closed lid puts it out
+  // of reach and the option must not be offered. Omarchy's detector decides;
+  // see LidState.qml. The FIDO2 key on a cable is unaffected either way.
+  readonly property bool lidClosed: lidState.closed
+  // A lid shut during a scan takes the reader out of reach, and the first
+  // reading can land after the auto-arm has already started one. Nothing else
+  // watches fingerprintReady falling, so the conversation would sit in PAM with
+  // no button on screen behind it.
+  onLidClosedChanged: if (lidClosed && fingerprintScanning) cancelFingerprintUnlock()
+  // Whether the vault can be unlocked with a finger *right now*: enrolled,
+  // stored, and with the reader within reach. Everything that offers the option
+  // -- the locked screen's button, the SSH prompt's, and the auto-arm -- reads
+  // this, so gating it here is what hides them all.
+  readonly property bool fingerprintReady: fingerprintUnlock && fingerprintAvailable && fingerprintStored && !lidClosed
 
   // Contextual suggestions state
   property var activeWindowData: null
@@ -774,11 +825,6 @@ Item {
     sshAgentTerminateTimer.restart()
   }
 
-  // Live companion events. Task 10 supervises the channel; the vault
-  // lifecycle, approval UI and key loading that consume these arrive with
-  // Tasks 12-14. Until then an unhandled event is deliberately inert rather
-  // than an error: it is a valid v1 message the panel simply has no use for
-  // yet.
   // -------------------------------------------------------------------------
   // Signing authorization
   // -------------------------------------------------------------------------
@@ -956,6 +1002,7 @@ Item {
   // request leave a password, PIN, PAM conversation, or prewarmed CLI behind.
   function clearSshPopupUnlockState() {
     cancelFingerprintUnlock()
+    cancelFidoUnlock()
     cancelAuthPrewarm()
     if (pinUnlockProc.running) pinUnlockProc.running = false
     root.pinUnlockSubmitted = false
@@ -965,8 +1012,11 @@ Item {
     root.pendingUnlockFrom = ""
     root.pinEntry = ""
     root.pinError = ""
+    root.pinUnlockError = ""
     root.fingerprintMessage = ""
+    root.fingerprintError = ""
     root.errorMessage = ""
+    syncLoginFieldsToState()
   }
 
   function approveSshRequest(grantSeconds) {
@@ -1116,11 +1166,19 @@ Item {
       // The request was cancelled by the client, timed out, or released on unlock.
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
-        if (message.reason !== "released") {
+        if (message.reason === "released") {
+          // A released sign request returns immediately as an approval, so the
+          // popup stays up and becomes that. A released identity listing has
+          // just been answered from the freshly loaded keys -- nothing follows
+          // it, and leaving the prompt up strands it on screen with the client
+          // already served.
+          var listingAnswered = root.sshUnlockRequest !== null
+            && root.sshUnlockRaw !== null
+            && root.sshUnlockRaw.reason === "list-identities"
+          if (!listingAnswered) return
+        } else {
           root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "timeout", Date.now())
           noteSshCooldown()
-        } else {
-          return
         }
         if (root.sshPrompt && root.sshPromptQueue.length > 0) advanceSshPrompt()
         else if (root.sshUnlockRequest && root.sshUnlockQueue.length > 0) advanceSshUnlock()
@@ -1152,9 +1210,21 @@ Item {
     if (message.type === "keys_loaded") {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
       root.sshAgentKeysLoadedAt = Date.now()
+      root.sshAgentLoadFailStreak = 0
       // The set is complete: every public_key for this epoch arrived ahead of
       // this message.
       if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
+      return
+    }
+    if (message.type === "load_failed") {
+      // The helper dropped its private set and kept serving. Distinct from
+      // `locked`, which is the ack for vault_locked and must not start a load.
+      // A failure for an older load is stale: a newer one has already begun
+      // and marked its epoch, and clearing that would read the vault again.
+      if (message.epoch !== root.sshAgentEpoch) return
+      root.sshAgentLoadFailStreak += 1
+      root.sshAgentLoadedForVaultEpoch = -1
+      if (root.sshAgentLoadFailStreak === 1) maybeStartupLoad()
       return
     }
     if (message.type === "locked") {
@@ -1168,9 +1238,7 @@ Item {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
       return
     }
-    // unlock_required, approval_required and grants_changed are the signing
-    // UX, and arrive with Task 14. Ignoring a valid v1 message is deliberate
-    // here; an unknown *type* is a protocol failure and never reaches this.
+    // An unknown *type* is a protocol failure and never reaches this.
   }
 
   // -------------------------------------------------------------------------
@@ -1209,6 +1277,9 @@ Item {
   // advances vaultEpoch on every lock and logout, so this is what tells a
   // startup load apart from one that has already happened for this session.
   property int sshAgentLoadedForVaultEpoch: -1
+  // Auto-retries of a failed FIFO load. One extra attempt; a persistently
+  // bad payload must not relaunch the item list forever.
+  property int sshAgentLoadFailStreak: 0
 
   function primeSshAgentLoadId() {
     if (loadIdProc.running || sshAgentNextLoadId !== "") return
@@ -1218,6 +1289,8 @@ Item {
   function onSshAgentLoadIdRead(raw) {
     var candidate = String(raw || "").trim()
     root.sshAgentNextLoadId = Model.isValidLoadId(candidate) ? candidate : ""
+    // A load that was owed while no nonce was ready waited for this one.
+    if (root.sshAgentNextLoadId !== "") maybeStartupLoad()
   }
 
   // Close an open load window. Called on success, on failure, and on a lock
@@ -1302,6 +1375,7 @@ Item {
     // restarted or re-enabled helper eligible for a load, instead of leaving
     // it keyless until something unrelated happens to bump the epoch.
     root.sshAgentLoadedForVaultEpoch = -1
+    root.sshAgentLoadFailStreak = 0
     primeSshAgentLoadId()
     // Startup is not evidence that the vault is locked: rememberSession can
     // restore a session key, so the panel can already be unlocked when the
@@ -1329,6 +1403,14 @@ Item {
     // carries no agent branch. onListFinished() calls back here once it lands.
     if (sshAgentLoadActive || listProc.running) return
     if (sshAgentLoadedForVaultEpoch === root.vaultEpoch) return
+    // Without a nonce the read would run with no agent branch, load nothing,
+    // and still spend the attempt. The nonce is re-primed as each load closes,
+    // so a retry right after a failure usually lands here first;
+    // onSshAgentLoadIdRead() calls back once it is ready.
+    if (!Model.isValidLoadId(sshAgentNextLoadId)) {
+      primeSshAgentLoadId()
+      return
+    }
     // Marked before the attempt, not after it, so one failed attempt cannot
     // turn into a read that relaunches itself.
     sshAgentLoadedForVaultEpoch = root.vaultEpoch
@@ -1530,6 +1612,7 @@ Item {
     isUnlocking = false
     suggestionsDismissed = false
     fingerprintMessage = ""
+    fingerprintError = ""
 
     // controller.show() flips `opened`, which runs onPanelOpened via
     // onOpenedChanged. Only drive it directly when the panel was already open
@@ -1555,6 +1638,9 @@ Item {
     abandonPinSetup()
     abandonFingerprintSetup()
     cancelFingerprintUnlock()
+    // Released, not cancelled: closing the panel must leave the key's request
+    // adoptable, or reopening asks a busy authenticator for a second one.
+    releaseFidoUnlock()
     cancelAttachmentDownloads()
     stopGeneratorServe()
     eachView(function(view) { view.hidePopout() })
@@ -1674,6 +1760,9 @@ Item {
     if (opened) onPanelOpened()
     else {
       cancelFingerprintUnlock()
+      // Not a cancel: see releaseSurface() in FidoUnlock.qml. The key keeps the
+      // request either way, so the conversation is kept to consume the touch.
+      fidoUnlocker.releaseSurface()
       cancelAuthPrewarm()
       if (pendingSecondFactorLogin()) suspendPendingLogin()
       else abandonAuthSecrets()
@@ -1707,7 +1796,7 @@ Item {
       // panel locked, which is precisely when the handoff matters.
       refreshStatus()
       prepareUnlock()
-      startFingerprintUnlock()
+      armPresenceUnlock()
     } else {
       refreshStatus()
     }
@@ -1861,6 +1950,11 @@ Item {
 
     if (st.unlocked) {
       cancelAuthPrewarm()
+      // A vault unlocked from another monitor, a terminal handoff, or the CLI
+      // leaves a presence gate waiting on a touch that can no longer unlock
+      // anything -- a key blinking for an interaction nobody asked for.
+      cancelFingerprintUnlock()
+      cancelFidoUnlock()
       abandonAuthSecrets()
       status = "unlocked"
       currentScreen = "main"
@@ -1888,7 +1982,7 @@ Item {
       currentScreen = "locked"
       focusAppropriateField()
       if (sshAuthSurfaceActive) prepareUnlock()
-      if (sshAuthSurfaceActive) startFingerprintUnlock()
+      if (sshAuthSurfaceActive) armPresenceUnlock()
     } else {
       cancelAuthPrewarm()
       if (vaultStatePresent()) {
@@ -2022,7 +2116,7 @@ Item {
   // Every view's login fields, re-pointed at the state behind them. See
   // syncLoginFields() in the View section for why this is never skipped.
   function syncLoginFieldsToState() {
-    eachView(function(view) { view.syncLoginFields() })
+    eachView(function(view) { view.syncSensitiveFields() })
   }
 
   // Closing on a challenge keeps the stage and the password, and drops the
@@ -2428,7 +2522,7 @@ Item {
 
     if (err) {
       logLogin("bw-error", out, err, exitCode)
-      errorMessage = err
+      errorMessage = Model.sanitizeInteractiveStderr(err, "") || "Login failed. Please check your credentials."
     } else if (exitCode !== 0) {
       logLogin("failed-no-stderr", out, err, exitCode)
       errorMessage = "Login failed. Please check your credentials."
@@ -2634,10 +2728,13 @@ Item {
     cancelFingerprintUnlock()
     fingerprintStored = false
     fingerprintMessage = ""
+    fingerprintError = ""
+    fidoUnlocker.reset()
     pinConfigured = false
     pinEntry = ""
     pinAttempts = 0
     pinError = ""
+    pinUnlockError = ""
     if (pinUnlock) writeSetting("pinUnlock", false, "bool")
   }
 
@@ -3119,6 +3216,7 @@ Item {
     pinSetupConfirm = ""
     pinSetupMaster = ""
     pinError = ""
+    pinUnlockError = ""
     screenBeforeSettings = "main"
     currentScreen = "pin"
     Qt.callLater(function() { presenter.focusField("pinSetupPin") })
@@ -3141,6 +3239,7 @@ Item {
     if (!pinSetupMaster) { pinError = "Master password is required to encrypt the PIN"; return }
 
     pinError = ""
+    pinUnlockError = ""
     pinBusy = true
     beginEpochOperation("pinStore")
     pinStoreProc.running = true
@@ -3173,10 +3272,10 @@ Item {
   function submitPinUnlock() {
     if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
     if (String(pinEntry || "").length < Model.pinMinLength()) {
-      pinError = "PIN must be at least " + Model.pinMinLength() + " digits"
+      pinUnlockError = "PIN must be at least " + Model.pinMinLength() + " digits"
       return
     }
-    pinError = ""
+    pinUnlockError = ""
     pinBusy = true
     pinUnlockSubmitted = true
     pinUnlockProc.command = Model.pinUnlockCommand()
@@ -3200,9 +3299,9 @@ Item {
         // Refuse to keep serving guesses at the UI. The ciphertext goes too,
         // so re-enabling requires the master password again.
         clearPin()
-        pinError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
+        pinUnlockError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
       } else {
-        pinError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
+        pinUnlockError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
       }
       return
     }
@@ -3223,6 +3322,7 @@ Item {
   function disablePinUnlock() {
     clearPin()
     pinError = ""
+    pinUnlockError = ""
     flashNotification("PIN unlock removed")
   }
 
@@ -3385,6 +3485,11 @@ Item {
       else beginFingerprintSetup()
       return
     }
+    if (e.action === "fido") {
+      if (fidoStored) forgetFidoUnlock()
+      else beginFidoSetup()
+      return
+    }
     if (e.type === "bool") writeSetting(e.key, !settingValue(e), "bool")
   }
 
@@ -3450,6 +3555,7 @@ Item {
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
+      case "fidoUnlock": return fidoUnlock && fidoStored
       // The toggle reflects a PIN actually being set, not just the flag.
       case "pinUnlock": return pinUnlock && pinConfigured
       case "sshAgentEnabled": return sshAgentEnabled
@@ -3462,28 +3568,36 @@ Item {
 
   function refreshFingerprintAvailability() {
     checkDependencies()
+    // FIDO2 readiness comes from its own probe, run here so the setup form
+    // opens on the right branch rather than flipping once the probe answers.
+    fidoUnlocker.refresh()
   }
 
   function onFingerprintStoredChecked(raw) {
     fingerprintStored = String(raw || "").trim() === "yes"
-    if (sshAuthSurfaceActive && status === "locked") startFingerprintUnlock()
+    if (sshAuthSurfaceActive && status === "locked") armPresenceUnlock()
   }
 
   function startFingerprintUnlock() {
     if (!fingerprintReady || status !== "locked" || isUnlocking) return
     if (fingerprintScanning || fingerprintPam.active) return
+    // Release rather than cancel: the key holds its request regardless, and
+    // keeping the conversation lets a return to the key adopt it.
+    fidoUnlocker.releaseSurface()
     if (!userName) {
-      fingerprintMessage = "Cannot determine current user for fingerprint verification"
+      fingerprintError = "Cannot determine current user for fingerprint verification"
       return
     }
 
     errorMessage = ""
+    fingerprintError = ""
     fingerprintAuthorized = false
     fingerprintScanning = true
     fingerprintMessage = "󰈷  Touch the fingerprint reader..."
     if (!fingerprintPam.start()) {
       fingerprintScanning = false
-      fingerprintMessage = "Could not start fingerprint verification"
+      fingerprintMessage = ""
+      fingerprintError = "Could not start fingerprint verification"
     }
   }
 
@@ -3500,15 +3614,18 @@ Item {
 
     if (result === PamResult.Success) {
       fingerprintAuthorized = true
-      fingerprintMessage = "󰈷  Fingerprint verified, unlocking..."
+      // The button under this says "Unlocking..." on its own now.
+      fingerprintMessage = "󰈷  Fingerprint verified"
       if (!keyringLookupMasterProc.running) {
         keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
         keyringLookupMasterProc.running = true
       }
     } else if (result === PamResult.MaxTries) {
-      fingerprintMessage = "Too many fingerprint attempts. Use your master password."
+      fingerprintMessage = ""
+      fingerprintError = "Too many fingerprint attempts. Use your master password."
     } else {
-      fingerprintMessage = "Fingerprint not recognised. Try again or use your master password."
+      fingerprintMessage = ""
+      fingerprintError = "Fingerprint not recognised. Try again or use your master password."
     }
   }
 
@@ -3525,7 +3642,8 @@ Item {
     var pw = String(raw || "")
     if (!pw) {
       fingerprintStored = false
-      fingerprintMessage = "No stored master password. Unlock with your password once to enable this."
+      fingerprintMessage = ""
+      fingerprintError = "No stored master password. Unlock with your password once to enable this."
       return
     }
     pendingUnlockFrom = "fingerprint"
@@ -3601,6 +3719,7 @@ Item {
     fingerprintStored = false
     cancelFingerprintUnlock()
     fingerprintMessage = ""
+    fingerprintError = ""
     flashNotification("Fingerprint unlock forgotten")
   }
 
@@ -3608,6 +3727,7 @@ Item {
     if (!fingerprintUnlock) {
       cancelFingerprintUnlock()
       fingerprintMessage = ""
+      fingerprintError = ""
       // Not `if (fingerprintStored)`. That flag is false whenever the reader
       // or fprintd is missing, which says nothing about whether the master
       // password is still sitting in the keyring -- and turning the feature
@@ -3616,6 +3736,45 @@ Item {
     } else {
       refreshFingerprintAvailability()
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // FIDO2 Unlock
+  // -------------------------------------------------------------------------
+  //
+  // FidoUnlock.qml owns the whole gate -- its PAM stack, its probe, its
+  // keyring entry and the setup form. These are the names the locked screen and
+  // the settings row use, kept parallel to the fingerprint's so the two methods
+  // read the same way from the outside (and so both halves of the settings
+  // screen can dispatch on a single action name).
+
+  // One gate at a time: two armed conversations mean two devices waiting, and
+  // whichever answers second is a touch given to nothing.
+  function startFidoUnlock() {
+    cancelFingerprintUnlock()
+    fidoUnlocker.startUnlock()
+  }
+  function cancelFidoUnlock() { fidoUnlocker.cancelUnlock() }
+  // Step back from the key without abandoning the request it is holding.
+  function releaseFidoUnlock() { fidoUnlocker.releaseSurface() }
+  function beginFidoSetup() { fidoUnlocker.beginSetup() }
+  function submitFidoSetup() { fidoUnlocker.submitSetup() }
+  function runFidoSetup() { fidoUnlocker.runOmarchySetup() }
+  function forgetFidoUnlock() { fidoUnlocker.forget("") }
+
+  // Which presence gate arms when the vault needs the screen: the FIDO2 key
+  // when one is plugged in and ready, the reader otherwise. Both buttons remain
+  // available either way -- this only decides which is already waiting.
+  function armPresenceUnlock() {
+    if (fidoReady) {
+      startFidoUnlock()
+      return
+    }
+    // A key plugged in since the last probe is not ready yet as far as this
+    // knows, and the answer arrives too late to choose from. Ask now: the
+    // probe arms the key itself when it lands on a locked vault.
+    if (fidoUnlock) fidoUnlocker.refresh()
+    startFingerprintUnlock()
   }
 
   // -------------------------------------------------------------------------
@@ -3634,6 +3793,7 @@ Item {
       return
     }
     cancelFingerprintUnlock()
+    cancelFidoUnlock()
     errorMessage = ""
     isUnlocking = true
     // Kept only until the unlock result is known; cleared on both paths below.
@@ -3666,10 +3826,18 @@ Item {
         Qt.callLater(prepareUnlock)
         return
       }
+      if (pendingUnlockFrom === "fido") {
+        pendingUnlockFrom = ""
+        fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
+        errorMessage = ""
+        focusAppropriateField()
+        Qt.callLater(prepareUnlock)
+        return
+      }
       if (pendingUnlockFrom === "pin") {
         pendingUnlockFrom = ""
         clearPin()
-        pinError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
+        pinUnlockError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
@@ -3739,7 +3907,9 @@ Item {
     pinEntry = ""
     pinAttempts = 0
     pinError = ""
+    pinUnlockError = ""
     fingerprintMessage = ""
+    fingerprintError = ""
 
     beginInitialVaultLoad(true, false)
     resetAutoLockTimer()
@@ -3767,9 +3937,13 @@ Item {
     status = "locked"
     currentScreen = "locked"
     fingerprintMessage = ""
+    fingerprintError = ""
     flashNotification("Vault locked")
     focusAppropriateField()
-    if (sshAuthSurfaceActive) startFingerprintUnlock()
+    // Whichever gate the lock screen is about to offer, not the reader every
+    // time: locking from an open panel with a key plugged in used to arm the
+    // fingerprint, so a touch went to the focused field instead of to PAM.
+    if (sshAuthSurfaceActive) armPresenceUnlock()
   }
 
   function vaultStatePresent() {
@@ -3786,9 +3960,11 @@ Item {
     initialSyncAttempted = false
     pinUnlockSubmitted = false
     cancelFingerprintUnlock()
+    cancelFidoUnlock()
     cancelAttachmentDownloads()
     session = ""
     vaultEpoch += 1
+    sshAgentLoadFailStreak = 0
     readEpochs = ({})
     masterPassword = ""
     itemsLoadedAt = 0
@@ -3899,6 +4075,7 @@ Item {
     fpSetupMaster = ""
     masterToStore = ""
     pendingAssociationsJson = ""
+    fidoUnlocker.dropSecrets()
     scrubSecretBuffers()
   }
 
@@ -3918,7 +4095,7 @@ Item {
       copyPasswordProc,
       createItemProc, editItemProc, deleteItemProc, createFolderProc, attachmentProc,
       associationsReadProc, generateServeRequestProc
-    ]
+    ].concat(fidoUnlocker.secretProcesses())
   }
 
   function scrubSecretBuffers() {
@@ -4291,8 +4468,12 @@ Item {
     } else if (currentScreen === "fingerprint") {
       fpError = ""
       currentScreen = "settings"
+    } else if (currentScreen === "fido") {
+      fidoUnlocker.error = ""
+      currentScreen = "settings"
     } else if (currentScreen === "pin") {
       pinError = ""
+      pinUnlockError = ""
       currentScreen = "settings"
     } else if (currentScreen === "settings") {
       closeSettings()
@@ -4328,6 +4509,7 @@ Item {
     // here rather than at each of the ways out.
     if (currentScreen !== "pin") abandonPinSetup()
     if (currentScreen !== "fingerprint") abandonFingerprintSetup()
+    if (currentScreen !== "fido") fidoUnlocker.abandonSetup()
     restoreScreenFocus()
   }
 
@@ -4338,7 +4520,7 @@ Item {
         case "main": presenter.focusField("search"); return
         case "edit": presenter.focusField("formName"); return
         // These open through a function that focuses their own first field.
-        case "pin": case "fingerprint": return
+        case "pin": case "fingerprint": case "fido": return
         case "sends": if (sendMode === "create") return; break
       }
       // Everything else is keyboard-navigated rather than typed into.
@@ -6369,6 +6551,27 @@ Item {
       root.fingerprintScanning = false
       root.fingerprintAuthorized = false
       root.fingerprintMessage = "Fingerprint verification unavailable"
+    }
+  }
+
+  // The lid, for the fingerprint reader's reachability. Its own file; the vault
+  // reads only whether the lid is shut.
+  LidState {
+    id: lidState
+    vault: root
+  }
+
+  // FIDO2 unlock, in its own file. It is handed the vault and the setting and
+  // gives back a password once a key touch has been verified; everything else
+  // FIDO2 -- its PAM stack, its probe, its keyring entry -- stays in there.
+  FidoUnlock {
+    id: fidoUnlocker
+    vault: root
+    armed: root.fidoUnlock
+
+    onUnlocked: function(password) {
+      root.pendingUnlockFrom = "fido"
+      root.unlockVaultWithPassword(password)
     }
   }
 

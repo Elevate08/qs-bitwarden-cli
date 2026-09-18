@@ -15,6 +15,7 @@ PanelWindow {
   // The vault this panel shows (Service.qml); `panel` is the view that draws it.
   required property var vault
   required property Item anchorItem
+  readonly property alias unlockScreen: unlockScreen
 
   // Every monitor's bar carries this popup, and all of them read the same vault,
   // so only the presenting view -- the open popout, else the focused monitor --

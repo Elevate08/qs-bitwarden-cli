@@ -6,6 +6,7 @@
 const KEYRING_SERVICE = "qs-bitwarden-cli"
 const KEYRING_ACCOUNT = "session"
 const KEYRING_MASTER = "master_password"
+const KEYRING_FIDO = "fido_password"
 
 // `secret-tool store` reads its secret from stdin until EOF, and Quickshell's
 // Process.write() cannot close stdin -- writing a value alone leaves the process
@@ -78,7 +79,7 @@ const SESSION_ENV = "BW_SESSION"
 // --passwordenv, BW_CLIENTID and BW_CLIENTSECRET on `login --apikey`. So the
 // master password and API key reach bw without appearing in any argv -- not
 // bw's, and not the wrapping shell's. The builders below interpolate nothing
-// secret into the script text; see authEnv() in Panel.qml for the values.
+// secret into the script text; see authEnv() in Service.qml for the values.
 const PASSWORD_ENV = "BW_PASSWORD"
 const CLIENT_ID_ENV = "BW_CLIENTID"
 const CLIENT_SECRET_ENV = "BW_CLIENTSECRET"
@@ -1131,8 +1132,8 @@ function listCommand() {
 // material through that branch. Type 5 is reduced to public metadata, and
 // every other type is omitted.
 //
-// This command is introduced separately from listCommand() so the process
-// boundary can be proved before the panel adopts its new output contract.
+// Production reads go through sanitizedListCommand(). listCommand() stays as
+// the uncapped-shape primitive the stream-limit tests pin.
 var SANITIZED_ITEMS_FILTER = [
   "def string_or_empty: if type == \"string\" then . else \"\" end;",
   "def string_or_null: if type == \"string\" then . else null end;",
@@ -1206,27 +1207,34 @@ var AGENT_KEYS_FILTER = [
 // stream first with the Node runtime that `bw` itself requires. Nothing is
 // written until the entire input is valid strict JSON, so parse failures cannot
 // leak a partial vault or an exception containing source material.
-var STRICT_JSON_PASSTHROUGH = [
-  "const maxBytes = Number(process.argv[1]);",
-  "const chunks = [];",
-  "let byteLength = 0;",
-  "process.stdin.on(\"data\", function (chunk) {",
-  "  byteLength += chunk.length;",
-  "  chunks.push(chunk);",
-  "});",
-  "process.stdin.on(\"end\", function () {",
-  "  if (byteLength > maxBytes) process.exit(1);",
-  "  const raw = Buffer.concat(chunks, byteLength);",
-  "  try {",
-  "    const decoder = new (require(\"util\").TextDecoder)(\"utf-8\", { fatal: true });",
-  "    const parsed = JSON.parse(decoder.decode(raw));",
-  "    if (!Array.isArray(parsed)) process.exit(1);",
-  "  } catch (error) {",
-  "    process.exit(1);",
-  "  }",
-  "  process.stdout.write(raw);",
-  "});"
-].join("\n")
+function strictJsonStdinScript(rejectExpr, writeStmt) {
+  return [
+    "const maxBytes = Number(process.argv[1]);",
+    "const chunks = [];",
+    "let byteLength = 0;",
+    "process.stdin.on(\"data\", function (chunk) {",
+    "  byteLength += chunk.length;",
+    "  chunks.push(chunk);",
+    "});",
+    "process.stdin.on(\"end\", function () {",
+    "  if (byteLength > maxBytes) process.exit(1);",
+    "  const raw = Buffer.concat(chunks, byteLength);",
+    "  try {",
+    "    const decoder = new (require(\"util\").TextDecoder)(\"utf-8\", { fatal: true });",
+    "    const parsed = JSON.parse(decoder.decode(raw));",
+    "    if (" + rejectExpr + ") process.exit(1);",
+    "  } catch (error) {",
+    "    process.exit(1);",
+    "  }",
+    "  " + writeStmt,
+    "});"
+  ].join("\n")
+}
+
+var STRICT_JSON_PASSTHROUGH = strictJsonStdinScript(
+  "!Array.isArray(parsed)",
+  "process.stdout.write(raw);"
+)
 
 // The same validator, for the one-item response `bw create item` and
 // `bw edit item` print. It differs only in the shape it accepts and the two
@@ -1237,29 +1245,10 @@ var STRICT_JSON_PASSTHROUGH = [
 // because the whole point of this stage is that strict Node JSON is the first
 // thing to parse these bytes. Letting jq slurp them into an array first would
 // hand the lenient parser the untrusted input and validate what it produced.
-var STRICT_JSON_ONE_OBJECT = [
-  "const maxBytes = Number(process.argv[1]);",
-  "const chunks = [];",
-  "let byteLength = 0;",
-  "process.stdin.on(\"data\", function (chunk) {",
-  "  byteLength += chunk.length;",
-  "  chunks.push(chunk);",
-  "});",
-  "process.stdin.on(\"end\", function () {",
-  "  if (byteLength > maxBytes) process.exit(1);",
-  "  const raw = Buffer.concat(chunks, byteLength);",
-  "  try {",
-  "    const decoder = new (require(\"util\").TextDecoder)(\"utf-8\", { fatal: true });",
-  "    const parsed = JSON.parse(decoder.decode(raw));",
-  "    if (parsed === null || typeof parsed !== \"object\" || Array.isArray(parsed)) process.exit(1);",
-  "  } catch (error) {",
-  "    process.exit(1);",
-  "  }",
-  "  process.stdout.write(\"[\");",
-  "  process.stdout.write(raw);",
-  "  process.stdout.write(\"]\");",
-  "});"
-].join("\n")
+var STRICT_JSON_ONE_OBJECT = strictJsonStdinScript(
+  "parsed === null || typeof parsed !== \"object\" || Array.isArray(parsed)",
+  "process.stdout.write(\"[\"); process.stdout.write(raw); process.stdout.write(\"]\");"
+)
 
 // Printed instead of an envelope when the save itself succeeded but the
 // sanitizing stage did not. The item is in the vault either way, so the panel
@@ -1630,6 +1619,36 @@ function keyringHasMasterPasswordCommand() {
 }
 
 // -------------------------------------------------------------------------
+// FIDO2 Unlock
+// -------------------------------------------------------------------------
+//
+// A FIDO2 key proves presence just as a fingerprint does, so it gates the same
+// kind of secret in the same way: the master password is kept in the login
+// keyring and a verified key touch is the only gate on reading it back. It is
+// a separate entry from the fingerprint's rather than a shared one, so the two
+// methods have independent lifecycles -- enabling or forgetting one never
+// reaches into the other's state. The encryption is the keyring's, not ours:
+// this blob is the password in the clear behind the keyring's own lock, which
+// is what let the fingerprint path keep its simple shape too.
+
+function keyringStoreFidoPasswordCommand() {
+  return ["bash", "-c", keyringStoreScript("Bitwarden Master Password (FIDO2 unlock)", KEYRING_FIDO)]
+}
+
+function keyringLookupFidoPasswordCommand() {
+  return keyringLookupEntryCommand(KEYRING_FIDO)
+}
+
+function keyringClearFidoPasswordCommand() {
+  return keyringClearEntryCommand(KEYRING_FIDO)
+}
+
+// Presence check that never puts the secret on stdout.
+function keyringHasFidoPasswordCommand() {
+  return keyringHasEntryCommand(KEYRING_FIDO)
+}
+
+// -------------------------------------------------------------------------
 // PIN Unlock
 // -------------------------------------------------------------------------
 //
@@ -1724,7 +1743,7 @@ function keyringHasPinCommand() {
 // credential hidden in a locked collection. Search first, request unlock of
 // every match, clear, then search again. Logout succeeds only when that final
 // search proves no matching item remains.
-var KEYRING_ALL_ACCOUNTS = [KEYRING_ACCOUNT, KEYRING_MASTER, KEYRING_PIN]
+var KEYRING_ALL_ACCOUNTS = [KEYRING_ACCOUNT, KEYRING_MASTER, KEYRING_FIDO, KEYRING_PIN]
 
 function keyringSearchStateScript(account, resultVar) {
   // Consume the complete search output with wc instead of capturing it: for an
@@ -3893,7 +3912,7 @@ var SSH_AGENT_HEALTHY_MS = 60 * 1000
 // it, which is exactly the case the protocol version exists to catch.
 var SSH_AGENT_EVENT_TYPES = [
   "ready", "unlock_required", "approval_required", "request_cancelled",
-  "keys_loaded", "public_key", "locked", "grants_changed", "state_changed", "error"
+  "keys_loaded", "public_key", "locked", "load_failed", "grants_changed", "state_changed", "error"
 ]
 
 function sshAgentMaxLineBytes() { return SSH_AGENT_MAX_LINE_BYTES }
@@ -5573,6 +5592,9 @@ var SETTINGS_SCHEMA = [
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint", defaultValue: false,
     requires: "fprintd", action: "fingerprint",
     description: "Store the master password in the OS keyring, gated behind a fingerprint." },
+  { key: "fidoUnlock", group: "security", type: "bool", label: "Unlock with FIDO2 key", defaultValue: false,
+    action: "fido",
+    description: "Store the master password in the OS keyring, gated behind a FIDO2 key touch. Requires 'omarchy setup security fido2'; the same registration also serves sudo and polkit." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "Encrypt the master password with a key derived from a PIN. Use 6 digits or more; 4 is the floor and is flagged as weak." },
@@ -5860,7 +5882,7 @@ var GENERATE_HOST = "127.0.0.1"
 var GENERATE_PORT = 8087
 
 // Started as a managed child so it dies with the shell rather than lingering.
-// BW_SESSION is cleared by the caller; see generatorServeEnv() in Panel.qml.
+// BW_SESSION is cleared by the caller; see generatorServeEnv() in Service.qml.
 function generateServeCommand() {
   return ["bw", "serve", "--hostname", GENERATE_HOST, "--port", String(GENERATE_PORT)]
 }

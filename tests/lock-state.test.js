@@ -306,9 +306,12 @@ check("abandoning authentication clears every typed or staged auth secret",
   abandonedAuth)
 check("handoff, external unlock, and panel hide purge abandoned auth secrets",
   /cancelAuthPrewarm\(\)[\s\S]{0,100}abandonAuthSecrets\(\)/.test(bodyOf("onSessionHandoff"))
-    && /if\s*\(st\.unlocked\)[\s\S]{0,120}abandonAuthSecrets\(\)/.test(bodyOf("onStatusFinished"))
-    && /onOpenedChanged:[\s\S]{0,180}else[\s\S]{0,120}abandonAuthSecrets\(\)/.test(panelSrc),
+    && /if\s*\(st\.unlocked\)[\s\S]{0,400}abandonAuthSecrets\(\)/.test(bodyOf("onStatusFinished"))
+    && /onOpenedChanged:[\s\S]{0,180}else[\s\S]{0,500}abandonAuthSecrets\(\)/.test(panelSrc),
   bodyOf("onSessionHandoff") + "\n" + bodyOf("onStatusFinished"))
+check("an unlock from elsewhere takes down a waiting reader or key",
+  /if\s*\(st\.unlocked\)[\s\S]{0,400}cancelFingerprintUnlock\(\)[\s\S]{0,120}cancelFidoUnlock\(\)/.test(bodyOf("onStatusFinished")),
+  "a gate armed for a vault someone else unlocked leaves a device waiting on a touch")
 check("closing the panel invalidates PIN and fingerprint unlock completions",
   /abandonAuthSecrets\(\)/.test(bodyOf("close"))
     && /pinUnlockSubmitted\s*=\s*false/.test(abandonedAuth)
