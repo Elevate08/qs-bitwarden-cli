@@ -16,7 +16,8 @@
 - **Unlock with a FIDO2 key** (opt-in, `fidoUnlock`). A YubiKey or any other
   FIDO2 authenticator can now unlock the vault, beside the fingerprint reader
   and the PIN. It reuses the registration `omarchy setup security fido2` writes
-  to `/etc/fido2/fido2` -- the same one that already serves `sudo` and polkit --
+  to `/etc/fido2/fido2` -- the same one the system's own authentication prompts
+  already use --
   and verifies the key through a PAM stack shipped inside the plugin and loaded
   from the plugin's own directory (Quickshell's `configDirectory`), so enabling
   it needs no privileged change to `/etc/pam.d`. Like fingerprint unlock, the

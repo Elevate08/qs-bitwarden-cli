@@ -5549,7 +5549,7 @@ function installPackagesCommand(pkgs, displayName) {
 // enrols a finger, verifies it, and only then writes the PAM stacks -- the
 // last of which is what this plugin's `ready` check is actually looking for.
 // It runs in the same floating terminal as an install, since it is interactive
-// (sudo, then "keep moving the finger around on the sensor").
+// (an administrator prompt, then "keep moving the finger around on the sensor").
 function fingerprintSetupCommand() {
   return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
     "omarchy setup security fingerprint"]
@@ -5594,7 +5594,7 @@ var SETTINGS_SCHEMA = [
     description: "Store the master password in the OS keyring, gated behind a fingerprint." },
   { key: "fidoUnlock", group: "security", type: "bool", label: "Unlock with FIDO2 key", defaultValue: false,
     action: "fido",
-    description: "Store the master password in the OS keyring, gated behind a FIDO2 key touch. Requires 'omarchy setup security fido2'; the same registration also serves sudo and polkit." },
+    description: "Store the master password in the OS keyring, gated behind a FIDO2 key touch. Requires 'omarchy setup security fido2'; the same registration also serves the system's own authentication prompts." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "Encrypt the master password with a key derived from a PIN. Use 6 digits or more; 4 is the floor and is flagged as weak." },
