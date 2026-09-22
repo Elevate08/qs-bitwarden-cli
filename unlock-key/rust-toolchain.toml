@@ -1,0 +1,9 @@
+# The release helper ships as bytes in this repository, so the toolchain that
+# produced them is part of the artifact. rustup honours this file; a distro
+# cargo ignores it, which is why the reproducible build (Task 16) runs under
+# rustup in a pinned container and compares output byte for byte.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu"]
+profile = "minimal"
