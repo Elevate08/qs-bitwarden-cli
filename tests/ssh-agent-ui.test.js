@@ -138,6 +138,22 @@ check("a forwarded request is flagged", forwarded.forwardedWarning.length > 0, f
 eq("a forwarded request offers no grant", forwarded.grantOffered, false)
 eq("an ordinary request has no forwarding warning", view.forwardedWarning, "")
 
+// What is being signed. A grant covers one kind of signature, so the prompt
+// names the kind the companion classified -- and nothing it did not.
+const labelled = (operation, operationDetail) =>
+  Model.sshAgentPromptView(Object.assign({}, request, { operation, operationDetail }), 120)
+eq("a Git signature is named as one", labelled("sshsig", "git").operationLabel, "Git commit or tag signature")
+check("another namespace is shown as-is",
+  /"file"/.test(labelled("sshsig", "file").operationLabel), labelled("sshsig", "file").operationLabel)
+eq("a login names its user", labelled("ssh-auth", "root").operationLabel, "SSH login as root")
+check("unrecognised data says so",
+  /unrecognised/i.test(labelled("ssh-sign", "").operationLabel), labelled("ssh-sign", "").operationLabel)
+eq("an unknown operation is not passed through", labelled("delete-everything", "x").operation, "")
+eq("and gets no label", labelled("delete-everything", "x").operationLabel, "")
+check("an absurd login name is bounded",
+  labelled("ssh-auth", "u".repeat(5000)).operationLabel.length <= 300,
+  String(labelled("ssh-auth", "u".repeat(5000)).operationLabel.length))
+
 // A vault item's name is attacker-controllable by whoever shares the
 // collection it came from, and the process path comes from outside too.
 const hostile = Model.sshAgentPromptView(Object.assign({}, request, {
@@ -180,6 +196,13 @@ check("an expiring grant says so", grants[1].remainingLabel.length > 0, grants[1
 check("no grant view carries key material",
   grants.every(g => JSON.stringify(g).indexOf("PRIVATE") < 0), "leaked")
 eq("a malformed grant list yields nothing", Model.sshAgentGrantViews(null).length, 0)
+const scoped = Model.sshAgentGrantViews([
+  { grantId: 11, keyName: "work", fingerprint: "SHA256:z", pid: 7, processPath: "/usr/bin/ssh-keygen",
+    operation: "sshsig", operationDetail: "git", expiresInSec: 60 }
+], 1_000)
+eq("a grant says what kind of signature it covers", scoped[0].operationLabel, "Git commit or tag signature")
+eq("and still says so as it counts down",
+  Model.sshAgentGrantsAt(scoped, 31_000)[0].operationLabel, "Git commit or tag signature")
 
 // A grant is announced once and then nothing is said until it changes, so the
 // remaining time has to be re-derived rather than remembered. Without this the

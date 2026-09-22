@@ -1,5 +1,5 @@
 use qs_bitwarden_ssh_agent::approvals::{
-    ApprovalManager, Authorization, RequestId, Submit, MAX_PENDING,
+    ApprovalManager, Authorization, RequestId, SignScope, Submit, MAX_PENDING,
 };
 use qs_bitwarden_ssh_agent::control::{
     parse_control_line, ControlMessage, LoadStatus, MAX_CONTROL_LINE,
@@ -42,7 +42,11 @@ enum Output {
         pid: u32,
         #[serde(rename = "processPath")]
         process_path: String,
+        /// `sshsig`, `ssh-auth`, or `ssh-sign` for data not recognised.
         operation: &'static str,
+        /// The SSHSIG namespace or the login name; empty for `ssh-sign`.
+        #[serde(rename = "operationDetail")]
+        operation_detail: String,
         forwarded: bool,
         #[serde(rename = "grantOffered")]
         grant_offered: bool,
@@ -79,6 +83,11 @@ enum Output {
         pid: u32,
         #[serde(rename = "processPath")]
         process_path: String,
+        /// As on `approval_required`; empty for an identity listing.
+        operation: &'static str,
+        #[serde(rename = "operationDetail")]
+        operation_detail: String,
+        forwarded: bool,
         /// Whether approving this request may also open a grant. Stated by
         /// the companion so the panel never has to assume it.
         #[serde(rename = "grantOffered")]
@@ -126,6 +135,9 @@ struct GrantView {
     pid: u32,
     #[serde(rename = "processPath")]
     process_path: String,
+    operation: &'static str,
+    #[serde(rename = "operationDetail")]
+    operation_detail: String,
     #[serde(rename = "expiresInSec")]
     expires_in_sec: u64,
 }
@@ -145,6 +157,7 @@ struct HeldSign {
     message: Vec<u8>,
     flags: u32,
     peer: qs_bitwarden_ssh_agent::peer::PeerContext,
+    scope: SignScope,
     deadline_ms: u64,
     /// Set when the user approved before the load finished, carrying the
     /// grant window they chose. Approving needs the key's identity and the
@@ -494,6 +507,10 @@ fn handle_client(
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
     match event.request {
+        // The server answers binds itself and never forwards one here.
+        AgentRequest::SessionBind { .. } => {
+            let _ = event.reply.send(protocol::failure_response());
+        }
         // Deliberately not behind `gate_open`. Public keys are not secret, and
         // a locked vault that still lists them is what stops every `ssh` after
         // a lock from raising an unlock prompt for a connection that may have
@@ -523,6 +540,9 @@ fn handle_client(
                             fingerprint: String::new(),
                             pid: event.peer.pid,
                             process_path: event.peer.executable.to_string_lossy().into_owned(),
+                            operation: "",
+                            operation_detail: String::new(),
+                            forwarded: event.forwarded,
                             grant_offered: false,
                         },
                     )?;
@@ -546,6 +566,10 @@ fn handle_client(
             message,
             flags,
         } => {
+            let scope = SignScope {
+                kind: protocol::classify_sign(&public_blob, &message),
+                forwarded: event.forwarded,
+            };
             if !gate_open {
                 // A locked vault that still knows this key asks the panel to
                 // unlock and keeps the request, rather than failing a client
@@ -579,7 +603,10 @@ fn handle_client(
                         fingerprint: key.fingerprint.clone(),
                         pid: event.peer.pid,
                         process_path: event.peer.executable.to_string_lossy().into_owned(),
-                        grant_offered: true,
+                        operation: scope.kind.operation(),
+                        operation_detail: scope.kind.detail().to_owned(),
+                        forwarded: scope.forwarded,
+                        grant_offered: scope.grantable(),
                     },
                 )?;
                 held.insert(
@@ -590,6 +617,7 @@ fn handle_client(
                         message,
                         flags,
                         peer: event.peer,
+                        scope,
                         deadline_ms: elapsed_ms(started).saturating_add(HELD_LIFETIME_MS),
                         approved: None,
                     },
@@ -604,6 +632,7 @@ fn handle_client(
                 store.epoch(),
                 &public_blob,
                 event.peer.clone(),
+                scope.clone(),
                 elapsed_ms(started),
             ) {
                 Ok(Submit::Granted(authorization)) => {
@@ -631,9 +660,10 @@ fn handle_client(
                             fingerprint: key.fingerprint.clone(),
                             pid: event.peer.pid,
                             process_path,
-                            operation: "ssh-sign",
-                            forwarded: false,
-                            grant_offered: true,
+                            operation: scope.kind.operation(),
+                            operation_detail: scope.kind.detail().to_owned(),
+                            forwarded: scope.forwarded,
+                            grant_offered: scope.grantable(),
                         },
                     )?;
                     pending.insert(
@@ -690,6 +720,7 @@ fn release_held(
                 store.epoch(),
                 &request.public_blob,
                 request.peer.clone(),
+                request.scope.clone(),
                 elapsed_ms(started),
             ) {
                 Ok(Submit::Granted(authorization)) => {
@@ -710,6 +741,7 @@ fn release_held(
             store.epoch(),
             &request.public_blob,
             request.peer.clone(),
+            request.scope.clone(),
             elapsed_ms(started),
         ) {
             Ok(Submit::Granted(authorization)) => {
@@ -737,9 +769,10 @@ fn release_held(
                         fingerprint: key.fingerprint.clone(),
                         pid: request.peer.pid,
                         process_path: request.peer.executable.to_string_lossy().into_owned(),
-                        operation: "ssh-sign",
-                        forwarded: false,
-                        grant_offered: true,
+                        operation: request.scope.kind.operation(),
+                        operation_detail: request.scope.kind.detail().to_owned(),
+                        forwarded: request.scope.forwarded,
+                        grant_offered: request.scope.grantable(),
                     },
                 )?;
                 pending.insert(
@@ -838,6 +871,8 @@ fn emit_grants_if_changed(
                 fingerprint: key.map(|key| key.fingerprint.clone()).unwrap_or_default(),
                 pid: grant.peer.pid,
                 process_path: grant.peer.executable.to_string_lossy().into_owned(),
+                operation: grant.kind.operation(),
+                operation_detail: grant.kind.detail().to_owned(),
                 expires_in_sec: grant.expires_at_ms.saturating_sub(now_ms) / 1000,
             }
         })

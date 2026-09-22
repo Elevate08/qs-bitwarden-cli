@@ -795,17 +795,23 @@ fn granting_and_revoking_announce_the_live_set() {
     let blob = public_blob.clone();
     let client = std::thread::spawn(move || {
         let mut stream = UnixStream::connect(&socket).unwrap();
-        stream.write_all(&sign_request(&blob)).unwrap();
+        stream
+            .write_all(&sign_request_for(&blob, &git_signature_data()))
+            .unwrap();
         let first = read_agent_frame(&mut stream);
         // A second signature on the same connection rides the grant, with no
         // further prompt -- which is the whole point of offering one.
-        stream.write_all(&sign_request(&blob)).unwrap();
+        stream
+            .write_all(&sign_request_for(&blob, &git_signature_data()))
+            .unwrap();
         (first, read_agent_frame(&mut stream))
     });
 
     let approval = agent.read();
     let request_id = approval["requestId"].as_u64().unwrap();
     assert_eq!(approval["grantOffered"], true);
+    assert_eq!(approval["operation"], "sshsig");
+    assert_eq!(approval["operationDetail"], "git");
     agent.send(&format!(
         "{{\"v\":1,\"type\":\"approve\",\"requestId\":{request_id},\"grantSeconds\":120}}"
     ));
@@ -814,6 +820,8 @@ fn granting_and_revoking_announce_the_live_set() {
     assert_eq!(changed["type"], "grants_changed");
     let grants = changed["grants"].as_array().unwrap();
     assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0]["operation"], "sshsig");
+    assert_eq!(grants[0]["operationDetail"], "git");
     assert!(grants[0]["expiresInSec"].as_u64().unwrap() <= 120);
     assert!(grants[0]["expiresInSec"].as_u64().unwrap() > 0);
     let grant_id = grants[0]["grantId"].as_u64().unwrap();
@@ -832,6 +840,118 @@ fn granting_and_revoking_announce_the_live_set() {
     let revoked = agent.read();
     assert_eq!(revoked["type"], "grants_changed");
     assert_eq!(revoked["grants"].as_array().unwrap().len(), 0);
+    agent.shutdown();
+}
+
+/// A grant taken for Git's commit signatures covers Git's commit signatures.
+/// The same program asking for a login -- the shape a process pretending to
+/// be `ssh-keygen` would use to reach a server -- is asked about again.
+#[test]
+fn a_grant_covers_only_the_kind_of_signature_it_was_given_for() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let (proceed, go) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream
+            .write_all(&sign_request_for(&blob, &git_signature_data()))
+            .unwrap();
+        let signed = read_agent_frame(&mut stream);
+        go.recv().unwrap();
+        stream
+            .write_all(&sign_request_for(&blob, &login_data(b"root", &blob)))
+            .unwrap();
+        (signed, read_agent_frame(&mut stream))
+    });
+
+    let approval = agent.read();
+    let request_id = approval["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"approve\",\"requestId\":{request_id},\"grantSeconds\":120}}"
+    ));
+    assert_eq!(agent.read()["type"], "grants_changed");
+    proceed.send(()).unwrap();
+
+    let login = agent.read();
+    assert_eq!(
+        login["type"], "approval_required",
+        "a login is not covered by a grant for Git signatures"
+    );
+    assert_eq!(login["operation"], "ssh-auth");
+    assert_eq!(login["operationDetail"], "root");
+    assert_eq!(login["grantOffered"], true);
+    let login_id = login["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"deny\",\"requestId\":{login_id}}}"
+    ));
+
+    let (signed, refused) = client.join().unwrap();
+    assert_eq!(signed[4], 14);
+    assert_eq!(refused, [0, 0, 0, 1, 5]);
+    agent.shutdown();
+}
+
+/// A connection OpenSSH bound for forwarding carries a remote host's
+/// requests through the local `ssh`. Such a request is labelled, is never
+/// offered a grant, cannot open one however the panel answers, and cannot
+/// ride one that already covers the local `ssh`.
+#[test]
+fn a_forwarded_request_is_labelled_and_never_granted() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let (proceed, go) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream.write_all(&session_bind(true)).unwrap();
+        let bound = read_agent_frame(&mut stream);
+        // The far end sending "not forwarded" must not clear the flag.
+        stream.write_all(&session_bind(false)).unwrap();
+        let rebound = read_agent_frame(&mut stream);
+        let mut signed = Vec::new();
+        for _ in 0..2 {
+            stream
+                .write_all(&sign_request_for(&blob, &login_data(b"git", &blob)))
+                .unwrap();
+            signed.push(read_agent_frame(&mut stream));
+            go.recv().unwrap();
+        }
+        (bound, rebound, signed)
+    });
+
+    for round in 0..2 {
+        let approval = agent.read();
+        assert_eq!(
+            approval["type"], "approval_required",
+            "round {round}: a forwarded request must always prompt"
+        );
+        assert_eq!(approval["forwarded"], true);
+        assert_eq!(approval["grantOffered"], false);
+        assert_eq!(approval["operation"], "ssh-auth");
+        let request_id = approval["requestId"].as_u64().unwrap();
+        // A panel that offers the window anyway still gets a single signature.
+        agent.send(&format!(
+            "{{\"v\":1,\"type\":\"approve\",\"requestId\":{request_id},\"grantSeconds\":120}}"
+        ));
+        proceed.send(()).unwrap();
+    }
+
+    let (bound, rebound, signed) = client.join().unwrap();
+    assert_eq!(bound, [0, 0, 0, 1, 6]);
+    assert_eq!(rebound, [0, 0, 0, 1, 6]);
+    assert!(signed.iter().all(|frame| frame[4] == 14));
+    // No grant was ever opened, so none was ever announced: the next control
+    // message is the lock acknowledgement, not a grants_changed.
+    agent.drain_control();
     agent.shutdown();
 }
 
@@ -1083,16 +1203,65 @@ impl Drop for TestAgent {
     }
 }
 
-/// A framed SSH_AGENTC_SIGN_REQUEST for one public blob.
+/// A framed SSH_AGENTC_SIGN_REQUEST for one public blob, over data the agent
+/// does not recognise -- so it is signed on a prompt and never under a grant.
 fn sign_request(public_blob: &[u8]) -> Vec<u8> {
+    sign_request_for(public_blob, b"payload")
+}
+
+fn sign_request_for(public_blob: &[u8], data: &[u8]) -> Vec<u8> {
     let mut request = Vec::new();
     13_u8.encode(&mut request).unwrap();
     public_blob.encode(&mut request).unwrap();
-    b"payload".as_slice().encode(&mut request).unwrap();
+    data.encode(&mut request).unwrap();
     0_u32.encode(&mut request).unwrap();
-    let mut framed = u32::try_from(request.len()).unwrap().to_be_bytes().to_vec();
-    framed.extend_from_slice(&request);
+    frame(&request)
+}
+
+fn frame(payload: &[u8]) -> Vec<u8> {
+    let mut framed = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+    framed.extend_from_slice(payload);
     framed
+}
+
+/// What `ssh-keygen -Y sign -n git` asks an agent to sign for a commit.
+fn git_signature_data() -> Vec<u8> {
+    let mut data = b"SSHSIG".to_vec();
+    b"git".as_slice().encode(&mut data).unwrap();
+    b"".as_slice().encode(&mut data).unwrap();
+    b"sha512".as_slice().encode(&mut data).unwrap();
+    [0x5a_u8; 64].as_slice().encode(&mut data).unwrap();
+    data
+}
+
+/// The data an SSH client signs to log in as `user` with `public_blob`.
+fn login_data(user: &[u8], public_blob: &[u8]) -> Vec<u8> {
+    let mut data = Vec::new();
+    [0x11_u8; 32].as_slice().encode(&mut data).unwrap();
+    50_u8.encode(&mut data).unwrap();
+    user.encode(&mut data).unwrap();
+    b"ssh-connection".as_slice().encode(&mut data).unwrap();
+    b"publickey".as_slice().encode(&mut data).unwrap();
+    1_u8.encode(&mut data).unwrap();
+    b"ssh-ed25519".as_slice().encode(&mut data).unwrap();
+    public_blob.encode(&mut data).unwrap();
+    data
+}
+
+/// A framed `session-bind@openssh.com`, as OpenSSH sends on each agent
+/// connection it opens.
+fn session_bind(forwarding: bool) -> Vec<u8> {
+    let mut request = Vec::new();
+    27_u8.encode(&mut request).unwrap();
+    b"session-bind@openssh.com"
+        .as_slice()
+        .encode(&mut request)
+        .unwrap();
+    b"host key".as_slice().encode(&mut request).unwrap();
+    [0x22_u8; 32].as_slice().encode(&mut request).unwrap();
+    b"host signature".as_slice().encode(&mut request).unwrap();
+    u8::from(forwarding).encode(&mut request).unwrap();
+    frame(&request)
 }
 
 /// Number of identities the agent offers over its real socket.

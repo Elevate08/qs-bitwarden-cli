@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **A signing grant covers one kind of signature.** Approving a program for a
+  window used to cover any signature that program asked for with that key, so
+  approving `ssh-keygen` for Git's commit signatures also let anything the
+  helper attributed to `ssh-keygen` log in to a server as you. The helper now
+  reads what it is asked to sign and scopes the grant to it: SSHSIG signatures
+  in one namespace (`git` for commits and tags), or SSH logins as one user.
+  Anything else is approved once and never for a window. The prompt and
+  **ACTIVE APPROVALS** say which kind a request or grant is.
+
+- **Forwarded requests are recognised, and never granted.** The helper refused
+  OpenSSH's `session-bind@openssh.com`, so it could not tell a remote host's
+  forwarded request from your own `ssh` -- and a grant for `/usr/bin/ssh`
+  answered both, letting the far end of an `ssh -A` session sign without a
+  prompt for as long as the grant ran. Binds are now read, a forwarded request
+  is labelled in the prompt, and it can neither open a grant nor use one. The
+  documentation said forwarded requests were already labelled; they were not.
+
 ## [1.10.0] - 2026-09-17
 
 ### Added
