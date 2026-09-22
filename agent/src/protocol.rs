@@ -1,8 +1,10 @@
 //! Bounded, allowlisted SSH-agent protocol handling.
 //!
-//! Wire values follow RFC 9987. The handler answers only identity listing and
-//! signing; every malformed, mutation, forwarding, extension, or unknown
-//! request receives the same one-byte failure and no diagnostic data.
+//! Wire values follow RFC 9987. The handler answers identity listing, signing,
+//! and one extension -- OpenSSH's `session-bind@openssh.com`, read only for
+//! whether the connection carries forwarded requests. Every malformed,
+//! mutation, other extension, or unknown request receives the same one-byte
+//! failure and no diagnostic data.
 
 use ssh_encoding::{Decode, Encode};
 use ssh_key::Signature;
@@ -11,10 +13,24 @@ use ssh_key::Signature;
 pub const MAX_FRAME_LEN: usize = 256 * 1024;
 
 const FAILURE: u8 = 5;
+const SUCCESS: u8 = 6;
 const REQUEST_IDENTITIES: u8 = 11;
 const IDENTITIES_ANSWER: u8 = 12;
 const SIGN_REQUEST: u8 = 13;
 const SIGN_RESPONSE: u8 = 14;
+const EXTENSION: u8 = 27;
+const SESSION_BIND: &[u8] = b"session-bind@openssh.com";
+
+/// RFC 4252 SSH_MSG_USERAUTH_REQUEST, the byte that follows the session
+/// identifier in the data a client signs to log in.
+const USERAUTH_REQUEST: u8 = 50;
+/// PROTOCOL.sshsig's raw six-byte preamble, the start of everything
+/// `ssh-keygen -Y sign` -- and so Git -- asks an agent to sign.
+const SSHSIG_PREAMBLE: &[u8] = b"SSHSIG";
+/// Longest login name or signature namespace carried into a prompt or a
+/// grant. Longer is not a shape OpenSSH produces, so it is classified as
+/// unrecognised rather than truncated into something that reads differently.
+const MAX_SIGN_DETAIL: usize = 256;
 
 /// Parsed allowlisted request. It contains public key selection and the
 /// payload to be signed, but never private material.
@@ -26,6 +42,122 @@ pub enum AgentRequest {
         message: Vec<u8>,
         flags: u32,
     },
+    /// `session-bind@openssh.com`. OpenSSH 8.9+ sends one on every agent
+    /// connection it opens: `is_forwarding` false before authenticating,
+    /// true on the connection it relays a remote host's requests over. The
+    /// host key, session identifier and signature are parsed for shape and
+    /// not kept -- the one thing this agent does with a bind is refuse to let
+    /// a forwarded request ride, or open, a grant.
+    SessionBind {
+        forwarding: bool,
+    },
+}
+
+/// What a sign request is asking for, read from the data to be signed.
+///
+/// This is what a grant is scoped to beside the key and the program. Without
+/// it, approving `ssh-keygen` for Git's commit signatures approved any
+/// signature a process attributed to `ssh-keygen` could ask for -- a login to
+/// any server included -- because the agent never looked at what it signed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SignKind {
+    /// A PROTOCOL.sshsig signature, as `ssh-keygen -Y sign` makes for Git.
+    /// The namespace says what the signature is for (`git`, `file`, ...),
+    /// and a signature for one is not valid for another.
+    SshSig { namespace: String },
+    /// An RFC 4252 public-key login, as the user named.
+    UserAuth { user: String },
+    /// Anything else. Signed only on a prompt answered for that request.
+    Other,
+}
+
+impl SignKind {
+    /// The `operation` field the panel reads.
+    pub fn operation(&self) -> &'static str {
+        match self {
+            Self::SshSig { .. } => "sshsig",
+            Self::UserAuth { .. } => "ssh-auth",
+            Self::Other => "ssh-sign",
+        }
+    }
+
+    /// The namespace or login name that goes with `operation`, or "".
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::SshSig { namespace } => namespace,
+            Self::UserAuth { user } => user,
+            Self::Other => "",
+        }
+    }
+}
+
+/// Classify the data a client asked to have signed with `public_blob`.
+///
+/// Both recognised shapes are parsed whole, with nothing left over; a partial
+/// match is `Other`. The two cannot be confused with each other: a login
+/// begins with the four-byte length of its session identifier, and `SSHS`
+/// read as one is over a gigabyte, far past the frame limit.
+pub fn classify_sign(public_blob: &[u8], message: &[u8]) -> SignKind {
+    sshsig_namespace(message)
+        .map(|namespace| SignKind::SshSig { namespace })
+        .or_else(|| userauth_user(public_blob, message).map(|user| SignKind::UserAuth { user }))
+        .unwrap_or(SignKind::Other)
+}
+
+/// PROTOCOL.sshsig: the preamble, then namespace, reserved, hash algorithm
+/// and the message hash, each an SSH string.
+fn sshsig_namespace(message: &[u8]) -> Option<String> {
+    let mut fields = message.strip_prefix(SSHSIG_PREAMBLE)?;
+    let namespace = Vec::<u8>::decode(&mut fields).ok()?;
+    let _reserved = Vec::<u8>::decode(&mut fields).ok()?;
+    let hash = Vec::<u8>::decode(&mut fields).ok()?;
+    let _digest = Vec::<u8>::decode(&mut fields).ok()?;
+    if !fields.is_empty() || !matches!(hash.as_slice(), b"sha256" | b"sha512") {
+        return None;
+    }
+    display_detail(namespace)
+}
+
+/// RFC 4252 section 7, and OpenSSH's host-bound variant which appends the
+/// server's host key. The key inside the request must be the key asked to
+/// sign it, as OpenSSH's own agent requires; a mismatch is not a login this
+/// key is making.
+fn userauth_user(public_blob: &[u8], message: &[u8]) -> Option<String> {
+    let mut fields = message;
+    let _session_id = Vec::<u8>::decode(&mut fields).ok()?;
+    if u8::decode(&mut fields).ok()? != USERAUTH_REQUEST {
+        return None;
+    }
+    let user = Vec::<u8>::decode(&mut fields).ok()?;
+    let _service = Vec::<u8>::decode(&mut fields).ok()?;
+    let method = Vec::<u8>::decode(&mut fields).ok()?;
+    let hostbound = match method.as_slice() {
+        b"publickey" => false,
+        b"publickey-hostbound-v00@openssh.com" => true,
+        _ => return None,
+    };
+    if u8::decode(&mut fields).ok()? != 1 {
+        return None;
+    }
+    let _algorithm = Vec::<u8>::decode(&mut fields).ok()?;
+    let key = Vec::<u8>::decode(&mut fields).ok()?;
+    if hostbound {
+        let _host_key = Vec::<u8>::decode(&mut fields).ok()?;
+    }
+    if !fields.is_empty() || key != public_blob {
+        return None;
+    }
+    display_detail(user)
+}
+
+/// A namespace or login name fit to show a person and to compare exactly:
+/// non-empty, bounded, UTF-8, and free of control characters.
+fn display_detail(bytes: Vec<u8>) -> Option<String> {
+    if bytes.is_empty() || bytes.len() > MAX_SIGN_DETAIL {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    (!text.chars().any(char::is_control)).then_some(text)
 }
 
 pub fn decode_request(frame: &[u8]) -> Option<AgentRequest> {
@@ -39,8 +171,27 @@ pub fn decode_request(frame: &[u8]) -> Option<AgentRequest> {
     match payload.first().copied()? {
         REQUEST_IDENTITIES if payload.len() == 1 => Some(AgentRequest::Identities),
         SIGN_REQUEST => decode_sign_request(&payload[1..]),
+        EXTENSION => decode_session_bind(&payload[1..]),
         _ => None,
     }
+}
+
+fn decode_session_bind(mut fields: &[u8]) -> Option<AgentRequest> {
+    if Vec::<u8>::decode(&mut fields).ok()? != SESSION_BIND {
+        return None;
+    }
+    let _host_key = Vec::<u8>::decode(&mut fields).ok()?;
+    let _session_id = Vec::<u8>::decode(&mut fields).ok()?;
+    let _signature = Vec::<u8>::decode(&mut fields).ok()?;
+    let forwarding = match u8::decode(&mut fields).ok()? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
+    if !fields.is_empty() {
+        return None;
+    }
+    Some(AgentRequest::SessionBind { forwarding })
 }
 
 fn decode_sign_request(mut fields: &[u8]) -> Option<AgentRequest> {
@@ -91,6 +242,10 @@ pub fn failure_response() -> Vec<u8> {
     response(failure_payload())
 }
 
+pub fn success_response() -> Vec<u8> {
+    response(vec![SUCCESS])
+}
+
 fn failure_payload() -> Vec<u8> {
     vec![FAILURE]
 }
@@ -111,7 +266,8 @@ fn response(payload: Vec<u8>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_request, failure_payload, response, signature_payload, AgentRequest, MAX_FRAME_LEN,
+        classify_sign, decode_request, failure_payload, response, signature_payload, AgentRequest,
+        SignKind, MAX_FRAME_LEN,
     };
     use crate::signing;
     use rand_core::OsRng;
@@ -190,6 +346,7 @@ mod tests {
                 message,
                 flags,
             } => sign_response_fields(&public_blob, &message, flags, identities),
+            AgentRequest::SessionBind { .. } => Some(vec![SUCCESS]),
         }
     }
 
@@ -223,6 +380,7 @@ mod tests {
     }
 
     const FAILURE: u8 = 5;
+    const SUCCESS: u8 = 6;
     const REQUEST_IDENTITIES: u8 = 11;
     const IDENTITIES_ANSWER: u8 = 12;
     const SIGN_REQUEST: u8 = 13;
@@ -390,6 +548,136 @@ mod tests {
         assert_eq!(
             response_payload(&handle_frame(&frame(&unknown_key), &[])),
             &[FAILURE]
+        );
+    }
+    fn session_bind(name: &[u8], forwarding: u8, trailing: &[u8]) -> Vec<u8> {
+        let mut payload = vec![27];
+        string(name, &mut payload);
+        string(b"host key blob", &mut payload);
+        string(b"session identifier", &mut payload);
+        string(b"host signature", &mut payload);
+        payload.push(forwarding);
+        payload.extend_from_slice(trailing);
+        frame(&payload)
+    }
+
+    #[test]
+    fn session_bind_is_read_for_its_forwarding_flag_and_nothing_else() {
+        assert_eq!(
+            decode_request(&session_bind(b"session-bind@openssh.com", 0, b"")),
+            Some(AgentRequest::SessionBind { forwarding: false })
+        );
+        assert_eq!(
+            decode_request(&session_bind(b"session-bind@openssh.com", 1, b"")),
+            Some(AgentRequest::SessionBind { forwarding: true })
+        );
+        assert_eq!(
+            response_payload(&handle_frame(
+                &session_bind(b"session-bind@openssh.com", 1, b""),
+                &[]
+            )),
+            &[SUCCESS]
+        );
+
+        // Any other extension, a boolean that is not one, or a trailing byte
+        // is the ordinary failure.
+        for malformed in [
+            session_bind(b"restrict-destination-v00@openssh.com", 1, b""),
+            session_bind(b"session-bind@openssh.com", 2, b""),
+            session_bind(b"session-bind@openssh.com", 1, b"x"),
+        ] {
+            assert_eq!(decode_request(&malformed), None);
+            assert_eq!(response_payload(&handle_frame(&malformed, &[])), &[FAILURE]);
+        }
+    }
+
+    fn sshsig(namespace: &[u8], hash: &[u8]) -> Vec<u8> {
+        let mut data = b"SSHSIG".to_vec();
+        string(namespace, &mut data);
+        string(b"", &mut data);
+        string(hash, &mut data);
+        string(&[0xab; 32], &mut data);
+        data
+    }
+
+    fn userauth(user: &[u8], method: &[u8], key: &[u8], host_key: Option<&[u8]>) -> Vec<u8> {
+        let mut data = Vec::new();
+        string(&[7; 32], &mut data);
+        data.push(50);
+        string(user, &mut data);
+        string(b"ssh-connection", &mut data);
+        string(method, &mut data);
+        data.push(1);
+        string(b"ssh-ed25519", &mut data);
+        string(key, &mut data);
+        if let Some(host_key) = host_key {
+            string(host_key, &mut data);
+        }
+        data
+    }
+
+    #[test]
+    fn sign_requests_are_classified_by_what_they_sign() {
+        let key = b"the requested key";
+        assert_eq!(
+            classify_sign(key, &sshsig(b"git", b"sha512")),
+            SignKind::SshSig {
+                namespace: "git".into()
+            }
+        );
+        assert_eq!(
+            classify_sign(key, &userauth(b"git", b"publickey", key, None)),
+            SignKind::UserAuth { user: "git".into() }
+        );
+        assert_eq!(
+            classify_sign(
+                key,
+                &userauth(
+                    b"deploy",
+                    b"publickey-hostbound-v00@openssh.com",
+                    key,
+                    Some(b"server host key")
+                )
+            ),
+            SignKind::UserAuth {
+                user: "deploy".into()
+            }
+        );
+
+        let mut trailing = sshsig(b"git", b"sha512");
+        trailing.push(0);
+        let unrecognised = [
+            b"payload".to_vec(),
+            trailing,
+            sshsig(b"", b"sha512"),
+            sshsig(b"git", b"md5"),
+            sshsig(b"git\n", b"sha512"),
+            sshsig(&[b'n'; 257], b"sha512"),
+            sshsig(&[0xff, 0xfe], b"sha512"),
+            // A login for a different key than the one asked to sign it.
+            userauth(b"git", b"publickey", b"another key", None),
+            // Host-bound without the host key, and a method that is not one.
+            userauth(b"git", b"publickey-hostbound-v00@openssh.com", key, None),
+            userauth(b"git", b"password", key, None),
+        ];
+        for data in unrecognised {
+            assert_eq!(classify_sign(key, &data), SignKind::Other);
+        }
+    }
+
+    #[test]
+    fn each_kind_names_its_operation_and_detail() {
+        let sig = SignKind::SshSig {
+            namespace: "git".into(),
+        };
+        assert_eq!((sig.operation(), sig.detail()), ("sshsig", "git"));
+        let login = SignKind::UserAuth {
+            user: "root".into(),
+        };
+        assert_eq!((login.operation(), login.detail()), ("ssh-auth", "root"));
+        assert_eq!(
+            (SignKind::Other.operation(), SignKind::Other.detail()),
+            ("ssh-sign", "")
         );
     }
 }

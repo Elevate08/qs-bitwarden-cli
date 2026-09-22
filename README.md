@@ -155,8 +155,9 @@ Opt-in. Serves the SSH keys in your vault to `ssh`, Git and `ssh-keygen -Y sign`
 while the vault is unlocked, from a helper process that holds the private keys
 in memory -- never on disk, never in QML.
 
-Every signature names the key, its fingerprint and the program asking. One
-approval can cover a whole rebase; live grants are listed and revocable.
+Every signature says what is being signed and names the key, its fingerprint
+and the program asking. One approval can cover a whole rebase -- and only the
+rebase's signatures; live grants are listed and revocable.
 
 **[Setup, verification and threat model →](docs/ssh-agent.md)**
 

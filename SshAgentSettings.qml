@@ -224,6 +224,7 @@ Column {
         width: parent.width - Style.space(110)
         text: modelData.keyName + "  ·  "
           + modelData.processName
+          + (modelData.operationLabel ? "  ·  " + modelData.operationLabel : "")
           + "  ·  " + modelData.remainingLabel
       }
 

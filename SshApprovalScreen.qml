@@ -80,9 +80,9 @@ Column {
     }
   }
 
-  // Forwarding is rejected in v1. If one ever reaches here it is
-  // called out rather than shown as ordinary context, because the
-  // process named would not be the one using the signature.
+  // A forwarded request is called out rather than shown as ordinary
+  // context, because the process named would not be the one using the
+  // signature. The companion offers no grant for one.
   SshCaption {
     panel: screen.panel
     visible: vault.sshPrompt && vault.sshPrompt.forwardedWarning !== ""
@@ -94,6 +94,26 @@ Column {
     panel: screen.panel
     visible: vault.sshAgentLoadActive
     text: Model.sshAgentLoadingNote()
+  }
+
+  // What is being signed, as the companion read it from the request.
+  // A grant covers this kind of signature and no other, so it is the
+  // first thing worth checking.
+  SshSectionHeader {
+    panel: screen.panel
+    visible: vault.sshPrompt && vault.sshPrompt.operationLabel !== ""
+    text: "REQUEST"
+  }
+
+  Text {
+    textFormat: Text.PlainText
+    width: parent.width
+    visible: vault.sshPrompt && vault.sshPrompt.operationLabel !== ""
+    text: vault.sshPrompt ? vault.sshPrompt.operationLabel : ""
+    color: panel.fg
+    font.family: panel.fontFamily
+    font.pixelSize: Style.font.body
+    wrapMode: Text.WrapAnywhere
   }
 
   SshSectionHeader {
@@ -192,7 +212,7 @@ Column {
     visible: vault.sshPrompt && vault.sshPrompt.grantOffered
     text: vault.sshPrompt ? vault.sshPrompt.grantLabel : ""
     iconText: "󰔟"
-    tooltipText: "Sign further requests from this same program with this key, without asking again, until the window expires"
+    tooltipText: "Sign further requests of this same kind from this same program with this key, without asking again, until the window expires"
     fontFamily: panel.fontFamily
     fontSize: Style.font.bodySmall
     focusable: true

@@ -18,9 +18,17 @@ pub const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 /// decorative -- which it was when both were thirty seconds.
 pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(150);
 const ACCEPT_ERROR_DELAY: Duration = Duration::from_millis(100);
+/// Session binds accepted on one connection, OpenSSH's own agent's limit.
+/// One per hop is what a real client sends; past this is not a client.
+pub const MAX_SESSION_BINDS: usize = 16;
 
 pub struct ClientEvent {
     pub peer: PeerContext,
+    /// Whether this connection was bound for forwarding. Once set it stays
+    /// set: the far end of a forwarded connection can send binds of its own,
+    /// and one saying "not forwarded" must not be able to clear the flag the
+    /// local `ssh` set when it opened the connection.
+    pub forwarded: bool,
     pub request: AgentRequest,
     pub reply: oneshot::Sender<Vec<u8>>,
 }
@@ -62,6 +70,8 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
         return;
     };
 
+    let mut forwarded = false;
+    let mut binds = 0_usize;
     loop {
         let Some(frame) = read_frame(&mut stream).await else {
             return;
@@ -75,10 +85,26 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
             }
             continue;
         };
+        // A bind is connection state, answered here; the state loop only
+        // ever sees its effect, on the requests that follow it.
+        if let AgentRequest::SessionBind { forwarding } = request {
+            let response = if binds < MAX_SESSION_BINDS {
+                binds += 1;
+                forwarded |= forwarding;
+                protocol::success_response()
+            } else {
+                protocol::failure_response()
+            };
+            if write_response(&mut stream, response).await.is_err() {
+                return;
+            }
+            continue;
+        }
         let (reply, response) = oneshot::channel();
         if events
             .try_send(ClientEvent {
                 peer: peer.clone(),
+                forwarded,
                 request,
                 reply,
             })

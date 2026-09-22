@@ -4873,8 +4873,30 @@ function formatDuration(seconds) {
 var SSH_AGENT_PROVENANCE_NOTE =
   "Reported by the system, not verified. Only the requesting user was checked."
 var SSH_AGENT_FORWARDED_WARNING =
-  "This request arrived over agent forwarding, which this release does not support. "
-  + "The process shown is not the one that will use the signature."
+  "Forwarded from a remote host. The program shown is the local ssh relaying it, "
+  + "not the one that will use the signature, so it can only be approved once."
+
+// What a request asks to have signed, as the companion classified it. The
+// namespace or login name comes from the requesting client, so it is bounded
+// and shown as plain text like every other client-supplied field.
+var SSH_AGENT_MAX_DETAIL_CHARS = 256
+
+function sshAgentOperationLabel(operation, detail) {
+  var text = boundedText(detail, SSH_AGENT_MAX_DETAIL_CHARS)
+  if (operation === "sshsig") {
+    // Git signs commits and tags under the "git" namespace, and that is the
+    // signature nearly every approval here is for.
+    if (text === "git") return "Git commit or tag signature"
+    return "Signature for \"" + text + "\""
+  }
+  if (operation === "ssh-auth") return "SSH login as " + text
+  if (operation === "ssh-sign") return "Unrecognised data -- approve only if you expect it"
+  return ""
+}
+
+function sshAgentOperation(value) {
+  return value === "sshsig" || value === "ssh-auth" || value === "ssh-sign" ? value : ""
+}
 
 // One approval_required message, reduced to what the prompt draws. Everything
 // attacker-influenced is bounded here rather than at the point it is rendered.
@@ -4895,12 +4917,14 @@ function sshAgentPromptView(message, approvalWindowSec) {
     pid: Math.floor(Number(request.pid)) || 0,
     processPath: boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS),
     processName: processNameFromPath(boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS)),
-    operation: request.operation === "ssh-sign" ? "ssh-sign" : "",
+    operation: sshAgentOperation(request.operation),
+    operationLabel: sshAgentOperationLabel(sshAgentOperation(request.operation), request.operationDetail),
     grantOffered: grantOffered,
     grantSeconds: grantOffered ? window : 0,
-    // "program", not "process": a grant matches the executable path and the
-    // key, so a fresh process running the same program rides it. That is what
-    // makes it useful for Git signing, which spawns one ssh-keygen per commit.
+    // "program", not "process": a grant matches the executable path, the key
+    // and the kind of signature, so a fresh process running the same program
+    // rides it. That is what makes it useful for Git signing, which spawns one
+    // ssh-keygen per commit.
     grantLabel: grantOffered ? "Approve for this program · " + formatDuration(window) : "",
     forwardedWarning: forwarded ? SSH_AGENT_FORWARDED_WARNING : "",
     provenanceNote: SSH_AGENT_PROVENANCE_NOTE
@@ -4959,6 +4983,7 @@ function sshAgentGrantViews(grants, nowMs) {
       pid: Math.floor(Number(grant.pid)) || 0,
       processPath: boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
       processName: processNameFromPath(boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS)),
+      operationLabel: sshAgentOperationLabel(sshAgentOperation(grant.operation), grant.operationDetail),
       // When it runs out, not how long it had left when it was announced.
       // The label below is a snapshot of one instant; this is what lets a
       // later instant be worked out without another announcement.
@@ -5000,6 +5025,7 @@ function sshAgentGrantsAt(views, nowMs) {
       pid: view.pid,
       processPath: view.processPath,
       processName: view.processName,
+      operationLabel: view.operationLabel,
       expiresAtMs: view.expiresAtMs,
       remainingSec: remaining,
       remainingLabel: formatDuration(remaining) + " left"

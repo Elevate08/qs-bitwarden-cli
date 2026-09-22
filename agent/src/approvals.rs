@@ -2,6 +2,7 @@
 
 use crate::keystore::{AuthorizationPermit, KeyStore};
 use crate::peer::PeerContext;
+use crate::protocol::SignKind;
 
 /// Requests pending approval and held for an unlock, counted together.
 pub const MAX_PENDING: usize = 4;
@@ -57,11 +58,33 @@ impl Authorization {
     }
 }
 
+/// What one sign request asks for, beyond the key and the requesting program.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignScope {
+    pub kind: SignKind,
+    /// Arrived over a connection OpenSSH bound for agent forwarding.
+    pub forwarded: bool,
+}
+
+impl SignScope {
+    /// Whether approving this request may open a grant, and whether a live
+    /// grant may answer it.
+    ///
+    /// Never for a forwarded request: it reaches the agent through the local
+    /// `ssh`, so a grant would be scoped to `/usr/bin/ssh` and would let the
+    /// remote host sign for as long as it ran. Never for data the agent does
+    /// not recognise: a grant has to say what it covers, and that cannot.
+    pub fn grantable(&self) -> bool {
+        !self.forwarded && self.kind != SignKind::Other
+    }
+}
+
 struct Pending {
     id: RequestId,
     epoch: u64,
     public_blob: Vec<u8>,
     peer: PeerContext,
+    scope: SignScope,
     deadline_ms: u64,
 }
 
@@ -71,6 +94,9 @@ pub struct Grant {
     pub id: GrantId,
     pub public_blob: Vec<u8>,
     pub peer: PeerContext,
+    /// The one kind of signature this grant answers: logins as one user, or
+    /// SSHSIG signatures in one namespace.
+    pub kind: SignKind,
     pub epoch: u64,
     pub expires_at_ms: u64,
 }
@@ -100,17 +126,21 @@ impl ApprovalManager {
         epoch: u64,
         public_blob: &[u8],
         peer: PeerContext,
+        scope: SignScope,
         now_ms: u64,
     ) -> Result<Submit, ApprovalError> {
         if peer.uid != self.expected_uid {
             return Err(ApprovalError::WrongUid);
         }
         self.expire(now_ms);
-        if self.grants.iter().any(|grant| {
-            grant.epoch == epoch
-                && grant.public_blob == public_blob
-                && grant.peer.shares_grant_scope(&peer)
-        }) {
+        if scope.grantable()
+            && self.grants.iter().any(|grant| {
+                grant.epoch == epoch
+                    && grant.public_blob == public_blob
+                    && grant.kind == scope.kind
+                    && grant.peer.shares_grant_scope(&peer)
+            })
+        {
             return Ok(Submit::Granted(Authorization {
                 epoch,
                 public_blob: public_blob.to_vec(),
@@ -129,6 +159,7 @@ impl ApprovalManager {
             epoch,
             public_blob: public_blob.to_vec(),
             peer,
+            scope,
             deadline_ms: now_ms.saturating_add(REQUEST_LIFETIME_MS),
         });
         Ok(Submit::Pending(id))
@@ -147,7 +178,10 @@ impl ApprovalManager {
             .position(|request| request.id == id)
             .ok_or(ApprovalError::UnknownRequest)?;
         let request = self.pending.remove(index);
-        if grant_seconds > 0 {
+        // The panel is not trusted to have withheld the grant button: a
+        // request that may not open a grant is approved once, whatever
+        // window came back with it.
+        if grant_seconds > 0 && request.scope.grantable() {
             let grant_id = self.next_grant_id;
             self.next_grant_id = self
                 .next_grant_id
@@ -158,6 +192,7 @@ impl ApprovalManager {
                 id: grant_id,
                 public_blob: request.public_blob.clone(),
                 peer: request.peer,
+                kind: request.scope.kind,
                 epoch: request.epoch,
                 expires_at_ms: now_ms.saturating_add(duration_ms),
             });
