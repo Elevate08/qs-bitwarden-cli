@@ -144,10 +144,19 @@ const releaseJob = jobs.get("release") || ""
 check("the release job runs the bytes outside the build container",
   !/container:/.test(releaseJob) && /--self-test/.test(releaseJob),
   "a binary that only works inside its own build image would still be published")
-check("the attestation names the shipped binary as its subject",
-  /attest-build-provenance@[0-9a-f]{40}[\s\S]{0,300}?subject-path: bin\/x86_64-linux\/qs-bitwarden-ssh-agent/
-    .test(releaseJob),
-  "the provenance attestation does not bind the tracked bytes")
+// Every shipped binary is a subject. An attestation that covers one of two
+// leaves the other with no provenance behind it -- and the README tells users
+// to verify both.
+const attestation = /attest-build-provenance@[0-9a-f]{40}[\s\S]{0,500}?subject-path: \|?([\s\S]*?)\n\s*\n/
+  .exec(releaseJob)
+for (const binary of ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key"]) {
+  check(`the attestation names ${binary} as a subject`,
+    !!attestation && attestation[1].includes(`bin/x86_64-linux/${binary}`),
+    "the provenance attestation does not bind these tracked bytes")
+  check(`${binary} is published as a release asset`,
+    new RegExp(`assets=\\([\\s\\S]*?bin/x86_64-linux/${binary}[\\s\\S]*?\\)`).test(releaseJob),
+    "a binary that is attested but not attached cannot be verified by anyone")
+}
 check("the verification command is written down where a reviewer will find it",
   /gh attestation verify/.test(release),
   "users are given provenance with no documented way to check it")

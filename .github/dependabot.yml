@@ -55,6 +55,45 @@ updates:
     commit-message:
       prefix: "deps"
 
+  # The quick-unlock tool is its own package with its own lockfile, so it
+  # needs its own entry: the one above does not see it. Same rules, same
+  # reason -- every accepted update means a rebuilt, re-committed binary.
+  - package-ecosystem: cargo
+    directory: /unlock-key
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    versioning-strategy: lockfile-only
+    groups:
+      crypto:
+        patterns:
+          - "chacha20*"
+          - "poly1305"
+          - "aead"
+          - "hkdf"
+          - "hmac"
+          - "sha2"
+          - "digest"
+          - "zeroize"
+          - "getrandom"
+          - "base64ct"
+      rust-dependencies:
+        patterns: ["*"]
+        exclude-patterns:
+          - "chacha20*"
+          - "poly1305"
+          - "aead"
+          - "hkdf"
+          - "hmac"
+          - "sha2"
+          - "digest"
+          - "zeroize"
+          - "getrandom"
+          - "base64ct"
+    labels: ["dependencies", "needs-binary-rebuild"]
+    commit-message:
+      prefix: "deps"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
