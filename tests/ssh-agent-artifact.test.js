@@ -433,8 +433,8 @@ check("dependency updates are told the binary must be rebuilt",
 check("no secrets are referenced",
   !/secrets\./.test(workflow), "a build gate should need no secrets")
 check("the panel tests get the tools they shell out to",
-  /jq/.test(workflow) && /openssh-client/.test(workflow),
-  "the pipeline and signing tests would fail without jq and ssh-keygen")
+  /jq/.test(workflow) && /openssh-client/.test(workflow) && /apt-get install[^\n]*\bargon2\b/.test(workflow),
+  "the pipeline, signing and envelope tests would fail without jq, ssh-keygen and argon2")
 
 if (failures.length) {
   console.error(`\n${failures.length} failed, ${pass} passed\n`)
