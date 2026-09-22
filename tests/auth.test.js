@@ -1184,18 +1184,25 @@ check("failed keyring cleanup keeps authentication blocked until an explicit ret
     && /logoutCleanupFailed\s*\?\s*root\.retryLogoutCleanup\(\)/.test(panelSrc),
   bodyOf("onLogoutCredentialsFinished") + "\n" + bodyOf("finishLogoutIfReady")
     + "\n" + bodyOf("retryLogoutCleanup"))
+// The master password's writer is now the envelope queue (envelopeProc); the
+// old plaintext fingerprint writer is gone.
 check("logout's final keyring sweep waits for every credential writer",
-  ["keyringStoreProc", "pinStoreProc", "keyringStoreMasterProc"].every(id =>
+  ["keyringStoreProc", "pinStoreProc", "envelopeProc"].every(id =>
     new RegExp(`\\b${id}\\.running`).test(credentialStores))
     && /credentialStoresRunning\(\)[\s\S]*allCredentialsClearPending\s*=\s*true[\s\S]*return/.test(allCredentialClear),
   credentialStores + "\n" + allCredentialClear)
-for (const id of ["keyringStoreProc", "pinStoreProc", "keyringStoreMasterProc"]) {
+check("nothing starts the old plaintext master-password writer",
+  !/keyringStoreMasterProc/.test(panelSrc), "keyringStoreMasterProc is still in the service")
+for (const id of ["keyringStoreProc", "pinStoreProc"]) {
   const start = panelSrc.indexOf(`id: ${id}`)
   const processBlock = panelSrc.slice(start, start + 520)
   check(`${id} resumes the deferred logout sweep after its write exits`,
     /logoutPending[\s\S]*allCredentialsClearPending[\s\S]*requestAllCredentialClear/.test(processBlock),
     processBlock)
 }
+check("the envelope queue resumes the deferred logout sweep after its job exits",
+  /logoutPending && allCredentialsClearPending[\s\S]{0,80}?requestAllCredentialClear/.test(bodyOf("onEnvelopeJobExited")),
+  bodyOf("onEnvelopeJobExited"))
 
 // Turning fingerprint unlock off is the other place a flag used to decide
 // whether the master password stayed behind.
@@ -1222,8 +1229,7 @@ check("locking drops the vault secrets",
 for (const prop of ["detailPassword", "liveTotp", "totpFollowupCode", "genValue",
                     "formPassword", "formTotp", "itemPayloadJson", "sendPayloadJson",
                     "sendFormText", "sendFormPassword", "loginPassword", "loginClientSecret",
-                    "pinEntry", "pinSetupPin", "pinSetupMaster", "fpSetupMaster",
-                    "masterToStore"]) {
+                    "pinEntry", "pinSetupPin", "pinSetupMaster", "fpSetupMaster"]) {
   check(`locking clears ${prop}`,
     new RegExp(`\\b${prop}\\s*=\\s*""`).test(dropped), dropped)
 }

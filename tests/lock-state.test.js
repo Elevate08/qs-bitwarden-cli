@@ -323,7 +323,7 @@ check("leaving either authentication setup form cancels its in-flight write",
   /currentScreen\s*!==\s*"pin"[\s\S]*abandonPinSetup\(\)/.test(panelSrc)
     && /currentScreen\s*!==\s*"fingerprint"[\s\S]*abandonFingerprintSetup\(\)/.test(panelSrc)
     && /invalidateEpochOperation\("pinStore"\)/.test(bodyOf("abandonPinSetup"))
-    && /invalidateEpochOperation\("masterStore"\)/.test(bodyOf("abandonFingerprintSetup")),
+    && /invalidateEpochOperation\("fingerprintAdd"\)/.test(bodyOf("abandonFingerprintSetup")),
   bodyOf("abandonPinSetup") + "\n" + bodyOf("abandonFingerprintSetup"))
 check("PIN completion requires a still-active submitted unlock",
   /pinUnlockSubmitted\s*&&\s*sshAuthSurfaceActive\s*&&\s*status\s*===\s*"locked"/.test(bodyOf("onPinUnlockResult")),
@@ -350,11 +350,26 @@ check("PIN stores cannot recreate a credential after the vault generation change
     && /epochOperationIsStale\("pinStore"\)/.test(bodyOf("onPinStored"))
     && /requestPinCredentialClear\(\)/.test(bodyOf("onPinStored")),
   bodyOf("submitPinSetup") + "\n" + bodyOf("onPinStored"))
-check("master-password stores cannot recreate a credential after lock or logout",
-  /beginEpochOperation\("masterStore"\)/.test(bodyOf("submitFingerprintSetup"))
-    && /epochOperationIsStale\("masterStore"\)/.test(bodyOf("onMasterPasswordStored"))
-    && /requestMasterCredentialClear\(\)/.test(bodyOf("onMasterPasswordStored")),
-  bodyOf("submitFingerprintSetup") + "\n" + bodyOf("onMasterPasswordStored"))
+// Fingerprint setup no longer stores a password: it adds a wrap to the one
+// envelope. The invariant is the same -- nothing written for a vault
+// generation that has since ended may survive it -- and so is the shape: the
+// write is stamped, and a stale or abandoned completion takes the wrap back
+// out.
+check("a fingerprint wrap cannot outlive the lock or abandonment it raced",
+  /beginEpochOperation\("fingerprintAdd"\)/.test(bodyOf("submitFingerprintSetup"))
+    && /epochOperationIsStale\("fingerprintAdd"\)[\s\S]{0,300}?removeQuickUnlockMethod\(\{ kind: "remove", method: "fingerprint" \}\)/
+      .test(bodyOf("submitFingerprintSetup")),
+  bodyOf("submitFingerprintSetup"))
+// And logout: the queue is emptied, and the final clear waits for a write
+// already running rather than racing it.
+check("logout drops queued envelope work and waits for a running write",
+  /dropEnvelopeState\(\)/.test(bodyOf("forgetStoredCredentials"))
+    && /envelopeJobs = \[\]/.test(bodyOf("dropEnvelopeState"))
+    && /envelopeProc\.running/.test(bodyOf("credentialStoresRunning")),
+  bodyOf("credentialStoresRunning"))
+check("an envelope job that finishes after logout starts no follow-up",
+  /job\.onDone && !logoutPending/.test(bodyOf("onEnvelopeJobExited")),
+  bodyOf("onEnvelopeJobExited"))
 check("a learned-association read cannot repopulate account metadata after logout",
   /associationsReadEpoch\s*=\s*associationsEpoch/.test(bodyOf("loadAssociations"))
     && /associationsReadEpoch\s*!==\s*associationsEpoch/.test(bodyOf("onAssociationsLoaded"))

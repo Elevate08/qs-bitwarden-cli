@@ -1600,6 +1600,10 @@ function keyringClearCommand() {
 // verification as the gate on reading it back -- the same trade the Bitwarden
 // desktop client makes for its own biometric unlock. Opt-in only.
 
+// Writes the plaintext entry older versions kept for fingerprint unlock. The
+// panel no longer calls this -- the envelope replaced it, and the legacy
+// entry is only ever read, migrated and deleted -- but the tests use it to
+// build an old install's keyring.
 function keyringStoreMasterPasswordCommand() {
   return ["bash", "-c", keyringStoreScript("Bitwarden Master Password (fingerprint unlock)", KEYRING_MASTER)]
 }
@@ -1970,6 +1974,80 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
     + "__verify_account " + shellQuote(account.id) + " " + shellQuote(account.server) + "; "
     + verifyOpen
     + "__store"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// What quick unlock needs besides the unlock tool: `argon2`, which arrives
+// with Arch's bitwarden-cli, and `systemd-creds --user`, which needs systemd
+// 256 or later and a running user manager. Asked by doing, not by version
+// numbers: a real seal of a throwaway value.
+function quickUnlockPrereqCommand() {
+  var script = "if command -v argon2 >/dev/null 2>&1; then echo argon2=1; else echo argon2=0; fi; "
+    + "if printf probe | systemd-creds --user encrypt --name=qs-bitwarden-probe - - >/dev/null 2>&1; "
+    + "then echo creds=1; else echo creds=0; fi"
+  return ["bash", "-c", script]
+}
+
+function parseQuickUnlockPrereqs(raw) {
+  var text = String(raw || "")
+  var argon2 = /^argon2=1$/m.test(text)
+  var creds = /^creds=1$/m.test(text)
+  var message = ""
+  if (!argon2) {
+    message = "Quick unlock needs `argon2`, which comes with the Bitwarden CLI package. "
+      + "Reinstall bitwarden-cli."
+  } else if (!creds) {
+    message = "Quick unlock needs `systemd-creds --user` (systemd 256 or later) to seal the "
+      + "stored password to this machine, and it is not working here."
+  }
+  return { argon2: argon2, creds: creds, ready: argon2 && creds, message: message }
+}
+
+// `bw` checking a typed master password when there is no envelope to check it
+// against: the session came from a terminal or SSO login, or the keyring was
+// cleared. `bw unlock` while unlocked verifies the password and mints a new
+// session key, which replaces the old one -- so the caller adopts what this
+// prints, exactly as a master-password unlock would.
+function bwVerifyPasswordCommand() {
+  var script = "bw unlock --passwordenv " + KEYRING_SECRET_ENV + " --raw 2>/dev/null | head -c " + MAX_TOKEN_BYTES
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// Fingerprint unlock's plaintext entry, moved into the envelope in one shell
+// so the password never passes through QML. The legacy entry is deleted only
+// after the envelope opens through the fingerprint wrap and yields exactly
+// that password; any failure leaves it where it was, for the next start.
+//
+//   0   migrated, legacy entry gone
+//   20  no legacy entry: nothing to do
+//   21  the envelope belongs to this password's account but will not open
+//       with it -- one of the two is stale; left alone
+//   other  the step that failed, as the envelope builders report it
+var LEGACY_MIGRATION_EXIT = { none: 20, mismatch: 21 }
+
+function legacyMigrationExitCodes() { return LEGACY_MIGRATION_EXIT }
+
+function legacyFingerprintMigrationCommand(tool, account) {
+  if (!envelopeArgsOk(tool, account)) return envelopeRefused()
+  var nested = function(cmd) { return "bash -c " + shellQuote(cmd[2]) }
+  var script = "__pw=\"$(secret-tool lookup" + keyringAttributes(KEYRING_MASTER)
+    + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ")\"; "
+    + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
+    + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; unset __pw; "
+    // Is there an envelope, and does this password open it?
+    + nested(unlockEnvelopeOpenCommand(tool, account, { kind: "master" })) + " >/dev/null; __rc=$?; "
+    + "case \"$__rc\" in "
+    + "0) ;; "
+    // None, another account's, or one this machine cannot unseal: this
+    // password is the best there is, so it becomes the envelope.
+    + ENVELOPE_EXIT.absent + "|6|" + ENVELOPE_EXIT.unseal + ") "
+    + nested(unlockEnvelopeCreateCommand(tool, account)) + " || exit $? ;; "
+    + "3) exit " + LEGACY_MIGRATION_EXIT.mismatch + " ;; "
+    + "*) exit \"$__rc\" ;; esac; "
+    + nested(unlockEnvelopeUpdateCommand(tool, account, { kind: "add-fingerprint" })) + " || exit $?; "
+    // The update re-opened the envelope through the fingerprint wrap and
+    // compared it with this password before storing it, so this is safe.
+    + "secret-tool clear" + keyringAttributes(KEYRING_MASTER) + " >/dev/null 2>&1; exit 0"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
@@ -4968,6 +5046,16 @@ var QUICK_UNLOCK_SETTINGS = ["fingerprintUnlock", "pinUnlock", "fidoUnlock"]
 
 function isQuickUnlockSetting(key) {
   return QUICK_UNLOCK_SETTINGS.indexOf(String(key)) !== -1
+}
+
+// The absolute path of the unlock tool the inspection chose, or "".
+function unlockKeyPath(pluginDir, source) {
+  if (sshAgentHelperPath(pluginDir) === "") return ""
+  var root = pluginDir
+  while (root.length > 1 && root.charAt(root.length - 1) === "/") root = root.slice(0, root.length - 1)
+  if (source === "bundled") return root + "/" + UNLOCK_KEY_BUNDLED_RELATIVE
+  if (source === "development") return root + "/" + UNLOCK_KEY_DEVELOPMENT_RELATIVE
+  return ""
 }
 
 function unlockKeySourceLabel(source) {

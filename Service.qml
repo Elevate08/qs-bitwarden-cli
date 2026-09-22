@@ -527,7 +527,6 @@ Item {
   property string authPasswordWriteValue: ""
   // The value the keyring store process reads. Set from whichever path is
   // storing: the explicit setup form, or the automatic refresh after unlock.
-  property string masterToStore: ""
   // Item JSON on its way to `bw encode`. Held here so the create/edit processes
   // can pass it in the environment instead of on the command line.
   property string itemPayloadJson: ""
@@ -671,6 +670,7 @@ Item {
     root.sshAgentSettingsReady = true
     if (root.sshAgentEnabled) root.inspectSshAgentHelper()
     root.inspectUnlockKey()
+    root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
   }
 
@@ -749,6 +749,304 @@ Item {
 
   function onUnlockKeyInspected(raw) {
     root.unlockKeyHelper = Model.parseUnlockKeyInspection(raw)
+    root.envelopeReadinessChanged()
+  }
+
+  // -------------------------------------------------------------------------
+  // The quick-unlock envelope
+  // -------------------------------------------------------------------------
+  //
+  // One keyring item holds the master password, encrypted once, written the
+  // first time `bw` accepts a typed password; each quick-unlock method only
+  // adds a way into it. Everything here goes through BitwardenModel's
+  // envelope builders, one process at a time: two writers racing on one
+  // keyring item would lose whichever stored first.
+
+  // Besides the tool: argon2 and systemd-creds --user.
+  property var quickUnlockPrereqs: ({ argon2: false, creds: false, ready: false, message: "", checked: false })
+  readonly property bool quickUnlockAvailable: unlockKeyReady && quickUnlockPrereqs.ready
+  readonly property string quickUnlockUnavailableReason: !unlockKeyReady
+    ? String(unlockKeyHelper.message || "")
+    : String(quickUnlockPrereqs.message || "")
+
+  // Which account an envelope belongs to, from `bw status`.
+  property string accountId: ""
+  property string accountServer: ""
+
+  // The envelope's secret-free summary, or null when there is none (or none
+  // has been read yet -- `envelopeChecked` says which).
+  property var envelopeSummary: null
+  property bool envelopeChecked: false
+
+  property var envelopeJobs: []
+  property var envelopeJob: null
+
+  // The password a quick unlock just produced and `bw` refused: the master
+  // password changed elsewhere. Held only until the next typed unlock, which
+  // uses it to open the envelope and re-seal it for the new password -- so no
+  // method has to be set up again. Cleared on lock-out paths and logout.
+  property string rotationOldPassword: ""
+  // Fingerprint unlock's plaintext entry from before the envelope. Migrated
+  // at the first start that can, then deleted.
+  property bool legacyFingerprintStored: false
+  property bool legacyMigrationAttempted: false
+  property bool fingerprintFromEnvelope: false
+
+  function inspectQuickUnlockPrereqs() {
+    if (!quickUnlockPrereqProc.running) quickUnlockPrereqProc.running = true
+  }
+
+  function onQuickUnlockPrereqs(raw) {
+    var parsed = Model.parseQuickUnlockPrereqs(raw)
+    parsed.checked = true
+    root.quickUnlockPrereqs = parsed
+    root.envelopeReadinessChanged()
+  }
+
+  function envelopeTool() {
+    return Model.unlockKeyPath(sshAgentPluginDir, unlockKeyHelper.source)
+  }
+
+  function envelopeAccount() {
+    return { id: accountId, server: accountServer }
+  }
+
+  function envelopeReadinessChanged() {
+    if (!quickUnlockAvailable) return
+    if (!envelopeChecked) refreshEnvelope()
+    maybeMigrateLegacyFingerprint()
+  }
+
+  // Queue one envelope process. `job` is { command, env, secretOutput,
+  // writes, onDone(exitCode, stdout) }. `env` carries the secrets and is
+  // dropped the moment the process starts.
+  function queueEnvelopeJob(job) {
+    var jobs = envelopeJobs.slice()
+    jobs.push(job)
+    envelopeJobs = jobs
+    pumpEnvelopeJobs()
+  }
+
+  function pumpEnvelopeJobs() {
+    if (envelopeProc.running || envelopeJob !== null || envelopeJobs.length === 0) return
+    var jobs = envelopeJobs.slice()
+    var job = jobs.shift()
+    envelopeJobs = jobs
+    envelopeJob = job
+    envelopeProc.command = job.command
+    envelopeProc.environment = job.env || {}
+    job.env = null
+    envelopeProc.running = true
+  }
+
+  function onEnvelopeJobExited(exitCode) {
+    if (finishScrubRun(envelopeProc)) {
+      pumpEnvelopeJobs()
+      return
+    }
+    var job = envelopeJob
+    var out = String(envelopeStdout.text || "")
+    envelopeJob = null
+    envelopeProc.environment = {}
+    // What an open printed was the master password. Take it, then scrub the
+    // collector so it does not sit in the Process until the next run.
+    if (job && job.secretOutput) clearProcessCollectorSoon(envelopeProc)
+    if (job && job.onDone && !logoutPending) job.onDone(exitCode, out)
+    out = ""
+    if (logoutPending && allCredentialsClearPending) Qt.callLater(requestAllCredentialClear)
+    Qt.callLater(pumpEnvelopeJobs)
+  }
+
+  // Logout: nothing queued may run after the keyring is cleared.
+  function dropEnvelopeState() {
+    envelopeJobs = []
+    envelopeSummary = null
+    envelopeChecked = false
+    rotationOldPassword = ""
+    legacyFingerprintStored = false
+    legacyMigrationAttempted = false
+    fingerprintFromEnvelope = false
+  }
+
+  function refreshEnvelope() {
+    if (!quickUnlockAvailable) return
+    queueEnvelopeJob({
+      command: Model.unlockEnvelopeInspectCommand(envelopeTool()),
+      onDone: function(code, out) {
+        if (code === 0) {
+          try { root.envelopeSummary = JSON.parse(out) } catch (e) { root.envelopeSummary = null }
+        } else if (code === Model.envelopeExitCodes().absent) {
+          root.envelopeSummary = null
+        }
+        root.envelopeChecked = true
+        root.recomputeFingerprintStored()
+      }
+    })
+  }
+
+  function recomputeFingerprintStored() {
+    fingerprintStored = Boolean(envelopeSummary && envelopeSummary.fingerprint) || legacyFingerprintStored
+  }
+
+  // Runs `then()` once the account is known, asking `bw status` if a fresh
+  // login has not reported it yet.
+  function withEnvelopeAccount(then) {
+    if (accountId) { then(); return }
+    queueEnvelopeJob({
+      command: Model.statusCommand(),
+      env: bwEnv(),
+      onDone: function(code, out) {
+        var st = code === 0 ? Model.parseStatus(out) : null
+        if (st && st.userId) {
+          root.accountId = st.userId
+          root.accountServer = st.serverUrl
+          then()
+        }
+      }
+    })
+  }
+
+  // THE writer of the stored password. Called whenever `bw` has just accepted
+  // a password somebody typed -- email login, API-key login, master-password
+  // unlock, or an enable form's check -- and never with one a quick-unlock
+  // method produced. `done(ok)` is optional.
+  function storeAcceptedMasterPassword(password, done) {
+    var pw = String(password || "")
+    var finish = function(ok) { if (done) done(ok) }
+    if (!pw || !quickUnlockAvailable) { finish(false); return }
+    var oldPassword = rotationOldPassword
+    rotationOldPassword = ""
+    withEnvelopeAccount(function() {
+      var E = Model.envelopeExitCodes()
+      var tool = root.envelopeTool()
+      var account = root.envelopeAccount()
+      var env = {}
+      env[Model.keyringSecretEnvVar()] = pw
+      root.queueEnvelopeJob({
+        command: Model.unlockEnvelopeOpenCommand(tool, account, { kind: "master" }),
+        env: env, secretOutput: true,
+        onDone: function(code) {
+          if (code === 0) { finish(true); return }
+          if (code === E.absent || code === 6 || code === E.unseal) {
+            root.writeEnvelope(Model.unlockEnvelopeCreateCommand(tool, account), env, finish)
+            return
+          }
+          if (code === 3) {
+            // `bw` took this password and the envelope does not: it was
+            // changed elsewhere. Re-seal through whatever still opens the
+            // envelope, keeping every method.
+            var rotate = {}
+            rotate[Model.envelopeNewSecretEnvVar()] = pw
+            if (oldPassword) {
+              rotate[Model.keyringSecretEnvVar()] = oldPassword
+              root.writeEnvelope(Model.unlockEnvelopeUpdateCommand(tool, account,
+                { kind: "rotate", auth: { kind: "master" } }), rotate, finish)
+            } else if (root.envelopeSummary && root.envelopeSummary.fingerprint) {
+              root.writeEnvelope(Model.unlockEnvelopeUpdateCommand(tool, account,
+                { kind: "rotate", auth: { kind: "fingerprint" } }), rotate, finish)
+            } else {
+              // Nothing here reaches the data key yet. The next quick unlock
+              // will produce the old password, fail, and bring it back here.
+              root.writeEnvelope(Model.unlockEnvelopeUpdateCommand(tool, account, { kind: "mark-stale" }),
+                {}, finish)
+            }
+            return
+          }
+          console.log("qs-bitwarden envelope: check failed with " + code)
+          finish(false)
+        }
+      })
+    })
+  }
+
+  function writeEnvelope(command, env, done) {
+    queueEnvelopeJob({
+      command: command, env: env, writes: true,
+      onDone: function(code) {
+        if (code !== 0) console.log("qs-bitwarden envelope: write failed with " + code)
+        root.refreshEnvelope()
+        if (done) done(code === 0, code)
+      }
+    })
+  }
+
+  // An enable form's master password: a check against the stored password,
+  // never a new copy of it. `op` is the update that adds the method; it is
+  // itself authorized by the password opening the master wrap. With no
+  // envelope at all, `bw` checks the password instead and it is stored the
+  // way any accepted password is, then the method is added.
+  function addQuickUnlockMethod(password, op, extraEnv, done) {
+    var pw = String(password || "")
+    if (!quickUnlockAvailable) { done(false, "unavailable"); return }
+    withEnvelopeAccount(function() {
+      var env = {}
+      env[Model.keyringSecretEnvVar()] = pw
+      if (extraEnv) for (var k in extraEnv) env[k] = extraEnv[k]
+      var command = Model.unlockEnvelopeUpdateCommand(root.envelopeTool(), root.envelopeAccount(), op)
+      root.queueEnvelopeJob({
+        command: command, env: env, writes: true,
+        onDone: function(code) {
+          var E = Model.envelopeExitCodes()
+          if (code === 0) { root.refreshEnvelope(); done(true, ""); return }
+          if (code === 3) { done(false, "wrong-password"); return }
+          if (code !== E.absent && code !== 6 && code !== E.unseal) { done(false, "failed"); return }
+          root.verifyWithBw(pw, function(ok) {
+            if (!ok) { done(false, "wrong-password"); return }
+            root.storeAcceptedMasterPassword(pw, function(stored) {
+              if (!stored) { done(false, "failed"); return }
+              var again = {}
+              again[Model.keyringSecretEnvVar()] = pw
+              if (extraEnv) for (var k2 in extraEnv) again[k2] = extraEnv[k2]
+              root.writeEnvelope(command, again, function(added) { done(added, added ? "" : "failed") })
+            })
+          })
+        }
+      })
+    })
+  }
+
+  // No envelope to check against: ask `bw`. A successful `bw unlock` mints a
+  // new session key that replaces the one in use, so it is adopted and
+  // remembered exactly as an unlock's would be.
+  function verifyWithBw(password, done) {
+    var env = {}
+    env[Model.keyringSecretEnvVar()] = String(password || "")
+    queueEnvelopeJob({
+      command: Model.bwVerifyPasswordCommand(),
+      env: bwEnv(env), secretOutput: true,
+      onDone: function(code, out) {
+        var s = code === 0 ? Model.extractSessionToken(out) : ""
+        if (!s) { done(false); return }
+        root.session = s
+        root.storeCurrentSession()
+        done(true)
+      }
+    })
+  }
+
+  function removeQuickUnlockMethod(op) {
+    if (!quickUnlockAvailable || !accountId) return
+    if (!envelopeSummary) return
+    writeEnvelope(Model.unlockEnvelopeUpdateCommand(envelopeTool(), envelopeAccount(), op), {}, null)
+  }
+
+  // The plaintext fingerprint entry, moved into the envelope in one shell.
+  // Once per session: a failure leaves the entry for the next start.
+  function maybeMigrateLegacyFingerprint() {
+    if (legacyMigrationAttempted || !legacyFingerprintStored || !quickUnlockAvailable || !accountId) return
+    legacyMigrationAttempted = true
+    var codes = Model.legacyMigrationExitCodes()
+    queueEnvelopeJob({
+      command: Model.legacyFingerprintMigrationCommand(envelopeTool(), envelopeAccount()),
+      writes: true,
+      onDone: function(code) {
+        if (code === 0 || code === codes.none) root.legacyFingerprintStored = false
+        if (code !== 0 && code !== codes.none) {
+          console.log("qs-bitwarden envelope: fingerprint migration left the legacy entry (" + code + ")")
+        }
+        root.refreshEnvelope()
+      }
+    })
   }
 
   property var sshAgentState: Model.sshAgentInitialState()
@@ -1944,6 +2242,11 @@ Item {
     var authoritative = statusCheckAuthoritative
     statusCheckAuthoritative = true
     var st = Model.parseStatus(rawJson)
+    if (st && st.userId) {
+      accountId = st.userId
+      accountServer = st.serverUrl
+      Qt.callLater(maybeMigrateLegacyFingerprint)
+    }
     if (!authoritative) {
       if (st && st.userEmail) {
         userEmail = st.userEmail
@@ -2533,6 +2836,10 @@ Item {
 
     if (exitCode === 0 && out.length > 10) {
       rememberTwoFactorMethod(login2faMethod)
+      // Typed, and `bw` just accepted it: the stored password comes from here
+      // for a fresh login. See storeAcceptedMasterPassword().
+      pendingUnlockPassword = String(loginPassword || "")
+      pendingUnlockFrom = ""
       loginPassword = ""
       login2faCode = ""
       logLogin("success", out, err, exitCode)
@@ -2694,7 +3001,7 @@ Item {
   }
 
   function credentialStoresRunning() {
-    return keyringStoreProc.running || pinStoreProc.running || keyringStoreMasterProc.running
+    return keyringStoreProc.running || pinStoreProc.running || envelopeProc.running
   }
 
   function requestAllCredentialClear() {
@@ -2726,6 +3033,7 @@ Item {
   // account it belonged to. See keyringClearAllCommand() for why asking
   // unconditionally is free.
   function forgetStoredCredentials() {
+    dropEnvelopeState()
     requestAllCredentialClear()
     // The learned-suggestion store is this account's data too -- which domains
     // and apps it holds logins for, and when each was last used -- and unlike
@@ -3461,8 +3769,22 @@ Item {
   // answers, which is not a verdict.
   function quickUnlockToolMissing(entry) {
     if (!entry || !Model.isQuickUnlockSetting(entry.key)) return false
-    if (unlockKeyHelper.state === "unknown" || unlockKeyReady) return false
+    if (unlockKeyHelper.state === "unknown" || !quickUnlockPrereqs.checked) return false
+    if (quickUnlockAvailable) return false
     return !settingValue(entry)
+  }
+
+  // The floor rule, said where it applies: the stored password is only as
+  // protected as the weakest enabled way into it, and with fingerprint on
+  // that is fingerprint -- a finger releases no secret to encrypt with. A PIN
+  // or a key does not make the password safer while fingerprint is also on,
+  // and the rows that suggest otherwise say so.
+  function settingNote(entry) {
+    if (!entry || (entry.key !== "pinUnlock" && entry.key !== "fidoUnlock")) return ""
+    if (!settingValue(entry) || !fingerprintUnlock || !fingerprintStored) return ""
+    return "Fingerprint unlock is also on, so the stored password is only as protected as "
+      + "fingerprint unlock: a program running as you can open it without the "
+      + (entry.key === "pinUnlock" ? "PIN." : "key.")
   }
 
   // The reason shown in place of the description, so an inert control says
@@ -3470,7 +3792,7 @@ Item {
   function settingBlockedReason(entry) {
     if (settingDependencyMissing(entry)) return "Needs fingerprint setup -- see Dependencies below."
     if (quickUnlockToolMissing(entry)) {
-      return unlockKeyHelper.message + " Your master password still unlocks the vault."
+      return quickUnlockUnavailableReason + " Your master password still unlocks the vault."
     }
     return ""
   }
@@ -3619,7 +3941,9 @@ Item {
   }
 
   function onFingerprintStoredChecked(raw) {
-    fingerprintStored = String(raw || "").trim() === "yes"
+    legacyFingerprintStored = String(raw || "").trim() === "yes"
+    recomputeFingerprintStored()
+    maybeMigrateLegacyFingerprint()
     if (sshAuthSurfaceActive && status === "locked") armPresenceUnlock()
   }
 
@@ -3661,6 +3985,10 @@ Item {
       fingerprintAuthorized = true
       // The button under this says "Unlocking..." on its own now.
       fingerprintMessage = "󰈷  Fingerprint verified"
+      if (quickUnlockAvailable && accountId && envelopeSummary && envelopeSummary.fingerprint) {
+        openEnvelopeForFingerprint()
+        return
+      }
       if (!keyringLookupMasterProc.running) {
         keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
         keyringLookupMasterProc.running = true
@@ -3672,6 +4000,34 @@ Item {
       fingerprintMessage = ""
       fingerprintError = "Fingerprint not recognised. Try again or use your master password."
     }
+  }
+
+  // After PamResult.Success, from the envelope's fingerprint wrap. A missing
+  // wrap or envelope falls back to the legacy entry, for the one start before
+  // migration runs.
+  function openEnvelopeForFingerprint() {
+    queueEnvelopeJob({
+      command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "fingerprint" }),
+      secretOutput: true,
+      onDone: function(code, out) {
+        if (code === 0 && out) {
+          root.fingerprintFromEnvelope = true
+          root.onFingerprintPasswordRetrieved(out)
+          return
+        }
+        var E = Model.envelopeExitCodes()
+        if ((code === 7 || code === E.absent) && root.legacyFingerprintStored
+            && !keyringLookupMasterProc.running) {
+          keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
+          keyringLookupMasterProc.running = true
+          return
+        }
+        root.fingerprintAuthorized = false
+        root.fingerprintMessage = ""
+        root.fingerprintError = "Could not read the stored password. Unlock with your master password."
+        root.refreshEnvelope()
+      }
+    })
   }
 
   // Only ever called after PamResult.Success.
@@ -3705,62 +4061,67 @@ Item {
   }
 
   function abandonFingerprintSetup() {
-    var active = fpSetupActive
-    if (active && keyringStoreMasterProc.running) invalidateEpochOperation("masterStore")
+    // A wrap still being written is taken back out when it lands: its
+    // completion finds the operation stale. See submitFingerprintSetup().
+    if (fpBusy) invalidateEpochOperation("fingerprintAdd")
     fpSetupActive = false
     fpBusy = false
     fpSetupMaster = ""
-    if (active) masterToStore = ""
   }
 
+  // The master password here is a check against the stored password: it
+  // must open the envelope, and the fingerprint wrap is added to it. Nothing
+  // typed is stored.
   function submitFingerprintSetup() {
-    if (fpBusy || keyringStoreMasterProc.running) return
+    if (fpBusy) return
+    if (!quickUnlockAvailable) {
+      fpError = quickUnlockUnavailableReason
+      return
+    }
     if (!fpSetupMaster) {
-      fpError = "Master password is required to enable fingerprint unlock"
+      fpError = "Confirm your master password to enable fingerprint unlock"
       return
     }
     fpError = ""
     fpBusy = true
     fpSetupActive = true
-    masterToStore = fpSetupMaster
-    beginEpochOperation("masterStore")
-    keyringStoreMasterProc.running = true
-  }
-
-  function onMasterPasswordStored(exitCode) {
-    masterToStore = ""
-    pendingUnlockPassword = ""
-    if (epochOperationIsStale("masterStore")) {
-      fpSetupActive = false
-      fpBusy = false
-      fpSetupMaster = ""
-      fingerprintStored = false
-      requestMasterCredentialClear()
-      return
-    }
-    fingerprintStored = (exitCode === 0)
-
-    if (fpSetupActive) {
-      fpSetupActive = false
-      fpBusy = false
-      fpSetupMaster = ""
-      if (exitCode !== 0) {
-        fpError = "Could not save the master password. Is the OS keyring available?"
+    var typed = fpSetupMaster
+    fpSetupMaster = ""
+    beginEpochOperation("fingerprintAdd")
+    addQuickUnlockMethod(typed, { kind: "add-fingerprint" }, null, function(ok, why) {
+      typed = ""
+      root.fpBusy = false
+      // Locked, logged out or abandoned while the wrap was being written: a
+      // fingerprint wrap for a setting that never turned on is the data key
+      // lying in the keyring for nothing. Take it back out.
+      if (root.epochOperationIsStale("fingerprintAdd") || !root.fpSetupActive) {
+        root.fpSetupActive = false
+        if (ok) root.removeQuickUnlockMethod({ kind: "remove", method: "fingerprint" })
         return
       }
-      writeSetting("fingerprintUnlock", true, "bool")
-      flashNotification("Fingerprint unlock enabled")
-      currentScreen = "settings"
-      return
-    }
-
-    if (exitCode !== 0) {
-      errorMessage = "Could not save master password to the OS keyring, so fingerprint unlock is unavailable."
-    }
+      root.fpSetupActive = false
+      if (!ok) {
+        root.fpError = why === "wrong-password"
+          ? "That is not your master password."
+          : "Could not enable fingerprint unlock. Is the OS keyring available?"
+        return
+      }
+      // The plaintext entry, if an older version left one, is superseded.
+      root.legacyFingerprintStored = false
+      root.requestMasterCredentialClear()
+      root.recomputeFingerprintStored()
+      root.writeSetting("fingerprintUnlock", true, "bool")
+      root.flashNotification("Fingerprint unlock enabled")
+      root.currentScreen = "settings"
+    })
   }
 
   function forgetFingerprintUnlock() {
     requestMasterCredentialClear()
+    legacyFingerprintStored = false
+    if (envelopeSummary && envelopeSummary.fingerprint) {
+      removeQuickUnlockMethod({ kind: "remove", method: "fingerprint" })
+    }
     fingerprintStored = false
     cancelFingerprintUnlock()
     fingerprintMessage = ""
@@ -3856,11 +4217,26 @@ Item {
     var err = String(stderrText || "").trim()
 
     if (exitCode === 0 && out) {
+      fingerprintFromEnvelope = false
       onUnlockSuccess(out)
     } else {
-      pendingUnlockPassword = ""
+      if (!(pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)) pendingUnlockPassword = ""
       // A stored secret the vault no longer accepts is useless: drop it rather
       // than fail on every open, and say which one went stale.
+      if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
+        // The envelope's password is out of date: the master password was
+        // changed elsewhere. Keep fingerprint unlock and remember the old
+        // password, so the next typed unlock can re-seal the envelope.
+        pendingUnlockFrom = ""
+        fingerprintFromEnvelope = false
+        rotationOldPassword = pendingUnlockPassword
+        pendingUnlockPassword = ""
+        fingerprintMessage = "Your master password was changed. Unlock with the new one once; fingerprint unlock will follow it."
+        errorMessage = ""
+        focusAppropriateField()
+        Qt.callLater(prepareUnlock)
+        return
+      }
       if (pendingUnlockFrom === "fingerprint") {
         pendingUnlockFrom = ""
         requestMasterCredentialClear()
@@ -3936,18 +4312,15 @@ Item {
 
     storeCurrentSession()
 
-    // Opting in stores the master password so a finger can stand in for it later.
-    // Keep an existing enrolment current after a master password change. It no
-    // longer creates one -- that is what the setup form is for.
-    if (fingerprintUnlock && fingerprintAvailable && fingerprintStored
-        && pendingUnlockPassword && pendingUnlockFrom === ""
-        && !keyringStoreMasterProc.running) {
-      masterToStore = pendingUnlockPassword
-      beginEpochOperation("masterStore")
-      keyringStoreMasterProc.running = true
+    // A typed password `bw` just accepted is the one source of the stored
+    // password -- never one a quick-unlock method produced. This also
+    // re-seals the envelope after a password change made elsewhere.
+    if (pendingUnlockPassword && pendingUnlockFrom === "") {
+      storeAcceptedMasterPassword(pendingUnlockPassword)
     } else {
-      pendingUnlockPassword = ""
+      rotationOldPassword = ""
     }
+    pendingUnlockPassword = ""
     pendingUnlockFrom = ""
     pinEntry = ""
     pinAttempts = 0
@@ -4118,7 +4491,6 @@ Item {
     pinSetupConfirm = ""
     pinSetupMaster = ""
     fpSetupMaster = ""
-    masterToStore = ""
     pendingAssociationsJson = ""
     fidoUnlocker.dropSecrets()
     scrubSecretBuffers()
@@ -5967,6 +6339,25 @@ Item {
   }
 
   Process {
+    id: quickUnlockPrereqProc
+    command: Model.quickUnlockPrereqCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onQuickUnlockPrereqs(text)
+    }
+  }
+
+  // Every envelope operation, one at a time; see queueEnvelopeJob().
+  Process {
+    id: envelopeProc
+    stdout: StdioCollector {
+      id: envelopeStdout
+      waitForEnd: true
+    }
+    onExited: function(exitCode) { root.onEnvelopeJobExited(exitCode) }
+  }
+
+  Process {
     id: sshExportProc
     command: Model.sshExportCommand()
     stdinEnabled: true
@@ -6494,17 +6885,6 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onFingerprintStoredChecked(text)
-    }
-  }
-
-  Process {
-    id: keyringStoreMasterProc
-    command: Model.keyringStoreMasterPasswordCommand()
-    environment: root.secretEnv(root.masterToStore)
-    onExited: function(exitCode) {
-      root.onMasterPasswordStored(exitCode)
-      if (root.logoutPending && root.allCredentialsClearPending)
-        Qt.callLater(root.requestAllCredentialClear)
     }
   }
 

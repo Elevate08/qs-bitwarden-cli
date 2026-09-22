@@ -180,13 +180,14 @@ check("the tool is inspected at every start, not only when an option is on",
   /root\.inspectUnlockKey\(\)/.test(service),
   "a password login would not know whether it can store the envelope")
 check("a missing tool blocks switching quick unlock on",
-  /function quickUnlockToolMissing[\s\S]{0,500}?Model\.isQuickUnlockSetting[\s\S]{0,300}?unlockKeyReady/.test(service),
+  /function quickUnlockToolMissing[\s\S]{0,500}?Model\.isQuickUnlockSetting[\s\S]{0,300}?quickUnlockAvailable/.test(service)
+    && /readonly property bool quickUnlockAvailable: unlockKeyReady && quickUnlockPrereqs\.ready/.test(service),
   "the settings toggles are not tied to the tool's inspection")
 check("but never blocks switching one off",
   /function quickUnlockToolMissing[\s\S]{0,700}?return !settingValue\(entry\)/.test(service),
   "an option that is on could not be turned off, stranding its stored credential")
 check("the blocked toggle says why, and that the password still works",
-  /function settingBlockedReason[\s\S]{0,400}?unlockKeyHelper\.message[\s\S]{0,100}?master password still unlocks/.test(service),
+  /function settingBlockedReason[\s\S]{0,400}?quickUnlockUnavailableReason[\s\S]{0,100}?master password still unlocks/.test(service),
   "an inert toggle with no reason")
 check("the settings screen shows that reason",
   /root\.vault\.settingBlockedReason\(modelData\)/.test(fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")),

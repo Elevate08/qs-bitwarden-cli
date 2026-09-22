@@ -38,6 +38,11 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.fidoEnv = envelopeFidoHmacEnvVar
   exports.account = keyringEnvelopeAccount
   exports.clearAll = keyringClearAllCommand
+  exports.migrate = legacyFingerprintMigrationCommand
+  exports.migrationExits = legacyMigrationExitCodes
+  exports.bwVerify = bwVerifyPasswordCommand
+  exports.prereqs = quickUnlockPrereqCommand
+  exports.parsePrereqs = parseQuickUnlockPrereqs
 `)(Model)
 
 let pass = 0
@@ -248,6 +253,29 @@ function suite(realCreds) {
       JSON.stringify(s))
     eq(tag + "and it still opens", open({ kind: "master" }, { [SECRET]: PASSWORD }).out, PASSWORD)
 
+    // --- migrating fingerprint unlock's plaintext entry ---
+    const legacy = path.join(store, "master_password")
+    const M = Model.migrationExits()
+    eq(tag + "no legacy entry: nothing to migrate", run(Model.migrate(tool, ACCOUNT)).code, M.none)
+
+    // An envelope whose password is not the legacy one: one of them is stale,
+    // so neither is touched.
+    fs.writeFileSync(legacy, "an older password")
+    before = stored()
+    eq(tag + "a legacy password the envelope refuses is left alone",
+      run(Model.migrate(tool, ACCOUNT)).code, M.mismatch)
+    check(tag + "both entries are still there", fs.existsSync(legacy) && stored() === before, "")
+
+    // The ordinary case: the legacy password is the envelope's.
+    fs.writeFileSync(legacy, PASSWORD.replace(/\n+$/, ""))
+    run(Model.clear())
+    const migrated = run(Model.migrate(tool, ACCOUNT))
+    eq(tag + "a legacy entry with no envelope migrates", migrated.code, 0)
+    eq(tag + "the plaintext entry is gone", fs.existsSync(legacy), false)
+    eq(tag + "the envelope now opens through fingerprint",
+      open({ kind: "fingerprint" }).out, PASSWORD.replace(/\n+$/, ""))
+    check(tag + "and holds no readable password", !stored().includes("horse"), "")
+
     // --- presence, and clearing ---
     eq(tag + "presence is reported without the secret", run(Model.has()).out.trim(), "yes")
     run(Model.clear())
@@ -280,6 +308,25 @@ if (realCreds.status === 0) {
 } else {
   console.log("unlock-envelope: systemd-creds --user unavailable here; the real-seal pass was skipped")
 }
+
+// -------------------------------------------------------------------------
+// The prerequisite probe, and bw's check of a typed password
+// -------------------------------------------------------------------------
+
+{
+  const probe = Model.prereqs()
+  const r = spawnSync(probe[0], probe.slice(1), { encoding: "utf8" })
+  const parsed = Model.parsePrereqs(r.stdout)
+  eq("argon2 is found here", parsed.argon2, true)
+  eq("the probe agrees with the real-seal pass about systemd-creds", parsed.creds, realCreds.status === 0)
+  check("a missing systemd-creds is explained",
+    /systemd-creds --user/.test(Model.parsePrereqs("argon2=1\ncreds=0\n").message), "")
+  check("a missing argon2 is explained",
+    /argon2/.test(Model.parsePrereqs("argon2=0\ncreds=1\n").message), "")
+  eq("both present is ready", Model.parsePrereqs("argon2=1\ncreds=1\n").ready, true)
+}
+check("bw checks a typed password from the environment, never argv",
+  /bw unlock --passwordenv QSBW_SECRET --raw/.test(Model.bwVerify()[2]), Model.bwVerify()[2])
 
 // -------------------------------------------------------------------------
 // Builders refuse what should never reach them
