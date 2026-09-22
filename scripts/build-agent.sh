@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Build the SSH agent helper reproducibly.
+# Build the plugin's helpers reproducibly: the SSH agent (agent/) and the
+# quick-unlock envelope tool (unlock-key/).
 #
-# The compiled helper is committed to this repository. That is only defensible
-# if anyone can rebuild it from the committed source and get the same bytes --
-# otherwise the binary is an unauditable blob that happens to sit next to some
-# source code. This script is the one entry point that produces it, locally and
+# The compiled helpers are committed to this repository. That is only
+# defensible if anyone can rebuild them from the committed source and get the
+# same bytes -- otherwise a binary is an unauditable blob that happens to sit
+# next to some source code. This script is the one entry point that produces
+# them, locally and
 # in CI, so there is a single definition of what "the release build" means.
 #
 # What fixes the output bytes:
 #
-#   Cargo.lock              the exact dependency set          (committed)
-#   rust-toolchain.toml     the exact compiler                (committed)
+#   Cargo.lock              the exact dependency set          (committed, per package)
+#   rust-toolchain.toml     the exact compiler                (committed, per package,
+#                                                              and the same in each)
 #   --target                the ABI                           (below)
 #   --remap-path-prefix     build paths, which otherwise leak (below)
 #   the container image     glibc, ld and strip               (PINNED_IMAGE)
@@ -44,7 +47,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # checksum file would have to change shape with it.
 OUTPUT_ARCH="x86_64-linux"
 OUTPUT_DIR="$REPO_ROOT/bin/$OUTPUT_ARCH"
-OUTPUT_NAME="qs-bitwarden-ssh-agent"
+# Every tracked artifact, as `<package directory>:<binary name>`. Separate
+# Cargo packages, each with its own manifest and lockfile: a crate added to one
+# must not change the other's bytes, and in a shared package it did (the SSH
+# helper went from f80366fe to 5c2fcc7b when the unlock tool was added beside
+# it, with no SSH source change).
+ARTIFACTS=(
+  "agent:qs-bitwarden-ssh-agent"
+  "unlock-key:qs-bitwarden-unlock-key"
+)
 # One SHA256SUMS covering every tracked artifact, in the format `sha256sum -c`
 # reads, rather than a sidecar file per binary.
 SUMS_FILE="$REPO_ROOT/bin/SHA256SUMS"
@@ -54,13 +65,13 @@ usage() {
 Usage: scripts/build-agent.sh [--verify-reproducible] [--compare-tracked]
                               [--allow-unpinned] [--explain]
 
-  (no flags)            Build the release helper into bin/<arch>/ and write
+  (no flags)            Build every release helper into bin/<arch>/ and write
                         bin/SHA256SUMS.
   --verify-reproducible Build twice from two different absolute paths and
                         require byte-identical output. Writes nothing.
-  --compare-tracked     Report whether the tracked binary matches a fresh build
-                        of this source, without modifying the repository.
-                        Exit 1 on drift.
+  --compare-tracked     Report whether every tracked binary matches a fresh
+                        build of this source, without modifying the repository.
+                        Exit 1 on drift, including a binary not yet tracked.
   --allow-unpinned      Permit a host-toolchain build when no container runtime
                         is available. The result is NOT reproducible and is
                         refused by --verify-reproducible.
@@ -75,10 +86,20 @@ note() { printf 'build-agent: %s\n' "$1" >&2; }
 # --- preconditions ---------------------------------------------------------
 
 require_lockfile() {
-  [ -f "$REPO_ROOT/agent/Cargo.lock" ] \
-    || fail "agent/Cargo.lock is missing; a release build has no dependency set without it"
-  [ -f "$REPO_ROOT/agent/rust-toolchain.toml" ] \
-    || fail "agent/rust-toolchain.toml is missing; the compiler is not pinned"
+  local spec package channel first=""
+  for spec in "${ARTIFACTS[@]}"; do
+    package="${spec%%:*}"
+    [ -f "$REPO_ROOT/$package/Cargo.lock" ] \
+      || fail "$package/Cargo.lock is missing; a release build has no dependency set without it"
+    [ -f "$REPO_ROOT/$package/rust-toolchain.toml" ] \
+      || fail "$package/rust-toolchain.toml is missing; the compiler is not pinned"
+    # One pinned image carries one rustc, so every package has to name it.
+    channel="$(grep -oP 'channel\s*=\s*"\K[^"]+' "$REPO_ROOT/$package/rust-toolchain.toml" 2>/dev/null)"
+    [ -n "$first" ] || first="$channel"
+    [ "$channel" = "$first" ] \
+      || fail "$package/rust-toolchain.toml pins $channel but ${ARTIFACTS[0]%%:*}/ pins $first;
+       the pinned image carries one compiler, so every package must name the same one"
+  done
 }
 
 # A target other than the one the committed binary is for would produce bytes
@@ -168,12 +189,20 @@ rustflags_for() {
 # the bytes. That is not hypothetical -- the release build used a separate
 # temporary directory and produced a different digest from the two builds
 # --verify-reproducible had just declared identical.
+#
+# Every package builds into the same target directory. Each is its own Cargo
+# project, so a dependency shared between them is reused only where its
+# version, features and profile are identical -- the same artifact either
+# package would have built alone.
 build_into() {
-  local src="$1"
-  ( cd "$src/agent" \
-    && CARGO_TARGET_DIR="$src/target" \
-       RUSTFLAGS="$(rustflags_for "$src")" \
-       cargo build --locked --release --target "$SUPPORTED_TARGET" >&2 )
+  local src="$1" spec package
+  for spec in "${ARTIFACTS[@]}"; do
+    package="${spec%%:*}"
+    ( cd "$src/$package" \
+      && CARGO_TARGET_DIR="$src/target" \
+         RUSTFLAGS="$(rustflags_for "$src")" \
+         cargo build --locked --release --target "$SUPPORTED_TARGET" >&2 ) || return 1
+  done
 }
 
 # Export the committed tree somewhere clean and build it there.
@@ -190,8 +219,10 @@ build_clean_copy() {
   mkdir -p "$dest" || return 1
   git -C "$REPO_ROOT" archive HEAD | tar -x -C "$dest" || return 1
   build_into "$dest" || return 1
-  printf '%s/target/%s/release/%s' "$dest" "$SUPPORTED_TARGET" "$OUTPUT_NAME"
+  printf '%s/target/%s/release' "$dest" "$SUPPORTED_TARGET"
 }
+
+binary_name() { printf '%s' "${1#*:}"; }
 
 digest() { sha256sum "$1" | cut -d' ' -f1; }
 
@@ -221,23 +252,27 @@ verify_reproducible() {
   first="$work/path-one"
   second="$work/a-considerably-longer-second-path"
 
-  local a b binary
-  binary="$(build_clean_copy "$first")" || fail "the first build failed"
-  a="$(digest "$binary")"
-  binary="$(build_clean_copy "$second")" || fail "the second build failed"
-  b="$(digest "$binary")"
+  local one two spec name a b differ=0
+  one="$(build_clean_copy "$first")" || fail "the first build failed"
+  two="$(build_clean_copy "$second")" || fail "the second build failed"
 
-  printf 'path one: %s\npath two: %s\n' "$a" "$b"
-  if [ "$a" != "$b" ]; then
-    fail "the two builds differ, so something in the build path reached the binary"
-  fi
-  note "identical across both paths: $a"
+  for spec in "${ARTIFACTS[@]}"; do
+    name="$(binary_name "$spec")"
+    a="$(digest "$one/$name")"
+    b="$(digest "$two/$name")"
+    printf '%s\n  path one: %s\n  path two: %s\n' "$name" "$a" "$b"
+    if [ "$a" = "$b" ]; then
+      note "$name identical across both paths: $a"
+    else
+      differ=1
+    fi
+  done
+  [ "$differ" -eq 0 ] \
+    || fail "the two builds differ, so something in the build path reached a binary"
 }
 
 # Report drift without touching the repository, so it is safe in a PR gate.
 compare_tracked() {
-  local committed="$OUTPUT_DIR/$OUTPUT_NAME"
-  [ -f "$committed" ] || fail "no tracked binary at bin/$OUTPUT_ARCH/$OUTPUT_NAME"
 
   # The comparison is only worth anything from inside the pinned environment.
   # The tracked bytes were produced there, and the image pins glibc and
@@ -262,15 +297,21 @@ compare_tracked() {
   work="$(mktemp -d)" || fail "could not create a work directory"
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" EXIT
-  local fresh binary
-  binary="$(build_clean_copy "$work/source")" || fail "the comparison build failed"
-  fresh="$(digest "$binary")"
-  local have
-  have="$(digest "$committed")"
-  printf 'tracked: %s\nfresh:   %s\n' "$have" "$fresh"
-  [ "$have" = "$fresh" ] \
-    || fail "bin/$OUTPUT_ARCH/$OUTPUT_NAME does not match a build of this source"
-  note "the tracked binary matches this source"
+  local built spec name committed have fresh drifted=""
+  built="$(build_clean_copy "$work/source")" || fail "the comparison build failed"
+  # Every artifact is compared and reported before the verdict, so one drift
+  # does not hide another. A binary that is not tracked yet is drift too: the
+  # candidate this source builds is exactly what has to be committed.
+  for spec in "${ARTIFACTS[@]}"; do
+    name="$(binary_name "$spec")"
+    committed="$OUTPUT_DIR/$name"
+    fresh="$(digest "$built/$name")"
+    if [ -f "$committed" ]; then have="$(digest "$committed")"; else have="(not tracked)"; fi
+    printf '%s\n  tracked: %s\n  fresh:   %s\n' "$name" "$have" "$fresh"
+    [ "$have" = "$fresh" ] || drifted="$drifted bin/$OUTPUT_ARCH/$name"
+  done
+  [ -z "$drifted" ] || fail "does not match a build of this source:$drifted"
+  note "every tracked binary matches this source"
 }
 
 build_release() {
@@ -292,13 +333,19 @@ build_release() {
   work="$(mktemp -d)" || fail "could not create a work directory"
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" EXIT
-  local binary
-  binary="$(build_clean_copy "$work/source")" || fail "the build failed"
-  install -m 0755 "$binary" "$OUTPUT_DIR/$OUTPUT_NAME"
+  local built spec name listed=()
+  built="$(build_clean_copy "$work/source")" || fail "the build failed"
+  for spec in "${ARTIFACTS[@]}"; do
+    name="$(binary_name "$spec")"
+    install -m 0755 "$built/$name" "$OUTPUT_DIR/$name"
+    listed+=("$OUTPUT_ARCH/$name")
+  done
   # Paths relative to bin/, so `sha256sum -c SHA256SUMS` works from there
-  # whatever the checkout is called.
-  ( cd "$REPO_ROOT/bin" && sha256sum "$OUTPUT_ARCH/$OUTPUT_NAME" > "$SUMS_FILE" )
-  note "wrote bin/$OUTPUT_ARCH/$OUTPUT_NAME and bin/SHA256SUMS"
+  # whatever the checkout is called. One line per artifact: the panel checks
+  # each binary against its own line, so one stale file never disables the
+  # other's feature.
+  ( cd "$REPO_ROOT/bin" && sha256sum "${listed[@]}" > "$SUMS_FILE" )
+  note "wrote ${listed[*]/#/bin/} and bin/SHA256SUMS"
 }
 
 # Report the decision without acting on it. Useful for a person wondering why

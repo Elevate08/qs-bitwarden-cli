@@ -2347,7 +2347,7 @@ Panel {
                       // bindings are evaluated all the same, and undefined
                       // reaches a QString property as a warning per frame.
                       text: blocked
-                        ? "Needs fingerprint setup -- see Dependencies below."
+                        ? root.vault.settingBlockedReason(modelData)
                         : (modelData.description || "")
                       color: root.dim
                       font.family: root.fontFamily

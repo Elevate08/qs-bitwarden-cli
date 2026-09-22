@@ -670,6 +670,7 @@ Item {
     // after this point are transitions worth reacting to.
     root.sshAgentSettingsReady = true
     if (root.sshAgentEnabled) root.inspectSshAgentHelper()
+    root.inspectUnlockKey()
     root.inspectUwsmFragment()
   }
 
@@ -729,6 +730,25 @@ Item {
 
   function onSshAgentHelperInspected(raw) {
     root.sshAgentHelper = Model.parseSshAgentHelperInspection(raw)
+  }
+
+  // The quick-unlock tool, checked the way the SSH helper is. Inspected at
+  // every start, not only while a quick-unlock option is on: the encrypted
+  // master password is written after each password login, so the panel has to
+  // know whether it can do that before anyone opens settings. Failing this
+  // disables PIN, fingerprint and FIDO2 unlock and nothing else.
+  property var unlockKeyHelper: ({ state: "unknown", source: "", version: "",
+    protocol: 0, checksum: "unchecked", selfTest: "", message: "" })
+  readonly property bool unlockKeyReady: Model.unlockKeyReady(unlockKeyHelper)
+
+  function inspectUnlockKey() {
+    if (unlockKeyProc.running || sshAgentPluginDir === "") return
+    unlockKeyProc.command = Model.unlockKeyInspectCommand(root.sshAgentPluginDir)
+    unlockKeyProc.running = true
+  }
+
+  function onUnlockKeyInspected(raw) {
+    root.unlockKeyHelper = Model.parseUnlockKeyInspection(raw)
   }
 
   property var sshAgentState: Model.sshAgentInitialState()
@@ -3423,11 +3443,36 @@ Item {
   // A setting whose dependency is missing is inert; the cursor may sit on it,
   // but changing it would silently do nothing.
   function settingBlocked(entry) {
+    return settingDependencyMissing(entry) || quickUnlockToolMissing(entry)
+  }
+
+  function settingDependencyMissing(entry) {
     if (!entry || !entry.requires) return false
     for (var i = 0; i < dependencies.items.length; i++) {
       if (dependencies.items[i].key === entry.requires) return !dependencies.items[i].ready
     }
     return false
+  }
+
+  // PIN, fingerprint and FIDO2 unlock all go through the quick-unlock tool.
+  // Without a usable one they cannot be switched on -- but switching one off
+  // never needs it, so an option already on stays reachable and can always
+  // be turned off. "unknown" is the moment before the first inspection
+  // answers, which is not a verdict.
+  function quickUnlockToolMissing(entry) {
+    if (!entry || !Model.isQuickUnlockSetting(entry.key)) return false
+    if (unlockKeyHelper.state === "unknown" || unlockKeyReady) return false
+    return !settingValue(entry)
+  }
+
+  // The reason shown in place of the description, so an inert control says
+  // why rather than doing nothing.
+  function settingBlockedReason(entry) {
+    if (settingDependencyMissing(entry)) return "Needs fingerprint setup -- see Dependencies below."
+    if (quickUnlockToolMissing(entry)) {
+      return unlockKeyHelper.message + " Your master password still unlocks the vault."
+    }
+    return ""
   }
 
   // Group headings are rows in the list but not controls, so the cursor steps
@@ -5910,6 +5955,14 @@ Item {
       id: sshAgentHelperStdout
       waitForEnd: true
       onStreamFinished: root.onSshAgentHelperInspected(text)
+    }
+  }
+
+  Process {
+    id: unlockKeyProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onUnlockKeyInspected(text)
     }
   }
 

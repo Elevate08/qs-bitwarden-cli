@@ -56,10 +56,13 @@ check("it is a real ELF binary",
   fs.existsSync(bundled) && fs.readFileSync(bundled).subarray(0, 4).toString("latin1") === "\x7fELF",
   "no ELF magic")
 
-const recorded = fs.existsSync(sums) ? fs.readFileSync(sums, "utf8").trim() : ""
-check("the checksum file records a path relative to bin/",
-  /^[0-9a-f]{64}\s+x86_64-linux\/qs-bitwarden-ssh-agent$/.test(recorded),
-  recorded)
+// SHA256SUMS names every shipped helper, one line each.
+const sumLines = fs.existsSync(sums) ? fs.readFileSync(sums, "utf8").trim().split("\n") : []
+check("every checksum line records a path relative to bin/",
+  sumLines.length > 0 && sumLines.every(l => /^[0-9a-f]{64}  x86_64-linux\/[a-z0-9-]+$/.test(l)),
+  sumLines.join(" | "))
+const recorded = sumLines.find(l => l.endsWith("  x86_64-linux/qs-bitwarden-ssh-agent")) || ""
+check("the SSH helper has its own line", recorded !== "", sumLines.join(" | "))
 if (fs.existsSync(bundled) && recorded) {
   const actual = spawnSync("sha256sum", [bundled], { encoding: "utf8" }).stdout.split(" ")[0]
   eq("the tracked binary matches its tracked checksum", actual, recorded.split(/\s+/)[0])
@@ -205,6 +208,36 @@ inTemp(dir => {
 // -------------------------------------------------------------------------
 // Failure isolation
 // -------------------------------------------------------------------------
+
+// SHA256SUMS lists every shipped helper. Checking the whole file would let a
+// stale unlock tool disable the SSH agent -- the two features have nothing to
+// do with each other, so each helper is checked against its own line only.
+inTemp(dir => {
+  const target = path.join(dir, "bin", "x86_64-linux")
+  fs.mkdirSync(target, { recursive: true })
+  fs.copyFileSync(bundled, path.join(target, "qs-bitwarden-ssh-agent"))
+  fs.chmodSync(path.join(target, "qs-bitwarden-ssh-agent"), 0o755)
+  fs.writeFileSync(path.join(target, "qs-bitwarden-unlock-key"), "stale\n", { mode: 0o755 })
+  fs.writeFileSync(path.join(dir, "bin", "SHA256SUMS"), recorded + "\n"
+    + "0".repeat(64) + "  x86_64-linux/qs-bitwarden-unlock-key\n")
+  const result = inspect(dir)
+  eq("another helper's stale line does not disable this one", result.state, "ok")
+  eq("and this one's own line still matches", result.checksum, "match")
+})
+
+// The other direction: a SHA256SUMS that simply omits this helper. A plain
+// `sha256sum -c` passes for a file the list does not mention.
+inTemp(dir => {
+  const target = path.join(dir, "bin", "x86_64-linux")
+  fs.mkdirSync(target, { recursive: true })
+  fs.copyFileSync(bundled, path.join(target, "qs-bitwarden-ssh-agent"))
+  fs.chmodSync(path.join(target, "qs-bitwarden-ssh-agent"), 0o755)
+  fs.writeFileSync(path.join(dir, "bin", "SHA256SUMS"),
+    "0".repeat(64) + "  x86_64-linux/qs-bitwarden-unlock-key\n")
+  const result = inspect(dir)
+  eq("a checksum file with no line for this helper is a mismatch", result.checksum, "mismatch")
+  eq("so the shipped helper is refused", result.state, "checksum-mismatch")
+})
 
 // The settings diagnostics live in SshAgentSettings.qml; the supervision that
 // feeds them is still in Panel.qml. Both, or a check lands on whichever half

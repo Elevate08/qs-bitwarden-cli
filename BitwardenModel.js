@@ -4511,18 +4511,25 @@ function sshAgentHelperSourceLabel(source) {
 //
 // Emits `key=value` lines, which the parser below reads. Nothing from the
 // helper's own output is interpolated into a message.
-function sshAgentHelperInspectCommand(pluginDir) {
-  var candidates = sshAgentHelperCandidates(pluginDir)
-  if (candidates.length === 0) return ["bash", "-c", "echo state=missing"]
-  var root = candidates[0].path.slice(0, candidates[0].path.length - SSH_AGENT_BUNDLED_RELATIVE.length - 1)
+//
+// Shared by every helper the plugin ships. `spec` names the binary, its two
+// candidate paths relative to the plugin root, and the sed expression that
+// reads its protocol or format version out of `--version`.
+function helperInspectCommand(pluginDir, spec) {
+  if (sshAgentHelperPath(pluginDir) === "") return ["bash", "-c", "echo state=missing"]
+  var root = pluginDir
+  while (root.length > 1 && root.charAt(root.length - 1) === "/") root = root.slice(0, root.length - 1)
+  // The binary's line in SHA256SUMS: its path relative to bin/, exactly.
+  var sumsPath = spec.bundled.replace(/^bin\//, "")
+  var sumsLine = "^[0-9a-f]{64}  " + sumsPath.replace(/[.]/g, "\\.") + "$"
 
   var script = "__root=" + shellQuote(root) + "; "
     + "__report() { printf '%s\\n' \"$@\"; exit 0; }; "
     + "__found=''; "
     // The shipped artifact first; a development build only if it is absent or
     // unusable, so a broken release never strands a working local build.
-    + "for __pair in " + shellQuote("bundled:" + SSH_AGENT_BUNDLED_RELATIVE)
-    + " " + shellQuote("development:" + SSH_AGENT_DEVELOPMENT_RELATIVE) + "; do "
+    + "for __pair in " + shellQuote("bundled:" + spec.bundled)
+    + " " + shellQuote("development:" + spec.development) + "; do "
     + "  __source=\"${__pair%%:*}\"; __rel=\"${__pair#*:}\"; __bin=\"$__root/$__rel\"; "
     + "  [ -e \"$__bin\" ] || continue; "
     + "  __found=\"$__source\"; "
@@ -4536,18 +4543,25 @@ function sshAgentHelperInspectCommand(pluginDir) {
     + "  [ \"$__arch\" = \"3e\" ] || { __state=wrong-architecture; continue; }; "
     // The checksum applies to the shipped artifact only. A local build has no
     // recorded digest and claiming one would be meaningless.
+    //
+    // Only this binary's own line is checked. SHA256SUMS names every shipped
+    // helper, and `sha256sum -c` over the whole file would let one stale
+    // binary disable every feature -- the SSH agent refused because the
+    // unlock tool drifted, or the other way round. A missing line is a
+    // mismatch: `sha256sum -c` passes for a file the list simply omits.
     + "  __checksum=unchecked; "
     + "  if [ \"$__source\" = bundled ] && [ -f \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" ]; then "
-    + "    if ( cd \"$__root/bin\" && sha256sum -c --status " + shellQuote(baseName(SSH_AGENT_SUMS_RELATIVE)) + " ) 2>/dev/null; then "
+    + "    __line=\"$(grep -E " + shellQuote(sumsLine) + " \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" | head -1)\"; "
+    + "    if [ -n \"$__line\" ] && ( cd \"$__root/bin\" && printf '%s\\n' \"$__line\" | sha256sum -c --status ) 2>/dev/null; then "
     + "      __checksum=match; "
     + "    else __checksum=mismatch; __state=checksum-mismatch; continue; fi; "
     + "  fi; "
     // Its own account of itself, bounded: a helper that hangs must not hang
     // the panel's startup decision.
     + "  __version=\"$(timeout 5 \"$__bin\" --version 2>/dev/null | head -c 200)\"; "
-    + "  case \"$__version\" in *'qs-bitwarden-ssh-agent '*) ;; *) __state=no-version; continue;; esac; "
-    + "  __semver=\"$(printf '%s' \"$__version\" | sed -n 's/.*qs-bitwarden-ssh-agent \\([0-9.]*\\).*/\\1/p')\"; "
-    + "  __proto=\"$(printf '%s' \"$__version\" | sed -n 's/.*protocol \\([0-9]*\\).*/\\1/p')\"; "
+    + "  case \"$__version\" in *" + shellQuote(spec.name + " ") + "*) ;; *) __state=no-version; continue;; esac; "
+    + "  __semver=\"$(printf '%s' \"$__version\" | sed -n " + shellQuote("s/.*" + spec.name + " \\([0-9.]*\\).*/\\1/p") + ")\"; "
+    + "  __proto=\"$(printf '%s' \"$__version\" | sed -n " + shellQuote(spec.protocolSed) + ")\"; "
     + "  if timeout 20 \"$__bin\" --self-test >/dev/null 2>&1; then __self=pass; "
     + "  else __self=fail; __state=self-test-failed; continue; fi; "
     + "  __report state=ok \"source=$__source\" \"version=$__semver\" \"protocol=$__proto\" "
@@ -4560,6 +4574,40 @@ function sshAgentHelperInspectCommand(pluginDir) {
     + "__report \"state=${__state:-unusable}\" \"source=$__found\" "
     + "\"checksum=${__checksum:-unchecked}\" \"selfTest=${__self:-}\""
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+var SSH_AGENT_HELPER_SPEC = {
+  name: "qs-bitwarden-ssh-agent",
+  bundled: SSH_AGENT_BUNDLED_RELATIVE,
+  development: SSH_AGENT_DEVELOPMENT_RELATIVE,
+  protocolSed: "s/.*protocol \\([0-9]*\\).*/\\1/p"
+}
+
+function sshAgentHelperInspectCommand(pluginDir) {
+  return helperInspectCommand(pluginDir, SSH_AGENT_HELPER_SPEC)
+}
+
+// Shared by every helper's parser: the `key=value` lines above, with the
+// format or protocol version checked against what this panel speaks.
+function parseHelperInspection(raw, expectedProtocol, messages) {
+  var fields = { state: "missing", source: "", version: "", protocol: 0,
+    checksum: "unchecked", selfTest: "" }
+  var lines = String(raw === undefined || raw === null ? "" : raw).split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var cut = lines[i].indexOf("=")
+    if (cut <= 0) continue
+    var key = lines[i].slice(0, cut)
+    var value = lines[i].slice(cut + 1)
+    if (key === "protocol") fields.protocol = Math.floor(Number(value)) || 0
+    else if (fields[key] !== undefined) fields[key] = value
+  }
+  // The protocol version is the panel's own compatibility check rather than
+  // something the shell script judges: the panel knows what it speaks.
+  if (fields.state === "ok" && fields.protocol !== expectedProtocol) {
+    fields.state = "protocol-mismatch"
+  }
+  fields.message = fields.state === "ok" ? "" : (messages[fields.state] || messages.unusable)
+  return fields
 }
 
 var SSH_AGENT_HELPER_MESSAGES = {
@@ -4582,25 +4630,7 @@ var SSH_AGENT_HELPER_MESSAGES = {
 }
 
 function parseSshAgentHelperInspection(raw) {
-  var fields = { state: "missing", source: "", version: "", protocol: 0,
-    checksum: "unchecked", selfTest: "" }
-  var lines = String(raw === undefined || raw === null ? "" : raw).split("\n")
-  for (var i = 0; i < lines.length; i++) {
-    var cut = lines[i].indexOf("=")
-    if (cut <= 0) continue
-    var key = lines[i].slice(0, cut)
-    var value = lines[i].slice(cut + 1)
-    if (key === "protocol") fields.protocol = Math.floor(Number(value)) || 0
-    else if (fields[key] !== undefined) fields[key] = value
-  }
-  // The protocol version is the panel's own compatibility check rather than
-  // something the shell script judges: the panel knows what it speaks.
-  if (fields.state === "ok" && fields.protocol !== SSH_AGENT_CONTROL_VERSION) {
-    fields.state = "protocol-mismatch"
-  }
-  fields.message = fields.state === "ok" ? "" : (SSH_AGENT_HELPER_MESSAGES[fields.state]
-    || SSH_AGENT_HELPER_MESSAGES.unusable)
-  return fields
+  return parseHelperInspection(raw, SSH_AGENT_CONTROL_VERSION, SSH_AGENT_HELPER_MESSAGES)
 }
 
 // Whether the supervisor may start at all. Every failure here disables this
@@ -4608,6 +4638,78 @@ function parseSshAgentHelperInspection(raw) {
 // the vault read.
 function sshAgentHelperReady(inspection) {
   return Boolean(inspection) && inspection.state === "ok"
+}
+
+// -------------------------------------------------------------------------
+// The quick-unlock tool
+// -------------------------------------------------------------------------
+//
+// `qs-bitwarden-unlock-key` holds the one part of quick unlock the operating
+// system cannot: authenticated encryption of the master password under keys
+// that `argon2`, `fido2-assert` and `systemd-creds` provide. It ships and is
+// checked exactly like the SSH helper -- same candidates, same inspection,
+// same checksum file (its own line of it) -- and for the same reasons. A
+// failure here disables quick unlock and nothing else; the master password
+// always unlocks.
+var UNLOCK_KEY_ENVELOPE_VERSION = 1
+var UNLOCK_KEY_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-unlock-key"
+var UNLOCK_KEY_DEVELOPMENT_RELATIVE = "unlock-key/target/debug/qs-bitwarden-unlock-key"
+
+var UNLOCK_KEY_SPEC = {
+  name: "qs-bitwarden-unlock-key",
+  bundled: UNLOCK_KEY_BUNDLED_RELATIVE,
+  development: UNLOCK_KEY_DEVELOPMENT_RELATIVE,
+  protocolSed: "s/.*envelope v\\([0-9]*\\).*/\\1/p"
+}
+
+function unlockKeyEnvelopeVersion() { return UNLOCK_KEY_ENVELOPE_VERSION }
+function unlockKeyBundledRelative() { return UNLOCK_KEY_BUNDLED_RELATIVE }
+function unlockKeyDevelopmentRelative() { return UNLOCK_KEY_DEVELOPMENT_RELATIVE }
+
+function unlockKeyInspectCommand(pluginDir) {
+  return helperInspectCommand(pluginDir, UNLOCK_KEY_SPEC)
+}
+
+var UNLOCK_KEY_MESSAGES = {
+  "missing": "The quick-unlock tool was not found. A release ships one; a source checkout "
+    + "needs `cargo build --manifest-path unlock-key/Cargo.toml --locked`.",
+  "not-a-file": "The quick-unlock tool path is not a file.",
+  "not-executable": "The quick-unlock tool is not executable. A clone from an archive can drop "
+    + "file modes; `chmod +x` on it is enough.",
+  "not-elf": "The quick-unlock tool is not a program. A partial clone, or Git LFS leaving a "
+    + "placeholder, both look like this.",
+  "wrong-architecture": "The quick-unlock tool was built for a different architecture. This "
+    + "release ships x86_64 only.",
+  "checksum-mismatch": "The quick-unlock tool does not match its recorded checksum. That usually "
+    + "means a stale binary after an update, or an incomplete clone.",
+  "no-version": "The quick-unlock tool did not report a usable version.",
+  "self-test-failed": "The quick-unlock tool failed its own self-test on this machine.",
+  "protocol-mismatch": "The quick-unlock tool uses a different envelope format than this "
+    + "version of the plugin. Reinstall the plugin so both come from the same release.",
+  "unusable": "The quick-unlock tool could not be used."
+}
+
+function parseUnlockKeyInspection(raw) {
+  return parseHelperInspection(raw, UNLOCK_KEY_ENVELOPE_VERSION, UNLOCK_KEY_MESSAGES)
+}
+
+// Whether PIN, fingerprint and FIDO2 unlock may be offered. The master
+// password does not depend on this.
+function unlockKeyReady(inspection) {
+  return Boolean(inspection) && inspection.state === "ok"
+}
+
+// The settings that go through the quick-unlock tool.
+var QUICK_UNLOCK_SETTINGS = ["fingerprintUnlock", "pinUnlock", "fidoUnlock"]
+
+function isQuickUnlockSetting(key) {
+  return QUICK_UNLOCK_SETTINGS.indexOf(String(key)) !== -1
+}
+
+function unlockKeySourceLabel(source) {
+  if (source === "bundled") return "the quick-unlock tool shipped with this plugin"
+  if (source === "development") return "a locally built quick-unlock tool, not the shipped artifact"
+  return ""
 }
 
 // -------------------------------------------------------------------------

@@ -208,8 +208,57 @@ check("checksums go to one SHA256SUMS, not a sidecar per binary",
   /SUMS_FILE="\$REPO_ROOT\/bin\/SHA256SUMS"/.test(script),
   "no bin/SHA256SUMS")
 check("the checksum file is written relative to bin/ so sha256sum -c works there",
-  /cd "\$REPO_ROOT\/bin" && sha256sum "\$OUTPUT_ARCH\/\$OUTPUT_NAME"/.test(script),
+  /listed\+=\("\$OUTPUT_ARCH\/\$name"\)/.test(script)
+    && /cd "\$REPO_ROOT\/bin" && sha256sum "\$\{listed\[@\]\}" > "\$SUMS_FILE"/.test(script),
   "absolute or checkout-relative paths in SHA256SUMS would only verify here")
+
+// -------------------------------------------------------------------------
+// More than one helper
+// -------------------------------------------------------------------------
+
+// Each helper is its own Cargo package. In one package, adding the unlock
+// tool changed the SSH helper's bytes with no SSH source change -- which is
+// exactly the unexplained bin/ change the trust path exists to flag.
+check("every shipped helper is built, from its own package",
+  /ARTIFACTS=\([\s\S]*?"agent:qs-bitwarden-ssh-agent"[\s\S]*?"unlock-key:qs-bitwarden-unlock-key"[\s\S]*?\)/.test(script),
+  "the build script does not list both helpers")
+check("every package is built with the same procedure",
+  /for spec in "\$\{ARTIFACTS\[@\]\}"[\s\S]{0,200}?cd "\$src\/\$package"[\s\S]{0,200}?cargo build --locked --release/.test(script),
+  "a helper is built some other way than the loop every mode shares")
+const unlockToolchain = read("unlock-key/rust-toolchain.toml")
+eq("both packages pin the same compiler",
+  (/channel\s*=\s*"([^"]+)"/.exec(unlockToolchain) || [])[1], pinnedChannel && pinnedChannel[1])
+check("and the script refuses packages that disagree",
+  /every package must name the same one/.test(script),
+  "the pinned image carries one rustc; a second channel would build with the wrong one")
+check("the unlock tool's release profile strips and aborts too",
+  /strip\s*=\s*"symbols"/.test(read("unlock-key/Cargo.toml"))
+    && /panic\s*=\s*"abort"/.test(read("unlock-key/Cargo.toml")),
+  "the unlock tool handles the master password and ships with symbols or unwinding")
+check("the unlock tool's cargo config sets no rustflags either",
+  !/^\s*rustflags\s*=/m.test(read("unlock-key/.cargo/config.toml")),
+  "config.toml assigns rustflags, which RUSTFLAGS in the environment would silently drop")
+check("a helper not yet tracked counts as drift, not as nothing to compare",
+  /\(not tracked\)/.test(script),
+  "a new helper could ship uncommitted with the comparison reporting success")
+for (const step of [/cargo fmt --check/, /cargo clippy --locked --all-targets/]) {
+  check(`CI runs ${step.source.replace(/\\/g, "")} for every package`,
+    new RegExp(`for package in agent unlock-key;[\\s\\S]{0,120}?${step.source}`).test(workflow),
+    "one package's gates do not cover the other")
+}
+check("CI tests the unlock tool",
+  /working-directory: unlock-key\s*\n\s*run: cargo test --locked --all-targets/.test(workflow),
+  "the unlock tool's tests never run in CI")
+check("CI applies the dependency policy to both packages",
+  /cargo deny --manifest-path agent\/Cargo\.toml --config deny\.toml check/.test(workflow)
+    && /cargo deny --manifest-path unlock-key\/Cargo\.toml --config deny\.toml check/.test(workflow),
+  "a package's dependencies are not checked against deny.toml")
+check("the uploaded candidate carries both helpers and the checksum file",
+  /bin\/x86_64-linux\/qs-bitwarden-ssh-agent\s*\n\s*bin\/x86_64-linux\/qs-bitwarden-unlock-key\s*\n\s*bin\/SHA256SUMS/.test(workflow),
+  "a maintainer committing the candidate would commit a SHA256SUMS naming a binary not in it")
+check("Dependabot watches the unlock tool's lockfile too",
+  /directory: \/unlock-key/.test(read(".github/dependabot.yml")),
+  "the unlock tool's dependencies would never be proposed for update")
 check("the usage text lists the flags that exist",
   /--compare-tracked/.test(script.split("USAGE")[1] || "") && !/\[--check\]/.test(script),
   "usage advertises a flag the script does not accept")

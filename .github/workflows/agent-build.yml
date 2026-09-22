@@ -172,17 +172,25 @@ jobs:
       - name: Report what was produced
         run: |
           cat bin/SHA256SUMS
-          file bin/x86_64-linux/qs-bitwarden-ssh-agent
-          ldd bin/x86_64-linux/qs-bitwarden-ssh-agent || true
-          ./bin/x86_64-linux/qs-bitwarden-ssh-agent --version
-          ./bin/x86_64-linux/qs-bitwarden-ssh-agent --self-test
+          for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
+                        bin/x86_64-linux/qs-bitwarden-unlock-key; do
+            echo "--- $binary"
+            file "$binary"
+            ldd "$binary" || true
+            "./$binary" --version
+            "./$binary" --self-test
+          done
 
       - name: Upload the candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: qs-bitwarden-ssh-agent-x86_64-linux
+          # Both helpers and the one checksum file that names them. Commit all
+          # three together: SHA256SUMS lists every artifact, so a partial
+          # commit leaves a line that no longer matches its file.
+          name: qs-bitwarden-helpers-x86_64-linux
           path: |
             bin/x86_64-linux/qs-bitwarden-ssh-agent
+            bin/x86_64-linux/qs-bitwarden-unlock-key
             bin/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -197,6 +205,7 @@ jobs:
         run: |
           echo "::error::the tracked binary does not match a clean build of this source."
           echo "::error::Commit the uploaded candidate: it is this source, built here."
+          echo "::error::The compare step's log names which helper drifted, or is not tracked yet."
           exit 1
 
   gates:
@@ -208,13 +217,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Every gate runs for each Cargo package. They are separate packages so
+      # that neither changes the other's committed bytes, which also means
+      # neither's checks cover the other.
       - name: Formatting
-        working-directory: agent
-        run: cargo fmt --check
+        run: |
+          for package in agent unlock-key; do
+            ( cd "$package" && cargo fmt --check ) || exit 1
+          done
 
       - name: Lint
-        working-directory: agent
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: |
+          for package in agent unlock-key; do
+            ( cd "$package" && cargo clippy --locked --all-targets -- -D warnings ) || exit 1
+          done
 
       - name: Dependency and licence policy
         # Advisories, licences, registries and duplicate policy. This binary
@@ -281,12 +297,17 @@ jobs:
           # records its Qt packages.
           cargo-deny --version
           cargo deny --manifest-path agent/Cargo.toml --config deny.toml check
+          cargo deny --manifest-path unlock-key/Cargo.toml --config deny.toml check
 
       - name: Tests
         working-directory: agent
         # The suite drives a real socket, a real FIFO and real disposable keys,
         # so it needs no network and no vault -- but it does take a couple of
         # minutes of wall time on the slower lifecycle cases.
+        run: cargo test --locked --all-targets
+
+      - name: Tests (unlock-key)
+        working-directory: unlock-key
         run: cargo test --locked --all-targets
 
   javascript:
@@ -334,12 +355,20 @@ jobs:
         # launches the development helper from and where the tests look for it.
         run: cargo build --locked
 
-      - name: Confirm the helper landed where the tests expect it
+      - name: Build the unlock tool the envelope tests drive
+        working-directory: unlock-key
+        # Into unlock-key/target/debug/, the development path the panel falls
+        # back to, the same way it does for the SSH helper.
+        run: cargo build --locked
+
+      - name: Confirm the helpers landed where the tests expect them
         run: |
-          # A default target in .cargo/config.toml would move this and the
+          # A default target in .cargo/config.toml would move these and the
           # tests would skip rather than fail, hiding real coverage loss.
           test -x agent/target/debug/qs-bitwarden-ssh-agent \
             || { echo "::error::helper not at agent/target/debug/"; exit 1; }
+          test -x unlock-key/target/debug/qs-bitwarden-unlock-key \
+            || { echo "::error::unlock tool not at unlock-key/target/debug/"; exit 1; }
 
       - name: Run the QML tests
         # The panel's own JavaScript runs inside QML's engine, not Node's, and

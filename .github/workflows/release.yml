@@ -113,16 +113,24 @@ jobs:
         # still describe the binary. A release must not ship the two out of
         # step, whatever the reason.
         run: |
-          binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
-          test -f "$binary" || { echo "::error::no tracked helper at $binary"; exit 1; }
-          test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
           ( cd bin && sha256sum -c SHA256SUMS )
-          file "$binary"
-          file "$binary" | grep -q 'ELF 64-bit LSB.*x86-64' || {
-            echo "::error::$binary is not an x86-64 ELF"
-            exit 1
-          }
-          ldd "$binary" || true
+          for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
+                        bin/x86_64-linux/qs-bitwarden-unlock-key; do
+            test -f "$binary" || { echo "::error::no tracked helper at $binary"; exit 1; }
+            test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
+            # Every shipped binary must have its own line: `sha256sum -c`
+            # above passes for a file the checksum list simply omits.
+            grep -qE "  ${binary#bin/}\$" bin/SHA256SUMS || {
+              echo "::error::bin/SHA256SUMS has no line for $binary"
+              exit 1
+            }
+            file "$binary"
+            file "$binary" | grep -q 'ELF 64-bit LSB.*x86-64' || {
+              echo "::error::$binary is not an x86-64 ELF"
+              exit 1
+            }
+            ldd "$binary" || true
+          done
 
       - name: The helper reports the versions the panel expects
         # Three numbers have to line up, and nothing else checks all three:
@@ -146,6 +154,27 @@ jobs:
           }
           "./$binary" --self-test
 
+      - name: The unlock tool reports the versions the panel expects
+        # The same three-way agreement for the quick-unlock envelope: the
+        # crate version, the envelope format the panel reads, and the binary's
+        # own report of both. An envelope format the panel does not know would
+        # disable quick unlock at every user's next launch.
+        run: |
+          binary=bin/x86_64-linux/qs-bitwarden-unlock-key
+          reported="$("./$binary" --version)"
+          echo "$reported"
+          crate="$(grep -oP '^version\s*=\s*"\K[^"]+' unlock-key/Cargo.toml | head -1)"
+          panel="$(grep -oP 'UNLOCK_KEY_ENVELOPE_VERSION\s*=\s*\K\d+' BitwardenModel.js | head -1)"
+          echo "$reported" | grep -qF "qs-bitwarden-unlock-key $crate" || {
+            echo "::error::the unlock tool reports a version that is not unlock-key/Cargo.toml's $crate"
+            exit 1
+          }
+          echo "$reported" | grep -qF "(envelope v$panel)" || {
+            echo "::error::the unlock tool's envelope format is not the v$panel the panel reads"
+            exit 1
+          }
+          "./$binary" --self-test
+
       - name: Collect the dependency and licence report
         # The same policy the gates job enforces, published as evidence rather
         # than only as a pass/fail. A user asking "what is in this binary and
@@ -157,6 +186,11 @@ jobs:
             list --layout crate --format json > dist/dependency-licences.json
           cargo tree --manifest-path agent/Cargo.toml --locked \
             --edges normal --target x86_64-unknown-linux-gnu > dist/dependency-tree.txt
+          # The unlock tool is its own package with its own dependency set.
+          cargo deny --manifest-path unlock-key/Cargo.toml --config deny.toml \
+            list --layout crate --format json > dist/unlock-key-dependency-licences.json
+          cargo tree --manifest-path unlock-key/Cargo.toml --locked \
+            --edges normal --target x86_64-unknown-linux-gnu > dist/unlock-key-dependency-tree.txt
 
       - name: Collect the SBOM
         run: |
@@ -164,6 +198,9 @@ jobs:
           cargo cyclonedx --manifest-path agent/Cargo.toml --format json \
             --describe binaries --target x86_64-unknown-linux-gnu
           mv agent/qs-bitwarden-ssh-agent_bin.cdx.json dist/qs-bitwarden-ssh-agent.cdx.json
+          cargo cyclonedx --manifest-path unlock-key/Cargo.toml --format json \
+            --describe binaries --target x86_64-unknown-linux-gnu
+          mv unlock-key/qs-bitwarden-unlock-key_bin.cdx.json dist/qs-bitwarden-unlock-key.cdx.json
 
       - name: Collect debug symbols
         # The release profile sets `strip = "symbols"`, so the shipped binary
@@ -179,20 +216,23 @@ jobs:
         # whoever downloads it will read it.
         run: |
           src="$PWD"
-          CARGO_TARGET_DIR="$src/target-debuginfo" \
-          CARGO_PROFILE_RELEASE_STRIP=none \
-          CARGO_PROFILE_RELEASE_DEBUG=full \
-          RUSTFLAGS="--remap-path-prefix=$src=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry=/registry" \
-            cargo build --manifest-path agent/Cargo.toml --locked --release \
-              --target x86_64-unknown-linux-gnu
-          built="$src/target-debuginfo/x86_64-unknown-linux-gnu/release/qs-bitwarden-ssh-agent"
-          objcopy --only-keep-debug "$built" dist/qs-bitwarden-ssh-agent.debug
-          gzip -9 dist/qs-bitwarden-ssh-agent.debug
+          for spec in agent:qs-bitwarden-ssh-agent unlock-key:qs-bitwarden-unlock-key; do
+            package="${spec%%:*}"; name="${spec#*:}"
+            CARGO_TARGET_DIR="$src/target-debuginfo" \
+            CARGO_PROFILE_RELEASE_STRIP=none \
+            CARGO_PROFILE_RELEASE_DEBUG=full \
+            RUSTFLAGS="--remap-path-prefix=$src=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry=/registry" \
+              cargo build --manifest-path "$package/Cargo.toml" --locked --release \
+                --target x86_64-unknown-linux-gnu
+            built="$src/target-debuginfo/x86_64-unknown-linux-gnu/release/$name"
+            objcopy --only-keep-debug "$built" "dist/$name.debug"
+            gzip -9 "dist/$name.debug"
+          done
           cat > dist/DEBUG-SYMBOLS.md <<'NOTE'
           # Debug symbols
 
-          `qs-bitwarden-ssh-agent.debug.gz` comes from a companion build of the
-          tagged commit: the same source, the same pinned container, the same
+          `qs-bitwarden-ssh-agent.debug.gz` and `qs-bitwarden-unlock-key.debug.gz`
+          come from companion builds of the tagged commit: the same source, the same pinned container, the same
           `--remap-path-prefix` flags, but built with debug information instead
           of the release profile's `strip = "symbols"`.
 
@@ -202,9 +242,10 @@ jobs:
           these symbols to debug this version of the source; do not use them to
           translate an address taken from a shipped helper.
 
-          The shipped binary deliberately carries no symbols: it is a process
-          that holds decrypted private keys, and its release profile also sets
-          `panic = "abort"` and disables core dumps at startup.
+          The shipped binaries deliberately carry no symbols: one holds
+          decrypted private keys and the other the master password, and both
+          release profiles also set `panic = "abort"` and disable core dumps at
+          startup.
           NOTE
 
       - name: Refuse to publish anything that looks like key material
@@ -311,22 +352,27 @@ jobs:
         # x86-64 Linux host with a different glibc: a binary that only works
         # in its own build container is not a release.
         run: |
-          binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
           ( cd bin && sha256sum -c SHA256SUMS )
-          test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
           ldd --version | head -1
-          "./$binary" --version
-          "./$binary" --self-test
-          sha256sum "$binary"
+          for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
+                        bin/x86_64-linux/qs-bitwarden-unlock-key; do
+            test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
+            "./$binary" --version
+            "./$binary" --self-test
+            sha256sum "$binary"
+          done
 
       - name: Attest the shipped bytes
         # Binds this digest to this repository, this workflow and this commit.
         # Verified by:
         #   gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
         #      --repo ${{ github.repository }}
+        # and the same for bin/x86_64-linux/qs-bitwarden-unlock-key.
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: bin/x86_64-linux/qs-bitwarden-ssh-agent
+          subject-path: |
+            bin/x86_64-linux/qs-bitwarden-ssh-agent
+            bin/x86_64-linux/qs-bitwarden-unlock-key
 
       - name: Publish the release
         env:
@@ -349,7 +395,8 @@ jobs:
           cp bin/SHA256SUMS dist/SHA256SUMS
           notes=dist/release-notes.md
           assets=(dist/*.json dist/*.txt dist/*.gz dist/DEBUG-SYMBOLS.md dist/SHA256SUMS
-                  bin/x86_64-linux/qs-bitwarden-ssh-agent)
+                  bin/x86_64-linux/qs-bitwarden-ssh-agent
+                  bin/x86_64-linux/qs-bitwarden-unlock-key)
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           # Created as a draft. A tag is pushed on a release branch, before
