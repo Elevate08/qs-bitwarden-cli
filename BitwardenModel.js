@@ -18,15 +18,18 @@ const KEYRING_SECRET_ENV = "QSBW_SECRET"
 const KEYRING_PIN = "pin_blob"
 const PIN_ENV = "QSBW_PIN"
 
-// PBKDF2 rounds for PIN unlock. Matches Bitwarden's own default and measures
-// at ~300ms here -- unnoticeable once, punishing a few million times over.
+// PBKDF2 rounds of the PIN blob older versions wrote (AES-256-CBC, no MAC).
+// Only read now, to migrate a blob into the envelope at its next PIN unlock.
+// It was weaker than it looked: one GPU tries a 6-digit PIN space in about a
+// minute at this cost.
 const PIN_ITERATIONS = 600000
 
 // Two thresholds, because the arithmetic is unforgiving and the choice is
-// still the user's. Six digits is what we ask for: 10^6 candidates against
-// 600k PBKDF2 rounds is a real cost to an attacker holding the ciphertext.
-// Four is 10,000 candidates -- minutes of offline work -- so it is allowed but
-// called out in red rather than quietly accepted.
+// still the user's. A PIN now reaches the envelope through Argon2id at
+// 256 MiB and 4 passes -- about 0.75 s of one CPU core and 256 MiB per guess,
+// which a GPU barely helps with -- and the envelope is sealed to this machine,
+// so the guessing has to happen here, as this user. Six digits is what we ask
+// for; four is allowed but called out with the actual number.
 const PIN_MIN_LENGTH = 4
 const PIN_RECOMMENDED_LENGTH = 6
 
@@ -1683,13 +1686,25 @@ function validatePin(pin, confirm) {
 // in as many words, with the number rather than a vague "weak". Empty for a
 // PIN of the recommended length or longer, and empty while still typing so the
 // warning does not flash up at every keystroke on the way to six.
+// Seconds one PIN guess costs: Argon2id at the envelope's parameters, as
+// measured on a current laptop. Only used to put a number in the warning.
+var PIN_GUESS_SECONDS = 0.75
+
+function pinGuessTime(length) {
+  var seconds = Math.pow(10, length) * PIN_GUESS_SECONDS
+  var hours = seconds / 3600
+  if (hours < 48) return "about " + Math.max(1, Math.round(hours)) + " hours"
+  return "about " + Math.round(hours / 24) + " days"
+}
+
 function pinWeakWarning(pin) {
   var p = String(pin || "")
   if (p.length < PIN_MIN_LENGTH || p.length >= PIN_RECOMMENDED_LENGTH) return ""
   var combinations = Math.pow(10, p.length).toLocaleString("en-US")
-  return "A " + p.length + "-digit PIN is only " + combinations + " combinations. "
-    + "If the encrypted blob ever leaks, that is minutes of offline guessing. "
-    + "Use " + PIN_RECOMMENDED_LENGTH + " or more."
+  return "A " + p.length + "-digit PIN is only " + combinations + " combinations: a program running "
+    + "as you could try them all in " + pinGuessTime(p.length) + " on one CPU core. "
+    + "Use " + PIN_RECOMMENDED_LENGTH + " or more: " + PIN_RECOMMENDED_LENGTH + " digits is "
+    + pinGuessTime(PIN_RECOMMENDED_LENGTH) + "."
 }
 
 function isPinWeak(pin) {
@@ -2027,15 +2042,23 @@ var LEGACY_MIGRATION_EXIT = { none: 20, mismatch: 21 }
 
 function legacyMigrationExitCodes() { return LEGACY_MIGRATION_EXIT }
 
-function legacyFingerprintMigrationCommand(tool, account) {
+// Shared by both migrations. `passwordFromKeyring` reads the legacy plaintext
+// entry; otherwise the password is already in KEYRING_SECRET_ENV because `bw`
+// has just accepted it (the PIN blob's case: the PIN decrypted it).
+function legacyMigrationCommand(tool, account, legacyAccount, addOp, passwordFromKeyring) {
   if (!envelopeArgsOk(tool, account)) return envelopeRefused()
   var nested = function(cmd) { return "bash -c " + shellQuote(cmd[2]) }
-  var script = "__pw=\"$(secret-tool lookup" + keyringAttributes(KEYRING_MASTER)
-    + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ")\"; "
-    + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
-    + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; unset __pw; "
-    // Is there an envelope, and does this password open it?
-    + nested(unlockEnvelopeOpenCommand(tool, account, { kind: "master" })) + " >/dev/null; __rc=$?; "
+  var script = ""
+  if (passwordFromKeyring) {
+    script += "__pw=\"$(secret-tool lookup" + keyringAttributes(legacyAccount)
+      + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ")\"; "
+      + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
+      + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; unset __pw; "
+  } else {
+    script += "[ -n \"${" + KEYRING_SECRET_ENV + ":-}\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
+  }
+  // Is there an envelope, and does this password open it?
+  script += nested(unlockEnvelopeOpenCommand(tool, account, { kind: "master" })) + " >/dev/null; __rc=$?; "
     + "case \"$__rc\" in "
     + "0) ;; "
     // None, another account's, or one this machine cannot unseal: this
@@ -2044,11 +2067,21 @@ function legacyFingerprintMigrationCommand(tool, account) {
     + nested(unlockEnvelopeCreateCommand(tool, account)) + " || exit $? ;; "
     + "3) exit " + LEGACY_MIGRATION_EXIT.mismatch + " ;; "
     + "*) exit \"$__rc\" ;; esac; "
-    + nested(unlockEnvelopeUpdateCommand(tool, account, { kind: "add-fingerprint" })) + " || exit $?; "
-    // The update re-opened the envelope through the fingerprint wrap and
-    // compared it with this password before storing it, so this is safe.
-    + "secret-tool clear" + keyringAttributes(KEYRING_MASTER) + " >/dev/null 2>&1; exit 0"
+    + nested(unlockEnvelopeUpdateCommand(tool, account, addOp)) + " || exit $?; "
+    // The update re-opened the envelope through the new wrap and compared it
+    // with this password before storing it, so this is safe.
+    + "secret-tool clear" + keyringAttributes(legacyAccount) + " >/dev/null 2>&1; exit 0"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+function legacyFingerprintMigrationCommand(tool, account) {
+  return legacyMigrationCommand(tool, account, KEYRING_MASTER, { kind: "add-fingerprint" }, true)
+}
+
+// The PIN blob, at the PIN unlock that just decrypted it: the password `bw`
+// accepted is in KEYRING_SECRET_ENV and the PIN typed in PIN_ENV.
+function legacyPinMigrationCommand(tool, account) {
+  return legacyMigrationCommand(tool, account, KEYRING_PIN, { kind: "add-pin" }, false)
 }
 
 function unlockEnvelopeClearCommand() {

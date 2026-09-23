@@ -39,6 +39,7 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.account = keyringEnvelopeAccount
   exports.clearAll = keyringClearAllCommand
   exports.migrate = legacyFingerprintMigrationCommand
+  exports.migratePin = legacyPinMigrationCommand
   exports.migrationExits = legacyMigrationExitCodes
   exports.bwVerify = bwVerifyPasswordCommand
   exports.prereqs = quickUnlockPrereqCommand
@@ -275,6 +276,22 @@ function suite(realCreds) {
     eq(tag + "the envelope now opens through fingerprint",
       open({ kind: "fingerprint" }).out, PASSWORD.replace(/\n+$/, ""))
     check(tag + "and holds no readable password", !stored().includes("horse"), "")
+
+    // --- migrating a PIN blob, at the PIN unlock that decrypted it ---
+    const blob = path.join(store, "pin_blob")
+    const plain = PASSWORD.replace(/\n+$/, "")
+    fs.writeFileSync(blob, "legacy-ciphertext")
+    eq(tag + "no password in hand: nothing to migrate",
+      run(Model.migratePin(tool, ACCOUNT), { [PIN]: PIN_VALUE }).code, M.none)
+    before = stored()
+    eq(tag + "a password the envelope refuses leaves the blob alone",
+      run(Model.migratePin(tool, ACCOUNT), { [SECRET]: "an older password", [PIN]: PIN_VALUE }).code, M.mismatch)
+    check(tag + "both are still there", fs.existsSync(blob) && stored() === before, "")
+    eq(tag + "the password bw accepted migrates the blob",
+      run(Model.migratePin(tool, ACCOUNT), { [SECRET]: plain, [PIN]: PIN_VALUE }).code, 0)
+    eq(tag + "the blob is gone", fs.existsSync(blob), false)
+    eq(tag + "the same PIN now opens the envelope", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).out, plain)
+    eq(tag + "and fingerprint still does", open({ kind: "fingerprint" }).out, plain)
 
     // --- presence, and clearing ---
     eq(tag + "presence is reported without the secret", run(Model.has()).out.trim(), "yes")

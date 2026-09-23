@@ -1821,8 +1821,9 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Your master password is encrypted with a key derived from this PIN, and only the encrypted form is stored. "
-                + "Use " + Model.pinRecommendedLength() + " digits or more; " + Model.pinMinLength()
+              text: "Your master password is already stored encrypted and sealed to this machine; this adds a way for the PIN "
+                + "to open it, through a deliberately slow key derivation. Use " + Model.pinRecommendedLength()
+                + " digits or more; " + Model.pinMinLength()
                 + " is the floor, and every extra digit multiplies an attacker's work by ten."
               color: root.dim
               font.family: root.fontFamily
@@ -1838,7 +1839,7 @@ Panel {
             Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
             TextField {
               width: parent.width
-              placeholderText: "Needed once, to encrypt the PIN..."
+              placeholderText: "Confirm your master password..."
               password: true
               text: root.vault.pinSetupMaster
               onTextChanged: root.vault.pinSetupMaster = text
@@ -1907,7 +1908,7 @@ Panel {
               spacing: Style.space(8)
 
               Button {
-                text: root.vault.pinBusy ? "Encrypting..." : "Save PIN"
+                text: root.vault.pinBusy ? "Checking..." : "Save PIN"
                 iconText: root.vault.pinBusy ? "󰑐" : "󰄬"
                 iconSpinning: root.vault.pinBusy
                 selected: true

@@ -322,7 +322,7 @@ check("closing the panel cancels authentication-method setup writes",
 check("leaving either authentication setup form cancels its in-flight write",
   /currentScreen\s*!==\s*"pin"[\s\S]*abandonPinSetup\(\)/.test(panelSrc)
     && /currentScreen\s*!==\s*"fingerprint"[\s\S]*abandonFingerprintSetup\(\)/.test(panelSrc)
-    && /invalidateEpochOperation\("pinStore"\)/.test(bodyOf("abandonPinSetup"))
+    && /invalidateEpochOperation\("pinAdd"\)/.test(bodyOf("abandonPinSetup"))
     && /invalidateEpochOperation\("fingerprintAdd"\)/.test(bodyOf("abandonFingerprintSetup")),
   bodyOf("abandonPinSetup") + "\n" + bodyOf("abandonFingerprintSetup"))
 check("PIN completion requires a still-active submitted unlock",
@@ -345,11 +345,14 @@ check("a newer session waits for an old store and its cleanup before being remem
     && /sessionStorePending[\s\S]{0,100}storeCurrentSession/.test(panelSrc.slice(
       panelSrc.indexOf("id: keyringClearProc"), panelSrc.indexOf("id: listFoldersProc"))),
   bodyOf("storeCurrentSession") + "\n" + bodyOf("onSessionStored"))
-check("PIN stores cannot recreate a credential after the vault generation changes",
-  /beginEpochOperation\("pinStore"\)/.test(bodyOf("submitPinSetup"))
-    && /epochOperationIsStale\("pinStore"\)/.test(bodyOf("onPinStored"))
-    && /requestPinCredentialClear\(\)/.test(bodyOf("onPinStored")),
-  bodyOf("submitPinSetup") + "\n" + bodyOf("onPinStored"))
+// A PIN is now a wrap in the envelope, and the invariant carries over: a wrap
+// written for a vault generation that has ended, or a form that was left, is
+// taken back out when it lands.
+check("a PIN wrap cannot outlive the lock or abandonment it raced",
+  /beginEpochOperation\("pinAdd"\)/.test(bodyOf("submitPinSetup"))
+    && /epochOperationIsStale\("pinAdd"\)[\s\S]{0,300}?removeQuickUnlockMethod\(\{ kind: "remove", method: "pin" \}\)/
+      .test(bodyOf("submitPinSetup")),
+  bodyOf("submitPinSetup"))
 // Fingerprint setup no longer stores a password: it adds a wrap to the one
 // envelope. The invariant is the same -- nothing written for a vault
 // generation that has since ended may survive it -- and so is the shape: the

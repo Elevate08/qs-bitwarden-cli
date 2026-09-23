@@ -791,6 +791,13 @@ Item {
   property bool legacyFingerprintStored: false
   property bool legacyMigrationAttempted: false
   property bool fingerprintFromEnvelope: false
+  // The PIN blob older versions wrote. Migrated at the next PIN unlock -- the
+  // one moment the PIN and the password are both in hand -- then deleted.
+  property bool legacyPinStored: false
+  property bool pinFromEnvelope: false
+  // The PIN that just decrypted a legacy blob, held only until that unlock
+  // settles so the blob can be migrated with it.
+  property string pendingPinForMigration: ""
 
   function inspectQuickUnlockPrereqs() {
     if (!quickUnlockPrereqProc.running) quickUnlockPrereqProc.running = true
@@ -866,6 +873,9 @@ Item {
     legacyFingerprintStored = false
     legacyMigrationAttempted = false
     fingerprintFromEnvelope = false
+    legacyPinStored = false
+    pinFromEnvelope = false
+    pendingPinForMigration = ""
   }
 
   function refreshEnvelope() {
@@ -880,8 +890,13 @@ Item {
         }
         root.envelopeChecked = true
         root.recomputeFingerprintStored()
+        root.recomputePinConfigured()
       }
     })
+  }
+
+  function recomputePinConfigured() {
+    pinConfigured = Boolean(envelopeSummary && envelopeSummary.pin) || legacyPinStored
   }
 
   function recomputeFingerprintStored() {
@@ -1034,6 +1049,29 @@ Item {
     // No envelope, or no such method in it, is the state removal wanted.
     writeEnvelope(Model.unlockEnvelopeUpdateCommand(envelopeTool(), envelopeAccount(), op), {}, null,
       [Model.envelopeExitCodes().absent, 7])
+  }
+
+  // The legacy PIN blob, at the PIN unlock that just decrypted it. `bw` has
+  // accepted the password it held, so it may create the envelope if there is
+  // none; the blob is deleted only after the envelope opens through the new
+  // PIN wrap and yields that password.
+  function migrateLegacyPin(password, pin) {
+    if (!quickUnlockAvailable) return
+    withEnvelopeAccount(function() {
+      var env = {}
+      env[Model.keyringSecretEnvVar()] = password
+      env[Model.pinEnvVar()] = pin
+      var codes = Model.legacyMigrationExitCodes()
+      root.queueEnvelopeJob({
+        command: Model.legacyPinMigrationCommand(root.envelopeTool(), root.envelopeAccount()),
+        env: env, writes: true,
+        onDone: function(code) {
+          if (code === 0 || code === codes.none) root.legacyPinStored = false
+          else console.log("qs-bitwarden envelope: PIN migration left the legacy blob (" + code + ")")
+          root.refreshEnvelope()
+        }
+      })
+    })
   }
 
   // The plaintext fingerprint entry, moved into the envelope in one shell.
@@ -3007,7 +3045,7 @@ Item {
   }
 
   function credentialStoresRunning() {
-    return keyringStoreProc.running || pinStoreProc.running || envelopeProc.running
+    return keyringStoreProc.running || envelopeProc.running
   }
 
   function requestAllCredentialClear() {
@@ -3542,7 +3580,8 @@ Item {
   }
 
   function onPinConfiguredChecked(raw) {
-    pinConfigured = String(raw || "").trim() === "yes"
+    legacyPinStored = String(raw || "").trim() === "yes"
+    recomputePinConfigured()
   }
 
   function beginPinSetup() {
@@ -3557,50 +3596,60 @@ Item {
   }
 
   function abandonPinSetup() {
-    if (pinStoreProc.running) invalidateEpochOperation("pinStore")
+    // A PIN wrap still being written is taken back out when it lands: its
+    // completion finds the operation stale. See submitPinSetup().
+    if (pinBusy) invalidateEpochOperation("pinAdd")
     pinBusy = false
     pinSetupPin = ""
     pinSetupConfirm = ""
     pinSetupMaster = ""
   }
 
-  // Encrypting needs the master password, and the vault does not keep it in
-  // memory once unlocked, so setting a PIN has to ask for it.
+  // The master password here is a check against the stored password: it must
+  // open the envelope, and a PIN wrap -- Argon2id of the PIN -- is added to it.
+  // Nothing typed is stored.
   function submitPinSetup() {
-    if (pinBusy || pinStoreProc.running) return
+    if (pinBusy) return
     var err = Model.validatePin(pinSetupPin, pinSetupConfirm)
     if (err) { pinError = err; return }
-    if (!pinSetupMaster) { pinError = "Master password is required to encrypt the PIN"; return }
+    if (!quickUnlockAvailable) { pinError = quickUnlockUnavailableReason; return }
+    if (!pinSetupMaster) { pinError = "Confirm your master password to set a PIN"; return }
 
     pinError = ""
     pinUnlockError = ""
     pinBusy = true
-    beginEpochOperation("pinStore")
-    pinStoreProc.running = true
-  }
-
-  function onPinStored(exitCode) {
-    pinBusy = false
-    if (epochOperationIsStale("pinStore")) {
-      pinConfigured = false
-      pinSetupPin = ""
-      pinSetupConfirm = ""
-      pinSetupMaster = ""
-      requestPinCredentialClear()
-      return
-    }
-    if (exitCode !== 0) {
-      pinError = "Could not save the PIN. Is the OS keyring available?"
-      return
-    }
-    pinConfigured = true
-    pinSetupPin = ""
-    pinSetupConfirm = ""
+    var typed = pinSetupMaster
+    var pin = {}
+    pin[Model.pinEnvVar()] = pinSetupPin
     pinSetupMaster = ""
-    pinAttempts = 0
-    writeSetting("pinUnlock", true, "bool")
-    flashNotification("PIN unlock enabled")
-    currentScreen = "settings"
+    beginEpochOperation("pinAdd")
+    addQuickUnlockMethod(typed, { kind: "add-pin" }, pin, function(ok, why) {
+      typed = ""
+      pin = null
+      root.pinBusy = false
+      // Locked, logged out or abandoned mid-write: a PIN wrap for a PIN the
+      // user never finished setting is a way in nobody asked for.
+      if (root.epochOperationIsStale("pinAdd") || root.currentScreen !== "pin") {
+        if (ok) root.removeQuickUnlockMethod({ kind: "remove", method: "pin" })
+        return
+      }
+      if (!ok) {
+        root.pinError = why === "wrong-password"
+          ? "That is not your master password."
+          : "Could not save the PIN. Is the OS keyring available?"
+        return
+      }
+      // The older PIN blob, if any, is superseded.
+      root.legacyPinStored = false
+      root.requestPinCredentialClear()
+      root.pinSetupPin = ""
+      root.pinSetupConfirm = ""
+      root.pinAttempts = 0
+      root.recomputePinConfigured()
+      root.writeSetting("pinUnlock", true, "bool")
+      root.flashNotification("PIN unlock enabled")
+      root.currentScreen = "settings"
+    })
   }
 
   function submitPinUnlock() {
@@ -3612,8 +3661,55 @@ Item {
     pinUnlockError = ""
     pinBusy = true
     pinUnlockSubmitted = true
+    if (quickUnlockAvailable && accountId && envelopeSummary && envelopeSummary.pin) {
+      var env = {}
+      env[Model.pinEnvVar()] = String(pinEntry || "")
+      queueEnvelopeJob({
+        command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
+        env: env, secretOutput: true,
+        onDone: function(code, out) { root.onEnvelopePinResult(code, out) }
+      })
+      return
+    }
     pinUnlockProc.command = Model.pinUnlockCommand()
     pinUnlockProc.running = true
+  }
+
+  // The envelope's answer to a PIN. 3 is a wrong PIN -- a wrong key for the
+  // PIN wrap -- and counts against the attempts exactly as a bad blob did.
+  function onEnvelopePinResult(code, out) {
+    var accepting = pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"
+    pinUnlockSubmitted = false
+    pinBusy = false
+    if (!accepting) return
+    if (code === 0 && out) {
+      pinAttempts = 0
+      pinFromEnvelope = true
+      pendingUnlockFrom = "pin"
+      unlockVaultWithPassword(out)
+      return
+    }
+    if (code === 3) {
+      countWrongPin()
+      return
+    }
+    pinEntry = ""
+    pinUnlockError = "Could not read the stored password. Unlock with your master password."
+    refreshEnvelope()
+  }
+
+  function countWrongPin() {
+    pinAttempts += 1
+    pinEntry = ""
+    if (pinAttempts >= pinMaxAttempts) {
+      // Refuse to keep serving guesses at the UI. The PIN's way in goes too,
+      // so re-enabling requires the master password again. A UI limit, not a
+      // cryptographic one: the Argon2 cost is what stands behind it.
+      clearPin()
+      pinUnlockError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
+    } else {
+      pinUnlockError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
+    }
   }
 
   function onPinUnlockResult(exitCode, password) {
@@ -3627,26 +3723,24 @@ Item {
     var pw = String(password || "")
 
     if (exitCode !== 0 || !pw) {
-      pinAttempts += 1
-      pinEntry = ""
-      if (pinAttempts >= pinMaxAttempts) {
-        // Refuse to keep serving guesses at the UI. The ciphertext goes too,
-        // so re-enabling requires the master password again.
-        clearPin()
-        pinUnlockError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
-      } else {
-        pinUnlockError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
-      }
+      countWrongPin()
       return
     }
 
+    // A legacy blob: keep the PIN until this unlock settles, so the blob can
+    // be migrated into the envelope with it.
     pinAttempts = 0
+    pendingPinForMigration = String(pinEntry || "")
     pendingUnlockFrom = "pin"
     unlockVaultWithPassword(pw)
   }
 
   function clearPin() {
     requestPinCredentialClear()
+    legacyPinStored = false
+    if (envelopeSummary && envelopeSummary.pin) {
+      removeQuickUnlockMethod({ kind: "remove", method: "pin" })
+    }
     pinConfigured = false
     pinEntry = ""
     pinAttempts = 0
@@ -4226,7 +4320,10 @@ Item {
       fingerprintFromEnvelope = false
       onUnlockSuccess(out)
     } else {
-      if (!(pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)) pendingUnlockPassword = ""
+      var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
+        || (pendingUnlockFrom === "pin" && pinFromEnvelope)
+      if (!fromEnvelope) pendingUnlockPassword = ""
+      pendingPinForMigration = ""
       // A stored secret the vault no longer accepts is useless: drop it rather
       // than fail on every open, and say which one went stale.
       if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
@@ -4256,6 +4353,20 @@ Item {
       if (pendingUnlockFrom === "fido") {
         pendingUnlockFrom = ""
         fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
+        errorMessage = ""
+        focusAppropriateField()
+        Qt.callLater(prepareUnlock)
+        return
+      }
+      if (pendingUnlockFrom === "pin" && pinFromEnvelope) {
+        // As for fingerprint: the password was changed elsewhere. Keep the
+        // PIN, and let the next typed unlock re-seal the envelope with the
+        // password this PIN just produced.
+        pendingUnlockFrom = ""
+        pinFromEnvelope = false
+        rotationOldPassword = pendingUnlockPassword
+        pendingUnlockPassword = ""
+        pinUnlockError = "Your master password was changed. Unlock with the new one once; PIN unlock will follow it."
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
@@ -4326,6 +4437,11 @@ Item {
     } else {
       rotationOldPassword = ""
     }
+    if (pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword) {
+      migrateLegacyPin(pendingUnlockPassword, pendingPinForMigration)
+    }
+    pendingPinForMigration = ""
+    pinFromEnvelope = false
     pendingUnlockPassword = ""
     pendingUnlockFrom = ""
     pinEntry = ""
@@ -6782,17 +6898,6 @@ Item {
   // PIN and master password are handed over in the environment; encrypt-and-store
   // and lookup-and-decrypt each run inside one process, so the plaintext never
   // travels back through QML on its way to or from the keyring.
-
-  Process {
-    id: pinStoreProc
-    command: Model.pinStoreCommand()
-    environment: root.pinEnv(root.pinSetupPin, root.pinSetupMaster)
-    onExited: function(exitCode) {
-      root.onPinStored(exitCode)
-      if (root.logoutPending && root.allCredentialsClearPending)
-        Qt.callLater(root.requestAllCredentialClear)
-    }
-  }
 
   Process {
     id: pinUnlockProc

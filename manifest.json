@@ -129,7 +129,7 @@
         "key": "pinUnlock",
         "type": "boolean",
         "label": "Unlock with PIN",
-        "description": "Unlock the vault with a numeric PIN (6 digits or more recommended; 4 is the floor and is flagged as weak while you type). Your master password is encrypted with a key derived from the PIN and only the ciphertext is kept, so reading the keyring alone does not reveal it. Turning this off deletes the stored ciphertext.",
+        "description": "Unlock the vault with a numeric PIN (6 digits or more recommended; 4 is the floor and is flagged as weak while you type). Your master password is stored once, encrypted and sealed to this machine; the PIN opens it through Argon2id, so reading the keyring does not reveal it and each guess costs real time on this machine. Turning this off removes the PIN's access.",
         "defaultValue": false
       },
       {

@@ -150,6 +150,48 @@ check("settings state the floor rule where it applies",
     .test(bodyOf("settingNote"))
     && /root\.vault\.settingNote\(modelData\)/.test(panel), bodyOf("settingNote"))
 
+// -------------------------------------------------------------------------
+// PIN
+// -------------------------------------------------------------------------
+
+const pinSetup = bodyOf("submitPinSetup")
+check("PIN setup adds a wrap through the master-password check, with the PIN in the environment",
+  /addQuickUnlockMethod\(typed, \{ kind: "add-pin" \}, pin,/.test(pinSetup)
+    && /pin\[Model\.pinEnvVar\(\)\] = pinSetupPin/.test(pinSetup), pinSetup)
+check("PIN rules are unchanged: validated first, numeric, 4 minimum",
+  /Model\.validatePin\(pinSetupPin, pinSetupConfirm\)/.test(pinSetup), pinSetup)
+check("a wrong master password is named as such",
+  /wrong-password[\s\S]{0,80}That is not your master password/.test(pinSetup), pinSetup)
+check("the old PIN-blob writer is gone",
+  !/pinStoreProc|onPinStored|Model\.pinStoreCommand/.test(service), "still referenced")
+const pinUnlock = bodyOf("submitPinUnlock")
+check("PIN unlock opens the envelope when it has a PIN wrap",
+  /envelopeSummary\.pin\)[\s\S]{0,300}?kind: "pin"/.test(pinUnlock), pinUnlock)
+check("a wrong PIN counts against the attempts, as before",
+  /code === 3\) \{\s*countWrongPin\(\)/.test(bodyOf("onEnvelopePinResult"))
+    && /pinAttempts >= pinMaxAttempts\) \{[\s\S]{0,300}?clearPin\(\)/.test(bodyOf("countWrongPin")),
+  bodyOf("onEnvelopePinResult"))
+check("an envelope answer is only acted on for a live, submitted unlock",
+  /pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"/.test(bodyOf("onEnvelopePinResult")),
+  bodyOf("onEnvelopePinResult"))
+check("a legacy blob's PIN is held only until that unlock settles, then migrated",
+  /pendingPinForMigration = String\(pinEntry \|\| ""\)/.test(bodyOf("onPinUnlockResult"))
+    && /pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword\) \{\s*migrateLegacyPin/
+      .test(unlockSuccess)
+    && /pendingPinForMigration = ""/.test(unlockSuccess)
+    && /pendingPinForMigration = ""/.test(unlockOutput),
+  bodyOf("onPinUnlockResult"))
+check("a PIN whose password was changed elsewhere is kept, and feeds the re-seal",
+  /pendingUnlockFrom === "pin" && pinFromEnvelope\) \{[\s\S]{0,600}?rotationOldPassword = pendingUnlockPassword/
+    .test(unlockOutput), unlockOutput.slice(0, 2400))
+check("removing the PIN removes its wrap as well as any legacy blob",
+  /requestPinCredentialClear\(\)[\s\S]{0,200}?removeQuickUnlockMethod\(\{ kind: "remove", method: "pin" \}\)/
+    .test(bodyOf("clearPin")), bodyOf("clearPin"))
+const pinEntry = manifest.barWidget.schema.find(e => e.key === "pinUnlock")
+check("the PIN option describes the envelope, not a ciphertext of its own",
+  pinEntry && /stored once, encrypted/.test(pinEntry.description) && /Argon2id/.test(pinEntry.description),
+  pinEntry && pinEntry.description)
+
 const fpEntry = manifest.barWidget.schema.find(e => e.key === "fingerprintUnlock")
 check("the fingerprint option no longer says the password is stored as-is",
   fpEntry && /stored once, encrypted/.test(fpEntry.description)

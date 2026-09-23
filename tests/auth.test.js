@@ -1187,13 +1187,13 @@ check("failed keyring cleanup keeps authentication blocked until an explicit ret
 // The master password's writer is now the envelope queue (envelopeProc); the
 // old plaintext fingerprint writer is gone.
 check("logout's final keyring sweep waits for every credential writer",
-  ["keyringStoreProc", "pinStoreProc", "envelopeProc"].every(id =>
+  ["keyringStoreProc", "envelopeProc"].every(id =>
     new RegExp(`\\b${id}\\.running`).test(credentialStores))
     && /credentialStoresRunning\(\)[\s\S]*allCredentialsClearPending\s*=\s*true[\s\S]*return/.test(allCredentialClear),
   credentialStores + "\n" + allCredentialClear)
-check("nothing starts the old plaintext master-password writer",
-  !/keyringStoreMasterProc/.test(panelSrc), "keyringStoreMasterProc is still in the service")
-for (const id of ["keyringStoreProc", "pinStoreProc"]) {
+check("nothing starts the old plaintext master-password or PIN-blob writers",
+  !/keyringStoreMasterProc|pinStoreProc/.test(panelSrc), "an old writer is still in the service")
+for (const id of ["keyringStoreProc"]) {
   const start = panelSrc.indexOf(`id: ${id}`)
   const processBlock = panelSrc.slice(start, start + 520)
   check(`${id} resumes the deferred logout sweep after its write exits`,
