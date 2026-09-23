@@ -113,6 +113,22 @@ check("unrecognised data says so",
   /unrecognised/i.test(labelled("ssh-sign", "").operationLabel), labelled("ssh-sign", "").operationLabel)
 eq("an unknown operation is not passed through", labelled("delete-everything", "x").operation, "")
 eq("and gets no label", labelled("delete-everything", "x").operationLabel, "")
+// A login names the server its session was bound to; a grant covers only it.
+const HOST = "SHA256:LgZpRzWEAbVvBimxTv69/UB88PD8jyOSDqfozr+iNX0"
+const loginTo = (hostKey, operation) => Model.sshAgentPromptView(
+  Object.assign({}, request, { operation: operation || "ssh-auth", operationDetail: "git", hostKey }), 120)
+eq("a login carries its server's host key", loginTo(HOST).hostKey, HOST)
+check("and names it in the prompt", loginTo(HOST).destinationLabel.indexOf(HOST) >= 0, loginTo(HOST).destinationLabel)
+check("a login with no reported server says so",
+  /not reported/i.test(loginTo("").destinationLabel), loginTo("").destinationLabel)
+eq("a host key of any other shape is dropped", loginTo("SHA256:x\nforged").hostKey, "")
+eq("a Git signature has no server", loginTo(HOST, "sshsig").hostKey, "")
+eq("and no destination line", loginTo(HOST, "sshsig").destinationLabel, "")
+eq("a login grant shows its server",
+  Model.sshAgentGrantViews([{ grantId: 12, keyName: "k", fingerprint: "SHA256:z", pid: 7,
+    processPath: "/usr/bin/ssh", operation: "ssh-auth", operationDetail: "git", hostKey: HOST,
+    expiresInSec: 60 }], 1_000)[0].hostKey, HOST)
+
 check("an absurd login name is bounded",
   labelled("ssh-auth", "u".repeat(5000)).operationLabel.length <= 300,
   String(labelled("ssh-auth", "u".repeat(5000)).operationLabel.length))

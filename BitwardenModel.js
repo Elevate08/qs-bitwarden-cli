@@ -4336,13 +4336,20 @@ function sshExportDirPrelude() {
     + "fi; "
     + "case \"$__base\" in /*) ;; *) exit " + SSH_EXPORT_EXIT_NO_HOME + ";; esac; "
     + "__dir=\"$__base/" + SSH_EXPORT_SUBDIR + "\"; "
-    + "if [ -L \"$__dir\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
+    // Both components the plugin owns, not just the last: through a symlinked
+    // parent, export and clear would write and prune *.pub files elsewhere.
+    + "for __own in \"$(dirname \"$__dir\")\" \"$__dir\"; do "
+    + "  if [ -L \"$__own\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
+    + "done; "
 }
 
 function sshExportCommand() {
   var script = sshExportDirPrelude()
-    // A symlinked export dir was already refused by the prelude.
+    // A symlinked export dir or parent was already refused by the prelude.
     + "mkdir -p -m 700 \"$(dirname \"$__dir\")\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
+    // mkdir -p accepts an existing directory of any kind; recheck the parent
+    // it may have just created or found, before anything is written under it.
+    + "[ -d \"$(dirname \"$__dir\")\" ] && [ ! -L \"$(dirname \"$__dir\")\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "if [ -e \"$__dir\" ]; then "
     + "  [ -d \"$__dir\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "else (umask 077 && mkdir -- \"$__dir\") || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
@@ -4500,6 +4507,24 @@ function sshAgentOperation(value) {
   return value === "sshsig" || value === "ssh-auth" || value === "ssh-sign" ? value : ""
 }
 
+// The server a login goes to, as the SSH client bound its session: a host key
+// fingerprint in `ssh-keygen -l` form, or "" if absent or any other shape.
+var SSH_HOST_KEY_RE = /^SHA256:[A-Za-z0-9+/]{43}$/
+
+function sshAgentHostKey(operation, hostKey) {
+  if (operation !== "ssh-auth" || typeof hostKey !== "string") return ""
+  return SSH_HOST_KEY_RE.test(hostKey) ? hostKey : ""
+}
+
+// Where a login goes. A login grant covers that one server, so the prompt
+// names it, or says the client did not (older OpenSSH, other clients).
+function sshAgentDestinationLabel(operation, hostKey) {
+  if (operation !== "ssh-auth") return ""
+  return hostKey
+    ? "Server host key " + hostKey + " (compare with `ssh-keygen -lF <host>`)"
+    : "Server not reported by the SSH client"
+}
+
 // An approval_required message reduced to what the prompt draws, with every
 // client-supplied field bounded.
 function sshAgentPromptView(message, approvalWindowSec) {
@@ -4510,6 +4535,8 @@ function sshAgentPromptView(message, approvalWindowSec) {
   // Offer a grant only if the companion did, a window is set, and the request
   // is not forwarded.
   var grantOffered = request.grantOffered === true && window > 0 && !forwarded
+  var operation = sshAgentOperation(request.operation)
+  var hostKey = sshAgentHostKey(operation, request.hostKey)
   return {
     requestId: isRequestId(request.requestId) ? request.requestId : -1,
     keyId: boundedText(request.keyId, SSH_AGENT_MAX_NAME_CHARS),
@@ -4518,12 +4545,14 @@ function sshAgentPromptView(message, approvalWindowSec) {
     pid: Math.floor(Number(request.pid)) || 0,
     processPath: boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS),
     processName: processNameFromPath(boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS)),
-    operation: sshAgentOperation(request.operation),
-    operationLabel: sshAgentOperationLabel(sshAgentOperation(request.operation), request.operationDetail),
+    operation: operation,
+    operationLabel: sshAgentOperationLabel(operation, request.operationDetail),
+    hostKey: hostKey,
+    destinationLabel: sshAgentDestinationLabel(operation, hostKey),
     grantOffered: grantOffered,
     grantSeconds: grantOffered ? window : 0,
-    // A grant covers the program (path + key + kind of signature), so each
-    // new ssh-keygen that Git spawns rides it.
+    // A grant covers the program (path + key + kind of signature, and for a
+    // login the server), so each new ssh-keygen that Git spawns rides it.
     grantLabel: grantOffered ? "Approve for this program · " + formatDuration(window) : "",
     forwardedWarning: forwarded ? SSH_AGENT_FORWARDED_WARNING : "",
     provenanceNote: SSH_AGENT_PROVENANCE_NOTE
@@ -4572,6 +4601,8 @@ function sshAgentGrantViews(grants, nowMs) {
     var grant = grants[i] || {}
     if (!isRequestId(grant.grantId)) continue
     var remaining = Math.max(0, Math.floor(Number(grant.expiresInSec)) || 0)
+    var operation = sshAgentOperation(grant.operation)
+    var hostKey = sshAgentHostKey(operation, grant.hostKey)
     out.push({
       grantId: grant.grantId,
       keyName: boundedText(grant.keyName, SSH_AGENT_MAX_NAME_CHARS),
@@ -4579,7 +4610,8 @@ function sshAgentGrantViews(grants, nowMs) {
       pid: Math.floor(Number(grant.pid)) || 0,
       processPath: boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
       processName: processNameFromPath(boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS)),
-      operationLabel: sshAgentOperationLabel(sshAgentOperation(grant.operation), grant.operationDetail),
+      operationLabel: sshAgentOperationLabel(operation, grant.operationDetail),
+      hostKey: hostKey,
       // Absolute expiry, so the countdown can be recomputed each tick.
       expiresAtMs: now + remaining * 1000,
       remainingSec: remaining,

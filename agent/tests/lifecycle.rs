@@ -837,6 +837,72 @@ fn granting_and_revoking_announce_the_live_set() {
     agent.shutdown();
 }
 
+/// A login names the server its session was bound to, and a grant for it
+/// covers that server only: the same login elsewhere asks again.
+#[test]
+fn a_login_grant_covers_only_the_server_it_was_approved_for() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let (proceed, go) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        let log_in_to = |host_key: &[u8], session: u8| {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream
+                .write_all(&session_bind_to(host_key, &[session; 32], false))
+                .unwrap();
+            assert_eq!(read_agent_frame(&mut stream)[4], 6);
+            stream
+                .write_all(&sign_request_for(
+                    &blob,
+                    &login_data_in(&[session; 32], b"git", &blob),
+                ))
+                .unwrap();
+            read_agent_frame(&mut stream)
+        };
+        let first = log_in_to(b"github host key", 0x31);
+        let again = log_in_to(b"github host key", 0x32);
+        go.recv().unwrap();
+        let elsewhere = log_in_to(b"another host key", 0x33);
+        (first, again, elsewhere)
+    });
+
+    let approval = agent.read();
+    assert_eq!(approval["operation"], "ssh-auth");
+    let github = approval["hostKey"].as_str().unwrap().to_owned();
+    assert!(github.starts_with("SHA256:"));
+    let request_id = approval["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"approve\",\"requestId\":{request_id},\"grantSeconds\":120}}"
+    ));
+    let changed = agent.read();
+    assert_eq!(changed["type"], "grants_changed");
+    assert_eq!(changed["grants"][0]["hostKey"], github.as_str());
+    proceed.send(()).unwrap();
+
+    let other = agent.read();
+    assert_eq!(
+        other["type"], "approval_required",
+        "a login grant does not cover another server"
+    );
+    let other_host = other["hostKey"].as_str().unwrap();
+    assert!(other_host.starts_with("SHA256:") && other_host != github);
+    let other_id = other["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"deny\",\"requestId\":{other_id}}}"
+    ));
+
+    let (first, again, elsewhere) = client.join().unwrap();
+    assert_eq!(first[4], 14);
+    assert_eq!(again[4], 14, "the same server rides the grant");
+    assert_eq!(elsewhere, [0, 0, 0, 1, 5]);
+    agent.shutdown();
+}
+
 /// A grant for Git signatures does not cover a login from the same program.
 #[test]
 fn a_grant_covers_only_the_kind_of_signature_it_was_given_for() {
@@ -1210,8 +1276,13 @@ fn git_signature_data() -> Vec<u8> {
 
 /// The data an SSH client signs to log in as `user` with `public_blob`.
 fn login_data(user: &[u8], public_blob: &[u8]) -> Vec<u8> {
+    login_data_in(&[0x11; 32], user, public_blob)
+}
+
+/// `login_data` on the session with key-exchange hash `session_id`.
+fn login_data_in(session_id: &[u8], user: &[u8], public_blob: &[u8]) -> Vec<u8> {
     let mut data = Vec::new();
-    [0x11_u8; 32].as_slice().encode(&mut data).unwrap();
+    session_id.encode(&mut data).unwrap();
     50_u8.encode(&mut data).unwrap();
     user.encode(&mut data).unwrap();
     b"ssh-connection".as_slice().encode(&mut data).unwrap();
@@ -1225,14 +1296,19 @@ fn login_data(user: &[u8], public_blob: &[u8]) -> Vec<u8> {
 /// A framed `session-bind@openssh.com`, as OpenSSH sends on each agent
 /// connection it opens.
 fn session_bind(forwarding: bool) -> Vec<u8> {
+    session_bind_to(b"host key", &[0x22; 32], forwarding)
+}
+
+/// A bind of session `session_id` to the server with `host_key`.
+fn session_bind_to(host_key: &[u8], session_id: &[u8], forwarding: bool) -> Vec<u8> {
     let mut request = Vec::new();
     27_u8.encode(&mut request).unwrap();
     b"session-bind@openssh.com"
         .as_slice()
         .encode(&mut request)
         .unwrap();
-    b"host key".as_slice().encode(&mut request).unwrap();
-    [0x22_u8; 32].as_slice().encode(&mut request).unwrap();
+    host_key.encode(&mut request).unwrap();
+    session_id.encode(&mut request).unwrap();
     b"host signature".as_slice().encode(&mut request).unwrap();
     u8::from(forwarding).encode(&mut request).unwrap();
     frame(&request)

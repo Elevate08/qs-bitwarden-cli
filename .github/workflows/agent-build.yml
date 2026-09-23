@@ -104,7 +104,12 @@ jobs:
             exit 0
           fi
           echo "drift=yes" >> "$GITHUB_OUTPUT"
-          autofix="$(./scripts/helper-autocommit-eligible.sh)"
+          # The base branch's copy, as helper-rebuild.yml runs it, so the two
+          # agree and a PR cannot edit its own verdict. Not a PR: "no".
+          autofix="no"
+          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
+            autofix="$(git show "origin/${GITHUB_BASE_REF}:scripts/helper-autocommit-eligible.sh" 2>/dev/null | bash)"
+          fi
           echo "autofix=$autofix" >> "$GITHUB_OUTPUT"
           if [ "$autofix" = "yes" ]; then
             echo "::notice::the helpers drifted; helper-rebuild.yml commits the rebuilt bytes to this branch"

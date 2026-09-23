@@ -247,9 +247,9 @@
       "revisionDate": "2026-08-20T10:00:00.000Z",
       "creationDate": "2026-08-20T10:00:00.000Z",
       "sshKey": {
-        "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACBGTamxk2fLE7NZekQoaoQkLjAbzaNDSJrO8clPlNnoXAAAAJhQ/dXxUP3V\n8QAAAAtzc2gtZWQyNTUxOQAAACBGTamxk2fLE7NZekQoaoQkLjAbzaNDSJrO8clPlNnoXA\nAAAEAqEDoJ+o48bC8qt9agrYLugGkX0IjZdM/iT5kK0Q0BGUZNqbGTZ8sTs1l6RChqhCQu\nMBvNo0NIms7xyU+U2ehcAAAAEGRlbW9AZXhhbXBsZS5jb20BAgMEBQ==\n-----END OPENSSH PRIVATE KEY-----\n",
-        "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEZNqbGTZ8sTs1l6RChqhCQuMBvNo0NIms7xyU+U2ehc demo@example.com",
-        "keyFingerprint": "SHA256:WJN+07USrkd8tFp3vVJBXAjwolWfskqqzl+UPp5GH30"
+        "privateKey": "@DEMO_SSH_PRIVATE_KEY@",
+        "publicKey": "@DEMO_SSH_PUBLIC_KEY@",
+        "keyFingerprint": "@DEMO_SSH_FINGERPRINT@"
       }
     }
   ],

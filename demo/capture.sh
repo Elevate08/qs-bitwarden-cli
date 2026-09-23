@@ -13,14 +13,21 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$REPO/docs/screenshots}"
 IPC=(qs -p /usr/share/omarchy/shell/shell.qml ipc call io.github.elevate08.qs-bitwarden-cli)
 
-for tool in grim magick wtype hyprctl quickshell /usr/bin/python3; do
+for tool in grim magick wtype hyprctl quickshell ssh-keygen /usr/bin/python3; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 1; }
 done
 
 mkdir -p "$OUT"
 
+# The fixture vault's SSH key, made fresh for this run and deleted with it,
+# so no private key is ever committed. demo/bin/bw reads it from here.
+DEMO_KEY_DIR="$(mktemp -d)"
+ssh-keygen -q -t ed25519 -N '' -C demo@example.com -f "$DEMO_KEY_DIR/id_ed25519"
+export QSBW_DEMO_SSH_KEY="$DEMO_KEY_DIR/id_ed25519"
+
 restore() {
   echo "restoring the real shell..."
+  rm -rf -- "$DEMO_KEY_DIR"
   # The fixture vault's SSH key gets projected to the same directory the real
   # one uses. The real shell rewrites its own keys on the next load but will
   # not remove a file it never wrote, so a demo key would sit there for good.
@@ -100,8 +107,9 @@ clear_search() {
 # to sign one challenge with one key and nothing else, which is the smallest
 # request that produces this prompt.
 #
-# Everything here is the fixture vault: the key is the throwaway pair in
-# fixtures.json, and the socket belongs to the fixture shell started above.
+# Everything here is the fixture vault: the key is the throwaway pair made at
+# the top of this script, and the socket belongs to the fixture shell started
+# above.
 # The request is denied rather than approved, so no signature is ever made.
 capture_ssh_approval() {
   local sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qs-bitwarden-cli/ssh-agent.sock"

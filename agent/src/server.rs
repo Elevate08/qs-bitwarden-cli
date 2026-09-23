@@ -1,7 +1,7 @@
 //! Bounded Unix-socket client transport for the single-owner state loop.
 
 use crate::peer::PeerContext;
-use crate::protocol::{self, AgentRequest, MAX_FRAME_LEN};
+use crate::protocol::{self, AgentRequest, SessionBinding, MAX_FRAME_LEN};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -24,6 +24,9 @@ pub struct ClientEvent {
     /// Set once bound for forwarding and never cleared, so the remote end
     /// cannot send a "not forwarded" bind to undo it.
     pub forwarded: bool,
+    /// The connection's session binds so far, oldest first: which server a
+    /// login on each bound session goes to.
+    pub binds: Vec<SessionBinding>,
     pub request: AgentRequest,
     pub reply: oneshot::Sender<Vec<u8>>,
 }
@@ -63,7 +66,7 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
     };
 
     let mut forwarded = false;
-    let mut binds = 0_usize;
+    let mut binds = Vec::<SessionBinding>::new();
     loop {
         let Some(frame) = read_frame(&mut stream).await else {
             return;
@@ -78,9 +81,13 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
             continue;
         };
         // Connection state; the state loop only sees its effect.
-        if let AgentRequest::SessionBind { forwarding } = request {
-            let response = if binds < MAX_SESSION_BINDS {
-                binds += 1;
+        if let AgentRequest::SessionBind {
+            forwarding,
+            binding,
+        } = request
+        {
+            let response = if binds.len() < MAX_SESSION_BINDS {
+                binds.push(binding);
                 forwarded |= forwarding;
                 protocol::success_response()
             } else {
@@ -96,6 +103,7 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
             .try_send(ClientEvent {
                 peer: peer.clone(),
                 forwarded,
+                binds: binds.clone(),
                 request,
                 reply,
             })

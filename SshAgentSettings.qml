@@ -203,6 +203,7 @@ Column {
         text: modelData.keyName + "  ·  "
           + modelData.processName
           + (modelData.operationLabel ? "  ·  " + modelData.operationLabel : "")
+          + (modelData.hostKey ? "  ·  " + modelData.hostKey : "")
           + "  ·  " + modelData.remainingLabel
       }
 

@@ -62,6 +62,12 @@ folder, organization and type without leaving the keyboard.
 credential to the top, so <kbd>Enter</kbd> is usually the only key you need.
 Pick an item once for a site a title cannot match, and it is remembered.
 
+Suggestions come from the window **title**, because that is all Hyprland
+exposes -- not the tab's real address. A page chooses its own title, so a
+phishing page titled `github.com` is suggested your GitHub login just like
+the real one. Check the address bar before you paste; unlike browser
+autofill, this is no defence against a look-alike site.
+
 <br clear="all">
 
 <img src="docs/screenshots/06-folder-drawer.png" width="420" align="right" alt="Folder filter drawer">

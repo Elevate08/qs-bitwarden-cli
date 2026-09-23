@@ -47,6 +47,10 @@ enum Output {
         /// The SSHSIG namespace or the login name; empty for `ssh-sign`.
         #[serde(rename = "operationDetail")]
         operation_detail: String,
+        /// For `ssh-auth`, the server host key fingerprint the client bound
+        /// the session to, unverified; "" when it reported none.
+        #[serde(rename = "hostKey")]
+        host_key: String,
         forwarded: bool,
         #[serde(rename = "grantOffered")]
         grant_offered: bool,
@@ -84,6 +88,10 @@ enum Output {
         operation: &'static str,
         #[serde(rename = "operationDetail")]
         operation_detail: String,
+        /// For `ssh-auth`, the server host key fingerprint the client bound
+        /// the session to, unverified; "" when it reported none.
+        #[serde(rename = "hostKey")]
+        host_key: String,
         forwarded: bool,
         /// Whether approving may also open a grant, so the panel never assumes.
         #[serde(rename = "grantOffered")]
@@ -130,6 +138,8 @@ struct GrantView {
     operation: &'static str,
     #[serde(rename = "operationDetail")]
     operation_detail: String,
+    #[serde(rename = "hostKey")]
+    host_key: String,
     #[serde(rename = "expiresInSec")]
     expires_in_sec: u64,
 }
@@ -515,6 +525,7 @@ fn handle_client(
                             process_path: event.peer.executable.to_string_lossy().into_owned(),
                             operation: "",
                             operation_detail: String::new(),
+                            host_key: String::new(),
                             forwarded: event.forwarded,
                             grant_offered: false,
                         },
@@ -540,7 +551,7 @@ fn handle_client(
             flags,
         } => {
             let scope = SignScope {
-                kind: protocol::classify_sign(&public_blob, &message),
+                kind: protocol::classify_sign(&public_blob, &message, &event.binds),
                 forwarded: event.forwarded,
             };
             if !gate_open {
@@ -576,6 +587,7 @@ fn handle_client(
                         process_path: event.peer.executable.to_string_lossy().into_owned(),
                         operation: scope.kind.operation(),
                         operation_detail: scope.kind.detail().to_owned(),
+                        host_key: scope.kind.host().to_owned(),
                         forwarded: scope.forwarded,
                         grant_offered: scope.grantable(),
                     },
@@ -633,6 +645,7 @@ fn handle_client(
                             process_path,
                             operation: scope.kind.operation(),
                             operation_detail: scope.kind.detail().to_owned(),
+                            host_key: scope.kind.host().to_owned(),
                             forwarded: scope.forwarded,
                             grant_offered: scope.grantable(),
                         },
@@ -738,6 +751,7 @@ fn release_held(
                         process_path: request.peer.executable.to_string_lossy().into_owned(),
                         operation: request.scope.kind.operation(),
                         operation_detail: request.scope.kind.detail().to_owned(),
+                        host_key: request.scope.kind.host().to_owned(),
                         forwarded: request.scope.forwarded,
                         grant_offered: request.scope.grantable(),
                     },
@@ -838,6 +852,7 @@ fn emit_grants_if_changed(
                 process_path: grant.peer.executable.to_string_lossy().into_owned(),
                 operation: grant.kind.operation(),
                 operation_detail: grant.kind.detail().to_owned(),
+                host_key: grant.kind.host().to_owned(),
                 expires_in_sec: grant.expires_at_ms.saturating_sub(now_ms) / 1000,
             }
         })

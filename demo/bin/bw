@@ -13,6 +13,28 @@ import json,sys
 d=json.load(open('$FIXTURES'))
 sys.stdout.write(json.dumps(d[sys.argv[1]]))" "$1"; }
 
+# The SSH key item. No private key is committed: capture.sh generates a
+# throwaway pair per run and names it in QSBW_DEMO_SSH_KEY, and its values
+# replace the fixture's placeholders here. Without one the item is left out.
+items() { python3 -c "
+import json,os,subprocess,sys
+d=json.load(open('$FIXTURES'))
+key=os.environ.get('QSBW_DEMO_SSH_KEY','')
+demo={}
+if key and os.path.isfile(key) and os.path.isfile(key+'.pub'):
+    demo['@DEMO_SSH_PRIVATE_KEY@']=open(key).read()
+    demo['@DEMO_SSH_PUBLIC_KEY@']=open(key+'.pub').read().strip()
+    demo['@DEMO_SSH_FINGERPRINT@']=subprocess.run(['ssh-keygen','-lf',key+'.pub'],
+        capture_output=True,text=True,check=True).stdout.split()[1]
+out=[]
+for it in d['items']:
+    ssh=it.get('sshKey')
+    if ssh is not None:
+        if not demo: continue
+        it=dict(it); it['sshKey']={k:demo.get(v,v) for k,v in ssh.items()}
+    out.append(it)
+sys.stdout.write(json.dumps(out))"; }
+
 # The vault state the fixture reports. `unlocked` for the populated shots;
 # `unauthenticated` drives the login screen, `locked` the unlock screen.
 DEMO_STATUS="${QSBW_DEMO_STATUS:-unlocked}"
@@ -38,7 +60,7 @@ sys.stdout.write(json.dumps(st))" "$DEMO_STATUS" ;;
     else echo "Xq7X2mFk9TbW4e"; fi ;;
   list)
     case "${2:-}" in
-      items)         j items ;;
+      items)         items ;;
       folders)       j folders ;;
       organizations) j organizations ;;
       *)             echo "[]" ;;

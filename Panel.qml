@@ -3087,7 +3087,9 @@ Panel {
                 textFormat: Text.PlainText
                 Layout.alignment: Qt.AlignVCenter
                 Layout.fillWidth: true
-                text: "Suggested for " + (root.vault.detectedContext ? root.vault.detectedContext.displayName : "active window")
+                // "Title", not "site": a page writes its own title, so this
+                // names what the title says, never a verified address.
+                text: "Matches window title: " + (root.vault.detectedContext ? root.vault.detectedContext.displayName : "active window")
                 color: Color.accent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
