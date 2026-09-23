@@ -4,6 +4,37 @@
 
 ### Security
 
+- **A login grant covers one server.** A grant for SSH logins as `git`
+  covered `git` on every server for its window, and the prompt never said
+  which server a login was for. The helper now reads the server host key from
+  OpenSSH's `session-bind@openssh.com` (and from host-bound logins, which must
+  agree with it), shows its `SHA256:` fingerprint in the prompt and under
+  **ACTIVE APPROVALS**, and scopes the grant to it. A client that reports no
+  server gets a prompt saying so. The fingerprint is what the SSH client
+  reported; the helper does not verify the server's signature on the bind.
+
+- **Suggestions say they come from the window title.** A page writes its own
+  title, so a phishing page titled `github.com` was offered your GitHub login
+  under a "Suggested for github.com" banner that read like a verified
+  address. The banner now reads "Matches window title", and the README says
+  suggestions are no defence against a look-alike site.
+
+- **The public-key export refuses a symlinked parent.** Only the final `ssh`
+  directory was checked, so a symlinked `~/.local/share/qs-bitwarden-cli`
+  made export and clear write and delete `*.pub` files elsewhere. Both
+  directories the plugin owns are now refused if they are symlinks.
+
+- **No private key is committed.** The screenshot fixture carried a throwaway
+  Ed25519 private key. `demo/capture.sh` now generates one per run and
+  deletes it afterwards; the old key remains in history and was never used
+  for anything but screenshots.
+
+- **CI's helper-commit gate comes from the base branch.** The eligibility
+  script ran from the pull request's own checkout, so a pull request could
+  change the rule that decides whether CI commits its binaries. Both
+  workflows now run the base branch's copy, and anything that stops it
+  running counts as "not eligible".
+
 - **A signing grant covers one kind of signature.** Approving a program for a
   window used to cover any signature that program asked for with that key, so
   approving `ssh-keygen` for Git's commit signatures also let anything the
