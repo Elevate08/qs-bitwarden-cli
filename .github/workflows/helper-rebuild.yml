@@ -1,7 +1,8 @@
 # Rebuilds the committed helper binaries for a pull request and commits them
 # to the PR branch, so a source change needs no second, hand-made commit.
 #
-# Only when scripts/helper-autocommit-eligible.sh says so: a same-repository
+# Only when scripts/helper-autocommit-eligible.sh -- the base branch's copy,
+# never the PR's own -- says so: a same-repository
 # PR into a release branch that leaves Cargo.lock, Cargo.toml and
 # rust-toolchain.toml alone. Dependency and toolchain changes are still rebuilt
 # by a person, because reading that diff is the only check against a
@@ -57,7 +58,12 @@ jobs:
             echo "rebuilt=no" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "$(./scripts/helper-autocommit-eligible.sh)" != "yes" ]; then
+          # The base branch's copy of the gate, not this PR's: a pull request
+          # cannot edit the script that judges it. (It could still edit this
+          # workflow, which is a diff a reviewer sees.) Anything that stops
+          # it running reads as "no".
+          eligible="$(git show "origin/${GITHUB_BASE_REF}:scripts/helper-autocommit-eligible.sh" 2>/dev/null | bash)"
+          if [ "$eligible" != "yes" ]; then
             echo "::notice::the helpers drifted but this PR is not eligible for a CI commit; agent build reports it"
             echo "rebuilt=no" >> "$GITHUB_OUTPUT"
             exit 0

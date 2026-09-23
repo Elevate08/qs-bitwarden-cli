@@ -9,6 +9,9 @@
 #
 # Reads GITHUB_EVENT_NAME, GITHUB_BASE_REF, IS_FORK and ACTOR from the
 # environment; needs the base branch fetched (checkout with fetch-depth: 0).
+#
+# CI runs the base branch's copy (`git show origin/<base>:<this path> | bash`),
+# so a change here takes effect for pull requests opened after it merges.
 
 set -u -o pipefail
 
