@@ -869,6 +869,10 @@ Item {
   // Logout: nothing queued may run after the keyring is cleared.
   function dropEnvelopeState() {
     envelopeJobs = []
+    // The next login may be another account: an envelope must never be bound
+    // to the one that just logged out.
+    accountId = ""
+    accountServer = ""
     envelopeSummary = null
     envelopeChecked = false
     rotationOldPassword = ""
@@ -907,8 +911,9 @@ Item {
   }
 
   // Runs `then()` once the account is known, asking `bw status` if a fresh
-  // login has not reported it yet.
-  function withEnvelopeAccount(then) {
+  // login has not reported it yet -- or `otherwise()` if it cannot be known,
+  // so no caller is left waiting on an answer that is not coming.
+  function withEnvelopeAccount(then, otherwise) {
     if (accountId) { then(); return }
     queueEnvelopeJob({
       command: Model.statusCommand(),
@@ -919,6 +924,8 @@ Item {
           root.accountId = st.userId
           root.accountServer = st.serverUrl
           then()
+        } else if (otherwise) {
+          otherwise()
         }
       }
     })
@@ -962,6 +969,14 @@ Item {
             } else if (root.envelopeSummary && root.envelopeSummary.fingerprint) {
               root.writeEnvelope(Model.unlockEnvelopeUpdateCommand(tool, account,
                 { kind: "rotate", auth: { kind: "fingerprint" } }), rotate, finish)
+            } else if (!root.envelopeHasMethods()) {
+              // Only the master wrap: no method is there to keep, so there is
+              // nothing to rotate for. The password `bw` just accepted simply
+              // becomes the envelope. Without this, a password changed before
+              // any method was set up left an envelope nothing could ever
+              // open again -- and every enable form calling the right
+              // password wrong.
+              root.writeEnvelope(Model.unlockEnvelopeCreateCommand(tool, account), env, finish)
             } else {
               // Nothing here reaches the data key yet. The next quick unlock
               // will produce the old password, fail, and bring it back here.
@@ -974,11 +989,20 @@ Item {
           finish(false)
         }
       })
-    })
+    }, function() { finish(false) })
   }
 
   // `quiet` lists exit codes that are an answer rather than a failure, such
   // as removing a method from an envelope that is already gone.
+  // Whether any quick-unlock method has a way into the envelope. Unknown
+  // (no summary read yet) counts as yes: dropping methods on a guess is the
+  // one thing this must not do.
+  function envelopeHasMethods() {
+    if (!envelopeSummary) return envelopeChecked ? false : true
+    return Boolean(envelopeSummary.pin || envelopeSummary.fingerprint
+      || (Array.isArray(envelopeSummary.fido) && envelopeSummary.fido.length > 0))
+  }
+
   function writeEnvelope(command, env, done, quiet) {
     queueEnvelopeJob({
       command: command, env: env, writes: true,
@@ -1018,7 +1042,12 @@ Item {
         onDone: function(code) {
           var E = Model.envelopeExitCodes()
           if (code === 0) { root.refreshEnvelope(); done(true, "", 0); return }
-          if (code === 3) { done(false, "wrong-password", code); return }
+          if (code === 3) {
+            // A stale envelope opens with nobody's current password: the
+            // master password changed and no method has re-sealed it yet.
+            done(false, root.envelopeSummary && root.envelopeSummary.stale ? "stale" : "wrong-password", code)
+            return
+          }
           if (code !== E.absent && code !== 6 && code !== E.unseal) { done(false, "failed", code); return }
           root.verifyWithBw(pw, function(ok) {
             if (!ok) { done(false, "wrong-password", 3); return }
@@ -1034,7 +1063,7 @@ Item {
           })
         }
       })
-    })
+    }, function() { done(false, "failed", 0) })
   }
 
   // No envelope to check against: ask `bw`. A successful `bw unlock` mints a
@@ -1043,11 +1072,20 @@ Item {
   function verifyWithBw(password, done) {
     var env = {}
     env[Model.keyringSecretEnvVar()] = String(password || "")
+    beginEpochOperation("bwVerify")
     queueEnvelopeJob({
       command: Model.bwVerifyPasswordCommand(),
       env: bwEnv(env), secretOutput: true,
       onDone: function(code, out) {
         var s = code === 0 ? Model.extractSessionToken(out) : ""
+        // A vault locked (or logged out) while bw was checking must stay
+        // locked: adopting the session it minted would unlock it behind the
+        // panel's back, and remember that across a restart.
+        if (root.epochOperationIsStale("bwVerify") || root.logoutPending || root.status !== "unlocked") {
+          s = ""
+          done(false)
+          return
+        }
         if (!s) { done(false); return }
         root.session = s
         root.storeCurrentSession()
@@ -1056,9 +1094,19 @@ Item {
     })
   }
 
+  function quickUnlockErrorText(why, fallback) {
+    if (why === "wrong-password") return "That is not your master password."
+    if (why === "stale") {
+      return "Your master password was changed and the stored copy has not caught up yet. "
+        + "Unlock once with a PIN, fingerprint or key you already have set up, then with your new password."
+    }
+    return fallback
+  }
+
+  // Not gated on envelopeSummary: a wrap written in this same flow may not
+  // be in a summary yet, and its removal must not be skipped for that.
   function removeQuickUnlockMethod(op) {
     if (!quickUnlockAvailable || !accountId) return
-    if (!envelopeSummary) return
     // No envelope, or no such method in it, is the state removal wanted.
     writeEnvelope(Model.unlockEnvelopeUpdateCommand(envelopeTool(), envelopeAccount(), op), {}, null,
       [Model.envelopeExitCodes().absent, 7])
@@ -3647,9 +3695,7 @@ Item {
         return
       }
       if (!ok) {
-        root.pinError = why === "wrong-password"
-          ? "That is not your master password."
-          : "Could not save the PIN. Is the OS keyring available?"
+        root.pinError = root.quickUnlockErrorText(why, "Could not save the PIN. Is the OS keyring available?")
         return
       }
       // The older PIN blob, if any, is superseded.
@@ -4214,9 +4260,7 @@ Item {
       }
       root.fpSetupActive = false
       if (!ok) {
-        root.fpError = why === "wrong-password"
-          ? "That is not your master password."
-          : "Could not enable fingerprint unlock. Is the OS keyring available?"
+        root.fpError = root.quickUnlockErrorText(why, "Could not enable fingerprint unlock. Is the OS keyring available?")
         return
       }
       // The plaintext entry, if an older version left one, is superseded.

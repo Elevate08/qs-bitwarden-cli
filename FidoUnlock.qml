@@ -453,7 +453,7 @@ Item {
       setupActive = false
       if (!ok) {
         var codes = Model.fidoExitCodes()
-        if (why === "wrong-password") error = "That is not your master password."
+        if (why === "wrong-password" || why === "stale") error = vault.quickUnlockErrorText(why, "")
         else if (code === codes.assert || code === codes.noSecret) error = "No touch received. Try again."
         else error = "Could not enable FIDO2 unlock. Is the OS keyring available?"
         setupActive = true
