@@ -959,11 +959,15 @@ Item {
     })
   }
 
-  function writeEnvelope(command, env, done) {
+  // `quiet` lists exit codes that are an answer rather than a failure, such
+  // as removing a method from an envelope that is already gone.
+  function writeEnvelope(command, env, done, quiet) {
     queueEnvelopeJob({
       command: command, env: env, writes: true,
       onDone: function(code) {
-        if (code !== 0) console.log("qs-bitwarden envelope: write failed with " + code)
+        if (code !== 0 && (!quiet || quiet.indexOf(code) === -1)) {
+          console.log("qs-bitwarden envelope: write failed with " + code)
+        }
         root.refreshEnvelope()
         if (done) done(code === 0, code)
       }
@@ -1027,7 +1031,9 @@ Item {
   function removeQuickUnlockMethod(op) {
     if (!quickUnlockAvailable || !accountId) return
     if (!envelopeSummary) return
-    writeEnvelope(Model.unlockEnvelopeUpdateCommand(envelopeTool(), envelopeAccount(), op), {}, null)
+    // No envelope, or no such method in it, is the state removal wanted.
+    writeEnvelope(Model.unlockEnvelopeUpdateCommand(envelopeTool(), envelopeAccount(), op), {}, null,
+      [Model.envelopeExitCodes().absent, 7])
   }
 
   // The plaintext fingerprint entry, moved into the envelope in one shell.
