@@ -314,10 +314,8 @@ fn disposable_key_load_identity_and_approved_sign_cross_the_real_socket() {
     assert!(child.wait().unwrap().success());
 }
 
-/// A lock drops the private set but keeps the public projection, and the
-/// design's state table says a locked-with-cache agent still lists identities:
-/// otherwise every `ssh` after a lock raises an unlock prompt, including the
-/// ones authenticating with an on-disk key. Signing is what the lock denies.
+/// A lock drops private keys but keeps the public projection, so identity
+/// listings still work (no unlock prompt for every `ssh`); signing is denied.
 #[test]
 fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
     let temp = TempDir::new();
@@ -384,11 +382,8 @@ fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
     // Locked with a cache: still listed, because public keys are not secret.
     assert_eq!(identity_count(&socket), 1);
 
-    // The private set is gone, so signing cannot proceed. The request is held
-    // and an unlock is asked for rather than failed outright -- refusing a
-    // client that has no way to retry is worse than asking. Dismissing that
-    // unlock is what turns it into a refusal, and it must do so at once
-    // rather than leaving the client to wait out the deadline.
+    // Signing is held with an unlock request rather than failed; dismissing
+    // the unlock refuses at once instead of waiting out the deadline.
     let socket_for_client = socket.clone();
     let blob = public_blob.clone();
     let client = std::thread::spawn(move || {
@@ -438,10 +433,8 @@ fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
     assert!(child.wait().unwrap().success());
 }
 
-/// A sign request against a locked-but-cached vault must not simply fail: the
-/// design has it raise an unlock, hold the request across the load, and then
-/// ask for approval. The unlock and the approval carry different request ids,
-/// because they are different decisions.
+/// A sign request against a locked-but-cached vault raises an unlock, is held
+/// across the load, then asks for approval, with a distinct request id each.
 #[test]
 fn a_locked_sign_request_raises_unlock_then_approval() {
     let mut agent = TestAgent::start();
@@ -494,11 +487,8 @@ fn a_locked_sign_request_raises_unlock_then_approval() {
     agent.shutdown();
 }
 
-/// The approval decision needs the key's identity and the requesting program,
-/// both of which come from the public cache. None of it depends on the vault
-/// read finishing, so a user may approve while keys are still loading and the
-/// signature is produced the moment they arrive -- rather than being made to
-/// wait several seconds and only then be asked.
+/// Approval needs only public data, so one given during a load is honoured
+/// as soon as the keys arrive.
 #[test]
 fn an_approval_given_during_a_load_is_honoured_when_keys_arrive() {
     let mut agent = TestAgent::start();
@@ -535,9 +525,7 @@ fn an_approval_given_during_a_load_is_honoured_when_keys_arrive() {
     agent.shutdown();
 }
 
-/// The same path must still refuse when the key that comes back is not the
-/// one that was approved. The approval names a key; the load decides whether
-/// that key is actually present.
+/// ...but only if the approved key is actually in the load.
 #[test]
 fn an_approval_given_during_a_load_still_requires_the_approved_key() {
     let mut agent = TestAgent::start();
@@ -572,10 +560,8 @@ fn an_approval_given_during_a_load_still_requires_the_approved_key() {
     agent.shutdown();
 }
 
-/// A freshly started companion has no public cache, so `ssh-add -L` is empty
-/// and no client will ever offer a vault key -- which means no sign request,
-/// and no way to ask for an unlock. Unlock-on-demand exists for exactly that
-/// cliff, and it has to begin at the identity listing rather than at signing.
+/// A fresh companion lists no identities, so no sign request could ever ask
+/// for an unlock; unlock-on-demand must start at the identity listing.
 #[test]
 fn unlock_on_demand_raises_an_unlock_for_an_empty_identity_listing() {
     let mut agent = TestAgent::start();
@@ -639,9 +625,8 @@ fn concurrent_identity_listings_coalesce_into_one_unlock() {
     agent.shutdown();
 }
 
-/// A vault with more keys than the old 16-slot control channel must still
-/// finish loading. PublicKey messages are try_send'd on a current-thread
-/// runtime that cannot drain until the emit loop returns.
+/// More keys than the old 16-slot channel must still finish loading: the
+/// try_send'd messages cannot drain until the emit loop returns.
 #[test]
 fn a_load_of_more_than_sixteen_keys_still_reports_keys_loaded() {
     let mut agent = TestAgent::start();
@@ -656,9 +641,8 @@ fn a_load_of_more_than_sixteen_keys_still_reports_keys_loaded() {
     agent.shutdown();
 }
 
-/// The largest burst one load can produce: every key at the cap announced,
-/// plus each held sign request withdrawn and re-raised as an approval. None of
-/// it can drain before the burst ends, so the channel has to hold all of it.
+/// The largest burst: every key announced, plus each held request withdrawn
+/// and re-raised. The channel must hold it all.
 #[test]
 fn a_full_load_releasing_every_held_request_keeps_the_helper_alive() {
     let mut agent = TestAgent::start();
@@ -704,9 +688,8 @@ fn a_full_load_releasing_every_held_request_keeps_the_helper_alive() {
     agent.shutdown();
 }
 
-/// A malformed FIFO payload must lock and keep serving, not take SSH_AUTH_SOCK
-/// down. The panel retries a failed load; a dead helper cannot. `load_failed`
-/// is distinct from `locked` so a lock acknowledgment is not confused with it.
+/// A malformed FIFO payload locks and keeps serving (the panel retries);
+/// `load_failed`, not `locked`, so it is not taken as a lock ack.
 #[test]
 fn a_malformed_load_leaves_the_helper_running_and_accepts_a_retry() {
     let mut agent = TestAgent::start();
@@ -843,9 +826,7 @@ fn granting_and_revoking_announce_the_live_set() {
     agent.shutdown();
 }
 
-/// A grant taken for Git's commit signatures covers Git's commit signatures.
-/// The same program asking for a login -- the shape a process pretending to
-/// be `ssh-keygen` would use to reach a server -- is asked about again.
+/// A grant for Git signatures does not cover a login from the same program.
 #[test]
 fn a_grant_covers_only_the_kind_of_signature_it_was_given_for() {
     let mut agent = TestAgent::start();
@@ -896,10 +877,8 @@ fn a_grant_covers_only_the_kind_of_signature_it_was_given_for() {
     agent.shutdown();
 }
 
-/// A connection OpenSSH bound for forwarding carries a remote host's
-/// requests through the local `ssh`. Such a request is labelled, is never
-/// offered a grant, cannot open one however the panel answers, and cannot
-/// ride one that already covers the local `ssh`.
+/// A request on a forwarding-bound connection is labelled, never offered a
+/// grant, cannot open one, and cannot ride the local `ssh`'s grant.
 #[test]
 fn a_forwarded_request_is_labelled_and_never_granted() {
     let mut agent = TestAgent::start();
@@ -955,11 +934,8 @@ fn a_forwarded_request_is_labelled_and_never_granted() {
     agent.shutdown();
 }
 
-/// The panel validates the bundled helper before it trusts it, and needs the
-/// helper's own answers to do that: what version it is, what protocol it
-/// speaks, and whether its crypto actually works on this machine. Both must
-/// answer without touching the filesystem, opening a socket, or needing a
-/// runtime directory -- they run before any of that exists.
+/// `--version` and `--self-test` answer without filesystem, socket or runtime
+/// directory: the panel runs them before any of that exists.
 #[test]
 fn version_and_self_test_answer_without_touching_the_system() {
     let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");
@@ -1013,9 +989,7 @@ fn version_and_self_test_answer_without_touching_the_system() {
     );
 }
 
-/// An unknown flag must not be mistaken for "run as the agent". The panel
-/// launches this binary with no arguments; anything else is a mistake worth
-/// reporting rather than silently starting a key-holding daemon.
+/// An unknown flag is refused, never taken as "run as the agent".
 #[test]
 fn an_unknown_argument_is_refused() {
     let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");
@@ -1062,10 +1036,8 @@ impl TestAgent {
         let socket = PathBuf::from(ready["socketPath"].as_str().unwrap());
         let fifo = PathBuf::from(ready["fifoPath"].as_str().unwrap());
 
-        // Every read below blocks on the agent's stdout, so a message the
-        // agent never sends would hang the whole suite instead of failing it.
-        // The watchdog kills the child, which closes stdout and turns that
-        // hang into an EOF the assertions report.
+        // A watchdog kills the child if a read would hang, turning the hang
+        // into an EOF the assertions report.
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let watching = alive.clone();
         let pid = child.id();
@@ -1096,18 +1068,9 @@ impl TestAgent {
         self.input.flush().unwrap();
     }
 
-    /// Wait until the control loop has processed everything sent so far.
-    ///
-    /// Control messages are read in order on one channel, so a message whose
-    /// effect is observable acts as a barrier for every message before it.
-    /// `vault_locked` is that message: it answers with `locked`, and locking
-    /// an empty store changes nothing a test then depends on.
-    ///
-    /// Needed because a test that sends `options` and then connects a client
-    /// is racing the control loop. That race is invisible on a fast machine
-    /// and cost a CI run: the client's listing arrived first, was answered
-    /// with an empty list instead of raising an unlock, and the test waited
-    /// for a message that was never going to come.
+    /// Wait until the control loop processed everything sent so far, using
+    /// `vault_locked` (answered in order with `locked`) as a barrier. Without
+    /// it, a client connecting right after `options` can race the loop.
     fn drain_control(&mut self) {
         self.send("{\"v\":1,\"type\":\"vault_locked\",\"epoch\":0}");
         let acknowledged = self.read();

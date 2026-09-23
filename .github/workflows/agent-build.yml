@@ -1,54 +1,18 @@
-# Reproducible build of the SSH agent helper.
-#
-# The helper ships as committed bytes, so this job exists to prove those bytes
-# can be reproduced from the committed source. It runs inside a digest-pinned
-# container rather than on the runner image directly: `ubuntu-latest` rolls
-# forward, and a GNU-linked binary carries symbol requirements from the glibc
-# it built against while `strip` output varies across binutils releases. The
-# Rust side is pinned by rust-toolchain.toml and Cargo.lock; the container
-# pins everything underneath it.
-#
-# Also called by release.yml, so a release re-runs these gates against the
-# tagged commit from this one definition rather than from a copy that can
-# drift away from it.
+# Reproducible build of the committed helper binaries: proves the bytes come
+# from the committed source. Runs in a digest-pinned container, since the
+# runner's glibc and binutils change the output; Rust itself is pinned by
+# rust-toolchain.toml and Cargo.lock. Also called by release.yml, so releases
+# run these same gates against the tagged commit.
 
 name: agent build
 
 on:
-  # Every push to master or a release branch, and every PR into either, with
-  # no `paths` filter.
-  #
-  # There was one, naming agent/** and the build script, and it meant this
-  # workflow never saw the panel: Panel.qml, BitwardenModel.js and tests/ were
-  # all outside it. PR #13 -- the server region feature -- merged with `no
-  # checks reported`, and the v1.6.0 tag run was the first time CI read a line
-  # of it. The branch list was stale in the same way, still naming the feature
-  # branch the SSH agent was built on after that work reached master.
-  #
-  # This is the third gate in this file to prove nothing through absence, after
-  # the digest check that compared a build with itself and the QML tests that
-  # were all skipped. The reproducible-build job costs two minutes; filtering
-  # it was never worth a hole this size.
-  #
-  # Release branches are listed for the same reason the paths filter came
-  # off. A release is assembled on one, so a PR into `release/1.7.0` that
-  # only master's branch list covered would merge with `no checks
-  # reported` -- the same hole reached through the base branch rather
-  # than through a path.
-  #
-  # Master is deliberately NOT listed, and that is not the same mistake in
-  # reverse. Work reaches master only by merging a release branch, and master
-  # requires that branch to be up to date before it can -- so the tree master
-  # ends up with is the tree this workflow already passed on the release
-  # branch, at the commit it passed on. Running again on the push would check
-  # the same tree twice, and running on the pull request would check a merge
-  # preview of it that cannot differ. The one thing master does need is
-  # publication, which is publish-on-master.yml.
-  #
-  # The exposure this accepts, stated plainly: a pull request into master from
-  # something other than a release branch gets no checks. Nothing mechanically
-  # prevents one. It is the release branches that are gated, so that is the
-  # route work has to take.
+  # Every push and PR on release branches, with no `paths` filter: a filter
+  # once let panel changes merge with no checks at all. Master is not listed:
+  # work reaches it only by merging an up-to-date release branch, whose exact
+  # tree already passed here (publish-on-master.yml handles publication). So a
+  # PR into master from anything but a release branch gets no checks; release
+  # branches are the gated route.
   push:
     branches: ['release/**']
   pull_request:
@@ -64,11 +28,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Scoped by the calling workflow, not just the ref. These jobs also run as
-  # release.yml's gates stage, and a shared group let a branch build and a
-  # release cancel one another -- which the rehearsal demonstrated by killing
-  # a branch build the moment the release run claimed the group. A release's
-  # gates are never cancelled; a superseded branch build still is.
+  # Scoped by calling workflow too, so a branch build and release.yml's gates
+  # never cancel each other. Release gates are never cancelled.
   group: agent-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.workflow != 'release' }}
 
@@ -114,9 +75,7 @@ jobs:
 
       - name: Build twice from different paths and compare
         env:
-          # This job *is* the pinned environment -- the container above. The
-          # script verifies the claim against rust-toolchain.toml and the
-          # image's own OS rather than taking it on trust.
+          # This job is the pinned environment; the script verifies the claim.
           QSBW_PINNED_BUILD: '1'
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -127,22 +86,10 @@ jobs:
         env:
           QSBW_PINNED_BUILD: '1'
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
-        # The gate that gives the committed bytes their meaning: they must be
-        # what this source builds in this environment. Skipped only while no
-        # binary is tracked, so it cannot pass by absence.
-        #
-        # FIRST, before anything else writes to bin/. This ran after "Build the
-        # candidate artifact" for four months, and that step calls the build
-        # script with no flags -- which *writes* bin/ and bin/SHA256SUMS. So the
-        # comparison read back the candidate it had just produced and compared
-        # it with itself. It reported `tracked` and `fresh` as the same digest
-        # on a repository whose committed binary was four commits stale, and
-        # every green run since Task 16 proved nothing at all.
-        #
-        # The verdict is recorded rather than acted on here, because a drifted
-        # binary is exactly when the candidate is most worth uploading: that
-        # artifact is how a maintainer fixes the drift. The job fails at the
-        # end instead.
+        # The bytes must be what this source builds here. Runs FIRST, before
+        # anything writes bin/ (it once compared a fresh build with itself).
+        # The verdict is recorded and the job fails at the end, so a drifted
+        # build's candidate is still uploaded for a maintainer to commit.
         run: |
           if [ ! -f bin/x86_64-linux/qs-bitwarden-ssh-agent ]; then
             echo "::notice::no tracked binary yet; nothing to compare"
@@ -163,10 +110,8 @@ jobs:
       - name: Build the candidate artifact
         env:
           QSBW_PINNED_BUILD: '1'
-        # The read-only candidate flow: this job builds the bytes and uploads
-        # them, a maintainer commits them, and a later run rebuilds and
-        # compares. No write token is ever handed to CI, and nothing here
-        # commits anything.
+        # Read-only candidate flow: CI builds and uploads, a maintainer
+        # commits, a later run compares. No write token; nothing is committed.
         run: ./scripts/build-agent.sh
 
       - name: Report what was produced
@@ -184,9 +129,7 @@ jobs:
       - name: Upload the candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          # Both helpers and the one checksum file that names them. Commit all
-          # three together: SHA256SUMS lists every artifact, so a partial
-          # commit leaves a line that no longer matches its file.
+          # Both helpers and SHA256SUMS; commit all three together.
           name: qs-bitwarden-helpers-x86_64-linux
           path: |
             bin/x86_64-linux/qs-bitwarden-ssh-agent
@@ -196,10 +139,8 @@ jobs:
           retention-days: 7
 
       - name: Fail if the tracked binary drifted
-        # After the upload, so the bytes that fix the drift are always
-        # available. A fork keeps its exemption: it cannot push CI's output
-        # into its own branch, and the bytes still cannot reach master without
-        # a same-repository run passing this.
+        # After the upload, so the fix is always available. Forks are exempt:
+        # they cannot push CI output, and master still requires a passing run.
         if: steps.compare.outputs.drift == 'yes'
           && github.event.pull_request.head.repo.fork != true
         run: |
@@ -217,9 +158,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Every gate runs for each Cargo package. They are separate packages so
-      # that neither changes the other's committed bytes, which also means
-      # neither's checks cover the other.
+      # Each gate runs per Cargo package; neither package's checks cover the
+      # other.
       - name: Formatting
         run: |
           for package in agent unlock-key; do
@@ -233,53 +173,21 @@ jobs:
           done
 
       - name: Dependency and licence policy
-        # Advisories, licences, registries and duplicate policy. This binary
-        # holds decrypted private keys; its dependency tree was reviewed in
-        # writing once, and this is what stops that review going stale.
-        #
-        # --config is explicit rather than discovered. cargo-deny looks beside
-        # the manifest and in the working directory, so running it from agent/
-        # silently fell back to built-in defaults and checked none of our
-        # policy while reporting success -- a gate that passes without reading
-        # its rules is worse than no gate.
-        #
-        # Not version-pinned, deliberately: this tool reads a live advisory
-        # database, and an old copy fails to parse newer entries. It is
-        # checking dependencies, not producing artifact bytes, so currency
-        # matters more here than reproducibility.
-        #
-        # The published binary, not `cargo install`. Building this tool from
-        # source cost 1m58s of a 3m34s job -- more than half the critical path
-        # of every push and every PR -- to produce a checker that then ran in
-        # about a second. Downloading it takes well under one. Currency is
-        # unaffected: the advisory database is fetched at check time, not baked
-        # into the binary, so `latest` here means the same thing it meant when
-        # cargo built it.
-        #
-        # Resolved at run time rather than pinned, for that same currency, and
-        # verified against the digest published beside it. Upstream ships a
-        # static musl build, so it runs in this container regardless of what
-        # the container's glibc is.
-        #
-        # The version comes from the `releases/latest` redirect rather than
-        # from api.github.com. The API allows 60 unauthenticated calls an hour
-        # per address and GitHub-hosted runners share addresses, so that route
-        # fails on someone else's traffic and reports it as our dependency
-        # gate going down. The redirect carries no such budget.
-        #
-        # `shell: bash` is explicit because a job running in a container gets
-        # `sh -e` by default, which is dash here -- and dash has no `pipefail`,
-        # so the guard on the line below is itself what fails. Every other step
-        # in this job is a single command and never noticed.
+        # Advisories, licences, registries and duplicates for a binary that
+        # holds private keys. `--config` is explicit (cargo-deny would otherwise
+        # silently use defaults from agent/). Not version-pinned: it reads a
+        # live advisory database. The published static musl binary (not `cargo
+        # install`, which took ~2 min), resolved from the `releases/latest`
+        # redirect (the API is rate-limited per shared runner address) and
+        # verified against its published digest. `shell: bash` for pipefail
+        # (a container step defaults to dash).
         shell: bash
         run: |
           set -euo pipefail
           latest="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
             https://github.com/EmbarkStudios/cargo-deny/releases/latest)"
           version="${latest##*/}"
-          # A redirect that stopped redirecting would leave a path segment
-          # rather than a version, and the download would 404 with nothing
-          # saying why. Check the shape before trusting it.
+          # A broken redirect would yield a path, not a version: check the shape.
           case "$version" in
             [0-9]*.[0-9]*) : ;;
             *) echo "::error::could not resolve the latest cargo-deny release (got '$version' from '$latest')"; exit 1 ;;
@@ -301,9 +209,8 @@ jobs:
 
       - name: Tests
         working-directory: agent
-        # The suite drives a real socket, a real FIFO and real disposable keys,
-        # so it needs no network and no vault -- but it does take a couple of
-        # minutes of wall time on the slower lifecycle cases.
+        # Real socket, FIFO and disposable keys; no network or vault. Slow
+        # lifecycle cases take a couple of minutes.
         run: cargo test --locked --all-targets
 
       - name: Tests (unlock-key)
@@ -318,29 +225,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install what the panel tests shell out to
-        # The tests execute the real pipeline rather than mocking it, so the
-        # tools that pipeline uses have to be present.
-        #
-        # From the runner image's own mirrors, not a pinned point-in-time
-        # snapshot. That snapshot cost about thirty lines of retry tuning and
-        # index-disabling and still took down three runs on 502s, the v1.6.0
-        # release among them, and what it bought was version pinning -- not
-        # provenance. Provenance comes from `Signed-By`, which apt applies to
-        # every mirror alike.
-        #
-        # Nothing installed here reaches the shipped binary: these are the
-        # tools that decide whether the tests can run, and the bytes users get
-        # are pinned separately by the digest-pinned build container. This job
-        # holds no secrets and no write token -- `permissions: contents: read`
-        # at the top of the file -- so a package that misbehaves in it has
-        # nothing to reach. The boundary is the release environment, not the
-        # archive date.
-        #
-        # Error-Mode=any is the part worth keeping. apt reports a failed index
-        # as a warning and exits 0, so the snapshot's 502 passed this step and
-        # surfaced four minutes later as `Unable to locate package` on six Qt
-        # packages -- a mirror outage wearing a missing-dependency costume.
-        # Now the fetch fails where it happens, saying what happened.
+        # The tests run the real pipeline, so its tools must be installed. From
+        # the runner's own mirrors (provenance comes from `Signed-By`); nothing
+        # here reaches the shipped binary, and the job holds no secrets or
+        # write token. Error-Mode=any makes a failed index fail here instead of
+        # later as a missing package.
         run: |
           sudo apt-get update -o APT::Update::Error-Mode=any
           sudo apt-get install -y -qq --no-install-recommends jq openssh-client argon2
@@ -351,34 +240,29 @@ jobs:
 
       - name: Build the helper the pipeline tests drive
         working-directory: agent
-        # Plain debug build into agent/target/debug/, which is where the panel
-        # launches the development helper from and where the tests look for it.
+        # Debug build in agent/target/debug/, where the panel's development
+        # fallback and the tests look for it.
         run: cargo build --locked
 
       - name: Build the unlock tool the envelope tests drive
         working-directory: unlock-key
-        # Into unlock-key/target/debug/, the development path the panel falls
-        # back to, the same way it does for the SSH helper.
+        # The unlock tool's development path, likewise.
         run: cargo build --locked
 
       - name: Confirm the helpers landed where the tests expect them
         run: |
-          # A default target in .cargo/config.toml would move these and the
-          # tests would skip rather than fail, hiding real coverage loss.
+          # A default target in .cargo/config.toml would move these and make
+          # the tests skip rather than fail.
           test -x agent/target/debug/qs-bitwarden-ssh-agent \
             || { echo "::error::helper not at agent/target/debug/"; exit 1; }
           test -x unlock-key/target/debug/qs-bitwarden-unlock-key \
             || { echo "::error::unlock tool not at unlock-key/target/debug/"; exit 1; }
 
       - name: Run the QML tests
-        # The panel's own JavaScript runs inside QML's engine, not Node's, and
-        # the two differ. These were passing locally and never running here.
+        # The panel's JavaScript runs in QML's engine, which differs from Node.
         run: |
-          # Every module named explicitly. --no-install-recommends keeps the
-          # install lean but drops what QtQuick merely *recommends*, and
-          # QtQml.WorkerScript is one of those -- importing QtQuick then fails
-          # at compile time with a module-not-installed error that looks like
-          # a broken test rather than a missing package.
+          # Every module named explicitly: --no-install-recommends drops
+          # QtQml.WorkerScript, which QtQuick needs.
           sudo apt-get install -y -qq --no-install-recommends \
             qt6-declarative-dev-tools \
             qml6-module-qttest \
@@ -386,28 +270,13 @@ jobs:
             qml6-module-qtqml-workerscript \
             qml6-module-qtquick \
             qml6-module-qtquick-window
-          # Record what these actually resolved to, so a future difference in
-          # behaviour can be traced to a version rather than guessed at. This
-          # is the log line that replaces the archive pin: the versions move,
-          # and when one of them changes something, the run that changed says
-          # so.
+          # Log the resolved versions, so behaviour changes can be traced.
           dpkg -l qt6-declarative-dev-tools qml6-module-qttest | tail -2
-          # The import paths qmltestrunner will search, so a future
-          # module-not-installed failure can be read straight from the log.
+          # The import paths qmltestrunner searches, for debugging.
           /usr/lib/qt6/bin/qmltestrunner -help 2>&1 | head -3 || true
-          # One test imports the Omarchy shell's own UI kit by absolute path,
-          # which exists on a desktop and not on a runner. It is skipped here
-          # -- but narrowly, loudly, and only for that reason: a gate that
-          # quietly runs nothing is worse than no gate, and this file has
-          # already been bitten twice by checks passing through absence.
-          #
-          # The match is on the `import` line, not on the path anywhere in the
-          # file. It used to be the latter, and that is a third way to pass
-          # through absence: tst_row_widths.qml only *mentions* the kit, in an
-          # optional check that reads Ui/Button.qml if it happens to be there
-          # and returns quietly if it is not. A substring match skipped the
-          # whole file, so the row-width gate silently stopped running on every
-          # runner while still reporting success.
+          # A test that imports the Omarchy shell's UI kit (absent on runners)
+          # is skipped, loudly. Matched on its `import` line only: a mere
+          # mention of the kit must not skip a file.
           shopt -s nullglob
           run=() ; skipped=()
           for f in tests/qml/*.qml; do
@@ -425,11 +294,8 @@ jobs:
             exit 1
           fi
           echo "running ${#run[@]} QML test file(s), skipping ${#skipped[@]}"
-          # QML_XHR_ALLOW_FILE_READ lets a test read the repository's own QML
-          # back through XMLHttpRequest, which Qt refuses by default.
-          # tst_row_widths.qml needs it: it measures the real panel sources
-          # rather than a copy of them that could drift. Without it that file
-          # fails on its first check rather than measuring nothing.
+          # Lets tst_row_widths.qml read the panel's own QML via XMLHttpRequest
+          # (Qt refuses file reads by default).
           status=0
           for f in "${run[@]}"; do
             QML_XHR_ALLOW_FILE_READ=1 QT_QPA_PLATFORM=offscreen \

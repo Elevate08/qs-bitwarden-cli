@@ -1,10 +1,7 @@
-//! `qs-bitwarden-unlock-key` driven the way the panel's shell pipelines will
-//! drive it: secrets in the environment, the envelope on stdin, the result on
-//! stdout, and the exit status as the only verdict.
-//!
-//! Key material is fixed hex and base64 here rather than real `argon2` or
-//! `fido2-assert` output, so the suite needs neither tool installed; the
-//! formats are the ones those tools print.
+//! `qs-bitwarden-unlock-key` driven as the panel's pipelines drive it: secrets
+//! in the environment, envelope on stdin, result on stdout, exit status as the
+//! verdict. Key material is fixed text in `argon2`/`fido2-assert` formats, so
+//! neither tool is needed.
 
 use std::io::Write;
 use std::process::{Command, Output, Stdio};

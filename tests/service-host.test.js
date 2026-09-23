@@ -1,28 +1,18 @@
 #!/usr/bin/env node
-// One vault per shell (issue #30). The bar builds this widget once per monitor;
-// the vault lives in Service.qml, which the shell loads once and every bar
-// copy reaches through `bar.shell.serviceFor()`. A copy that cannot reach it
-// hosts a private one. These checks pin the decision and the wiring: a view
-// that picks "private" while the shared service is merely late starts a
-// second vault, which is the contention the service exists to remove.
+// One vault per shell: Service.qml is loaded once and reached by every bar via
+// `bar.shell.serviceFor()`; a bar that cannot reach it hosts a private one.
+// Choosing private while the shared one is merely late would start a second
+// vault.
 //
 //   node tests/service-host.test.js
 
+const { createSuite, loadModule, read, repoRoot } = require("./harness")
 const fs = require("fs")
 const path = require("path")
-const root = path.join(__dirname, "..")
-const read = f => fs.readFileSync(path.join(root, f), "utf8")
 
-const Model = {}
-new Function("exports", read("BitwardenModel.js").replace(/^\.pragma library\s*$/m, "") + `
-  exports.vaultHostDecision = vaultHostDecision
-  exports.vaultHostTimeoutMs = vaultHostTimeoutMs
-  exports.presenterIndex = presenterIndex
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("service-host")
 
 // --- the decision -----------------------------------------------------------
 
@@ -50,7 +40,7 @@ check("the plugin is still a bar widget",
   JSON.stringify(manifest.kinds))
 check("and declares the service the shell loads once",
   manifest.kinds.includes("service") && manifest.entryPoints.service === "Service.qml"
-    && fs.existsSync(path.join(root, "Service.qml")),
+    && fs.existsSync(path.join(repoRoot, "Service.qml")),
   JSON.stringify(manifest.entryPoints))
 
 // --- the view's wiring ------------------------------------------------------
@@ -115,9 +105,8 @@ check("vaultHost reports which monitor presents and which popouts are open",
 
 // --- an unattached vault is inert ----------------------------------------------
 //
-// Every bar carries a standby Service, and the shared one exists before any bar
-// finds it. Neither may do anything until a view attaches, or each monitor
-// would run its own vault again.
+//
+// Standby and not-yet-found vaults do nothing until a view attaches.
 
 check("the vault is live only while a view is attached",
   /readonly property bool live: viewCount > 0/.test(service), "live must follow viewCount")
@@ -171,11 +160,10 @@ check("each view reports the monitor it is on",
 
 // --- the split ----------------------------------------------------------------
 //
-// Service.qml is the vault; Panel.qml draws it. The vault reaches the screen only
-// through the presenter contract, and the views reach the vault only through
-// `root.vault` (Panel.qml) or `vault` (the components Panel.qml hands it to).
-// tests/plugin-source.js relies on the second half to fold those qualifiers back
-// for the older source-reading suites, so it is enforced here.
+//
+// The vault reaches the screen only through the presenter contract, and views
+// reach the vault only via `root.vault` or `vault`; readPluginSource() relies
+// on the latter to fold qualifiers.
 
 const code = src => src
   .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
@@ -241,10 +229,8 @@ for (const [file, src, vaultRef] of [["Panel.qml", panel, "root.vault"], ["Custo
 check("Connections on a vault member's change signal target the vault",
   handlerTargets.length === 0, handlerTargets.join("; "))
 
-// A statement that opens with `(` or `[` continues the line before it when that
-// line has no semicolon -- `var x = a` then `(b).c()` is `a(b).c()`. That is how
-// opening the panel came to throw "opened is not a function". Flag any such
-// line whose predecessor ends in something that can be called or indexed.
+// A line starting with `(` or `[` continues a preceding line with no
+// semicolon (`a` then `(b).c()` is `a(b).c()`); flag such lines.
 const asiHazards = []
 for (const [file, src] of [["Service.qml", service], ["Panel.qml", panel]]) {
   const lines = code(src).split("\n")
@@ -259,10 +245,8 @@ for (const [file, src] of [["Service.qml", service], ["Panel.qml", panel]]) {
 check("no statement begins with ( or [ straight after a line it would continue",
   asiHazards.length === 0, asiHazards.join("\n    "))
 
-// Every vault member a view reaches must exist as a property or function. An
-// object id is not reachable from outside its file, and `vault` is untyped, so
-// qmllint cannot see either mistake: the search box called
-// vault.searchDebounceTimer.restart() and the filter silently never ran.
+// Every vault member a view uses must exist: ids are not reachable across
+// files, and `vault` is untyped, so qmllint cannot catch it.
 const vaultApi = new Set([
   ...[...serviceCode.matchAll(/^  (?:readonly )?property \S+ ([A-Za-z_]\w*)/gm)].map(m => m[1]),
   ...[...serviceCode.matchAll(/^  function ([A-Za-z_]\w*)\s*\(/gm)].map(m => m[1]),
@@ -295,8 +279,4 @@ check("and the stand-in presenter answers every one of them",
 const asksNames = [...serviceCode.matchAll(/presenter\.(?:focusField|fieldHasFocus)\(""\)/g)].length
 check("the vault asks for fields by name, never by control", asksNames > 10, String(asksNames))
 
-console.log(`\n${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  for (const f of failures) console.log(`\n  FAIL ${f}`)
-  process.exit(1)
-}
+done()

@@ -1,21 +1,14 @@
 #!/usr/bin/env node
-// Transient status and error messages float over the panel instead of joining
-// its content column. Their arrival must never change the height used by
-// KeyboardPanel, which is what made every screen jump down and back up.
+// Status and error messages float over the panel, so they never change
+// KeyboardPanel's height (which made screens jump).
 //
 //   node tests/status-notice.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, read, readPluginSource } = require("./harness")
 
 const panelSrc = readPluginSource("Panel.qml")
-const noticeSrc = fs.existsSync(path.join(__dirname, "..", "StatusNotice.qml"))
-  ? fs.readFileSync(path.join(__dirname, "..", "StatusNotice.qml"), "utf8")
-  : ""
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const noticeSrc = read("StatusNotice.qml")
+const { check, done } = createSuite("status-notice")
 
 const noticeAt = panelSrc.indexOf("id: statusNotice")
 const noticeUse = noticeAt === -1 ? "" : panelSrc.slice(noticeAt, noticeAt + 2000)
@@ -73,8 +66,4 @@ check("dynamic notices expose alert semantics to assistive technology",
     && /Accessible\.name:/.test(noticeSrc),
   noticeSrc)
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

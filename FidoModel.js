@@ -1,71 +1,33 @@
-// FidoModel.js — FIDO2 unlock helpers for the Bitwarden plugin.
-//
-// Kept separate from BitwardenModel.js on purpose: this is the FIDO2-specific
-// surface (the readiness probe that finds which plugged-in key holds which
-// registered credential, and the setup hand-off to Omarchy). The pipelines
-// that touch the key and open the envelope live in BitwardenModel.js beside
-// the envelope builders they compose.
+// FidoModel.js -- FIDO2 unlock helpers: the probe that finds which plugged-in
+// key holds which registered credential, and the hand-off to Omarchy's setup.
+// The pipelines that use the key live in BitwardenModel.js with the envelope.
 
 .pragma library
 
-// -------------------------------------------------------------------------
-// FIDO2 Unlock
-// -------------------------------------------------------------------------
-//
-// The credential is not registered here. Omarchy's own FIDO2 setup writes it
-// to the global authfile through pam-u2f, and that one registration serves
-// this plugin and the system's own authentication prompts alike. A touch asks
-// the key for that credential's hmac-secret, which opens the envelope's FIDO
-// wrap; see BitwardenModel.js. Only a device that is actually plugged in at
-// unlock time can answer.
-
-// Omarchy's global registration. root:root 0644, so the probe can read it --
-// and it must be the very file the system's own PAM stacks already name, so
-// one registration keeps answering for both.
+// Credentials are registered by Omarchy's FIDO2 setup (pam-u2f), in the same
+// world-readable authfile the system's PAM stacks use, so one registration
+// serves both.
 var FIDO_AUTHFILE = "/etc/fido2/fido2"
-// A probe answer is a handful of `key=value` lines; the cap is the same shape
-// every other stream this shell buffers uses.
 var FIDO_MAX_PROBE_BYTES = 4096
 
-function fidoAuthfile() { return FIDO_AUTHFILE }
-
-// Omarchy owns the enrolment end to end, exactly as it does for the reader:
-// `omarchy setup security fido2` installs libfido2/pam-u2f, checks the device,
-// registers it, wires the system's own authentication prompts, and tests it.
-// It runs in the same floating terminal as an install, since it is interactive
-// (an administrator prompt, then a touch). There is no `pkg add pam-u2f` button for the same reason there is no
-// `pkg add fprintd` one: installing the package alone leaves the option
-// exactly as unconfigured as it was.
+// Omarchy's interactive enrolment (packages, registration, PAM wiring), in a
+// floating terminal; a package install alone would configure nothing.
 function fidoSetupCommand() {
   return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
     "omarchy setup security fido2"]
 }
 
-// Why `omarchy remove security fido2` is the only supported way to turn this
-// off again: it is what removes the authfile the stack reads and unwires the
-// system's own prompts. Unregistering here would leave those broken.
+// The only supported removal: it also unwires the system's own prompts.
 function fidoRemoveCommand() {
   return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
     "omarchy remove security fido2"]
 }
 
-// One shell round trip: `key=value` per line, capped at the producer. Readiness
-// needs more than a binary on PATH --
-//   * fido2-assert and fido2-token present => libfido2's tools, which pam-u2f
-//     itself depends on, are installed,
-//   * the authfile a regular, non-empty, non-symlink file => Omarchy has
-//     registered a credential (a symlink is refused for the same reason
-//     omarchy-setup-security-fido2 refuses one: it is not a registration the
-//     module can trust),
-//   * fido2-token listing a device => a key is plugged in right now.
-// Then, for each of this user's registered credentials, which plugged-in key
-// holds it -- asked with a silent assertion (`up=false`, no hmac-secret): no
-// touch, no secret, and an answer in a fraction of a second either way.
-// An hmac-secret request for a credential a key does not hold would wait for
-// a touch before saying so, which is why that is never used to search.
-//
-// Each credential line is `cred=<id>|<options>|<device or ->`. None of it is
-// secret: credential ids and options are in a world-readable file.
+// One capped round trip of `key=value` lines: libfido2 tools installed, a
+// registration present (regular non-empty file, not a symlink), a key plugged
+// in, and the rp. Then per registered credential of this user, which plugged-in
+// key holds it, found with a silent assertion (`up=false`, no hmac-secret, so
+// no touch). Lines are `cred=<id>|<options>|<device or ->`; nothing secret.
 function fidoProbeCommand() {
   var auth = "'" + FIDO_AUTHFILE + "'"
   var script =
@@ -91,15 +53,10 @@ function fidoProbeCommand() {
   return ["bash", "-c", "{ " + script + "; } | head -c " + FIDO_MAX_PROBE_BYTES]
 }
 
-// Absent keys are false rather than an error: a probe that half-answered (or a
-// `fido2-token` that is not installed) must not read as "ready". `applicable`
-// only decides whether the settings row is worth drawing at all -- a machine
-// with none of the three parts has no FIDO2 to offer.
-//
-// A credential registered with `+pin` or `+verification` asks sudo for the
-// key's PIN as well as a touch. This unlock cannot collect that PIN yet, and a
-// touch alone would be weaker than what the registration asks of the system,
-// so such credentials are listed but never used.
+// Missing fields read as false, so a partial probe is never "ready".
+// `applicable`: whether to show the settings row at all. Credentials
+// registered with `+pin`/`+verification` are listed but not used: this unlock
+// cannot collect the key's PIN, and a touch alone would be weaker.
 function parseFidoProbe(raw) {
   var found = {}
   var creds = []

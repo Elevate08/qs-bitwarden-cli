@@ -1,39 +1,20 @@
 #!/usr/bin/env node
-// One `bw list items` read feeds both the panel and the companion. These tests
-// run the real shell pipeline against a fake `bw` and a real FIFO, because the
-// properties that matter are process-boundary properties: what reaches QML's
-// stdout, what reaches the FIFO, and -- above all -- that the optional agent
-// branch can never take the ordinary item list down with it.
+// One `bw list items` feeds both the panel and the companion. Run for real
+// against a fake `bw` and a real FIFO: what reaches QML, what reaches the FIFO,
+// and that the agent branch can never break the item list.
 //
 //   node tests/ssh-agent-pipeline.test.js
+//   node tests/ssh-agent-pipeline.test.js
 
+const { createSuite, loadModule, readPluginSource, repoRoot } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { spawnSync, execFileSync } = require("child_process")
 
-const repoRoot = path.join(__dirname, "..")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.sanitizedListCommand = sanitizedListCommand
-  exports.sshAgentFifoPath = sshAgentFifoPath
-  exports.loadIdEnvVar = loadIdEnvVar
-  exports.isValidLoadId = isValidLoadId
-  exports.loadIdCommand = loadIdCommand
-  exports.sshAgentLoadBeginLine = sshAgentLoadBeginLine
-  exports.sshAgentLoadEndLine = sshAgentLoadEndLine
-  exports.sshAgentVaultLockedLine = sshAgentVaultLockedLine
-  exports.sshAgentLoggedOutLine = sshAgentLoggedOutLine
-  exports.sshAgentHelloLine = sshAgentHelloLine
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done, failures } = createSuite("ssh-agent-pipeline")
 
 const PRIVATE_MARKER = "SSH_PRIVATE_MARKER_must_not_reach_QML"
 const REPROMPT_MARKER = "REPROMPT_PRIVATE_MARKER_must_not_reach_the_agent"
@@ -269,12 +250,9 @@ for (const [label, contents] of [
   })(), run.fifo.slice(0, 200))
 }
 
-// A `bw` that streams a complete, valid document and *then* exits nonzero is
-// a different shape of failure: the branch has already forwarded well-formed
-// bytes by the time the exit status exists, and no in-stream check could have
-// known. The FIFO is deliberately not the boundary here -- `key_load_end` is.
-// The companion holds every candidate unpublished until that line arrives, and
-// discards it on `failed`, so what matters is that the panel reports failure.
+// A `bw` that streams a valid document and then exits nonzero: the bytes are
+// already forwarded, so `key_load_end` is the boundary (the companion discards
+// the candidate on `failed`); the panel must report failure.
 {
   const run = withFifoReader(() =>
     runPipeline({ agentBranch: true, runtimeDir: runtimeDir },
@@ -353,11 +331,8 @@ for (const line of [Model.sshAgentLoadBeginLine(7, LOAD_ID), Model.sshAgentLoadE
 // The whole data plane, end to end
 // -------------------------------------------------------------------------
 //
-// Everything above tests one boundary at a time. This runs the real thing:
-// the real pipeline writes to the real companion's FIFO, the companion
-// validates and publishes, and the real OpenSSH client lists the key back.
-// It is the only test that would catch the projection and the decoder
-// disagreeing about a field name, because both sides are real here.
+// The real pipeline, companion and OpenSSH client together: the only test
+// that catches the projection and decoder disagreeing on a field.
 const helperBin = path.join(repoRoot, "agent", "target", "debug", "qs-bitwarden-ssh-agent")
 
 function endToEnd(done) {
@@ -469,10 +444,5 @@ function endToEnd(done) {
 
 endToEnd(() => {
   try { fs.rmSync(tempDir, { recursive: true, force: true }) } catch (e) {}
-  if (failures.length) {
-    console.error(`\n${failures.length} failed, ${pass} passed\n`)
-    failures.forEach(f => console.error(`  FAIL ${f}`))
-    process.exit(1)
-  }
-  console.log(`ssh-agent-pipeline: ${pass} passed`)
+  done()
 })

@@ -1,32 +1,17 @@
 #!/usr/bin/env node
-// Tests for the two events that lock the vault without waiting out the
-// auto-lock countdown, and for the window in which a terminal login's session
-// key is accepted.
+// Locking on screen lock and on suspend, and the window in which a terminal
+// login's session key is accepted.
 //
 //   node tests/lock-triggers.test.js
 
+const { createSuite, loadModule, read } = require("./harness")
 const fs = require("fs")
 const path = require("path")
 const { execFileSync } = require("child_process")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.screenLockStateCommand = screenLockStateCommand
-  exports.screenIsLocked = screenIsLocked
-  exports.screenLockPollMs = screenLockPollMs
-  exports.sleepMonitorCommand = sleepMonitorCommand
-  exports.sleepSignalToken = sleepSignalToken
-  exports.wakeSignalToken = wakeSignalToken
-  exports.sessionHandoffReadCommand = sessionHandoffReadCommand
-  exports.handoffWindowOpen = handoffWindowOpen
-  exports.handoffWindowMs = handoffWindowMs
-  exports.groupedSettings = groupedSettings
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("lock-triggers")
 
 // -------------------------------------------------------------------------
 // Screen lock
@@ -93,10 +78,9 @@ check("the loop never exits, so a failure cannot become a hot restart",
 check("sed is unbuffered, so the token is not held back past the suspend",
   /sed -une/.test(sleepScript), sleepScript)
 
-// The end-to-end behaviour, against stubs standing in for gdbus and
-// systemd-inhibit: the announcement has to produce exactly one token, the
-// inhibitor has to be released about a second later, and the loop has to come
-// round for the suspend after this one.
+// End to end against stub gdbus and systemd-inhibit: one token per
+// announcement, the inhibitor released ~1 s later, and the loop ready for the
+// next suspend.
 const os = require("os")
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-lock-"))
 try {
@@ -179,7 +163,7 @@ exit $rc
 // -------------------------------------------------------------------------
 
 const NOW = 1_700_000_000_000
-const WINDOW = Model.handoffWindowMs()
+const WINDOW = Model.HANDOFF_WINDOW_MS
 
 check("the window is closed when no terminal login was ever launched",
   Model.handoffWindowOpen(0, NOW) === false, "0")
@@ -260,7 +244,7 @@ for (const k of ["lockOnScreenLock", "lockOnSuspend"]) {
 }
 
 // The manifest is what the shell reads defaults from, so the two have to agree.
-const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
+const manifest = JSON.parse(read("manifest.json"))
 for (const k of ["lockOnScreenLock", "lockOnSuspend"]) {
   check(`${k} has a manifest default`,
     manifest.barWidget.defaults[k] === true, JSON.stringify(manifest.barWidget.defaults[k]))
@@ -270,9 +254,4 @@ for (const k of ["lockOnScreenLock", "lockOnSuspend"]) {
 
 // -------------------------------------------------------------------------
 
-if (failures.length) {
-  console.error(`\n${failures.length} failure(s):\n`)
-  for (const f of failures) console.error(`  ${f}\n`)
-  process.exit(1)
-}
-console.log(`lock-triggers.test.js: ${pass} checks passed`)
+done()

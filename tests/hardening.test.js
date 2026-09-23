@@ -1,38 +1,22 @@
 #!/usr/bin/env node
-// Tests for three boundaries that had drifted or were never drawn.
+// Three boundaries:
 //
 //   node tests/hardening.test.js
 //
-//  1. Every bw invocation that takes a server-chosen id ends its options with
-//     `--`. Quoting an id defends against the shell, not against bw's own
-//     option parser -- a quoted `--help` is still `--help` by the time bw
-//     sees it.
-//  2. The custom-server field is where the master password is about to be
-//     sent, so it may not name a plaintext http host off this machine.
-//  3. The learned-suggestion store is account data with no expiry of its own,
-//     so logging out has to remove it.
+//  1. `--` before every server-chosen id (quoting does not stop bw reading a
+//     quoted `--help` as an option).
+//  2. The custom server may not be plaintext http off this machine.
+//  3. Logout removes the learned-suggestion store.
 
+const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { execFileSync } = require("child_process")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.getPasswordCommand = getPasswordCommand
-  exports.getTotpCommand = getTotpCommand
-  exports.validateServerUrl = validateServerUrl
-  exports.associationsEnvVar = associationsEnvVar
-  exports.associationsReadCommand = associationsReadCommand
-  exports.associationsWriteCommand = associationsWriteCommand
-  exports.associationsClearCommand = associationsClearCommand
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("hardening")
 
 // -------------------------------------------------------------------------
 // 1. `--` before a server-chosen id
@@ -193,16 +177,7 @@ try {
 const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
   .map(readPluginSource)
   .join("\n")
-const bodyOf = name => {
-  const start = panelSrc.indexOf(`function ${name}(`)
-  if (start === -1) return ""
-  let depth = 0
-  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
-    if (panelSrc[i] === "{") depth++
-    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
-  }
-  return ""
-}
+const bodyOf = name => functionBody(panelSrc, name)
 const forget = bodyOf("forgetStoredCredentials")
 const assocWriter = panelSrc.slice(panelSrc.indexOf("id: associationsWriteProc"),
   panelSrc.indexOf("id: associationsClearProc"))
@@ -234,9 +209,4 @@ check("TOTP copy reuses the managed TOTP reader instead of a detached bw process
 
 // -------------------------------------------------------------------------
 
-if (failures.length) {
-  console.error(`\n${failures.length} failure(s):\n`)
-  for (const f of failures) console.error(`  ${f}\n`)
-  process.exit(1)
-}
-console.log(`hardening.test.js: ${pass} checks passed`)
+done()

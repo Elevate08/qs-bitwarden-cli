@@ -1,60 +1,23 @@
 #!/usr/bin/env node
-// The quick-unlock envelope's keyring commands, run for real: the actual
-// shell pipelines, the real `argon2`, `jq` and qs-bitwarden-unlock-key, and a
-// file-backed `secret-tool` so nothing touches this machine's keyring.
+// The envelope's keyring commands, run for real: the actual pipelines, real
+// `argon2`, `jq` and qs-bitwarden-unlock-key, and a file-backed `secret-tool`.
+// `systemd-creds` is a stand-in (CI lacks `--user`), and the suite reruns
+// against the real one where it works. Every tool logs its argv, and no
+// secret may appear there.
 //
-// `systemd-creds` is a stand-in by default -- CI's runner predates `--user` --
-// and the whole suite runs a second time against the real one wherever
-// `systemd-creds --user` works.
-//
-// Every tool the pipelines start logs its argv, and the suite ends by checking
-// that no password, PIN, hmac-secret or derived key ever appeared there:
-// /proc/<pid>/cmdline is readable by every local user.
-//
-// Needs: argon2, jq, and unlock-key/target/debug/qs-bitwarden-unlock-key
-// (`cargo build` in unlock-key/).
+// Needs: argon2, jq, and unlock-key/target/debug/qs-bitwarden-unlock-key.
 //
 //   node tests/unlock-envelope.test.js
 
+const { createSuite, loadModule, repoRoot } = require("./harness")
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
 const { spawnSync } = require("child_process")
 
-const repoRoot = path.join(__dirname, "..")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.inspect = unlockEnvelopeInspectCommand
-  exports.open = unlockEnvelopeOpenCommand
-  exports.create = unlockEnvelopeCreateCommand
-  exports.update = unlockEnvelopeUpdateCommand
-  exports.clear = unlockEnvelopeClearCommand
-  exports.has = unlockEnvelopeHasCommand
-  exports.exits = envelopeExitCodes
-  exports.secretEnv = keyringSecretEnvVar
-  exports.pinEnv = pinEnvVar
-  exports.newSecretEnv = envelopeNewSecretEnvVar
-  exports.fidoEnv = envelopeFidoHmacEnvVar
-  exports.account = keyringEnvelopeAccount
-  exports.clearAll = keyringClearAllCommand
-  exports.migrate = legacyFingerprintMigrationCommand
-  exports.migratePin = legacyPinMigrationCommand
-  exports.fidoUnlock = fidoUnlockCommand
-  exports.fidoEnroll = fidoEnrollCommand
-  exports.fidoLegacy = fidoLegacyUnlockCommand
-  exports.fidoExits = fidoExitCodes
-  exports.migrationExits = legacyMigrationExitCodes
-  exports.bwVerify = bwVerifyPasswordCommand
-  exports.prereqs = quickUnlockPrereqCommand
-  exports.parsePrereqs = parseQuickUnlockPrereqs
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done } = createSuite("unlock-envelope")
 
 const realTool = path.join(repoRoot, "unlock-key", "target", "debug", "qs-bitwarden-unlock-key")
 const which = name => spawnSync("bash", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim()
@@ -70,11 +33,11 @@ if (missing.length) {
 // Fixtures
 // -------------------------------------------------------------------------
 
-const E = Model.exits()
-const SECRET = Model.secretEnv()
-const PIN = Model.pinEnv()
-const NEW_SECRET = Model.newSecretEnv()
-const HMAC = Model.fidoEnv()
+const E = Model.envelopeExitCodes()
+const SECRET = Model.keyringSecretEnvVar()
+const PIN = Model.pinEnvVar()
+const NEW_SECRET = Model.envelopeNewSecretEnvVar()
+const HMAC = Model.FIDO_HMAC_ENV
 const ACCOUNT = { id: "user-1234", server: "https://vault.bitwarden.com" }
 
 // Awkward on purpose: quotes, a dollar, a backslash and a trailing newline
@@ -119,10 +82,8 @@ esac`)
   }
   write("unlock-tool", `exec ${JSON.stringify(realTool)} "$@"`)
 
-  // A key that holds FAKE_FIDO_CREDS, answers only when "touched" (not
-  // FAKE_FIDO_FAIL), and derives each hmac-secret from the credential and
-  // salt, so the same pair always gives the same secret. Every secret it hands
-  // out is logged, for the argv check at the end.
+  // Holds FAKE_FIDO_CREDS, answers only when touched (not FAKE_FIDO_FAIL), and
+  // derives a deterministic hmac-secret per credential and salt; logs each.
   write("fido2-assert", `
 hmac=0; for a in "$@"; do [ "$a" = -h ] && hmac=1; done
 [ -z "\${FAKE_FIDO_FAIL:-}" ] || exit 1
@@ -164,7 +125,7 @@ function suite(realCreds) {
     const hmacLog = path.join(dir, "hmac.log")
     const tool = path.join(bin, "unlock-tool")
     const stored = () => {
-      const f = path.join(store, Model.account())
+      const f = path.join(store, Model.KEYRING_ENVELOPE)
       return fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null
     }
 
@@ -184,18 +145,18 @@ function suite(realCreds) {
       return { code: r.status, out: r.stdout.toString("utf8"), err: r.stderr.toString("utf8") }
     }
     const summary = () => {
-      const r = run(Model.inspect(tool))
+      const r = run(Model.unlockEnvelopeInspectCommand(tool))
       return r.code === 0 ? JSON.parse(r.out) : { code: r.code }
     }
-    const open = (via, secrets) => run(Model.open(tool, ACCOUNT, via), secrets)
+    const open = (via, secrets) => run(Model.unlockEnvelopeOpenCommand(tool, ACCOUNT, via), secrets)
 
     // --- nothing stored yet ---
-    eq(tag + "no envelope: inspect says absent", run(Model.inspect(tool)).code, E.absent)
+    eq(tag + "no envelope: inspect says absent", run(Model.unlockEnvelopeInspectCommand(tool)).code, E.absent)
     eq(tag + "no envelope: opening says absent",
       open({ kind: "master" }, { [SECRET]: PASSWORD }).code, E.absent)
 
     // --- the first accepted password ---
-    const created = run(Model.create(tool, ACCOUNT), { [SECRET]: PASSWORD })
+    const created = run(Model.unlockEnvelopeCreateCommand(tool, ACCOUNT), { [SECRET]: PASSWORD })
     eq(tag + "a first password is stored", created.code, 0)
     check(tag + "the keyring holds no readable password",
       stored() !== null && !stored().includes("horse") && !stored().includes("staple"),
@@ -213,26 +174,26 @@ function suite(realCreds) {
     eq(tag + "a wrong password is refused as a wrong key",
       open({ kind: "master" }, { [SECRET]: "not it" }).code, 3)
     eq(tag + "another account is refused",
-      run(Model.open(tool, { id: "user-9999", server: ACCOUNT.server }, { kind: "master" }),
+      run(Model.unlockEnvelopeOpenCommand(tool, { id: "user-9999", server: ACCOUNT.server }, { kind: "master" }),
         { [SECRET]: PASSWORD }).code, 6)
 
     // --- adding methods needs the master password, and stores nothing typed ---
     let before = stored()
     eq(tag + "a wrong master password cannot add a PIN",
-      run(Model.update(tool, ACCOUNT, { kind: "add-pin" }), { [SECRET]: "wrong", [PIN]: PIN_VALUE }).code, 3)
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "add-pin" }), { [SECRET]: "wrong", [PIN]: PIN_VALUE }).code, 3)
     eq(tag + "and nothing was written", stored(), before)
 
     eq(tag + "the right one adds a PIN",
-      run(Model.update(tool, ACCOUNT, { kind: "add-pin" }), { [SECRET]: PASSWORD, [PIN]: PIN_VALUE }).code, 0)
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "add-pin" }), { [SECRET]: PASSWORD, [PIN]: PIN_VALUE }).code, 0)
     eq(tag + "the PIN opens it", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).out, PASSWORD)
     eq(tag + "a wrong PIN is a wrong key", open({ kind: "pin" }, { [PIN]: "000000" }).code, 3)
 
     eq(tag + "fingerprint is added",
-      run(Model.update(tool, ACCOUNT, { kind: "add-fingerprint" }), { [SECRET]: PASSWORD }).code, 0)
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "add-fingerprint" }), { [SECRET]: PASSWORD }).code, 0)
     eq(tag + "fingerprint opens it", open({ kind: "fingerprint" }).out, PASSWORD)
 
     eq(tag + "a FIDO2 credential is added",
-      run(Model.update(tool, ACCOUNT, { kind: "add-fido", cred: CRED, rp: "pam://host", salt: FIDO_SALT }),
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "add-fido", cred: CRED, rp: "pam://host", salt: FIDO_SALT }),
         { [SECRET]: PASSWORD, [HMAC]: HMAC_VALUE }).code, 0)
     eq(tag + "its hmac-secret opens it", open({ kind: "fido", cred: CRED }, { [HMAC]: HMAC_VALUE }).out, PASSWORD)
     eq(tag + "another hmac-secret is a wrong key",
@@ -245,19 +206,19 @@ function suite(realCreds) {
     // --- failed writes leave the old envelope ---
     before = stored()
     eq(tag + "a keyring that refuses the store is reported",
-      run(Model.update(tool, ACCOUNT, { kind: "mark-stale" }), {}, { FAIL_STORE: "1" }).code, E.store)
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "mark-stale" }), {}, { FAIL_STORE: "1" }).code, E.store)
     eq(tag + "and the old envelope is still there", stored(), before)
     if (!realCreds) {
       eq(tag + "a new envelope that does not re-open is never stored",
-        run(Model.update(tool, ACCOUNT, { kind: "mark-stale" }), {}, { CORRUPT_SEAL: "1" }).code, E.verify)
+        run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "mark-stale" }), {}, { CORRUPT_SEAL: "1" }).code, E.verify)
       eq(tag + "and the old envelope is still there", stored(), before)
     }
 
     // --- a password changed elsewhere ---
-    eq(tag + "marking stale", run(Model.update(tool, ACCOUNT, { kind: "mark-stale" })).code, 0)
+    eq(tag + "marking stale", run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "mark-stale" })).code, 0)
     eq(tag + "is recorded", summary().stale, true)
     eq(tag + "a PIN unlock rotates to the new password",
-      run(Model.update(tool, ACCOUNT, { kind: "rotate", auth: { kind: "pin" } }),
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "rotate", auth: { kind: "pin" } }),
         { [PIN]: PIN_VALUE, [NEW_SECRET]: NEW_PASSWORD }).code, 0)
     eq(tag + "the new password opens the master wrap",
       open({ kind: "master" }, { [SECRET]: NEW_PASSWORD }).out, NEW_PASSWORD)
@@ -266,14 +227,14 @@ function suite(realCreds) {
     eq(tag + "so does the key", open({ kind: "fido", cred: CRED }, { [HMAC]: HMAC_VALUE }).out, NEW_PASSWORD)
     eq(tag + "and the stale mark is gone", summary().stale, false)
     eq(tag + "rotating through fingerprint needs no secret",
-      run(Model.update(tool, ACCOUNT, { kind: "rotate", auth: { kind: "fingerprint" } }),
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "rotate", auth: { kind: "fingerprint" } }),
         { [NEW_SECRET]: PASSWORD }).code, 0)
     eq(tag + "and lands the password given", open({ kind: "fingerprint" }).out, PASSWORD)
 
     // --- disabling ---
     for (const op of [{ kind: "remove", method: "pin" }, { kind: "remove", method: "fingerprint" },
       { kind: "remove", method: "fido", cred: CRED }]) {
-      eq(tag + `removing ${op.method} needs no secret`, run(Model.update(tool, ACCOUNT, op)).code, 0)
+      eq(tag + `removing ${op.method} needs no secret`, run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, op)).code, 0)
     }
     eq(tag + "a removed PIN is missing, not wrong", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).code, 7)
     s = summary()
@@ -283,21 +244,21 @@ function suite(realCreds) {
 
     // --- migrating fingerprint unlock's plaintext entry ---
     const legacy = path.join(store, "master_password")
-    const M = Model.migrationExits()
-    eq(tag + "no legacy entry: nothing to migrate", run(Model.migrate(tool, ACCOUNT)).code, M.none)
+    const M = Model.legacyMigrationExitCodes()
+    eq(tag + "no legacy entry: nothing to migrate", run(Model.legacyFingerprintMigrationCommand(tool, ACCOUNT)).code, M.none)
 
     // An envelope whose password is not the legacy one: one of them is stale,
     // so neither is touched.
     fs.writeFileSync(legacy, "an older password")
     before = stored()
     eq(tag + "a legacy password the envelope refuses is left alone",
-      run(Model.migrate(tool, ACCOUNT)).code, M.mismatch)
+      run(Model.legacyFingerprintMigrationCommand(tool, ACCOUNT)).code, M.mismatch)
     check(tag + "both entries are still there", fs.existsSync(legacy) && stored() === before, "")
 
     // The ordinary case: the legacy password is the envelope's.
     fs.writeFileSync(legacy, PASSWORD.replace(/\n+$/, ""))
-    run(Model.clear())
-    const migrated = run(Model.migrate(tool, ACCOUNT))
+    run(Model.keyringClearEntryCommand(Model.KEYRING_ENVELOPE))
+    const migrated = run(Model.legacyFingerprintMigrationCommand(tool, ACCOUNT))
     eq(tag + "a legacy entry with no envelope migrates", migrated.code, 0)
     eq(tag + "the plaintext entry is gone", fs.existsSync(legacy), false)
     eq(tag + "the envelope now opens through fingerprint",
@@ -309,74 +270,74 @@ function suite(realCreds) {
     const plain = PASSWORD.replace(/\n+$/, "")
     fs.writeFileSync(blob, "legacy-ciphertext")
     eq(tag + "no password in hand: nothing to migrate",
-      run(Model.migratePin(tool, ACCOUNT), { [PIN]: PIN_VALUE }).code, M.none)
+      run(Model.legacyPinMigrationCommand(tool, ACCOUNT), { [PIN]: PIN_VALUE }).code, M.none)
     before = stored()
     eq(tag + "a password the envelope refuses leaves the blob alone",
-      run(Model.migratePin(tool, ACCOUNT), { [SECRET]: "an older password", [PIN]: PIN_VALUE }).code, M.mismatch)
+      run(Model.legacyPinMigrationCommand(tool, ACCOUNT), { [SECRET]: "an older password", [PIN]: PIN_VALUE }).code, M.mismatch)
     check(tag + "both are still there", fs.existsSync(blob) && stored() === before, "")
     eq(tag + "the password bw accepted migrates the blob",
-      run(Model.migratePin(tool, ACCOUNT), { [SECRET]: plain, [PIN]: PIN_VALUE }).code, 0)
+      run(Model.legacyPinMigrationCommand(tool, ACCOUNT), { [SECRET]: plain, [PIN]: PIN_VALUE }).code, 0)
     eq(tag + "the blob is gone", fs.existsSync(blob), false)
     eq(tag + "the same PIN now opens the envelope", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).out, plain)
     eq(tag + "and fingerprint still does", open({ kind: "fingerprint" }).out, plain)
 
     // --- FIDO2 through hmac-secret ---
-    const F = Model.fidoExits()
+    const F = Model.fidoExitCodes()
     const onKey = (cred) => ({ device: "/dev/hidraw9", cred, rp: "pam://tuxframe" })
     const wrapOf = (cred) => (summary().fido || []).find(w => w.cred === cred)
     eq(tag + "enrolling needs the right master password (the touch comes first)",
-      run(Model.fidoEnroll(tool, ACCOUNT, onKey(FIDO_CRED_A)), { [SECRET]: "wrong" }).code, 3)
-    eq(tag + "no touch, no wrap", run(Model.fidoEnroll(tool, ACCOUNT, onKey(FIDO_CRED_A)),
+      run(Model.fidoEnrollCommand(tool, ACCOUNT, onKey(FIDO_CRED_A)), { [SECRET]: "wrong" }).code, 3)
+    eq(tag + "no touch, no wrap", run(Model.fidoEnrollCommand(tool, ACCOUNT, onKey(FIDO_CRED_A)),
       { [SECRET]: plain }, { FAKE_FIDO_FAIL: "1" }).code, F.assert)
     eq(tag + "a credential on no plugged-in key cannot enroll",
-      run(Model.fidoEnroll(tool, ACCOUNT, onKey(FIDO_CRED_ELSEWHERE)), { [SECRET]: plain }).code, F.assert)
+      run(Model.fidoEnrollCommand(tool, ACCOUNT, onKey(FIDO_CRED_ELSEWHERE)), { [SECRET]: plain }).code, F.assert)
     eq(tag + "one touch and the password enroll a key",
-      run(Model.fidoEnroll(tool, ACCOUNT, onKey(FIDO_CRED_A)), { [SECRET]: plain }).code, 0)
+      run(Model.fidoEnrollCommand(tool, ACCOUNT, onKey(FIDO_CRED_A)), { [SECRET]: plain }).code, 0)
     const wrapA = wrapOf(FIDO_CRED_A)
     check(tag + "its wrap records the relying party and a fresh 32-byte salt",
       wrapA && wrapA.rp === "pam://tuxframe" && Buffer.from(wrapA.salt, "base64").length === 32,
       JSON.stringify(wrapA))
-    const unlockA = run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: wrapA.salt })))
+    const unlockA = run(Model.fidoUnlockCommand(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: wrapA.salt })))
     eq(tag + "one touch unlocks through it", unlockA.code, 0)
     eq(tag + "and the password is the only output", unlockA.out, plain)
     eq(tag + "no touch, no password",
-      run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: wrapA.salt })),
+      run(Model.fidoUnlockCommand(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: wrapA.salt })),
         {}, { FAKE_FIDO_FAIL: "1" }).code, F.assert)
     eq(tag + "another salt yields another secret, which opens nothing",
-      run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: FIDO_SALT }))).code, 3)
+      run(Model.fidoUnlockCommand(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: FIDO_SALT }))).code, 3)
 
     // The first touch after upgrading: no wrap for this credential yet, but
     // the old plaintext entry is there. The same touch migrates it.
     const legacyFido = path.join(store, "fido_password")
     fs.writeFileSync(legacyFido, plain)
-    const migratedFido = run(Model.fidoLegacy(tool, ACCOUNT, onKey(FIDO_CRED_B)))
+    const migratedFido = run(Model.fidoLegacyUnlockCommand(tool, ACCOUNT, onKey(FIDO_CRED_B)))
     eq(tag + "the legacy entry unlocks and migrates in one touch", migratedFido.code, 0)
     eq(tag + "yielding the password", migratedFido.out, plain)
     eq(tag + "the plaintext entry is gone", fs.existsSync(legacyFido), false)
     const wrapB = wrapOf(FIDO_CRED_B)
     eq(tag + "the key now has its own wrap",
-      run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_B), { salt: wrapB && wrapB.salt }))).out, plain)
+      run(Model.fidoUnlockCommand(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_B), { salt: wrapB && wrapB.salt }))).out, plain)
     // A legacy password the envelope refuses: it still unlocks (bw decides),
     // exit 40 says the migration did not happen, and the entry stays.
     fs.writeFileSync(legacyFido, "an older password")
     before = stored()
-    const stale = run(Model.fidoLegacy(tool, ACCOUNT, onKey(FIDO_CRED_A)))
+    const stale = run(Model.fidoLegacyUnlockCommand(tool, ACCOUNT, onKey(FIDO_CRED_A)))
     eq(tag + "a legacy password the envelope refuses still comes back", stale.code, F.legacyUsed)
     eq(tag + "as itself", stale.out, "an older password")
     check(tag + "and nothing was written or removed", fs.existsSync(legacyFido) && stored() === before, "")
     fs.rmSync(legacyFido)
     eq(tag + "removing one key's wrap leaves the other working",
-      run(Model.update(tool, ACCOUNT, { kind: "remove", method: "fido", cred: FIDO_CRED_A })).code, 0)
+      run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "remove", method: "fido", cred: FIDO_CRED_A })).code, 0)
     eq(tag + "B still unlocks",
-      run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_B), { salt: wrapB.salt }))).out, plain)
+      run(Model.fidoUnlockCommand(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_B), { salt: wrapB.salt }))).out, plain)
     const handedOut = fs.existsSync(hmacLog) ? fs.readFileSync(hmacLog, "utf8").trim().split("\n") : []
     check(tag + "the stand-in key handed out secrets", handedOut.length >= 5, String(handedOut.length))
 
     // --- presence, and clearing ---
-    eq(tag + "presence is reported without the secret", run(Model.has()).out.trim(), "yes")
-    run(Model.clear())
+    eq(tag + "presence is reported without the secret", run(Model.keyringHasEntryCommand(Model.KEYRING_ENVELOPE)).out.trim(), "yes")
+    run(Model.keyringClearEntryCommand(Model.KEYRING_ENVELOPE))
     eq(tag + "clearing removes it", stored(), null)
-    eq(tag + "and presence says so", run(Model.has()).out.trim(), "no")
+    eq(tag + "and presence says so", run(Model.keyringHasEntryCommand(Model.KEYRING_ENVELOPE)).out.trim(), "no")
 
     // --- nothing secret in any argv ---
     const argv = fs.readFileSync(argvLog, "utf8")
@@ -413,40 +374,35 @@ if (realCreds.status === 0) {
 // -------------------------------------------------------------------------
 
 {
-  const probe = Model.prereqs()
+  const probe = Model.quickUnlockPrereqCommand()
   const r = spawnSync(probe[0], probe.slice(1), { encoding: "utf8" })
-  const parsed = Model.parsePrereqs(r.stdout)
+  const parsed = Model.parseQuickUnlockPrereqs(r.stdout)
   eq("argon2 is found here", parsed.argon2, true)
   eq("the probe agrees with the real-seal pass about systemd-creds", parsed.creds, realCreds.status === 0)
   check("a missing systemd-creds is explained",
-    /systemd-creds --user/.test(Model.parsePrereqs("argon2=1\ncreds=0\n").message), "")
+    /systemd-creds --user/.test(Model.parseQuickUnlockPrereqs("argon2=1\ncreds=0\n").message), "")
   check("a missing argon2 is explained",
-    /argon2/.test(Model.parsePrereqs("argon2=0\ncreds=1\n").message), "")
-  eq("both present is ready", Model.parsePrereqs("argon2=1\ncreds=1\n").ready, true)
+    /argon2/.test(Model.parseQuickUnlockPrereqs("argon2=0\ncreds=1\n").message), "")
+  eq("both present is ready", Model.parseQuickUnlockPrereqs("argon2=1\ncreds=1\n").ready, true)
 }
 check("bw checks a typed password from the environment, never argv",
-  /bw unlock --passwordenv QSBW_SECRET --raw/.test(Model.bwVerify()[2]), Model.bwVerify()[2])
+  /bw unlock --passwordenv QSBW_SECRET --raw/.test(Model.bwVerifyPasswordCommand()[2]), Model.bwVerifyPasswordCommand()[2])
 
 // -------------------------------------------------------------------------
 // Builders refuse what should never reach them
 // -------------------------------------------------------------------------
 
 const refused = cmd => cmd.length === 3 && cmd[2] === "exit 2"
-check("a relative tool path is refused", refused(Model.inspect("unlock-tool")), JSON.stringify(Model.inspect("x")))
-check("a missing account is refused", refused(Model.create("/t", null)), "")
-check("an empty account id is refused", refused(Model.create("/t", { id: "", server: "s" })), "")
-check("a control character in the server is refused", refused(Model.create("/t", { id: "a", server: "s\n" })), "")
+check("a relative tool path is refused", refused(Model.unlockEnvelopeInspectCommand("unlock-tool")), JSON.stringify(Model.unlockEnvelopeInspectCommand("x")))
+check("a missing account is refused", refused(Model.unlockEnvelopeCreateCommand("/t", null)), "")
+check("an empty account id is refused", refused(Model.unlockEnvelopeCreateCommand("/t", { id: "", server: "s" })), "")
+check("a control character in the server is refused", refused(Model.unlockEnvelopeCreateCommand("/t", { id: "a", server: "s\n" })), "")
 check("a FIDO2 credential that is not base64 is refused",
-  refused(Model.open("/t", ACCOUNT, { kind: "fido", cred: "a'b" })), "")
-check("an unknown method is refused", refused(Model.open("/t", ACCOUNT, { kind: "face" })), "")
+  refused(Model.unlockEnvelopeOpenCommand("/t", ACCOUNT, { kind: "fido", cred: "a'b" })), "")
+check("an unknown method is refused", refused(Model.unlockEnvelopeOpenCommand("/t", ACCOUNT, { kind: "face" })), "")
 check("removing the master wrap is not an operation",
-  refused(Model.update("/t", ACCOUNT, { kind: "remove", method: "master" })), "")
+  refused(Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "remove", method: "master" })), "")
 check("logout clears the envelope with everything else",
-  Model.clearAll()[2].includes("'unlock_envelope'"), "keyringClearAllCommand does not name it")
+  Model.keyringClearAllCommand()[2].includes("'unlock_envelope'"), "keyringClearAllCommand does not name it")
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`unlock-envelope: ${pass} passed`)
+done()

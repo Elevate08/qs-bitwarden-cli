@@ -1,53 +1,20 @@
 #!/usr/bin/env node
-// Tests for the setup wizard's dependency probe and the settings writer.
-//
-// The interesting cases are the ones that cannot be exercised on a machine
-// where everything is already installed: a missing required tool, and fprintd
-// being present but having no enrolled finger.
+// The setup dependency probe and the settings writer, including cases a fully
+// set-up machine cannot exercise (missing tools, fprintd without a finger).
 //
 //   node tests/setup-settings.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
+const { createSuite, loadModule, read, readPluginSource } = require("./harness")
+const { legacyKeyring } = require("./legacy-keyring")
 const path = require("path")
 const panelSrc = readPluginSource("Panel.qml")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.parseDependencies = parseDependencies
-  exports.missingRequired = missingRequired
-  exports.dependencyCheckCommand = dependencyCheckCommand
-  exports.vaultListMode = vaultListMode
-  exports.vaultListBlockedMessage = vaultListBlockedMessage
-  exports.vaultListFailureMessage = vaultListFailureMessage
-  exports.sshCliMinVersion = sshCliMinVersion
-  exports.sshCliSupport = typeof sshCliSupport === "function" ? sshCliSupport : null
-  exports.sshUiAvailable = sshUiAvailable
-  exports.settingWriteCommand = settingWriteCommand
-  exports.boolSetting = boolSetting
-  exports.installPackagesCommand = installPackagesCommand
-  exports.SETTINGS_SCHEMA = SETTINGS_SCHEMA
-  exports.DEPENDENCIES = DEPENDENCIES
-  exports.groupedSettings = groupedSettings
-  exports.SETTINGS_GROUPS = SETTINGS_GROUPS
-  exports.validatePin = validatePin
-  exports.pinMinLength = pinMinLength
-  exports.pinRecommendedLength = pinRecommendedLength
-  exports.pinWeakWarning = pinWeakWarning
-  exports.isPinWeak = isPinWeak
-  exports.pinStoreCommand = pinStoreCommand
-  exports.pinUnlockCommand = pinUnlockCommand
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("setup-settings")
 const byKey = (deps, k) => deps.items.find(d => d.key === k)
 const dependencyProbe = Model.dependencyCheckCommand()[2]
-const sshCliSupport = (version) => typeof Model.sshCliSupport === "function"
-  ? Model.sshCliSupport(version)
-  : "__missing__"
+const sshCliSupport = Model.sshCliSupport
 
 // KeyboardPanel applies focusTarget after the panel's own open handler. Keep
 // that final open-time choice aligned with the locked screen's PIN-first UI.
@@ -71,9 +38,9 @@ check("the dependency probe checks for jq before vault reads",
 check("the dependency probe captures the bw CLI version for SSH gating",
   /bw\s+--version|bw\s+-v/.test(dependencyProbe),
   dependencyProbe)
-check("sshCliMinVersion reports the verified floor",
-  Model.sshCliMinVersion() === "2025.1.2",
-  String(Model.sshCliMinVersion()))
+check("SSH_CLI_MIN_VERSION is the verified floor",
+  Model.SSH_CLI_MIN_VERSION === "2025.1.2",
+  String(Model.SSH_CLI_MIN_VERSION))
 check("sshCliSupport marks 2025.1.2 as supported",
   sshCliSupport("2025.1.2") === "supported",
   JSON.stringify(sshCliSupport("2025.1.2")))
@@ -131,10 +98,8 @@ check("supported bw without jq blocks the vault list until setup finishes",
     && Model.vaultListBlockedMessage(noJq).includes("jq"),
   `${Model.vaultListMode(noJq)} / ${Model.vaultListBlockedMessage(noJq)}`)
 
-// A whole-list failure on a CLI that predates the malformed-SSH-item fix is the
-// one case where the panel can say something useful about a read it cannot
-// repair. The attribution comes from the probed version, never from the failed
-// read's own output, which can quote decrypted vault material.
+// On a CLI older than the malformed-SSH-item fix, a failed read names the fix;
+// attribution comes from the probed version, never the read's output.
 const rawCliFailure = "TypeError: Cannot read properties of null (reading 'keyFingerprint') for item work-ssh"
 check("a list failure on a pre-2026.8.0 CLI names the release that fixes it",
   Model.vaultListFailureMessage(rawCliFailure, all, "sanitized").includes("2026.8.0"),
@@ -174,7 +139,7 @@ check("older bw versions remain installed but are marked unsupported for SSH",
   byKey(oldBw, "bw").installed === true
     && byKey(oldBw, "bw").version === "2025.1.1"
     && oldBw.sshCliStatus === "unsupported"
-    && byKey(oldBw, "bw").note.includes(Model.sshCliMinVersion()),
+    && byKey(oldBw, "bw").note.includes(Model.SSH_CLI_MIN_VERSION),
   JSON.stringify({ bw: byKey(oldBw, "bw"), sshCliStatus: oldBw.sshCliStatus }))
 check("older bw with jq still uses the sanitized list path for ordinary items",
   Model.vaultListMode(oldBw) === "sanitized",
@@ -200,10 +165,8 @@ for (const [label, raw] of [["empty", ""], ["garbage", "???\n=\nbw\n"]]) {
 }
 
 // --- settings writer --------------------------------------------------------
-// Values must reach shell.json as real JSON types, not strings, or `setting()`
-// hands the panel a string where it expects a number or a bool.
-// The writer runs through bash so its diagnostic stderr can be capped, so the
-// assertions read the script rather than an argv list.
+// Values must reach shell.json as real JSON types; the writer runs via bash
+// (to cap stderr), so the script is checked.
 const writeScript = (k, v, t) => Model.settingWriteCommand(k, v, t)[2]
 
 // --- colorized menu-bar icon setting ----------------------------------------
@@ -256,7 +219,7 @@ check("setting writer caps its diagnostic stderr",
 
 // Every schema key must exist in the manifest, or the settings screen would
 // write a key the plugin never reads.
-const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
+const manifest = JSON.parse(read("manifest.json"))
 const manifestKeys = new Set(manifest.barWidget.schema.map(e => e.key))
 for (const entry of Model.SETTINGS_SCHEMA) {
   check(`schema key '${entry.key}' exists in manifest.json`,
@@ -347,23 +310,9 @@ for (const [pin, confirm, wantErr] of [
 }
 check("confirm is optional when omitted", Model.validatePin("1234") === "", Model.validatePin("1234"))
 
-// --- PIN crypto command shape ----------------------------------------------
-// The whole point of PIN unlock over fingerprint unlock is that the keyring
-// holds ciphertext, not the master password. Guard that property.
-const store = Model.pinStoreCommand()[2]
-check("store derives a key from the PIN rather than saving it",
-  store.includes("openssl enc") && store.includes("-pbkdf2") && store.includes("env:QSBW_PIN"), store)
-check("store uses a high iteration count",
-  /-iter\s+(\d+)/.test(store) && Number(store.match(/-iter\s+(\d+)/)[1]) >= 600000, store)
-check("store pins PBKDF2 to SHA-256 instead of relying on an OpenSSL default",
-  store.includes("-md sha256"), store)
-check("store salts the ciphertext", store.includes("-salt"), store)
-check("store reports encryption failures instead of saving an empty blob",
-  store.includes("set -o pipefail"), store)
-check("store pipes straight into the keyring, never through argv",
-  store.includes("secret-tool store") && !store.includes("$QSBW_SECRET\" secret-tool"), store)
-check("neither PIN nor secret appears as a literal argument",
-  !store.includes("--pass ") && store.includes("-pass env:"), store)
+// --- legacy PIN blob -------------------------------------------------------
+// Read only, to migrate it; must match what older versions wrote.
+const store = legacyKeyring(Model).storePin()[2]
 
 const unlock = Model.pinUnlockCommand()[2]
 check("unlock decrypts with the PIN-derived key",
@@ -376,5 +325,4 @@ check("unlock iteration count matches store",
 check("unlock uses the same explicit PBKDF2 digest as store",
   unlock.includes("-md sha256"), unlock)
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

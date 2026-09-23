@@ -1,24 +1,16 @@
 #!/usr/bin/env node
-// Two places where data the panel did not write reaches the system: the
-// session-handoff file path, and a vault item's URI on its way to xdg-open.
+// The session-handoff file path, and item URIs on their way to xdg-open.
 //
 //   node tests/handoff-urls.test.js
 
+const { createSuite, loadModule } = require("./harness")
 const fs = require("fs")
 const path = require("path")
 const { execFileSync } = require("child_process")
 const os = require("os")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.terminalLoginCommand = terminalLoginCommand
-  exports.sessionHandoffReadCommand = sessionHandoffReadCommand
-  exports.normalizeOpenableUrl = normalizeOpenableUrl
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("handoff-urls")
 
 // --- the session handoff file never falls back to a shared directory --------
 // The key is written by a terminal and read by the panel. A world-writable
@@ -36,7 +28,7 @@ for (const [label, script] of [["terminal login", login], ["terminal unlock", un
 check("the write side refuses to run without a runtime dir, rather than defaulting",
   /XDG_RUNTIME_DIR:\?/.test(login), login)
 check("mkdir and chmod are both checked, so a directory that is not ours aborts",
-  login.includes('mkdir -p "$d" || exit 1') && login.includes('chmod 700 "$d" || exit 1'), login)
+  login.includes('mkdir -p -- "$d") || exit 1') && login.includes('chmod 700 -- "$d" || exit 1'), login)
 check("the write side refuses a symlinked handoff directory",
   login.includes('[ ! -L "$d" ]'), login)
 check("umask is set before the directory is created, not after",
@@ -148,5 +140,4 @@ check("an ambiguous backslash web URL is refused instead of parsed differently b
     && opens("https://evil.example\\@trusted.example").reason === "ambiguous",
   JSON.stringify(opens("https://evil.example\\@trusted.example")))
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

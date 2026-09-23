@@ -1,40 +1,24 @@
 #!/usr/bin/env node
-// How the vault service uses the quick-unlock envelope. The envelope commands
-// themselves are exercised for real in tests/unlock-envelope.test.js; this
-// file pins the rules about *when* they run, which live in Service.qml:
+// When Service.qml runs the envelope commands (the commands themselves are
+// tested in unlock-envelope.test.js):
 //
-//   - the stored password comes only from a password somebody typed and `bw`
-//     accepted -- never from one a quick-unlock method produced;
-//   - an enable form's master password is a check, and stores nothing new;
-//   - a password changed elsewhere re-seals the envelope rather than dropping
-//     methods;
-//   - one envelope process runs at a time, and logout outlasts all of them.
+//   - the stored password comes only from one typed and accepted by `bw`;
+//   - an enable form's password is a check and stores nothing new;
+//   - a password changed elsewhere re-seals rather than dropping methods;
+//   - one envelope process at a time, and logout outlasts them all.
 //
 //   node tests/unlock-envelope-service.test.js
 
-const fs = require("fs")
+const { createSuite, functionBody, read } = require("./harness")
 const path = require("path")
 
-const repoRoot = path.join(__dirname, "..")
-const service = fs.readFileSync(path.join(repoRoot, "Service.qml"), "utf8")
-const panel = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
-const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "manifest.json"), "utf8"))
+const service = read("Service.qml")
+const panel = read("Panel.qml")
+const manifest = JSON.parse(read("manifest.json"))
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${String(detail).slice(0, 400)}`)
+const { check, done } = createSuite("unlock-envelope-service")
 
-// The body of a QML function, by brace matching.
-function bodyOf(name) {
-  const start = service.indexOf(`function ${name}(`)
-  if (start < 0) return ""
-  let depth = 0
-  for (let i = service.indexOf("{", start); i < service.length; i++) {
-    if (service[i] === "{") depth++
-    else if (service[i] === "}" && --depth === 0) return service.slice(start, i + 1)
-  }
-  return ""
-}
+const bodyOf = name => functionBody(service, name)
 
 // -------------------------------------------------------------------------
 // One writer
@@ -255,9 +239,4 @@ check("the fingerprint option no longer says the password is stored as-is",
     && !/Stores your master password in the OS login keyring/.test(fpEntry.description),
   fpEntry && fpEntry.description)
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`unlock-envelope-service: ${pass} passed`)
+done()

@@ -1,60 +1,20 @@
 #!/usr/bin/env node
-// Tests for the commands that unlock the vault: unlock, email login, API key
-// login. The property under test is the one that matters most here -- none of
-// them may put a credential in an argv, because /proc/<pid>/cmdline is
-// world-readable on a default Linux install and these are the credentials that
-// open everything else.
+// Unlock, email login and API-key login: above all, no credential may reach an
+// argv (/proc/<pid>/cmdline is world-readable).
 //
 //   node tests/auth.test.js
 
+const { createSuite, functionBody, loadModule, read, readPluginSource } = require("./harness")
+const { legacyKeyring } = require("./legacy-keyring")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { execFileSync, spawnSync } = require("child_process")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.unlockPrewarmCommand = unlockPrewarmCommand
-  exports.emailLoginPrewarmCommand = emailLoginPrewarmCommand
-  exports.apiKeyLoginCommand = apiKeyLoginCommand
-  exports.loginServerUrlFor = typeof loginServerUrlFor === "function" ? loginServerUrlFor : null
-  exports.passwordEnvVar = passwordEnvVar
-  exports.clientIdEnvVar = clientIdEnvVar
-  exports.clientSecretEnvVar = clientSecretEnvVar
-  exports.twoFactorCodeEnvVar = twoFactorCodeEnvVar
-  exports.loginNeedsSecondFactor = typeof loginNeedsSecondFactor === "function" ? loginNeedsSecondFactor : null
-  exports.loginNeedsDeviceVerification = typeof loginNeedsDeviceVerification === "function" ? loginNeedsDeviceVerification : null
-  exports.loginNeedsMethodChoice = typeof loginNeedsMethodChoice === "function" ? loginNeedsMethodChoice : null
-  exports.deviceVerificationLoginCommand = typeof deviceVerificationLoginCommand === "function" ? deviceVerificationLoginCommand : null
-  exports.loginPromptRanOutOfInput = typeof loginPromptRanOutOfInput === "function" ? loginPromptRanOutOfInput : null
-  exports.sanitizeInteractiveStderr = typeof sanitizeInteractiveStderr === "function" ? sanitizeInteractiveStderr : null
-  exports.deviceCodeEnvVar = typeof deviceCodeEnvVar === "function" ? deviceCodeEnvVar : null
-  exports.secondFactorWindowOpen = typeof secondFactorWindowOpen === "function" ? secondFactorWindowOpen : null
-  exports.loginDiagnostic = typeof loginDiagnostic === "function" ? loginDiagnostic : null
-  exports.loginHasNoUsableProvider = typeof loginHasNoUsableProvider === "function" ? loginHasNoUsableProvider : null
-  exports.twoFactorMethods = typeof twoFactorMethods === "function" ? twoFactorMethods : null
-  exports.isTwoFactorMethod = typeof isTwoFactorMethod === "function" ? isTwoFactorMethod : null
-  exports.twoFactorMethodLabel = typeof twoFactorMethodLabel === "function" ? twoFactorMethodLabel : null
-  exports.rememberedTwoFactorMethodFor = typeof rememberedTwoFactorMethodFor === "function" ? rememberedTwoFactorMethodFor : null
-  exports.rememberTwoFactorMethodIn = typeof rememberTwoFactorMethodIn === "function" ? rememberTwoFactorMethodIn : null
-  exports.forgetTwoFactorMethodIn = typeof forgetTwoFactorMethodIn === "function" ? forgetTwoFactorMethodIn : null
-  exports.settingWriteCommand = typeof settingWriteCommand === "function" ? settingWriteCommand : null
-  exports.noInteractionEnvVar = noInteractionEnvVar
-  exports.sessionEnvVar = sessionEnvVar
-  exports.extractSessionToken = extractSessionToken
-  exports.isSessionToken = isSessionToken
-  exports.keyringClearAllCommand = keyringClearAllCommand
-  exports.keyringStoreMasterPasswordCommand = keyringStoreMasterPasswordCommand
-  exports.keyringLookupMasterPasswordCommand = keyringLookupMasterPasswordCommand
-  exports.pinStoreCommand = pinStoreCommand
-  exports.keyringSecretEnvVar = keyringSecretEnvVar
-`)(Model)
+const Model = loadModule()
+const legacy = legacyKeyring(Model)
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("auth")
 
 // Distinctive enough that a substring search cannot miss them.
 const MASTER = "correct-horse-battery-staple"
@@ -89,11 +49,9 @@ check("Bitwarden CLI 2026.2.0's standalone required-code error reveals the follo
   Model.loginNeedsSecondFactor && Model.loginNeedsSecondFactor("", "Code is required."),
   "Code is required. must be treated as a login verification challenge")
 
-// Fixes #4. bw says "Code is required." to two different challenges. One of
-// them, new-device verification, has no --code flag and no non-interactive
-// answer at all, so treating it as a rejected two-step code asks the user for
-// the same code forever. The attempt that already carried one is what tells
-// them apart.
+// bw answers "Code is required." to both a two-step challenge and new-device
+// verification (which --code cannot answer); an attempt that already carried
+// a code tells them apart.
 check("a required-code challenge answering an attempt that carried a code is device verification",
   Model.loginNeedsDeviceVerification
     && Model.loginNeedsDeviceVerification("", "Code is required.", true),
@@ -112,10 +70,9 @@ check("a genuinely rejected two-step code is not mistaken for device verificatio
 
 // --- the two-step method question -------------------------------------------
 //
-// bw picks the provider itself when an account has exactly one, and asks when
-// it has more. It asks by failing, because the menu it would otherwise draw
-// needs a terminal. Answering by guessing is what produces a failed login, so
-// the panel treats the message as the question it is.
+//
+// bw asks which provider to use (by failing, as it has no terminal) when an
+// account has several; the panel must treat that as a question.
 check("bw's provider question is recognised as a question, not a credential failure",
   Model.loginNeedsMethodChoice
     && Model.loginNeedsMethodChoice("", "Login failed. No provider selected.")
@@ -129,10 +86,8 @@ check("an account whose methods this client cannot perform is a separate dead en
     && !Model.loginNeedsMethodChoice("", "Login failed. No providers available for this client."),
   "the two provider messages must not be confused for one another")
 
-// getSupportedProviders() gates Duo and Organization Duo behind supportsDuo()
-// and WebAuthn behind supportsWebAuthn(), both of which the CLI's platform
-// layer hardcodes to false. So these three are not a shortlist -- they are
-// every provider bw can act on, which is what makes a fixed picker complete.
+// The CLI can never use Duo or WebAuthn, so these three are every provider bw
+// can act on and a fixed picker is complete.
 check("the method picker offers every provider bw can use and nothing it cannot",
   Model.twoFactorMethods
     && Model.twoFactorMethods().map((m) => m.method).join(",") === "0,3,1"
@@ -277,9 +232,7 @@ check("a password passed where hasCode belongs is never interpolated",
 
 // --- --method, the one argument that is a bare integer ----------------------
 //
-// bw wants a number here, so it is neither quoted nor carried in the
-// environment like everything else. What keeps that safe is that the only
-// values which reach it are the ones already in the table.
+// bw wants a bare integer here, so only values from the table may reach it.
 const emailMethod = Model.emailLoginPrewarmCommand("john@example.com", true, "", 0)
 const emailNoMethod = Model.emailLoginPrewarmCommand("john@example.com", true, "", -1)
 check("a chosen method is passed to bw as a bare integer",
@@ -302,10 +255,8 @@ check("the email login stage that carries a method carries no code with it",
 
 // --- the one login that runs with bw's prompts enabled ----------------------
 //
-// New-device verification is the only challenge bw accepts from no flag: the
-// token comes from an inquirer prompt on stdin. So this command answers it on
-// stdin, and everything below is about that being safe rather than merely
-// working.
+// New-device verification is answered on stdin (bw accepts it from no flag);
+// these check that this is safe, not just that it works.
 const deviceCmd = Model.deviceVerificationLoginCommand("john@example.com", "", 0)
 const deviceFlat = flat(deviceCmd)
 check("the device code is piped to bw's stdin, read from the environment",
@@ -326,10 +277,8 @@ check("a chosen two-step method still travels with it",
 check("this command does not disable interaction, which is the whole point",
   !deviceFlat.includes("BW_NOINTERACTION"), deviceFlat)
 
-// The flag being dropped was there so bw fails fast instead of blocking on a
-// prompt nobody can see. A pipe keeps that: inquirer 8.2.6 throws
-// ERR_USE_AFTER_CLOSE at EOF rather than waiting, which is what the fallback
-// to a terminal login keys off.
+// A pipe keeps BW_NOINTERACTION's fail-fast property: inquirer throws
+// ERR_USE_AFTER_CLOSE at EOF, which triggers the terminal fallback.
 check("an unexpected prompt is recognised as a reason to fall back, not an error to show",
   Model.loginPromptRanOutOfInput
     && Model.loginPromptRanOutOfInput("", "Error [ERR_USE_AFTER_CLOSE]: readline was closed")
@@ -373,9 +322,8 @@ check("interaction is disabled through the environment, not the command line",
   Model.noInteractionEnvVar())
 
 // --- the two-step code, the one exception, is still kept out of the shell ----
-// bw has no environment option for --code, so the value reaches bw's argv. It
-// must at least be expanded by the shell from the environment rather than
-// written into the script, which outlives the login process.
+// bw has no env option for --code, but the shell must expand it from the
+// environment rather than inline it in the longer-lived script.
 
 check("a 2FA code is expanded from the environment, never inlined",
   flat(emailFull).includes('--code "$' + Model.twoFactorCodeEnvVar() + '"')
@@ -406,9 +354,8 @@ check("shell metacharacters in the email and server URL stay quoted",
     || flat(injected).includes("'\\''"), flat(injected))
 
 // --- what counts as a session key -------------------------------------------
-// The handoff file and bw's own stdout both feed extractSessionToken, and
-// whatever it returns is written to the keyring and treated as an unlocked
-// vault. Anything not shaped like a key must come back empty instead.
+// Whatever extractSessionToken returns is stored and treated as unlocked, so
+// anything not shaped like a key must come back empty.
 
 const REAL_KEY = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTBhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk9PQ=="
 
@@ -442,15 +389,9 @@ check("a BW_SESSION line carrying junk is rejected rather than unwrapped",
 
 // --- logging out has to take the keyring with it ----------------------------
 //
-// Two of the three entries this plugin writes are the master password: once in
-// the clear for fingerprint unlock, once encrypted under a short PIN. Both go
-// to the default collection, which is a file on disk that PAM unlocks at every
-// login, so both survive a reboot on purpose. Logging out used to leave the
-// PIN blob there forever, and to clear the fingerprint copy only when the
-// panel's own `fingerprintStored` flag happened to be true -- a flag that goes
-// false when a reader is unplugged, when fprintd is uninstalled, and for the
-// first moments of every shell start. Run against a stand-in secret-tool so
-// what is checked is that the entries are gone, not that a string looks right.
+// Logout must remove every entry the plugin ever wrote, legacy ones included,
+// whatever the panel's flags say. Run against a stand-in secret-tool so the
+// check is that the entries are gone.
 
 const keyringStub = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-logout-"))
 fs.writeFileSync(path.join(keyringStub, "secret-tool"), `#!/usr/bin/env bash
@@ -514,7 +455,7 @@ const keyringEntries = () => fs.readdirSync(keyringStub)
 // remove that transport delimiter without trimming spaces that are actually
 // part of the master password.
 const SPACED_MASTER = "  exact master password  "
-keyringRun(Model.keyringStoreMasterPasswordCommand(), {
+keyringRun(legacy.storeMasterPassword(), {
   [Model.keyringSecretEnvVar()]: SPACED_MASTER
 })
 check("fingerprint keyring lookup preserves leading and trailing password spaces",
@@ -525,8 +466,8 @@ check("fingerprint keyring lookup preserves leading and trailing password spaces
 // copied into the test: a fourth secret added later must not slip past this.
 keyringRun(["bash", "-c", "printf '%s' \"$QSBW_SECRET\" | secret-tool store --label=x"
   + " service 'qs-bitwarden-cli' account 'session'"], { QSBW_SECRET: "boot-id " + REAL_KEY })
-keyringRun(Model.keyringStoreMasterPasswordCommand(), { [Model.keyringSecretEnvVar()]: MASTER })
-keyringRun(Model.pinStoreCommand(), { [Model.keyringSecretEnvVar()]: MASTER, QSBW_PIN: "123456" })
+keyringRun(legacy.storeMasterPassword(), { [Model.keyringSecretEnvVar()]: MASTER })
+keyringRun(legacy.storePin(), { [Model.keyringSecretEnvVar()]: MASTER, QSBW_PIN: "123456" })
 check("the fixture leaves all three secrets in the keyring",
   keyringEntries().join(",") === "master_password,pin_blob,session", keyringEntries().join(","))
 
@@ -598,28 +539,19 @@ fs.rmSync(keyringStub, { recursive: true, force: true })
 // The command is only half of it: the panel has to run it, and run it without
 // first asking a flag for permission. Both gates below were the bug.
 const panelSrc = readPluginSource("Panel.qml")
-const bodyOf = (name) => {
-  const start = panelSrc.indexOf(`function ${name}(`)
-  if (start === -1) return ""
-  let depth = 0
-  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
-    if (panelSrc[i] === "{") depth++
-    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
-  }
-  return ""
-}
+const bodyOf = name => functionBody(panelSrc, name)
 
 const logout = bodyOf("logoutAccount")
 const forget = bodyOf("forgetStoredCredentials")
 const credentialStores = bodyOf("credentialStoresRunning")
 const allCredentialClear = bodyOf("requestAllCredentialClear")
 const loginEnv = bodyOf("loginProcessEnv")
-const unlockSuccess = bodyOf("onUnlockSuccess")
+const unlockSuccess = bodyOf("onUnlockSuccess") + bodyOf("clearLoginAttempt")
 const pinResult = bodyOf("onPinUnlockResult")
 const fingerprintResult = bodyOf("onFingerprintPasswordRetrieved")
 const submitLogin = bodyOf("submitLogin")
 const loginOutput = bodyOf("onLoginOutput")
-const abandonAuth = bodyOf("abandonAuthSecrets")
+const abandonAuth = bodyOf("abandonAuthSecrets") + bodyOf("clearLoginAttempt")
 const resetSecondFactor = bodyOf("resetEmailLoginSecondFactor")
 const prepareEmailLogin = bodyOf("prepareEmailLogin")
 const chooseMethod = bodyOf("chooseTwoFactorMethod")
@@ -726,12 +658,9 @@ check("every email login attempt records whether it carried a code",
   prepareEmailLogin + "\n---\n" + submitLogin)
 // --- a code is never sent without the method it belongs to -------------------
 //
-// bw only puts the two-step token on the wire when a provider came with it
-// (TokenRequest.toIdentityToken requires provider != null). Without --method
-// the code-carrying request is therefore a bare password grant, and for an
-// email provider the server answers that challenge by issuing a fresh code --
-// invalidating the one being submitted. Measured against bw 2026.2.0: the same
-// command succeeds with --method and fails without it.
+// bw sends the two-step token only with a provider, so without --method an
+// Email account is sent a fresh code that invalidates the typed one (seen with
+// bw 2026.2.0).
 check("a code is not collected until the method it belongs to is known",
   /!Model\.isTwoFactorMethod\(login2faMethod\)[\s\S]{0,400}show2faMethodPicker = true[\s\S]{0,300}return/.test(loginOutput),
   loginOutput)
@@ -756,11 +685,8 @@ check("every command that carries a code also carries a method",
 
 // --- a status check must never cancel the login it raced ---------------------
 //
-// `bw status` takes seconds and answers about the world as it was when it
-// started. Landing mid-login it says "unauthenticated", truthfully for that
-// moment, and the unauthenticated branch calls cancelAuthPrewarm() -- which
-// SIGTERMs the login the user just submitted. It also clears isLoading on the
-// way past, so the button dropped out of "Verifying..." with nothing shown.
+// A slow `bw status` landing mid-login reports "unauthenticated" as of when it
+// started; acting on it would cancel the submitted login.
 check("a status result that raced a submitted login is ignored",
   /if \(authAttemptInFlight\(\)\)[\s\S]{0,240}return/.test(statusFinished)
     && statusFinished.indexOf("authAttemptInFlight")
@@ -776,19 +702,13 @@ check("the guard sits ahead of every branch that cancels or drops state",
 
 // --- a cleared property must never leave a filled-in field ------------------
 //
-// A field whose text binding is gone keeps showing what was typed after the
-// property behind it is cleared, while every submit reads the property -- so
-// the panel sent a login with no code at all while the user looked at a
-// filled-in code field, bw answered "Code is required.", and retyping the code
-// repaired the property so the next click worked. That was the double Verify.
-//
-// Typing keeps the binding; `field.text = value` drops it for good (pinned in
-// tests/qml/tst_field_binding.qml). So a sync must re-point with Qt.binding,
-// or the first sync is what leaves the field stale from then on.
+// A field whose binding broke keeps showing text the property no longer holds
+// (a login once went out with no code while the field showed one). Syncs must
+// re-point with Qt.binding, never assign (tests/qml/tst_field_binding.qml).
 const rebinds = (body, field, prop) => new RegExp(
   `${field}\\.text = Qt\\.binding\\(function\\(\\) \\{ return (root|form)\\.(vault\\.)?${prop} \\}\\)`
 ).test(body)
-const unlockFormSrc = fs.readFileSync(path.join(__dirname, "..", "UnlockForm.qml"), "utf8")
+const unlockFormSrc = read("UnlockForm.qml")
 const syncFromVault = unlockFormSrc.slice(unlockFormSrc.indexOf("function syncFromVault("))
 check("clearing a login field's property clears the field with it",
   [["code2faField", "login2faCode"], ["deviceCodeField", "loginDeviceCode"],
@@ -830,10 +750,8 @@ check("locking and succeeding sync the fields too, so a later login opens clean"
 
 // --- a login must never end without saying anything -------------------------
 //
-// bw exiting cleanly with no session used to be handed to the unlock path,
-// which refuses it on the login screen and then fails silently two seconds
-// later in a FIFO writer. The button went to "Verifying..." and back, and
-// nothing was ever shown.
+// A clean exit with no session must report, not fall through to unlock and
+// fail silently.
 check("a clean exit with no session reports instead of falling through to unlock",
   /logLogin\("clean-exit-no-session"[\s\S]{0,200}errorMessage = "Bitwarden reported no error/.test(loginOutput)
     && !/unlockVaultWithPassword\(loginPassword\)/.test(loginOutput),
@@ -864,12 +782,8 @@ check("the diagnostic is bounded, so a stack trace cannot fill the log",
 
 // --- a submit must never be swallowed by the buffer scrub -------------------
 //
-// The scrub is started from the login process's own exit handler and takes the
-// process for a moment. A submit arriving in that moment ends up waiting on the
-// scrub's exit rather than the login's, and the exit handler returned early for
-// a scrub -- so the deferred submit was dropped and the click did nothing. The
-// next click worked because by then nothing held the process. That was having
-// to press Verify twice.
+// A submit arriving while the scrub holds the login process must be
+// dispatched when the scrub exits, not dropped (the "press Verify twice" bug).
 check("a scrub's exit still dispatches whatever submit was waiting on it",
   /finishScrubRun\(loginProc\)\)\s*\{[\s\S]{0,120}resumeDeferredLogin\(false\)[\s\S]{0,40}return/.test(loginExited),
   loginExited)
@@ -891,10 +805,8 @@ check("a scrub is not started over a submit that is already waiting",
 
 // --- a login waiting on an emailed code must survive the panel closing ------
 //
-// A code that arrives by email cannot be read without leaving the panel, and
-// closing used to call abandonAuthSecrets() -- so the password and the stage
-// were gone by the time the user came back with the code. Email two-step and
-// new-device verification were both unreachable by construction.
+// An emailed code cannot be read without leaving the panel, so closing it must
+// keep the pending login (stage and password) for a while.
 const MIN = 60 * 1000
 check("a pending login survives the panel closing, for a bounded time",
   Model.secondFactorWindowOpen
@@ -937,14 +849,13 @@ check("the window expires on its own, even while the panel is not on screen",
 check("every stage that waits on a code starts the clock",
   (panelSrc.match(/markSecondFactorStage\(\)/g) || []).length >= 5, panelSrc)
 check("locking, logging out and succeeding all end the pending window",
-  (panelSrc.match(/secondFactorStartedAt = 0/g) || []).length >= 3, panelSrc)
+  /secondFactorStartedAt = 0/.test(bodyOf("clearLoginAttempt"))
+    && (panelSrc.match(/clearLoginAttempt\(\)/g) || []).length >= 3, bodyOf("clearLoginAttempt"))
 
 // --- an unsynced vault is not an empty vault --------------------------------
 //
-// `bw login` calls fullSync() without allowThrowOnError, so a sync that throws
-// is swallowed: login exits 0 and prints a working session onto a local vault
-// with no ciphers in it. The item list is then empty and correct, and looks
-// exactly like a vault with nothing in it.
+// `bw login` swallows a failed sync and still prints a session, leaving an
+// empty local vault that looks like an empty account.
 check("an unlocked vault that has never synced is repaired rather than rendered empty",
   /!st\.lastSync && session && !initialSyncAttempted && !isSyncing[\s\S]{0,160}syncVault\(\)/.test(statusFinished),
   statusFinished)
@@ -959,7 +870,7 @@ check("a new session gets a fresh attempt at the repair",
   bodyOf("dropVaultState"))
 check("bw's status already reports lastSync, so nothing new has to be parsed for it",
   /lastSync:\s*String\(st\.lastSync/.test(
-    fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")),
+    read("BitwardenModel.js")),
   "parseStatus must expose lastSync")
 
 // --- new-device verification, in the panel ----------------------------------
@@ -1026,10 +937,8 @@ check("the shared submit button stays out of the stages that do not use it",
 
 // --- focus must never be taken off a field being typed into ------------------
 //
-// A logout sets the status itself, then confirms it with `bw status` seconds
-// later. That confirmation used to re-focus the login screen while the master
-// password was being typed, moving the rest of it into the unmasked email
-// field -- which the next submit would have sent as an email address.
+// A logout's confirming `bw status` must not move focus mid-typing (it once
+// sent the rest of a master password into the unmasked email field).
 check("a login screen that already has the cursor keeps it",
   /loginFieldHasFocus\(\)[\s\S]{0,40}return/.test(focusField)
     && /unlockFieldHasFocus\(\)[\s\S]{0,40}return/.test(focusField)
@@ -1072,10 +981,8 @@ check("a rejected method the user chose is reported as not configured, not retri
     && /does not have/.test(loginOutput),
   loginOutput)
 
-// The pick is sent on its own first. For Email that is what makes Bitwarden
-// send the mail at all -- bw only posts the two-factor email when no token
-// came with the request -- and for the others it validates the pick before
-// anything is typed.
+// The pick is sent first without a code: for Email that is what triggers the
+// mail; for the others it validates the pick.
 check("choosing a method submits it without a code",
   /login2faMethod\s*=\s*method/.test(chooseMethod)
     && /login2faMethodConfirmed\s*=\s*true/.test(chooseMethod)
@@ -1219,10 +1126,9 @@ check("locking erases the remembered session whatever the setting now says",
   bodyOf("lockVault"))
 
 // --- and nothing the vault gave us outlives the lock ------------------------
-// Every one of these is a secret that used to sit in the panel object until
-// the shell exited: a generated password, a form left mid-compose, the payload
-// JSON on its way to bw, the master password typed into a setup form.
-const dropped = bodyOf("dropVaultSecrets")
+// Nothing from the vault survives a lock: generated values, half-typed forms,
+// payload JSON, setup passwords.
+const dropped = bodyOf("dropVaultSecrets") + bodyOf("clearLoginAttempt")
 check("locking drops the vault secrets",
   /dropVaultState\(\)/.test(bodyOf("lockVault")) && /dropVaultSecrets\(\)/.test(bodyOf("dropVaultState")),
   bodyOf("lockVault") + "\n" + bodyOf("dropVaultState"))
@@ -1247,5 +1153,4 @@ check("leaving the fingerprint form drops the master password it asked for",
   /currentScreen !== "fingerprint"[\s\S]{0,80}abandonFingerprintSetup\(\)/.test(screenChanged)
     && /fpSetupMaster\s*=\s*""/.test(bodyOf("abandonFingerprintSetup")), screenChanged)
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

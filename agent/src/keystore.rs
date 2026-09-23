@@ -10,9 +10,8 @@ use zeroize::Zeroizing;
 pub const MAX_KEYS: usize = 128;
 /// Maximum OpenSSH PEM bytes accepted for one item.
 pub const MAX_PEM_BYTES: usize = 64 * 1024;
-/// Public vault metadata retained in memory or emitted on the bounded control
-/// channel. Measured in UTF-8 bytes, matching the protocol ceiling. An item id
-/// past it fails the load; a name past it is truncated to it.
+/// Bound on public metadata, in UTF-8 bytes (the protocol's unit). A longer
+/// item id fails the load; a longer name is truncated.
 pub const MAX_METADATA_BYTES: usize = 256;
 /// Maximum filtered FIFO payload accepted for one load.
 pub const MAX_FILTERED_BYTES: usize = 8 * 1024 * 1024;
@@ -71,10 +70,8 @@ pub struct PublicIdentity {
     pub item_id: String,
     pub name: String,
     pub fingerprint: String,
-    /// The OpenSSH one-line form, derived from the parsed private key rather
-    /// than copied from vault metadata. Git signing needs this on disk as a
-    /// file, and the panel writes it; deriving it here means only material
-    /// this keystore actually validated can ever be exported.
+    /// The OpenSSH one-line public key, derived from the validated private key
+    /// (not vault metadata), so only vetted material is exported for Git.
     pub public_key_openssh: String,
     public_blob: Vec<u8>,
 }
@@ -114,8 +111,8 @@ impl fmt::Debug for CandidateLoad {
 }
 
 impl CandidateLoad {
-    /// Validate and add one item. Individual key defects are reported as skips;
-    /// a hard resource limit poisons the entire candidate.
+    /// Validate and add one item. Key defects are skips; a hard resource
+    /// limit poisons the whole candidate.
     pub fn add(&mut self, item: CandidateItem) -> Result<Option<SkipCode>, LoadError> {
         self.seen_items = self.seen_items.saturating_add(1);
         if self.seen_items > MAX_KEYS {
@@ -126,19 +123,14 @@ impl CandidateLoad {
             self.failed = true;
             return Err(LoadError::PemTooLarge);
         }
-        // An item id that long is malformed rather than unusual -- Bitwarden's
-        // are 36-character UUIDs -- and it identifies the key, so it cannot be
-        // shortened without changing what it names.
+        // Bitwarden ids are 36-char UUIDs; a longer one is malformed and cannot
+        // be shortened without changing what it names.
         if item.item_id.len() > MAX_METADATA_BYTES {
             self.failed = true;
             return Err(LoadError::MetadataTooLarge);
         }
-        // A long *name* is ordinary. Bitwarden allows them, and 256 bytes is
-        // around 85 CJK characters, so failing the load here would take the
-        // whole feature down over one item somebody named descriptively. The
-        // name is display and comment text, so it is bounded by truncation
-        // instead -- on a character boundary, because a String cut mid-sequence
-        // is not one.
+        // Long names are ordinary: truncate (on a char boundary) rather than
+        // fail the load.
         let mut item = item;
         if item.name.len() > MAX_METADATA_BYTES {
             let mut end = MAX_METADATA_BYTES;
@@ -189,8 +181,7 @@ impl CandidateLoad {
             return Ok(self.skip(item.item_id, SkipCode::Duplicate));
         }
 
-        // Derived from the key that was just validated, not from the vault's
-        // copy: the export on disk must be material this keystore vouched for.
+        // From the validated key, not the vault's copy.
         let public_key_openssh = match key.public_key().to_openssh() {
             Ok(text) => text,
             Err(_) => return Ok(self.skip(item.item_id, SkipCode::MalformedPublicKey)),

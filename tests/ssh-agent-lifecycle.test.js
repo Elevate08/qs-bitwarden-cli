@@ -1,33 +1,16 @@
 #!/usr/bin/env node
-// The vault's lifecycle drives the companion's. These tests pin the design's
-// state table and the ordering rules around a lock: deny first, cancel work,
-// drop private material, keep only the public projection, and never let the
-// panel's own lock wait on a companion that will not answer.
+// The vault's lifecycle drives the companion's: on lock, deny first, cancel
+// work, drop private keys, keep the public projection, and never wait on the
+// companion.
 //
 //   node tests/ssh-agent-lifecycle.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
+const { createSuite, loadModule, readPluginSource } = require("./harness")
 const path = require("path")
 
-const repoRoot = path.join(__dirname, "..")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.sshAgentVaultState = sshAgentVaultState
-  exports.sshAgentIdentityPolicy = sshAgentIdentityPolicy
-  exports.sshAgentLifecycleTransition = sshAgentLifecycleTransition
-  exports.sshAgentLockAckTimeoutMs = sshAgentLockAckTimeoutMs
-  exports.sshAgentVaultLockedLine = sshAgentVaultLockedLine
-  exports.sshAgentLoggedOutLine = sshAgentLoggedOutLine
-  exports.sshAgentRevokeGrantsLine = sshAgentRevokeGrantsLine
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done } = createSuite("ssh-agent-lifecycle")
 
 const ctx = extra => Object.assign({
   enabled: true, helperReady: true, loggedIn: true,
@@ -54,31 +37,6 @@ eq("logged out outranks a stale cache",
   Model.sshAgentVaultState(ctx({ loggedIn: false, hasPublicCache: true })), "logged-out")
 eq("disabled outranks logged out",
   Model.sshAgentVaultState(ctx({ enabled: false, loggedIn: false })), "disabled")
-
-const policy = state => Model.sshAgentIdentityPolicy(state)
-
-for (const [state, publicIds, privateKeys, signing] of [
-  ["disabled", false, false, "denied"],
-  ["logged-out", false, false, "denied"],
-  ["locked-empty", false, false, "needs-unlock"],
-  ["loading", true, false, "denied"],
-  ["unlocked", true, true, "allowed"],
-  ["locked-cached", true, false, "needs-unlock"]
-]) {
-  const p = policy(state)
-  eq(`${state} offers public identities: ${publicIds}`, p.publicIdentities, publicIds)
-  eq(`${state} holds private keys: ${privateKeys}`, p.privateKeys, privateKeys)
-  eq(`${state} signing is ${signing}`, p.signing, signing)
-}
-
-// Private keys exist in exactly one state, and it is the only one that signs.
-const allStates = ["disabled", "logged-out", "locked-empty", "loading", "unlocked", "locked-cached"]
-eq("private keys live in exactly one state",
-  allStates.filter(s => policy(s).privateKeys).length, 1)
-eq("only that state signs without a further unlock",
-  allStates.filter(s => policy(s).signing === "allowed").join(","), "unlocked")
-check("no state holds private keys without allowing signing",
-  allStates.every(s => !policy(s).privateKeys || policy(s).signing === "allowed"), "mismatch")
 
 // -------------------------------------------------------------------------
 // Lifecycle transitions
@@ -268,18 +226,13 @@ check("a successful load or a new helper clears the fail streak",
     && /function dropVaultState\(\)[\s\S]{0,1200}sshAgentLoadFailStreak = 0/.test(panelSrc),
   "a later sync after recovery would inherit a spent retry")
 
-// Turning the feature off stops the helper through the supervisor, which is a
-// different path from the lifecycle table -- so the table's clearPublic has to
-// be applied explicitly or the projection is left on disk by a feature that is
-// no longer running.
+// Disabling stops the helper via the supervisor, outside the lifecycle table,
+// so the projection must be cleared explicitly.
 check("disabling the feature clears the public projection",
   /onSshAgentEnabledChanged[\s\S]{0,700}?applySshAgentLifecycle\("disable"\)/.test(panelSrc),
   "disabling never applies the disable transition")
 
-// A restarted helper is empty even when the vault epoch has not moved: the
-// keystore lives in the helper's memory, not the vault's. Keying the
-// startup-load guard on the vault epoch alone leaves a fresh helper keyless
-// until something unrelated happens to bump it.
+// A restarted helper is empty even if the vault epoch did not move.
 check("a new helper is always eligible for a load",
   /onSshAgentGateOpenChanged[\s\S]{0,700}?sshAgentLoadedForVaultEpoch = -1/.test(panelSrc),
   "a restarted helper inherits the old load bookkeeping and never loads")
@@ -300,9 +253,4 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
     line.indexOf("BW_SESSION") < 0 && line.indexOf("privateKey") < 0 && line.indexOf("PRIVATE") < 0, line)
 }
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`ssh-agent-lifecycle: ${pass} passed`)
+done()

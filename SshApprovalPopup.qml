@@ -4,10 +4,8 @@ import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 
-// A transient, centered SSH authorization surface. The full-screen layer
-// window supplies the scrim, outside-click denial, and keyboard focus; only
-// the compact card is visible. It is tied to the bar widget's screen but not
-// positioned relative to the bar, so the plugin otherwise stays out of sight.
+// A centered SSH authorization card on the bar's screen. The full-screen layer
+// window supplies the scrim, deny-on-outside-click and keyboard focus.
 PanelWindow {
   id: popup
 
@@ -17,9 +15,8 @@ PanelWindow {
   required property Item anchorItem
   readonly property alias unlockScreen: unlockScreen
 
-  // Every monitor's bar carries this popup, and all of them read the same vault,
-  // so only the presenting view -- the open popout, else the focused monitor --
-  // shows it. Two would each take exclusive keyboard focus.
+  // Every monitor's bar has this popup; only the presenting view shows it (two
+  // would fight over exclusive keyboard focus).
   readonly property bool presenting: vault.presenter === panel
   readonly property bool open: presenting && vault.sshAgentApprovalPopup
     && (vault.sshPrompt !== null || vault.sshUnlockRequest !== null)
@@ -113,8 +110,7 @@ PanelWindow {
       Math.max(1, Style.space(2)))
     padding: Style.spacing.panelPadding
 
-    // Swallow clicks on unused card space; only a click outside the card is a
-    // denial. Interactive children declared below remain above this catcher.
+    // Clicks on the card itself are not a denial.
     MouseArea { anchors.fill: parent; onClicked: {} }
 
     Item {

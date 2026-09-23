@@ -54,6 +54,12 @@
   SSH helper; without it quick unlock is unavailable and the master password
   still works.
 
+### Fixed
+
+- **Quick-unlock descriptions match the envelope.** The FIDO2 setup screen,
+  the settings rows and the Forget buttons still described the master password
+  as kept as-is in the login keyring; they now describe the encrypted copy.
+
 ## [1.10.0] - 2026-09-17
 
 ### Added

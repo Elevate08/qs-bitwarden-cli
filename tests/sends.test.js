@@ -1,42 +1,13 @@
 #!/usr/bin/env node
-// Tests for Bitwarden Send payloads, parsing and command construction.
-// Field names come from a real `bw send --fullObject` response.
+// Send payloads, parsing and commands; field names from a real
+// `bw send --fullObject`.
 //
 //   node tests/sends.test.js
 
-const fs = require("fs")
-const path = require("path")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.buildSendPayload = buildSendPayload
-  exports.parseSends = parseSends
-  exports.sendExpiryLabel = sendExpiryLabel
-  exports.sendAccessLabel = sendAccessLabel
-  exports.createSendCommand = createSendCommand
-  exports.listSendsCommand = listSendsCommand
-  exports.deleteSendCommand = deleteSendCommand
-  exports.createItemCommand = createItemCommand
-  exports.editItemCommand = editItemCommand
-  exports.sessionEnvVar = sessionEnvVar
-  exports.statusCommand = statusCommand
-  exports.listCommand = listCommand
-  exports.syncCommand = syncCommand
-  exports.getItemCommand = getItemCommand
-  exports.getTotpCommand = getTotpCommand
-  exports.lockCommand = lockCommand
-  exports.deleteItemCommand = deleteItemCommand
-  exports.createFolderCommand = createFolderCommand
-  exports.listFoldersCommand = listFoldersCommand
-  exports.listOrganizationsCommand = listOrganizationsCommand
-  exports.terminalLoginCommand = terminalLoginCommand
-  exports.sessionHandoffReadCommand = sessionHandoffReadCommand
-  exports.extractSessionToken = extractSessionToken
-`)(Model)
+const { createSuite, loadModule } = require("./harness")
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("sends")
 
 // --- the security property that motivated the env-based commands ------------
 // argv is world-readable via /proc on a default Linux box, so no secret may
@@ -113,7 +84,7 @@ check("the session env var is BW_SESSION, which bw reads natively",
 
 const builders = [
   ["statusCommand", () => Model.statusCommand()],
-  ["listCommand", () => Model.listCommand()],
+  ["sanitizedListCommand", () => Model.sanitizedListCommand()],
   ["listFoldersCommand", () => Model.listFoldersCommand()],
   ["listOrganizationsCommand", () => Model.listOrganizationsCommand()],
   ["listSendsCommand", () => Model.listSendsCommand()],
@@ -194,5 +165,4 @@ check("an export line is unwrapped",
   Model.extractSessionToken('export BW_SESSION="tok3n-value-that-is-long-enough=="') === "tok3n-value-that-is-long-enough==",
   Model.extractSessionToken('export BW_SESSION="tok3n-value-that-is-long-enough=="'))
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

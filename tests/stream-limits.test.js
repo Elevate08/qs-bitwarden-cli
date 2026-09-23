@@ -2,63 +2,25 @@
 // Verifies that all data streams read by the long-lived shell process
 // are capped on the producer side to prevent unbounded buffering.
 
+const { createSuite, loadModule } = require("./harness")
 const fs = require("fs")
 const path = require("path")
 const os = require("os")
 const { execFileSync, spawnSync } = require("child_process")
 
-const Model = {}
-const code = fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "")
+const Model = loadModule()
 
-new Function("exports", code + `
-  exports.listCommand = listCommand
-  exports.getItemCommand = getItemCommand
-  exports.listSendsCommand = listSendsCommand
-  exports.listFoldersCommand = listFoldersCommand
-  exports.listOrganizationsCommand = listOrganizationsCommand
-  exports.listOrgCollectionsCommand = listOrgCollectionsCommand
-  exports.getTotpCommand = getTotpCommand
-  exports.statusCommand = statusCommand
-  exports.generateCommand = generateCommand
-  exports.generateServeRequestCommand = generateServeRequestCommand
-  exports.createSendCommand = createSendCommand
-  exports.createItemCommand = createItemCommand
-  exports.editItemCommand = editItemCommand
-  exports.deleteItemCommand = deleteItemCommand
-  exports.createFolderCommand = createFolderCommand
-  exports.attachmentDownloadCommand = attachmentDownloadCommand
-  exports.sessionHandoffReadCommand = sessionHandoffReadCommand
-  exports.associationsReadCommand = associationsReadCommand
-  exports.keyringLookupCommand = keyringLookupCommand
-  exports.keyringLookupMasterPasswordCommand = keyringLookupMasterPasswordCommand
-  exports.pinUnlockCommand = pinUnlockCommand
-  exports.dependencyCheckCommand = dependencyCheckCommand
-  exports.buildCappedCommand = buildCappedCommand
-  exports.syncCommand = syncCommand
-  exports.deleteSendCommand = deleteSendCommand
-  exports.settingWriteCommand = settingWriteCommand
-`)(Model)
-
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => {
-  if (ok) {
-    pass++
-  } else {
-    failures.push(`${label}\n    ${detail}`)
-  }
-}
+const { check, done } = createSuite("stream-limits")
 
 const flat = (cmd) => (Array.isArray(cmd) ? cmd.join(" ") : String(cmd))
 
 // 1. Vault item list stream is capped
-const listCmd = Model.listCommand()
-check("listCommand produces bash pipeline with head -c byte cap",
-  flat(listCmd).includes("bw list items") && flat(listCmd).includes("head -c 16777216"),
+const listCmd = Model.sanitizedListCommand()
+check("sanitizedListCommand caps bw list items one byte past the limit",
+  flat(listCmd).includes("bw list items | head -c 16777217"),
   flat(listCmd))
-check("listCommand caps diagnostic stderr stream",
-  flat(listCmd).includes("exec 2> >(head -c 8192 >&2)"),
+check("sanitizedListCommand discards diagnostic stderr",
+  flat(listCmd).includes("} 2>/dev/null)"),
   flat(listCmd))
 
 // 2. Vault item detail stream is capped
@@ -147,11 +109,8 @@ check("createFolderCommand caps stderr and response",
   flat(createFolderCmd).includes("exec 2> >(head -c 8192 >&2)") && flat(createFolderCmd).includes("head -c 65536"),
   flat(createFolderCmd))
 
-// The save commands cap their response the way sanitizedListCommand does:
-// read one byte past the ceiling, then refuse anything that reached it. A
-// bare `head -c <max>` cannot tell a stream that fit from one that was cut,
-// and these two now carry a sanitising stage whose output must be whole or
-// discarded. See the same idiom asserted for the item list in ssh-items.
+// Save commands read one byte past the ceiling and refuse anything reaching
+// it, so a truncated response is never taken as whole (as in ssh-items).
 const capsResponse = cmd =>
   flat(cmd).includes("head -c 65537") && flat(cmd).includes('-gt 65536')
 
@@ -184,12 +143,8 @@ check("capped stderr does not leak into stdout",
   proc.trim() === "stdout data",
   `stdout was: ${JSON.stringify(proc)}`)
 
-// 16. A cap must not swallow the producer's exit status. `head -c` closes the
-// pipe and exits 0, so without `pipefail` every failing bw command would reach
-// the panel as a success and the UI would report "Item deleted" for a delete
-// that never happened.
+// 16. `pipefail` keeps a failing bw's status through the `head -c` cap.
 const cappedBuilders = [
-  ["listCommand", Model.listCommand()],
   ["getItemCommand", Model.getItemCommand("x")],
   ["deleteItemCommand", Model.deleteItemCommand("x")],
   ["deleteSendCommand", Model.deleteSendCommand("x")],
@@ -251,8 +206,4 @@ check("hitting the cap truncates at exactly the limit",
 
 fs.rmSync(stubDir, { recursive: true, force: true })
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

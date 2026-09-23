@@ -47,10 +47,8 @@ fn loaded_store(epoch: u64) -> (KeyStore, Vec<u8>) {
     (store, blob)
 }
 
-/// Two clocks bound one wait, and they are not independent. The companion's
-/// request deadline is the human's time to answer; the server's reply wait is
-/// how long a client blocks for that answer. If the second is shorter, the
-/// first is decorative -- which it was, with both set to thirty seconds.
+/// The server's reply wait must outlast the human deadline, or the deadline
+/// is meaningless.
 #[test]
 fn a_client_waits_longer_than_the_human_is_given_to_answer() {
     assert!(
@@ -144,12 +142,8 @@ fn approval_is_single_use_and_old_epoch_fails_at_final_check() {
     assert!(second.finalize(&store).is_none());
 }
 
-/// A grant covers one key and one program, not one process. Git spawns a
-/// fresh `ssh-keygen` for every commit it signs, so a grant tied to a PID
-/// never matches the case grants exist for -- a rebase would prompt once per
-/// commit regardless. Scoping to the executable path is what makes the
-/// feature do its job, at the cost of trusting every process that runs the
-/// same program with the same key.
+/// A grant covers one key and one program, not one process: Git spawns a new
+/// `ssh-keygen` per commit.
 #[test]
 fn grants_are_capped_and_bound_to_key_and_executable() {
     let (_, key) = loaded_store(3);
@@ -287,9 +281,8 @@ fn peer_snapshot_comes_from_proc_without_trusting_display_metadata() {
     assert!(snapshot.executable.is_absolute());
 }
 
-/// A grant answers the kind of signature it was given for and nothing else:
-/// Git's commit signatures do not cover a login, nor a signature in another
-/// namespace, and a login as one user does not cover a login as another.
+/// A grant answers only its own kind of signature: Git signatures do not cover
+/// logins or other namespaces, and a login as one user does not cover another.
 #[test]
 fn a_grant_is_scoped_to_what_it_signed() {
     let (_, key) = loaded_store(3);
@@ -350,9 +343,8 @@ fn a_grant_is_scoped_to_what_it_signed() {
     ));
 }
 
-/// Neither a forwarded request nor one over unrecognised data may open a
-/// grant, whatever window the panel sends back -- and a forwarded request
-/// may not ride a grant the local program already holds.
+/// Forwarded or unrecognised requests never open a grant, whatever the panel
+/// sends, and forwarded ones never ride an existing grant.
 #[test]
 fn forwarded_and_unrecognised_requests_never_open_or_ride_a_grant() {
     let (_, key) = loaded_store(3);

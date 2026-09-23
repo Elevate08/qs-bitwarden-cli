@@ -3,19 +3,8 @@ import qs.Commons
 import qs.Ui
 import "BitwardenModel.js" as Model
 
-// One labelled, copyable field on the detail screen.
-//
-// The detail view drew each of these longhand -- a PanelSectionHeader, a
-// BorderSurface, a Text and one or two PanelActionButtons, forty lines at a
-// time. That was tolerable while only a login had fields worth showing.
-// Cards and identities together add sixteen more, and sixteen more copies of
-// the same forty lines is how the surfaces drift apart: one row elides and
-// the next does not, one masks and the next forgets to.
-//
-// Empty is not a state worth drawing. `visible` is false when there is no
-// value, so a caller can declare every field a type can carry and let the
-// sparse ones -- most of an identity, most of the time -- take themselves off
-// the screen rather than leaving labelled blanks behind.
+// One labelled, copyable field on the detail screen. Hidden when the value is
+// empty, so callers can declare every field a type can have.
 Column {
   id: root
 
@@ -24,24 +13,16 @@ Column {
   required property color foreground
   required property string fontFamily
 
-  // A value that should not sit in plain sight on a shared screen: a card
-  // number, a security code, a social security number. Masked until revealed,
-  // and the reveal is per-field rather than a screen-wide switch.
+  // Masked until revealed, per field (card numbers, codes, SSNs).
   property bool sensitive: false
   property bool revealed: false
 
-  // What the flash message calls this once it is on the clipboard.
+  // How the copy flash message names the field.
   property string copyLabel: label
-  // Appended to the copy button's tooltip, e.g. "(n)". Empty when the field
-  // has no key bound to it.
+  // Shortcut hints appended to the copy and reveal tooltips, e.g. "(n)"; empty
+  // when no key is bound.
   property string shortcutHint: ""
-  // The same, for the reveal button. Separate because only one field per item
-  // is reachable by `v` -- promising it on the others would be a lie, and the
-  // reveal on each field is independent of every other.
   property string revealHint: ""
-  // The copy button's glyph. Defaults to a plain copy icon; callers pass a
-  // semantic one where the detail view already had it, so a converted row
-  // keeps the icon it has always drawn.
   property string copyIcon: "󰈙"
 
   signal copyRequested()

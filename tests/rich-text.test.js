@@ -1,24 +1,15 @@
 #!/usr/bin/env node
-// Vault values are attacker-controlled text, and Qt renders text as HTML the
-// moment it looks like markup. These tests pin both halves of the defence:
-// the neutralizer used for the shared kit controls, and the `textFormat`
-// every Text in the plugin's own QML must declare.
+// Vault values are untrusted and Qt renders markup-like text as HTML. Pins the
+// neutralizer for kit controls and the `textFormat` every plugin Text declares.
 //
 //   node tests/rich-text.test.js
 
+const { createSuite, loadModule, read, readPluginSource, repoRoot } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const path = require("path")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.plainLabel = plainLabel
-  exports.clipLabel = clipLabel
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("rich-text")
 
 // --- plainLabel ---
 // Ordinary names cannot trip Qt's sniffer, so they must survive byte for byte:
@@ -52,13 +43,12 @@ check("plainLabel is idempotent in the sense that re-running it cannot inject",
   Model.plainLabel(Model.plainLabel("<b>x</b>")))
 
 // --- the QML side ---
-// Text defaults to Text.AutoText. Vault names, usernames, URIs, notes and Send
-// names all land in one of these, so every one of them has to say otherwise --
-// including the ones that only render a constant today.
-const qmlFiles = fs.readdirSync(path.join(__dirname, ".."))
+// Text defaults to AutoText, so every Text declares PlainText, even constant
+// ones.
+const qmlFiles = fs.readdirSync(repoRoot)
   .filter((name) => name.endsWith(".qml"))
 for (const file of qmlFiles) {
-  const src = fs.readFileSync(path.join(__dirname, "..", file), "utf8")
+  const src = read(file)
   const bare = []
   // The element's own body, not a line window: a window lets a bare Text pass
   // on a neighbour's textFormat. Nested blocks are left out for the same reason.
@@ -79,7 +69,7 @@ for (const file of qmlFiles) {
 // strings we hand it have to arrive already neutralized.
 // Every QML file that draws vault-derived text, not just the largest one.
 const panel = qmlFiles.map(readPluginSource).join("\n")
-const detailField = fs.readFileSync(path.join(__dirname, "..", "DetailField.qml"), "utf8")
+const detailField = read("DetailField.qml")
 for (const binding of ["formFolderLabel()", "formOrgLabel()", "Model.clipLabel(value, 20)",
                        'name + " filter (" + shortcut + "): " + value']) {
   const line = panel.split("\n").find(l => l.includes(binding) && /^\s*(text|tooltipText):/.test(l))
@@ -105,9 +95,8 @@ check("custom-field names are neutralized before reaching action tooltips",
   "both DetailField action tooltips must neutralize their dynamic label")
 
 // --- clipping vault text to a width the panel can hold ---
-// Ui.Button has no elide, so a folder name decides how wide a button is. The
-// clip is what keeps that decision ours; the ellipsis lives inside the budget,
-// so `max` is a real ceiling and not a suggestion.
+// Ui.Button cannot elide, so vault text is clipped; the "..." counts toward
+// `max`.
 check("a value already within the budget is returned untouched",
   Model.clipLabel("Work", 20) === "Work", Model.clipLabel("Work", 20))
 check("a value exactly at the budget is not clipped",
@@ -132,5 +121,4 @@ check("clipping cannot manufacture markup that plainLabel then has to catch",
   Model.plainLabel(Model.clipLabel("<img src=x onerror=alert(1)>", 20)).indexOf("<img") < 0,
   Model.plainLabel(Model.clipLabel("<img src=x onerror=alert(1)>", 20)))
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

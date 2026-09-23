@@ -3,14 +3,9 @@ import qs.Commons
 import qs.Ui
 import "BitwardenModel.js" as Model
 
-// SCREEN: SSH signing approval.
-//
-// The one place a signature is authorised. It states what the companion
-// verified -- the requesting user -- and is explicit that everything else
-// about the process is context rather than identity.
-//
-// `panel` is the Panel root. This screen holds no state: it draws the pending
-// request and calls back for the answer.
+// SCREEN: SSH signing approval. Says what the companion verified (the
+// requesting user) and marks everything else about the process as unverified
+// context. Stateless: draws the pending request and calls back.
 Column {
   id: screen
 
@@ -19,9 +14,8 @@ Column {
   required property var vault
   property bool active: vault.activeScreen === "sshApproval"
 
-  // A signing decision should never open with an affirmative action focused.
-  // Both the anchored panel and the centered popup can call this after their
-  // window receives keyboard focus.
+  // Never open with an affirmative action focused. Called by both the panel
+  // and the popup once their window has keyboard focus.
   function focusDefault() {
     if (screen.active && screen.visible) denyButton.forceActiveFocus()
   }
@@ -80,9 +74,8 @@ Column {
     }
   }
 
-  // A forwarded request is called out rather than shown as ordinary
-  // context, because the process named would not be the one using the
-  // signature. The companion offers no grant for one.
+  // Forwarded requests are flagged: the named process is not the one that
+  // will use the signature, and no grant is offered.
   SshCaption {
     panel: screen.panel
     visible: vault.sshPrompt && vault.sshPrompt.forwardedWarning !== ""
@@ -96,9 +89,7 @@ Column {
     text: Model.sshAgentLoadingNote()
   }
 
-  // What is being signed, as the companion read it from the request.
-  // A grant covers this kind of signature and no other, so it is the
-  // first thing worth checking.
+  // What is being signed; a grant covers only this kind of signature.
   SshSectionHeader {
     panel: screen.panel
     visible: vault.sshPrompt && vault.sshPrompt.operationLabel !== ""
@@ -131,8 +122,7 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // The fingerprint is the value worth checking, so it is shown whole
-  // rather than elided.
+  // Shown whole, not elided: this is the value to check.
   SshCaption {
     panel: screen.panel
     text: vault.sshPrompt ? vault.sshPrompt.fingerprint : ""
@@ -172,8 +162,7 @@ Column {
     width: parent.width
   }
 
-  // Deny leads, and nothing is activated by a bare Enter: a stray
-  // keypress must not be able to sign.
+  // Deny first, and no bare-Enter default: a stray key must not sign.
   Row {
     width: parent.width
     spacing: Style.space(8)

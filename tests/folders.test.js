@@ -1,31 +1,13 @@
 #!/usr/bin/env node
-// Tests for folder parsing, filtering and payload assignment.
+// Folder parsing, filtering and payload assignment.
 //
 //   node tests/folders.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, loadModule, readPluginSource } = require("./harness")
 const panelSrc = readPluginSource("Panel.qml")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.parseFolders = parseFolders
-  exports.folderName = folderName
-  exports.filterItems = filterItems
-  exports.parseItems = parseItems
-  exports.parseItemDetail = parseItemDetail
-  exports.buildCreatePayload = buildCreatePayload
-  exports.buildEditPayload = buildEditPayload
-  exports.listFoldersCommand = listFoldersCommand
-  exports.createFolderCommand = createFolderCommand
-  exports.folderPayload = folderPayload
-  exports.folderEnvVar = folderEnvVar
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("folders")
 
 // --- parsing ---
 const folders = Model.parseFolders(JSON.stringify([
@@ -106,10 +88,7 @@ check("the folder writer receives its payload through the private environment bi
   "createFolderProc is not bound to folderEnv()")
 
 // --- the collapsed filter buttons ---
-// Each button names its own keyboard shortcut in its tooltip, and the key that
-// actually opens the drawer lives in runShortcut(). Two places, so they can
-// disagree -- and a tooltip promising a key that does nothing is worse than no
-// tooltip. Pin them to each other.
+// Each filter button's tooltip shortcut must match runShortcut().
 const filterButtons = [...panelSrc.matchAll(
   /VaultFilterButton\s*\{[\s\S]*?group:\s*"([a-z]+)"[\s\S]*?shortcut:\s*"([a-z])"/g)]
   .map(m => ({ group: m[1], shortcut: m[2] }))
@@ -126,5 +105,4 @@ check("each filter button still names its group somewhere the user can reach",
   /tooltipText: Model\.plainLabel\(name \+ " filter \(" \+ shortcut \+ "\): " \+ value\)/.test(panelSrc),
   "the filter tooltip no longer carries the group name and value")
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

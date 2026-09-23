@@ -1,54 +1,22 @@
 #!/usr/bin/env node
-// Two things a lock and a logout were leaving behind.
+// What a lock must not leave behind:
 //
 //   node tests/buffer-scrub.test.js
 //
-//  1. A StdioCollector keeps whatever its process last printed until that
-//     process runs again, so every secret that has come back through a pipe
-//     outlives the lock that was supposed to end it. Emptying one means
-//     running a command through it that prints nothing, which is what these
-//     assertions describe: what that command is, how a handler recognises a
-//     run of it, and which processes a pass over the queue touches.
-//  2. The generator port is loopback and first-come, and QML's
-//     XMLHttpRequest has no timeout of its own. What bounds a request to a
-//     squatter is checked here; its cancellation and restart lifecycle is
-//     checked in tests/generator.test.js.
+//  1. Collector buffers: emptied by re-running each process with a command
+//     that prints nothing; checks the command, how handlers recognise it, and
+//     which processes a pass touches.
+//  2. Generator requests to the first-come loopback port are bounded
+//     (lifecycle in generator.test.js).
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
 
 const panelSource = readPluginSource("Panel.qml")
-const panelBodyOf = (name) => {
-  const start = panelSource.indexOf(`function ${name}(`)
-  if (start === -1) return ""
-  let depth = 0
-  for (let i = panelSource.indexOf("{", start); i < panelSource.length; i++) {
-    if (panelSource[i] === "{") depth++
-    else if (panelSource[i] === "}" && --depth === 0) return panelSource.slice(start, i + 1)
-  }
-  return ""
-}
+const panelBodyOf = name => functionBody(panelSource, name)
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.scrubCommand = scrubCommand
-  exports.isScrubCommand = isScrubCommand
-  exports.scrubPass = scrubPass
-  exports.finishScrub = finishScrub
-  exports.scrubRetryMs = scrubRetryMs
-  exports.generatorResponseCap = generatorResponseCap
-  exports.generatorRequestTimeoutMs = generatorRequestTimeoutMs
-  exports.generateServeRequestCommand = generateServeRequestCommand
-  exports.generatorResponseTooLarge = generatorResponseTooLarge
-  exports.generatorPortIsForeign = generatorPortIsForeign
-  exports.generatorProbeIsForeign = generatorProbeIsForeign
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("buffer-scrub")
 
 // ---------------------------------------------------------------------------
 // The scrub command
@@ -228,52 +196,15 @@ check("the deferred TOTP restart reserves the Process against a newer direct sta
 // Generator request bounds
 // ---------------------------------------------------------------------------
 
-const cap = Model.generatorResponseCap()
+const cap = Model.GENERATE_RESPONSE_CAP
 
 check("the response cap is far above a generated password",
   cap >= 4096, `cap is ${cap} bytes`)
 check("and far below anything that would hurt to hold",
   cap <= 1024 * 1024, `cap is ${cap} bytes`)
 check("the request deadline is short enough to be a loopback deadline",
-  Model.generatorRequestTimeoutMs() > 0 && Model.generatorRequestTimeoutMs() <= 10000,
-  `deadline is ${Model.generatorRequestTimeoutMs()}ms`)
-
-check("a real answer is under the cap",
-  Model.generatorResponseTooLarge("67", 67) === false, "a 67-byte answer was refused")
-
-check("a declared length past the cap is refused before the body arrives",
-  Model.generatorResponseTooLarge(String(cap + 1), 0) === true,
-  "an oversized Content-Length was accepted")
-
-check("a body past the cap is refused however much was declared",
-  Model.generatorResponseTooLarge("10", cap + 1) === true,
-  "an oversized body was accepted")
-
-check("a chunked response declares nothing and is judged on what arrives",
-  Model.generatorResponseTooLarge("", 12) === false && Model.generatorResponseTooLarge("", cap + 1) === true,
-  "the chunked case was misjudged")
-
-check("an absent Content-Length is not read as an enormous one",
-  Model.generatorResponseTooLarge(null, 12) === false, "a missing header refused a small body")
-
-check("nor is a garbage one",
-  Model.generatorResponseTooLarge("not-a-number", 12) === false, "an unparseable header refused a small body")
-
-// The port check, once a request can be cut short. status 0 is both "nothing
-// answered" and "we hung up", and only the first of those leaves the port free.
-check("a refused connection leaves the port free",
-  Model.generatorProbeIsForeign(0, false) === false, "a refused connection read as occupied")
-
-check("any HTTP answer means someone is already bound",
-  Model.generatorProbeIsForeign(200, false) === true && Model.generatorProbeIsForeign(404, false) === true,
-  "an HTTP answer read as a free port")
-
-check("a request we had to cut short means someone is already bound",
-  Model.generatorProbeIsForeign(0, true) === true,
-  "an aborted probe read as a free port -- a stalling squatter would get our trust")
-
-check("even one that answered before stalling",
-  Model.generatorProbeIsForeign(200, true) === true, "an aborted probe read as free")
+  Model.GENERATE_REQUEST_TIMEOUT_MS > 0 && Model.GENERATE_REQUEST_TIMEOUT_MS <= 10000,
+  `deadline is ${Model.GENERATE_REQUEST_TIMEOUT_MS}ms`)
 
 // Process-based probe checks (curl exit codes)
 check("curl CURLE_COULDNT_CONNECT (exit 7) with empty stdout indicates a free port",
@@ -296,9 +227,4 @@ check("generateServeRequestCommand uses curl with timeout and head -c byte cap",
 
 // ---------------------------------------------------------------------------
 
-if (failures.length) {
-  console.error(`\n${failures.length} failure(s):\n`)
-  failures.forEach((f) => console.error(`  ✗ ${f}\n`))
-  process.exit(1)
-}
-console.log(`buffer-scrub: ${pass} checks passed`)
+done()

@@ -1,26 +1,16 @@
 #!/usr/bin/env node
-// Wheel scrolling across the panel.
-//
-// Qt moves a Flickable by the platform's wheel-scroll-lines, a figure tuned for
-// a full-screen document. In a panel a few hundred pixels tall that is a crawl,
-// so the rate is set here instead -- and set in one place, because two views
-// scrolling at different speeds is worse than both being slow.
+// Wheel scrolling: one faster rate, set in one place for every view (Qt's
+// default crawls in a small panel).
 //
 //   node tests/scrolling.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, read, readPluginSource } = require("./harness")
 
-const read = f => fs.existsSync(path.join(__dirname, "..", f))
-  ? fs.readFileSync(path.join(__dirname, "..", f), "utf8") : ""
 
 const panelSrc = readPluginSource("Panel.qml")
 const wheelSrc = read("WheelScroll.qml")
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("scrolling")
 
 check("WheelScroll exists", wheelSrc !== "", "WheelScroll.qml is missing")
 
@@ -71,8 +61,4 @@ check("and every one of them has a scrollbar, so the list is the same list",
   (panelSrc.match(/ScrollBar\.vertical:/g) || []).length === scrollViews.length,
   "a view with a scrollbar but no wheel tuning would scroll at a different rate")
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

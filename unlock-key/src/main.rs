@@ -1,10 +1,9 @@
 //! Command-line face of the quick-unlock envelope. See `lib.rs`.
 //!
-//! The panel runs this inside short shell pipelines, between `secret-tool`,
-//! `systemd-creds`, `argon2` and `fido2-assert`. Every secret arrives in the
-//! environment; the envelope arrives on stdin; the result -- an envelope, the
-//! password, or a secret-free summary -- leaves on stdout. No argument ever
-//! carries a secret, because `/proc/<pid>/cmdline` is readable by everyone.
+//! Run inside short shell pipelines between `secret-tool`, `systemd-creds`,
+//! `argon2` and `fido2-assert`. Secrets arrive in the environment, the
+//! envelope on stdin; the result (envelope, password, or secret-free summary)
+//! goes to stdout. No argument ever carries a secret.
 //!
 //! Environment:
 //!   QSBW_UNLOCK_PASSWORD  create: the password `bw` accepted
@@ -302,8 +301,7 @@ impl<'a> Flags<'a> {
         Ok(Self(map))
     }
 
-    /// Refuse anything the command does not take, so a typo is an error
-    /// rather than a silently ignored option.
+    /// Refuse options the command does not take, so a typo is an error.
     fn only(&self, allowed: &[&str]) -> Result<(), Failure> {
         if self.0.keys().all(|name| allowed.contains(name)) {
             Ok(())
@@ -384,9 +382,8 @@ fn base64_env(name: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, Failure> {
 /// One named self-test check.
 type Check = (&'static str, fn() -> bool);
 
-/// What the panel runs before trusting this binary: the process can be
-/// hardened, the cipher round-trips, and wrong keys and edits are refused.
-/// Random keys only; nothing is read from or written to the system.
+/// Run before the panel trusts this binary: hardening applies, the cipher
+/// round-trips, wrong keys and edits are refused. Random keys; no system I/O.
 fn self_test() -> i32 {
     let checks: [Check; 4] = [
         (
