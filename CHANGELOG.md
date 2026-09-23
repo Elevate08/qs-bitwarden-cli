@@ -21,6 +21,39 @@
   is labelled in the prompt, and it can neither open a grant nor use one. The
   documentation said forwarded requests were already labelled; they were not.
 
+- **Quick unlock keeps your master password once, encrypted.** Fingerprint and
+  FIDO2 unlock each kept a plaintext copy of the master password in the login
+  keyring, readable by any program running as you, and PIN unlock kept a third
+  copy under AES-CBC with a PBKDF2-derived key and no MAC -- a 6-digit PIN
+  space fell to one GPU in about a minute, and about 1 in 256 wrong PINs
+  "decrypted". Now there is one keyring item: the password encrypted with
+  XChaCha20-Poly1305 under a random key, sealed to this machine and user with
+  `systemd-creds --user`, and bound to your Bitwarden account. It is written
+  the first time `bw` accepts a password you typed. Each method adds its own
+  way to the key, and none stores the password:
+  - **PIN**: Argon2id (256 MiB, 4 passes) from the OS `argon2` tool -- about
+    0.75 s of one CPU core per guess, on this machine only. A wrong PIN
+    always fails. PIN rules are unchanged; the weak-PIN warning now gives
+    real numbers.
+  - **FIDO2**: the key's `hmac-secret` for the credential Omarchy already
+    registered through pam-u2f, so nobody re-enrolls. The key refuses to
+    produce it without a touch, so unlocking now needs the key itself. The
+    plugin's PAM stack is gone.
+  - **Fingerprint**: a finger releases no secret, so its way in is protected
+    by the machine seal alone -- still better than plaintext, and the settings
+    screen says plainly that with it on the stored password is only as safe
+    as fingerprint unlock.
+
+  Turning a method on asks for your master password as a check against the
+  stored one; a wrong one is refused and nothing typed there is stored. A
+  master password changed elsewhere re-seals the stored copy at the next
+  unlock with the new one, keeping every method. Upgrading needs nothing: the
+  old entries move in as each method is next used and are deleted once the
+  new copy opens. The encryption runs in a new helper,
+  `qs-bitwarden-unlock-key`, built, checked, attested and shipped like the
+  SSH helper; without it quick unlock is unavailable and the master password
+  still works.
+
 ## [1.10.0] - 2026-09-17
 
 ### Added

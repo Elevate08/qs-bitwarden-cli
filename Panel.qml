@@ -1322,7 +1322,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 width: parent.width
-                text: "A fingerprint proves you are present but cannot produce your master password, and bw unlock accepts nothing else. The password is stored in the OS login keyring, and a verified fingerprint is the gate on reading it back."
+                text: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -1332,7 +1332,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 width: parent.width
-                text: "Anyone who can read your unlocked login keyring can read the password. A PIN stores it encrypted instead."
+                text: "Honest limit: with fingerprint unlock on, a program running as you while you are logged in can open the stored password without your finger. A PIN or a FIDO2 key cannot be bypassed that way."
                 color: root.urgent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1349,7 +1349,7 @@ Panel {
               TextField {
                 id: fpMasterField
                 width: parent.width
-                placeholderText: "Needed once, to store for fingerprint unlock..."
+                placeholderText: "Confirm your master password..."
                 password: true
                 text: root.vault.fpSetupMaster
                 onTextChanged: root.vault.fpSetupMaster = text
@@ -1373,7 +1373,7 @@ Panel {
                 spacing: Style.space(8)
 
                 Button {
-                  text: root.vault.fpBusy ? "Saving..." : "Enable"
+                  text: root.vault.fpBusy ? "Checking..." : "Enable"
                   iconText: root.vault.fpBusy ? "󰑐" : "󰈷"
                   iconSpinning: root.vault.fpBusy
                   selected: true
@@ -1821,8 +1821,9 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Your master password is encrypted with a key derived from this PIN, and only the encrypted form is stored. "
-                + "Use " + Model.pinRecommendedLength() + " digits or more; " + Model.pinMinLength()
+              text: "Your master password is already stored encrypted and sealed to this machine; this adds a way for the PIN "
+                + "to open it, through a deliberately slow key derivation. Use " + Model.pinRecommendedLength()
+                + " digits or more; " + Model.pinMinLength()
                 + " is the floor, and every extra digit multiplies an attacker's work by ten."
               color: root.dim
               font.family: root.fontFamily
@@ -1838,7 +1839,7 @@ Panel {
             Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
             TextField {
               width: parent.width
-              placeholderText: "Needed once, to encrypt the PIN..."
+              placeholderText: "Confirm your master password..."
               password: true
               text: root.vault.pinSetupMaster
               onTextChanged: root.vault.pinSetupMaster = text
@@ -1907,7 +1908,7 @@ Panel {
               spacing: Style.space(8)
 
               Button {
-                text: root.vault.pinBusy ? "Encrypting..." : "Save PIN"
+                text: root.vault.pinBusy ? "Checking..." : "Save PIN"
                 iconText: root.vault.pinBusy ? "󰑐" : "󰄬"
                 iconSpinning: root.vault.pinBusy
                 selected: true
@@ -2349,6 +2350,7 @@ Panel {
                       text: blocked
                         ? root.vault.settingBlockedReason(modelData)
                         : (modelData.description || "")
+                          + (root.vault.settingNote(modelData) ? "\n\n" + root.vault.settingNote(modelData) : "")
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
