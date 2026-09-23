@@ -56,6 +56,11 @@
 
 ### Fixed
 
+- **No unlock before the vault status is known.** For a few seconds after the
+  shell starts the lock screen is still checking the vault, and a master
+  password submitted then failed with "Could not deliver the password", while a
+  PIN was silently discarded. The Unlock button now says it is checking and
+  waits; what you type is kept.
 - **Quick-unlock descriptions match the envelope.** The FIDO2 setup screen,
   the settings rows and the Forget buttons still described the master password
   as kept as-is in the login keyring; they now describe the encrypted copy.

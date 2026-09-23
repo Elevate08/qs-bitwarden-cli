@@ -2381,6 +2381,7 @@ Item {
     if (target === "unlock") {
       unlockSubmitted = false
       isUnlocking = false
+      pendingUnlockPassword = ""
       if (unlockProc.running) unlockProc.running = false
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
       Qt.callLater(prepareUnlock)
@@ -3317,6 +3318,11 @@ Item {
 
   function submitPinUnlock() {
     if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
+    // As for the password: the PIN's result is discarded unless locked.
+    if (status !== "locked") {
+      pinUnlockError = "Still checking the vault. Try again in a moment."
+      return
+    }
     if (String(pinEntry || "").length < Model.pinMinLength()) {
       pinUnlockError = "PIN must be at least " + Model.pinMinLength() + " digits"
       return
@@ -3913,6 +3919,12 @@ Item {
   // -------------------------------------------------------------------------
 
   function unlockVault() {
+    // No `bw unlock` is waiting until status says locked (it is "checking"
+    // for a few seconds after a start); the typed text is kept.
+    if (status !== "locked") {
+      errorMessage = "Still checking the vault. Try again in a moment."
+      return
+    }
     pendingUnlockFrom = ""
     unlockVaultWithPassword(masterPassword)
   }

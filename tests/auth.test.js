@@ -1153,4 +1153,23 @@ check("leaving the fingerprint form drops the master password it asked for",
   /currentScreen !== "fingerprint"[\s\S]{0,80}abandonFingerprintSetup\(\)/.test(screenChanged)
     && /fpSetupMaster\s*=\s*""/.test(bodyOf("abandonFingerprintSetup")), screenChanged)
 
+// --- no submit before the vault status is known ------------------------------
+//
+// Status is "checking" for a few seconds after a start, with no `bw unlock`
+// waiting; a submit then failed ("Could not deliver the password") or, for a
+// PIN, was silently discarded. Typing stays allowed; submitting waits.
+check("a typed unlock is refused until status is locked",
+  /if \(status !== "locked"\)[\s\S]{0,120}return[\s\S]{0,80}unlockVaultWithPassword\(masterPassword\)/.test(bodyOf("unlockVault")),
+  bodyOf("unlockVault"))
+check("a PIN unlock is refused until status is locked",
+  /if \(status !== "locked"\)[\s\S]{0,120}pinUnlockError =[\s\S]{0,60}return/.test(bodyOf("submitPinUnlock")),
+  bodyOf("submitPinUnlock"))
+check("a failed password delivery drops the held password",
+  /target === "unlock"[\s\S]{0,120}pendingUnlockPassword = ""/.test(bodyOf("onAuthPasswordWriterExited")),
+  bodyOf("onAuthPasswordWriterExited"))
+check("the Unlock button waits for a known locked vault",
+  /canSubmit: form\.vault\.status === "locked"/.test(unlockFormSrc)
+    && /enabled: !form\.busy && form\.canSubmit/.test(unlockFormSrc),
+  "the button can be pressed while status is still checking")
+
 done()

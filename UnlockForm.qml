@@ -42,6 +42,8 @@ Column {
   readonly property bool fingerprintBusy: form.vault.fingerprintScanning
     || form.vault.fingerprintAuthorized
     || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fingerprint")
+  // Submitting needs a known locked vault; typing does not.
+  readonly property bool canSubmit: form.vault.status === "locked"
   readonly property bool busy: method === "pin"
     ? (form.vault.pinBusy || form.vault.isUnlocking)
     : form.vault.isUnlocking
@@ -374,14 +376,15 @@ Column {
   Button {
     visible: form.fieldsOffered && form.method !== "fingerprint" && form.method !== "fido"
     width: parent.width
-    text: form.busy ? (form.method === "pin" ? "Checking..." : "Unlocking...") : "Unlock Vault"
-    iconText: form.busy ? "󰑐" : "󰌋"
-    iconSpinning: form.busy
+    text: form.busy ? (form.method === "pin" ? "Checking..." : "Unlocking...")
+      : (form.canSubmit ? "Unlock Vault" : "Checking vault status...")
+    iconText: form.busy || !form.canSubmit ? "󰑐" : "󰌋"
+    iconSpinning: form.busy || !form.canSubmit
     selected: true
     accent: Color.accent
     fontFamily: form.panel.fontFamily
     focusable: form.buttonsFocusable
-    enabled: !form.busy
+    enabled: !form.busy && form.canSubmit
     onClicked: form.submitCurrentMethod()
   }
 
