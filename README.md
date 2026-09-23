@@ -619,7 +619,8 @@ Nothing will prompt you -- there are no `ignore` conditions to trip, because
 cargo's own semver rules already hold `0.10` back from `0.11`.
 
 Every accepted bump, major or not, changes the shipped bytes and so needs the
-binary rebuilt in the same change -- see the `needs-binary-rebuild` label:
+binary rebuilt in the same change, by hand -- see the `needs-binary-rebuild`
+label:
 
 ```bash
 gh pr checkout <n>
@@ -627,11 +628,15 @@ gh pr checkout <n>
 git commit -am "deps: rebuild the agent binary" && git push
 ```
 
-CI never does this for you. `--compare-tracked` proves the committed bytes are
-what the committed source builds; it cannot tell you whether that source is
-trustworthy, and a malicious crate builds just as reproducibly as an honest
-one. Reading the `Cargo.lock` diff before you commit the binary is the only
-check that covers that, which is why the rebuild stays a human step.
+For other source changes CI does it: on a pull request into a release branch
+from this repository, `helper-rebuild.yml` rebuilds the helpers in the pinned
+image and commits them to the PR branch. It never does so when `Cargo.lock`,
+`Cargo.toml` or `rust-toolchain.toml` changed, or for Dependabot or a fork.
+`--compare-tracked` proves the committed bytes are what the committed source
+builds; it cannot tell you whether that source is trustworthy, and a malicious
+crate builds just as reproducibly as an honest one. Reading the `Cargo.lock`
+diff before you commit the binary is the only check that covers that, which
+is why dependency rebuilds stay a human step.
 
 ---
 

@@ -86,10 +86,13 @@ jobs:
         env:
           QSBW_PINNED_BUILD: '1'
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ACTOR: ${{ github.actor }}
         # The bytes must be what this source builds here. Runs FIRST, before
         # anything writes bin/ (it once compared a fresh build with itself).
         # The verdict is recorded and the job fails at the end, so a drifted
-        # build's candidate is still uploaded for a maintainer to commit.
+        # build's candidate is still uploaded. On a PR that helper-rebuild.yml
+        # commits for (see scripts/helper-autocommit-eligible.sh), drift is
+        # reported, not fatal; its commit re-runs this workflow.
         run: |
           if [ ! -f bin/x86_64-linux/qs-bitwarden-ssh-agent ]; then
             echo "::notice::no tracked binary yet; nothing to compare"
@@ -101,6 +104,11 @@ jobs:
             exit 0
           fi
           echo "drift=yes" >> "$GITHUB_OUTPUT"
+          autofix="$(./scripts/helper-autocommit-eligible.sh)"
+          echo "autofix=$autofix" >> "$GITHUB_OUTPUT"
+          if [ "$autofix" = "yes" ]; then
+            echo "::notice::the helpers drifted; helper-rebuild.yml commits the rebuilt bytes to this branch"
+          fi
           if [ "$IS_FORK" = "true" ]; then
             echo "::warning::the tracked binary does not match this source. A fork cannot"
             echo "::warning::push CI's bytes, so this is reported rather than blocking."
@@ -110,8 +118,8 @@ jobs:
       - name: Build the candidate artifact
         env:
           QSBW_PINNED_BUILD: '1'
-        # Read-only candidate flow: CI builds and uploads, a maintainer
-        # commits, a later run compares. No write token; nothing is committed.
+        # Read-only: this job builds and uploads; helper-rebuild.yml or a
+        # maintainer commits, and a later run compares.
         run: ./scripts/build-agent.sh
 
       - name: Report what was produced
@@ -139,9 +147,11 @@ jobs:
           retention-days: 7
 
       - name: Fail if the tracked binary drifted
-        # After the upload, so the fix is always available. Forks are exempt:
-        # they cannot push CI output, and master still requires a passing run.
+        # After the upload, so the fix is always available. Forks are exempt
+        # (they cannot receive CI's commit), as are PRs helper-rebuild.yml
+        # fixes; tags and branch pushes always fail on drift.
         if: steps.compare.outputs.drift == 'yes'
+          && steps.compare.outputs.autofix != 'yes'
           && github.event.pull_request.head.repo.fork != true
         run: |
           echo "::error::the tracked binary does not match a clean build of this source."
