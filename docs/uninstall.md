@@ -17,7 +17,8 @@ above, or you are cleaning up after a plugin that is already gone, this is the
 same work by hand:
 
 ```bash
-# Session key, and the master password stored for PIN/fingerprint unlock
+# Session key, and the encrypted master password quick unlock uses (plus any
+# per-method entries left by 1.10.0 or earlier)
 secret-tool clear service qs-bitwarden-cli
 
 # Learned window-title -> vault item suggestions
