@@ -1771,6 +1771,7 @@ var ENVELOPE_LABEL = "Bitwarden quick unlock (encrypted)"
 var ENVELOPE_CREDENTIAL_NAME = "qs-bitwarden-unlock"
 var NEW_SECRET_ENV = "QSBW_NEW_SECRET"
 var FIDO_HMAC_ENV = "QSBW_FIDO_HMAC"
+var FIDO_SALT_ENV = "QSBW_FIDO_SALT"
 // Argon2id for new wraps: 256 MiB, 4 passes, about 0.75 s here. Existing wraps
 // are opened with the parameters they record, which the tool refuses below
 // Bitwarden's own defaults.
@@ -1943,12 +1944,16 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
     transform = "QSBW_UNLOCK_KEY=\"$__mk\" \"$__tool\" add" + acct + " --auth master --method fingerprint"
     verifyOpen = "__vk=''; __verify_opens \"$" + KEYRING_SECRET_ENV + "\"" + acct + " --via fingerprint; "
   } else if (op.kind === "add-fido") {
-    if (!ENVELOPE_BASE64_RE.test(String(op.cred || "")) || !ENVELOPE_BASE64_RE.test(String(op.salt || ""))
+    // `saltFromEnv`: the salt was drawn inside the same pipeline, from
+    // /dev/urandom, and is in FIDO_SALT_ENV. The tool validates it either way.
+    var saltArg = op.saltFromEnv ? "\"$" + FIDO_SALT_ENV + "\"" : shellQuote(op.salt)
+    if (!ENVELOPE_BASE64_RE.test(String(op.cred || ""))
+        || (!op.saltFromEnv && !ENVELOPE_BASE64_RE.test(String(op.salt || "")))
         || !op.rp || /[\x00-\x1f\x7f]/.test(String(op.rp))) return envelopeRefused()
     pre = masterKey
     transform = "QSBW_UNLOCK_KEY=\"$__mk\" QSBW_UNLOCK_NEW_KEY=\"$" + FIDO_HMAC_ENV + "\" \"$__tool\" add" + acct
       + " --auth master --method fido --cred " + shellQuote(op.cred) + " --rp " + shellQuote(op.rp)
-      + " --fido-salt " + shellQuote(op.salt)
+      + " --fido-salt " + saltArg
     verifyOpen = "__vk=\"$" + FIDO_HMAC_ENV + "\"; __verify_opens \"$" + KEYRING_SECRET_ENV + "\"" + acct
       + " --via fido --cred " + shellQuote(op.cred) + "; "
   } else if (op.kind === "remove") {
@@ -2082,6 +2087,98 @@ function legacyFingerprintMigrationCommand(tool, account) {
 // accepted is in KEYRING_SECRET_ENV and the PIN typed in PIN_ENV.
 function legacyPinMigrationCommand(tool, account) {
   return legacyMigrationCommand(tool, account, KEYRING_PIN, { kind: "add-pin" }, false)
+}
+
+// -------------------------------------------------------------------------
+// FIDO2 through hmac-secret
+// -------------------------------------------------------------------------
+//
+// The credential is Omarchy's own registration in /etc/fido2/fido2, written
+// by pam-u2f -- nobody re-enrolls. What changed is the touch: instead of a
+// PAM conversation that can only answer yes or no, `fido2-assert -h` asks the
+// key for the credential's hmac-secret, and that secret is the key to the
+// envelope's FIDO wrap. No touch, no secret: the key refuses `up=false` for
+// hmac-secret outright (FIDO_ERR_UP_REQUIRED, measured).
+//
+// The relying party is pam-u2f's default, `pam://<hostname>`, because that is
+// what the registration was made for. The client data hash is random and
+// thrown away: nothing verifies the assertion, only its hmac-secret is used.
+var FIDO_EXIT = {
+  assert: 31,     // fido2-assert failed: no touch in time, a refusal, or a busy key
+  noSecret: 32,   // it answered, but without an hmac-secret
+  legacyUsed: 40  // unlocked with the old plaintext entry; migration did not finish
+}
+
+function fidoExitCodes() { return FIDO_EXIT }
+
+function fidoTargetOk(target) {
+  return target && typeof target.device === "string" && /^\/dev\/[A-Za-z0-9_.\/-]+$/.test(target.device)
+    && ENVELOPE_BASE64_RE.test(String(target.cred || ""))
+    && typeof target.rp === "string" && /^pam:\/\/[A-Za-z0-9.-]+$/.test(target.rp)
+}
+
+// One touch, and the hmac-secret for `saltExpr` lands in FIDO_HMAC_ENV. The
+// secret goes from fido2-assert's stdout into a shell variable and on into the
+// environment; it is never an argument and never reaches QML.
+function fidoAssertScript(target, saltExpr) {
+  return "__cdh=\"$(head -c 32 /dev/urandom | base64 -w0)\"; "
+    + "__out=\"$(printf '%s\\n%s\\n%s\\n%s\\n' \"$__cdh\" " + shellQuote(target.rp) + " "
+    + shellQuote(target.cred) + " " + saltExpr + " | timeout 45 fido2-assert -G -h "
+    + shellQuote(target.device) + " 2>/dev/null)\" || exit " + FIDO_EXIT.assert + "; "
+    + "__hmac=\"$(printf '%s\\n' \"$__out\" | sed -n 5p)\"; unset __out; "
+    + "[ -n \"$__hmac\" ] || exit " + FIDO_EXIT.noSecret + "; "
+    + "export " + FIDO_HMAC_ENV + "=\"$__hmac\"; unset __hmac; "
+}
+
+function fidoNewSaltScript() {
+  return "export " + FIDO_SALT_ENV + "=\"$(head -c 32 /dev/urandom | base64 -w0)\"; "
+}
+
+function nestedScript(cmd) { return "bash -c " + shellQuote(cmd[2]) }
+
+// Unlock through a credential the envelope already has a wrap for: one touch
+// with the wrap's own salt, then the envelope opens and the password is the
+// only output.
+function fidoUnlockCommand(tool, account, target) {
+  if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)
+      || !ENVELOPE_BASE64_RE.test(String(target.salt || ""))) return envelopeRefused()
+  var script = fidoAssertScript(target, shellQuote(target.salt))
+    + nestedScript(unlockEnvelopeOpenCommand(tool, account, { kind: "fido", cred: target.cred }))
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// Enabling FIDO2: the typed master password (KEYRING_SECRET_ENV) authorizes,
+// one touch yields the hmac-secret for a fresh salt, and the wrap is added.
+// Exit 10 means there is no envelope yet: the caller has `bw` check the
+// password, stores it, and asks for the touch again.
+function fidoEnrollCommand(tool, account, target) {
+  if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)) return envelopeRefused()
+  var script = fidoNewSaltScript() + fidoAssertScript(target, "\"$" + FIDO_SALT_ENV + "\"")
+    + nestedScript(unlockEnvelopeUpdateCommand(tool, account,
+      { kind: "add-fido", cred: target.cred, rp: target.rp, saltFromEnv: true }))
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// The first unlock after upgrading: the credential has no wrap, but the old
+// plaintext entry is there. The same single touch yields an hmac-secret for a
+// fresh salt; the legacy password opens (or creates) the envelope and the
+// FIDO wrap is added; the envelope is then opened through that wrap, which is
+// the proof the legacy entry can go. If any of that fails the legacy password
+// still unlocks, exit 40 says so, and the entry stays for next time.
+function fidoLegacyUnlockCommand(tool, account, target) {
+  if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)) return envelopeRefused()
+  var migrate = legacyMigrationCommand(tool, account, KEYRING_FIDO,
+    { kind: "add-fido", cred: target.cred, rp: target.rp, saltFromEnv: true }, false)
+  var script = "__pw=\"$(secret-tool lookup" + keyringAttributes(KEYRING_FIDO)
+    + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ")\"; "
+    + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
+    + fidoNewSaltScript() + fidoAssertScript(target, "\"$" + FIDO_SALT_ENV + "\"")
+    + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; "
+    + "if " + nestedScript(migrate) + " >/dev/null; then "
+    + nestedScript(unlockEnvelopeOpenCommand(tool, account, { kind: "fido", cred: target.cred }))
+    + " && exit 0; fi; "
+    + "printf '%s' \"$__pw\"; exit " + FIDO_EXIT.legacyUsed
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
 function unlockEnvelopeClearCommand() {

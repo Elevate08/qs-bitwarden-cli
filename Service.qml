@@ -795,6 +795,8 @@ Item {
   // one moment the PIN and the password are both in hand -- then deleted.
   property bool legacyPinStored: false
   property bool pinFromEnvelope: false
+  // Set by FidoUnlock when the password came from the envelope's FIDO wrap.
+  property bool fidoFromEnvelope: false
   // The PIN that just decrypted a legacy blob, held only until that unlock
   // settles so the blob can be migrated with it.
   property string pendingPinForMigration: ""
@@ -876,6 +878,7 @@ Item {
     legacyPinStored = false
     pinFromEnvelope = false
     pendingPinForMigration = ""
+    fidoFromEnvelope = false
   }
 
   function refreshEnvelope() {
@@ -995,28 +998,38 @@ Item {
   // envelope at all, `bw` checks the password instead and it is stored the
   // way any accepted password is, then the method is added.
   function addQuickUnlockMethod(password, op, extraEnv, done) {
+    addQuickUnlockMethodWith(password, function(tool, account) {
+      return Model.unlockEnvelopeUpdateCommand(tool, account, op)
+    }, extraEnv, done)
+  }
+
+  // The same, for a method whose command is more than an update -- FIDO2's
+  // touches the key first. `done(ok, why, exitCode)`.
+  function addQuickUnlockMethodWith(password, makeCommand, extraEnv, done) {
     var pw = String(password || "")
-    if (!quickUnlockAvailable) { done(false, "unavailable"); return }
+    if (!quickUnlockAvailable) { done(false, "unavailable", 0); return }
     withEnvelopeAccount(function() {
       var env = {}
       env[Model.keyringSecretEnvVar()] = pw
       if (extraEnv) for (var k in extraEnv) env[k] = extraEnv[k]
-      var command = Model.unlockEnvelopeUpdateCommand(root.envelopeTool(), root.envelopeAccount(), op)
+      var command = makeCommand(root.envelopeTool(), root.envelopeAccount())
       root.queueEnvelopeJob({
         command: command, env: env, writes: true,
         onDone: function(code) {
           var E = Model.envelopeExitCodes()
-          if (code === 0) { root.refreshEnvelope(); done(true, ""); return }
-          if (code === 3) { done(false, "wrong-password"); return }
-          if (code !== E.absent && code !== 6 && code !== E.unseal) { done(false, "failed"); return }
+          if (code === 0) { root.refreshEnvelope(); done(true, "", 0); return }
+          if (code === 3) { done(false, "wrong-password", code); return }
+          if (code !== E.absent && code !== 6 && code !== E.unseal) { done(false, "failed", code); return }
           root.verifyWithBw(pw, function(ok) {
-            if (!ok) { done(false, "wrong-password"); return }
+            if (!ok) { done(false, "wrong-password", 3); return }
             root.storeAcceptedMasterPassword(pw, function(stored) {
-              if (!stored) { done(false, "failed"); return }
+              if (!stored) { done(false, "failed", 0); return }
               var again = {}
               again[Model.keyringSecretEnvVar()] = pw
               if (extraEnv) for (var k2 in extraEnv) again[k2] = extraEnv[k2]
-              root.writeEnvelope(command, again, function(added) { done(added, added ? "" : "failed") })
+              root.writeEnvelope(command, again, function(added, addCode) {
+                done(added, added ? "" : "failed", added ? 0 : addCode)
+              })
             })
           })
         }
@@ -4322,6 +4335,7 @@ Item {
     } else {
       var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
         || (pendingUnlockFrom === "pin" && pinFromEnvelope)
+        || (pendingUnlockFrom === "fido" && fidoFromEnvelope)
       if (!fromEnvelope) pendingUnlockPassword = ""
       pendingPinForMigration = ""
       // A stored secret the vault no longer accepts is useless: drop it rather
@@ -4345,6 +4359,20 @@ Item {
         requestMasterCredentialClear()
         fingerprintStored = false
         fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
+        errorMessage = ""
+        focusAppropriateField()
+        Qt.callLater(prepareUnlock)
+        return
+      }
+      if (pendingUnlockFrom === "fido" && fidoFromEnvelope) {
+        // As for fingerprint and PIN: the password was changed elsewhere.
+        // Keep the key's way in, and let the next typed unlock re-seal the
+        // envelope with the password the key just produced.
+        pendingUnlockFrom = ""
+        fidoFromEnvelope = false
+        rotationOldPassword = pendingUnlockPassword
+        pendingUnlockPassword = ""
+        fidoUnlocker.failure = "Your master password was changed. Unlock with the new one once; FIDO2 unlock will follow it."
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
@@ -4442,6 +4470,7 @@ Item {
     }
     pendingPinForMigration = ""
     pinFromEnvelope = false
+    fidoFromEnvelope = false
     pendingUnlockPassword = ""
     pendingUnlockFrom = ""
     pinEntry = ""

@@ -122,7 +122,7 @@
         "key": "fidoUnlock",
         "type": "boolean",
         "label": "Unlock with FIDO2 key",
-        "description": "Use a FIDO2 authenticator (YubiKey and friends) to unlock the vault. Requires 'omarchy setup security fido2'; that one registration also serves the system's own authentication prompts. Stores your master password in the OS login keyring so a verified key touch can unlock the vault -- the same trade-off as the fingerprint and Bitwarden desktop biometrics. Turning this off deletes the stored password.",
+        "description": "Use a FIDO2 authenticator (YubiKey and friends) to unlock the vault. Requires 'omarchy setup security fido2'; that one registration also serves the system's own authentication prompts, and nothing is registered again. Your master password is stored once, encrypted and sealed to this machine; a touch asks the key for a secret only it can produce, and that secret opens it -- so unlocking needs the key itself, not just access to the keyring. Turning this off removes the key's access.",
         "defaultValue": false
       },
       {

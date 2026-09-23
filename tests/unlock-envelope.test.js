@@ -40,6 +40,10 @@ new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js")
   exports.clearAll = keyringClearAllCommand
   exports.migrate = legacyFingerprintMigrationCommand
   exports.migratePin = legacyPinMigrationCommand
+  exports.fidoUnlock = fidoUnlockCommand
+  exports.fidoEnroll = fidoEnrollCommand
+  exports.fidoLegacy = fidoLegacyUnlockCommand
+  exports.fidoExits = fidoExitCodes
   exports.migrationExits = legacyMigrationExitCodes
   exports.bwVerify = bwVerifyPasswordCommand
   exports.prereqs = quickUnlockPrereqCommand
@@ -81,6 +85,10 @@ const PIN_VALUE = "482913"
 const HMAC_VALUE = Buffer.alloc(32, 7).toString("base64")
 const CRED = Buffer.from("credential-id-from-pam-u2f").toString("base64")
 const FIDO_SALT = Buffer.alloc(32, 9).toString("base64")
+// Credentials as the pam-u2f authfile records them, on a stand-in key.
+const FIDO_CRED_A = Buffer.alloc(64, 0xa1).toString("base64")
+const FIDO_CRED_B = Buffer.alloc(64, 0xb2).toString("base64")
+const FIDO_CRED_ELSEWHERE = Buffer.alloc(64, 0xc3).toString("base64")
 
 function fakeBin(dir, realCreds) {
   const bin = path.join(dir, "bin")
@@ -111,6 +119,22 @@ esac`)
   }
   write("unlock-tool", `exec ${JSON.stringify(realTool)} "$@"`)
 
+  // A key that holds FAKE_FIDO_CREDS, answers only when "touched" (not
+  // FAKE_FIDO_FAIL), and derives each hmac-secret from the credential and
+  // salt, so the same pair always gives the same secret. Every secret it hands
+  // out is logged, for the argv check at the end.
+  write("fido2-assert", `
+hmac=0; for a in "$@"; do [ "$a" = -h ] && hmac=1; done
+[ -z "\${FAKE_FIDO_FAIL:-}" ] || exit 1
+IFS= read -r cdh; IFS= read -r rp; IFS= read -r cred; salt=""; [ $hmac = 1 ] && IFS= read -r salt
+case ",$FAKE_FIDO_CREDS," in *",$cred,"*) ;; *) exit 1 ;; esac
+printf '%s\n%s\nauthdata\nsignature\n' "$cdh" "$rp"
+if [ $hmac = 1 ]; then
+  secret="$(printf '%s|%s|%s' fake-device-key "$cred" "$salt" | openssl dgst -sha256 -binary | base64 -w0)"
+  printf '%s\n' "$secret" >> "$HMAC_LOG"
+  printf '%s\n' "$secret"
+fi`)
+
   if (realCreds) {
     write("systemd-creds", `exec /usr/bin/systemd-creds "$@"`)
   } else {
@@ -137,6 +161,7 @@ function suite(realCreds) {
     const store = path.join(dir, "store")
     fs.mkdirSync(store)
     const argvLog = path.join(dir, "argv.log")
+    const hmacLog = path.join(dir, "hmac.log")
     const tool = path.join(bin, "unlock-tool")
     const stored = () => {
       const f = path.join(store, Model.account())
@@ -148,7 +173,9 @@ function suite(realCreds) {
         PATH: `${bin}:/usr/bin:/bin`,
         HOME: process.env.HOME || dir,
         STORE_DIR: store,
-        ARGV_LOG: argvLog
+        ARGV_LOG: argvLog,
+        HMAC_LOG: hmacLog,
+        FAKE_FIDO_CREDS: [FIDO_CRED_A, FIDO_CRED_B].join(",")
       }, realCreds ? {
         XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || "",
         DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || ""
@@ -293,6 +320,58 @@ function suite(realCreds) {
     eq(tag + "the same PIN now opens the envelope", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).out, plain)
     eq(tag + "and fingerprint still does", open({ kind: "fingerprint" }).out, plain)
 
+    // --- FIDO2 through hmac-secret ---
+    const F = Model.fidoExits()
+    const onKey = (cred) => ({ device: "/dev/hidraw9", cred, rp: "pam://tuxframe" })
+    const wrapOf = (cred) => (summary().fido || []).find(w => w.cred === cred)
+    eq(tag + "enrolling needs the right master password (the touch comes first)",
+      run(Model.fidoEnroll(tool, ACCOUNT, onKey(FIDO_CRED_A)), { [SECRET]: "wrong" }).code, 3)
+    eq(tag + "no touch, no wrap", run(Model.fidoEnroll(tool, ACCOUNT, onKey(FIDO_CRED_A)),
+      { [SECRET]: plain }, { FAKE_FIDO_FAIL: "1" }).code, F.assert)
+    eq(tag + "a credential on no plugged-in key cannot enroll",
+      run(Model.fidoEnroll(tool, ACCOUNT, onKey(FIDO_CRED_ELSEWHERE)), { [SECRET]: plain }).code, F.assert)
+    eq(tag + "one touch and the password enroll a key",
+      run(Model.fidoEnroll(tool, ACCOUNT, onKey(FIDO_CRED_A)), { [SECRET]: plain }).code, 0)
+    const wrapA = wrapOf(FIDO_CRED_A)
+    check(tag + "its wrap records the relying party and a fresh 32-byte salt",
+      wrapA && wrapA.rp === "pam://tuxframe" && Buffer.from(wrapA.salt, "base64").length === 32,
+      JSON.stringify(wrapA))
+    const unlockA = run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: wrapA.salt })))
+    eq(tag + "one touch unlocks through it", unlockA.code, 0)
+    eq(tag + "and the password is the only output", unlockA.out, plain)
+    eq(tag + "no touch, no password",
+      run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: wrapA.salt })),
+        {}, { FAKE_FIDO_FAIL: "1" }).code, F.assert)
+    eq(tag + "another salt yields another secret, which opens nothing",
+      run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_A), { salt: FIDO_SALT }))).code, 3)
+
+    // The first touch after upgrading: no wrap for this credential yet, but
+    // the old plaintext entry is there. The same touch migrates it.
+    const legacyFido = path.join(store, "fido_password")
+    fs.writeFileSync(legacyFido, plain)
+    const migratedFido = run(Model.fidoLegacy(tool, ACCOUNT, onKey(FIDO_CRED_B)))
+    eq(tag + "the legacy entry unlocks and migrates in one touch", migratedFido.code, 0)
+    eq(tag + "yielding the password", migratedFido.out, plain)
+    eq(tag + "the plaintext entry is gone", fs.existsSync(legacyFido), false)
+    const wrapB = wrapOf(FIDO_CRED_B)
+    eq(tag + "the key now has its own wrap",
+      run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_B), { salt: wrapB && wrapB.salt }))).out, plain)
+    // A legacy password the envelope refuses: it still unlocks (bw decides),
+    // exit 40 says the migration did not happen, and the entry stays.
+    fs.writeFileSync(legacyFido, "an older password")
+    before = stored()
+    const stale = run(Model.fidoLegacy(tool, ACCOUNT, onKey(FIDO_CRED_A)))
+    eq(tag + "a legacy password the envelope refuses still comes back", stale.code, F.legacyUsed)
+    eq(tag + "as itself", stale.out, "an older password")
+    check(tag + "and nothing was written or removed", fs.existsSync(legacyFido) && stored() === before, "")
+    fs.rmSync(legacyFido)
+    eq(tag + "removing one key's wrap leaves the other working",
+      run(Model.update(tool, ACCOUNT, { kind: "remove", method: "fido", cred: FIDO_CRED_A })).code, 0)
+    eq(tag + "B still unlocks",
+      run(Model.fidoUnlock(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_B), { salt: wrapB.salt }))).out, plain)
+    const handedOut = fs.existsSync(hmacLog) ? fs.readFileSync(hmacLog, "utf8").trim().split("\n") : []
+    check(tag + "the stand-in key handed out secrets", handedOut.length >= 5, String(handedOut.length))
+
     // --- presence, and clearing ---
     eq(tag + "presence is reported without the secret", run(Model.has()).out.trim(), "yes")
     run(Model.clear())
@@ -306,10 +385,13 @@ function suite(realCreds) {
     for (const [what, value] of Object.entries(secrets)) {
       check(tag + `${what} never appeared in an argv`, !argv.includes(value), "found in the argv log")
     }
+    const keySecrets = fs.existsSync(hmacLog) ? fs.readFileSync(hmacLog, "utf8").trim().split("\n").filter(Boolean) : []
+    check(tag + "no secret a key handed out ever appeared in an argv",
+      keySecrets.length > 0 && keySecrets.every(k => !argv.includes(k)), "found in the argv log")
     check(tag + "no derived key appeared in an argv either",
       !/[0-9a-f]{64}/.test(argv), (argv.match(/[0-9a-f]{64}/) || [""])[0])
     check(tag + "the argv log actually recorded the tools",
-      ["secret-tool", "argon2", "unlock-tool", "systemd-creds", "jq", "cmp", "head"]
+      ["secret-tool", "argon2", "unlock-tool", "systemd-creds", "jq", "cmp", "head", "fido2-assert"]
         .every(name => argv.includes(name + "\0")),
       argv.slice(0, 120))
   } finally {

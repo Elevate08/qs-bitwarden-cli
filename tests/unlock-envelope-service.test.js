@@ -51,8 +51,8 @@ check("a quick unlock's password never does",
   !/pendingUnlockFrom === "(pin|fingerprint|fido)"[\s\S]{0,120}storeAcceptedMasterPassword/.test(service),
   "a method-produced password is stored")
 check("the only other caller is an enable form, after bw has checked the password",
-  callers === 3 // the definition, onUnlockSuccess, addQuickUnlockMethod
-    && /verifyWithBw\(pw, function\(ok\)[\s\S]{0,200}?storeAcceptedMasterPassword\(pw/.test(bodyOf("addQuickUnlockMethod")),
+  callers === 3 // the definition, onUnlockSuccess, addQuickUnlockMethodWith
+    && /verifyWithBw\(pw, function\(ok\)[\s\S]{0,200}?storeAcceptedMasterPassword\(pw/.test(bodyOf("addQuickUnlockMethodWith")),
   `${callers} occurrences`)
 
 const loginOutput = bodyOf("onLoginOutput")
@@ -191,6 +191,28 @@ const pinEntry = manifest.barWidget.schema.find(e => e.key === "pinUnlock")
 check("the PIN option describes the envelope, not a ciphertext of its own",
   pinEntry && /stored once, encrypted/.test(pinEntry.description) && /Argon2id/.test(pinEntry.description),
   pinEntry && pinEntry.description)
+
+// -------------------------------------------------------------------------
+// FIDO2
+// -------------------------------------------------------------------------
+
+check("a key whose password was changed elsewhere is kept, and feeds the re-seal",
+  /pendingUnlockFrom === "fido" && fidoFromEnvelope\) \{[\s\S]{0,600}?rotationOldPassword = pendingUnlockPassword/
+    .test(unlockOutput), "")
+check("the enable path that touches a key shares the master-password check and bw fallback",
+  /function addQuickUnlockMethodWith\(password, makeCommand, extraEnv, done\)/.test(service)
+    && /addQuickUnlockMethodWith\(password, function\(tool, account\) \{\s*return Model\.unlockEnvelopeUpdateCommand/
+      .test(bodyOf("addQuickUnlockMethod")),
+  bodyOf("addQuickUnlockMethod"))
+check("the FIDO flag is cleared with the others",
+  /fidoFromEnvelope = false/.test(bodyOf("dropEnvelopeState"))
+    && /fidoFromEnvelope = false/.test(unlockSuccess), "")
+const fidoEntry = manifest.barWidget.schema.find(e => e.key === "fidoUnlock")
+check("the FIDO2 option describes the key's secret, not a stored password behind a gate",
+  fidoEntry && /stored once, encrypted/.test(fidoEntry.description)
+    && /nothing is registered again/.test(fidoEntry.description)
+    && !/Stores your master password in the OS login keyring/.test(fidoEntry.description),
+  fidoEntry && fidoEntry.description)
 
 const fpEntry = manifest.barWidget.schema.find(e => e.key === "fingerprintUnlock")
 check("the fingerprint option no longer says the password is stored as-is",
