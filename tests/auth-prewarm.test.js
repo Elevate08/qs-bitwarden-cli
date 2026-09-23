@@ -1,29 +1,18 @@
 #!/usr/bin/env node
-// Regression coverage for password-FIFO auth prewarming. The expensive bw
-// process must be alive before the password is submitted, while the password
-// itself stays out of argv and is written only after the user submits.
+// Password-FIFO prewarming: bw is running before submit, and the password
+// stays out of argv and is written only on submit.
 //
 //   node tests/auth-prewarm.test.js
 
+const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { execFileSync } = require("child_process")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.unlockPrewarmCommand = typeof unlockPrewarmCommand === "function" ? unlockPrewarmCommand : null
-  exports.emailLoginPrewarmCommand = typeof emailLoginPrewarmCommand === "function" ? emailLoginPrewarmCommand : null
-  exports.apiKeyLoginCommand = typeof apiKeyLoginCommand === "function" ? apiKeyLoginCommand : null
-  exports.authPasswordWriteCommand = typeof authPasswordWriteCommand === "function" ? authPasswordWriteCommand : null
-  exports.passwordEnvVar = passwordEnvVar
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done, failures } = createSuite("auth-prewarm")
 const flat = command => (command || []).join(" ")
 
 check("the model exposes the three prewarming commands",
@@ -57,10 +46,8 @@ if (Model.unlockPrewarmCommand && Model.emailLoginPrewarmCommand && Model.authPa
     /wait "\$__auth_job"; __auth_rc=\$\?; __auth_job=''; exit "\$__auth_rc"/.test(flat(unlock)),
     flat(unlock))
 
-  // Exercise the real command pair against a fake bw. The fake announces that
-  // it has started, then blocks while reading the FIFO. Only after observing
-  // that announcement do we launch the writer. Leading and trailing spaces
-  // prove the panel cannot normalize a real master password along the way.
+  // Against a fake bw that announces itself, then blocks on the FIFO; the
+  // writer starts after that. Edge spaces prove nothing trims the password.
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-prewarm-"))
   const bin = path.join(temp, "bin")
   const runtime = path.join(temp, "runtime")
@@ -127,11 +114,8 @@ wait "$auth_pid"
     fs.rmSync(temp, { recursive: true, force: true })
   }
 
-  // QML stops a Process by sending SIGTERM to its immediate child. A shell
-  // waiting for a foreground FIFO reader can defer that signal until the
-  // reader exits, which would strand both after the panel closes. Exercise
-  // cancellation separately and require the wrapper, its bw child and the
-  // FIFO to disappear promptly.
+  // QML stops a Process with SIGTERM to its child; the wrapper, its bw and the
+  // FIFO must all go promptly.
   const cancelTemp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-prewarm-cancel-"))
   const cancelBin = path.join(cancelTemp, "bin")
   const cancelRuntime = path.join(cancelTemp, "runtime")
@@ -253,16 +237,7 @@ printf '%s %s' "$parent_stopped" "$child_stopped"
 // The QML lifecycle is part of the security boundary: start early, write only
 // on submit, and stop a waiting process when the panel closes.
 const panelSrc = readPluginSource("Panel.qml")
-const bodyOf = name => {
-  const start = panelSrc.indexOf(`function ${name}(`)
-  if (start === -1) return ""
-  let depth = 0
-  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
-    if (panelSrc[i] === "{") depth++
-    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
-  }
-  return ""
-}
+const bodyOf = name => functionBody(panelSrc, name)
 
 check("opening an already-locked panel starts unlock prewarming",
   /prepareUnlock\(\)/.test(bodyOf("onPanelOpened")), bodyOf("onPanelOpened"))
@@ -325,8 +300,4 @@ check("a cancelled unlock scrubs any token that won the exit race",
   /!root\.unlockSubmitted[\s\S]{0,120}clearProcessCollectorSoon\(unlockProc\)/.test(unlockProcBlock),
   unlockProcBlock)
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

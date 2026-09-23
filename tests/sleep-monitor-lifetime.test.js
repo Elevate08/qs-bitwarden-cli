@@ -1,17 +1,14 @@
 #!/usr/bin/env node
 // Exercise owner death, not timeout's process-group termination. All logind
 // and inhibitor commands are stubs; these tests never inhibit or suspend Linux.
+const { loadModule, readPluginSource } = require("./harness")
 const assert = require("node:assert/strict")
 const fs = require("node:fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("node:os")
 const path = require("node:path")
 const { spawn } = require("node:child_process")
 
-const root = path.join(__dirname, "..")
-const model = fs.readFileSync(path.join(root, "BitwardenModel.js"), "utf8")
-const command = new Function(model.replace(/^\.pragma library\s*$/m, "")
-  + "\nreturn sleepMonitorCommand()")()
+const command = loadModule().sleepMonitorCommand()
 const panel = readPluginSource("Panel.qml")
 assert.match(panel.slice(panel.indexOf("id: sleepMonitorProc"),
   panel.indexOf("command: Model.sleepMonitorCommand()")), /stdinEnabled:\s*true/)

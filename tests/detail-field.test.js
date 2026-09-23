@@ -1,25 +1,18 @@
 #!/usr/bin/env node
-// The detail screen draws every labelled, copyable field through DetailField.
-// These assertions guard the properties that make a card safe to put on
-// screen -- masking, empty-field suppression, and the promise that a copy
-// still goes through the panel's one clipboard path.
+// DetailField: masking, hiding empty fields, and copying through the panel's
+// one clipboard path.
 //
 //   node tests/detail-field.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
+const { createSuite, read, readPluginSource } = require("./harness")
 const path = require("path")
 
-const read = f => fs.existsSync(path.join(__dirname, "..", f))
-  ? fs.readFileSync(path.join(__dirname, "..", f), "utf8") : ""
 
 const fieldSrc = read("DetailField.qml")
 const panelSrc = readPluginSource("Panel.qml")
 const customEditorSrc = readPluginSource("CustomFieldsEditor.qml")
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("detail-field")
 
 check("DetailField exists", fieldSrc !== "", "DetailField.qml is missing")
 
@@ -91,10 +84,8 @@ for (const label of ["Brand", "Cardholder Name", "Expires"]) {
 
 // --- reveals are per field ---------------------------------------------------
 //
-// One shared flag served every masked field to begin with, which was invisible
-// while a login had exactly one secret. A card has two and an identity three,
-// so revealing a card number also uncovered its security code, and an identity
-// showed its social security, passport and licence numbers together.
+//
+// Each masked field reveals on its own.
 
 const revealKeys = uses
   .filter(u => /sensitive:\s*true/.test(u))
@@ -237,8 +228,4 @@ check("an address is one copyable block, not seven rows",
     && /tooltipText: "Copy address"/.test(panelSrc),
   "an address is copied as an address")
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

@@ -1,41 +1,20 @@
 #!/usr/bin/env node
-// The quick-unlock tool ships as committed bytes beside the SSH helper and is
-// checked the same way before the panel trusts it: present, executable, the
-// right architecture, matching its own line of bin/SHA256SUMS, passing its
-// self-test, and writing the envelope format this panel reads. Any failure
-// disables PIN, fingerprint and FIDO2 unlock -- and nothing else. The master
-// password never depends on it.
-//
-// The development fallback is unlock-key/target/debug/, which CI's panel job
-// builds before running this file.
+// The quick-unlock tool is checked like the SSH helper before use: present,
+// executable, right architecture, its own SHA256SUMS line, passing self-test,
+// and the envelope format this panel reads. A failure disables only quick
+// unlock. The development fallback is unlock-key/target/debug/.
 //
 //   node tests/unlock-key-bundle.test.js
 
+const { createSuite, loadModule, read, readPluginSource, repoRoot } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { spawnSync } = require("child_process")
 
-const repoRoot = path.join(__dirname, "..")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.unlockKeyBundledRelative = unlockKeyBundledRelative
-  exports.unlockKeyDevelopmentRelative = unlockKeyDevelopmentRelative
-  exports.unlockKeyEnvelopeVersion = unlockKeyEnvelopeVersion
-  exports.unlockKeyInspectCommand = unlockKeyInspectCommand
-  exports.parseUnlockKeyInspection = parseUnlockKeyInspection
-  exports.unlockKeyReady = unlockKeyReady
-  exports.unlockKeySourceLabel = unlockKeySourceLabel
-  exports.isQuickUnlockSetting = isQuickUnlockSetting
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done } = createSuite("unlock-key-bundle")
 
 // -------------------------------------------------------------------------
 // The shipped artifact is really in the repository
@@ -64,14 +43,10 @@ if (fs.existsSync(bundled) && recorded) {
 // -------------------------------------------------------------------------
 
 eq("the bundled path is architecture-scoped",
-  Model.unlockKeyBundledRelative(), "bin/x86_64-linux/qs-bitwarden-unlock-key")
+  Model.UNLOCK_KEY_BUNDLED_RELATIVE, "bin/x86_64-linux/qs-bitwarden-unlock-key")
 eq("the development path is cargo's debug output for its own package",
-  Model.unlockKeyDevelopmentRelative(), "unlock-key/target/debug/qs-bitwarden-unlock-key")
-eq("the panel reads envelope v1", Model.unlockKeyEnvelopeVersion(), 1)
-check("the source in use is nameable",
-  /shipped/.test(Model.unlockKeySourceLabel("bundled"))
-    && /local|not the shipped/.test(Model.unlockKeySourceLabel("development")),
-  Model.unlockKeySourceLabel("development"))
+  Model.UNLOCK_KEY_DEVELOPMENT_RELATIVE, "unlock-key/target/debug/qs-bitwarden-unlock-key")
+eq("the panel reads envelope v1", Model.UNLOCK_KEY_ENVELOPE_VERSION, 1)
 
 // -------------------------------------------------------------------------
 // The inspection, run against real files
@@ -98,13 +73,13 @@ const sample = fs.existsSync(bundled) ? bundled : development
   check("its version is reported", /^\d+\.\d+\.\d+$/.test(result.version), result.version)
   eq("its envelope version is the panel's", result.protocol, 1)
   eq("its self-test passed", result.selfTest, "pass")
-  eq("quick unlock would be offered", Model.unlockKeyReady(result), true)
+  eq("quick unlock would be offered", Model.helperReady(result), true)
 }
 
 inTemp(dir => {
   const result = inspect(dir)
   eq("a missing tool is reported", result.state, "missing")
-  eq("and quick unlock stays off", Model.unlockKeyReady(result), false)
+  eq("and quick unlock stays off", Model.helperReady(result), false)
   check("the message says how to get one", /cargo build --manifest-path unlock-key/.test(result.message),
     result.message)
 })
@@ -135,7 +110,7 @@ if (fs.existsSync(sample)) {
       "0".repeat(64) + "  x86_64-linux/qs-bitwarden-unlock-key\n")
     const result = inspect(dir)
     eq("a stale shipped tool is refused", result.state, "checksum-mismatch")
-    eq("and quick unlock stays off", Model.unlockKeyReady(result), false)
+    eq("and quick unlock stays off", Model.helperReady(result), false)
   })
 
   // Shipped and correct, beside a stale SSH helper line: the SSH agent's
@@ -190,12 +165,7 @@ check("the blocked toggle says why, and that the password still works",
   /function settingBlockedReason[\s\S]{0,400}?quickUnlockUnavailableReason[\s\S]{0,100}?master password still unlocks/.test(service),
   "an inert toggle with no reason")
 check("the settings screen shows that reason",
-  /root\.vault\.settingBlockedReason\(modelData\)/.test(fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")),
+  /root\.vault\.settingBlockedReason\(modelData\)/.test(read("Panel.qml")),
   "the reason is computed but never drawn")
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`unlock-key-bundle: ${pass} passed`)
+done()

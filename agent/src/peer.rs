@@ -9,10 +9,9 @@ pub enum PeerError {
     Malformed,
 }
 
-/// Process context captured from kernel-owned peer/proc data.
-///
-/// UID is the socket admission boundary. PID, start time, and executable path
-/// are prompt context and grant-scoping inputs, not proof of user identity.
+/// Process context from kernel peer/proc data. UID is the admission boundary;
+/// PID, start time and executable path are prompt context and grant scope,
+/// not identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerContext {
     pub uid: u32,
@@ -40,17 +39,10 @@ impl PeerContext {
         })
     }
 
-    /// Whether a grant taken for `self` covers a request from `other`.
-    ///
-    /// A grant is scoped to one user and one program, deliberately not to one
-    /// process. Git runs a fresh `ssh-keygen` for every commit it signs, so a
-    /// PID-scoped grant never matches the workflow grants exist to serve --
-    /// a twenty-commit rebase would prompt twenty times either way. The
-    /// exposure this accepts is that any process at the same path benefits
-    /// during the window; on an unlocked desktop a hostile same-UID process
-    /// could simply run that program itself, which the threat model already
-    /// declines to defend against. The UID check is not relaxed: that is the
-    /// one property the companion actually verifies.
+    /// Whether a grant taken for `self` covers `other`: same user and same
+    /// program, not same process (Git runs a new `ssh-keygen` per commit). Any
+    /// process at that path benefits during the window, which a same-UID
+    /// attacker could achieve anyway; the UID check is never relaxed.
     pub fn shares_grant_scope(&self, other: &Self) -> bool {
         self.uid == other.uid && self.executable == other.executable
     }

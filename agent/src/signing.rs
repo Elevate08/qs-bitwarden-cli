@@ -4,10 +4,8 @@ use crate::rsa_keys;
 use signature::{SignatureEncoding, Signer};
 use ssh_key::{private::KeypairData, Algorithm, HashAlg, PrivateKey, Signature};
 
-/// Sign `message` with the exact algorithm selected by agent-protocol flags.
-///
-/// Callers deliberately receive no underlying crypto error: errors can carry
-/// parser or key context and the wire protocol has only a generic failure.
+/// Sign `message` with the algorithm the agent-protocol flags select. Errors
+/// are opaque: the wire has only a generic failure.
 pub(crate) fn sign(key: &PrivateKey, message: &[u8], flags: u32) -> Option<Signature> {
     match key.key_data() {
         KeypairData::Ed25519(_) if flags == 0 => key.try_sign(message).ok(),

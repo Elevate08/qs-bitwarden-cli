@@ -47,8 +47,7 @@ pub enum ControlMessage {
         request_id: u64,
         reason: String,
     },
-    /// Panel settings the companion needs to act on. Sent after the
-    /// handshake and whenever they change.
+    /// Settings the companion acts on; sent after the handshake and on change.
     Options {
         v: u8,
         #[serde(rename = "unlockOnDemand")]

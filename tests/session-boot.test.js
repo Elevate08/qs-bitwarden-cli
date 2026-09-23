@@ -1,29 +1,18 @@
 #!/usr/bin/env node
-// The remembered session must not survive the machine it was minted on.
-//
-// These run the real shell scripts the panel executes, against a stand-in
-// secret-tool, so what is checked is the behaviour and not a string.
+// A remembered session must not survive a reboot. Runs the real scripts
+// against a stand-in secret-tool.
 //
 //   node tests/session-boot.test.js
 
+const { createSuite, loadModule } = require("./harness")
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
 const { execFileSync } = require("child_process")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.keyringStoreCommand = keyringStoreCommand
-  exports.keyringLookupCommand = keyringLookupCommand
-  exports.keyringClearCommand = keyringClearCommand
-  exports.keyringSecretEnvVar = keyringSecretEnvVar
-  exports.bootIdPath = bootIdPath
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("session-boot")
 
 // A stand-in for libsecret. Keeps the stored blob in a file, records every
 // call, and can be told to refuse the session collection the way a secret
@@ -49,7 +38,7 @@ exit 1
 fs.chmodSync(path.join(stub, "secret-tool"), 0o755)
 
 const TOKEN = "not-a-real-session-token"
-const bootId = fs.readFileSync(Model.bootIdPath(), "utf8").trim()
+const bootId = fs.readFileSync(Model.BOOT_ID_PATH, "utf8").trim()
 
 const reset = () => {
   for (const f of ["value", "collection", "calls"]) fs.rmSync(path.join(stub, f), { force: true })
@@ -115,5 +104,4 @@ check("an empty keyring is not an error, so the panel falls through to bw status
 
 fs.rmSync(stub, { recursive: true, force: true })
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

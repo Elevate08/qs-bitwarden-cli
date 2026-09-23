@@ -15,10 +15,9 @@ Panel {
   // View
   // =========================================================================
   //
-  // Everything here draws. The vault -- state, commands, timers and IPC --
-  // lives in Service.qml, once per shell. The boundary is load-bearing --
-  // tests/service-host.test.js fails if this file names a control from the
-  // vault, or the vault names a control declared here.
+  // Everything here draws; the vault (state, commands, timers, IPC) is
+  // Service.qml. tests/service-host.test.js enforces that neither side names
+  // the other's controls.
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -27,10 +26,8 @@ Panel {
   // View contract
   // -------------------------------------------------------------------------
   //
-  // What the logic may ask of a view. Nothing above the View boundary names a
-  // control by id; it goes through `presenter` or eachView(), and these are the
-  // only things either may call. tests/service-host.test.js enforces both
-  // halves.
+  // What the vault may ask of a view, via `presenter` or eachView(); it names
+  // no control by id (enforced by tests/service-host.test.js).
 
   // The monitor this copy of the bar is on, for choosing a presenter.
   readonly property string screenName: root.QsWindow && root.QsWindow.window && root.QsWindow.window.screen
@@ -73,8 +70,7 @@ Panel {
     if (itemsListView) itemsListView.positionViewAtIndex(index, ListView.Contain)
   }
 
-  // Every field on the login screen, and every field on the unlock screen.
-  // focusAppropriateField() consults these before it moves the cursor.
+  // Whether a login/unlock field has focus; focusAppropriateField() asks.
   function loginFieldHasFocus() {
     return emailField.activeFocus || loginPassField.activeFocus
       || code2faField.activeFocus || deviceCodeField.activeFocus
@@ -87,18 +83,10 @@ Panel {
     return unlockForm.passwordField.activeFocus || unlockForm.pinField.activeFocus
   }
 
-  // A field whose `text` has lost its binding to the property behind it keeps
-  // showing what was typed after the property is cleared -- while every submit
-  // reads the property. That is how a login came to be sent with no code at
-  // all while the user was looking at a filled-in field: bw answered "Code is
-  // required.", the panel reported the code as rejected, and retyping it
-  // repaired the property so the next click worked.
-  //
-  // Typing keeps the binding; an imperative `field.text = value` is what drops
-  // it, after which the field never follows the property again. So these
-  // re-point each field with Qt.binding rather than copying a value: the field
-  // is refreshed now and keeps following afterwards. Never assign a plain
-  // value here -- tests/qml/tst_field_binding.qml pins why.
+  // Re-point each field at its property with Qt.binding, never assign a value:
+  // an imperative `text =` breaks the binding, and the field would keep
+  // showing text the property no longer holds (a login once went out with no
+  // code while the field showed one). See tests/qml/tst_field_binding.qml.
   function syncLoginFields() {
     code2faField.text = Qt.binding(function() { return root.vault.login2faCode })
     deviceCodeField.text = Qt.binding(function() { return root.vault.loginDeviceCode })
@@ -106,6 +94,14 @@ Panel {
     apiMasterField.text = Qt.binding(function() { return root.vault.loginPassword })
     apiClientIdField.text = Qt.binding(function() { return root.vault.loginClientId })
     apiClientSecretField.text = Qt.binding(function() { return root.vault.loginClientSecret })
+  }
+
+  // Leave a second-factor stage for the credentials form.
+  function backToCredentials() {
+    root.vault.errorMessage = ""
+    root.vault.resetEmailLoginSecondFactor()
+    root.vault.invalidateEmailLoginPrewarm()
+    Qt.callLater(function() { loginPassField.forceActiveFocus() })
   }
 
   // The same guarantee for the unlock, item-form and Send secrets.
@@ -137,15 +133,10 @@ Panel {
   // Vault host
   // -------------------------------------------------------------------------
   //
-  // This widget is built once per monitor; the vault it shows is Service.qml,
-  // built once per shell. `vault` is the shared service when the shell hands it
-  // over, or a private one this view creates when it will not -- see
-  // Model.vaultHostDecision() for why "not yet" is a wait rather than a
-  // failure.
-  // Never null: until the shared service is found this is the bar's own standby
-  // vault, which stays inert because nothing is attached to it. Every binding
-  // below reads `root.vault`, so none of them has a null to trip over while the
-  // lookup runs.
+  // This widget exists per monitor; `vault` is the shared Service.qml, or a
+  // private one when the shell does not provide it (see
+  // Model.vaultHostDecision()). Never null: until resolved it is the bar's own
+  // inert standby vault.
   property var resolvedVault: null
   readonly property var vault: resolvedVault !== null ? resolvedVault : localVault
   // "pending" until decided, then "shared" or "private".
@@ -166,8 +157,7 @@ Panel {
     root.resolvedVault.attachView(root)
   }
 
-  // Polled rather than bound: serviceFor() is a function call, so nothing
-  // notifies a binding when the shell publishes the service.
+  // Polled: serviceFor() is a call, so nothing notifies a binding.
   Timer {
     id: vaultResolveTimer
     interval: 50
@@ -190,11 +180,8 @@ Panel {
   function close() { root.vault.close() }
   function toggle() { root.vault.toggle(root) }
 
-  // The bar calls this on the popout being replaced when another one opens.
-  // When the one opening is this plugin on another monitor, the vault is moving
-  // there, not closing: only this copy goes, and a full close() here would hide
-  // the copy that just opened. Anything else taking over closes the vault as
-  // before.
+  // Called when another popout replaces this one. If it is this plugin on
+  // another monitor, the vault is moving there: close only this copy.
   function closeForPopoutSwitch() {
     root.popoutSwitchClosing = true
     root.hidePopout()
@@ -202,52 +189,29 @@ Panel {
     Qt.callLater(function() { root.popoutSwitchClosing = false })
   }
 
-  // The shared vault belongs to the shell and outlives any monitor; a private
-  // one is this view's own child and goes with it.
+  // A private vault is this view's child and goes with it; the shared one stays.
   Component.onDestruction: if (root.resolvedVault) root.resolvedVault.detachView(root)
 
-  // The lane every vertical scrollbar in this panel gets to itself.
-  //
-  // These bars are overlays: left alone they draw on top of whatever occupies
-  // the right edge of the view, which across these screens is toggles, number
-  // fields, copy buttons and the ends of elided text. Every scrolling view
-  // subtracts this from its content width, so the bar has somewhere to be and
-  // the right-hand edges of all of them line up.
-  //
-  // Measured from a real scrollbar rather than guessed at, so a theme with a
-  // wider one does not put it back over the controls. One bar stands in for
-  // all of them because they are the same control with the same style; the
-  // floor covers both a null reference and the frames before it has an
-  // implicit width of its own.
+  // Width reserved for the overlay scrollbar, so it never covers controls at
+  // the right edge. Measured from a real scrollbar, with a floor for before it
+  // has a size.
   readonly property real scrollGutter:
     Math.max(settingsScrollBar ? settingsScrollBar.implicitWidth : 0, Style.space(10))
 
-  // Which section the view is currently inside, named by the pinned indicator.
-  // Held rather than derived, because it depends on delegate geometry the
-  // Repeater only knows after layout, and a binding cannot read that without
-  // fighting it.
+  // The section named by the pinned settings header. Held, not bound: it
+  // depends on delegate geometry only known after layout.
   property var settingsStickyEntry: null
 
-  // The settings view's two geometry questions, in one place. Everything else
-  // that needs them goes through these rather than reaching into the Flickable
-  // and the Repeater by id from across the file.
+  // The settings view's geometry, in one place.
   function settingsViewportTop() { return settingsFlick ? settingsFlick.contentY : 0 }
   function settingsRepeaterItem(i) {
     return settingsRepeater ? settingsRepeater.itemAt(i) : null
   }
 
-  // The section the view is currently inside: the last heading at or above the
-  // top of the viewport, while any part of its section is still on screen.
-  //
-  // Both halves matter. Without the first the bar sits empty until the user
-  // has scrolled, which is the one position everybody starts from. Without the
-  // second the last group stays named through the maintenance and danger-zone
-  // rows below it, which belong to no section and would leave the bar
-  // describing somewhere the user had already scrolled past.
-  //
-  // Drawing the heading twice is prevented at the other end: the in-list
-  // heading of whichever section this names is drawn transparent, so it keeps
-  // its place in the layout without appearing alongside its own copy.
+  // The section the view is inside: the last heading at or above the top,
+  // while its section is still on screen (so the header is named at the start
+  // and cleared below the last group). That section's in-list heading is drawn
+  // transparent so it does not appear twice.
   function updateSettingsSticky() {
     var entries = root.vault.settingsEntries
     var top = settingsViewportTop()
@@ -257,16 +221,15 @@ Panel {
       if (!entries[i] || entries[i].kind !== "group") continue
       var row = settingsRepeaterItem(i)
       if (!row) continue
-      // Still below the top edge: the section before this one is the one the
-      // view is in.
+      // Still below the top edge: the previous section is current.
       if (row.y > top + 1) break
       if (top < settingsSectionEnd(i)) found = entries[i]
     }
     settingsStickyEntry = found
   }
 
-  // Where the section beginning at `index` stops: the next heading, or for the
-  // last one, the bottom of the final row before the trailing action blocks.
+  // Where the section at `index` ends: the next heading, or the last settings
+  // row.
   function settingsSectionEnd(index) {
     var entries = root.vault.settingsEntries
     for (var i = index + 1; i < entries.length; i++) {
@@ -282,33 +245,64 @@ Panel {
     return self ? self.y + self.height : 0
   }
 
-  // The FIDO2 half of the locked screen's maintenance pair. It has two slots:
-  // inline beside Switch / Log Out, where Forget Fingerprint sits when there is
-  // one, and on its own centred line under the pair when there is not. Declared
-  // once so the two slots cannot drift apart.
+  // "Forget FIDO2 key" on the locked screen: inline beside Switch / Log Out
+  // when there is a fingerprint button there, else centred below.
   component ForgetFidoButton: Button {
     text: "Forget FIDO2 Key"
     iconText: "󰟵"
-    tooltipText: "Remove the stored master password from the OS keyring"
+    tooltipText: "Stop unlocking with this FIDO2 key"
     fontFamily: root.fontFamily
     fontSize: Style.font.caption
     onClicked: root.vault.forgetFidoUnlock()
   }
 
-  // One of the three vault filters at the foot of the list, collapsed to its
-  // current value. Declared once so the three cannot drift apart and start
-  // reading as different kinds of control.
-  //
-  // The button names its filter as well as showing its value. The glyphs alone
-  // do not carry it: the three sit together reading "All", "All", "All" for as
-  // long as nothing is filtered, which is exactly when the value says least and
-  // the name says most. So the name stays, and the row is allowed to take a
-  // second line on the rarer occasions all three are set to something long.
-  //
-  // The value is still clipped. `Ui.Button` has no elide, so a folder named
-  // after a whole client engagement would make one button wider than the whole
-  // panel -- and a row that wraps can move a button to the next line but can
-  // never make one narrower than the panel it is in.
+  // A form row: label, optional caption note, and a NumberField.
+  component NumberRow: Row {
+    id: numberRow
+    property string label: ""
+    property string note: ""
+    property int value: 0
+    property int from: 0
+    property int to: 0
+    signal modified(int v)
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(10)
+
+    Text {
+      textFormat: Text.PlainText
+      anchors.verticalCenter: parent.verticalCenter
+      width: parent.width - Style.space(170)
+      text: numberRow.label
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+    }
+    Text {
+      textFormat: Text.PlainText
+      anchors.verticalCenter: parent.verticalCenter
+      visible: numberRow.note !== ""
+      text: numberRow.note
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+    NumberField {
+      anchors.verticalCenter: parent.verticalCenter
+      value: numberRow.value
+      from: numberRow.from
+      to: numberRow.to
+      stepSize: 1
+      foreground: root.fg
+      accent: Color.accent
+      fontFamily: root.fontFamily
+      onModified: function(v) { numberRow.modified(v) }
+    }
+  }
+
+  // A collapsed vault filter at the foot of the list, showing its name and
+  // value (three "All"s alone would be ambiguous). The value is clipped, since
+  // Ui.Button cannot elide.
   component VaultFilterButton: Button {
     required property string group
     required property string glyph
@@ -316,8 +310,7 @@ Panel {
     required property string value
     required property string shortcut
 
-    // Clipped first, then neutralized: plainLabel may return a <span>, and
-    // slicing that would cut the tag in half.
+    // Clip, then neutralize (plainLabel may add a <span>).
     text: Model.plainLabel(name + ": " + Model.clipLabel(value, 20))
     iconText: root.vault.openFilterGroup === group ? "󰅀" : glyph
     selected: root.vault.openFilterGroup === group
@@ -325,8 +318,7 @@ Panel {
     fontFamily: root.fontFamily
     fontSize: Style.font.caption
     horizontalPadding: Style.space(10)
-    // The full value, unclipped, is still one hover away -- and the tooltip is
-    // drawn by the kit's own auto-detecting Text, so it is neutralized too.
+    // The full value in the tooltip, neutralized too.
     tooltipText: Model.plainLabel(name + " filter (" + shortcut + "): " + value)
     onClicked: root.vault.toggleFilterGroup(group)
   }
@@ -346,17 +338,10 @@ Panel {
       }
 
       Text {
-        textFormat: Text.PlainText
         id: shieldGlyph
-        // The centering below is what holds the glyph on the same logical
-        // centerline as the bar's panel-open indicator; the renderer does not
-        // enter into it. Measured at scale 1.3333, QtRendering and
-        // NativeRendering put the painted center on the same pixel -- but
-        // QtRendering came out with saturated colour on the glyph edges, blue
-        // down one side and gold down the other, which no other icon in the bar
-        // has. So this matches what Omarchy uses everywhere else
-        // (Ui/OpticalGlyph.qml, Ui/WidgetButton.qml) and the plugin's own lock
-        // and install badges below.
+        textFormat: Text.PlainText
+        // NativeRendering, like Omarchy's own glyphs; QtRendering fringed the
+        // edges with colour.
         anchors.centerIn: parent
         anchors.horizontalCenterOffset: shieldGlyph.implicitWidth / 2
           - (shieldGlyphMetrics.tightBoundingRect.x
@@ -368,10 +353,7 @@ Panel {
         renderType: Text.NativeRendering
       }
 
-      // Mini Install Badge in the same corner while a required tool is absent.
-      // A freshly installed widget has to say "click me, there is one step
-      // left" rather than sit there looking like it failed, so this outranks
-      // the padlock: with no `bw` there is no lock state worth reporting.
+      // Install badge while a required tool is missing; outranks the padlock.
       Item {
         visible: root.vault.missingRequired.length > 0
         anchors.right: parent.right
@@ -428,7 +410,7 @@ Panel {
   }
 
   // -------------------------------------------------------------------------
-  // Status Bar Button
+  // Bar button
   // -------------------------------------------------------------------------
 
   BarIconButton {
@@ -439,8 +421,7 @@ Panel {
     useActiveColor: false
     dimmed: root.vault.status === "unauthenticated" || root.vault.status === "checking"
     tooltipText: {
-      // Ahead of every status: with a required tool missing, whatever `bw`
-      // last said about the vault is beside the point.
+      // A missing required tool outranks any vault status.
       if (root.vault.missingRequired.length > 0) {
         return "Bitwarden (Click to finish setup)"
       }
@@ -465,7 +446,7 @@ Panel {
   }
 
   // -------------------------------------------------------------------------
-  // Popup Window (KeyboardPanel)
+  // Popup window
   // -------------------------------------------------------------------------
 
   SshApprovalPopup {
@@ -481,11 +462,8 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    // Every unlocked screen except the two that are text entry drives the key
-    // catcher, so arrow navigation works on settings and the generator too.
-    // Setup is buttons, not text entry, and it is reached with the vault state
-    // still unknown -- so it takes the key catcher outright rather than
-    // handing focus to a password field that is not even on screen.
+    // The key catcher drives every unlocked screen but the two text-entry
+    // ones, and setup (all buttons) outright.
     focusTarget: root.vault.currentScreen === "setup"
       ? keyCatcher
       : ((root.vault.status === "unlocked"
@@ -500,27 +478,20 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.vault.filterDrawerHeight)
 
-    // PanelKeyCatcher maps h/j/k/l to arrow navigation and consumes them before
-    // its textKey signal fires, which silently swallowed the l (lock) shortcut.
-    // Forwarding here first gives our letter bindings the first look; anything
-    // we do not accept falls through to the catcher's own navigation.
+    // Our letter shortcuts get the first look: PanelKeyCatcher would consume
+    // h/j/k/l (including l, lock) as navigation.
     Item {
       id: shortcutInterceptor
       Keys.onPressed: function(event) {
-        // Escape is handled here rather than in the key catcher because the
-        // catcher is blocked on every screen built around a text field -- the
-        // item form, the PIN and fingerprint screens, the Send composer --
-        // and a blocked catcher swallows Escape along with everything else.
-        // This interceptor runs first and is not gated by `blocked`, so
-        // cancelling out of a form works while the cursor is in a field.
+        // Escape here, since the catcher is blocked on text-entry screens and
+        // would swallow it.
         if (event.key === Qt.Key_Escape && !(event.modifiers & ~Qt.KeypadModifier)) {
           root.vault.handleEscape()
           event.accepted = true
           return
         }
 
-        // Alt may arrive with no text depending on the keymap, so fall back to
-        // the key code for A-Z.
+        // Alt may arrive without text; fall back to the key code for A-Z.
         var t = event.text ? String(event.text).toLowerCase() : ""
         if (!t && event.key >= Qt.Key_A && event.key <= Qt.Key_Z) {
           t = String.fromCharCode(event.key).toLowerCase()
@@ -555,8 +526,7 @@ Panel {
         || (root.vault.currentScreen === "fingerprint")
         || (root.vault.currentScreen === "sends" && root.vault.sendMode === "create")
 
-      // Reached only on screens where the catcher is not blocked; the
-      // interceptor handles Escape everywhere else. Same dispatch either way.
+      // Only where the catcher is not blocked; same dispatch as the interceptor.
       onCloseRequested: root.vault.handleEscape()
       onTabRequested: function(direction) {
         if (root.vault.currentScreen === "main") {
@@ -613,12 +583,8 @@ Panel {
           }
           return
         }
-        // The password row has always been labelled "Copy password (y / Enter)"
-        // and the detail screen has never handled Enter, so that half of the
-        // tooltip was a promise nothing kept. Enter copies the item's primary
-        // secret here, the same one `y` reaches: the password on a login, the
-        // number on a card. A note or an identity has no single such value, so
-        // Enter stays inert on those rather than guessing at one.
+        // Enter copies the item's primary secret, like `y`: a login's password,
+        // a card's number. Nothing on notes and identities.
         if (root.vault.currentScreen === "detail") {
           if (root.vault.detailIsCard) {
             if (root.vault.detailCard && root.vault.detailCard.number) {
@@ -641,10 +607,7 @@ Panel {
           if (lower === "/") searchField.forceActiveFocus()
           else root.vault.runShortcut(lower)
         } else if (root.vault.currentScreen === "detail") {
-          // `y` is "copy the thing this item is for". On a login that is the
-          // password; on a card it is the number. Keeping one key for the
-          // primary secret is worth more than a key that means `password`
-          // everywhere and does nothing on two of the four types.
+          // `y` copies the item's primary secret (password or card number).
           if (lower === "y" || lower === "p") {
             if (root.vault.detailIsCard) {
               if (root.vault.detailCard && root.vault.detailCard.number) root.vault.copyToClipboard(root.vault.detailCard.number, "Card number")
@@ -660,9 +623,8 @@ Panel {
               root.vault.copyToClipboard(root.vault.detailCard.code, "Security code")
             }
           } else if (lower === "u" || lower === "c") {
-            // `u` copies the identifier, `c` the contact address. On a login
-            // both land on the one username field, which is what they have
-            // always done.
+            // `u` copies the identifier, `c` the contact address (both the
+            // username on a login).
             if (root.vault.detailIsIdentity && root.vault.detailIdentity) {
               if (lower === "c" && root.vault.detailIdentity.email) {
                 root.vault.copyToClipboard(root.vault.detailIdentity.email, "Email")
@@ -694,7 +656,7 @@ Panel {
         spacing: Style.space(12)
 
         // -------------------------------------------------------------------
-        // Hero Header
+        // Header
         // -------------------------------------------------------------------
         PanelHero {
           width: parent.width
@@ -703,9 +665,7 @@ Panel {
             if (root.vault.status === "unlocked") {
               if (root.vault.isSyncing) return "Syncing..."
               if (root.vault.isLoading && root.vault.items.length === 0) return "Loading items..."
-              // The email arrives with `bw status`, which lags the item list on
-              // a cold start and after a terminal-login handoff. Fall back to
-              // the count so the subtitle is never blank in that gap.
+              // `bw status` can lag the list; show the count meanwhile.
               return root.vault.userEmail || (root.vault.filteredItems.length + " items")
             }
             if (root.vault.status === "locked") return "Vault Locked"
@@ -792,7 +752,7 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // Sequential TOTP Follow-Up Action Banner
+        // TOTP follow-up banner
         // -------------------------------------------------------------------
         BorderSurface {
           visible: root.vault.totpFollowupActive && root.vault.totpFollowupItem !== null
@@ -857,13 +817,9 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // Development Helper Banner
+        // Development helper banner
         // -------------------------------------------------------------------
-        // The shipped helper is what a user installed and what CI verified.
-        // Falling back to a local build is deliberate -- a broken release must
-        // not strand a working one -- but it is a state you can sit in for
-        // days without noticing, signing with a binary nobody checked. The
-        // settings screen says so in passing; this says so wherever you are.
+        // Shown on every screen while an unverified local build signs.
         BorderSurface {
           visible: root.vault.sshAgentHelper.source === "development" && root.vault.activeScreen !== "settings"
           width: parent.width
@@ -884,8 +840,8 @@ Panel {
               font.pixelSize: Style.font.body
             }
             Text {
-              textFormat: Text.PlainText
               id: sshDevHelperText
+              textFormat: Text.PlainText
               text: Model.sshAgentDevelopmentHelperWarning(root.vault.sshAgentHelper)
               color: root.fg
               font.family: root.fontFamily
@@ -897,14 +853,10 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SSH Signing Cooldown Banner
+        // SSH signing cooldown banner
         // -------------------------------------------------------------------
-        // A five-minute signing outage is not noticed on the SSH agent
-        // settings screen: the requests it refuses arrive while the panel is
-        // showing something else, or while the vault is locked and no prompt
-        // can be raised at all. So the explanation lives on every screen,
-        // and carries the only control that ends the cooldown early -- an
-        // approval cannot, because there is no prompt left to approve.
+        // On every screen, since refused requests arrive while the panel
+        // shows something else; carries the only early resume.
         BorderSurface {
           visible: root.vault.sshCooldownStatus.active
           width: parent.width
@@ -930,8 +882,8 @@ Panel {
               spacing: Style.space(8)
 
               Text {
-                textFormat: Text.PlainText
                 id: sshCooldownBannerText
+                textFormat: Text.PlainText
                 text: root.vault.sshCooldownStatus.message
                 color: root.fg
                 font.family: root.fontFamily
@@ -1190,70 +1142,22 @@ Panel {
                 }
               }
 
-              Row {
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(170)
-                  text: "Delete after"
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: "days"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-                NumberField {
-                  anchors.verticalCenter: parent.verticalCenter
-                  value: root.vault.sendFormDays
-                  from: 1
-                  to: 31
-                  stepSize: 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.vault.sendFormDays = v }
-                }
+              NumberRow {
+                label: "Delete after"
+                note: "days"
+                value: root.vault.sendFormDays
+                from: 1
+                to: 31
+                onModified: function(v) { root.vault.sendFormDays = v }
               }
 
-              Row {
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(170)
-                  text: "Maximum views"
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: root.vault.sendFormMaxAccess === 0 ? "unlimited" : ""
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-                NumberField {
-                  anchors.verticalCenter: parent.verticalCenter
-                  value: root.vault.sendFormMaxAccess
-                  from: 0
-                  to: 100
-                  stepSize: 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.vault.sendFormMaxAccess = v }
-                }
+              NumberRow {
+                label: "Maximum views"
+                note: root.vault.sendFormMaxAccess === 0 ? "unlimited" : ""
+                value: root.vault.sendFormMaxAccess
+                from: 0
+                to: 100
+                onModified: function(v) { root.vault.sendFormMaxAccess = v }
               }
 
               Text { textFormat: Text.PlainText; text: "PASSWORD (OPTIONAL)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -1404,9 +1308,6 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 0c: PIN SETUP
-        // -------------------------------------------------------------------
-        // -------------------------------------------------------------------
         // SCREEN 0d: GENERATOR
         // -------------------------------------------------------------------
         Flickable {
@@ -1442,8 +1343,8 @@ Panel {
                 onClicked: root.vault.closeGenerator()
               }
 
-              // Only when the generator was opened from the item form: hand
-              // the value back to the password field and return there.
+              // Only when opened from the item form: fill its password field
+              // and return.
               Button {
                 visible: root.vault.generatorFeedsForm
                 text: "Use this password (Enter)"
@@ -1581,29 +1482,12 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Row {
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(170)
-                  text: "Length"
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                NumberField {
-                  anchors.verticalCenter: parent.verticalCenter
-                  value: root.vault.genOpts.length
-                  from: 5
-                  to: 128
-                  stepSize: 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.vault.setGenOpt("length", v) }
-                }
+              NumberRow {
+                label: "Length"
+                value: root.vault.genOpts.length
+                from: 5
+                to: 128
+                onModified: function(v) { root.vault.setGenOpt("length", v) }
               }
 
               Flow {
@@ -1712,29 +1596,12 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Row {
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(170)
-                  text: "Number of words"
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                NumberField {
-                  anchors.verticalCenter: parent.verticalCenter
-                  value: root.vault.genOpts.words
-                  from: 3
-                  to: 20
-                  stepSize: 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.vault.setGenOpt("words", v) }
-                }
+              NumberRow {
+                label: "Number of words"
+                value: root.vault.genOpts.words
+                from: 3
+                to: 20
+                onModified: function(v) { root.vault.setGenOpt("words", v) }
               }
 
               Row {
@@ -1782,8 +1649,9 @@ Panel {
           }
         }
 
-        // Scrolls rather than overflowing the panel: this screen is taller
-        // than the popup's height cap on smaller displays.
+        // -------------------------------------------------------------------
+        // SCREEN 0c: PIN SETUP (scrolls: taller than the popup on small displays)
+        // -------------------------------------------------------------------
         Flickable {
           id: pinFlick
           visible: root.vault.activeScreen === "pin"
@@ -1849,8 +1717,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               text: "PIN"
-              // The label turns with the field, so the warning is visible even
-              // when the cursor has moved on to Confirm.
+              // The label turns red too, visible while typing in Confirm.
               color: root.vault.pinSetupWeak ? root.urgent : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1864,8 +1731,7 @@ Panel {
               text: root.vault.pinSetupPin
               onTextChanged: root.vault.pinSetupPin = text.replace(/[^0-9]/g, "")
               enabled: !root.vault.pinBusy
-              // A short PIN is allowed but not waved through: the border goes
-              // red rather than accent while it is under the recommendation.
+              // A short PIN is allowed but flagged in red.
               accent: root.vault.pinSetupWeak ? root.urgent : Color.accent
               foreground: root.vault.pinSetupWeak ? root.urgent : root.fg
             }
@@ -1931,10 +1797,8 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 0a: SETUP WIZARD (missing dependencies)
+        // SCREEN 0a: SETUP WIZARD (missing dependencies; scrolls)
         // -------------------------------------------------------------------
-        // Scrolls rather than overflowing the panel: this screen is taller
-        // than the popup's height cap on smaller displays.
         Flickable {
           id: setupFlick
           visible: root.vault.activeScreen === "setup"
@@ -1983,8 +1847,7 @@ Panel {
           }
 
           Repeater {
-            // Only rows this machine can act on. A desktop with no fingerprint
-            // reader is not missing a dependency.
+            // Only rows this machine can act on (no reader, no fingerprint row).
             model: Model.applicableDependencies(root.vault.dependencies)
 
             delegate: BorderSurface {
@@ -2056,10 +1919,8 @@ Panel {
                     wrapMode: Text.WordWrap
                   }
 
-                  // The package being on PATH is not the finish line for a
-                  // setup row: fingerprint unlock also wants an enrolled
-                  // finger and the PAM stack, and only the setup command
-                  // produces those.
+                  // A setup row needs more than the package (an enrolled
+                  // finger, the PAM stack); only the setup command does that.
                   Text {
                     textFormat: Text.PlainText
                     visible: modelData.setup && modelData.installed && !modelData.ready
@@ -2101,9 +1962,7 @@ Panel {
               onClicked: root.vault.checkDependencies()
             }
 
-            // The one button a first run needs. It covers the optional tools
-            // too, so a single trip through the terminal leaves every feature
-            // working rather than only the ones that block startup.
+            // Installs every missing package, optional ones included.
             Button {
               visible: root.vault.installablePackages.length > 0
               text: root.vault.installablePackages.length > 1 ? "Install all missing" : "Install"
@@ -2128,10 +1987,8 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 0b: SETTINGS
+        // SCREEN 0b: SETTINGS (scrolls)
         // -------------------------------------------------------------------
-        // Scrolls rather than overflowing the panel: this screen is taller
-        // than the popup's height cap on smaller displays.
         Column {
           id: settingsScreen
           visible: root.vault.activeScreen === "settings"
@@ -2140,17 +1997,13 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          // Pinned above the scroll area rather than scrolling with it. The
-          // right half is the way out, which should never require scrolling to
-          // find. The left half is the section the view is currently inside,
-          // and it folds that section -- so a user twenty rows into Security
-          // can shut it without first scrolling back to its heading.
+          // Pinned above the scroll area: the current section (click to fold
+          // it from anywhere inside) and the way out.
           Item {
             width: parent.width
             height: Style.space(26)
 
-            // An indicator, not a control. It says which section the view is
-            // inside; the heading it stands for is a plain heading too.
+            // An indicator, not a control.
             Row {
               id: stickySection
               anchors.left: parent.left
@@ -2170,9 +2023,7 @@ Panel {
 
             Row {
               anchors.right: parent.right
-              // Flush with the scrolling rows below, which stop short of the
-              // scrollbar. Without this the Back button overhangs every
-              // control it sits above.
+              // Clear of the scrollbar, aligned with the rows below.
               anchors.rightMargin: root.scrollGutter
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(8)
@@ -2214,20 +2065,15 @@ Panel {
 
             WheelScroll { view: settingsFlick }
 
-            // The pinned bar names the section the view is inside, so it has to
-            // be recomputed as the view moves and whenever the content resizes.
-            // The height case runs a frame later, after layout.
+            // Recompute the pinned section as the view moves or resizes (the
+            // resize a frame later, after layout).
             onContentYChanged: root.updateSettingsSticky()
             onContentHeightChanged: Qt.callLater(root.updateSettingsSticky)
 
             Column {
               id: settingsCol
-              // Short of the scrollbar rather than under it. The bar is an
-              // overlay, so without this it sits on top of whatever is at the
-              // right edge -- which on this screen is every toggle and every
-              // number field. Reserved unconditionally: the width would
-              // otherwise change as the bar came and went, reflowing the rows
-              // underneath it.
+              // Clear of the overlay scrollbar, reserved unconditionally so
+              // rows do not reflow as it appears.
               width: settingsFlick.width - root.scrollGutter
             spacing: Style.space(10)
 
@@ -2259,15 +2105,8 @@ Panel {
 
                 readonly property bool isGroup: modelData.kind === "group"
 
-              // This heading is the one the pinned bar is currently drawing.
-              // The bar stands in for it completely, so the row gives up its
-              // space rather than sitting there empty -- a transparent row
-              // left a heading-sized hole directly under the bar.
-              //
-              // Exactly one heading is ever in this state, so the content
-              // height does not change as the pinned section changes: the
-              // heading taking over collapses at the same moment the previous
-              // one is restored, and the view does not jump.
+              // The heading the pinned bar is showing collapses, and the one it
+              // replaces reappears at once, so the content height is stable.
               readonly property bool yieldsToBar: isGroup
                 && Boolean(root.settingsStickyEntry)
                 && root.settingsStickyEntry.group === modelData.group
@@ -2279,11 +2118,8 @@ Panel {
                   height: visible ? Style.space(18) : 0
                 }
 
-                // A group heading is a row of its own rather than a label on
-                // the first setting under it: the pinned indicator reads
-                // delegate geometry to tell which section the view is inside,
-                // and a heading carried by another row has no position of its
-                // own to be found at.
+                // Headings are rows of their own so the pinned bar can find
+                // them by delegate geometry.
                 Item {
                   visible: isGroup && !yieldsToBar
                   width: parent.width
@@ -2299,8 +2135,7 @@ Panel {
                   }
                 }
 
-                // A setting whose dependency is missing is shown but inert, with
-                // the reason stated rather than the control silently doing nothing.
+                // Inert when its dependency is missing, with the reason shown.
                 readonly property bool blocked: !isGroup && root.vault.settingBlocked(modelData)
 
                 Item {
@@ -2310,8 +2145,7 @@ Panel {
                     ? Math.max(settingTextCol.implicitHeight, settingControlRow.implicitHeight, Style.space(32))
                     : 0
 
-                  // Keyboard cursor: a bar in the gutter, so the row it marks is
-                  // unmistakable without recolouring the whole row.
+                  // Keyboard cursor: a bar in the gutter.
                   Rectangle {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
@@ -2343,10 +2177,8 @@ Panel {
                     Text {
                       textFormat: Text.PlainText
                       width: parent.width
-                      // `|| ""` because this binding also runs for the heading
-                      // rows, which carry no description: an invisible item's
-                      // bindings are evaluated all the same, and undefined
-                      // reaches a QString property as a warning per frame.
+                      // `|| ""`: also evaluated for heading rows, which have no
+                      // description.
                       text: blocked
                         ? root.vault.settingBlockedReason(modelData)
                         : (modelData.description || "")
@@ -2373,8 +2205,7 @@ Panel {
                       accent: Color.accent
                       onToggled: {
                         if (blocked) return
-                        // A PIN cannot simply be switched on: it has to be chosen,
-                        // and encrypting it needs the master password.
+                        // A PIN must be chosen, with the master password.
                         if (modelData.action === "pin") {
                           if (checked) root.vault.disablePinUnlock()
                           else root.vault.beginPinSetup()
@@ -2430,16 +2261,9 @@ Panel {
 
                 PanelSeparator { width: parent.width }
 
-                // The SSH agent has more to say than its four toggles: what the
-                // helper is doing, and whether the user's terminals will reach
-                // it. That block used to sit after all four groups, which was
-                // survivable while nothing folded -- now it would leave a
-                // collapsed SSH Agent section with its status still on screen,
-                // attached to nothing. It loads at the end of the group it
-                // belongs to, so folding the section folds the whole section.
-                //
-                // A Loader rather than a visible binding: this delegate is
-                // instantiated for every row, and only one of them wants it.
+                // The SSH agent's status and routing block, loaded at the end
+                // of its group so folding the section hides it. A Loader, since
+                // only one delegate wants it.
                 Loader {
                   width: parent.width
                   active: !isGroup && modelData.group === "sshAgent"
@@ -2480,16 +2304,14 @@ Panel {
                 visible: root.vault.fingerprintStored
                 text: "Forget Fingerprint"
                 iconText: "󰈷"
-                tooltipText: "Remove the stored master password from the OS keyring"
+                tooltipText: "Stop unlocking with fingerprint"
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.forgetFingerprintUnlock()
               }
             }
 
-            // Its own row for the same reason the destructive block has one: a
-            // third button beside the other two would elide a label rather than
-            // fit.
+            // Its own row: a third button would elide a label.
             Row {
               width: parent.width
               spacing: Style.space(8)
@@ -2498,16 +2320,14 @@ Panel {
                 visible: root.vault.fidoStored
                 text: "Forget FIDO2 Key"
                 iconText: "󰟵"
-                tooltipText: "Remove the stored master password from the OS keyring"
+                tooltipText: "Stop unlocking with this FIDO2 key"
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.forgetFidoUnlock()
               }
             }
 
-            // Everything below this line destroys something. It was drawn in a
-            // row visually identical to the one above it, so "Dependencies" and
-            // "Remove Plugin Data" looked equally safe to press.
+            // Destructive actions below, set apart.
             Item { width: parent.width; height: Style.space(18) }
 
             PanelSeparator { width: parent.width }
@@ -2519,10 +2339,8 @@ Panel {
               fontFamily: root.fontFamily
             }
 
-            // Its own row: this sits beside two buttons already, and a third
-            // one plus the two the confirmation adds overflow the panel width
-            // and elide their labels -- "Remove Plugin Data" reading as
-            // "Remove Plugin" is a considerably more alarming button.
+            // Its own row: with the confirmation's buttons it would overflow
+            // and elide "Remove Plugin Data".
             Row {
               width: parent.width
               spacing: Style.space(8)
@@ -2557,9 +2375,8 @@ Panel {
               }
             }
 
-            // Run this before removing the plugin: once the folder is gone
-            // there is no code left to do it, and `omarchy plugin remove` has
-            // no uninstall hook to call.
+            // Must run before removal: `omarchy plugin remove` has no
+            // uninstall hook.
             Text {
               textFormat: Text.PlainText
               width: parent.width
@@ -2596,13 +2413,9 @@ Panel {
           }
         }
 
-        // An SSH request waiting on an unlock. Shown above whatever unlock
-        // control the vault is configured for, so the reason for the prompt
-        // is visible without the unlock itself authorising anything.
+        // An SSH request waiting on an unlock, shown above the unlock controls.
         Column {
-          // Stays up through the load as well as the unlock: the request is
-          // held across the vault read, so dropping the block the moment the
-          // vault unlocks would leave the user watching nothing for seconds.
+          // Stays through the key load that follows the unlock.
           visible: !root.vault.sshAgentApprovalPopup && root.vault.sshUnlockRequest !== null
             && (root.vault.status === "locked" || root.vault.sshAgentLoadActive)
           width: parent.width
@@ -2626,9 +2439,7 @@ Panel {
               : (root.vault.sshUnlockRequest.keyName !== ""
                   ? root.vault.sshUnlockRequest.keyName + " · requested by "
                     + root.vault.sshUnlockRequest.processName
-                  // An identity listing names no key: the client is asking
-                  // which keys exist, and until the vault is open there is no
-                  // answer to give.
+                  // A listing names no key; it asks which keys exist.
                   : root.vault.sshUnlockRequest.processName
                     + " is asking which SSH keys are available")
             color: root.fg
@@ -2673,7 +2484,7 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 1: LOGIN VIEW (When unauthenticated)
+        // SCREEN 1: LOGIN (unauthenticated)
         // -------------------------------------------------------------------
         Column {
           visible: root.vault.status === "unauthenticated" && root.vault.activeScreen !== "settings" && root.vault.activeScreen !== "setup" && root.vault.activeScreen !== "pin" && root.vault.activeScreen !== "fido" && root.vault.activeScreen !== "fingerprint"
@@ -2835,10 +2646,8 @@ Panel {
               }
             }
 
-            // New-device verification. bw takes this code from a prompt and
-            // from nothing else, so answering it here is the difference
-            // between finishing the login in the panel and sending the user to
-            // a terminal to do it. See deviceVerificationLoginCommand().
+            // New-device verification: bw takes this code only from a prompt;
+            // see deviceVerificationLoginCommand().
             Column {
               visible: root.vault.showDeviceCodeField
               width: parent.width
@@ -2894,16 +2703,10 @@ Panel {
                   iconText: "󰁍"
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: {
-                    root.vault.errorMessage = ""
-                    root.vault.resetEmailLoginSecondFactor()
-                    root.vault.invalidateEmailLoginPrewarm()
-                    Qt.callLater(function() { loginPassField.forceActiveFocus() })
-                  }
+                  onClicked: root.backToCredentials()
                 }
 
-                // Still here, because bw in a real terminal can answer
-                // anything this path cannot.
+                // A real terminal can answer anything this path cannot.
                 Button {
                   text: "Use Terminal Instead"
                   iconText: "󰞷"
@@ -2914,10 +2717,8 @@ Panel {
               }
             }
 
-            // bw asks this question only when an account has more than one
-            // method it can use, and only a terminal ever got to see it. The
-            // pick is sent on its own, before any code is collected, so a
-            // wrong one costs a round trip rather than a typed code.
+            // bw's method question (asked when several are usable). The pick is
+            // sent before any code is typed.
             Column {
               visible: root.vault.show2faMethodPicker
               width: parent.width
@@ -2976,12 +2777,7 @@ Panel {
                 iconText: "󰁍"
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
-                onClicked: {
-                  root.vault.errorMessage = ""
-                  root.vault.resetEmailLoginSecondFactor()
-                  root.vault.invalidateEmailLoginPrewarm()
-                  Qt.callLater(function() { loginPassField.forceActiveFocus() })
-                }
+                onClicked: root.backToCredentials()
               }
             }
 
@@ -3023,17 +2819,10 @@ Panel {
                   iconText: "󰁍"
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: {
-                    root.vault.errorMessage = ""
-                    root.vault.resetEmailLoginSecondFactor()
-                    root.vault.invalidateEmailLoginPrewarm()
-                    Qt.callLater(function() { loginPassField.forceActiveFocus() })
-                  }
+                  onClicked: root.backToCredentials()
                 }
 
-                // The escape hatch from a remembered method. It is the only
-                // way back to the question once an account has answered it, so
-                // it stays available even when nothing has gone wrong yet.
+                // The only way back to the question once remembered.
                 Button {
                   text: "Change method"
                   iconText: "󰑐"
@@ -3048,9 +2837,7 @@ Panel {
             }
 
             Button {
-              // The picker stage submits by choosing, and the device stage has
-              // its own button, so this one belongs to the stages that share
-              // the ordinary login command.
+              // For the stages that use the ordinary login command.
               visible: !root.vault.show2faMethodPicker && !root.vault.showDeviceCodeField
               width: parent.width
               text: root.vault.emailLoginButtonText()
@@ -3125,9 +2912,7 @@ Panel {
             }
           }
 
-          // Normally the quieter of the two ways in. When Bitwarden has asked
-          // to verify this device it is the only one, so it stops being an
-          // aside and says what it is for.
+          // The terminal login; prominent when device verification needs it.
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
@@ -3155,7 +2940,7 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 2: LOCKED VIEW (When authenticated, but vault locked)
+        // SCREEN 2: LOCKED VIEW (logged in, vault locked)
         // -------------------------------------------------------------------
         Column {
           visible: (root.vault.status === "locked" || root.vault.status === "checking")
@@ -3187,23 +2972,19 @@ Panel {
               visible: root.vault.fingerprintStored
               text: "Forget Fingerprint"
               iconText: "󰈷"
-              tooltipText: "Remove the stored master password from the OS keyring"
+              tooltipText: "Stop unlocking with fingerprint"
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.forgetFingerprintUnlock()
             }
 
-            // Takes the slot Forget Fingerprint would have used, so the row
-            // keeps its shape on a machine with no fingerprint configured
-            // instead of leaving the button stranded on a line of its own.
+            // In Forget Fingerprint's slot when there is none.
             ForgetFidoButton {
               visible: root.vault.fidoStored && !root.vault.fingerprintStored
             }
           }
 
-          // Only when Forget Fingerprint is there to be balanced against. Sits
-          // under the pair and centres the same way, so the three read as one
-          // block rather than a pair with a stray button hung off the edge.
+          // Only beside Forget Fingerprint: centred under the pair.
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(8)
@@ -3215,7 +2996,7 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 3: UNLOCKED - ITEM LIST VIEW
+        // SCREEN 3: ITEM LIST
         // -------------------------------------------------------------------
         Column {
           visible: root.vault.status === "unlocked" && root.vault.activeScreen === "main"
@@ -3254,10 +3035,8 @@ Panel {
                 var itm = root.vault.getSelectedItem()
                 if (itm) root.vault.handleSmartEnter(itm)
               }
-              // Only while the search box is the screen. A hidden item keeps
-              // active focus in Qt, so without this guard the search field
-              // still owned Escape from behind the item form and closed the
-              // whole panel instead of cancelling the edit.
+              // Only while the list is showing: Qt keeps focus on hidden
+              // items, so Escape from the item form would close the panel.
               Keys.onEscapePressed: function(event) {
                 if (root.vault.currentScreen !== "main") {
                   event.accepted = false   // let it reach the panel's dispatch
@@ -3287,10 +3066,8 @@ Panel {
             color: Style.selectedFillFor(root.fg, Color.accent)
             borderSpec: Border.controlSpec("normal", Color.accent, Color.accent)
 
-            // A RowLayout, so the label can be told to take whatever the glyph
-            // and the dismiss button leave rather than a hand-measured slice of
-            // the banner. The name in it is a window title, so its length is
-            // not ours to predict.
+            // A RowLayout, so the label (a window title) takes whatever width
+            // is left.
             RowLayout {
               anchors.fill: parent
               anchors.leftMargin: Style.space(8)
@@ -3378,10 +3155,7 @@ Panel {
                   anchors.rightMargin: Style.space(8)
                   spacing: Style.space(10)
 
-                  // Type Icon, or a spinner while the vault is being told about
-                  // this row. The glyph is the row's identity, so the saving
-                  // state borrows it rather than adding a second marker and
-                  // reflowing everything beside it.
+                  // The type glyph, spinning while the row is being saved.
                   Text {
                     textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
@@ -3392,11 +3166,7 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.title
                     width: Style.space(20)
-                    // The glyph is narrower than the column it sits in, so
-                    // without centring it the spin happens about the middle of
-                    // the box and the icon orbits that point instead of
-                    // turning on its own axis. Same shape the kit's own
-                    // spinning button icon uses.
+                    // Centred so it spins on its own axis.
                     horizontalAlignment: Text.AlignHCenter
                     transformOrigin: Item.Center
 
@@ -3441,8 +3211,7 @@ Panel {
                         anchors.verticalCenter: parent.verticalCenter
                       }
 
-                      // A paperclip is the whole badge: the file names live in
-                      // the detail view, and the row only has to say they exist.
+                      // Attachments badge; names are in the detail view.
                       Text {
                         textFormat: Text.PlainText
                         visible: Boolean(itemData.hasAttachments)
@@ -3479,15 +3248,14 @@ Panel {
                       }
 
                       Text {
-                        textFormat: Text.PlainText
                         id: rowSubtitle
+                        textFormat: Text.PlainText
                         text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                         elide: Text.ElideRight
-                        // Take only what is needed, so the folder tag that follows
-                        // keeps its place instead of being pushed off the row.
+                        // Only what it needs, so the folder tag keeps its place.
                         width: Math.min(implicitWidth,
                           parent.width
                             - (itemData.organizationId ? Style.space(40) : 0)
@@ -3496,8 +3264,8 @@ Panel {
                       }
 
                       Text {
-                        textFormat: Text.PlainText
                         id: rowFolderTag
+                        textFormat: Text.PlainText
                         // Only worth showing when it is not already implied by the filter.
                         visible: Boolean(itemData.folderId) && root.vault.selectedFolder === "all"
                         text: "· 󰉋 " + Model.folderName(root.vault.folders, itemData.folderId)
@@ -3615,15 +3383,12 @@ Panel {
           // -----------------------------------------------------------------
           // Bottom filter bar: Folders / Vaults / Types
           // -----------------------------------------------------------------
-          // Three horizontally scrolling strips were easy to miss and awkward
-          // to reach. One collapsed row instead, each opening a vertical list
-          // in place; the item list gives back exactly the height the open
-          // list takes, so the panel does not jump.
+          // Each collapsed button opens a list in place; the item list gives
+          // back that height, so the panel does not jump.
 
           PanelSeparator { width: parent.width }
 
-          // The open group's options: a pinned header naming the group, then up
-          // to five rows with the rest scrolling underneath it.
+          // The open group: a pinned header, then up to five scrolling rows.
           Column {
             id: filterDrawer
             width: parent.width
@@ -3777,22 +3542,10 @@ Panel {
             }
           }
 
-          // The three collapsed buttons. Identical shape, so none reads as a
-          // different kind of control from the others -- which is why they are
-          // one component declared three times rather than three buttons.
-          //
-          // A Flow rather than a Row. Two of the three carry a vault name, so
-          // their width is whatever the user typed, and a Row can neither
-          // shrink a child nor start a second line -- it lays the overflow out
-          // past the panel edge, off both sides at once because the group is
-          // centred. `width` is the group's own combined width while the three
-          // share a line, which is what keeps it centred, and the panel's when
-          // they cannot. It reads the buttons' implicitWidth, never their
-          // width, so the layout's width never depends on its own result.
-          //
-          // This is what pays for the labels naming their filters: the three
-          // fit one line in the ordinary case and take a second when they do
-          // not, instead of the names having to be dropped to guarantee one.
+          // The three collapsed filter buttons. A Flow, since vault names make
+          // their widths unpredictable and a Row would overflow the panel: one
+          // centred line normally, two when needed. `width` reads implicit
+          // widths only, so it never depends on its own result.
           Flow {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
@@ -3833,33 +3586,22 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 4: UNLOCKED - ITEM DETAIL VIEW
+        // SCREEN 4: ITEM DETAIL
         // -------------------------------------------------------------------
         Column {
           visible: root.vault.status === "unlocked" && root.vault.activeScreen === "detail"
           width: parent.width
           spacing: Style.space(12)
 
-          // Back Navigation & Action Header
-          //
-          // A Flow, not a Row, because how many buttons are here is decided at
-          // runtime: the suggestion button appears only on a recognised window,
-          // and it is the widest of the four. A Row cannot shrink a child or
-          // start a second line, so the fourth button was laid out past the
-          // panel's right edge and Delete simply left the panel -- worse still
-          // only once the suggestion was pinned, because "Suggested here" is a
-          // character wider than "Suggest here" and that character was the one
-          // that overflowed. The panel is also narrower than its 450 ask on a
-          // small screen (see fittedContentWidth), so no arrangement of fixed
-          // labels is safe; wrapping is. Everything still fits on one line at
-          // the default size, so this only shows itself when it has to.
+          // Back and actions. A Flow, since the suggestion button appears at
+          // runtime and the panel can be narrower than asked; it wraps rather
+          // than pushing Delete off the edge.
           Flow {
             width: parent.width
             spacing: Style.space(8)
 
             Button {
-              // "Back to list" spelled out cost more width than the row could
-              // spare, and the Sends screen already says just "Back (Esc)".
+              // Short, like the Sends screen's.
               text: "Back (Esc)"
               iconText: "󰁍"
               fontFamily: root.fontFamily
@@ -3875,8 +3617,7 @@ Panel {
               iconText: pinned ? "󰐾" : "󰐽"
               selected: pinned
               accent: Color.accent
-              // The window title is no more trustworthy than a vault value,
-              // and the kit renders tooltips with an auto-detecting Text.
+              // Window titles are untrusted; tooltips auto-detect markup.
               tooltipText: Model.plainLabel((pinned ? "Stop suggesting this for " : "Always suggest this for ")
                 + (root.vault.detectedContext ? root.vault.detectedContext.displayName : ""))
               fontFamily: root.fontFamily
@@ -4053,8 +3794,8 @@ Panel {
                   color: Style.hoverFillFor(root.fg, Color.accent)
                   borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
                   Text {
-                    textFormat: Text.PlainText
                     id: sshPublicKeyText
+                    textFormat: Text.PlainText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
                     text: root.vault.detailItem ? (root.vault.detailItem.publicKey || "No public key") : ""
@@ -4256,18 +3997,9 @@ Panel {
                 }
               }
 
-              // FIELD: Attachments
-              //
-              // The metadata came down with the item, so the list is here the
-              // moment the detail view opens; only the bytes cost a CLI call,
-              // and only for the file the user actually asks for.
-              //
-              // Above NOTES on purpose. Notes is the one section with no height
-              // of its own -- it grows with the text -- and this Flickable is
-              // capped, so anything after it starts below the fold on exactly
-              // the items whose note is long. A secure note with a file
-              // attached is that case, and the files were the thing being
-              // pushed out of sight.
+              // FIELD: Attachments. Listed from the item's metadata; bytes are
+              // fetched on request. Above NOTES, which grows with its text and
+              // would push the files below the fold.
               Column {
                 visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5 && root.vault.detailItem.hasAttachments)
                 width: parent.width
@@ -4309,8 +4041,8 @@ Panel {
                       spacing: Style.space(6)
 
                       Text {
-                        textFormat: Text.PlainText
                         id: attachmentGlyph
+                        textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
                         text: "󰈔"
                         color: root.dim
@@ -4332,8 +4064,8 @@ Panel {
                       }
 
                       Text {
-                        textFormat: Text.PlainText
                         id: attachmentStatus
+                        textFormat: Text.PlainText
                         anchors.verticalCenter: parent.verticalCenter
                         text: busy ? "Saving..." : queued ? "Queued" : modelData.sizeName
                         color: root.dim
@@ -4366,8 +4098,7 @@ Panel {
                         PanelActionButton {
                           visible: savedPath !== ""
                           iconText: "󰝰"
-                          // The path is ours -- a download directory plus a
-                          // sanitised name -- but it is still drawn as text.
+                          // Our own path, still drawn as text.
                           tooltipText: Model.plainLabel("Show in " + Model.parentDirectory(savedPath))
                           fontFamily: root.fontFamily
                           onClicked: root.vault.revealSavedAttachment(modelData.id)
@@ -4405,8 +4136,8 @@ Panel {
                   borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                   Text {
-                    textFormat: Text.PlainText
                     id: notesText
+                    textFormat: Text.PlainText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
                     text: root.vault.detailItem ? root.vault.detailItem.notes : ""
@@ -4421,10 +4152,7 @@ Panel {
               // -----------------------------------------------------------
               // FIELDS: Card
               // -----------------------------------------------------------
-              // Expiry is one field rather than two. It is written, read and
-              // typed as a unit, and a vault that shows "04" above "2030" in
-              // two labelled boxes is describing its storage rather than the
-              // card in your hand.
+              // Expiry shown as one value.
               DetailField {
                 visible: root.vault.detailIsCard
                 label: "Cardholder Name"
@@ -4484,10 +4212,7 @@ Panel {
               // -----------------------------------------------------------
               // FIELDS: Identity
               // -----------------------------------------------------------
-              // Every field an identity can carry is declared; DetailField
-              // hides the empty ones. Most identities fill in a handful, and
-              // the alternative -- deciding here which are worth drawing --
-              // is how the useful one for somebody ends up missing.
+              // Every field is declared; DetailField hides the empty ones.
               DetailField {
                 visible: root.vault.detailIsIdentity
                 label: "Name"
@@ -4535,9 +4260,7 @@ Panel {
                 onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.phone : "", "Phone")
               }
 
-              // The three an identity item usually exists to hold. Masked for
-              // the same reason a password is: a shoulder is enough to lose
-              // them, and unlike a password they cannot be rotated.
+              // Masked like a password (and unlike one, not rotatable).
               DetailField {
                 visible: root.vault.detailIsIdentity
                 label: "Social Security Number"
@@ -4597,8 +4320,8 @@ Panel {
                   spacing: Style.space(6)
 
                   Text {
-                    textFormat: Text.PlainText
                     id: addressText
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.vault.detailIdentityAddress
                     color: root.fg
@@ -4622,10 +4345,8 @@ Panel {
               // -----------------------------------------------------------
               // FIELDS: Custom
               // -----------------------------------------------------------
-              // Custom fields belong to every ordinary vault item type. The
-              // model has always preserved them; this is the detail renderer
-              // that makes them visible. Hidden fields use the same per-field
-              // reveal and clipboard paths as the built-in secrets.
+              // Hidden fields use the same per-field reveal and copy as the
+              // built-in secrets.
               Column {
                 id: customFieldsSection
                 visible: Boolean(root.vault.detailItem && root.vault.detailItem.fields
@@ -4664,7 +4385,7 @@ Panel {
         }
 
         // -------------------------------------------------------------------
-        // SCREEN 5: ADD / EDIT ITEM FORM VIEW
+        // SCREEN 5: ADD / EDIT ITEM FORM
         // -------------------------------------------------------------------
         Column {
           visible: root.vault.status === "unlocked" && root.vault.activeScreen === "edit"
@@ -4771,8 +4492,7 @@ Panel {
                 }
               }
 
-              // FIELD: Folder -- expandable list rather than a wrapping row of
-              // buttons, which grew unreadable once a vault had more than a few.
+              // FIELD: Folder -- an expandable list.
               Column {
                 width: parent.width
                 spacing: Style.space(3)
@@ -4925,8 +4645,7 @@ Panel {
                   }
                 }
 
-                // Collections only exist for org-owned items, and Bitwarden
-                // requires at least one, so this appears with the choice.
+                // Only for org-owned items, which need at least one.
                 Column {
                   visible: Boolean(root.vault.formOrgId) && root.vault.formOrgId !== "personal"
                   width: parent.width
@@ -4997,8 +4716,7 @@ Panel {
                           label: modelData.name
                           glyph: "\u{F0290}"
                           picked: root.vault.isFormCollectionSelected(modelData.id)
-                          // Several collections may hold one item, so these
-                          // toggle instead of replacing the choice.
+                          // An item can be in several collections.
                           multi: true
                           onActivated: root.vault.toggleFormCollection(modelData.id)
                         }
@@ -5031,8 +4749,7 @@ Panel {
                   width: parent.width
                   Text { textFormat: Text.PlainText; text: "PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                   Item { Layout.fillWidth: true }
-                  // Opens the real generator, which fills this field in and
-                  // comes back. The ellipsis says it goes somewhere first.
+                  // Opens the generator, which fills this field and returns.
                   Button {
                     text: "Generate..."
                     iconText: "󰌆"
@@ -5093,9 +4810,7 @@ Panel {
               // -----------------------------------------------------------
               // FORM FIELDS: Card
               // -----------------------------------------------------------
-              // Expiry is split here, unlike the detail view, because these
-              // are two values the vault stores separately and a single box
-              // would have to guess where the boundary between them falls.
+              // Expiry as two boxes here: the vault stores two values.
               Column {
                 visible: root.vault.formTypeCode === 3
                 width: parent.width
@@ -5421,14 +5136,8 @@ Panel {
                 }
               }
 
-              // Enter saves from anywhere in the form, so a long item does not
-              // have to be scrolled to the bottom to be committed.
-              //
-              // A Shortcut rather than `onAccepted` on each field: there are
-              // more than thirty of them and the next one added would silently
-              // not save. It is scoped tightly instead -- only on this screen,
-              // and not while a picker is open, where Enter belongs to the
-              // list being picked from.
+              // Enter saves from anywhere in the form (one Shortcut rather than
+              // onAccepted on 30+ fields), except while a picker has it.
               Shortcut {
                 sequences: ["Return", "Enter"]
                 enabled: root.vault.activeScreen === "edit" && root.vault.formPicker === ""
@@ -5456,10 +5165,8 @@ Panel {
         }
       }
 
-      // Transient updates belong to the panel, but not to its layout. Keeping
-      // this beside mainColumn means fittedContentHeight never sees it, so an
-      // unlock, copy, save, or error cannot shove the active screen down and
-      // pull it back up when the message clears.
+      // Overlaid beside mainColumn, outside the layout, so messages never
+      // shift the active screen.
       StatusNotice {
         id: statusNotice
         statusMessage: root.vault.flashMessage
@@ -5475,11 +5182,7 @@ Panel {
           : ""
         onActionRequested: root.vault.reopenFailedSave()
         onErrorDismissed: {
-          // Dismissing the message drops the recovery with it: the list is
-          // already back to what the vault holds, so what is being discarded
-          // is the attempt, and leaving a Reopen behind an invisible message
-          // would be a button for something the user has said they are done
-          // with.
+          // Dismissing also drops the Reopen recovery.
           root.vault.failedSave = null
           root.vault.errorMessage = ""
         }

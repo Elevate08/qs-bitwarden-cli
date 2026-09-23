@@ -4,42 +4,31 @@ import Quickshell.Io
 import "FidoModel.js" as Fido
 import "BitwardenModel.js" as Model
 
-// Owns "unlock with FIDO2 key".
-//
-// The credential is Omarchy's own registration in /etc/fido2/fido2, written by
-// pam-u2f -- nobody re-enrolls anything for this. A touch no longer answers a
-// PAM conversation, which can only say yes or no; it asks the key for that
-// credential's hmac-secret, and the secret opens the envelope's FIDO wrap
-// (BitwardenModel.js). No touch, no secret: the key itself refuses to produce
-// one without presence. So unlocking needs the physical key, not just a
-// program able to read the keyring.
-//
-// Almost all of FIDO2 lives here and in FidoModel.js; the vault keeps only the
-// handful of lines that hand it a setting and take a password back.
+// Owns "unlock with FIDO2 key". A touch asks the key for the hmac-secret of
+// Omarchy's existing pam-u2f credential, which opens the envelope's FIDO wrap
+// (BitwardenModel.js), so unlocking needs the physical key. The vault only
+// passes in the setting and takes back the password.
 Item {
   id: fido
 
-  // No visual presence of its own; it exists to hold the key's request, the
-  // processes and the state they act on.
+  // No visuals; holds the key request, its processes and state.
   visible: false
   width: 0
   height: 0
 
-  // The vault that instantiated this. The setting and the unlocked password
-  // pass between them, and nothing else.
   required property var vault
   // The fidoUnlock setting, pushed down by the vault.
   property bool armed: false
 
   // The last probe: which plugged-in key holds which registered credential.
   property var probe: Fido.parseFidoProbe("")
-  // Readiness: the tools are installed, Omarchy registered a credential, and a
-  // key holding a usable one is plugged in right now.
+  // Tools installed, a credential registered, and a key holding a usable one
+  // plugged in.
   property bool available: false
-  // Worth drawing at all -- any one of the three parts is present.
+  // Any of those three present: worth drawing the option.
   property bool applicable: false
-  // The plaintext entry older versions kept (account=fido_password). Migrated
-  // by the first touch that finds it, then deleted.
+  // The legacy plaintext entry (account=fido_password), migrated by the first
+  // touch that finds it.
   property bool legacyStored: false
   // Credentials the envelope has a FIDO wrap for.
   readonly property var envelopeCredentials: vault && vault.envelopeSummary
@@ -47,11 +36,10 @@ Item {
   readonly property bool stored: legacyStored || envelopeCredentials.length > 0
   property bool scanning: false
   property bool authorized: false     // a live touch may consume one answer
-  // Progress of an attempt at the key, shown only on the FIDO2 screen.
+  // Attempt progress, shown on the FIDO2 screen.
   property string message: ""
-  // Why the last attempt failed. Kept apart from `message` for the reason the
-  // fingerprint's own split exists: an unreadable key is exactly when the user
-  // moves to another method, and the reason has to go with them.
+  // Why the last attempt failed; kept apart from `message` so it survives a
+  // switch to another method.
   property string failure: ""
 
   // Setup form.
@@ -63,47 +51,41 @@ Item {
 
   readonly property bool ready: armed && available && stored
 
-  // Which kind of request is in flight: "envelope" (a wrap exists) or
-  // "legacy" (migrating the plaintext entry with the same touch).
+  // "envelope" (a wrap exists) or "legacy" (migrating with the same touch).
   property string assertMode: ""
   property bool startAfterProbe: false
 
-  // A key answers one request at a time, and an abandoned request lives on in
-  // the authenticator until its own presence timeout. Measured on a YubiKey 5:
-  // for about 15 s after a request is abandoned, every new one fails in under
-  // 0.1 s with a misleading FIDO_ERR_UNSUPPORTED_OPTION. So a failure that
-  // arrives too fast to have been a real answer, soon after a request was
-  // abandoned, is retried rather than reported.
+  // A key holds an abandoned request until its presence timeout; meanwhile
+  // (~15 s on a YubiKey 5) new requests fail in <0.1 s with a misleading
+  // error. A failure that fast, soon after abandoning one, is retried.
   property double abandonedAtMs: 0
   property double startedAtMs: 0
   property int busyRetries: 0
   readonly property int busyRetryMs: 2000
-  // Long enough to outlast the authenticator's presence timeout.
+  // Outlasts the authenticator's presence timeout.
   readonly property int busyWindowMs: 40000
-  // A real touch cannot arrive this fast, so a failure inside it is the device
-  // refusing rather than the user being rejected.
+  // Faster than any real touch, so a failure inside it is the device refusing.
   readonly property int busyFailureMs: 1500
   readonly property int busyRetryLimit: 15
-  // An unanswered request ends on the key's own timeout, about 28.6 s.
+  // The key's own timeout for an unanswered request is ~28.6 s.
   readonly property int noTouchMs: 20000
 
-  // Emitted only after a touch and a successful read of the stored password.
-  // The vault decides what to do with the password; here it is only the gate.
+  readonly property string touchMessage: "󰟵  Touch your FIDO2 key..."
+  readonly property string busyMessage: "󰟵  Your key is finishing an earlier request -- touch it to clear it, or wait a moment..."
+
+  // After a touch and a successful read; the vault decides what to do.
   signal unlocked(string password)
 
   // -------------------------------------------------------------------------
   // Readiness
   // -------------------------------------------------------------------------
 
-  // The setting is usually already true when this is built, so onArmedChanged
-  // never fires and nothing else would probe. Without this the option is not
-  // offered until something else happens to refresh it, and the lock screen
-  // leads with another method while the key sits plugged in.
+  // The setting is usually true at construction, so onArmedChanged never
+  // fires; probe now.
   Component.onCompleted: if (armed) refresh()
 
   function refresh() {
-    // A probe while the key holds our request would find it busy and report
-    // it absent; the answer to that request is coming anyway.
+    // A probe would find the key busy with our own request.
     if (assertProc.running) return
     if (!probeProc.running) probeProc.running = true
   }
@@ -124,14 +106,12 @@ Item {
 
   function onHasChecked(raw) {
     legacyStored = String(raw || "").trim() === "yes"
-    // An SSH request raises the auth surface before the panel is open; if the
-    // key is ready, arm it the same way the panel's own open does.
+    // An SSH request can raise the auth surface before the panel opens.
     if (ready && vault && vault.status === "locked" && vault.sshAuthSurfaceActive) startUnlock()
   }
 
-  // The credential to ask for: one the envelope has a wrap for, on a key that
-  // is plugged in; otherwise, while the plaintext entry is still there, any
-  // usable registered credential, whose touch will migrate it.
+  // A credential with an envelope wrap on a plugged-in key; failing that,
+  // while the legacy entry exists, any usable one (its touch migrates it).
   function unlockTarget() {
     var usable = probe.usable || []
     for (var i = 0; i < usable.length; i++) {
@@ -164,13 +144,11 @@ Item {
   function startUnlock() {
     if (!ready || !vault || vault.status !== "locked" || vault.isUnlocking) return
     if (!vault.quickUnlockAvailable || !vault.accountId) return
-    // A request left running by a closed panel is still waiting on the same
-    // key. Adopt it rather than asking the authenticator for a second request
-    // it would refuse.
+    // A request left by a closed panel is still waiting on the key: adopt it.
     if (assertProc.running) {
       scanning = true
       failure = ""
-      if (message === "") message = "󰟵  Touch your FIDO2 key..."
+      if (message === "") message = touchMessage
       return
     }
     if (scanning) return
@@ -178,11 +156,9 @@ Item {
     failure = ""
     scanning = true
     message = busyRetries > 0
-      ? "󰟵  Your key is finishing an earlier request -- touch it to clear it, or wait a moment..."
-      : "󰟵  Touch your FIDO2 key..."
-    // Which device holds the credential can change between probes -- a key
-    // replugged lands on another hidraw node -- so ask first. It is silent and
-    // takes a fraction of a second.
+      ? busyMessage
+      : touchMessage
+    // Re-probe first: a replugged key can move to another hidraw node.
     startAfterProbe = true
     if (!probeProc.running) probeProc.running = true
   }
@@ -205,14 +181,9 @@ Item {
     assertProc.running = true
   }
 
-  // Let go of the screen without letting go of the key.
-  //
-  // Stopping our side buys nothing: the authenticator keeps the request it was
-  // already given until a touch or its own presence timeout. So the request is
-  // left running instead: if the key is touched while no panel is up,
-  // onAssertExited() sees no auth surface and drops the result (the vault
-  // stays locked), and the key is free again. Re-opening the panel finds the
-  // request still armed and simply keeps waiting.
+  // Leave the screen but keep the key's request running: stopping our side
+  // would not free the key. A touch with no surface up is discarded; reopening
+  // the panel just keeps waiting.
   function releaseSurface() {
     busyRetryTimer.stop()
     busyRetries = 0
@@ -229,7 +200,7 @@ Item {
   function cancelUnlock() {
     busyRetryTimer.stop()
     startAfterProbe = false
-    // Only an abandoned request leaves the authenticator holding one.
+    // Only an abandoned request leaves the key holding one.
     if (assertProc.running) {
       abandonedAtMs = Date.now()
       assertProc.running = false
@@ -238,8 +209,7 @@ Item {
     authorized = false
   }
 
-  // A failure too fast to be an answer, while the key is still holding the
-  // request this panel abandoned a moment ago.
+  // Failed too fast to be an answer, soon after this panel abandoned a request.
   function deviceStillBusy() {
     var now = Date.now()
     return busyRetries < busyRetryLimit
@@ -250,13 +220,13 @@ Item {
   function retryAfterBusy() {
     busyRetries += 1
     failure = ""
-    message = "󰟵  Your key is finishing an earlier request -- touch it to clear it, or wait a moment..."
+    message = busyMessage
     busyRetryTimer.restart()
   }
 
   function onAssertExited(exitCode) {
     if (vault && vault.finishScrubRun(assertProc)) return
-    // Taken, then scrubbed: on success this collector holds the password.
+    // Read, then scrubbed: on success this holds the password.
     var out = String(assertStdout.text || "")
     if (vault) vault.clearProcessCollectorSoon(assertProc)
     var mode = assertMode
@@ -266,8 +236,7 @@ Item {
     var codes = Model.fidoExitCodes()
     var migrated = exitCode === 0 && mode === "legacy"
     if (migrated) {
-      // The touch that unlocked also moved the plaintext entry into the
-      // envelope and deleted it. True whether or not anyone is still looking.
+      // The legacy entry was migrated and deleted, even if nobody is looking.
       legacyStored = false
       if (vault) vault.refreshEnvelope()
     }
@@ -277,7 +246,7 @@ Item {
       busyRetries = 0
       abandonedAtMs = 0
       authorized = false
-      // The button under this says "Unlocking..." on its own.
+      // The button shows "Unlocking..." by itself.
       message = "󰟵  Key verified"
       if (exitCode === codes.legacyUsed) {
         console.log("qs-bitwarden envelope: FIDO2 unlocked from the legacy entry; migration did not finish")
@@ -315,16 +284,15 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // Stored credential
+  // Stored credentials
   // -------------------------------------------------------------------------
 
-  // The processes whose collector can hold the master password, so the vault's
-  // lock-time buffer scrub reaches this one too.
+  // Processes whose output can hold the master password, for the lock scrub.
   function secretProcesses() { return [assertProc] }
 
   function dropSecrets() { setupMaster = "" }
 
-  // The plaintext entry, if an older version left one.
+  // Clears the legacy entry, if any.
   function requestClear() {
     if (clearProc.running) {
       clearPending = true
@@ -333,9 +301,8 @@ Item {
     clearProc.running = true
   }
 
-  // Take away every way in FIDO2 has: the envelope's wraps and any plaintext
-  // entry. Used when the user turns the feature off. `notify` is false when
-  // there is nothing to confirm.
+  // Remove every FIDO2 way in (envelope wraps and legacy entry). `notify`
+  // false skips the confirmation.
   function forget(reasonMessage, notify) {
     cancelUnlock()
     var creds = envelopeCredentials.slice()
@@ -349,7 +316,7 @@ Item {
     if (notify !== false && vault) vault.flashNotification("FIDO2 unlock forgotten")
   }
 
-  // State only, no keyring touch: logging out already swept the keyring.
+  // State only: logout already cleared the keyring.
   function reset() {
     cancelUnlock()
     busyRetries = 0
@@ -367,11 +334,8 @@ Item {
       cancelUnlock()
       message = ""
       failure = ""
-      // Not `if (stored)`. That flag is false whenever the key or the packages
-      // are missing, which says nothing about whether a way in is still in the
-      // keyring -- and turning the feature off is precisely when it must not
-      // be. The clear is unconditional for the same reason the vault's logout
-      // sweep is.
+      // Unconditional, not `if (stored)`: that flag also goes false when the
+      // key or packages are missing, and a way in may still be stored.
       forget("")
     } else {
       refresh()
@@ -386,32 +350,27 @@ Item {
     setupMaster = ""
     error = ""
     setupActive = true
-    // Probe now rather than only when the setting is on: the form has to know
-    // whether a key is registered before it can decide between offering
-    // Omarchy's setup and asking for the master password.
+    // Probe even if the setting is off: the form needs to know whether a key
+    // is registered.
     refresh()
     if (vault) vault.currentScreen = "fido"
   }
 
-  // Omarchy owns the enrolment end to end (`omarchy setup security fido2`:
-  // install, detect, register, wire the system's own authentication prompts,
-  // test). This only opens it in the same floating terminal an install uses --
-  // it needs an administrator prompt and a touch.
+  // Omarchy's enrolment, in a floating terminal (it prompts for sudo and a touch).
   function runOmarchySetup() {
     Quickshell.execDetached(Fido.fidoSetupCommand())
     if (vault) vault.flashNotification("FIDO2 setup opened -- this screen updates itself")
   }
 
   function abandonSetup() {
-    // A wrap still being written is taken back out when it lands: its
-    // completion finds the operation stale. See submitSetup().
+    // A wrap still being written is removed when it lands (see submitSetup()).
     if (busy && vault) vault.invalidateEpochOperation("fidoAdd")
     setupActive = false
     busy = false
     setupMaster = ""
   }
 
-  // The master password is a check against the stored password, and one touch
+  // The typed master password is checked against the stored one; one touch
   // adds this key's wrap. Nothing typed is stored.
   function submitSetup() {
     if (busy || !vault) return
@@ -443,8 +402,7 @@ Item {
       typed = ""
       busy = false
       message = ""
-      // Locked, logged out or abandoned while the wrap was being written: a
-      // way in for a setting that never turned on. Take it back out.
+      // Stale by the time it landed: remove the wrap again.
       if (vault.epochOperationIsStale("fidoAdd") || !setupActive) {
         setupActive = false
         if (ok) vault.removeQuickUnlockMethod({ kind: "remove", method: "fido", cred: target.cred })
@@ -459,7 +417,7 @@ Item {
         setupActive = true
         return
       }
-      // The plaintext entry, if an older version left one, is superseded.
+      // Supersedes any legacy entry.
       legacyStored = false
       requestClear()
       vault.writeSetting("fidoUnlock", true, "bool")
@@ -488,8 +446,7 @@ Item {
     }
   }
 
-  // One touch: the key's hmac-secret opens the envelope, and the password is
-  // the only output. See Model.fidoUnlockCommand().
+  // One touch; the password is the only output. See Model.fidoUnlockCommand().
   Process {
     id: assertProc
     stdout: StdioCollector {
@@ -510,9 +467,7 @@ Item {
     }
   }
 
-  // Re-arms once the authenticator has had a moment to finish what it was
-  // holding. Gated on the same conditions as an ordinary arm, so a panel closed
-  // in the meantime stops the retries rather than reviving them.
+  // Retry after the key had a moment, only while the conditions still hold.
   Timer {
     id: busyRetryTimer
     interval: fido.busyRetryMs

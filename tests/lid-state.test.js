@@ -1,18 +1,12 @@
 #!/usr/bin/env node
-// Tests for the closed-lid rule: the fingerprint reader is on the laptop body,
-// so a shut lid must take "Unlock with Fingerprint" off the screen while leaving
-// everything else -- the master password, and a FIDO2 key on a cable -- alone.
+// A closed lid hides fingerprint unlock (the reader is on the laptop body) and
+// nothing else.
 //
 //   node tests/lid-state.test.js
 
-const fs = require("fs")
-const path = require("path")
-const root = path.join(__dirname, "..")
-const read = f => fs.readFileSync(path.join(root, f), "utf8")
+const { createSuite, read } = require("./harness")
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("lid-state")
 
 const lid = read("LidState.qml")
 const service = read("Service.qml")
@@ -60,10 +54,7 @@ check("a closed lid drops fingerprint readiness",
   /readonly property bool fingerprintReady:[^\n]*&& !lidClosed/.test(service),
   "fingerprintReady must carry the lid, or nothing that offers the option would hide")
 
-// The option is offered by one button in the shared form, and the form only
-// draws it while the fingerprint is the offered method -- which reads
-// fingerprintReady. The auto-arm goes through startFingerprintUnlock, whose
-// guard reads the same property.
+// The shared form and the auto-arm both read fingerprintReady.
 check("the shared form offers the fingerprint only while it is ready",
   /if \(name === "fingerprint"\) return form\.vault\.fingerprintReady/.test(unlockForm)
     && /visible: form\.fieldsOffered && form\.method === "fingerprint"/.test(unlockForm),
@@ -77,9 +68,8 @@ check("and arming refuses while it is not ready",
 
 // --- what the lid must NOT touch ---------------------------------------------
 //
-// The user asked for the fingerprint option to go, "no matter if the FIDO2
-// unlock is enabled and configured or not": the two are independent, and a key
-// on a cable does not care about the lid.
+//
+// A FIDO2 key on a cable does not care about the lid.
 
 check("the FIDO2 option is not gated on the lid",
   !/fidoReady[^\n]*lidClosed/.test(service)
@@ -91,9 +81,4 @@ check("enrolment state is untouched, so the setting still reflects what is store
     && /case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored/.test(service),
   "the lid must not change whether a password is stored, nor what the toggle reads")
 
-if (failures.length) {
-  console.error(`FAIL ${failures.length}\n`)
-  for (const f of failures) console.error(`  x ${f}\n`)
-  process.exit(1)
-}
-console.log(`ok ${pass}`)
+done()

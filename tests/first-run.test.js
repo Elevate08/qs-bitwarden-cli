@@ -1,54 +1,20 @@
 #!/usr/bin/env node
-// Tests for the first run: the state a machine is in the moment
-// `omarchy plugin add ... --enable` finishes and before `bw` exists.
-//
-// The plugin is installed and enabled before the CLI it drives necessarily
-// does -- `omarchy plugin add` installs the plugin and nothing else -- so the
-// panel has to open on the setup screen, install what is missing from inside
-// itself, and pick the vault up on its own once the install lands. None of
-// that is reachable on a developer machine where everything is already there,
-// which is exactly why it is pinned here.
+// The first run: the plugin is installed and enabled before `bw` exists, so
+// the panel must open on setup, install what is missing, and pick up the vault
+// once the install lands. Unreachable on a developer machine, so pinned here.
 //
 //   node tests/first-run.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
 const panelSrc = readPluginSource("Panel.qml")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.parseDependencies = parseDependencies
-  exports.missingRequired = missingRequired
-  exports.setupGateActive = setupGateActive
-  exports.dependencyProbeOutcome = dependencyProbeOutcome
-  exports.missingPackages = missingPackages
-  exports.installPackagesCommand = installPackagesCommand
-  exports.fingerprintSetupCommand = fingerprintSetupCommand
-  exports.applicableDependencies = applicableDependencies
-  exports.dependencyCheckCommand = dependencyCheckCommand
-  exports.DEPENDENCIES = DEPENDENCIES
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const bodyOf = name => {
-  const start = panelSrc.indexOf(`function ${name}(`)
-  if (start < 0) return ""
-  let depth = 0
-  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
-    if (panelSrc[i] === "{") depth++
-    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
-  }
-  return ""
-}
+const { check, done } = createSuite("first-run")
+const bodyOf = name => functionBody(panelSrc, name)
 
-// A machine that has just installed the plugin and nothing else. The probe
-// still answers for tools that are no longer on the wizard's list -- Omarchy
-// ships those -- and parseDependencies must ignore what it was not asked
-// about rather than inventing rows for it.
+// A machine with only the plugin. The probe still reports tools Omarchy ships;
+// parseDependencies must ignore them.
 const FRESH = Model.parseDependencies(
   "bw=0\nbw_version=\njq=0\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=0\nfingerprint_ready=0\nomarchy=1")
 // The same machine after one trip through the setup screen's install button.
@@ -87,9 +53,8 @@ check("gate: opens once everything is installed",
   "a fully installed machine was still gated")
 
 // --- the first-run sequence -------------------------------------------------
-// Walked in order, because the bug this guards against is an ordering one: the
-// panel probing `bw` before it knows whether `bw` exists lands the user on a
-// login form that cannot succeed.
+// In order: probing `bw` before knowing it exists would land on a login form
+// that cannot succeed.
 let probeStarted = false
 let wasGated = false
 const step = (deps, dismissed) => {
@@ -133,9 +98,8 @@ check("normal launch: later probes stay quiet",
   "a settled machine kept re-probing")
 
 // --- carrying on without the CLI --------------------------------------------
-// "Continue anyway" is the panel's own escape hatch. Having taken it, the user
-// must not be dragged back to setup, and the panel must not spend a `bw`
-// round trip on every dependency check it happens to run.
+// After "Continue anyway", no dragging back to setup and no `bw` probe on
+// every dependency check.
 probeStarted = true
 wasGated = false
 check("dismissed: a missing tool no longer forces setup",
@@ -172,11 +136,7 @@ check("install: a package shared by two tools is only asked for once",
   new Set(fresh).size === fresh.length,
   `got [${fresh}]`)
 
-// Omarchy already owns "install these packages where the user can watch it":
-// a floating, centred, themed terminal with the logo, the pacman output and a
-// keypress to close. Rolling our own terminal invocation would have to pick a
-// terminal, invent the wait-for-keypress, and still look like nothing else on
-// the system.
+// Installs go through Omarchy's own installer window.
 const cmd = Model.installPackagesCommand(fresh, "Bitwarden CLI")
 check("install: goes through Omarchy's floating-terminal installer",
   cmd.slice(0, 3).join(" ") === "omarchy install app",
@@ -199,11 +159,8 @@ check("install: refuses anything that is not a plain package name",
   "a crafted package name produced a command")
 
 // --- fingerprint belongs to Omarchy -----------------------------------------
-// `omarchy setup security fingerprint` detects the reader, installs
-// libfprint/fprintd/usbutils, enrols a finger, verifies it, and only then
-// writes /etc/pam.d/omarchy-lock-fingerprint -- which is the file this
-// plugin's own readiness check looks for. A bare `pkg add fprintd` produces
-// none of that, so the row must never take that door.
+// `omarchy setup security fingerprint` does everything readiness needs (it
+// writes /etc/pam.d/omarchy-lock-fingerprint); `pkg add fprintd` does not.
 check("fingerprint: the row is a setup row, not a package row",
   Model.DEPENDENCIES.find(d => d.key === "fprintd").setup === true,
   "fprintd is still presented as an ordinary package install")
@@ -260,8 +217,4 @@ check("copy: the required tools are presented as installable, not as a wall",
   bw.required === true && !/nothing works/i.test(bw.purpose),
   bw.purpose)
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.log("\n" + failures.map(f => `  FAIL ${f}`).join("\n"))
-  process.exit(1)
-}
+done()

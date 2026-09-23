@@ -1,29 +1,15 @@
 #!/usr/bin/env node
-// The first post-authentication bw process is the item list. Organization and
-// folder metadata must not compete with it; they begin only after items have
-// reached the model and had an event-loop turn to paint.
+// The item list is the first bw process after authentication; organizations
+// and folders start only after items have painted.
 //
 //   node tests/initial-load.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, functionBody, readPluginSource } = require("./harness")
 
 const panelSrc = readPluginSource("Panel.qml")
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("initial-load")
 
-const bodyOf = name => {
-  const start = panelSrc.indexOf(`function ${name}(`)
-  if (start === -1) return ""
-  let depth = 0
-  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
-    if (panelSrc[i] === "{") depth++
-    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
-  }
-  return ""
-}
+const bodyOf = name => functionBody(panelSrc, name)
 
 const initial = bodyOf("beginInitialVaultLoad")
 check("initial loading starts the item list", /loadItems\(/.test(initial), initial)
@@ -108,8 +94,4 @@ for (const id of ["statusProc", "sessionHandoffProc", "listOrgsProc", "listFolde
     /onExited:/.test(block) && !/onStreamFinished:/.test(block), block)
 }
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

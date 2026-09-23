@@ -1,5 +1,5 @@
-// BitwardenModel.js — Helper module for Bitwarden plugin.
-// Pure JavaScript: CLI command constructors, output parsers, filtering, and CRUD builders.
+// BitwardenModel.js -- pure helpers for the plugin: CLI command builders,
+// output parsers, filtering and form builders.
 
 .pragma library
 
@@ -8,28 +8,20 @@ const KEYRING_ACCOUNT = "session"
 const KEYRING_MASTER = "master_password"
 const KEYRING_FIDO = "fido_password"
 
-// `secret-tool store` reads its secret from stdin until EOF, and Quickshell's
-// Process.write() cannot close stdin -- writing a value alone leaves the process
-// hanging forever and nothing is ever stored. So the secret is handed over in
-// the environment (readable only by this user, same exposure as the BW_PASSWORD
-// env var already used for `bw unlock`) and piped in by a shell that supplies
-// the EOF. Never pass secrets in argv: that is world-readable in /proc.
+// `secret-tool store` reads stdin to EOF and Process.write() cannot close
+// stdin, so secrets reach it through this env var, piped in by a shell. Never
+// put a secret in argv: /proc/<pid>/cmdline is world-readable.
 const KEYRING_SECRET_ENV = "QSBW_SECRET"
 const KEYRING_PIN = "pin_blob"
 const PIN_ENV = "QSBW_PIN"
 
-// PBKDF2 rounds of the PIN blob older versions wrote (AES-256-CBC, no MAC).
-// Only read now, to migrate a blob into the envelope at its next PIN unlock.
-// It was weaker than it looked: one GPU tries a 6-digit PIN space in about a
-// minute at this cost.
+// PBKDF2 rounds of the legacy PIN blob (AES-256-CBC, no MAC). Read only, to
+// migrate it into the envelope on the next PIN unlock.
 const PIN_ITERATIONS = 600000
 
-// Two thresholds, because the arithmetic is unforgiving and the choice is
-// still the user's. A PIN now reaches the envelope through Argon2id at
-// 256 MiB and 4 passes -- about 0.75 s of one CPU core and 256 MiB per guess,
-// which a GPU barely helps with -- and the envelope is sealed to this machine,
-// so the guessing has to happen here, as this user. Six digits is what we ask
-// for; four is allowed but called out with the actual number.
+// Each PIN guess costs Argon2id at 256 MiB x 4 passes (~0.75 s) on this
+// machine, as this user. Six digits is recommended; four is allowed with a
+// warning that names the cost.
 const PIN_MIN_LENGTH = 4
 const PIN_RECOMMENDED_LENGTH = 6
 
@@ -46,12 +38,15 @@ function keyringStoreScript(label, account) {
     + keyringAttributes(account)
 }
 
+// A capped `secret-tool lookup` of one entry.
+function keyringReadScript(account) {
+  return "secret-tool lookup" + keyringAttributes(account) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES
+}
+
 function keyringLookupEntryCommand(account) {
-  // secret-tool prints a newline after the stored value. Strip only that
-  // transport delimiter: QML's String.trim() would also corrupt legitimate
-  // leading or trailing spaces in a master password or client secret.
-  var script = "stored=$(secret-tool lookup" + keyringAttributes(account)
-    + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + "); "
+  // Strip only secret-tool's trailing newline; trim() would also eat
+  // meaningful spaces in a password or client secret.
+  var script = "stored=$(" + keyringReadScript(account) + "); "
     + "__lookup_rc=$?; [ \"$__lookup_rc\" -eq 0 ] || exit \"$__lookup_rc\"; "
     + "printf '%s' \"$stored\""
   return ["bash", "-c", cappedScript(script)]
@@ -71,49 +66,30 @@ function shellQuote(value) {
   return "'" + String(value || "").replace(/'/g, "'\\''") + "'"
 }
 
-// The session token is never put on a command line. /proc/<pid>/cmdline is
-// world-readable on a default Linux install, and the token grants full access
-// to the unlocked vault. It travels in BW_SESSION instead, which bw reads
-// natively; see sessionEnvVar() and the callers that set it.
+// Secrets never go in argv. The session token travels in BW_SESSION.
 const SESSION_ENV = "BW_SESSION"
 
-// The same reasoning applies to the credentials that unlock the vault in the
-// first place, and bw reads all three of these natively: BW_PASSWORD via
-// --passwordenv, BW_CLIENTID and BW_CLIENTSECRET on `login --apikey`. So the
-// master password and API key reach bw without appearing in any argv -- not
-// bw's, and not the wrapping shell's. The builders below interpolate nothing
-// secret into the script text; see authEnv() in Service.qml for the values.
+// bw reads these natively (--passwordenv, `login --apikey`), so the master
+// password and API key reach no argv. Values are set by authEnv() in Service.qml.
 const PASSWORD_ENV = "BW_PASSWORD"
 const CLIENT_ID_ENV = "BW_CLIENTID"
 const CLIENT_SECRET_ENV = "BW_CLIENTSECRET"
 
-// The one credential that cannot follow that rule: bw offers no environment
-// option for the two-step code, so --code is the only way in and the code does
-// land in bw's own argv. Carrying it in the environment still keeps it out of
-// the wrapping shell's argv, which lives for the whole login chain rather than
-// just the login process. A six-digit code is single-use and expires in
-// seconds, which is why this residue is acceptable where a password would not
-// be.
+// bw has no env option for the two-step code, so it lands in bw's argv via
+// --code. The env var keeps it out of the wrapping shell's longer-lived argv;
+// the code is single-use and short-lived.
 const TWOFACTOR_CODE_ENV = "QSBW_CODE"
 
-// bw prompts on a tty it does not have here, so every auth command runs with
-// interaction disabled and fails fast instead of hanging. The one exception is
-// deviceVerificationLoginCommand(), which keeps the same guarantee by other
-// means -- see the comment there.
+// Auth commands run non-interactively so a hidden prompt fails fast. The
+// exception is deviceVerificationLoginCommand().
 const NOINTERACTION_ENV = "BW_NOINTERACTION"
-// Bitwarden's SSH documentation names 2025.1.2 as the first supported
-// release. Keep the ordinary vault usable on older CLI builds, but do not
-// advertise SSH support from them.
+// First bw release Bitwarden documents SSH keys for.
 const SSH_CLI_MIN_VERSION = "2025.1.2"
-// Bitwarden CLI releases before this one throw on SSH key items whose
-// decrypted public fields are absent, and the throw takes the whole
-// `bw list items` read with it. The panel cannot repair that, but it can name
-// the release that fixes it instead of leaving the user with a bare failure.
+// Earlier bw releases throw on SSH items with missing public fields, failing
+// the whole `bw list items`; the panel names this release as the fix.
 const SSH_MALFORMED_ITEM_FIX_VERSION = "2026.8.0"
 
-// The new-device verification code. Like the two-step code it is single-use
-// and short-lived, and unlike it, it never reaches an argv at all: it is read
-// out of the environment by a printf inside the command and piped to bw.
+// The new-device verification code: piped to bw by printf, so it reaches no argv.
 const DEVICE_CODE_ENV = "QSBW_DEVICE_CODE"
 
 function sessionEnvVar() {
@@ -140,16 +116,11 @@ function noInteractionEnvVar() {
   return NOINTERACTION_ENV
 }
 
-function sshCliMinVersion() {
-  return SSH_CLI_MIN_VERSION
-}
-
 function deviceCodeEnvVar() {
   return DEVICE_CODE_ENV
 }
 
-// Limits on stdout and stderr streams collected into the shell's memory space.
-// Producer-side caps (via `head -c`) prevent unbounded buffering in QML StdioCollector.
+// Producer-side (`head -c`) caps on every stream the shell collects.
 var MAX_ITEMS_BYTES = 16 * 1024 * 1024       // 16 MB: large vault item list
 var MAX_DETAIL_BYTES = 4 * 1024 * 1024      // 4 MB: single item with custom fields & notes
 var MAX_SENDS_BYTES = 8 * 1024 * 1024       // 8 MB: send list
@@ -163,36 +134,27 @@ var MAX_ASSOC_BYTES = 1024 * 1024           // 1 MB: learned associations file
 var MAX_STDERR_BYTES = 8192                 // 8 KB: diagnostic stderr output
 var MAX_MISC_BYTES = 64 * 1024              // 64 KB: create/edit/delete responses
 
-// Attachment bytes go to disk rather than into the shell's memory, so the
-// ceilings that matter there are the size of the file itself, how long the
-// transfer may run, and leaving the disk with room to spare afterwards.
+// Attachments stream to disk: cap the file size, the transfer time, and keep
+// free space in reserve.
 var MAX_ATTACHMENT_BYTES = 512 * 1024 * 1024        // 512 MB: Bitwarden's own per-file ceiling
 var ATTACHMENT_TIMEOUT_SECS = 900                   // 15 min: a stalled transfer must not hold the queue
 var ATTACHMENT_FREE_SLACK_BYTES = 64 * 1024 * 1024  // 64 MB: never fill the disk to the last byte
 
-// `head -c` closes the pipe the moment the cap is reached, so a capped pipeline
-// exits with head's status -- success -- and every bw failure behind it would be
-// reported to the panel as a success. `pipefail` puts the producer's status back.
-// The one status it must not forward is 141: that is the SIGPIPE the cap itself
-// delivers when it truncates an oversized but otherwise healthy stream, which is
-// the limit doing its job rather than the command failing.
+// `pipefail` keeps bw's exit status through a `head -c` cap, except 141: the
+// SIGPIPE the cap sends when it truncates a healthy stream.
 function cappedScript(script, maxStderrBytes) {
   var out = ""
   if (maxStderrBytes) {
     out += "exec 2> >(head -c " + Number(maxStderrBytes) + " >&2); "
   }
   out += "set -o pipefail; " + script
-  // `case` rather than `[ ... ] && ...`, which reports failure on no match and
-  // would trip `set -e` in the scripts that use it.
+  // `case`, not `[ ] &&`, which fails on no match and would trip `set -e`.
   out += "\n__rc=$?\ncase \"$__rc\" in 141) __rc=0 ;; esac\nexit \"$__rc\""
   return out
 }
 
-// Every id below is the server's to choose, and quoting it defends against the
-// shell rather than against bw's own option parser -- `bw get item --help`
-// prints help rather than looking anything up. `--` ends the options, so an id
-// shaped like a flag is read as the id it is. Flags that belong to us go before
-// it, since everything after it is a positional.
+// Arguments are shell-quoted. Callers put `--` before server-chosen ids so an
+// id shaped like a flag stays positional; our own flags go before it.
 function buildCappedCommand(args, maxStdoutBytes, maxStderrBytes) {
   var inner = "bw"
   if (args && args.length > 0) {
@@ -211,14 +173,8 @@ function buildCappedCommand(args, maxStdoutBytes, maxStderrBytes) {
   return ["bash", "-c", cappedScript(inner, maxStderrBytes)]
 }
 
-// A bw session key is base64: 88 characters for the 64 bytes bw mints. Only
-// something shaped like one is accepted, and anything else yields "" rather
-// than the raw input.
-//
-// The old last-resort `return s` meant any non-empty text became a "session":
-// a bw error message, or whatever happened to be sitting in the handoff file,
-// would be written to the keyring and the panel would declare itself unlocked
-// on the strength of it. Both callers already treat "" as failure.
+// A bw session key is base64 (88 chars for bw's 64 bytes). Anything not
+// shaped like one yields "", which callers treat as failure.
 var SESSION_TOKEN_RE = /^[A-Za-z0-9+/=_-]{32,}$/
 
 function isSessionToken(value) {
@@ -249,21 +205,10 @@ function extractSessionToken(raw) {
 // Vault generation
 // -------------------------------------------------------------------------
 //
-// Nothing cancels a `bw` that is already running. By the time the panel locks
-// the vault, a `bw list items` started a second earlier is long past the point
-// where the session mattered: it will finish, print the whole vault, and the
-// completion handler will put it back into a panel that has just thrown it
-// away. The list carries each login's password in its raw object, so the
-// contents of a vault the user had just locked went on living in the shell for
-// the rest of the desktop session -- and a logout followed by a login to a
-// second account showed the first account's items until the new list landed,
-// close enough to copy from.
-//
-// So every reader records the vault generation it started under, and the
-// generation moves on whenever the vault changes hands: locked, logged out of,
-// unlocked again. A result from a previous generation is discarded rather than
-// rendered. Exit status is no help here -- the command genuinely succeeded;
-// the vault it succeeded against is the thing that is gone.
+// Nothing cancels a running `bw`, so a read started before a lock can land
+// afterwards and repopulate the panel. Every reader records the vault
+// generation it started under; the generation advances on lock, logout and
+// unlock, and a result from an older generation is discarded.
 function vaultReadIsStale(startedEpoch, currentEpoch, hasSession) {
   if (!hasSession) return true
   return Number(startedEpoch) !== Number(currentEpoch)
@@ -273,24 +218,11 @@ function vaultReadIsStale(startedEpoch, currentEpoch, hasSession) {
 // Collector scrubbing
 // -------------------------------------------------------------------------
 //
-// Refusing a stale answer is not the same as forgetting it. A StdioCollector
-// keeps whatever its process last printed for as long as that process is not
-// started again -- `text` is read-only, there is no clear(), and nothing in
-// Quickshell drops the buffer when the panel stops reading it. So every secret
-// that has ever come back through a pipe is still in the shell process after
-// the vault locks: the session key from the handoff file and from the keyring,
-// the master password from the PIN and fingerprint lookups, both halves of a
-// login or unlock, the whole item list with each login's password in its raw
-// object, an item detail, a live TOTP. dropVaultSecrets() empties the QML
-// properties those values were copied into and leaves the originals sitting
-// behind them, which for a shell that lives as long as the desktop session is
-// the residue it exists to prevent.
-//
-// The buffer IS replaced when the process next starts, so the way to empty one
-// is to run something through it that prints nothing. That command doubles as
-// the marker for the run: a handler that finds it on its own process knows the
-// empty string it just received is a scrub rather than an answer, so nothing
-// needs a flag whose lifetime someone has to get right.
+// A StdioCollector keeps its last output until its process runs again; there
+// is no clear(). So after a lock, secrets (session keys, passwords, item
+// lists, TOTPs) would stay in the shell's memory. A buffer is emptied by
+// re-running its process with a command that prints nothing, and that
+// command doubles as the marker that an empty result is a scrub, not an answer.
 var SCRUB_COMMAND = ["bash", "-c", ""]
 
 function scrubCommand() {
@@ -305,23 +237,15 @@ function isScrubCommand(cmd) {
   return true
 }
 
-// How often the panel comes back for a process that was still running when the
-// vault locked. Its buffer cannot be scrubbed while it is being written. There
-// is deliberately no retry limit: a process that exits late can otherwise
-// leave its final output resident until an unrelated future run that may never
-// happen.
+// Retry interval for a process still running at lock time. No retry limit:
+// giving up would leave its final output resident.
 var SCRUB_RETRY_MS = 1000
 
 function scrubRetryMs() { return SCRUB_RETRY_MS }
 
-// One pass over the scrub queue. Returns what to do with each process and what
-// is left to come back for, so the walk itself can be tested without a running
-// shell: `start` is scrubbed now, `waiting` is asked again next tick, and
-// anything in neither is done and drops out of the queue.
-//
-// A process that is running is left alone -- stomping its command mid-flight
-// would abandon a read the panel is still waiting on -- and one already
-// carrying the scrub command has been scrubbed and needs nothing further.
+// One pass over the scrub queue: `start` is scrubbed now, `waiting` is checked
+// again next tick, anything else is done. Running processes are left alone
+// (their read is still wanted); already-scrubbed ones need nothing.
 function scrubPass(procs) {
   var start = []
   var waiting = []
@@ -336,9 +260,8 @@ function scrubPass(procs) {
   return { start: start, waiting: waiting }
 }
 
-// Record completion before a handler is allowed to reuse the Process. The
-// command property describes the newest run, so inspecting it on the next
-// timer tick cannot prove that an earlier scrub finished.
+// Drop a process from the queue once its scrub finished. Checking `command`
+// later cannot prove that, since it describes the newest run.
 function finishScrub(procs, finished) {
   var remaining = []
   for (var i = 0; i < (procs || []).length; i++) {
@@ -359,15 +282,10 @@ function statusCommand() {
 // Authentication prewarming
 // -------------------------------------------------------------------------
 //
-// Starting the bw process is a substantial part of unlock/login latency. A
-// password FIFO lets bw complete that bootstrap while the user is still
-// typing: bw opens the FIFO through --passwordfile and waits there, then the
-// panel writes the password only after explicit submission.
-//
-// The FIFOs live in XDG_RUNTIME_DIR (private tmpfs owned by this login), never
-// in /tmp or the plugin directory. Each command removes its FIFO on every exit
-// path. There is deliberately one fixed FIFO per auth flow: the panel owns one
-// Process for each and never runs two attempts of the same kind concurrently.
+// A password FIFO lets bw start up while the user types: bw waits on it via
+// --passwordfile and the password is written only on submit. FIFOs live in a
+// private dir under XDG_RUNTIME_DIR, one per auth flow, and are removed on
+// every exit path.
 var RUNTIME_SUBDIR = "qs-bitwarden-cli"
 
 function authPasswordFifoName(channel) {
@@ -389,25 +307,27 @@ function supervisedProcessPrelude(cleanupCommand) {
   return script
 }
 
+// Creates the directory in shell variable `name` mode 0700, or accepts it if
+// it is a real directory (not a symlink); exits 1 otherwise.
+function privateDirScript(name) {
+  var d = "\"$" + name + "\""
+  return "if [ -e " + d + " ]; then [ -d " + d + " ] && [ ! -L " + d + " ] || exit 1; "
+    + "else (umask 077 && mkdir -p -- " + d + ") || exit 1; fi; chmod 700 -- " + d + " || exit 1; "
+}
+
 function authFifoPrelude(channel) {
   var fifoName = authPasswordFifoName(channel)
   if (!fifoName) return ""
 
-  // Check an existing directory before using it so a symlink cannot redirect
-  // the FIFO outside the per-login runtime directory. XDG_RUNTIME_DIR itself is
-  // supplied and protected by the login manager; absence is a hard failure.
+  // Refuse a symlinked directory so the FIFO cannot be redirected.
   var script = "test -n \"${XDG_RUNTIME_DIR:-}\" || exit 1; "
   script += "__auth_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
-  script += "if [ -e \"$__auth_dir\" ]; then "
-  script += "[ -d \"$__auth_dir\" ] && [ ! -L \"$__auth_dir\" ] || exit 1; "
-  script += "else (umask 077 && mkdir -- \"$__auth_dir\") || exit 1; fi; "
-  script += "chmod 700 -- \"$__auth_dir\" || exit 1; "
+  script += privateDirScript("__auth_dir")
   script += "__auth_fifo=\"$__auth_dir/" + fifoName + "\"; "
   script += "rm -f -- \"$__auth_fifo\"; "
   script += "mkfifo -m 600 -- \"$__auth_fifo\" || exit 1; "
-  // QProcess terminates only this wrapper. Run bw and its output cap as a
-  // separate process group so a cancelled panel can stop the FIFO-blocked
-  // child immediately instead of leaving it orphaned behind the shell.
+  // QProcess kills only this wrapper, so bw runs in its own process group
+  // that the cleanup trap can signal.
   script += supervisedProcessPrelude("rm -f -- \"$__auth_fifo\"")
   return script
 }
@@ -419,9 +339,8 @@ function supervisedProcessCommand(command) {
 }
 
 function supervisedProcessRun(command) {
-  // Disarm the EXIT cleanup after a normal wait. Otherwise the trap sends a
-  // redundant signal to a process-group ID that has already been reaped and
-  // could, in the tiny gap before shell exit, have been reused.
+  // Clear the job id after a normal wait so the EXIT trap cannot signal a
+  // reaped (and possibly reused) process group.
   var script = "set -m; (" + cappedScript(command, MAX_STDERR_BYTES) + ") & "
   script += "__auth_job=$!; wait \"$__auth_job\"; __auth_rc=$?; "
   script += "__auth_job=''; exit \"$__auth_rc\""
@@ -430,9 +349,8 @@ function supervisedProcessRun(command) {
 
 function supervisedAuthCommand(channel, command) {
   var script = authFifoPrelude(channel)
-  // `set -m` gives the background subshell its own process group. The wrapper
-  // then waits with bash's interruptible `wait` builtin, allowing the signal
-  // traps above to run immediately even while bw is blocked opening the FIFO.
+  // `set -m` gives bw its own process group; the interruptible `wait` lets the
+  // signal traps run while bw blocks on the FIFO.
   script += supervisedProcessRun(command)
   return ["bash", "-c", script]
 }
@@ -442,15 +360,9 @@ function unlockPrewarmCommand() {
   return supervisedAuthCommand("unlock", command)
 }
 
-// The two-step methods bw is able to use, in the order bw itself lists them.
-// This is the whole set, not a selection from it: getSupportedProviders()
-// offers Duo and Organization Duo only if supportsDuo() and WebAuthn only if
-// supportsWebAuthn(), and the CLI's platform layer returns false for both, so
-// whatever an account has configured, the providers bw can act on are always a
-// subset of these three. A picker over them is therefore complete, which
-// matters because bw exposes no way to ask which ones an account actually has:
-// it keeps that list in a "memory" StateDefinition that dies with the process,
-// `bw serve` has no login route, and no flag reports it.
+// Every two-step method bw can act on, in bw's order. The CLI never offers
+// Duo or WebAuthn, and bw cannot report which methods an account has, so a
+// picker over these three is complete.
 var TWO_FACTOR_METHODS = [
   { method: 0, label: "Authenticator app",
     hint: "The rotating 6-digit code from your authenticator." },
@@ -470,9 +382,8 @@ function twoFactorMethods() {
   return out
 }
 
-// --method is the one part of the login command that is neither quoted nor
-// carried in the environment, because bw wants a bare integer. Nothing outside
-// this table may reach it, so membership -- not shape -- is the test.
+// --method is the only unquoted login argument, so only values from this
+// table may reach it.
 function isTwoFactorMethod(method) {
   for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
     if (TWO_FACTOR_METHODS[i].method === method) return true
@@ -487,41 +398,29 @@ function twoFactorMethodLabel(method) {
   return ""
 }
 
-// Two-step methods belong to an account, not to a machine. A single remembered
-// method was wrong for anyone with more than one vault: signing into the second
-// account sent the first account's method, which that account rejects, and the
-// stale-method recovery then spent a round trip discovering it. Keyed by email,
-// each account answers the question once and keeps its own answer.
+// Remembered two-step methods, keyed by account email.
 var MAX_REMEMBERED_ACCOUNTS = 10
 
-// Bitwarden treats the login address case-insensitively, so the key has to as
-// well or the same account remembers itself twice.
+// Bitwarden compares login emails case-insensitively.
 function twoFactorAccountKey(email) {
   return String(email || "").trim().toLowerCase()
 }
 
-// shell.json is not validated by anything that writes it, and a remembered
-// method is read straight back into an argv, so it is checked against the table
-// on the way in as well as on the way out. Anything else is "not remembered",
-// which costs one picker rather than a malformed command.
+// shell.json is unvalidated and the method goes into argv, so it is checked
+// against the table on read; anything else is "not remembered" (-1).
 function rememberedTwoFactorMethodFor(store, email) {
   var key = twoFactorAccountKey(email)
   if (!key || !store || typeof store !== "object") return -1
   var raw = store[key]
-  // The same reason intSetting() does not lean on Number() alone: it reads
-  // null, "" and false as 0, and 0 is Authenticator, so an absent entry would
-  // come back as a confident answer.
+  // Number() alone reads null, "" and false as 0 (Authenticator).
   var m = (typeof raw === "number" || (typeof raw === "string" && String(raw).trim() !== ""))
     ? Math.floor(Number(raw))
     : NaN
   return isFinite(m) && isTwoFactorMethod(m) ? m : -1
 }
 
-// Rebuilt rather than mutated, so whatever else is in that key -- a hand-edit,
-// an entry from a newer version, an unreadable value -- cannot survive into
-// what gets written back. Bounded, because this is a config file and not a
-// history: past the cap the oldest surviving entries are simply not copied,
-// which costs their accounts one picker each.
+// Rebuilt, not mutated, so unknown or invalid entries are dropped; capped at
+// MAX_REMEMBERED_ACCOUNTS.
 function rememberTwoFactorMethodIn(store, email, method) {
   var key = twoFactorAccountKey(email)
   if (!key || !isTwoFactorMethod(method)) return null
@@ -555,13 +454,14 @@ function forgetTwoFactorMethodIn(store, email) {
   return next
 }
 
+// `bw config server <url> && `, or "" for the default server.
+function serverConfigPrefix(serverUrl) {
+  var url = String(serverUrl || "").trim()
+  return url ? "bw config server " + shellQuote(url) + " >/dev/null 2>&1 && " : ""
+}
+
 function emailLoginPrewarmCommand(email, hasCode, serverUrl, method) {
-  var command = ""
-
-  if (serverUrl && serverUrl.trim()) {
-    command += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
-  }
-
+  var command = serverConfigPrefix(serverUrl)
   command += "bw login " + shellQuote(email) + " --passwordfile \"$__auth_fifo\""
   if (isTwoFactorMethod(method)) command += " --method " + String(method)
   if (hasCode) command += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
@@ -569,40 +469,17 @@ function emailLoginPrewarmCommand(email, hasCode, serverUrl, method) {
   return supervisedAuthCommand("login", command)
 }
 
-// bw 2026.2.0 answers two different challenges with this one bare sentence,
-// and which one it is decides whether this panel can answer it at all. See
-// loginNeedsDeviceVerification().
-// How long the one interactive login may run. It is answering a prompt with a
-// code the user has already typed, so it is a couple of server round trips --
-// not a person thinking. The bound exists so a login that reaches no prompt at
-// all cannot sit holding the master password until the panel is closed.
+// Bounds the one interactive login so one that never prompts cannot hold the
+// master password until the panel closes.
 var DEVICE_VERIFICATION_TIMEOUT_S = 60
 
-// The only login that runs with bw's prompts enabled.
-//
-// New-device verification is the one challenge bw accepts from no flag. Its
-// token comes from an inquirer prompt and from nothing else, so stdin is the
-// only way to answer it, and a login that cannot answer it cannot finish here
-// at all.
-//
-// Piping rather than opening a pty is what keeps BW_NOINTERACTION's guarantee
-// after taking BW_NOINTERACTION away. That flag was there so bw fails fast
-// instead of blocking on a prompt nobody can see, and a pipe ends: measured
-// against the inquirer 8.2.6 that bw bundles, a prompt with nothing left to
-// read throws ERR_USE_AFTER_CLOSE and the process exits, and a second prompt
-// after the single line supplied here does the same. So an unexpected prompt
-// still ends the login rather than hanging it, which is the property that
-// mattered. `timeout` covers the remainder: a bw that never prompts at all.
-//
-// The code itself is read from the environment by printf, so unlike --code it
-// reaches no argv, not even bw's.
+// The only login with bw's prompts enabled. New-device verification reads its
+// code from an inquirer prompt and no flag, so the code is piped to stdin
+// (from the env, so it reaches no argv). A pipe still ends: an unexpected
+// second prompt fails with ERR_USE_AFTER_CLOSE instead of hanging, and
+// `timeout` covers a bw that never prompts.
 function deviceVerificationLoginCommand(email, serverUrl, method) {
-  var command = ""
-
-  if (serverUrl && serverUrl.trim()) {
-    command += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
-  }
-
+  var command = serverConfigPrefix(serverUrl)
   command += "printf '%s\\n' \"$" + DEVICE_CODE_ENV + "\" | "
   command += "timeout " + DEVICE_VERIFICATION_TIMEOUT_S + "s bw login " + shellQuote(email)
     + " --passwordfile \"$__auth_fifo\""
@@ -611,19 +488,18 @@ function deviceVerificationLoginCommand(email, serverUrl, method) {
   return supervisedAuthCommand("login", command)
 }
 
-// inquirer's own failure when it is asked for input that is not coming. It
-// means bw reached a prompt this login did not expect, which is a reason to
-// hand the login to a terminal rather than anything to show the user.
-function loginPromptRanOutOfInput(stdoutText, stderrText) {
-  var combined = String(stderrText || "") + "\n" + String(stdoutText || "")
-  return /ERR_USE_AFTER_CLOSE|readline was closed/.test(combined)
+// stderr then stdout, lower-cased, for matching bw's messages.
+function combinedOutput(stdoutText, stderrText) {
+  return (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
 }
 
-// An interactive bw draws its prompt on stderr and echoes every keystroke back
-// with the cursor movement to match, so the captured stream holds the code and
-// a great deal of noise. None of that is an error message. Strip the escape
-// sequences, drop the lines inquirer drew, and redact the code itself, so what
-// is left is whatever bw actually had to say.
+// inquirer's error for input that is not coming: bw hit an unexpected prompt.
+function loginPromptRanOutOfInput(stdoutText, stderrText) {
+  return /err_use_after_close|readline was closed/.test(combinedOutput(stdoutText, stderrText))
+}
+
+// Interactive bw echoes its prompt and keystrokes on stderr. Strip escapes,
+// prompt lines and any line containing the code, leaving bw's own message.
 function sanitizeInteractiveStderr(raw, secret) {
   var text = String(raw || "")
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
@@ -639,17 +515,12 @@ function sanitizeInteractiveStderr(raw, secret) {
     if (code && line.indexOf(code) !== -1) continue
     kept.push(line)
   }
-  // A crashing node prints a stack trace, which is not an error message
-  // either. Whatever survives is only ever shown as one line of context.
+  // One line of context at most (a node crash prints a stack trace).
   return kept.join(" ").slice(0, 300)
 }
 
-// A failed login is the hardest thing in this plugin to diagnose: it happens on
-// someone else's machine, against someone else's account, and the panel shows a
-// curated message rather than whatever bw said. This reports the shape of an
-// attempt and never its content -- the session token is counted, not printed,
-// and stderr goes through the same sanitiser the panel uses before it shows
-// anything, with no code to redact because none is passed.
+// The shape of a login attempt for the journal, never its content: stdout is
+// counted, stderr is sanitised.
 function loginDiagnostic(stdoutText, stderrText, exitCode, branch) {
   return "exit=" + String(exitCode)
     + " stdout=" + String(stdoutText || "").length + "b"
@@ -658,57 +529,36 @@ function loginDiagnostic(stdoutText, stderrText, exitCode, branch) {
 }
 
 function loginCodeIsRequiredChallenge(stdoutText, stderrText) {
-  var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
-  return /(?:^|[\r\n])\s*code\s+is\s+required[.!]?\s*(?=$|[\r\n])/.test(combined)
+  return /(?:^|[\r\n])\s*code\s+is\s+required[.!]?\s*(?=$|[\r\n])/.test(combinedOutput(stdoutText, stderrText))
 }
 
 function loginNeedsSecondFactor(stdoutText, stderrText) {
-  var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
-  return /(?:two[ _-]?(?:step|factor)|2fa|verification[ _-]?code)/.test(combined)
+  return /(?:two[ _-]?(?:step|factor)|2fa|verification[ _-]?code)/.test(combinedOutput(stdoutText, stderrText))
     || loginCodeIsRequiredChallenge(stdoutText, stderrText)
 }
 
-// New-device verification is the challenge --code cannot answer. bw's login
-// command takes a two-step token from --code and reads it only in its
-// requiresTwoFactor branch; the requiresDeviceVerification branch that follows
-// takes its OTP from an inquirer prompt and nothing else, so BW_NOINTERACTION
-// leaves it with an empty token and it returns "Code is required." again. bw
-// 2026.2.0 offers no flag for that token -- login accepts --method, --code,
-// --sso, --apikey, --passwordenv and --passwordfile, and none of them reach it.
-//
-// The two challenges are indistinguishable on a first attempt: both come back
-// as that same sentence. They separate on the second. A login that carried a
-// code and still says the code is required did not have its code rejected --
-// a rejected two-step token says so ("Two-step token is invalid") -- it was
-// never read. That attempt is the evidence, so the caller passes it in.
+// New-device verification, which --code cannot answer. Its first reply is the
+// same "Code is required." as a two-step challenge; only a retry that sent a
+// code and still gets it tells them apart (a rejected code says "invalid").
 function loginNeedsDeviceVerification(stdoutText, stderrText, codeWasSent) {
   if (!codeWasSent) return false
   return loginCodeIsRequiredChallenge(stdoutText, stderrText)
 }
 
-// bw's answer when an account has more than one usable provider and nothing
-// told it which one to use. It reads like a failure but it is a question: bw
-// would have shown a menu here if it had a terminal to show one on, and
-// --method is the only answer it accepts. Guessing at it is what produces a
-// real failed attempt, so the panel asks instead.
+// bw's reply when several providers are usable and none was chosen: a menu it
+// cannot show. The panel asks the user for --method instead of guessing.
 function loginNeedsMethodChoice(stdoutText, stderrText) {
-  var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
-  return /no\s+provider\s+selected/.test(combined)
+  return /no\s+provider\s+selected/.test(combinedOutput(stdoutText, stderrText))
 }
 
-// The dead end next to it: the account's two-step methods are all ones this
-// client cannot perform -- a passkey or Duo, typically. No --method answers
-// this and no terminal helps, because it is the CLI that lacks the support,
-// so the only way in is an API key.
+// Every two-step method on the account is one the CLI cannot do (passkey,
+// Duo): only an API key login works.
 function loginHasNoUsableProvider(stdoutText, stderrText) {
-  var combined = (String(stderrText || "") + "\n" + String(stdoutText || "")).toLowerCase()
-  return /no\s+providers\s+available\s+for\s+this\s+client/.test(combined)
+  return /no\s+providers\s+available\s+for\s+this\s+client/.test(combinedOutput(stdoutText, stderrText))
 }
 
-// The password remains in BW_PASSWORD, inherited only by this short-lived
-// writer. The nested shell script is a literal in argv (it contains the
-// variable name, not its value), and timeout prevents a dead reader from
-// leaving the writer blocked forever between the FIFO check and open.
+// Writes BW_PASSWORD into the FIFO. The script names the variable, never its
+// value; `timeout` stops a dead reader from blocking the writer forever.
 function authPasswordWriteCommand(channel) {
   var fifoName = authPasswordFifoName(channel)
   if (!fifoName) return []
@@ -716,12 +566,8 @@ function authPasswordWriteCommand(channel) {
   var script = "test -n \"${XDG_RUNTIME_DIR:-}\" || exit 1; "
   script += "__auth_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
   script += "__auth_fifo=\"$__auth_dir/" + fifoName + "\"; "
-  // The reader creates the directory and then the FIFO, and this writer is
-  // started alongside it, so on the first login after boot (the runtime dir
-  // is tmpfs) neither may exist yet. Wait for both inside the same window
-  // instead of failing on the missing directory before the reader has had
-  // its first millisecond -- that failure surfaced as "Could not deliver the
-  // password" on the first unlock of every session.
+  // Started alongside the reader, so on the first login after boot the dir
+  // and FIFO may not exist yet: wait for both.
   script += "for __auth_wait in {1..200}; do "
   script += "if [ -d \"$__auth_dir\" ] && [ ! -L \"$__auth_dir\" ] && [ -p \"$__auth_fifo\" ] && [ ! -L \"$__auth_fifo\" ]; then "
   script += "exec timeout 10s bash -c 'printf \"%s\" \"$" + PASSWORD_ENV + "\" > \"$1\"' _ \"$__auth_fifo\"; "
@@ -729,33 +575,16 @@ function authPasswordWriteCommand(channel) {
   return ["bash", "-c", script]
 }
 
-// `hasCode` rather than the code itself -- only whether the flag is present
-// shapes the command; the value comes from the environment.
-// The custom-server field is where the master password is about to be sent,
-// and `bw config server` takes whatever it is given. Two things it must not be
-// allowed to be.
-//
-// It must not be a scheme bw will not speak. Anything that is not http or
-// https is a typo at best, and `bw config server` accepting it quietly means
-// the failure surfaces later as an unexplained login error.
-//
-// It must not be plaintext http to somewhere off this machine. That is the
-// master password and every vault secret behind it, in the clear, to whoever
-// is on the path -- and the field is a plausible thing to talk someone into
-// pasting. Loopback is the exception, because there is no path: a Vaultwarden
-// on 127.0.0.1 or an SSH tunnel to one is a normal way to run this.
-//
-// Returns "" for a URL that is fine to use (including an empty one, which
-// means the official server), or the reason it was refused.
+// The custom server receives the master password. Returns "" if the URL is
+// usable (empty means the default server), else why it was refused: only
+// http(s), and plain http only to loopback (e.g. a local Vaultwarden or tunnel).
 var SERVER_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//
 var LOOPBACK_HOST_RE = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/i
 var BITWARDEN_US_SERVER = "https://vault.bitwarden.com"
 var BITWARDEN_EU_SERVER = "https://vault.bitwarden.eu"
 
-// Both cloud regions are explicit because bw persists its last configured
-// server. An empty US override after an EU login would keep sending the next
-// login to EU. Unknown UI state fails closed to US instead of accidentally
-// sending credentials to a stale custom URL.
+// Both regions are explicit because bw remembers its last server. Unknown
+// input falls back to US, never to a stale custom URL.
 function loginServerUrlFor(region, customUrl) {
   var choice = String(region || "").toLowerCase()
   if (choice === "eu") return BITWARDEN_EU_SERVER
@@ -767,11 +596,8 @@ function validateServerUrl(raw) {
   var url = String(raw || "").trim()
   if (!url) return ""
 
-  // Node's WHATWG URL parser (used by bw) treats backslashes as path
-  // separators for http(s), while the small parser below would leave one in
-  // the authority. That disagreement can turn
-  // `http://evil.example\@localhost` into "localhost" here but evil.example
-  // on the wire, bypassing the plaintext-password protection.
+  // bw's URL parser treats `\` as `/` in http(s) authorities; the parser below
+  // does not, so `http://evil\@localhost` could pass as loopback.
   if (url.indexOf("\\") !== -1) return "Server URL must not contain backslashes"
 
   var m = url.match(SERVER_SCHEME_RE)
@@ -801,12 +627,7 @@ function validateServerUrl(raw) {
 // `login --apikey` authenticates but does not unlock, so the master password
 // is still needed for the second step. Both come from the environment.
 function apiKeyLoginCommand(serverUrl) {
-  var script = ""
-
-  if (serverUrl && serverUrl.trim()) {
-    script += "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
-  }
-
+  var script = serverConfigPrefix(serverUrl)
   script += "bw login --apikey >/dev/null 2>&1 && "
   script += "bw unlock --passwordenv " + PASSWORD_ENV + " --raw | head -c " + MAX_TOKEN_BYTES
   return supervisedProcessCommand(script)
@@ -816,43 +637,25 @@ function apiKeyLoginCommand(serverUrl) {
 // Terminal login handoff
 // -------------------------------------------------------------------------
 //
-// `bw login` in a terminal covers what the in-panel form cannot -- SSO, Duo, a
-// hardware key -- but it used to leave the panel none the wiser, so a
-// successful terminal login was immediately followed by unlocking all over
-// again. The terminal now writes its session key to a file the panel reads
-// once and deletes.
-//
-// The key is a secret at rest, so it goes to XDG_RUNTIME_DIR: user-only tmpfs,
-// never written to disk, and cleared when the session ends. `--raw` prints only
-// the key on stdout while bw's prompts stay on stderr, so redirecting it keeps
-// the login interactive.
+// `bw login` in a terminal handles what the panel cannot (SSO, Duo, hardware
+// keys). The terminal writes its session key to a file under XDG_RUNTIME_DIR,
+// which the panel reads once and deletes. `--raw` keeps prompts on stderr.
 
-// No fallback if XDG_RUNTIME_DIR is missing. It is set by pam_systemd at login
-// and is a precondition of the systemd user manager that `omarchy launch
-// terminal` runs the terminal under, so it cannot realistically be absent --
-// and a `${XDG_RUNTIME_DIR:-/tmp}` default would quietly turn that impossible
-// case into "write the session key somewhere world-writable", where another
-// user could have pre-created the directory. Fail closed instead.
+// No /tmp fallback if XDG_RUNTIME_DIR is unset: fail closed rather than write
+// a session key somewhere world-writable.
 var HANDOFF_BASENAME = "session-handoff"
 
-// `mode` is "login" when logged out and "unlock" when merely locked. The panel
-// already knows which, so this does not probe with `bw status` first -- that
-// probe measured at ~3.3s, spent before the user was even shown a prompt.
+// `mode` is "login" or "unlock"; the panel already knows which, so no slow
+// `bw status` probe first.
 function terminalLoginCommand(mode, serverUrl) {
   var verb = (mode === "unlock") ? "unlock" : "login"
-  var configureServer = (verb === "login" && serverUrl && serverUrl.trim())
-    ? "bw config server " + shellQuote(serverUrl.trim()) + " >/dev/null 2>&1 && "
-    : ""
+  var configureServer = verb === "login" ? serverConfigPrefix(serverUrl) : ""
   var inner = "set -u; "
     + "d=\"${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR -- refusing to write a session key}/"
     + RUNTIME_SUBDIR + "\"; f=\"$d/" + HANDOFF_BASENAME + "\"; "
-    // umask before mkdir, so the directory is born 700 rather than created
-    // world-readable and narrowed a moment later. The chmod then covers a
-    // directory that already existed, and both are checked: a chmod that
-    // fails means the directory is not ours, which is not a place for a key.
-    + "umask 077; if [ -e \"$d\" ]; then "
-    + "[ -d \"$d\" ] && [ ! -L \"$d\" ] || exit 1; "
-    + "else mkdir -p \"$d\" || exit 1; fi; chmod 700 \"$d\" || exit 1; "
+    // umask before mkdir so the dir is created 0700; a failed chmod means the
+    // dir is not ours.
+    + "umask 077; " + privateDirScript("d")
     // Remove a stale entry before opening the output path, so a pre-created
     // symlink is unlinked rather than followed by shell redirection.
     + "rm -f -- \"$f\" || exit 1; "
@@ -869,80 +672,36 @@ function terminalLoginCommand(mode, serverUrl) {
   return ["bash", "-c", script]
 }
 
-// How long after launching a terminal login the panel will still accept what
-// that terminal left behind. Long enough for a real login -- a password, a
-// push to a phone, a hardware key tap, and bw's own round trip -- and short
-// enough that the window is not simply always open.
+// How long after launching a terminal login its handoff is still accepted.
 var HANDOFF_WINDOW_MS = 10 * 60 * 1000
 
-function handoffWindowMs() {
-  return HANDOFF_WINDOW_MS
-}
-
-// Whether a handoff written now would still be accepted. `startedAt` is when
-// the panel launched the terminal, or 0 if it never did.
-// How long a login that is waiting on a second factor survives the panel being
-// closed.
-//
-// It has to survive it at all, because a code that arrives by email cannot be
-// read without leaving the panel, and a login that forgets everything the
-// moment it loses focus is one that can never be completed by email -- not for
-// two-step email codes and not for new-device verification, which is emailed
-// too. The panel dropping its state on close is right for every other case and
-// wrong for this one.
-//
-// Shorter than the terminal handoff window, because what is being held over is
-// the master password rather than a session key: long enough to open a mail
-// client and read six digits, not long enough to be somewhere the password
-// lives.
+// How long a login awaiting a second factor survives the panel closing, so an
+// emailed code can be read. Shorter than the handoff window: it holds the
+// master password, not a session key.
 var SECOND_FACTOR_WINDOW_MS = 5 * 60 * 1000
 
-function secondFactorWindowOpen(startedAt, now) {
+// Wall-clock, like the auto-lock, so time spent suspended counts. A clock
+// stepped backwards closes the window rather than reopening it.
+function windowOpen(startedAt, now, windowMs) {
   var began = Number(startedAt)
   if (!isFinite(began) || began <= 0) return false
   var elapsed = Number(now) - began
-  // Measured on the wall clock rather than a monotonic timer, for the reason
-  // the auto-lock is: a suspended machine stops CLOCK_MONOTONIC, and a login
-  // left pending across a lid close must expire on the time that actually
-  // passed. A clock stepped backwards closes the window rather than reopening
-  // it, the same way handoffWindowOpen() treats it.
   if (!isFinite(elapsed) || elapsed < 0) return false
-  return elapsed <= SECOND_FACTOR_WINDOW_MS
+  return elapsed <= windowMs
+}
+
+function secondFactorWindowOpen(startedAt, now) {
+  return windowOpen(startedAt, now, SECOND_FACTOR_WINDOW_MS)
 }
 
 function handoffWindowOpen(startedAt, now) {
-  var began = Number(startedAt)
-  if (!isFinite(began) || began <= 0) return false
-  var elapsed = Number(now) - began
-  // A clock stepped backwards leaves a negative elapsed time. That is not
-  // evidence the login was recent; it is evidence the clock moved, so the
-  // window closes rather than reopening for ten minutes.
-  if (!isFinite(elapsed) || elapsed < 0) return false
-  return elapsed <= HANDOFF_WINDOW_MS
+  return windowOpen(startedAt, now, HANDOFF_WINDOW_MS)
 }
 
-// Read-once: the key is consumed by the panel and the file removed, so it does
-// not linger for the next process that goes looking.
-//
-// `expecting` is the whole point of this signature. The read runs on every
-// status refresh, and it used to consume whatever was at that path regardless
-// of whether the panel had ever asked for a terminal login -- so anything able
-// to write the file could hand the panel a session key at a moment of its own
-// choosing, and the panel would adopt it and write it to the keyring. The
-// runtime directory is 0700, so that is one of this user's own processes
-// rather than a stranger, and this was never a privilege boundary. It is a
-// window that had no reason to be open: a key is only ever expected in the
-// minutes after *we* launched a terminal, so those are the only minutes it is
-// read in.
-//
-// Unexpected is not the same as ignored. The file is removed either way --
-// leaving a live session key sitting in the runtime directory because nobody
-// was expecting it is the worse of the two outcomes, and a legitimate login
-// the user abandoned halfway leaves exactly that.
-//
-// A missing runtime dir means "nothing was handed over" and exits quietly
-// rather than erroring into the shell log the way the write side deliberately
-// does.
+// Reads and deletes the handoff file. The key is only read while `expecting`
+// (shortly after we launched a terminal login), so no other process can hand
+// the panel a session key at a time of its choosing; the file is deleted
+// either way. A missing runtime dir means nothing was handed over.
 function sessionHandoffReadCommand(expecting) {
   var script = "d=\"${XDG_RUNTIME_DIR:-}\"; [ -n \"$d\" ] || exit 0; "
     + "d=\"$d/" + RUNTIME_SUBDIR + "\"; "
@@ -960,25 +719,12 @@ function sessionHandoffReadCommand(expecting) {
 // Locking on screen lock and on suspend
 // -------------------------------------------------------------------------
 //
-// Auto-lock only ever measured elapsed time, and the two moments a vault most
-// obviously stops being attended are not about elapsed time at all: the screen
-// locking, and the machine going to sleep. Both used to leave the vault open
-// for whatever was left of the countdown. Omarchy already treats the first as
-// a "lock your password manager now" event -- `omarchy-system-lock` locks
-// 1Password -- so this is the same event, read from the same place.
+// Screen lock and suspend both lock the vault, like `omarchy-system-lock`
+// does for 1Password.
 
-// The screen-lock half has to be asked rather than waited for. The Omarchy
-// lock screen is `WlSessionLock` (ext-session-lock), which is a compositor
-// protocol with no bus presence: it never calls `loginctl lock-session`, so
-// logind's `LockedHint` stays "no" and its `Lock` signal never fires while the
-// screen is locked. The shell's own lock plugin is the only thing that knows,
-// and the only way to ask it is its IPC handler.
-//
-// Only the exact string "true" counts as locked. A shell with the lock plugin
-// disabled answers "Target not found." on stdout and exits non-zero, and that
-// is "no answer" rather than "unlocked" -- but neither may be read as "locked",
-// because a vault that locks itself every few seconds on a machine with no
-// lock screen is a vault nobody can use.
+// Screen lock is polled: Omarchy's lock screen (ext-session-lock) never tells
+// logind, so only the shell's lock plugin knows, via IPC. Only "true" means
+// locked; a missing plugin must never read as locked.
 function screenLockStateCommand() {
   return ["bash", "-c", "omarchy-shell lock isLocked 2>/dev/null | head -c 16"]
 }
@@ -987,49 +733,19 @@ function screenIsLocked(raw) {
   return String(raw || "").trim() === "true"
 }
 
-// How often to ask. Only ever runs while the setting is on *and* the vault is
-// unlocked, so the default configuration pays nothing and a locked vault stops
-// paying the moment it locks. The call is an IPC round trip to a socket in the
-// runtime directory and measures at ~50ms.
+// Polled only while the setting is on and the vault unlocked (~50 ms per call).
 var SCREEN_LOCK_POLL_MS = 3000
 
 function screenLockPollMs() {
   return SCREEN_LOCK_POLL_MS
 }
 
-// The suspend half is a real event, so it is waited for rather than polled.
-// logind announces `PrepareForSleep(true)` before sleeping and
-// `PrepareForSleep(false)` on resume, for every path into suspend -- the lid,
-// the menu, `systemctl suspend`, an idle timeout -- which is more than any one
-// of those could be watched individually.
-//
-// The delay inhibitor is what makes the lock mean something. Without one,
-// logind announces the sleep and suspends without waiting, so the vault would
-// be locked by a panel that is about to be frozen mid-way through doing it --
-// and a session key still in the keyring is a session key in the memory image.
-// A delay inhibitor makes logind wait, and it costs nothing until a suspend
-// actually happens: it is held continuously, and released a second after the
-// announcement, which is far inside logind's own InhibitDelayMaxSec (5s by
-// default) and long enough for the panel to drop the key and for the keyring
-// clear it spawns to finish.
-//
-// Held *inside* the loop rather than around it, because an inhibitor is only
-// released by the process holding it exiting. Announce, wait a beat, exit to
-// release, then loop round to take a fresh one for the next suspend.
-//
-// `gdbus monitor` needs `--dest`, and prints a line about the name having no
-// owner rather than exiting if logind is somehow absent, so it keeps waiting
-// instead of spinning the loop. sed does the matching, so only the one word
-// the panel cares about ever crosses the pipe.
-//
-// The monitor is killed by pid rather than left to a broken pipe. sed quits on
-// the match, but a plain `monitor | sed` would then sit in the pipeline until
-// the monitor next wrote something -- and the next thing logind announces
-// after a sleep is the resume, which is on the far side of the suspend this is
-// supposed to be delaying. The inhibitor would still be held, the loop would
-// never come round, and only the very first suspend of the session would ever
-// be noticed. Bash sets $! for a process substitution, so the monitor can be
-// read from an fd and then killed outright.
+// Suspend is an event: logind's PrepareForSleep(true), for every path into
+// sleep. A delay inhibitor, held until a second after the announcement, gives
+// the panel time to drop the key before memory is frozen. Inhibitors release
+// only on exit, so each loop iteration takes a fresh one. The monitor is
+// killed by pid once sed matches; waiting for a broken pipe would hold the
+// inhibitor until the next signal, which is the resume.
 var SLEEP_SIGNAL_TOKEN = "sleep"
 var WAKE_SIGNAL_TOKEN = "wake"
 
@@ -1047,21 +763,13 @@ function sleepMonitorCommand() {
   var inner = "exec 3< <(" + monitor + "); g=$!; "
     + match + " <&3; "
     + "kill \"$g\" 2>/dev/null; exec 3<&-; "
-    // The beat that makes the inhibitor worth holding: the panel has the token
-    // by now, and this is the time it gets to act on it before logind is told
-    // we are done.
+    // Time for the panel to act before the inhibitor is released.
     + "sleep 1"
 
-  // The loop never exits on its own. Bound to the setting, this process is
-  // started and stopped by the panel and by nothing else, so every path that
-  // could fail waits before trying again instead of returning and inviting a
-  // restart -- a monitor that cannot start must not become a hot loop.
-  // Quickshell kills only its direct child on reload, not that child's tree.
-  // Keep a watcher on its stdin pipe: even SIGKILL of the owner closes the
-  // pipe, so the watcher can kill our private process group. setsid below
-  // makes $$ the group id; never run this script in the shell's own group.
-  // Explicit stdin redirection keeps Bash from giving the background watcher
-  // /dev/null. The panel must keep stdinEnabled true for the owner's lifetime.
+  // Never exits on its own; failures wait before retrying so it cannot spin.
+  // Quickshell kills only its direct child on reload, so a watcher on stdin
+  // kills this process group (setsid makes $$ its id) when the owner dies.
+  // The panel must keep stdinEnabled true.
   var script = "(while IFS= read -r _; do :; done; kill -KILL -- -$$) <&0 & "
     + "while :; do "
     + "command -v gdbus >/dev/null 2>&1 || { sleep 300; continue; }; "
@@ -1087,14 +795,9 @@ function activeWindowCommand() {
 // Opening an item's URI
 // -------------------------------------------------------------------------
 //
-// A vault item's URI is data, not something the panel wrote, and an item can
-// arrive from a shared organization collection that somebody else can edit.
-// xdg-open hands whatever scheme it is given to whichever program claims it,
-// so `file:///`, `ftp://` or a desktop-registered custom scheme would all be
-// launched on a click. Only the web schemes are followed.
-//
-// A colon followed by digits is a port, not a scheme, so "example.com:8080"
-// and "localhost:3000" still work as the bare hosts they are.
+// Item URIs are untrusted (shared collections are editable by others) and
+// xdg-open launches any scheme, so only http(s) is opened. `host:8080` is a
+// port, not a scheme.
 var HTTP_URL_RE = /^https?:\/\//i
 var URL_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):(?!\d)/
 
@@ -1103,9 +806,7 @@ var URL_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):(?!\d)/
 function normalizeOpenableUrl(raw) {
   var target = String(raw || "").trim()
   if (!target) return { ok: false, scheme: "" }
-  // Browsers parse backslashes as slashes in http(s) authorities. Refuse the
-  // ambiguous spelling rather than displaying one apparent host and opening
-  // another (for example `https://evil.example\@trusted.example`).
+  // Browsers treat `\` as `/` in http(s) authorities; refuse the ambiguity.
   if (target.indexOf("\\") !== -1) return { ok: false, scheme: "", reason: "ambiguous" }
 
   if (HTTP_URL_RE.test(target)) return { ok: true, url: target }
@@ -1121,30 +822,21 @@ function logoutCommand() {
   return ["bw", "logout"]
 }
 
-function listCommand() {
-  return buildCappedCommand(["list", "items"], MAX_ITEMS_BYTES, MAX_STDERR_BYTES)
-}
-
-// `bw list items` returns complete decrypted ciphers. In particular, an SSH
-// item carries its private key, and cipher types added after this panel was
-// written otherwise fall through as ordinary logins. Keep that stream out of
-// QML by allowlisting supported types in a short-lived jq process. Types 1-4
-// remain complete because their existing edit/detail paths need rawObject. A
-// malformed cross-typed ordinary item with an sshKey subtree therefore fails
-// the whole read instead of being mutated or allowed to smuggle private-key
-// material through that branch. Type 5 is reduced to public metadata, and
-// every other type is omitted.
-//
-// Production reads go through sanitizedListCommand(). listCommand() stays as
-// the uncapped-shape primitive the stream-limit tests pin.
-var SANITIZED_ITEMS_FILTER = [
+// `bw list items` returns decrypted ciphers, SSH private keys included. A jq
+// filter keeps only supported types: 1-4 whole (edit and detail need
+// rawObject; an sshKey subtree on one fails the read), type 5 as public
+// metadata only, others dropped.
+var JQ_ITEM_HELPERS = [
   "def string_or_empty: if type == \"string\" then . else \"\" end;",
   "def string_or_null: if type == \"string\" then . else null end;",
   "def bool_or_false: if type == \"boolean\" then . else false end;",
   "def reprompt_or_zero: if . == 0 or . == 1 then . else 0 end;",
   "def item_type: try (.type | tonumber) catch null;",
   "def ordinary_type: item_type as $t | ($t == 1 or $t == 2 or $t == 3 or $t == 4);",
-  "def ssh_type: item_type == 5;",
+  "def ssh_type: item_type == 5;"
+]
+
+var SANITIZED_ITEMS_FILTER = JQ_ITEM_HELPERS.concat([
   "if type != \"array\" then",
   "  error(\"expected one item array\")",
   "elif any(.[] | objects | select(ordinary_type); has(\"sshKey\")) then",
@@ -1166,25 +858,13 @@ var SANITIZED_ITEMS_FILTER = [
   "    }]",
   "  }",
   "end"
-].join("\n")
+]).join("\n")
 
-// The agent branch's projection. It sees the same validated array the panel
-// filter sees, and reduces it to the one thing the companion is allowed to
-// hold: eligible private keys, framed by the load nonce.
-//
-// Re-prompt items are dropped here rather than sent and skipped later. The
-// companion refuses them too -- that check is authoritative and stays -- but a
-// private key that never leaves this stage is one fewer copy in one fewer
-// process. Items with no private key are dropped for the same reason: an empty
-// PEM is not a key, and forwarding it would only produce a skip on the far side.
-//
-// The field names and shape are fixed by the companion's decoder, which uses
-// serde `deny_unknown_fields`. Anything extra here fails the whole load closed.
-var AGENT_KEYS_FILTER = [
-  "def string_or_empty: if type == \"string\" then . else \"\" end;",
-  "def reprompt_or_zero: if . == 0 or . == 1 then . else 0 end;",
-  "def item_type: try (.type | tonumber) catch null;",
-  "def ssh_type: item_type == 5;",
+// The agent branch's projection: eligible private keys framed by the load
+// nonce. Re-prompt items and empty keys are dropped here (the companion also
+// refuses them) so fewer copies travel. The shape must match the companion's
+// `deny_unknown_fields` decoder exactly.
+var AGENT_KEYS_FILTER = JQ_ITEM_HELPERS.concat([
   "if type != \"array\" then",
   "  error(\"expected one item array\")",
   "else",
@@ -1203,13 +883,11 @@ var AGENT_KEYS_FILTER = [
   "      | select(.privateKey != \"\")]",
   "  }",
   "end"
-].join("\n")
+]).join("\n")
 
-// jq deliberately accepts several non-JSON extensions and replaces malformed
-// UTF-8 before a filter can measure it. Validate and count the bounded raw byte
-// stream first with the Node runtime that `bw` itself requires. Nothing is
-// written until the entire input is valid strict JSON, so parse failures cannot
-// leak a partial vault or an exception containing source material.
+// jq accepts non-JSON extensions and rewrites bad UTF-8, so input is first
+// validated as strict JSON by node (which bw already requires). Nothing is
+// written unless the whole input parses.
 function strictJsonStdinScript(rejectExpr, writeStmt) {
   return [
     "const maxBytes = Number(process.argv[1]);",
@@ -1239,24 +917,16 @@ var STRICT_JSON_PASSTHROUGH = strictJsonStdinScript(
   "process.stdout.write(raw);"
 )
 
-// The same validator, for the one-item response `bw create item` and
-// `bw edit item` print. It differs only in the shape it accepts and the two
-// brackets it adds, so the sanitizing filter -- which is written against an
-// array and must stay that way -- can be reused unchanged on a save.
-//
-// The wrapping is done here rather than by a `jq -s` upstream of the filter,
-// because the whole point of this stage is that strict Node JSON is the first
-// thing to parse these bytes. Letting jq slurp them into an array first would
-// hand the lenient parser the untrusted input and validate what it produced.
+// The same validator for the single object `bw create/edit item` prints,
+// wrapped in [] so the array-based sanitizing filter applies unchanged. Node
+// must parse the untrusted bytes first, so this is not left to `jq -s`.
 var STRICT_JSON_ONE_OBJECT = strictJsonStdinScript(
   "parsed === null || typeof parsed !== \"object\" || Array.isArray(parsed)",
   "process.stdout.write(\"[\"); process.stdout.write(raw); process.stdout.write(\"]\");"
 )
 
-// Printed instead of an envelope when the save itself succeeded but the
-// sanitizing stage did not. The item is in the vault either way, so the panel
-// must not call this a failure -- it falls back to a full reload, which is
-// exactly what it did before any of this existed.
+// Printed when the save succeeded but sanitizing its output failed; the panel
+// then reloads the list instead of reporting a failure.
 var SAVED_UNSANITIZED_MARKER = "__QSBW_SAVED_UNSANITIZED__"
 
 var SANITIZED_LIST_ERROR = "Could not safely read vault items."
@@ -1264,26 +934,14 @@ var SANITIZED_LIST_SSH_FIX_HINT = " Bitwarden CLI before " + SSH_MALFORMED_ITEM_
   + " can fail on malformed SSH key items. Upgrading to " + SSH_MALFORMED_ITEM_FIX_VERSION
   + " or newer may fix this."
 
-// The optional `tee` branch. Three rules shape every line of it, because this
-// is the one place where an optional feature sits inside the pipeline the
-// ordinary item list depends on:
-//
-//  1. It never blocks the pipeline on opening the FIFO. The writer opens it
-//     O_RDWR, which on a FIFO never waits for a peer -- so a companion
-//     that died between the panel's readiness check and this read costs
-//     nothing instead of hanging the list behind a blocking open.
-//  2. It never writes anywhere but the real FIFO descriptor it opened with
-//     O_NOFOLLOW. A pathname check followed by a shell redirection would let
-//     the last component be swapped between the two operations.
-//  3. It always drains its stdin. `tee` writes to this branch; a branch that
-//     exited early would leave `tee` with a broken pipe and could take the
-//     whole read down. The trailing `cat` guarantees the remainder is consumed
-//     however `jq` ended.
-//
-// `pipefail` cannot see inside a process substitution, so nothing here can
-// report success or failure to the panel. That is by design: `key_load_end`
-// carries the panel's view of the pipeline, and the companion's own nonce and
-// schema validation is what actually decides whether a load is accepted.
+// The optional `tee` branch feeding the SSH agent's FIFO. It must never break
+// the item list it sits inside:
+//  1. It never blocks: O_RDWR on a FIFO does not wait for a reader.
+//  2. It writes only to the fd opened with O_NOFOLLOW and fstat-checked, so
+//     the path cannot be swapped under it.
+//  3. It always drains stdin (the trailing `cat`), so `tee` never sees EPIPE.
+// Its status is invisible to pipefail by design; the agent validates each
+// load by nonce and schema.
 function agentBranchScript() {
   var fifoWriter = [
     "const fs = require(\"fs\");",
@@ -1305,11 +963,8 @@ function agentBranchScript() {
     "process.stdin.on(\"end\", function () { if (fd !== null) fs.closeSync(fd); });"
   ].join("\n")
   var inner = "__qsbw_fifo=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "/ssh-keys.fifo\"; "
-    // The pathname test is not the safety check -- the descriptor's own fstat
-    // is, below -- but it is free, and without it a companion that died
-    // between the panel's readiness check and this read would still cost a
-    // full decrypt-and-filter pass over the vault, piping private keys into a
-    // writer with nowhere to put them.
+    // A cheap pre-check (the fstat is the real one) that skips the whole
+    // decrypt-and-filter pass when the agent is gone.
     + "if [ -p \"$__qsbw_fifo\" ]; then "
     + "timeout 10 jq -c --arg loadId \"${" + LOAD_ID_ENV + ":-}\" "
     + shellQuote(AGENT_KEYS_FILTER) + " 2>/dev/null | timeout 10 node -e "
@@ -1320,21 +975,15 @@ function agentBranchScript() {
 }
 
 function sanitizedListCommand(opts) {
-  // The validator receives at most one byte beyond the raw ceiling and counts
-  // bytes before UTF-8 decoding. The second cap and command substitution keep
-  // partial sanitized JSON out of QML-facing stdout. All pipeline diagnostics
-  // are suppressed because bw and jq may quote decrypted source material; the
-  // only error exposed to QML is the fixed message below. Blaming a failure on
-  // the pre-2026.8.0 malformed-SSH-item bug is left to vaultListFailureMessage(),
-  // which reads the already-probed CLI version instead of the failure text --
-  // nothing here has to look at what the producer printed.
+  // Caps allow one byte over the limit so overflow is detectable. All
+  // diagnostics are suppressed (bw and jq may quote decrypted data); QML sees
+  // only SANITIZED_LIST_ERROR. vaultListFailureMessage() adds the SSH hint.
   var agentBranch = Boolean(opts && opts.agentBranch)
   var maxPlusOne = MAX_ITEMS_BYTES + 1
   var script = "export LC_ALL=C BW_NOINTERACTION=true; set -o pipefail; "
   script += "__qsbw_items=$({ bw list items | head -c " + maxPlusOne
     + " | node -e " + shellQuote(STRICT_JSON_PASSTHROUGH) + " " + MAX_ITEMS_BYTES
-    // The branch sits after the strict validator, so the companion is only
-    // ever offered bytes that already parsed as one strict JSON array.
+    // After the validator, so the agent only sees a strict JSON array.
     + " | " + (agentBranch ? agentBranchScript() : "")
     + "jq -c " + shellQuote(SANITIZED_ITEMS_FILTER)
     + " | head -c " + maxPlusOne + "; } 2>/dev/null)\n"
@@ -1344,9 +993,7 @@ function sanitizedListCommand(opts) {
   script += "  exit 1\n"
   script += "fi\n"
   script += "printf '%s' \"$__qsbw_items\""
-  // Only the fan-out form needs the process-group wrapper: it is the one with
-  // a `tee` and a second `jq` that a lock has to be able to reap along with
-  // `bw`. The plain form keeps the exact command it has always run.
+  // Only the fan-out form has extra processes a lock must reap.
   return agentBranch ? supervisedProcessCommand(script) : ["bash", "-c", script]
 }
 
@@ -1358,9 +1005,7 @@ function listFoldersCommand() {
   return buildCappedCommand(["list", "folders"], MAX_FOLDERS_BYTES)
 }
 
-// An organization's collections. Bitwarden files org-owned items into
-// collections rather than folders, and refuses to create one without at least
-// one collection, so the form has to offer them.
+// Org-owned items go in collections (at least one is required), not folders.
 function listOrgCollectionsCommand(organizationId) {
   return buildCappedCommand(["list", "org-collections", "--organizationid", String(organizationId)], MAX_COLLECTIONS_BYTES)
 }
@@ -1376,6 +1021,12 @@ function parseJsonArray(raw) {
 
 function compareNames(a, b) {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+}
+
+// Favorites first, then by name.
+function compareItems(a, b) {
+  if (a.favorite !== b.favorite) return a.favorite ? -1 : 1
+  return compareNames(a, b)
 }
 
 function nameById(entries, id) {
@@ -1402,10 +1053,6 @@ function parseCollections(raw) {
   return out
 }
 
-function collectionName(collections, id) {
-  return nameById(collections, id)
-}
-
 var FOLDER_ENV = "QSBW_FOLDER"
 
 function folderEnvVar() {
@@ -1416,15 +1063,8 @@ function folderPayload(name) {
   return JSON.stringify({ name: String(name || "").trim() })
 }
 
-// `bw encode` is base64 and nothing else -- it reads stdin, encodes it, and
-// never touches the vault or the session. Paying a full Bitwarden CLI startup
-// for that cost 2.7 seconds on every single save, measured, which was the
-// larger half of the time between pressing Save and seeing the item. coreutils
-// does the same job in about two milliseconds and produces byte-identical
-// output, which a test asserts rather than trusts.
-//
-// The payload still travels in the environment and is still piped rather than
-// interpolated, so nothing about where the password lives has changed.
+// `bw encode` is plain base64 but costs a full CLI startup (~2.7 s per save);
+// coreutils gives identical output (asserted by a test) in milliseconds.
 var ENCODE_CMD = "base64 -w0"
 
 function createFolderCommand() {
@@ -1456,39 +1096,24 @@ function lockCommand() {
 }
 
 // -------------------------------------------------------------------------
-// CRUD Commands (Create, Edit, Delete)
+// Create, edit, delete
 // -------------------------------------------------------------------------
 
-// The item JSON contains the password, so it travels in the environment. An
-// inlined `printf %s '<json>'` would put it in /proc/<pid>/cmdline, which is
-// world-readable here (no hidepid).
+// Item JSON contains the password, so it travels in the environment.
 var ITEM_ENV = "QSBW_ITEM"
 
 function itemEnvVar() {
   return ITEM_ENV
 }
 
-// `bw create item` and `bw edit item` both print the saved cipher. That is the
-// authoritative post-save state -- ids the server assigned, fields it
-// normalised -- and reading it is what lets the panel skip re-listing the
-// whole vault to learn about one item it just wrote.
-//
-// It arrives as a complete decrypted cipher, though, which is the exact thing
-// sanitizedListCommand() exists to keep out of QML. So it goes through the
-// same two stages the list does, in the same order: strict Node JSON first,
-// then the allowlisting jq filter, emitting the same envelope shape the list
-// produces. One item or a thousand, QML only ever sees output of that filter.
-//
-// The save's own exit status is captured before any of that runs. A failure in
-// the sanitising stage must not be reported as a failed save: the item is
-// already in the vault, and telling the user otherwise invites a duplicate.
-// That case prints a marker and the panel falls back to a full reload.
+// `bw create/edit item` print the saved cipher, which lets the panel update
+// one item instead of re-listing the vault. It is fully decrypted, so it goes
+// through the same strict-JSON + jq sanitizer as the list. The save's status
+// is captured first: a sanitizer failure after a successful save prints
+// SAVED_UNSANITIZED_MARKER (the panel reloads) instead of a false failure.
 function savePipelineScript(saveCommand) {
   var maxPlusOne = MAX_MISC_BYTES + 1
-  // stderr stays its own stream, capped, exactly as cappedScript() left it.
-  // Folding it into the captured stdout would put any `bw` warning inside the
-  // JSON, and a warning would then quietly cost the optimisation on every save
-  // that produced one.
+  // Keep stderr separate so bw warnings cannot corrupt the captured JSON.
   var script = "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2); "
   script += "export LC_ALL=C BW_NOINTERACTION=true; set -o pipefail; "
   script += "__qsbw_saved=$(printf '%s' \"$" + ITEM_ENV + "\" | " + ENCODE_CMD
@@ -1525,49 +1150,19 @@ function deleteItemCommand(itemId, typeCode) {
 }
 
 // -------------------------------------------------------------------------
-// Keyring (libsecret / secret-tool) Commands
-// -------------------------------------------------------------------------
-
-// -------------------------------------------------------------------------
-// The remembered session dies with the boot that minted it
+// Remembered session
 // -------------------------------------------------------------------------
 //
-// A session token used to outlive its machine. The login keyring is a file on
-// disk and PAM unlocks it again at the next login, so rebooting with an
-// unlocked vault brought the vault back unlocked -- the panel found the token
-// waiting and never asked for anything. Locking the screen is not what the
-// user did; powering the machine off is, and that has to mean something.
-//
-// Two independent things stop it now, because one of them depends on the
-// secret service and the other does not.
-//
-// The token goes into libsecret's `session` collection, which the secret
-// service holds in memory and destroys when the login session ends, so on a
-// well-behaved service there is nothing on disk to come back. Not every
-// implementation offers that collection, so the store falls back to the
-// default one rather than failing to remember the session at all.
-//
-// And the token is written behind the kernel's boot id, which is regenerated
-// on every boot. A token that did survive -- fallback collection, a keyring
-// restored from a backup, a service that ignores the session semantics -- no
-// longer matches the running boot and is refused. That check is the guarantee;
-// the collection is what keeps the token off the disk in the first place.
-//
-// Fail closed at every step: a missing boot id, an unreadable keyring or a
-// stale entry all report no token, which lands the panel on `bw status` and
-// the lock screen. A stale entry is cleared on the way out so it cannot be
-// found again.
+// The session token must not survive a reboot. It is stored in libsecret's
+// in-memory `session` collection where available (falling back to the
+// default), and prefixed with the kernel boot id, so a token from another
+// boot is refused and cleared. Every failure reads as "no token".
 const KEYRING_SESSION_COLLECTION = "session"
 const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
 
-function bootIdPath() {
-  return BOOT_ID_PATH
-}
-
 function keyringStoreCommand() {
   var attrs = keyringAttributes(KEYRING_ACCOUNT)
-  // The secret still travels in the environment (see keyringStoreScript); only
-  // the boot id, which is not a secret, is read inside the script.
+  // Only the boot id is read in the script; the token comes from the env.
   var script = "store() { printf '%s %s' \"$(cat " + shellQuote(BOOT_ID_PATH) + ")\" \"$"
     + KEYRING_SECRET_ENV + "\" | secret-tool store \"$@\" --label="
     + shellQuote("Bitwarden Vault Session") + attrs + "; }; "
@@ -1582,8 +1177,7 @@ function keyringLookupCommand() {
     + "stored=$(secret-tool lookup" + attrs + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ") || exit 0; "
     + "case \"$stored\" in "
     + "\"$boot \"?*) printf '%s' \"${stored#* }\" ;; "
-    // Anything else is from another boot, or from before the boot id was
-    // written at all. Drop it so the next lookup does not have to think.
+    // From another boot, or unprefixed: clear it.
     + "*) [ -n \"$stored\" ] && secret-tool clear" + attrs + " >/dev/null 2>&1 ;; "
     + "esac; exit 0"
   return ["bash", "-c", cappedScript(script)]
@@ -1594,22 +1188,12 @@ function keyringClearCommand() {
 }
 
 // -------------------------------------------------------------------------
-// Fingerprint Unlock
+// Legacy quick-unlock entries
 // -------------------------------------------------------------------------
 //
-// PAM can prove the user is present but cannot produce the Bitwarden master
-// password, and `bw unlock` accepts nothing else. So fingerprint unlock keeps
-// the master password in the login keyring and uses a successful fingerprint
-// verification as the gate on reading it back -- the same trade the Bitwarden
-// desktop client makes for its own biometric unlock. Opt-in only.
-
-// Writes the plaintext entry older versions kept for fingerprint unlock. The
-// panel no longer calls this -- the envelope replaced it, and the legacy
-// entry is only ever read, migrated and deleted -- but the tests use it to
-// build an old install's keyring.
-function keyringStoreMasterPasswordCommand() {
-  return ["bash", "-c", keyringStoreScript("Bitwarden Master Password (fingerprint unlock)", KEYRING_MASTER)]
-}
+// Before the envelope, fingerprint and FIDO2 unlock kept the master password
+// in plaintext keyring entries and PIN unlock kept an AES-CBC blob. They are
+// now only read, migrated into the envelope and deleted.
 
 function keyringLookupMasterPasswordCommand() {
   return keyringLookupEntryCommand(KEYRING_MASTER)
@@ -1619,31 +1203,9 @@ function keyringClearMasterPasswordCommand() {
   return keyringClearEntryCommand(KEYRING_MASTER)
 }
 
-// Presence check that never puts the secret on stdout, so the panel can show
-// the right prompt without reading the password until a finger is verified.
+// Presence check that never prints the secret.
 function keyringHasMasterPasswordCommand() {
   return keyringHasEntryCommand(KEYRING_MASTER)
-}
-
-// -------------------------------------------------------------------------
-// FIDO2 Unlock
-// -------------------------------------------------------------------------
-//
-// A FIDO2 key proves presence just as a fingerprint does, so it gates the same
-// kind of secret in the same way: the master password is kept in the login
-// keyring and a verified key touch is the only gate on reading it back. It is
-// a separate entry from the fingerprint's rather than a shared one, so the two
-// methods have independent lifecycles -- enabling or forgetting one never
-// reaches into the other's state. The encryption is the keyring's, not ours:
-// this blob is the password in the clear behind the keyring's own lock, which
-// is what let the fingerprint path keep its simple shape too.
-
-function keyringStoreFidoPasswordCommand() {
-  return ["bash", "-c", keyringStoreScript("Bitwarden Master Password (FIDO2 unlock)", KEYRING_FIDO)]
-}
-
-function keyringLookupFidoPasswordCommand() {
-  return keyringLookupEntryCommand(KEYRING_FIDO)
 }
 
 function keyringClearFidoPasswordCommand() {
@@ -1656,19 +1218,8 @@ function keyringHasFidoPasswordCommand() {
 }
 
 // -------------------------------------------------------------------------
-// PIN Unlock
+// PIN
 // -------------------------------------------------------------------------
-//
-// A PIN cannot produce the master password any more than a fingerprint can, so
-// the password is encrypted *with a key derived from the PIN* and only the
-// ciphertext is kept. Unlike fingerprint unlock, reading the keyring is then
-// not enough on its own -- an attacker also has to break the PIN. A wrong PIN
-// fails decryption outright, so correctness needs no separately stored hash
-// (and no hash to attack).
-//
-// Be honest about the limit: a short PIN is a small search space, and the only
-// thing standing between a leaked blob and the master password is the KDF cost.
-// That is why the iteration count is high and short PINs are refused.
 
 function pinEnvVar() { return PIN_ENV }
 function pinMinLength() { return PIN_MIN_LENGTH }
@@ -1682,12 +1233,8 @@ function validatePin(pin, confirm) {
   return ""
 }
 
-// Not an error -- the PIN is accepted -- but short enough to deserve saying so
-// in as many words, with the number rather than a vague "weak". Empty for a
-// PIN of the recommended length or longer, and empty while still typing so the
-// warning does not flash up at every keystroke on the way to six.
-// Seconds one PIN guess costs: Argon2id at the envelope's parameters, as
-// measured on a current laptop. Only used to put a number in the warning.
+// Argon2id cost of one PIN guess at the envelope's parameters, measured on a
+// current laptop; used only in the warning text.
 var PIN_GUESS_SECONDS = 0.75
 
 function pinGuessTime(length) {
@@ -1711,19 +1258,7 @@ function isPinWeak(pin) {
   return pinWeakWarning(pin) !== ""
 }
 
-// Encrypt and store in one process, so the plaintext never travels back
-// through QML on the way to the keyring.
-function pinStoreCommand() {
-  var script = "printf '%s' \"$" + KEYRING_SECRET_ENV + "\""
-    + " | openssl enc -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
-    + " -md sha256 -salt -pass env:" + PIN_ENV + " -base64 -A"
-    + " | secret-tool store --label=" + shellQuote("Bitwarden Master Password (PIN unlock)")
-    + " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(KEYRING_PIN)
-  return ["bash", "-c", cappedScript(script)]
-}
-
-// Non-zero exit means the PIN was wrong (or the blob is gone). stdout carries
-// the master password only on success.
+// Decrypts the legacy PIN blob. Non-zero exit: wrong PIN or no blob.
 function pinUnlockCommand() {
   var script = "secret-tool lookup" + keyringAttributes(KEYRING_PIN) + " 2>/dev/null | head -c 8192"
     + " | openssl enc -d -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
@@ -1743,38 +1278,27 @@ function keyringHasPinCommand() {
 // The quick-unlock envelope in the keyring
 // -------------------------------------------------------------------------
 //
-// One keyring item holds the master password, encrypted once, and a way in
-// for each enabled quick-unlock method (see unlock-key/src/lib.rs for the
-// layout). These builders are whole operations, each one shell pipeline:
+// One keyring item holds the master password, encrypted once, plus a way in
+// per enabled quick-unlock method (layout: unlock-key/src/lib.rs). Each
+// builder is one pipeline:
 //
 //   secret-tool lookup -> systemd-creds --user decrypt -> qs-bitwarden-unlock-key
 //     -> systemd-creds --user encrypt -> verify -> secret-tool store
 //
-// with `argon2` deriving keys from the password or PIN along the way. The
-// envelope itself never reaches QML: the panel gets a secret-free summary,
-// or the password on an actual unlock, and nothing else.
-//
-// Secrets travel only through the environment and `printf`, a shell builtin:
-// the password in KEYRING_SECRET_ENV, a new password in NEW_SECRET_ENV, the
-// PIN in PIN_ENV, a FIDO2 hmac-secret in FIDO_HMAC_ENV. Salts, parameters,
-// account ids and credential ids are not secret and may appear in argv.
-//
-// Writes commit last. The new envelope is sealed, unsealed again, checked for
-// the right account, and -- where the operation wrote a way in -- opened
-// through that way and compared byte for byte with the password, before
-// `secret-tool store` replaces the old item. A failure anywhere before the
-// store leaves the previous envelope exactly as it was.
+// with `argon2` deriving keys from the password or PIN. QML only ever gets a
+// secret-free summary, or the password on unlock. Secrets travel only in env
+// vars via `printf` (a builtin); salts, parameters and ids may be in argv.
+// Writes commit last: the new envelope is re-opened and checked before
+// `secret-tool store`, so any failure leaves the old one intact.
 var KEYRING_ENVELOPE = "unlock_envelope"
 var ENVELOPE_LABEL = "Bitwarden quick unlock (encrypted)"
-// The systemd-creds name: bound into the seal, so a blob sealed for another
-// purpose does not decrypt as this one.
+// The systemd-creds name, bound into the seal.
 var ENVELOPE_CREDENTIAL_NAME = "qs-bitwarden-unlock"
 var NEW_SECRET_ENV = "QSBW_NEW_SECRET"
 var FIDO_HMAC_ENV = "QSBW_FIDO_HMAC"
 var FIDO_SALT_ENV = "QSBW_FIDO_SALT"
-// Argon2id for new wraps: 256 MiB, 4 passes, about 0.75 s here. Existing wraps
-// are opened with the parameters they record, which the tool refuses below
-// Bitwarden's own defaults.
+// Argon2id for new wraps (~0.75 s). Existing wraps use their recorded
+// parameters; the tool refuses any below Bitwarden's defaults.
 var ENVELOPE_ARGON2 = { m: 262144, t: 4, p: 1 }
 var MAX_ENVELOPE_SEALED_BYTES = 256 * 1024
 
@@ -1789,16 +1313,16 @@ var ENVELOPE_EXIT = {
   verify: 14      // the new envelope did not re-open as it should have
 }
 
-function keyringEnvelopeAccount() { return KEYRING_ENVELOPE }
 function envelopeNewSecretEnvVar() { return NEW_SECRET_ENV }
-function envelopeFidoHmacEnvVar() { return FIDO_HMAC_ENV }
 function envelopeExitCodes() { return ENVELOPE_EXIT }
 
 var ENVELOPE_BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/
 
-// A command that fails as a usage error, for arguments that should never
-// have reached a builder.
+// Exits as a usage error, for arguments that should never reach a builder.
 function envelopeRefused() { return ["bash", "-c", "exit 2"] }
+
+// A ["bash", "-c", script] command as a step inside another script.
+function nestedScript(cmd) { return "bash -c " + shellQuote(cmd[2]) }
 
 function envelopeArgsOk(tool, account) {
   return typeof tool === "string" && tool.charAt(0) === "/"
@@ -1819,8 +1343,7 @@ function envelopePrelude(tool) {
     + " 2>/dev/null | head -c " + MAX_ENVELOPE_SEALED_BYTES + "; }; "
     + "__unseal() { printf '%s' \"$1\" | systemd-creds --user decrypt --name=\"$__name\" - - 2>/dev/null; }; "
     + "__seal() { systemd-creds --user encrypt --name=\"$__name\" - - 2>/dev/null; }; "
-    // secret salt t m(KiB) p -> 64 hex digits. The secret is a function
-    // argument, which is shell memory, and reaches argon2 on its stdin.
+    // secret salt t m(KiB) p -> 64 hex digits; the secret reaches argon2 on stdin.
     + "__kdf() { printf '%s' \"$1\" | argon2 \"$2\" -id -t \"$3\" -k \"$4\" -p \"$5\" -l 32 -r 2>/dev/null; }; "
     + "__salt() { head -c 16 /dev/urandom | base64 -w0; }; "
     // The current envelope, sealed, and its secret-free summary.
@@ -1837,11 +1360,9 @@ function envelopePrelude(tool) {
     + "__verify_account() { __unseal \"$__new\" | \"$__tool\" inspect "
     + "| jq -e --arg id \"$1\" --arg server \"$2\" '.account.id == $id and .account.server == $server' "
     + ">/dev/null || exit " + ENVELOPE_EXIT.verify + "; }; "
-    // ...and, through the way just written, yield exactly the password.
-    // Compared with cmp on two streams rather than two captured strings, so a
-    // password ending in a newline is compared as it is. The key for that way
-    // is in $__vk, handed over as the tool's environment -- never as an
-    // argument, not even to `env`.
+    // ...and yield exactly the password through the way just written. cmp on
+    // streams keeps a trailing newline significant; the way's key ($__vk)
+    // goes in the tool's env, never argv.
     + "__verify_opens() { cmp -s <(printf '%s' \"$1\") "
     + "<(__unseal \"$__new\" | QSBW_UNLOCK_KEY=\"$__vk\" \"$__tool\" open \"${@:2}\") "
     + "|| exit " + ENVELOPE_EXIT.verify + "; }; "
@@ -1859,9 +1380,8 @@ function envelopeNewKey(secretExpr, saltVar) {
     + ENVELOPE_ARGON2.m + " " + ENVELOPE_ARGON2.p
 }
 
-// The summary the panel needs to decide what to offer: which methods are
-// enabled, whether the envelope is stale, which FIDO2 credentials and salts
-// to ask a key for. No secret is in it. Exit 10 means there is no envelope.
+// Secret-free summary: enabled methods, staleness, FIDO2 credentials and
+// salts. Exit 10: no envelope.
 function unlockEnvelopeInspectCommand(tool) {
   if (typeof tool !== "string" || tool.charAt(0) !== "/") return envelopeRefused()
   var script = envelopePrelude(tool) + "__load; printf '%s' \"$__summary\""
@@ -1893,9 +1413,8 @@ function unlockEnvelopeOpenCommand(tool, account, via) {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// The envelope for a password `bw` has just accepted, in KEYRING_SECRET_ENV.
-// Replaces any envelope already there: this is the one writer of the stored
-// password, and a new password login means a new data key.
+// Creates the envelope from a password `bw` just accepted (KEYRING_SECRET_ENV),
+// replacing any existing one. The only writer of the stored password.
 function unlockEnvelopeCreateCommand(tool, account) {
   if (!envelopeArgsOk(tool, account)) return envelopeRefused()
   var script = envelopePrelude(tool)
@@ -1922,9 +1441,8 @@ function unlockEnvelopeCreateCommand(tool, account) {
 //   { kind: "rotate", auth }                  new password in NEW_SECRET_ENV; `auth` is a
 //                                             `via` as for opening, with its secret where
 //                                             unlockEnvelopeOpenCommand expects it
-// Every add is authorized by the master password opening the `master` wrap:
-// the typed password is a check against the stored one, and nothing typed is
-// stored.
+// Adds are authorized by the typed master password opening the `master`
+// wrap; nothing typed is stored.
 function unlockEnvelopeUpdateCommand(tool, account, op) {
   if (!envelopeArgsOk(tool, account) || !op) return envelopeRefused()
   var acct = envelopeAccountArgs(account)
@@ -1944,8 +1462,7 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
     transform = "QSBW_UNLOCK_KEY=\"$__mk\" \"$__tool\" add" + acct + " --auth master --method fingerprint"
     verifyOpen = "__vk=''; __verify_opens \"$" + KEYRING_SECRET_ENV + "\"" + acct + " --via fingerprint; "
   } else if (op.kind === "add-fido") {
-    // `saltFromEnv`: the salt was drawn inside the same pipeline, from
-    // /dev/urandom, and is in FIDO_SALT_ENV. The tool validates it either way.
+    // `saltFromEnv`: a fresh salt drawn earlier in the same pipeline.
     var saltArg = op.saltFromEnv ? "\"$" + FIDO_SALT_ENV + "\"" : shellQuote(op.salt)
     if (!ENVELOPE_BASE64_RE.test(String(op.cred || ""))
         || (!op.saltFromEnv && !ENVELOPE_BASE64_RE.test(String(op.salt || "")))
@@ -1997,10 +1514,8 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// What quick unlock needs besides the unlock tool: `argon2`, which arrives
-// with Arch's bitwarden-cli, and `systemd-creds --user`, which needs systemd
-// 256 or later and a running user manager. Asked by doing, not by version
-// numbers: a real seal of a throwaway value.
+// Quick unlock also needs `argon2` (ships with bitwarden-cli) and a working
+// `systemd-creds --user` (systemd 256+), probed with a real throwaway seal.
 function quickUnlockPrereqCommand() {
   var script = "if command -v argon2 >/dev/null 2>&1; then echo argon2=1; else echo argon2=0; fi; "
     + "if printf probe | systemd-creds --user encrypt --name=qs-bitwarden-probe - - >/dev/null 2>&1; "
@@ -2023,58 +1538,46 @@ function parseQuickUnlockPrereqs(raw) {
   return { argon2: argon2, creds: creds, ready: argon2 && creds, message: message }
 }
 
-// `bw` checking a typed master password when there is no envelope to check it
-// against: the session came from a terminal or SSO login, or the keyring was
-// cleared. `bw unlock` while unlocked verifies the password and mints a new
-// session key, which replaces the old one -- so the caller adopts what this
-// prints, exactly as a master-password unlock would.
+// Verifies a typed master password with `bw` when there is no envelope to
+// check it against. `bw unlock` mints a new session key, which the caller
+// adopts.
 function bwVerifyPasswordCommand() {
   var script = "bw unlock --passwordenv " + KEYRING_SECRET_ENV + " --raw 2>/dev/null | head -c " + MAX_TOKEN_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// Fingerprint unlock's plaintext entry, moved into the envelope in one shell
-// so the password never passes through QML. The legacy entry is deleted only
-// after the envelope opens through the fingerprint wrap and yields exactly
-// that password; any failure leaves it where it was, for the next start.
-//
-//   0   migrated, legacy entry gone
-//   20  no legacy entry: nothing to do
-//   21  the envelope belongs to this password's account but will not open
-//       with it -- one of the two is stale; left alone
-//   other  the step that failed, as the envelope builders report it
+// Legacy migration exits: 0 migrated (legacy entry deleted), 20 no legacy
+// entry, 21 envelope for this account will not open with this password (one
+// is stale; left alone), else the failing envelope step's code.
 var LEGACY_MIGRATION_EXIT = { none: 20, mismatch: 21 }
 
 function legacyMigrationExitCodes() { return LEGACY_MIGRATION_EXIT }
 
-// Shared by both migrations. `passwordFromKeyring` reads the legacy plaintext
-// entry; otherwise the password is already in KEYRING_SECRET_ENV because `bw`
-// has just accepted it (the PIN blob's case: the PIN decrypted it).
+// Moves a legacy entry into the envelope in one shell, so the password never
+// reaches QML. The legacy entry is deleted only after the envelope opens
+// through the new wrap. The password comes from the legacy entry
+// (`passwordFromKeyring`) or is already in KEYRING_SECRET_ENV.
 function legacyMigrationCommand(tool, account, legacyAccount, addOp, passwordFromKeyring) {
   if (!envelopeArgsOk(tool, account)) return envelopeRefused()
-  var nested = function(cmd) { return "bash -c " + shellQuote(cmd[2]) }
   var script = ""
   if (passwordFromKeyring) {
-    script += "__pw=\"$(secret-tool lookup" + keyringAttributes(legacyAccount)
-      + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ")\"; "
+    script += "__pw=\"$(" + keyringReadScript(legacyAccount) + ")\"; "
       + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
       + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; unset __pw; "
   } else {
     script += "[ -n \"${" + KEYRING_SECRET_ENV + ":-}\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
   }
   // Is there an envelope, and does this password open it?
-  script += nested(unlockEnvelopeOpenCommand(tool, account, { kind: "master" })) + " >/dev/null; __rc=$?; "
+  script += nestedScript(unlockEnvelopeOpenCommand(tool, account, { kind: "master" })) + " >/dev/null; __rc=$?; "
     + "case \"$__rc\" in "
     + "0) ;; "
-    // None, another account's, or one this machine cannot unseal: this
-    // password is the best there is, so it becomes the envelope.
+    // None, another account's, or unsealable: this password becomes the envelope.
     + ENVELOPE_EXIT.absent + "|6|" + ENVELOPE_EXIT.unseal + ") "
-    + nested(unlockEnvelopeCreateCommand(tool, account)) + " || exit $? ;; "
+    + nestedScript(unlockEnvelopeCreateCommand(tool, account)) + " || exit $? ;; "
     + "3) exit " + LEGACY_MIGRATION_EXIT.mismatch + " ;; "
     + "*) exit \"$__rc\" ;; esac; "
-    + nested(unlockEnvelopeUpdateCommand(tool, account, addOp)) + " || exit $?; "
-    // The update re-opened the envelope through the new wrap and compared it
-    // with this password before storing it, so this is safe.
+    + nestedScript(unlockEnvelopeUpdateCommand(tool, account, addOp)) + " || exit $?; "
+    // The update verified the new wrap before storing, so this is safe.
     + "secret-tool clear" + keyringAttributes(legacyAccount) + " >/dev/null 2>&1; exit 0"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
@@ -2083,8 +1586,8 @@ function legacyFingerprintMigrationCommand(tool, account) {
   return legacyMigrationCommand(tool, account, KEYRING_MASTER, { kind: "add-fingerprint" }, true)
 }
 
-// The PIN blob, at the PIN unlock that just decrypted it: the password `bw`
-// accepted is in KEYRING_SECRET_ENV and the PIN typed in PIN_ENV.
+// Run at the PIN unlock that decrypted the blob: password in
+// KEYRING_SECRET_ENV, PIN in PIN_ENV.
 function legacyPinMigrationCommand(tool, account) {
   return legacyMigrationCommand(tool, account, KEYRING_PIN, { kind: "add-pin" }, false)
 }
@@ -2093,16 +1596,11 @@ function legacyPinMigrationCommand(tool, account) {
 // FIDO2 through hmac-secret
 // -------------------------------------------------------------------------
 //
-// The credential is Omarchy's own registration in /etc/fido2/fido2, written
-// by pam-u2f -- nobody re-enrolls. What changed is the touch: instead of a
-// PAM conversation that can only answer yes or no, `fido2-assert -h` asks the
-// key for the credential's hmac-secret, and that secret is the key to the
-// envelope's FIDO wrap. No touch, no secret: the key refuses `up=false` for
-// hmac-secret outright (FIDO_ERR_UP_REQUIRED, measured).
-//
-// The relying party is pam-u2f's default, `pam://<hostname>`, because that is
-// what the registration was made for. The client data hash is random and
-// thrown away: nothing verifies the assertion, only its hmac-secret is used.
+// Uses the existing pam-u2f registration in /etc/fido2/fido2 (rp
+// `pam://<hostname>`). `fido2-assert -h` returns the credential's
+// hmac-secret, which is the key to the envelope's FIDO wrap; the key requires
+// a touch for it. The random client data hash is discarded: only the
+// hmac-secret is used.
 var FIDO_EXIT = {
   assert: 31,     // fido2-assert failed: no touch in time, a refusal, or a busy key
   noSecret: 32,   // it answered, but without an hmac-secret
@@ -2117,9 +1615,8 @@ function fidoTargetOk(target) {
     && typeof target.rp === "string" && /^pam:\/\/[A-Za-z0-9.-]+$/.test(target.rp)
 }
 
-// One touch, and the hmac-secret for `saltExpr` lands in FIDO_HMAC_ENV. The
-// secret goes from fido2-assert's stdout into a shell variable and on into the
-// environment; it is never an argument and never reaches QML.
+// One touch; the hmac-secret for `saltExpr` is exported in FIDO_HMAC_ENV,
+// never as an argument.
 function fidoAssertScript(target, saltExpr) {
   return "__cdh=\"$(head -c 32 /dev/urandom | base64 -w0)\"; "
     + "__out=\"$(printf '%s\\n%s\\n%s\\n%s\\n' \"$__cdh\" " + shellQuote(target.rp) + " "
@@ -2134,11 +1631,7 @@ function fidoNewSaltScript() {
   return "export " + FIDO_SALT_ENV + "=\"$(head -c 32 /dev/urandom | base64 -w0)\"; "
 }
 
-function nestedScript(cmd) { return "bash -c " + shellQuote(cmd[2]) }
-
-// Unlock through a credential the envelope already has a wrap for: one touch
-// with the wrap's own salt, then the envelope opens and the password is the
-// only output.
+// Unlock through an existing FIDO wrap, using its salt.
 function fidoUnlockCommand(tool, account, target) {
   if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)
       || !ENVELOPE_BASE64_RE.test(String(target.salt || ""))) return envelopeRefused()
@@ -2147,10 +1640,8 @@ function fidoUnlockCommand(tool, account, target) {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// Enabling FIDO2: the typed master password (KEYRING_SECRET_ENV) authorizes,
-// one touch yields the hmac-secret for a fresh salt, and the wrap is added.
-// Exit 10 means there is no envelope yet: the caller has `bw` check the
-// password, stores it, and asks for the touch again.
+// Adds a FIDO wrap: the typed master password authorizes, one touch gives the
+// hmac-secret for a fresh salt. Exit 10: no envelope yet.
 function fidoEnrollCommand(tool, account, target) {
   if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)) return envelopeRefused()
   var script = fidoNewSaltScript() + fidoAssertScript(target, "\"$" + FIDO_SALT_ENV + "\"")
@@ -2159,18 +1650,14 @@ function fidoEnrollCommand(tool, account, target) {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// The first unlock after upgrading: the credential has no wrap, but the old
-// plaintext entry is there. The same single touch yields an hmac-secret for a
-// fresh salt; the legacy password opens (or creates) the envelope and the
-// FIDO wrap is added; the envelope is then opened through that wrap, which is
-// the proof the legacy entry can go. If any of that fails the legacy password
-// still unlocks, exit 40 says so, and the entry stays for next time.
+// First unlock after upgrading: one touch migrates the legacy plaintext entry
+// into a new FIDO wrap and opens through it. If that fails, the legacy
+// password is printed anyway with exit 40, and the entry stays.
 function fidoLegacyUnlockCommand(tool, account, target) {
   if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)) return envelopeRefused()
   var migrate = legacyMigrationCommand(tool, account, KEYRING_FIDO,
     { kind: "add-fido", cred: target.cred, rp: target.rp, saltFromEnv: true }, false)
-  var script = "__pw=\"$(secret-tool lookup" + keyringAttributes(KEYRING_FIDO)
-    + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ")\"; "
+  var script = "__pw=\"$(" + keyringReadScript(KEYRING_FIDO) + ")\"; "
     + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
     + fidoNewSaltScript() + fidoAssertScript(target, "\"$" + FIDO_SALT_ENV + "\"")
     + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; "
@@ -2181,46 +1668,19 @@ function fidoLegacyUnlockCommand(tool, account, target) {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-function unlockEnvelopeClearCommand() {
-  return keyringClearEntryCommand(KEYRING_ENVELOPE)
-}
-
-function unlockEnvelopeHasCommand() {
-  return keyringHasEntryCommand(KEYRING_ENVELOPE)
-}
-
 // -------------------------------------------------------------------------
-// Everything the keyring holds, gone in one go
+// Clear everything on logout
 // -------------------------------------------------------------------------
 //
-// Logging out is the moment the plugin should be holding nothing for this
-// account. The session token is the least of it: two of the three entries are
-// the master password itself -- once in the clear behind fingerprint unlock,
-// once encrypted under a four-to-six digit PIN -- and both live in the default
-// collection, which is a file on disk that PAM unlocks at every login. Neither
-// is any use to an account that is no longer signed in, and both outlive a
-// reboot by design, so neither may outlive the logout.
-//
-// One command that names every account rather than three calls the panel
-// decides between, because the deciding was the bug: those decisions were made
-// from the panel's own flags, and a flag describes what the settings screen
-// last saw rather than what is in the keyring. `fingerprintStored` goes false
-// the moment a reader is unplugged or fprintd is uninstalled -- the master
-// password does not go anywhere. `secret-tool clear` on an entry that is not
-// there returns 1 without printing an error. Worse, `clear` only removes
-// unlocked matches, so that result alone cannot distinguish absence from a
-// credential hidden in a locked collection. Search first, request unlock of
-// every match, clear, then search again. Logout succeeds only when that final
-// search proves no matching item remains.
-// The envelope, and the three legacy entries it replaces. The legacy ones stay
-// here after migration ships: an install that never ran the migration still
-// has them, and logout must not leave them behind.
+// Every entry the plugin has ever written, legacy ones included, is cleared
+// regardless of the panel's flags (which reflect settings, not the keyring).
+// `secret-tool clear` skips locked matches and exits 1 on absence, so each
+// account is searched, unlocked, cleared and searched again; logout succeeds
+// only if nothing remains.
 var KEYRING_ALL_ACCOUNTS = [KEYRING_ACCOUNT, KEYRING_ENVELOPE, KEYRING_MASTER, KEYRING_FIDO, KEYRING_PIN]
 
 function keyringSearchStateScript(account, resultVar) {
-  // Consume the complete search output with wc instead of capturing it: for an
-  // unlocked item secret-tool includes the secret in that stream. Only its
-  // byte count and the producer exit code are retained by the shell.
+  // Count the output with wc rather than capture it: it contains the secret.
   var attrs = keyringAttributes(account)
   return resultVar + "=$(secret-tool search --all" + attrs
     + " 2>/dev/null | wc -c | tr -d '[:space:]'; "
@@ -2292,8 +1752,7 @@ function parseFolders(raw) {
   for (var i = 0; i < arr.length; i++) {
     var f = arr[i]
     if (!f || typeof f !== "object") continue
-    // bw represents "no folder" as an entry with a null id on some versions.
-    // The panel has its own control for that, so drop it here.
+    // Some bw versions list "no folder" as an entry with a null id.
     if (!f.id) continue
     out.push({ id: String(f.id), name: String(f.name || "Folder") })
   }
@@ -2318,10 +1777,7 @@ function itemTypeName(type) {
   return ITEM_TYPES[String(type)] || "login"
 }
 
-// The same glyphs the type filter chips use, so an item row and the chip
-// that selects it agree. Two of these used to be neither: the comments said
-// "note icon" and "credit card icon", but the codepoints were md-fan and
-// md-close_octagon_outline -- a ceiling fan and a stop sign.
+// The same glyphs as the type filter chips.
 function itemTypeGlyph(type) {
   var t = itemTypeName(type)
   switch (t) {
@@ -2350,37 +1806,12 @@ function itemTypeLabel(type) {
 // Attachments
 // -------------------------------------------------------------------------
 //
-// `bw list items` carries the attachment metadata with the cipher -- id, file
-// name and size -- so the panel can list an item's files without asking the
-// CLI anything. Only the bytes need a round trip, and those are fetched on
-// demand by attachmentDownloadCommand().
+// Attachment metadata comes with `bw list items`; only the bytes are fetched,
+// on demand, by attachmentDownloadCommand().
 
-// -------------------------------------------------------------------------
-// Array.isArray is not safe on anything that came back out of QML
-// -------------------------------------------------------------------------
-//
-// `bw`'s JSON parses into real arrays, and every check below used to say
-// Array.isArray(). That holds right up until the parsed cipher is stored in a
-// QML `var` property -- root.items -- and read back out to build the detail
-// view. Qt converts the nested arrays on that round trip into array-like
-// objects: `typeof` is "object", `.length` is right, indexing works, and
-// Array.isArray() returns false. So the check passes in Node and fails in the
-// panel, silently, yielding an empty list rather than an error.
-//
-// That is exactly how an item the list had already marked as having twelve
-// attachments opened with no attachments section at all -- and, it turns out,
-// why the detail view's WEBSITE section has been empty for logins that
-// plainly have a URI.
-//
-// Duck-type instead: anything with a sane numeric length is a list.
-//
-// Bounded, because duck-typing takes the server's word for how long the list
-// is. `{"attachments":{"length":200000000}}` is forty bytes of JSON that asked
-// for a two-hundred-million-element array, and the process that dies of it is
-// the whole shell -- bar, panel and all. The item-list byte cap is no defence
-// here: the lie costs the server nothing to tell. No item carries thousands of
-// URIs, attachments or custom fields, so past the ceiling there is no list
-// worth building.
+// Arrays stored in a QML `var` and read back are array-like objects for which
+// Array.isArray() is false, so lists are duck-typed by length. Capped, since
+// the length is the server's claim ({"length": 2e8} would take down the shell).
 var MAX_LIST_ENTRIES = 4096
 
 function toList(value) {
@@ -2414,8 +1845,7 @@ function parseAttachments(raw) {
 
 var ATTACHMENT_UNITS = ["B", "KB", "MB", "GB", "TB"]
 
-// bw normally supplies its own `sizeName`, so this is the fallback for the
-// attachments that arrive with only a byte count.
+// Fallback for attachments without bw's `sizeName`.
 function formatAttachmentSize(bytes) {
   // Nothing at all is no size text; zero bytes is a size, and a real one.
   if (bytes === null || bytes === undefined || String(bytes).trim() === "") return ""
@@ -2432,12 +1862,9 @@ function formatAttachmentSize(bytes) {
   return value + " " + ATTACHMENT_UNITS[unit]
 }
 
-// A file name out of the vault is attacker-controlled text, and it is about to
-// become part of a path we create. "../../.bashrc", an embedded newline or a
-// NUL all have to come out as an inert basename: path separators and control
-// characters are replaced rather than stripped, so nothing can be spliced back
-// together into a traversal, and a leading dot or dash cannot turn the result
-// into a hidden file or into something that reads as a flag.
+// Vault file names are untrusted: reduce to an inert basename. Separators and
+// control characters are replaced (not stripped, so nothing re-joins into a
+// traversal) and leading dots/dashes removed.
 function safeAttachmentFileName(raw) {
   var name = String(raw || "")
   name = name.replace(/^.*[\\/]/, "")               // best-effort basename
@@ -2465,73 +1892,40 @@ function baseName(path) {
   return cut < 0 ? p : p.slice(cut + 1)
 }
 
-// Saves one attachment into the user's download directory and prints the path
-// it landed on -- which is the only way the panel learns where that was, since
-// the directory is resolved at run time. An existing file of the same name is
-// never overwritten: " (1)", " (2)" and so on go before the extension until
-// the name is free.
-//
-// The attachment id, the item id and the file name all come out of the vault,
-// so all three are quoted rather than interpolated bare, and the file name has
-// been through safeAttachmentFileName() before it gets here.
-//
-// Two things this must not do, neither of which a `[ -e ]` test can prevent.
-//
-// It must not write *through* whatever happens to sit at the chosen path. `-e`
-// follows symlinks, so a dangling one reads as a free name and bw would then
-// create the file the link points at; and even a correct test is only true for
-// as long as it takes to return, so a link dropped in afterwards still wins.
-// The bytes therefore land in a freshly made private directory first, and the
-// finished file claims its name with link(), which never follows the last
-// component of the new path and fails outright if anything is already there.
-// That single call is the existence test and the creation at once, so there is
-// no window between them to race, and nothing to redirect.
-//
-// It must not accept an unbounded transfer. The size the vault reports is the
-// server's word rather than proof, so it only buys an early, readable refusal;
-// RLIMIT_FSIZE, a timeout, and a free-space check are the limits that hold when
-// it lies.
+// Saves one attachment to the download dir without overwriting (" (1)", ...)
+// and prints the final path. Vault ids and names are quoted. The file is
+// staged in a private temp dir and claimed with link(), which never follows a
+// symlink and fails if the name exists, so there is no check-then-write race.
+// The declared size is only the server's claim; RLIMIT_FSIZE, a timeout and a
+// free-space check bound the transfer.
 function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize) {
   var maxBytes = MAX_ATTACHMENT_BYTES
   var maxMb = Math.round(maxBytes / (1024 * 1024))
   var maxBlocks = Math.ceil(maxBytes / 1024)          // ulimit -f counts 1 KB blocks
 
-  // The declared size is the only thing out of the vault that reaches the
-  // script as a bare word rather than a quoted one, and JavaScript prints a
-  // large enough number in exponential notation. "1e+30" is not an integer to
-  // `[ ]`, so a server that declares an absurd size made both comparisons
-  // below fail as errors rather than as answers -- and a check that errors
-  // inside an `if` is simply skipped, which left the download running with no
-  // declared-size ceiling and no free-space check at all, silently.
-  //
-  // Nothing above the limit needs an exact figure, since it is refused either
-  // way, so anything larger is clamped to one byte over it. That keeps every
-  // number written into the script a plain decimal integer and turns the lie
-  // into the refusal it was always meant to be.
+  // The declared size reaches the script unquoted, and JS prints huge numbers
+  // as "1e+30", which `[ ]` errors on (silently skipping the checks). Clamp
+  // anything over the limit to limit + 1 so it is refused.
   var numericSize = Number(declaredSize)
   var sizeKnown = declaredSize !== undefined && declaredSize !== null
     && String(declaredSize).trim() !== "" && isFinite(numericSize) && numericSize >= 0
   var want = sizeKnown ? Math.floor(numericSize) : 0
   if (want > maxBytes) want = maxBytes + 1
 
-  // When metadata omits the size, reserve for the largest transfer the kernel
-  // limit permits. Treating unknown as zero let a bounded 512 MB download start
-  // on a nearly full disk after checking for only the 64 MB safety margin.
+  // Unknown size: reserve for the largest allowed transfer.
   var reserveBytes = sizeKnown ? want : maxBytes
   var needKb = Math.ceil((reserveBytes + ATTACHMENT_FREE_SLACK_BYTES) / 1024)
 
   var script = [
     "set -e",
-    // A decrypted attachment must not be readable by anyone else while it sits
-    // in the staging directory, nor after it lands.
+    // Decrypted bytes stay private, staged and final.
     "umask 077",
     "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2)",
     "name=" + shellQuote(safeAttachmentFileName(fileName)),
     "max=" + maxBytes,
     "want=" + want,
     "dir=\"$(xdg-user-dir DOWNLOAD 2>/dev/null || true)\"",
-    // xdg-user-dir answers $HOME for a directory it does not know about, and
-    // $HOME is not somewhere to drop files.
+    // xdg-user-dir falls back to $HOME, which is not a download dir.
     "if [ -z \"$dir\" ] || [ \"$dir\" = \"$HOME\" ]; then dir=\"$HOME/Downloads\"; fi",
     "mkdir -p -- \"$dir\"",
 
@@ -2546,14 +1940,12 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     "  echo 'Not enough free space in the download folder.' >&2; exit 1",
     "fi",
 
-    // Staged inside the destination directory, so the finished file can be
-    // linked into place without crossing a filesystem boundary.
+    // Staged in the destination dir so link() stays on one filesystem.
     "work=$(mktemp -d -- \"$dir/.qsbw-XXXXXXXX\")",
     "trap 'rm -rf -- \"$work\"' EXIT HUP INT TERM",
     "tmp=\"$work/part\"",
 
-    // RLIMIT_FSIZE stops the write itself, so an oversized attachment dies
-    // mid-transfer instead of on a check that trusted the declared size.
+    // RLIMIT_FSIZE stops an oversized write mid-transfer.
     "rc=0",
     "( ulimit -f " + maxBlocks + "; exec timeout " + ATTACHMENT_TIMEOUT_SECS + "s bw get attachment --itemid " + shellQuote(itemId)
       + " --output \"$tmp\" -- " + shellQuote(attachmentId) + " >/dev/null ) || rc=$?",
@@ -2565,15 +1957,13 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     "  exit 1",
     "fi",
 
-    // Belt and braces: the limit above is the kernel's, this one holds even
-    // where it was not applied.
+    // Backstop in case the rlimit was not applied.
     "got=$(wc -c < \"$tmp\" 2>/dev/null || echo 0)",
     "if [ \"$got\" -gt \"$max\" ]; then",
     "  echo 'Attachment exceeded the " + maxMb + " MB download limit.' >&2; exit 1",
     "fi",
 
-    // Asked once, rather than inferred from a failure that could equally mean
-    // the name was taken.
+    // Probe hard-link support once rather than guess from a failure.
     "hardlink=1",
     ": > \"$work/probe\"",
     "ln -- \"$work/probe\" \"$work/probe2\" 2>/dev/null || hardlink=0",
@@ -2586,9 +1976,8 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     "  if [ \"$n\" -eq 0 ]; then cand=\"$dir/$name\"; else cand=\"$dir/$stem ($n)$ext\"; fi",
     "  if [ \"$hardlink\" = 1 ]; then",
     "    if ln -- \"$tmp\" \"$cand\" 2>/dev/null; then out=\"$cand\"; break; fi",
-    // Some removable and FUSE filesystems do not support hard links. Keep the
-    // same no-overwrite contract there with mv -n after rejecting both an
-    // existing entry and a dangling symlink.
+    // No hard links (some removable/FUSE filesystems): mv -n after rejecting
+    // an existing entry or dangling symlink.
     "  elif [ ! -e \"$cand\" ] && [ ! -L \"$cand\" ] && mv -n -- \"$tmp\" \"$cand\" 2>/dev/null; then",
     "    out=\"$cand\"; break",
     "  fi",
@@ -2599,9 +1988,8 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     "fi",
     "printf %s \"$out\" | head -c 4096"
   ].join("\n")
-  // The panel cancels this Process on lock/logout. Supervision gives the
-  // attachment shell and every child a private process group, so SIGTERM
-  // reaches timeout, bw, and the staging cleanup rather than only the wrapper.
+  // Its own process group, so cancelling on lock reaches bw, timeout and the
+  // cleanup trap.
   return supervisedProcessCommand(script)
 }
 
@@ -2650,20 +2038,20 @@ function identityDetail(identity) {
   }
 }
 
-// First, middle and last, with the gaps closed. An identity that carries only
-// a surname should read as that surname, not as two spaces and a surname.
+// Title and names, skipping empty parts.
 function identityFullName(identity) {
   if (!identity) return ""
-  return [identity.title, identity.firstName, identity.middleName, identity.lastName]
-    .map(function(part) { return String(part || "").trim() })
-    .filter(function(part) { return part !== "" })
-    .join(" ")
+  return nonEmptyParts([identity.title, identity.firstName, identity.middleName, identity.lastName]).join(" ")
 }
 
-// Linked fields do not store their own value. They point at one of the
-// cipher's native fields, using the stable ids from Bitwarden's LinkedIdType
-// enum. Resolve that value for the detail screen while retaining linkedId so
-// an edit can write the relationship back unchanged.
+// The trimmed, non-empty strings among `parts`.
+function nonEmptyParts(parts) {
+  return parts.map(function(part) { return String(part || "").trim() })
+    .filter(function(part) { return part !== "" })
+}
+
+// Linked fields point at one of the cipher's own fields by Bitwarden's
+// LinkedIdType id. Resolve the value for display; linkedId is kept for edits.
 function linkedCustomFieldValue(item, linkedId) {
   var it = item || {}
   var login = it.login || {}
@@ -2704,8 +2092,7 @@ function itemCustomFields(fields, item) {
       ? null : Number(field.linkedId)
     customFields.push({
       name: String(field.name || ""),
-      // Keep an explicit false from a boolean field. `false || ""` erased it
-      // and left the detail row with no value to draw.
+      // Keep an explicit boolean false.
       value: type === 3
         ? linkedCustomFieldValue(item, linkedId)
         : (field.value === undefined || field.value === null ? "" : String(field.value)),
@@ -2772,10 +2159,8 @@ function parseItems(raw) {
       attachments: attachments,
       hasAttachments: attachments.length > 0,
       subtitle: subtitle,
-      // The list row carries these so search can match a card by its brand or
-      // last four and an identity by name or email -- the same things the
-      // subtitle now shows. Without them the row displays a value the search
-      // box cannot find.
+      // So search can match what the subtitle shows (card brand/last four,
+      // identity name/email).
       card: cardDetail(it.card),
       identity: identityDetail(it.identity),
       notes: String(it.notes || ""),
@@ -2783,13 +2168,7 @@ function parseItems(raw) {
     })
   }
 
-  // Sort by favorite first, then alphabetically by name
-  out.sort(function(a, b) {
-    if (a.favorite !== b.favorite) {
-      return a.favorite ? -1 : 1
-    }
-    return compareNames(a, b)
-  })
+  out.sort(compareItems)
 
   return out
 }
@@ -2817,7 +2196,7 @@ function parseSshKeys(keys) {
       subtitle: fingerprint || publicKey || "SSH Key", notes: "",
       publicKey: publicKey, fingerprint: fingerprint, rawObject: raw })
   }
-  out.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  out.sort(compareItems)
   return out
 }
 
@@ -2832,7 +2211,7 @@ function parseSanitizedEnvelope(raw) {
   if (envelope.sshCapability !== undefined && envelope.sshCapability !== expectedCapability) return null
   var sshKeys = parseSshKeys(envelope.sshKeys)
   var items = parseItems(JSON.stringify(envelope.items)).concat(sshKeys)
-  items.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  items.sort(compareItems)
   return {
     items: items,
     sshKeys: sshKeys,
@@ -2840,29 +2219,9 @@ function parseSanitizedEnvelope(raw) {
   }
 }
 
-// One item's worth of list state, from the envelope a save now returns.
-//
-// The saved cipher is authoritative -- the server assigns the id on a create
-// and normalises fields on both paths -- so this replaces by id when the item
-// is already known and inserts when it is not. Sorting is the list's own
-// comparator rather than a second copy of it, which is what makes a rename, a
-// favourite toggle or a folder move land in the right place without a reload.
-//
-// Returns null when the envelope is not one this filter produced, and the
-// caller reloads instead. Nothing here is a fallback worth improvising on: an
-// item list that quietly disagrees with the vault is worse than a slow one.
-// The row to show while a save is in flight.
-//
-// Built from the payload on its way to `bw`, through the same parser the real
-// list uses, so an optimistic row and the row that replaces it are the same
-// shape and cannot disagree about how a card is subtitled or whether an item
-// has a password. It is the user's own input rendered back; the authoritative
-// version arrives a second or two later and replaces it.
-//
-// A create has no id yet -- the server assigns one -- so it carries a
-// provisional one that the save's response swaps out. The prefix is what
-// distinguishes it, and it cannot collide with a vault id because Bitwarden's
-// are UUIDs.
+// The row shown while a save is in flight, built from the payload through
+// parseItems so it has the same shape as the real row that replaces it. A
+// create gets a provisional id with this prefix (vault ids are UUIDs).
 var PENDING_ID_PREFIX = "qsbw-pending:"
 
 function pendingItemId(seed) { return PENDING_ID_PREFIX + String(seed) }
@@ -2887,9 +2246,7 @@ function optimisticItem(payload, itemId) {
   return parsed[0]
 }
 
-// Replace-or-insert by id, then sort -- the same operation spliceSavedItem
-// performs, without the envelope. Used to put an optimistic row in and to take
-// it back out again when a save fails.
+// Replace-or-insert by id (or remove, with no replacement), then sort.
 function replaceItemById(items, id, replacement) {
   var out = []
   var existing = toList(items)
@@ -2903,12 +2260,14 @@ function replaceItemById(items, id, replacement) {
     }
   }
   if (!replaced && replacement) out.push(replacement)
-  out.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
+  out.sort(compareItems)
   return out
 }
 
 function savedUnsanitizedMarker() { return SAVED_UNSANITIZED_MARKER }
 
+// Puts the item a save returned into the list. null if the output is not a
+// sanitized envelope; the caller then reloads.
 function spliceSavedItem(items, raw, replacingId) {
   var envelope = parseSanitizedEnvelope(raw)
   if (!envelope) return null
@@ -2917,33 +2276,13 @@ function spliceSavedItem(items, raw, replacingId) {
   var one = saved[0]
   if (!one || !one.id) return null
 
-  // On a create the row in the list is the provisional one, whose id the
-  // server has just replaced; `replacingId` is how the two are matched up.
-  var target = replacingId ? String(replacingId) : one.id
-  var out = []
-  var replaced = false
-  var existing = toList(items)
-  for (var i = 0; i < existing.length; i++) {
-    if (existing[i] && existing[i].id === target) {
-      out.push(one)
-      replaced = true
-    } else {
-      out.push(existing[i])
-    }
-  }
-  if (!replaced) out.push(one)
-  out.sort(function(a, b) { if (a.favorite !== b.favorite) return a.favorite ? -1 : 1; return compareNames(a, b) })
-  return out
+  // On a create, `replacingId` is the provisional row's id.
+  return replaceItemById(items, replacingId ? String(replacingId) : one.id, one)
 }
 
 function parseSanitizedItems(raw) {
   var envelope = parseSanitizedEnvelope(raw)
   return envelope ? envelope.items : []
-}
-
-function parseSanitizedCapability(raw) {
-  var envelope = parseSanitizedEnvelope(raw)
-  return envelope ? envelope.sshCapability : "unconfirmed"
 }
 
 function parseItemDetail(raw) {
@@ -2956,12 +2295,8 @@ function parseItemDetail(raw) {
   return itemDetailFromObject(it)
 }
 
-// `bw list items` already returns complete cipher objects -- password, TOTP
-// key, card, identity and custom fields included -- and parseItems keeps each
-// one as `rawObject`. So opening an item needs no second trip to the CLI: the
-// detail view is built from what the list already fetched, which is the
-// difference between a spinner and an instant open. `bw get item` costs a full
-// CLI bootstrap (~0.9s) plus service init (~2s) before it decrypts anything.
+// The list already holds each full cipher as `rawObject`, so the detail view
+// is built from it without a slow `bw get item`.
 function itemDetailFromObject(it) {
   if (!it || typeof it !== "object") return null
 
@@ -2991,8 +2326,7 @@ function itemDetailFromObject(it) {
     notes: String(it.notes || ""),
     username: String(login.username || ""),
     password: String(login.password || ""),
-    // The detail view's password row reads this when the password itself is
-    // empty. Missing, it made that `visible` binding undefined.
+    // The password row's `visible` binding reads this.
     hasPassword: Boolean(login.password),
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
@@ -3007,7 +2341,7 @@ function itemDetailFromObject(it) {
 }
 
 // -------------------------------------------------------------------------
-// Filtering & Searching
+// Filtering and search
 // -------------------------------------------------------------------------
 
 function matchesQuery(item, query) {
@@ -3015,38 +2349,27 @@ function matchesQuery(item, query) {
   var q = String(query).toLowerCase().trim()
   if (!q) return true
 
-  if (String(item.name).toLowerCase().indexOf(q) !== -1) return true
-  if (String(item.username).toLowerCase().indexOf(q) !== -1) return true
-  if (String(item.notes).toLowerCase().indexOf(q) !== -1) return true
-  if (String(item.publicKey || "").toLowerCase().indexOf(q) !== -1) return true
-  if (String(item.fingerprint || "").toLowerCase().indexOf(q) !== -1) return true
+  var has = function(value) { return String(value || "").toLowerCase().indexOf(q) !== -1 }
+  if (has(item.name) || has(item.username) || has(item.notes)
+      || has(item.publicKey) || has(item.fingerprint)) return true
 
-  // A card row shows its brand and last four; an identity row shows a name or
-  // an email. Anything the list is willing to display, the search box has to
-  // be able to find -- otherwise the one visible handle on a card is the one
-  // thing you cannot type. Never the full number: a substring search over
-  // stored card numbers is a lookup nobody asked this box to perform.
+  // Match what card and identity rows display; for a card number, only the
+  // last four digits.
   if (item.card) {
-    if (String(item.card.brand || "").toLowerCase().indexOf(q) !== -1) return true
-    if (String(item.card.cardholderName || "").toLowerCase().indexOf(q) !== -1) return true
+    if (has(item.card.brand) || has(item.card.cardholderName)) return true
     var digits = String(item.card.number || "").replace(/\D/g, "")
     if (digits.length >= 4 && digits.slice(-4).indexOf(q.replace(/\D/g, "")) !== -1
         && q.replace(/\D/g, "") !== "") return true
   }
   if (item.identity) {
-    if (identityFullName(item.identity).toLowerCase().indexOf(q) !== -1) return true
-    if (String(item.identity.email || "").toLowerCase().indexOf(q) !== -1) return true
-    if (String(item.identity.username || "").toLowerCase().indexOf(q) !== -1) return true
-    if (String(item.identity.company || "").toLowerCase().indexOf(q) !== -1) return true
+    if (has(identityFullName(item.identity)) || has(item.identity.email)
+        || has(item.identity.username) || has(item.identity.company)) return true
   }
 
-  // toList, not Array.isArray: this item came back out of a QML `var`
-  // property, and the array nested inside it did not survive that trip as one.
-  // The check that reads right is the check that quietly turned URL search off
-  // in the panel while every test here went on passing.
+  // toList: arrays read back from QML are not real arrays.
   var uris = toList(item.uris)
   for (var i = 0; i < uris.length; i++) {
-    if (String(uris[i]).toLowerCase().indexOf(q) !== -1) return true
+    if (has(uris[i])) return true
   }
   return false
 }
@@ -3106,15 +2429,11 @@ function maskString(str) {
   return "•".repeat(Math.min(str.length, 16))
 }
 
-// There is deliberately no local password generator here. QML's Math.random()
-// is not a CSPRNG -- it is seeded predictably and its output can be recovered
-// from a handful of samples -- which makes it unfit to produce a password that
-// will guard an account. The only generator is generateCommand() further down,
-// which delegates to `bw generate`, and the item form reaches it by way of the
-// generator screen. See openGenerator() in Panel.qml.
+// No local password generator: Math.random() is not a CSPRNG. Passwords come
+// from `bw generate` via generateCommand().
 
 // -------------------------------------------------------------------------
-// Payload Builders for Create & Edit
+// Create and edit payloads
 // -------------------------------------------------------------------------
 
 function selectedOrganizationId(organizationId) {
@@ -3138,11 +2457,8 @@ function updateLoginFields(login, username, password, totp) {
   login.totp = totp && totp.trim() ? totp.trim() : null
 }
 
-// Create and edit write these through the same pair, so a field the form can
-// set is a field both paths set the same way. `fields` is whatever the form
-// collected; anything absent from it is written as an empty string rather
-// than left undefined, because `bw edit` treats a missing key and an empty
-// one differently and the form's cleared box means cleared.
+// Shared by create and edit. Absent fields are written as "" (not left
+// undefined) so a cleared box clears the value.
 function updateCardFields(card, fields) {
   var f = fields || {}
   card.cardholderName = String(f.cardholderName || "").trim()
@@ -3164,9 +2480,8 @@ function updateIdentityFields(identity, fields) {
   }
 }
 
-// Strip the form-only reveal flag and normalize values to the representation
-// the Bitwarden clients write. Booleans are strings in cipher JSON, while a
-// linked field stores its target id and deliberately has no independent value.
+// Drops form-only state and writes values as Bitwarden clients do: booleans as
+// "true"/"false", linked fields as a linkedId with a null value.
 function customFieldsPayload(fields) {
   var raw = toList(fields)
   var out = []
@@ -3192,10 +2507,8 @@ function customFieldsPayload(fields) {
   return out
 }
 
-// `typeFields` carries the card or identity boxes. It is a trailing object
-// rather than twenty-four more positional arguments: a card needs six and an
-// identity eighteen, and a call site that long is one transposed pair away
-// from writing an expiry year into a security code.
+// `typeFields` holds the card or identity fields as one object rather than
+// two dozen positional arguments.
 function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (Number(typeCode) === 5) return null
   var payload = {
@@ -3207,10 +2520,7 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
     folderId: selectedFolderId(folderId)
   }
 
-  // Only org-owned items carry collections, and such an item must be in at
-  // least one -- Bitwarden rejects it otherwise. Omit the key entirely when
-  // none were chosen rather than sending an empty array, which would change
-  // what existing callers send.
+  // Org items need at least one collection; omit the key when none are chosen.
   var collections = selectedCollectionIds(collectionIds)
   if (payload.organizationId && collections) payload.collectionIds = collections
 
@@ -3241,12 +2551,8 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
   payload.name = String(name || "Untitled").trim()
   payload.notes = String(notes || "").trim()
   payload.favorite = Boolean(favorite)
-  // Set *and* clear. Only assigning meant picking "My Vault" for an item that
-  // belonged to an organization left it in the organization, so the form said
-  // one thing and the vault kept another.
+  // Assign and clear: personal/none must move the item out.
   payload.organizationId = selectedOrganizationId(organizationId)
-  // An explicit empty selection means "no folder", so this must be able to
-  // clear an existing assignment, not only set one.
   payload.folderId = selectedFolderId(folderId)
 
   if (payload.organizationId) {
@@ -3255,16 +2561,9 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
     delete payload.collectionIds
   }
 
-  // The payload started as a deep clone of the item as the vault holds it, so
-  // every sub-object the form does not expose is already correct. Each branch
-  // writes only its own type's fields; nothing here deletes another type's,
-  // because an item that arrived as a card leaves as a card.
-  //
-  // The `&& typeFields` is load-bearing. The writers set every key they know,
-  // so calling one with nothing to write blanks the lot -- an edit that only
-  // meant to rename a card would return it to the vault with its number,
-  // expiry and security code erased. A caller with no type fields to offer is
-  // saying "leave that sub-object alone", and the clone already has it right.
+  // The payload is a clone of the stored item, so each branch writes only its
+  // own type's fields. `&& typeFields` matters: the writers set every key, so
+  // calling one without fields would blank a card or identity on rename.
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}
     updateLoginFields(payload.login, username, password, totp)
@@ -3279,27 +2578,20 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
     updateIdentityFields(payload.identity, typeFields)
   }
 
-  // Undefined means an older/non-form caller had no custom-field state and
-  // therefore wants the cloned fields left alone. An explicit array, including
-  // an empty one, is the edit form's authoritative value and can add, change,
-  // reorder, or remove fields.
+  // undefined leaves the cloned fields alone; any array (even empty) replaces them.
   if (customFields !== undefined) payload.fields = customFieldsPayload(customFields)
 
   return payload
 }
 
 // -------------------------------------------------------------------------
-// Context-Aware Window & Active Tab Matching
+// Context matching
 // -------------------------------------------------------------------------
 //
-// Hyprland exposes only the window class and title -- browsers do not publish
-// the active tab URL over any interface we can read, so the page title is the
-// only signal available. Everything below is built to squeeze a reliable
-// domain/brand out of a title while refusing to guess when the title says
-// nothing useful.
+// Hyprland exposes only a window's class and title (no tab URL), so the site
+// is inferred from the title, refusing to guess when it says nothing useful.
 
-// Labels that carry no identity. Never matched against a page title, and
-// dropped when tokenising titles and item names.
+// Labels that carry no identity; ignored in titles and item names.
 var GENERIC_LABELS = {
   "www": 1, "www2": 1, "web": 1, "app": 1, "apps": 1, "mobile": 1, "my": 1,
   "secure": 1, "login": 1, "signin": 1, "sign": 1, "logon": 1, "auth": 1,
@@ -3312,8 +2604,8 @@ var GENERIC_LABELS = {
   "for": 1, "with": 1, "your": 1, "new": 1, "inbox": 1, "settings": 1
 }
 
-// Public suffixes we accept as the tail of a hostname. Deliberately a closed
-// list: it is what stops "config.json" or "v1.2" from being read as a domain.
+// Accepted hostname suffixes. A closed list, so "config.json" or "v1.2" is not
+// read as a domain.
 var TLDS = {
   "com": 1, "org": 1, "net": 1, "edu": 1, "gov": 1, "mil": 1, "int": 1,
   "io": 1, "co": 1, "ai": 1, "app": 1, "dev": 1, "me": 1, "tv": 1, "cc": 1,
@@ -3333,13 +2625,10 @@ var TLDS = {
   "local": 1, "lan": 1, "home": 1, "internal": 1, "arpa": 1, "localdomain": 1
 }
 
-// Second-level suffixes: only ever treated as part of the suffix when a third
-// label follows (bbc.co.uk -> bbc, but co.uk alone stays as-is).
+// Second-level suffixes, only when a third label follows (bbc.co.uk -> bbc).
 var MULTI_SLD = { "co": 1, "com": 1, "net": 1, "org": 1, "ac": 1, "gov": 1, "edu": 1, "or": 1, "ne": 1 }
 
-// Brands whose sites are commonly titled with a different word than the domain
-// that ends up on the vault item. Conservative on purpose -- each entry maps a
-// title word to the registrable name it should also count as.
+// Title words that stand for a different registrable name.
 var BRAND_ALIASES = {
   "gmail": "google", "googlemail": "google", "youtube": "google",
   "hotmail": "microsoft", "outlook": "microsoft", "live": "microsoft",
@@ -3357,15 +2646,12 @@ var BROWSER_BRAND_RE = /\s*[-—–|·•]\s*(Google Chrome|Chromium|Mozilla Fir
 
 var TITLE_SEPARATOR_RE = /\s*[|·•—–]\s*|\s+[-]\s+|\s*::\s*/
 
-// How much of a window title is ever looked at. A page writes its own title
-// and nothing obliges it to be short, while every part of the match runs over
-// the whole of it once per vault item -- so a title long enough is a vault
-// large enough away from a visible freeze of the shell. Nothing past a couple
-// of hundred characters identifies a site anyway; the rest is prose.
+// Only this much of a title is examined: matching runs over it per vault item,
+// and a page controls its own title length.
 var MAX_TITLE_CHARS = 512
 
-// Strip anything that is chrome rather than content: unread counters, media
-// indicators, private-window markers, and leading sign-in verbs.
+// Strip browser chrome: brand suffixes, counters, media and private markers,
+// leading sign-in verbs.
 function stripTitleNoise(title) {
   var t = String(title || "").trim()
   t = t.replace(BROWSER_BRAND_RE, "").trim()
@@ -3411,9 +2697,8 @@ function extractTokens(str) {
   return tokens
 }
 
-// The registrable names a title implies purely through a brand alias, e.g. a
-// "Gmail" title implies "google". Kept separate from the literal title tokens:
-// only an alias may stand in for a domain the title never actually spelled.
+// Names implied only through a brand alias ("Gmail" -> "google"), kept apart
+// from literal title tokens.
 function aliasesFor(tokens) {
   var out = []
   var seen = {}
@@ -3472,25 +2757,16 @@ function parseDomain(urlStr) {
 // Pull a hostname out of free text (a page title). Requires a known public
 // suffix so version numbers and filenames are not mistaken for domains.
 //
-// Scanned by splitting rather than by one pass of a host-shaped regex, because
-// that regex was quadratic on exactly the input this function exists to read.
-// `[a-z0-9-]+(?:\.[a-z0-9-]+)+` against a long run of letters with no dot in
-// it makes the engine swallow the whole run, discover the dot is missing, give
-// a character back, fail again, and so on to the end of the run -- and then do
-// it all over from the next offset. A page decides its own title, so a title of
-// 60 kB of one word is a page's to send, and it cost ~2.5 s of the GUI thread
-// per scan: the whole shell, bar included, frozen every time the panel opened
-// over that tab. Splitting on the characters a host cannot contain and then
-// walking the labels between the dots reads the same hosts out in the same
-// order, in one linear pass.
+// Split on non-host characters and walk the labels, one linear pass. A
+// host-shaped regex backtracks quadratically on long dotless runs, and a page
+// controls its own title (60 kB froze the shell for ~2.5 s).
 function detectDomainInText(text) {
   var s = String(text || "").toLowerCase()
   var runs = s.split(/[^a-z0-9.\-]+/)
   for (var r = 0; r < runs.length; r++) {
     var labels = runs[r].split(".")
     var group = []
-    // One past the end, so a group that reaches the end of the run is closed
-    // by the same branch that closes one interrupted by an empty label.
+    // Run to one past the end so the final group is closed by the same branch.
     for (var i = 0; i <= labels.length; i++) {
       if (i < labels.length && labels[i]) {
         group.push(labels[i])
@@ -3516,8 +2792,7 @@ function detectDomainInText(text) {
 function itemDomains(item) {
   var out = []
   if (!item) return out
-  // Same round trip, same reason as matchesQuery: an Array.isArray here is a
-  // domain match that works in Node and never fires in the panel.
+  // toList: see matchesQuery.
   var uris = toList(item.uris)
   for (var i = 0; i < uris.length; i++) {
     var d = parseDomain(uris[i])
@@ -3526,9 +2801,13 @@ function itemDomains(item) {
   return out
 }
 
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")
+}
+
 function hasWholeWord(haystack, word) {
   if (!haystack || !word) return false
-  var escaped = String(word).replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")
+  var escaped = escapeRegExp(word)
   return new RegExp("(?:^|[^a-z0-9])" + escaped + "(?:$|[^a-z0-9])", "i").test(haystack)
 }
 
@@ -3575,8 +2854,7 @@ function windowIdentity(cls, title) {
   }
 
   if (isTerminal) {
-    // Only remote sessions are worth suggesting for; a local shell title
-    // ("hostname: ~/dir") describes the machine, not a credential.
+    // Only remote sessions; a local shell title describes this machine.
     var remoteSession = title.match(REMOTE_SESSION_RE)
     if (!remoteSession) return null
     return {
@@ -3616,12 +2894,11 @@ function cleanWindowContext(windowData) {
 
   if (!cleanTitle && !cls) return null
 
-  // Words belonging to a hostname printed in the title must not be reusable as
-  // free text, or every item sharing a label ("example") with the current host
-  // would match. Strip the host, then re-seed the one name that does count.
+  // Remove the title's hostname so its labels do not match as free words,
+  // then add back its registrable name.
   var matchText = cleanTitle
   if (detectedDomain) {
-    matchText = matchText.replace(new RegExp(detectedDomain.host.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&"), "gi"), " ").trim()
+    matchText = matchText.replace(new RegExp(escapeRegExp(detectedDomain.host), "gi"), " ").trim()
   }
 
   var rawTokens = extractTokens(matchText)
@@ -3728,8 +3005,8 @@ function nativeAppScore(domains, nameSquashed, ctx) {
   return score
 }
 
-// Score one vault item against the active window. 0 means no match; the bands
-// are deliberately spread so a real domain hit always outranks a word hit.
+// Score one item against the window; 0 is no match. Bands are spread so a
+// domain hit always outranks a word hit.
 function matchItem(item, ctx) {
   if (!ctx || !item) return 0
   if (ctx.isTerminal && !ctx.detectedDomain) return 0
@@ -3752,8 +3029,7 @@ var MATCH_THRESHOLD = 80
 var MAX_SUGGESTIONS = 6
 
 function resolveLearnedMatches(items, associations, ctx) {
-  // What you taught it comes first, and is never filtered out by the score
-  // banding -- an explicit choice outranks anything inferred.
+  // Learned picks come first and bypass the score bands.
   var byId = {}
   for (var i = 0; i < items.length; i++) {
     if (items[i] && items[i].id) byId[items[i].id] = items[i]
@@ -3812,9 +3088,8 @@ function findContextualMatches(items, windowData, associations) {
 
   scored.sort(compareContextualMatches)
 
-  // Keep only the strongest band. A confirmed domain hit discards everything
-  // weaker (so a second account on the same site survives, but unrelated items
-  // that merely share a word do not).
+  // Keep only the strongest band: a domain hit drops word-only matches but
+  // keeps other accounts on the same site.
   var best = scored[0].score
   var cutoff = best >= 96 ? 96 : Math.max(MATCH_THRESHOLD, best - 8)
 
@@ -3829,15 +3104,11 @@ function findContextualMatches(items, windowData, associations) {
 }
 
 // -------------------------------------------------------------------------
-// Learned Associations
+// Learned associations
 // -------------------------------------------------------------------------
 //
-// Titles are a weak signal and some sites cannot be matched from one at all:
-// a page titled "Home - authentik" served from auth.example.xyz shares no word
-// with the stored credential, so no heuristic will ever connect them. Instead
-// of guessing harder, the panel remembers. Picking an item while a window is
-// active records that window's identifying keys against the item, and the next
-// visit suggests it outright. Learning beats every heuristic tier below it.
+// Some sites cannot be matched from their title at all, so picking an item
+// records the window's keys against it and the next visit suggests it first.
 
 var ASSOC_VERSION = 1
 var ASSOC_ENV = "QSBW_ASSOC"
@@ -3854,16 +3125,12 @@ function associationsReadCommand() {
   return ["bash", "-c", script]
 }
 
-// Written through the environment for the same reason the keyring stores are:
-// Process.write() cannot deliver EOF, so a shell supplies the payload instead.
+// Payload in the environment (Process.write() cannot send EOF).
 function associationsWriteCommand() {
-  // Replace atomically from a private temporary file. Redirection straight to
-  // the destination would follow a symlink and would preserve an old 0644
-  // mode; rename replaces the directory entry itself and the fresh file is
-  // born 0600 under this umask.
+  // Write a private temp file and rename it, so a symlink is replaced, not
+  // followed, and the file is always 0600.
   var script = "set -e; d=\"" + ASSOC_DIR + "\"; "
-    + "if [ -e \"$d\" ]; then [ -d \"$d\" ] && [ ! -L \"$d\" ] || exit 1; "
-    + "else (umask 077 && mkdir -p \"$d\") || exit 1; fi; chmod 700 \"$d\"; "
+    + privateDirScript("d")
     + "umask 077; tmp=$(mktemp -- \"$d/.associations.XXXXXXXX\"); "
     + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
     + "printf '%s' \"$" + ASSOC_ENV + "\" > \"$tmp\"; chmod 600 \"$tmp\"; "
@@ -3871,16 +3138,8 @@ function associationsWriteCommand() {
   return ["bash", "-c", script]
 }
 
-// Logging out has to take this with it. The store is a list of the domains,
-// app names and title words the user has credentials for, each stamped with
-// when it was last used -- a browsing-shaped record of the account, in the
-// clear, under an account that is no longer signed in. The keyring entries
-// are already cleared for exactly that reason; this file was the one piece of
-// the account's data left behind, and it has no expiry of its own.
-//
-// The directory stays: it is created 700 on the next write. The panel waits
-// for an in-flight atomic writer to exit before it runs this clear, so logout
-// cannot be followed by that writer resurrecting the file.
+// Cleared on logout: it records the sites the account has credentials for.
+// The panel waits for any in-flight write first so it cannot recreate the file.
 function associationsClearCommand() {
   var script = "d=\"" + ASSOC_DIR + "\"; "
     + "if [ -d \"$d\" ] && [ ! -L \"$d\" ]; then rm -f -- \"$d/associations.json\" 2>/dev/null; fi; exit 0"
@@ -3945,9 +3204,8 @@ function serializeAssociations(assoc) {
   return JSON.stringify(assoc && assoc.keys ? assoc : emptyAssociations())
 }
 
-// The identifying keys for a window, strongest first. A domain is definitive;
-// an app class is nearly so; individual title words are the weak fallback that
-// makes an untitled-domain site like authentik learnable at all.
+// A window's keys, strongest first: domain, app class, then title words (the
+// weak fallback for sites with no domain in the title).
 function contextKeys(ctx) {
   if (!ctx) return []
   var keys = []
@@ -3964,17 +3222,12 @@ function contextKeys(ctx) {
   return keys
 }
 
-// How large the store may get on the way out. It only ever grew, and it is
-// read back through a `head -c` cap: the first read past that cap returns a
-// truncated object, which does not parse, which is indistinguishable here from
-// no store at all -- so the next pick overwrites everything the user ever
-// taught it with a fresh empty file. Since a title's words each become a key
-// and a page picks its own title, that erasure is something a page can drive.
-// Half the reader's cap, so the estimate below has room to be wrong.
+// Write budget, half the read cap: a store truncated by the read cap fails to
+// parse and would be replaced by an empty one, and a page's title words can
+// grow it.
 var MAX_ASSOC_WRITE_BYTES = MAX_ASSOC_BYTES / 2
 
-// Last pick wins: re-recording a key that pointed elsewhere retargets it, so a
-// word learned from the wrong page corrects itself the next time you choose.
+// Last pick wins, so a key learned from the wrong page corrects itself.
 function recordAssociation(assoc, ctx, itemId, timestamp) {
   var next = { version: ASSOC_VERSION, keys: {} }
   var k
@@ -3997,9 +3250,7 @@ function recordAssociation(assoc, ctx, itemId, timestamp) {
   return trimAssociations(next)
 }
 
-// Newest kept first, by the ISO timestamp each entry carries, until the budget
-// is spent. An entry with no timestamp predates the field, so it sorts oldest
-// and is the first to go.
+// Keeps the newest entries within budget; entries without a timestamp go first.
 function trimAssociations(assoc) {
   var all = []
   var k
@@ -4040,8 +3291,7 @@ function forgetAssociation(assoc, ctx, itemId) {
   return next
 }
 
-// True when this exact item is already what the context resolves to, used to
-// decide whether a pick is worth recording and how to label the pin action.
+// Whether the context already resolves to this item.
 function isAssociated(assoc, ctx, itemId) {
   if (!assoc || !ctx || !itemId) return false
   var keys = contextKeys(ctx)
@@ -4071,22 +3321,11 @@ function learnedMatchIds(assoc, ctx) {
 }
 
 // -------------------------------------------------------------------------
-// Dependency Checks (Setup Wizard)
+// Dependency checks (setup)
 // -------------------------------------------------------------------------
 //
-// What the wizard asks the user to install, checked in one process rather than
-// one per tool. Each entry reports present/absent plus the package that
-// provides it, so the wizard can offer an exact install command instead of
-// advice.
-//
-// Only tools Omarchy does not already ship belong here. `wl-clipboard`,
-// `libsecret` and `hyprland` are in omarchy-base.packages, and `glib2`,
-// `systemd` and `openssl` come with the system, so listing them turned a
-// first-run screen into a checklist of rows that are green on every machine
-// this plugin can run on -- noise in front of the one row that is not. The
-// plugin still shells out to all of them; they are simply not a decision the
-// user has to make. Anything added here must be something an Omarchy install
-// can genuinely lack.
+// Only tools an Omarchy install can actually lack; the rest (wl-clipboard,
+// libsecret, glib2, systemd, openssl...) ship with it. Probed in one process.
 var DEPENDENCIES = [
   {
     key: "bw", label: "Bitwarden CLI", binary: "bw", pkg: "bitwarden-cli", aur: false,
@@ -4099,13 +3338,8 @@ var DEPENDENCIES = [
     purpose: "Safely strips SSH private keys before the panel reads your vault."
   },
   {
-    // Not an `omarchy pkg add` row. Installing fprintd on its own gets nobody
-    // anywhere: `ready` also wants an enrolled finger and the PAM stack at
-    // /etc/pam.d/omarchy-lock-fingerprint, and a package install produces
-    // neither -- the row would stay red however many times it was pressed.
-    // `omarchy setup security fingerprint` is the whole job in one command
-    // (reader detection, libfprint/fprintd/usbutils, enrolment, verification,
-    // then the PAM stacks), so it owns this row outright.
+    // Set up by `omarchy setup security fingerprint` (packages, enrolment,
+    // PAM), not a package install: `ready` needs an enrolled finger too.
     key: "fprintd", label: "Fingerprint unlock", binary: "fprintd-list", pkg: "fprintd", aur: false,
     required: false, setup: true,
     // Only shown on a machine with a reader; see `applicable` below.
@@ -4113,8 +3347,7 @@ var DEPENDENCIES = [
   }
 ]
 
-// One shell round trip: `key=1` or `key=0` per line, plus the fingerprint
-// enrolment state, which needs more than a binary being on PATH.
+// One round trip: `key=1|0` per tool, the bw version and fingerprint state.
 function dependencyCheckCommand() {
   var parts = []
   for (var i = 0; i < DEPENDENCIES.length; i++) {
@@ -4122,8 +3355,7 @@ function dependencyCheckCommand() {
     parts.push("if command -v " + d.binary + " >/dev/null 2>&1; then echo "
       + shellQuote(d.key + "=1") + "; else echo " + shellQuote(d.key + "=0") + "; fi")
   }
-  // Never forward arbitrary version output into QML. The CLI gets 64 bytes,
-  // and only a strict calendar-version token survives the producer boundary.
+  // Only a strict calendar-version token reaches QML.
   parts.push("if command -v bw >/dev/null 2>&1; then "
     + "__qsbw_bw_version=$(bw -v 2>/dev/null | head -c 64); "
     + "if [[ \"$__qsbw_bw_version\" =~ ^v?[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,6}$ ]]; then "
@@ -4131,11 +3363,8 @@ function dependencyCheckCommand() {
     + "else echo bw_version=; fi")
   parts.push("if [ -f /etc/pam.d/omarchy-lock-fingerprint ] && command -v fprintd-list >/dev/null 2>&1 "
     + "&& fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo fingerprint_ready=1; else echo fingerprint_ready=0; fi")
-  // Omarchy's own reader detection, which reads sysfs rather than asking
-  // fprintd -- so it answers before anything is installed, which is exactly
-  // when the wizard needs to know whether to offer the row at all. A desktop
-  // with no reader should not be shown a fingerprint option it can never
-  // satisfy.
+  // Reader detection via sysfs, which works before anything is installed, so
+  // machines without a reader are not offered fingerprint unlock.
   parts.push("if command -v omarchy-hw-fingerprint >/dev/null 2>&1 && omarchy-hw-fingerprint >/dev/null 2>&1; "
     + "then echo fingerprint_hw=1; else echo fingerprint_hw=0; fi")
   parts.push("if command -v omarchy >/dev/null 2>&1; then echo omarchy=1; else echo omarchy=0; fi")
@@ -4178,12 +3407,9 @@ function parseDependencies(raw) {
       pkg: dep.pkg,
       required: dep.required,
       purpose: dep.purpose,
-      // Omarchy owns this one end to end, so the wizard offers its setup
-      // command rather than a package install. See DEPENDENCIES.
+      // Offer Omarchy's setup command instead of a package install.
       setup: Boolean(dep.setup),
-      // Whether this machine can satisfy the row at all. Hardware the box does
-      // not have is not a missing dependency, and listing it as one is how a
-      // setup screen grows rows nobody can ever turn green.
+      // Missing hardware is not a missing dependency.
       applicable: dep.key === "fprintd" ? found["fingerprint_hw"] === "1" : true,
       installed: installed,
       // fprintd on PATH is not the same as a usable reader with an enrolled finger.
@@ -4202,9 +3428,7 @@ function parseDependencies(raw) {
   }
 }
 
-// What the setup screen actually draws: the rows this machine can do something
-// about. Everything else stays in `items`, where the settings screen and the
-// fingerprint wiring still look tools up by key.
+// The rows the setup screen draws; `items` keeps them all for lookups by key.
 function applicableDependencies(deps) {
   var out = []
   if (!deps || !deps.items) return out
@@ -4269,11 +3493,8 @@ function vaultListBlockedMessage(deps) {
   return "Could not determine how to safely read vault items."
 }
 
-// The SSH filter -- and later the agent's setup -- appear only once the
-// dependency probe has confirmed a CLI that can decrypt SSH key items. An
-// unreadable version counts as unsupported: hiding the SSH surface costs a
-// user on an unknown build nothing, while showing it promises a read the CLI
-// may not be able to perform.
+// SSH UI shows only once the probe confirmed a supporting CLI; an unknown
+// version counts as unsupported.
 function sshUiAvailable(deps, checked) {
   return Boolean(checked) && Boolean(deps) && deps.sshCliStatus === "supported"
 }
@@ -4305,9 +3526,7 @@ function inspectSanitizedVault(raw) {
   }
 }
 
-// "supported" | "unsupported" | "unknown" for one probed `bw --version`
-// string. Anything the probe could not read stays "unknown": SSH stays hidden,
-// while ordinary vault items keep working.
+// "supported" | "unsupported" | "unknown" for a probed `bw --version`.
 function sshCliSupport(version) {
   var normalized = normalizeReleaseVersion(version)
   if (!normalized) return "unknown"
@@ -4316,9 +3535,8 @@ function sshCliSupport(version) {
 
 function vaultListFailureMessage(stderrText, deps, mode) {
   if (mode === "blocked") return vaultListBlockedMessage(deps)
-  // Never pass producer diagnostics through: bw and jq can quote decrypted
-  // values in failures. The only detail added here comes from the version the
-  // dependency probe already read, never from what the failed read printed.
+  // Never echo the failed read's output (it can quote decrypted values); only
+  // the already-probed version adds detail.
   var version = deps && deps.bwVersion ? deps.bwVersion : ""
   if (version && compareReleaseVersions(version, SSH_MALFORMED_ITEM_FIX_VERSION) < 0) {
     return SANITIZED_LIST_ERROR + SANITIZED_LIST_SSH_FIX_HINT
@@ -4330,74 +3548,41 @@ function vaultListFailureMessage(stderrText, deps, mode) {
 // SSH companion supervision
 // -------------------------------------------------------------------------
 //
-// The companion is a separate process holding decrypted private keys, so the
-// panel supervises it rather than launching and forgetting it: a tracked,
-// non-detached Process with stdin held open, stdout parsed a line at a time
-// from the moment it starts, and a cleared environment carrying nothing but
-// the runtime directory it needs to find its own socket.
-//
-// Everything here is pure. The panel owns the Process, the timers and the
-// clock; this file owns the decisions. That is what keeps the supervision
-// asynchronous -- there is no point in this state machine where QML could
-// wait for the helper, because none of it can block, and the panel's only
-// response to any event is to set a property or arm a timer.
-//
-// The signing gate is the safety property. It opens on exactly one transition
-// -- a well-formed v1 `ready` answering the panel's `hello` -- and closes on
-// every other outcome: a malformed or overlong line, an unexpected message
-// type, a version mismatch, a stalled handshake, EOF, or a crash. Nothing in
-// the ordinary vault reads it, so a helper that never starts costs the user
-// nothing but the SSH feature.
+// The companion holds decrypted private keys, so the panel supervises it: a
+// tracked Process with stdin held open, stdout parsed line by line, and an
+// environment of just XDG_RUNTIME_DIR. Everything here is pure; the panel
+// owns the Process, timers and clock. The signing gate opens only on a
+// well-formed v1 `ready` answering `hello`, and closes on anything else.
 
-// Matches MAX_CONTROL_LINE in the companion. The panel enforces the same
-// ceiling on the way back so a helper that has lost its mind cannot make the
-// shell allocate without bound.
+// MAX_CONTROL_LINE in the companion, enforced on its output too.
 var SSH_AGENT_CONTROL_VERSION = 1
 var SSH_AGENT_MAX_LINE_BYTES = 64 * 1024
 
-// The development helper, built by `cargo build --manifest-path agent/Cargo.toml`.
-// Task 18 replaces this with the checksum-validated bundled binary; until then
-// the path is still resolved the same way -- inside the plugin directory, from
-// an absolute base, with no shell and no PATH lookup between here and exec.
-var SSH_AGENT_HELPER_RELATIVE = "agent/target/debug/qs-bitwarden-ssh-agent"
-
-// A handshake is two writes and a read on an already-running process. Five
-// seconds is far past any honest answer and still short enough that a helper
-// wedged before `ready` is reported rather than waited on.
+// How long a started helper has to answer `hello`.
 var SSH_AGENT_HANDSHAKE_TIMEOUT_MS = 5000
 var SSH_AGENT_BACKOFF_BASE_MS = 500
 var SSH_AGENT_BACKOFF_MAX_MS = 30000
 var SSH_AGENT_MAX_RESTARTS = 5
-// The hard ceiling on `sshAgentApprovalWindowSec`. A grant is a window in
-// which a live process signs without asking again, so the cap is a security
-// bound and belongs next to the protocol constants rather than in the
-// settings screen that happens to draw it.
+// Cap on `sshAgentApprovalWindowSec`: a grant lets a program sign without
+// asking, so this is a security bound.
 var SSH_AGENT_APPROVAL_WINDOW_MAX_SEC = 900
-// A run that served for this long was working, whatever killed it afterwards.
-// Without this, one healthy helper restarted at the end of a long session
-// would carry the failure count from a crash loop hours earlier; with it, only
-// genuinely consecutive quick deaths reach the restart cap.
+// A run this long counts as healthy and resets the failure count, so only
+// consecutive quick deaths reach the restart cap.
 var SSH_AGENT_HEALTHY_MS = 60 * 1000
 
-// Messages the companion is allowed to send. An unknown type is a mismatch
-// between the panel and a helper binary that should have been replaced with
-// it, which is exactly the case the protocol version exists to catch.
+// Messages the companion may send; anything else is a version mismatch.
 var SSH_AGENT_EVENT_TYPES = [
   "ready", "unlock_required", "approval_required", "request_cancelled",
   "keys_loaded", "public_key", "locked", "load_failed", "grants_changed", "state_changed", "error"
 ]
 
 function sshAgentMaxLineBytes() { return SSH_AGENT_MAX_LINE_BYTES }
-function sshAgentApprovalWindowMax() { return SSH_AGENT_APPROVAL_WINDOW_MAX_SEC }
 function sshAgentMaxRestarts() { return SSH_AGENT_MAX_RESTARTS }
 function sshAgentHandshakeTimeoutMs() { return SSH_AGENT_HANDSHAKE_TIMEOUT_MS }
 
-// The plugin's own directory, from the `file://` URL QML resolves for it.
-// This is the base for the only executable the panel launches by path rather
-// than by name, so it is validated rather than trusted: absolute, `file:`
-// scheme or nothing, and no traversal segment either literal or percent-
-// encoded. A URL that fails any of those yields "", which disables the helper
-// instead of resolving an executable somewhere else on the disk.
+// The plugin directory from QML's `file://` URL. It is the base of the only
+// executable launched by path, so it must be absolute with no traversal
+// segment (literal or percent-encoded); otherwise "" disables the helper.
 function pluginDirFromUrl(url) {
   if (typeof url !== "string" || url === "") return ""
   var raw = url
@@ -4412,70 +3597,56 @@ function pluginDirFromUrl(url) {
   } catch (e) {
     return ""
   }
-  if (decoded.charAt(0) !== "/") return ""
-  while (decoded.length > 1 && decoded.charAt(decoded.length - 1) === "/") {
-    decoded = decoded.slice(0, decoded.length - 1)
-  }
-  var parts = decoded.split("/")
-  for (var i = 0; i < parts.length; i++) {
-    if (parts[i] === "." || parts[i] === "..") return ""
-  }
-  return decoded
+  return cleanAbsoluteDir(decoded)
 }
 
-function sshAgentHelperPath(pluginDir) {
-  if (typeof pluginDir !== "string" || pluginDir.charAt(0) !== "/") return ""
-  var base = pluginDir
-  while (base.length > 1 && base.charAt(base.length - 1) === "/") {
-    base = base.slice(0, base.length - 1)
-  }
+// `dir` without trailing slashes, or "" unless it is absolute with no "." or
+// ".." segment.
+function cleanAbsoluteDir(dir) {
+  if (typeof dir !== "string" || dir.charAt(0) !== "/") return ""
+  var base = dir
+  while (base.length > 1 && base.charAt(base.length - 1) === "/") base = base.slice(0, -1)
   var parts = base.split("/")
   for (var i = 0; i < parts.length; i++) {
     if (parts[i] === "." || parts[i] === "..") return ""
   }
-  return base + "/" + SSH_AGENT_HELPER_RELATIVE
+  return base
 }
 
-// No `bash -c` wrapper, unlike every `bw` call in this file. Those need a
-// shell for their output caps; this one needs the opposite -- an unwrapped
-// child whose stdin, stdout and lifetime belong to the Process object, so
-// closing stdin reaches the helper itself and killing the Process kills the
-// thing holding the keys rather than a shell that spawned it.
+// Run directly, not via `bash -c`, so closing stdin and killing the Process
+// reach the process holding the keys.
 function sshAgentHelperCommand(pluginDir, source) {
-  var candidates = sshAgentHelperCandidates(pluginDir)
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i].source === source) return [candidates[i].path]
-  }
-  // No accepted source means the inspection has not run or did not accept
-  // anything, and launching a guess would defeat the point of inspecting.
-  return []
+  var path = helperPath(pluginDir, SSH_AGENT_HELPER_SPEC, source)
+  return path ? [path] : []
 }
 
-// The companion needs no PATH, no HOME, and no vault credential of any kind:
-// it spawns nothing and runs no `bw`. XDG_RUNTIME_DIR is the single variable
-// it reads, to find the private directory its socket and FIFO live in. Paired
-// with `clearEnvironment: true` on the Process, this is the whole environment
-// the helper is given -- BW_SESSION cannot leak into it because it is not
-// there to leak.
+// The helper's whole environment (with `clearEnvironment: true`): it only
+// needs XDG_RUNTIME_DIR, and no credential can leak into it.
 function sshAgentHelperEnv(runtimeDir) {
   if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return null
   return { XDG_RUNTIME_DIR: runtimeDir }
 }
 
+// One control-protocol line to the companion: {v, type, ...fields}.
+function agentControlLine(type, fields) {
+  var message = { v: SSH_AGENT_CONTROL_VERSION, type: type }
+  for (var k in fields) message[k] = fields[k]
+  return JSON.stringify(message) + "\n"
+}
+
+function agentEpoch(epoch) { return Math.floor(Number(epoch)) || 0 }
+
 function sshAgentHelloLine() {
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "hello" }) + "\n"
+  return agentControlLine("hello")
 }
 
 function sshAgentShutdownLine() {
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "shutdown" }) + "\n"
+  return agentControlLine("shutdown")
 }
 
-// The cap is in bytes because the companion's is. Counting UTF-16 units would
-// let a line of three-byte characters through at three times the ceiling.
+// Bytes, not UTF-16 units, to match the companion's cap.
 function utf8ByteLength(text) {
-  // A UTF-8 byte count is never below the UTF-16 unit count, so anything
-  // already longer than the cap in characters is over it in bytes. Checking
-  // that first keeps the loop off a line that is megabytes of junk.
+  // Bytes >= UTF-16 units, so skip counting a line already over the cap.
   if (text.length > SSH_AGENT_MAX_LINE_BYTES) return text.length
   var bytes = 0
   for (var i = 0; i < text.length; i++) {
@@ -4488,17 +3659,9 @@ function utf8ByteLength(text) {
   return bytes
 }
 
-// One line of companion stdout. Returns {ok:true, message} or {ok:false, code,
-// fatal}. Only a blank line is non-fatal: SplitParser can hand back the empty
-// remainder around a final newline, and that is not a protocol failure.
-// Everything else that is not a well-formed, v1, known-type object closes the
-// signing gate, because the panel cannot tell a bug from a helper that is no
-// longer the binary it shipped with.
-// The panel caps each line, but the line itself is assembled by SplitParser,
-// which has no ceiling of its own: a helper that wrote without ever emitting a
-// newline would grow that buffer. That is inside the same-UID boundary this
-// feature does not defend against -- the process concerned is the plugin's own
-// binary -- and every line it does terminate is bounded here.
+// One line of companion stdout: {ok:true, message} or {ok:false, code,
+// fatal}. Only a blank line (SplitParser's remainder) is non-fatal; anything
+// not a well-formed v1 known-type object closes the gate.
 function parseAgentEvent(line) {
   var text = (line === undefined || line === null) ? "" : String(line)
   if (text.charAt(text.length - 1) === "\n") text = text.slice(0, text.length - 1)
@@ -4532,9 +3695,8 @@ function parseAgentEvent(line) {
   return { ok: true, message: parsed }
 }
 
-// 500ms doubling to a 30s ceiling. The first retry is quick because the
-// overwhelmingly likely cause is a helper that was replaced under a running
-// shell; the ceiling is what stops a permanently broken build from spinning.
+// 500 ms doubling to 30 s: quick for a helper replaced under a running shell,
+// bounded for a broken build.
 function sshAgentRestartDelayMs(failures) {
   var n = Math.floor(Number(failures))
   if (!isFinite(n) || n < 1) return SSH_AGENT_BACKOFF_BASE_MS
@@ -4546,36 +3708,20 @@ function sshAgentRestartDelayMs(failures) {
 // Client routing: the managed UWSM fragment and SSH_AUTH_SOCK diagnostics
 // -------------------------------------------------------------------------
 //
-// Nothing in this section decides whether the companion runs. The companion
-// binds a deterministic path and never reads SSH_AUTH_SOCK; that variable is
-// how *clients* -- ssh, git, ssh-add, ssh-keygen -Y sign, and everything that
-// spawns them -- find an agent. So routing is a separate, advisory concern,
-// and the panel's view of it is a hint rather than a verdict: it sees the
-// graphical session's environment, while a ~/.bashrc export, a systemd --user
-// unit, a TTY login, or an incoming SSH session can each differ and are all
-// invisible from here.
+// SSH_AUTH_SOCK is how clients find an agent; the companion ignores it.
+// Routing is advisory: the panel sees only the graphical session's
+// environment, not shell rc files, TTYs or SSH sessions.
 
-// How long to wait before trying again when another process holds the agent's
-// runtime lock. Not a backoff step: nothing is broken, so it neither grows nor
-// counts toward the crash-loop bound, and it is slow because the usual holder
-// -- another shell, during a restart -- goes away on its own.
+// Retry interval while another process (usually another shell mid-restart)
+// holds the agent's runtime lock. Not a failure, so no backoff.
 var SSH_AGENT_ELSEWHERE_RETRY_MS = 30 * 1000
 
-function sshAgentElsewhereRetryMs() {
-  return SSH_AGENT_ELSEWHERE_RETRY_MS
-}
-
-// Whether another process holds the helper's runtime lock, asked without the
-// helper. It exits 1 for every startup failure, lost lock included, and a
-// distinct code would mean rebuilding the committed binary.
-//
-// `flock -n` on the same file answers exactly that, and releases at once. The
-// file is tested first because flock(1) creates what it cannot find, and the
-// helper refuses a lock file it did not make 0600 itself; a symlink is never
-// followed. Exit 75 is held; anything else, including a missing file, is not.
+// Whether another process holds the helper's runtime lock (the helper exits 1
+// for every startup failure). Tests the file first, since flock(1) would
+// create it; never follows a symlink. Exit 75: held.
 function sshAgentLockProbeCommand(runtimeDir) {
-  if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return null
-  var lock = runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.lock"
+  var lock = runtimeFilePath(runtimeDir, "ssh-agent.lock")
+  if (!lock) return null
   return ["bash", "-c",
     "[ -f \"$1\" ] && [ ! -L \"$1\" ] || exit 0; exec flock -n -E 75 \"$1\" true",
     "_", lock]
@@ -4585,21 +3731,17 @@ function sshAgentLockHeld(exitCode) {
   return Number(exitCode) === 75
 }
 
-function sshAgentSocketPath(runtimeDir) {
+// `name` in the plugin's runtime directory, or "" without an absolute runtimeDir.
+function runtimeFilePath(runtimeDir, name) {
   if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return ""
-  return runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-agent.sock"
+  return runtimeDir + "/" + RUNTIME_SUBDIR + "/" + name
 }
 
-function sshAgentFifoPath(runtimeDir) {
-  if (typeof runtimeDir !== "string" || runtimeDir.charAt(0) !== "/") return ""
-  return runtimeDir + "/" + RUNTIME_SUBDIR + "/ssh-keys.fifo"
-}
+function sshAgentSocketPath(runtimeDir) { return runtimeFilePath(runtimeDir, "ssh-agent.sock") }
+function sshAgentFifoPath(runtimeDir) { return runtimeFilePath(runtimeDir, "ssh-keys.fifo") }
 
-// The per-load nonce. It is what stops another same-UID process writing its
-// own key set into an open FIFO window: it cannot guess a value it cannot
-// read. The panel delivers it to the companion over the private stdin pipe
-// and to `jq` through the environment -- never argv, because
-// /proc/<pid>/cmdline is world-readable while /proc/<pid>/environ is not.
+// Per-load nonce, so no other same-UID process can inject keys into the FIFO.
+// Sent to the companion on stdin and to jq in the environment, never argv.
 var LOAD_ID_ENV = "QSBW_LOAD_ID"
 var LOAD_ID_RE = /^[0-9a-f]{32}$/
 
@@ -4609,8 +3751,7 @@ function isValidLoadId(value) {
   return typeof value === "string" && LOAD_ID_RE.test(value)
 }
 
-// 128 bits from the kernel CSPRNG. Math.random() is not a source for a value
-// whose whole job is being unguessable by a process running as this user.
+// 128 bits from the kernel CSPRNG.
 function loadIdCommand() {
   var script = "LC_ALL=C od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n'"
   return ["bash", "-c", script]
@@ -4618,56 +3759,45 @@ function loadIdCommand() {
 
 function sshAgentLoadBeginLine(epoch, loadId) {
   if (!isValidLoadId(loadId)) return ""
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "key_load_begin",
-    epoch: Math.floor(Number(epoch)) || 0, loadId: loadId }) + "\n"
+  return agentControlLine("key_load_begin", { epoch: agentEpoch(epoch), loadId: loadId })
 }
 
 function sshAgentLoadEndLine(epoch, ok) {
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "key_load_end",
-    epoch: Math.floor(Number(epoch)) || 0, status: ok ? "ok" : "failed" }) + "\n"
+  return agentControlLine("key_load_end", { epoch: agentEpoch(epoch), status: ok ? "ok" : "failed" })
 }
 
 function sshAgentVaultLockedLine(epoch) {
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "vault_locked",
-    epoch: Math.floor(Number(epoch)) || 0 }) + "\n"
+  return agentControlLine("vault_locked", { epoch: agentEpoch(epoch) })
 }
 
 function sshAgentLoggedOutLine() {
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "vault_logged_out" }) + "\n"
+  return agentControlLine("vault_logged_out")
 }
 
-// Omarchy runs the graphical session through UWSM, which reads env.d
-// fragments at login. Exactly one file is plugin-owned, and it is identified
-// by its full contents rather than by its name, so nothing the user wrote is
-// ever replaced or deleted on the strength of a filename match.
+// UWSM reads env.d fragments at login. The plugin owns one file, recognised by
+// its exact contents, never by name alone.
 var UWSM_FRAGMENT_REL = ".config/uwsm/env.d/50-qs-bitwarden-ssh-agent"
 
 function uwsmFragmentDisplayPath() {
   return "~/" + UWSM_FRAGMENT_REL
 }
 
-// ${XDG_RUNTIME_DIR} is left for the shell that sources this at login, not
-// expanded now: the runtime directory belongs to the session that will read
-// it, and baking today's path into a login fragment would survive into
-// sessions where it is wrong.
+// ${XDG_RUNTIME_DIR} is expanded at login, not now.
 function uwsmFragmentContent() {
   return "# Managed by the qs-bitwarden-cli Quickshell plugin.\n"
     + "# Routes SSH clients to the Bitwarden agent. Delete this file to stop.\n"
     + "export SSH_AUTH_SOCK=\"${XDG_RUNTIME_DIR}/" + RUNTIME_SUBDIR + "/ssh-agent.sock\"\n"
 }
 
-// Exit codes shared by the write and remove scripts. They are the whole
-// vocabulary between the shell and parseUwsmActionResult(), so each one means
-// exactly one thing and none of them overlap with a shell's own.
+// Exit codes of the write and remove scripts, read by parseUwsmActionResult().
 var UWSM_EXIT_NO_HOME = 3
 var UWSM_EXIT_PARENT = 4
 var UWSM_EXIT_SYMLINK = 5
 var UWSM_EXIT_FOREIGN = 6
 var UWSM_EXIT_WRITE = 7
 
-// The comparison both scripts make. `$(cat)` strips trailing newlines, so the
-// expected value is stripped the same way rather than the file being rewritten
-// to match a comparison artefact.
+// `$(cat)` strips trailing newlines, so the expected content is compared
+// stripped too.
 function uwsmExpectedShell() {
   var expected = uwsmFragmentContent().replace(/\n+$/, "")
   return "__want=" + shellQuote(expected) + "; "
@@ -4714,23 +3844,14 @@ function uwsmWriteCommand() {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// Everything this plugin leaves outside its own folder, removed in one pass.
-//
-// It exists because removal cannot do it. `omarchy plugin remove` has no
-// uninstall hook -- it disables the plugin and deletes the directory -- so the
-// last moment any of this code can run is while the plugin is still
-// installed. What is not cleared here has to be cleared by hand afterwards,
-// from instructions, which is how it was until now.
-//
-// Deliberately not included: the vault. `bw logout` is the user's own call and
-// removing a panel is no reason to make it. Nor the shell.json entry, which
-// belongs to the shell and is rewritten by `omarchy bar` rather than by us.
+// Removes everything the plugin stores outside its folder (keyring, state,
+// data), since `omarchy plugin remove` has no uninstall hook. Leaves the vault
+// session and shell.json alone.
 function pluginDataRemoveCommand() {
   var script = "test -n \"${HOME:-}\" || exit " + PLUGIN_DATA_EXIT_NO_HOME + "; "
     + "__state=\"${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli\"; "
     + "__data=\"${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli\"; "
-    // Each step reports rather than aborting the rest: a keyring that is
-    // already empty, or a directory already gone, must not stop the others.
+    // Each step reports independently; one failing does not stop the rest.
     + "__done=''; "
     + "if secret-tool clear service qs-bitwarden-cli 2>/dev/null; then __done=\"$__done keyring\"; fi; "
     + "if [ -e \"$__state\" ]; then rm -rf -- \"$__state\" && __done=\"$__done state\"; fi; "
@@ -4816,18 +3937,12 @@ function parseUwsmInspection(raw) {
   }
 }
 
-// The status block's one line about routing, decided by the file rather than
-// by this session's SSH_AUTH_SOCK.
-//
-// The variable was fixed at login, so it says what routing *was*; the file
-// says what routing *will be*. Reading the variable hides a missing fragment
-// for the whole life of a session that started routed -- the warning then
-// arrives at the next boot, which is the one moment it can no longer help.
+// The status line about routing, judged by the fragment file (what the next
+// login will get), not by this session's SSH_AUTH_SOCK (fixed at login).
 function sshAgentRoutingNotice(fragment, routing) {
   var fragmentState = fragment && fragment.state ? String(fragment.state) : "unknown"
   var routingState = routing && routing.state ? String(routing.state) : "unknown"
-  // States the plugin refuses to act on say their piece in the routing
-  // section itself, in full. Repeating a summary here would be noise.
+  // Those states are explained in full in the routing section.
   if (fragmentState === "unknown" || fragmentState === "no-home") {
     return { text: "", urgent: false }
   }
@@ -4869,9 +3984,7 @@ function parseUwsmActionResult(exitCode, stdout) {
   }, failures, "Could not update " + uwsmFragmentDisplayPath() + ".")
 }
 
-// Which agent the graphical session is actually pointed at. Matched most
-// specific first, because this plugin's own socket also contains "bitwarden"
-// and would otherwise be attributed to Bitwarden Desktop.
+// Most specific first: this plugin's socket also contains "bitwarden".
 var SSH_AUTH_SOCK_OWNERS = [
   { re: /\/gcr\/|\/keyring\//i, name: "GNOME Keyring" },
   { re: /1password/i, name: "1Password" },
@@ -4884,9 +3997,7 @@ function sshAuthSockTerminalCheck() {
   return "echo \"$SSH_AUTH_SOCK\"; ssh-add -L"
 }
 
-// Three outcomes, and a fourth for "there is nothing to compare against".
-// None of them gate anything: the wording stays descriptive on purpose, so a
-// diagnostic can never read as a prerequisite the user has to satisfy.
+// Descriptive only; never a prerequisite.
 function sshAuthSockDiagnostic(sock, runtimeDir) {
   var value = (sock === undefined || sock === null) ? "" : String(sock)
   var ours = sshAgentSocketPath(runtimeDir)
@@ -4916,51 +4027,39 @@ function sshAuthSockDiagnostic(sock, runtimeDir) {
 // The bundled helper
 // -------------------------------------------------------------------------
 //
-// The plugin ships a compiled helper rather than downloading one, so the
-// panel checks it before trusting it: that it is there, executable, the right
-// architecture, matches its recorded checksum, passes its own self-test, and
-// speaks this panel's protocol version.
-//
-// What the checksum is and is not. `bin/SHA256SUMS` sits beside the binary and
-// beside the QML that reads it, so anyone who can replace one can replace all
-// three. This is not tamper detection, and presenting it as such would be a
-// lie. What it does catch is what actually goes wrong: a partial clone, a Git
-// LFS placeholder, a truncated file, and -- most often -- a stale binary left
-// behind by a `git pull` that updated the source. Provenance is a separate
-// mechanism with a different root of trust; see the release documentation.
+// Shipped helpers are checked before use: present, executable, right
+// architecture, matching checksum, passing self-test, matching protocol.
+// SHA256SUMS sits beside the binary, so it catches stale or incomplete files,
+// not tampering; provenance is covered by the release attestation.
 var SSH_AGENT_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-ssh-agent"
 var SSH_AGENT_SUMS_RELATIVE = "bin/SHA256SUMS"
-// Cargo's ordinary debug output. Preferring the shipped artifact but falling
-// back to this keeps a developer's `cargo build` meaningful without a release
-// round-trip, and the settings screen says which one is in use so the two are
-// never confused.
+// Cargo's debug build, used when the shipped binary is absent or unusable;
+// the settings screen names which one is running.
 var SSH_AGENT_DEVELOPMENT_RELATIVE = "agent/target/debug/qs-bitwarden-ssh-agent"
 
-function sshAgentBundledRelative() { return SSH_AGENT_BUNDLED_RELATIVE }
-function sshAgentDevelopmentRelative() { return SSH_AGENT_DEVELOPMENT_RELATIVE }
-
-// In preference order. The shipped artifact first, because that is what a
-// user installed and what CI verified; the local build second, because a
-// developer who just compiled one means to run it.
-function sshAgentHelperCandidates(pluginDir) {
-  var base = sshAgentHelperPath(pluginDir) === "" ? "" : pluginDir
-  if (base === "") return []
-  var root = base
-  while (root.length > 1 && root.charAt(root.length - 1) === "/") root = root.slice(0, root.length - 1)
+// In preference order: shipped artifact, then local build.
+function helperCandidates(pluginDir, spec) {
+  var root = cleanAbsoluteDir(pluginDir)
+  if (!root) return []
   return [
-    { source: "bundled", path: root + "/" + SSH_AGENT_BUNDLED_RELATIVE },
-    { source: "development", path: root + "/" + SSH_AGENT_DEVELOPMENT_RELATIVE }
+    { source: "bundled", path: root + "/" + spec.bundled },
+    { source: "development", path: root + "/" + spec.development }
   ]
 }
 
-// What the banner says when a local build is serving SSH keys. It has to
-// carry why that is worth knowing, not just that it is true: the shipped
-// binary is the one with a recorded digest and a CI provenance attestation
-// behind it, and a development build has neither. When the shipped one was
-// rejected rather than absent, say which -- "yours is broken" and "you built
-// one" are different situations. The remedy is the same either way and is
-// named in the words a user has: reinstall the plugin. Rebuilding from source
-// is a maintainer's answer, and this banner is not only read by maintainers.
+// The absolute path of the candidate the inspection accepted, or "". Never a
+// guess: an unaccepted source launches nothing.
+function helperPath(pluginDir, spec, source) {
+  var candidates = helperCandidates(pluginDir, spec)
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i].source === source) return candidates[i].path
+  }
+  return ""
+}
+
+// Banner text when a local build serves SSH keys: it has no digest or
+// provenance. Says whether the shipped one was rejected or just absent; the
+// fix is to reinstall the plugin.
 function sshAgentDevelopmentHelperWarning(helper) {
   var checksum = helper && helper.checksum ? helper.checksum : "unchecked"
   var why = checksum === "mismatch"
@@ -4976,21 +4075,13 @@ function sshAgentHelperSourceLabel(source) {
   return ""
 }
 
-// One pass over both candidates, in the shell, reporting the first that is
-// usable. Written as one script rather than several commands because the
-// panel must not sequence six probes through six Process round-trips before
-// it can decide whether a feature is available.
-//
-// Emits `key=value` lines, which the parser below reads. Nothing from the
-// helper's own output is interpolated into a message.
-//
-// Shared by every helper the plugin ships. `spec` names the binary, its two
-// candidate paths relative to the plugin root, and the sed expression that
-// reads its protocol or format version out of `--version`.
+// Checks both candidates in one shell and reports the first usable one as
+// `key=value` lines; none of the helper's own output reaches a message.
+// `spec` gives the binary name, candidate paths and the sed expression that
+// reads its protocol version from `--version`.
 function helperInspectCommand(pluginDir, spec) {
-  if (sshAgentHelperPath(pluginDir) === "") return ["bash", "-c", "echo state=missing"]
-  var root = pluginDir
-  while (root.length > 1 && root.charAt(root.length - 1) === "/") root = root.slice(0, root.length - 1)
+  var root = cleanAbsoluteDir(pluginDir)
+  if (!root) return ["bash", "-c", "echo state=missing"]
   // The binary's line in SHA256SUMS: its path relative to bin/, exactly.
   var sumsPath = spec.bundled.replace(/^bin\//, "")
   var sumsLine = "^[0-9a-f]{64}  " + sumsPath.replace(/[.]/g, "\\.") + "$"
@@ -4998,8 +4089,7 @@ function helperInspectCommand(pluginDir, spec) {
   var script = "__root=" + shellQuote(root) + "; "
     + "__report() { printf '%s\\n' \"$@\"; exit 0; }; "
     + "__found=''; "
-    // The shipped artifact first; a development build only if it is absent or
-    // unusable, so a broken release never strands a working local build.
+    // Shipped first; a local build only if that is absent or unusable.
     + "for __pair in " + shellQuote("bundled:" + spec.bundled)
     + " " + shellQuote("development:" + spec.development) + "; do "
     + "  __source=\"${__pair%%:*}\"; __rel=\"${__pair#*:}\"; __bin=\"$__root/$__rel\"; "
@@ -5007,20 +4097,13 @@ function helperInspectCommand(pluginDir, spec) {
     + "  __found=\"$__source\"; "
     + "  [ -f \"$__bin\" ] || { __state=not-a-file; continue; }; "
     + "  [ -x \"$__bin\" ] || { __state=not-executable; continue; }; "
-    // ELF magic, before anything tries to run it. A Git LFS placeholder and a
-    // truncated download both fail here rather than as a confusing exec error.
+    // ELF magic first, so LFS placeholders and truncated files fail clearly.
     + "  __magic=\"$(head -c 4 -- \"$__bin\" 2>/dev/null | od -An -tx1 | tr -d ' \\n')\"; "
     + "  [ \"$__magic\" = \"7f454c46\" ] || { __state=not-elf; continue; }; "
     + "  __arch=\"$(od -An -tx1 -j 18 -N 1 -- \"$__bin\" 2>/dev/null | tr -d ' \\n')\"; "
     + "  [ \"$__arch\" = \"3e\" ] || { __state=wrong-architecture; continue; }; "
-    // The checksum applies to the shipped artifact only. A local build has no
-    // recorded digest and claiming one would be meaningless.
-    //
-    // Only this binary's own line is checked. SHA256SUMS names every shipped
-    // helper, and `sha256sum -c` over the whole file would let one stale
-    // binary disable every feature -- the SSH agent refused because the
-    // unlock tool drifted, or the other way round. A missing line is a
-    // mismatch: `sha256sum -c` passes for a file the list simply omits.
+    // Shipped artifact only, and only its own SHA256SUMS line, so one stale
+    // helper cannot disable the other. A missing line is a mismatch.
     + "  __checksum=unchecked; "
     + "  if [ \"$__source\" = bundled ] && [ -f \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" ]; then "
     + "    __line=\"$(grep -E " + shellQuote(sumsLine) + " \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" | head -1)\"; "
@@ -5028,8 +4111,7 @@ function helperInspectCommand(pluginDir, spec) {
     + "      __checksum=match; "
     + "    else __checksum=mismatch; __state=checksum-mismatch; continue; fi; "
     + "  fi; "
-    // Its own account of itself, bounded: a helper that hangs must not hang
-    // the panel's startup decision.
+    // Bounded, so a hung helper cannot stall startup.
     + "  __version=\"$(timeout 5 \"$__bin\" --version 2>/dev/null | head -c 200)\"; "
     + "  case \"$__version\" in *" + shellQuote(spec.name + " ") + "*) ;; *) __state=no-version; continue;; esac; "
     + "  __semver=\"$(printf '%s' \"$__version\" | sed -n " + shellQuote("s/.*" + spec.name + " \\([0-9.]*\\).*/\\1/p") + ")\"; "
@@ -5040,9 +4122,7 @@ function helperInspectCommand(pluginDir, spec) {
     + "\"checksum=$__checksum\" \"selfTest=$__self\"; "
     + "done; "
     + "if [ -z \"$__found\" ]; then __report state=missing; fi; "
-    // Carry the checksum verdict into the failure report too. Without it a
-    // mismatch arrives as "unchecked", which reads as "we did not look"
-    // rather than "we looked and it was wrong".
+    // Keep the checksum verdict in failures, so "mismatch" is not "unchecked".
     + "__report \"state=${__state:-unusable}\" \"source=$__found\" "
     + "\"checksum=${__checksum:-unchecked}\" \"selfTest=${__self:-}\""
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
@@ -5059,8 +4139,13 @@ function sshAgentHelperInspectCommand(pluginDir) {
   return helperInspectCommand(pluginDir, SSH_AGENT_HELPER_SPEC)
 }
 
-// Shared by every helper's parser: the `key=value` lines above, with the
-// format or protocol version checked against what this panel speaks.
+// A helper's state before its inspection has run.
+function uninspectedHelper() {
+  return { state: "unknown", source: "", version: "", protocol: 0,
+    checksum: "unchecked", selfTest: "", message: "" }
+}
+
+// Parses the inspection lines; the panel, not the script, judges the protocol.
 function parseHelperInspection(raw, expectedProtocol, messages) {
   var fields = { state: "missing", source: "", version: "", protocol: 0,
     checksum: "unchecked", selfTest: "" }
@@ -5073,8 +4158,6 @@ function parseHelperInspection(raw, expectedProtocol, messages) {
     if (key === "protocol") fields.protocol = Math.floor(Number(value)) || 0
     else if (fields[key] !== undefined) fields[key] = value
   }
-  // The protocol version is the panel's own compatibility check rather than
-  // something the shell script judges: the panel knows what it speaks.
   if (fields.state === "ok" && fields.protocol !== expectedProtocol) {
     fields.state = "protocol-mismatch"
   }
@@ -5082,33 +4165,38 @@ function parseHelperInspection(raw, expectedProtocol, messages) {
   return fields
 }
 
-var SSH_AGENT_HELPER_MESSAGES = {
-  "missing": "No SSH agent helper was found. A release ships one; a source checkout needs "
-    + "`cargo build --manifest-path agent/Cargo.toml --locked`.",
-  "not-a-file": "The SSH agent helper path is not a file.",
-  "not-executable": "The SSH agent helper is not executable. A clone from an archive can drop "
-    + "file modes; `chmod +x` on it is enough.",
-  "not-elf": "The SSH agent helper is not a program. A partial clone, or Git LFS leaving a "
-    + "placeholder, both look like this.",
-  "wrong-architecture": "The SSH agent helper was built for a different architecture. This "
-    + "release ships x86_64 only.",
-  "checksum-mismatch": "The SSH agent helper does not match its recorded checksum. That usually "
-    + "means a stale binary after an update, or an incomplete clone.",
-  "no-version": "The SSH agent helper did not report a usable version.",
-  "self-test-failed": "The SSH agent helper failed its own self-test on this machine.",
-  "protocol-mismatch": "The SSH agent helper speaks a different control protocol than this "
-    + "version of the plugin. Reinstall the plugin so both come from the same release.",
-  "unusable": "The SSH agent helper could not be used."
+// User-facing text for each failed inspection state of a helper.
+function helperMessages(noun, manifest, protocolMismatch) {
+  var the = "The " + noun
+  return {
+    "missing": the + " was not found. A release ships one; a source checkout needs "
+      + "`cargo build --manifest-path " + manifest + " --locked`.",
+    "not-a-file": the + " path is not a file.",
+    "not-executable": the + " is not executable. A clone from an archive can drop "
+      + "file modes; `chmod +x` on it is enough.",
+    "not-elf": the + " is not a program. A partial clone, or Git LFS leaving a "
+      + "placeholder, both look like this.",
+    "wrong-architecture": the + " was built for a different architecture. This "
+      + "release ships x86_64 only.",
+    "checksum-mismatch": the + " does not match its recorded checksum. That usually "
+      + "means a stale binary after an update, or an incomplete clone.",
+    "no-version": the + " did not report a usable version.",
+    "self-test-failed": the + " failed its own self-test on this machine.",
+    "protocol-mismatch": the + " " + protocolMismatch + " than this version of the plugin. "
+      + "Reinstall the plugin so both come from the same release.",
+    "unusable": the + " could not be used."
+  }
 }
+
+var SSH_AGENT_HELPER_MESSAGES = helperMessages("SSH agent helper", "agent/Cargo.toml",
+  "speaks a different control protocol")
 
 function parseSshAgentHelperInspection(raw) {
   return parseHelperInspection(raw, SSH_AGENT_CONTROL_VERSION, SSH_AGENT_HELPER_MESSAGES)
 }
 
-// Whether the supervisor may start at all. Every failure here disables this
-// optional feature and nothing else -- no socket, no FIFO, no agent branch in
-// the vault read.
-function sshAgentHelperReady(inspection) {
+// Whether a helper passed inspection. A failure disables only its feature.
+function helperReady(inspection) {
   return Boolean(inspection) && inspection.state === "ok"
 }
 
@@ -5116,13 +4204,9 @@ function sshAgentHelperReady(inspection) {
 // The quick-unlock tool
 // -------------------------------------------------------------------------
 //
-// `qs-bitwarden-unlock-key` holds the one part of quick unlock the operating
-// system cannot: authenticated encryption of the master password under keys
-// that `argon2`, `fido2-assert` and `systemd-creds` provide. It ships and is
-// checked exactly like the SSH helper -- same candidates, same inspection,
-// same checksum file (its own line of it) -- and for the same reasons. A
-// failure here disables quick unlock and nothing else; the master password
-// always unlocks.
+// `qs-bitwarden-unlock-key` encrypts the master password under keys from
+// argon2, fido2-assert and systemd-creds. Shipped and inspected like the SSH
+// helper. If it fails, only quick unlock is disabled.
 var UNLOCK_KEY_ENVELOPE_VERSION = 1
 var UNLOCK_KEY_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-unlock-key"
 var UNLOCK_KEY_DEVELOPMENT_RELATIVE = "unlock-key/target/debug/qs-bitwarden-unlock-key"
@@ -5134,41 +4218,15 @@ var UNLOCK_KEY_SPEC = {
   protocolSed: "s/.*envelope v\\([0-9]*\\).*/\\1/p"
 }
 
-function unlockKeyEnvelopeVersion() { return UNLOCK_KEY_ENVELOPE_VERSION }
-function unlockKeyBundledRelative() { return UNLOCK_KEY_BUNDLED_RELATIVE }
-function unlockKeyDevelopmentRelative() { return UNLOCK_KEY_DEVELOPMENT_RELATIVE }
-
 function unlockKeyInspectCommand(pluginDir) {
   return helperInspectCommand(pluginDir, UNLOCK_KEY_SPEC)
 }
 
-var UNLOCK_KEY_MESSAGES = {
-  "missing": "The quick-unlock tool was not found. A release ships one; a source checkout "
-    + "needs `cargo build --manifest-path unlock-key/Cargo.toml --locked`.",
-  "not-a-file": "The quick-unlock tool path is not a file.",
-  "not-executable": "The quick-unlock tool is not executable. A clone from an archive can drop "
-    + "file modes; `chmod +x` on it is enough.",
-  "not-elf": "The quick-unlock tool is not a program. A partial clone, or Git LFS leaving a "
-    + "placeholder, both look like this.",
-  "wrong-architecture": "The quick-unlock tool was built for a different architecture. This "
-    + "release ships x86_64 only.",
-  "checksum-mismatch": "The quick-unlock tool does not match its recorded checksum. That usually "
-    + "means a stale binary after an update, or an incomplete clone.",
-  "no-version": "The quick-unlock tool did not report a usable version.",
-  "self-test-failed": "The quick-unlock tool failed its own self-test on this machine.",
-  "protocol-mismatch": "The quick-unlock tool uses a different envelope format than this "
-    + "version of the plugin. Reinstall the plugin so both come from the same release.",
-  "unusable": "The quick-unlock tool could not be used."
-}
+var UNLOCK_KEY_MESSAGES = helperMessages("quick-unlock tool", "unlock-key/Cargo.toml",
+  "uses a different envelope format")
 
 function parseUnlockKeyInspection(raw) {
   return parseHelperInspection(raw, UNLOCK_KEY_ENVELOPE_VERSION, UNLOCK_KEY_MESSAGES)
-}
-
-// Whether PIN, fingerprint and FIDO2 unlock may be offered. The master
-// password does not depend on this.
-function unlockKeyReady(inspection) {
-  return Boolean(inspection) && inspection.state === "ok"
 }
 
 // The settings that go through the quick-unlock tool.
@@ -5180,50 +4238,24 @@ function isQuickUnlockSetting(key) {
 
 // The absolute path of the unlock tool the inspection chose, or "".
 function unlockKeyPath(pluginDir, source) {
-  if (sshAgentHelperPath(pluginDir) === "") return ""
-  var root = pluginDir
-  while (root.length > 1 && root.charAt(root.length - 1) === "/") root = root.slice(0, root.length - 1)
-  if (source === "bundled") return root + "/" + UNLOCK_KEY_BUNDLED_RELATIVE
-  if (source === "development") return root + "/" + UNLOCK_KEY_DEVELOPMENT_RELATIVE
-  return ""
-}
-
-function unlockKeySourceLabel(source) {
-  if (source === "bundled") return "the quick-unlock tool shipped with this plugin"
-  if (source === "development") return "a locally built quick-unlock tool, not the shipped artifact"
-  return ""
+  return helperPath(pluginDir, UNLOCK_KEY_SPEC, source)
 }
 
 // -------------------------------------------------------------------------
 // Public-key file projection
 // -------------------------------------------------------------------------
 //
-// Git SSH signing needs paths, not inline keys: `user.signingkey` takes a
-// file, and `gpg.ssh.allowedSignersFile` has no inline form at all. So the
-// panel writes the companion's validated public identities to disk.
-//
-// Public keys are not secret, so this does not cross the private boundary --
-// but the files are still written 0600 inside a 0700 directory, because a
-// projection of your vault's contents is nobody else's business either.
-// Private material is never written here under any circumstance.
-//
-// Not into ~/.ssh: that directory belongs to the user and to OpenSSH, and a
-// plugin that rewrites a set of files in it would eventually delete something
-// it did not create.
+// Git SSH signing needs key files, so the companion's validated public keys
+// are written 0600 into a 0700 dir under XDG_DATA_HOME (not ~/.ssh, which the
+// plugin must not manage). Private material never goes here.
 var SSH_EXPORT_SUBDIR = "qs-bitwarden-cli/ssh"
 
 function sshExportDisplayDir() {
   return "~/.local/share/" + SSH_EXPORT_SUBDIR
 }
 
-// An item name is decrypted vault content about to become a path, and the
-// collection it came from may be writable by somebody else. It goes through
-// the same sanitizer the attachment path uses, then gets ".pub" appended --
-// after sanitizing, so nothing in the name can consume the extension.
-//
-// `taken` accumulates the names already used by this projection. Two items may
-// legitimately share a name; neither may overwrite the other, so the loser
-// gains its item ID rather than the file being clobbered.
+// Vault item names are untrusted: sanitized like attachment names, then
+// ".pub" added. Duplicate names get the item id instead of overwriting.
 function sshExportFileName(name, itemId, taken) {
   var used = taken || {}
   var base = safeAttachmentFileName(name)
@@ -5237,9 +4269,7 @@ function sshExportFileName(name, itemId, taken) {
   return candidate
 }
 
-// The OpenSSH one-line public form, and nothing that is not one. The
-// companion derives these from keys it validated, but this is the last gate
-// before bytes reach the filesystem and it costs nothing to check the shape.
+// OpenSSH one-line public form only: the last check before disk.
 var SSH_PUBLIC_KEY_RE = /^(ssh-ed25519|ssh-rsa) [A-Za-z0-9+/=]+(\s|$)/
 
 function sshExportIdentities(identities) {
@@ -5262,9 +4292,7 @@ function sshExportIdentities(identities) {
   return out
 }
 
-// What the export script reads on stdin. Not argv: a hundred keys of RSA
-// public material would push at the argument limit, and stdin keeps the
-// vault-derived names out of /proc/<pid>/cmdline as a matter of habit.
+// Sent on stdin: argv has size limits and is world-readable.
 function sshExportPayload(identities) {
   var taken = {}
   var entries = []
@@ -5282,8 +4310,7 @@ var SSH_EXPORT_EXIT_NO_HOME = 3
 var SSH_EXPORT_EXIT_UNSAFE_DIR = 5
 var SSH_EXPORT_EXIT_WRITE = 7
 
-// The directory the projection lives in, resolved and checked the same way in
-// both the export and the clear script.
+// Resolves and checks the export dir; shared by export and clear.
 function sshExportDirPrelude() {
   return "__base=\"${XDG_DATA_HOME:-}\"; "
     + "if [ -z \"$__base\" ]; then "
@@ -5297,30 +4324,22 @@ function sshExportDirPrelude() {
 
 function sshExportCommand() {
   var script = sshExportDirPrelude()
-    // Safe parent creation, then the directory itself. A symlink at the
-    // export path was refused by sshExportDirPrelude() rather than followed:
-    // writing through it would let anything that could plant it choose where
-    // these land.
+    // A symlinked export dir was already refused by the prelude.
     + "mkdir -p -m 700 \"$(dirname \"$__dir\")\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "if [ -e \"$__dir\" ]; then "
     + "  [ -d \"$__dir\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "else (umask 077 && mkdir -- \"$__dir\") || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
     + "chmod 700 -- \"$__dir\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
-    // The payload is read once into a variable so a partial stdin cannot
-    // leave a half-written projection behind.
+    // Read stdin whole so a partial payload writes nothing.
     + "__payload=\"$(cat)\"; "
     + "printf '%s' \"$__payload\" | jq -e 'type == \"array\"' >/dev/null 2>&1 || exit "
     + SSH_EXPORT_EXIT_WRITE + "; "
-    // NUL-delimited so a filename can never split a record, whatever the
-    // sanitizer let through.
-    // A bash array, not an accumulated string: "$x\n" inside double quotes
-    // appends a literal backslash-n, which silently made every freshly
-    // written file look stale and deleted it again.
+    // NUL-delimited records. Kept names go in a bash array ("$x\n" in a
+    // string would add a literal backslash-n).
     + "__keep=(); "
     + "while IFS= read -r -d '' __file && IFS= read -r -d '' __key; do "
     + "  case \"$__file\" in */*|..|.|\"\") exit " + SSH_EXPORT_EXIT_WRITE + ";; esac; "
-    // Each file lands by rename, so a reader never sees a partial key, and an
-    // existing symlink at the name is replaced rather than written through.
+    // Write by rename: no partial files, and symlinks are replaced.
     + "  __tmp=\"$(mktemp \"$__dir/.export.XXXXXX\")\" || exit " + SSH_EXPORT_EXIT_WRITE + "; "
     + "  printf '%s\\n' \"$__key\" > \"$__tmp\" || { rm -f -- \"$__tmp\"; exit "
     + SSH_EXPORT_EXIT_WRITE + "; }; "
@@ -5329,9 +4348,7 @@ function sshExportCommand() {
     + SSH_EXPORT_EXIT_WRITE + "; }; "
     + "  __keep+=(\"$__file\"); "
     + "done < <(printf '%s' \"$__payload\" | jq -j '.[] | .fileName, \"\\u0000\", .publicKey, \"\\u0000\"'); "
-    // Anything left in the directory belonged to a previous epoch. Only files
-    // this projection creates are removed -- the pattern is ours, so a file a
-    // user dropped in here by hand is left alone.
+    // Remove stale *.pub files from earlier loads; other files are left alone.
     + "for __existing in \"$__dir\"/*.pub; do "
     + "  [ -e \"$__existing\" ] || [ -L \"$__existing\" ] || continue; "
     + "  __name=\"$(basename -- \"$__existing\")\"; "
@@ -5346,9 +4363,8 @@ function sshExportCommand() {
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// Logout, account change, and disabling the feature all remove the whole
-// projection. A lock does not: public identities stay advertised while
-// locked, so the files stay too.
+// Run on logout, account change and disable, not on lock (public keys stay
+// advertised while locked).
 function sshExportClearCommand() {
   var script = sshExportDirPrelude()
     + "[ -d \"$__dir\" ] || { echo cleared; exit 0; }; "
@@ -5378,22 +4394,14 @@ function parseSshExportResult(exitCode, stdout) {
 // Signing authorization UX
 // -------------------------------------------------------------------------
 //
-// The prompt is the only place a person is asked to authorise a signature, so
-// what it says has to match what the companion actually checked. It verifies
-// the peer's UID and nothing else: the PID, the executable path and the name
-// derived from it are context for a human, not an identity claim, and the
-// prompt says so rather than implying otherwise.
+// The companion verifies only the peer's UID. PID, path and process name are
+// shown as unverified context.
 
-// Matches REQUEST_LIFETIME_MS in the companion. The panel only draws the
-// countdown; the companion is what actually expires the request. Two minutes
-// rather than thirty seconds because this waits on a person reading a
-// fingerprint, not on a machine: thirty seconds expired under users who were
-// simply reading the prompt, and each expiry counted toward the denial cooldown.
+// REQUEST_LIFETIME_MS in the companion, which enforces it. Two minutes, since
+// a person is reading a fingerprint; expiries count toward the cooldown.
 var SSH_AGENT_REQUEST_DEADLINE_MS = 120 * 1000
 
-// Bounds on anything drawn from a vault item or another process. A name comes
-// from a collection somebody else may be able to edit, and a path comes from
-// outside the panel entirely.
+// Bounds on text from vault items and other processes.
 var SSH_AGENT_MAX_NAME_CHARS = 256
 var SSH_AGENT_MAX_PATH_CHARS = 512
 
@@ -5413,31 +4421,26 @@ function sshAgentApproveLine(requestId, grantSeconds) {
   var seconds = Math.floor(Number(grantSeconds))
   if (!isFinite(seconds) || seconds < 0) seconds = 0
   seconds = Math.min(seconds, SSH_AGENT_APPROVAL_WINDOW_MAX_SEC)
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "approve",
-    requestId: requestId, grantSeconds: seconds }) + "\n"
+  return agentControlLine("approve", { requestId: requestId, grantSeconds: seconds })
 }
 
 function sshAgentDenyLine(requestId) {
   if (!isRequestId(requestId)) return ""
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "deny", requestId: requestId }) + "\n"
+  return agentControlLine("deny", { requestId: requestId })
 }
 
-// The companion has no way to tell a dismissed unlock dialog from a user who
-// wandered off, so the panel says which it was rather than letting the
-// request burn its deadline.
+// Tells the companion the unlock was dismissed, so the request ends now.
 function sshAgentUnlockCancelledLine(requestId) {
   if (!isRequestId(requestId)) return ""
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "unlock_cancelled",
-    requestId: requestId, reason: "user-cancelled" }) + "\n"
+  return agentControlLine("unlock_cancelled", { requestId: requestId, reason: "user-cancelled" })
 }
 
 function sshAgentRevokeGrantLine(grantId) {
   if (!isRequestId(grantId)) return ""
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "revoke_grant", grantId: grantId }) + "\n"
+  return agentControlLine("revoke_grant", { grantId: grantId })
 }
 
-// "/usr/bin/ssh" -> "ssh". Only ever for display beside the full path, never
-// as a substitute for it: a basename is the easiest part of this to fake.
+// "/usr/bin/ssh" -> "ssh", for display beside the full path only.
 function processNameFromPath(processPath) {
   var text = String(processPath === undefined || processPath === null ? "" : processPath)
   var cut = text.lastIndexOf("/")
@@ -5460,16 +4463,14 @@ var SSH_AGENT_FORWARDED_WARNING =
   "Forwarded from a remote host. The program shown is the local ssh relaying it, "
   + "not the one that will use the signature, so it can only be approved once."
 
-// What a request asks to have signed, as the companion classified it. The
-// namespace or login name comes from the requesting client, so it is bounded
-// and shown as plain text like every other client-supplied field.
+// Label for what a request would sign. The detail comes from the client, so
+// it is bounded.
 var SSH_AGENT_MAX_DETAIL_CHARS = 256
 
 function sshAgentOperationLabel(operation, detail) {
   var text = boundedText(detail, SSH_AGENT_MAX_DETAIL_CHARS)
   if (operation === "sshsig") {
-    // Git signs commits and tags under the "git" namespace, and that is the
-    // signature nearly every approval here is for.
+    // Git signs commits and tags in the "git" namespace.
     if (text === "git") return "Git commit or tag signature"
     return "Signature for \"" + text + "\""
   }
@@ -5482,16 +4483,15 @@ function sshAgentOperation(value) {
   return value === "sshsig" || value === "ssh-auth" || value === "ssh-sign" ? value : ""
 }
 
-// One approval_required message, reduced to what the prompt draws. Everything
-// attacker-influenced is bounded here rather than at the point it is rendered.
+// An approval_required message reduced to what the prompt draws, with every
+// client-supplied field bounded.
 function sshAgentPromptView(message, approvalWindowSec) {
   var request = message || {}
   var window = Math.max(0, Math.min(SSH_AGENT_APPROVAL_WINDOW_MAX_SEC,
     Math.floor(Number(approvalWindowSec)) || 0))
   var forwarded = request.forwarded === true
-  // A grant is a window in which this process signs without asking again, so
-  // it is offered only when the companion offered one, the user has a
-  // non-zero window configured, and nothing about the request is unusual.
+  // Offer a grant only if the companion did, a window is set, and the request
+  // is not forwarded.
   var grantOffered = request.grantOffered === true && window > 0 && !forwarded
   return {
     requestId: isRequestId(request.requestId) ? request.requestId : -1,
@@ -5505,18 +4505,15 @@ function sshAgentPromptView(message, approvalWindowSec) {
     operationLabel: sshAgentOperationLabel(sshAgentOperation(request.operation), request.operationDetail),
     grantOffered: grantOffered,
     grantSeconds: grantOffered ? window : 0,
-    // "program", not "process": a grant matches the executable path, the key
-    // and the kind of signature, so a fresh process running the same program
-    // rides it. That is what makes it useful for Git signing, which spawns one
-    // ssh-keygen per commit.
+    // A grant covers the program (path + key + kind of signature), so each
+    // new ssh-keygen that Git spawns rides it.
     grantLabel: grantOffered ? "Approve for this program · " + formatDuration(window) : "",
     forwardedWarning: forwarded ? SSH_AGENT_FORWARDED_WARNING : "",
     provenanceNote: SSH_AGENT_PROVENANCE_NOTE
   }
 }
 
-// FIFO queueing for concurrent SSH requests. Bounded to match the companion's
-// MAX_PENDING capacity.
+// FIFO queue of prompts, capped at the companion's MAX_PENDING.
 function sshAgentEnqueuePrompt(queue, message, maxQueue) {
   var cap = typeof maxQueue === "number" && maxQueue > 0 ? maxQueue : 4
   var list = Array.isArray(queue) ? queue.slice() : []
@@ -5549,9 +4546,7 @@ function sshAgentPendingCount(activePrompt, queue) {
   return active + queued
 }
 
-// The live grant set, as the settings screen draws it. Public metadata only:
-// the companion never sends key material here and nothing below would carry
-// it if it did.
+// Grant views for the settings screen (public metadata only).
 function sshAgentGrantViews(grants, nowMs) {
   if (!grants || !Array.isArray(grants)) return []
   var now = Number(nowMs) || 0
@@ -5568,9 +4563,7 @@ function sshAgentGrantViews(grants, nowMs) {
       processPath: boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
       processName: processNameFromPath(boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS)),
       operationLabel: sshAgentOperationLabel(sshAgentOperation(grant.operation), grant.operationDetail),
-      // When it runs out, not how long it had left when it was announced.
-      // The label below is a snapshot of one instant; this is what lets a
-      // later instant be worked out without another announcement.
+      // Absolute expiry, so the countdown can be recomputed each tick.
       expiresAtMs: now + remaining * 1000,
       remainingSec: remaining,
       remainingLabel: remaining > 0 ? formatDuration(remaining) + " left" : "expiring"
@@ -5579,69 +4572,44 @@ function sshAgentGrantViews(grants, nowMs) {
   return out
 }
 
-// The announced set as it stands at a given moment.
-//
-// The companion announces a grant once and says nothing more until something
-// changes, so a view rendered straight from an announcement is frozen at the
-// number it was born with -- a two-minute grant reading "1m 59s left" for its
-// whole life, then vanishing without ever having counted down. Re-deriving
-// against a ticking clock is what makes the remaining time mean anything, and
-// it drops a grant the moment it lapses rather than waiting to be told.
+// Grant views recomputed for `nowMs`: the companion announces each grant only
+// once, so this makes the countdown tick and drops lapsed grants.
 function sshAgentGrantsAt(views, nowMs) {
   if (!views || !Array.isArray(views)) return []
   var now = Number(nowMs) || 0
   var out = []
   for (var i = 0; i < views.length; i++) {
     var view = views[i] || {}
-    // Nothing to re-derive from: an announcement that has not been stamped,
-    // or a tick that has not run yet. Show it as announced rather than drop a
-    // live grant on a technicality.
+    // No expiry stamp or no clock yet: show as announced.
     if (typeof view.expiresAtMs !== "number" || now <= 0) {
       out.push(view)
       continue
     }
     var remaining = Math.max(0, Math.ceil((view.expiresAtMs - now) / 1000))
     if (remaining <= 0) continue
-    out.push({
-      grantId: view.grantId,
-      keyName: view.keyName,
-      fingerprint: view.fingerprint,
-      pid: view.pid,
-      processPath: view.processPath,
-      processName: view.processName,
-      operationLabel: view.operationLabel,
-      expiresAtMs: view.expiresAtMs,
-      remainingSec: remaining,
-      remainingLabel: formatDuration(remaining) + " left"
-    })
+    var copy = {}
+    for (var k in view) copy[k] = view[k]
+    copy.remainingSec = remaining
+    copy.remainingLabel = formatDuration(remaining) + " left"
+    out.push(copy)
   }
   return out
 }
 
-// Unlocking runs the panel's ordinary vault read, which decrypts the whole
-// vault and takes seconds. The SSH request that triggered the unlock is held
-// across it rather than failed, so the user needs to see that something is
-// happening -- otherwise unlocking appears to do nothing until the approval
-// prompt arrives. There is no faster path: `bw` has no server-side type
-// filter, so an SSH-only read would decrypt exactly as much and cost the
-// same seconds.
+// Shown while an SSH request waits on the (slow, full-vault) read an unlock
+// runs; bw cannot read only SSH items.
 function sshAgentLoadingNote() {
   return "Loading your SSH keys from the vault. The signing request is still waiting."
 }
 
-// The agent never opens an approval UI over the lock screen. An unknown screen
-// state counts as locked: the cost of not prompting is a failed SSH request,
-// and the cost of prompting is a credential decision on a locked desktop.
+// Never prompt over the lock screen; an unknown screen state counts as locked.
 function sshAgentShouldPrompt(context) {
   if (!context || typeof context !== "object") return false
   return context.screenLocked !== true
 }
 
-// A same-UID process can ask for a signature as often as it likes. It cannot
-// be stopped from trying, but it can be stopped from reopening the panel every
-// time: two consecutive refusals and the panel stops raising prompts for a
-// while. Approving clears the run, because a user who is engaging is not being
-// pestered.
+// After two consecutive refusals the panel stops raising prompts for a while,
+// so an unattended process cannot keep reopening it.
 var SSH_AGENT_COOLDOWN_AFTER = 2
 var SSH_AGENT_COOLDOWN_MS = 5 * 60 * 1000
 
@@ -5652,11 +4620,8 @@ function sshAgentCooldownInitial() {
 function sshAgentCooldownAfter(state, outcome, nowMs) {
   var current = state || sshAgentCooldownInitial()
   var now = Number(nowMs) || 0
-  // Approving clears the run because the user is engaging. So does resuming,
-  // and that one matters more than it looks: a running cooldown suppresses the
-  // prompts an approval would have to come from, so an approval can never end
-  // one that has already started. Without an explicit resume the only exit is
-  // waiting the full window out.
+  // Approving or explicitly resuming resets it (while cooling down there are
+  // no prompts to approve).
   if (outcome === "approved" || outcome === "resumed") return { refusals: 0, untilMs: 0 }
   if (outcome !== "denied" && outcome !== "timeout") {
     return { refusals: current.refusals, untilMs: current.untilMs }
@@ -5673,11 +4638,8 @@ function sshAgentCooldownActive(state, nowMs) {
   return (Number(nowMs) || 0) < current.untilMs
 }
 
-// A cooldown that fails signatures silently is worse than the pestering it
-// prevents: SSH stops working for minutes with no explanation anywhere, and
-// the user has no reason to connect the two. So it says what it is doing and
-// when it stops -- in general terms only, naming neither the key nor the
-// process, because the whole point is that the requests are unattended.
+// Tells the user signing is paused and until when, without naming the key or
+// process.
 function sshAgentCooldownStatus(state, nowMs) {
   var current = state || sshAgentCooldownInitial()
   var now = Number(nowMs) || 0
@@ -5695,33 +4657,25 @@ function sshAgentCooldownStatus(state, nowMs) {
 // Vault lifecycle
 // -------------------------------------------------------------------------
 //
-// The companion's state follows the vault's, and both are stated explicitly
-// rather than inferred from whether a socket or a key happens to exist. The
-// two functions below are the design's state table; sshAgentLifecycleTransition
-// is what each vault event does about it.
+// The companion's state is derived explicitly from the vault's: the state
+// table below, and sshAgentLifecycleTransition() for each vault event.
 
-// The panel waits this long for the companion's `locked` acknowledgment and
-// then kills it. The acknowledgment is what lets the panel say "keys cleared"
-// as well as "vault locked" -- it is never a precondition for locking, because
-// a companion that cannot confirm a lock is one that must not keep running.
+// How long to wait for the companion's `locked` ack before killing it. The ack
+// only lets the panel report "keys cleared"; locking never waits on it.
 var SSH_AGENT_LOCK_ACK_TIMEOUT_MS = 2000
 
 function sshAgentLockAckTimeoutMs() { return SSH_AGENT_LOCK_ACK_TIMEOUT_MS }
 
-// Settings the companion has to act on. Sent after the handshake and again
-// whenever they change, because the companion has no other way to learn them.
+// Settings the companion acts on; sent after the handshake and on change.
 function sshAgentOptionsLine(unlockOnDemand) {
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "options",
-    unlockOnDemand: unlockOnDemand === true }) + "\n"
+  return agentControlLine("options", { unlockOnDemand: unlockOnDemand === true })
 }
 
 function sshAgentRevokeGrantsLine() {
-  return JSON.stringify({ v: SSH_AGENT_CONTROL_VERSION, type: "revoke_grants" }) + "\n"
+  return agentControlLine("revoke_grants")
 }
 
-// Ordered most-restrictive first, so a stale public cache can never outrank a
-// logout: an account change has to leave nothing behind, whatever was loaded a
-// moment earlier.
+// Most restrictive first, so a cached key set never outranks a logout.
 function sshAgentVaultState(context) {
   var ctx = context || {}
   if (!ctx.enabled || !ctx.helperReady) return "disabled"
@@ -5731,38 +4685,12 @@ function sshAgentVaultState(context) {
   return ctx.hasPublicCache ? "locked-cached" : "locked-empty"
 }
 
-// What each state offers. Public keys are not secret, so they survive a lock
-// and spare the user an unlock prompt for an identity listing; private keys
-// exist in exactly one state, and it is the only one that can sign without a
-// further unlock.
-var SSH_AGENT_STATE_POLICY = {
-  "disabled":      { publicIdentities: false, privateKeys: false, signing: "denied" },
-  "logged-out":    { publicIdentities: false, privateKeys: false, signing: "denied" },
-  "locked-empty":  { publicIdentities: false, privateKeys: false, signing: "needs-unlock" },
-  // A load publishes nothing until it completes, so the previous public cache
-  // is all that is on offer and no signature may cross.
-  "loading":       { publicIdentities: true,  privateKeys: false, signing: "denied" },
-  "unlocked":      { publicIdentities: true,  privateKeys: true,  signing: "allowed" },
-  "locked-cached": { publicIdentities: true,  privateKeys: false, signing: "needs-unlock" }
-}
-
-function sshAgentIdentityPolicy(state) {
-  var policy = SSH_AGENT_STATE_POLICY[state]
-  if (!policy) return { publicIdentities: false, privateKeys: false, signing: "denied" }
-  return { publicIdentities: policy.publicIdentities, privateKeys: policy.privateKeys, signing: policy.signing }
-}
-
-// Events that end the current epoch's private material. Screen lock and
-// suspend are listed rather than left for a reader to infer from the panel:
-// they are locks, and the table should say so.
+// Events that end the current private key set.
 var SSH_AGENT_LOCK_EVENTS = ["lock", "screen-lock", "suspend"]
 // Events that end the account itself, taking the public projection with it.
 var SSH_AGENT_LOGOUT_EVENTS = ["logout", "account-change"]
-// Events that ride the panel's own vault read. Only `startup` needs a caller:
-// unlock and sync already run loadItems(), which carries the agent branch
-// whenever the gate is open, so sending them here would load twice. They stay
-// in the table because the table is the specification of what each event
-// means, not a list of what happens to need a trigger today.
+// Events that load keys. Only `startup` needs a caller; unlock and sync
+// already run loadItems() with the agent branch. Listed for completeness.
 var SSH_AGENT_LOAD_EVENTS = ["unlock", "sync", "startup"]
 
 function sshAgentLifecycleTransition(event, context) {
@@ -5780,15 +4708,13 @@ function sshAgentLifecycleTransition(event, context) {
   if (event === "disable" || event === "shutdown") {
     action.stopHelper = true
     action.cancelLoad = true
-    // Nothing of this account survives the feature being turned off, and the
-    // companion's socket and FIFO go with the process.
+    // Nothing of this account survives disabling.
     action.clearPublic = true
     return action
   }
 
   if (SSH_AGENT_LOCK_EVENTS.indexOf(event) >= 0) {
-    // The cancel happens whether or not a companion is listening: the load is
-    // the panel's own process group, and a lock has to stop it either way.
+    // The load is the panel's own process, so cancel it either way.
     action.cancelLoad = true
     if (live) {
       action.controlLines.push(sshAgentVaultLockedLine(ctx.epoch))
@@ -5800,18 +4726,13 @@ function sshAgentLifecycleTransition(event, context) {
   if (SSH_AGENT_LOGOUT_EVENTS.indexOf(event) >= 0) {
     action.cancelLoad = true
     action.clearPublic = true
-    // No acknowledgment is waited on here. Logout already tears the account
-    // down on the panel's side, and the companion's public cache goes with it
-    // rather than being retained the way a lock retains it.
+    // No ack needed: logout drops the public cache too.
     if (live) action.controlLines.push(sshAgentLoggedOutLine())
     return action
   }
 
   if (SSH_AGENT_LOAD_EVENTS.indexOf(event) >= 0) {
-    // Startup is not evidence that the vault is locked: `rememberSession` can
-    // restore a session key, leaving the panel unlocked while a freshly
-    // started companion still has no cache. That case needs the same load an
-    // interactive unlock would have run.
+    // A remembered session can start unlocked while the companion has no keys.
     action.startLoad = live && Boolean(ctx.unlocked)
     return action
   }
@@ -5819,18 +4740,13 @@ function sshAgentLifecycleTransition(event, context) {
   return action
 }
 
-// Setup is an explicit state, not something inferred from whether a socket
-// happens to exist. There are exactly three, and the transient face of
-// starting up is `enabled` with `busy` set rather than a fourth:
+// Setup state for the settings screen:
 //
 //   disabled  nothing runs; no socket, no FIFO, no agent branch
-//   enabled   the helper is running, or is on its way to running
-//   error     the helper is stopped or backing off; the vault is unaffected
+//   enabled   running or starting (`busy`)
+//   error     stopped or backing off; the vault is unaffected
 //
-// Client routing is deliberately absent. Where SSH_AUTH_SOCK points changes
-// nothing here: the companion binds a deterministic path and never reads that
-// variable, so routing is a diagnostic about the user's terminal, not a
-// verdict on the feature. See sshAuthSockDiagnostic().
+// Routing (SSH_AUTH_SOCK) does not affect it; see sshAuthSockDiagnostic().
 function sshAgentSetupState(opts) {
   var o = opts || {}
   if (!o.enabled) {
@@ -5839,9 +4755,7 @@ function sshAgentSetupState(opts) {
       message: "The SSH agent is off. Your vault works normally; SSH keys stay read-only records."
     }
   }
-  // The one hard prerequisite. XDG_RUNTIME_DIR is set by pam_systemd at login,
-  // and falling back to a guessable path would put the socket somewhere
-  // another user could have prepared first.
+  // Never fall back to a guessable socket path.
   if (!o.supervisable) {
     return {
       state: "error", busy: false,
@@ -5862,16 +4776,14 @@ function sshAgentSetupState(opts) {
 }
 
 // phase:
-//   "disabled"    nothing runs and nothing is scheduled
-//   "starting"    Process.running is true, waiting for onStarted
-//   "handshaking" hello written, waiting for `ready` under a bounded timeout
-//   "ready"       handshake complete; this is the only phase with an open gate
-//   "restarting"  a failure was detected mid-run; waiting for the child to go
-//   "backoff"     a restart timer is armed
-//   "elsewhere"   the helper lost the runtime lock to another process; a slow
-//                 retry is armed and nothing counts as a failure
-//   "failed"      the restart cap was reached; the feature is off until it is
-//                 explicitly re-enabled, and the rest of the plugin is untouched
+//   "disabled"    nothing runs or is scheduled
+//   "starting"    process launched, waiting for onStarted
+//   "handshaking" hello sent, waiting for `ready`
+//   "ready"       the only phase with an open gate
+//   "restarting"  failure seen mid-run; waiting for the child to exit
+//   "backoff"     restart timer armed
+//   "elsewhere"   runtime lock held by another process; slow retry, no failure
+//   "failed"      restart cap reached; off until re-enabled
 function sshAgentInitialState() {
   return {
     phase: "disabled",
@@ -6017,10 +4929,7 @@ function sshAgentReduce(state, event) {
         return { state: next, action: action }
       }
       var isReady = parsed.message.type === "ready"
-      // `ready` answers `hello` exactly once. A second one, or any other
-      // message before the first, means the helper is not in the state the
-      // panel believes it is -- which is a signing-gate failure, not a
-      // message to interpret.
+      // `ready` answers `hello` exactly once; anything out of order fails.
       if (isReady !== (current.phase === "handshaking")) {
         sshAgentFailMidRun(next, action, "PROTOCOL")
         return { state: next, action: action }
@@ -6032,11 +4941,8 @@ function sshAgentReduce(state, event) {
         next.fifoPath = parsed.message.fifoPath
         next.agentVersion = parsed.message.agentVersion
         next.readyAtMs = nowMs
-        // Deliberately not resetting `failures` here. A handshake proves the
-        // helper started, not that it works: a helper that answers hello and
-        // dies a second later, every time, is exactly the crash loop this
-        // bound exists to stop. Only a run that actually lasted clears the
-        // history, and that is decided at exit against SSH_AGENT_HEALTHY_MS.
+        // `failures` is not reset here: only a run that lasts
+        // SSH_AGENT_HEALTHY_MS clears it, at exit.
         next.errorCode = ""
         next.errorMessage = ""
         return { state: next, action: action }
@@ -6046,10 +4952,8 @@ function sshAgentReduce(state, event) {
     }
 
     case "exited":
-      // A start that never reached `ready` may have lost the runtime lock to
-      // another process rather than failed. The panel probes the lock before
-      // reporting such an exit; a held lock is a wait, not a crash, and must
-      // not walk the supervisor toward CRASH_LOOP.
+      // An exit before `ready` with the runtime lock held elsewhere is a wait,
+      // not a crash, and must not count toward CRASH_LOOP.
       if (ev.lockHeld === true && current.readyAtMs === 0) {
         next.gateOpen = false
         next.socketPath = ""
@@ -6075,76 +4979,49 @@ function sshAgentReduce(state, event) {
   }
 }
 
-// Whether the panel should be sitting on the setup screen instead of talking
-// to `bw`. The plugin is installed and enabled before the CLI it drives
-// necessarily exists -- `omarchy plugin add` does not install anything else --
-// so a fresh install has to lead with "here is what is missing, install it"
-// rather than a status probe. Without `bw` that probe can only ever come back
-// "not logged in", and the login form it lands on is a dead end until the CLI
-// is there.
-//
-// The gate closes on three conditions rather than one: nothing is decided
-// until the probe has actually run (`checked`), it only holds while a required
-// tool is genuinely absent, and the user can always step past it (`dismissed`)
-// to reach the login screen anyway.
+// Whether to show the setup screen instead of talking to `bw`: a fresh install
+// may lack the CLI (`omarchy plugin add` installs nothing else). Only after the
+// probe ran (`checked`), only while a required tool is missing, and never once
+// the user skipped it (`dismissed`).
 function setupGateActive(deps, checked, dismissed) {
   if (!checked || dismissed) return false
   return missingRequired(deps).length > 0
 }
 
-// What a finished dependency probe should do next. The panel has exactly three
-// reactions available and choosing the wrong one is what a fresh install
-// experiences as breakage, so the decision sits here in the open rather than
-// inside a signal handler where nothing can reach it.
+// What a finished dependency probe should do next:
 //
-//   "setup" -- a required tool is absent and the user has not waved setup
-//              away: show it, and ask `bw` nothing.
-//   "probe" -- the required tools are all present, and either this session has
-//              never looked at the vault or an install just arrived and the
-//              panel has been waiting on it. Either way, go ask.
-//   "idle"  -- nothing to do. The ordinary case on a machine already set up,
-//              and also the case where a required tool is still missing but
-//              the user chose to carry on regardless.
+//   "setup" -- a required tool is missing and setup was not skipped
+//   "probe" -- all required tools present, and the vault was never probed or
+//              an install just completed (`wasGated`)
+//   "idle"  -- nothing to do
 //
-// `wasGated` is the caller's memory of having seen a required tool missing. It
-// is what makes an install finishing in a terminal we do not own -- no exit
-// code, no signal, nothing to wait on -- turn into a panel that moves on.
+// `wasGated` is how an install in a terminal we do not own is noticed.
 function dependencyProbeOutcome(deps, dismissed, probeStarted, wasGated) {
   if (missingRequired(deps).length > 0) return dismissed ? "idle" : "setup"
   if (!probeStarted || wasGated) return "probe"
   return "idle"
 }
 
-// The packages a first-run install should ask for: everything absent, required
-// or not, so one trip through the terminal leaves the whole feature set
-// working instead of the bare minimum.
+// Every missing package, required or not, so one install enables everything.
 function missingPackages(deps) {
   var pkgs = []
   if (!deps || !deps.items) return pkgs
   for (var i = 0; i < deps.items.length; i++) {
     var d = deps.items[i]
-    // A row this machine cannot use, or one Omarchy sets up through its own
-    // command, is not something to hand to `pkg add`.
+    // Skip rows this machine cannot use and ones Omarchy sets up itself.
     if (!d.applicable || d.setup || d.installed) continue
     if (pkgs.indexOf(d.pkg) === -1) pkgs.push(d.pkg)
   }
   return pkgs
 }
 
-// Package names reach the installer through an unquoted shell expansion
-// (omarchy-install-app runs `omarchy-pkg-add ${packages}`, where the splitting
-// is the point). Everything here comes from the DEPENDENCIES constant above,
-// so this guards a constant rather than user input -- but the guard is what
-// keeps that true if a package name ever starts coming from somewhere else.
+// Package names are word-split unquoted by the installer; they come from
+// DEPENDENCIES, and this keeps it that way.
 function isPlainPackageName(name) {
   return typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(name)
 }
 
-// Installs are surfaced through Omarchy's own installer: a floating, centred,
-// themed terminal with the Omarchy logo, the package output, and a "press any
-// key to close" at the end. Same window every other app install on the system
-// opens, and it means we neither pick a terminal nor invent our own wait-for-
-// keypress. A password prompt has somewhere to be answered.
+// Omarchy's own installer window, which also handles the sudo prompt.
 function installPackagesCommand(pkgs, displayName) {
   if (!pkgs || pkgs.length === 0) return null
   for (var i = 0; i < pkgs.length; i++) {
@@ -6154,32 +5031,21 @@ function installPackagesCommand(pkgs, displayName) {
   return ["omarchy", "install", "app", name, pkgs.join(" ")]
 }
 
-// Fingerprint is Omarchy's to set up, not ours: `omarchy setup security
-// fingerprint` detects the reader, installs libfprint/fprintd/usbutils,
-// enrols a finger, verifies it, and only then writes the PAM stacks -- the
-// last of which is what this plugin's `ready` check is actually looking for.
-// It runs in the same floating terminal as an install, since it is interactive
-// (an administrator prompt, then "keep moving the finger around on the sensor").
+// Omarchy's interactive fingerprint setup (packages, enrolment, PAM stack),
+// in a floating terminal.
 function fingerprintSetupCommand() {
   return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
     "omarchy setup security fingerprint"]
 }
 
 // -------------------------------------------------------------------------
-// Settings Persistence
+// Settings
 // -------------------------------------------------------------------------
 //
-// Settings belong in the widget's own entry in ~/.config/omarchy/shell.json --
-// that is where Panel.setting() reads them and where Omarchy's own tooling
-// expects them. Writing goes through `omarchy bar set` rather than editing the
-// file directly, so Omarchy owns the parsing, merging and formatting, and the
-// shell picks the change up on its usual hot reload.
+// Stored in the widget's entry in ~/.config/omarchy/shell.json and written
+// with `omarchy bar set`, which the shell hot-reloads.
 
-// Order is the screen's order. General leads: it is three short rows about how
-// the panel behaves day to day, and they were previously split across two
-// one-and-two-row sections stranded below the SSH agent's block, which is by
-// far the tallest thing on this screen. Security follows and is the group that
-// opens expanded, because it is what the screen is usually opened for.
+// In screen order; Security opens expanded.
 var SETTINGS_GROUPS = [
   { id: "general", label: "General" },
   { id: "security", label: "Security" },
@@ -6201,13 +5067,13 @@ var SETTINGS_SCHEMA = [
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint", defaultValue: false,
     requires: "fprintd", action: "fingerprint",
-    description: "Store the master password in the OS keyring, gated behind a fingerprint." },
+    description: "A verified fingerprint opens your master password, stored once, encrypted and sealed to this machine." },
   { key: "fidoUnlock", group: "security", type: "bool", label: "Unlock with FIDO2 key", defaultValue: false,
     action: "fido",
-    description: "Store the master password in the OS keyring, gated behind a FIDO2 key touch. Requires 'omarchy setup security fido2'; the same registration also serves the system's own authentication prompts." },
+    description: "A FIDO2 key touch opens your master password, stored once, encrypted and sealed to this machine. Requires 'omarchy setup security fido2'; the same registration also serves the system's own authentication prompts." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
-    description: "Encrypt the master password with a key derived from a PIN. Use 6 digits or more; 4 is the floor and is flagged as weak." },
+    description: "A PIN opens your master password, stored once, encrypted and sealed to this machine. Use 6 digits or more; 4 is the floor and is flagged as weak." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },
@@ -6231,8 +5097,7 @@ var SETTINGS_SCHEMA = [
     description: "Match the focused window or browser tab against your vault." }
 ]
 
-// Schema entries in group order, each tagged with whether it opens a new
-// section, so the settings screen can draw one header per group.
+// Schema entries in group order; the first of each carries `groupLabel`.
 function groupedSettings() {
   var out = []
   for (var g = 0; g < SETTINGS_GROUPS.length; g++) {
@@ -6250,15 +5115,9 @@ function groupedSettings() {
   return out
 }
 
-// The settings the panel should actually draw. The SSH agent rows are held
-// back behind the same probe that hides the SSH type filter: a toggle for a
-// feature the installed `bw` cannot serve is worse than no toggle at all.
-//
-// A group heading is its own row rather than a label carried by the first
-// setting under it. The panel walks this list with one index and reads
-// delegate geometry off it to tell which section the view is inside, and a
-// heading that belonged to another row would have neither a position of its
-// own nor an entry to be found at.
+// The rows the settings screen draws: a heading row per group, then its
+// settings. SSH agent rows only when the CLI supports SSH keys. Headings are
+// rows of their own because the panel reads section positions off this list.
 function visibleSettings(deps, checked) {
   var showSsh = sshUiAvailable(deps, checked)
   var rows = groupedSettings().filter(function(entry) {
@@ -6278,13 +5137,9 @@ function visibleSettings(deps, checked) {
       })
     }
     entry.kind = "setting"
-    // The label lived on the first row of each group. It has a row of its own
-    // now, and leaving the old field set would draw both.
+    // The heading row replaces the old label field.
     entry.groupLabel = ""
-    // Marks where a group's settings end, so a section that has more to draw
-    // than its toggles -- the SSH agent's status and routing block -- can be
-    // attached to the end of the group it belongs to instead of trailing all
-    // the groups.
+    // Lets a group's extra block (SSH status and routing) attach to its end.
     entry.lastInGroup = (i + 1 >= rows.length) || rows[i + 1].group !== entry.group
     out.push(entry)
   }
@@ -6305,47 +5160,26 @@ function settingSchemaEntry(key) {
   return null
 }
 
-// Every integer setting is read straight back out of shell.json, and nothing
-// validates what goes in there. `omarchy bar set` stores whatever value it is
-// handed -- a bare word becomes a JSON string, `--json` stores any number at
-// all -- and the README documents editing the file by hand as well. The
-// settings screen clamps to the schema on the way out; this is the same clamp
-// on the way in, which is the direction that was missing.
-//
-// It matters most for the auto-lock, because QML turns a bad minute count into
-// a dangerous one rather than an obvious one. `Number("fifteen")` is NaN, and
-// NaN assigned to an `int` property is 0 -- which is exactly how "never lock"
-// is spelled. A count past the schema's ceiling fails the same way from the
-// other end: 999999 minutes is 59,999,940,000 ms, which overflows the `int`
-// behind Timer.interval and lands negative, and a Timer with a negative
-// interval never fires. Both readings leave a vault that never locks itself,
-// silently, so an unreadable value falls back to the schema's default rather
-// than to zero.
+// Integer settings read from shell.json, which nothing validates. Unreadable
+// values fall back to the default, never to 0: in QML NaN becomes 0 ("never
+// lock"), and an oversized minute count overflows Timer.interval so it never
+// fires.
 function intSetting(key, raw) {
-  // Number() is too generous to be the whole test here: it reads null, "" and
-  // false as 0, and 0 is a meaningful setting rather than a missing one. Only
-  // something that was written as a number, or as the decimal string that
-  // `omarchy bar set` writes without --json, counts as a value at all.
+  // Only a number or a decimal string counts; Number() reads null, "" and
+  // false as 0.
   var n = (typeof raw === "number" || (typeof raw === "string" && String(raw).trim() !== ""))
     ? Math.floor(Number(raw))
     : NaN
   var entry = settingSchemaEntry(key)
   if (!entry || entry.type !== "int") return isFinite(n) ? n : 0
-  // Below the floor is treated as unreadable rather than clamped up to it,
-  // because on every integer setting here the floor is also the sentinel for
-  // "off": clamping -1 minutes to 0 spells "never lock" and clamping -1
-  // seconds to 0 spells "never clear the clipboard". That is the same silent
-  // failure this function exists to refuse, arrived at from the other side.
-  // Past the ceiling still clamps down, since that direction only ever locks
-  // sooner than asked.
+  // Below the floor falls back to the default rather than clamping up, since
+  // the floor means "off". Above the ceiling clamps down.
   if (!isFinite(n) || n < entry.min) n = Math.floor(Number(entry.defaultValue))
   if (!isFinite(n)) n = entry.min
   return Math.max(entry.min, Math.min(entry.max, n))
 }
 
-// shell.json is external input. Only a JSON boolean may enable a boolean
-// setting; strings such as "false" are truthy in JavaScript and previously
-// enabled opt-in PIN/fingerprint storage when the file was malformed.
+// Only a JSON boolean counts; "false" is truthy.
 function boolSetting(key, raw) {
   if (typeof raw === "boolean") return raw
   var entry = settingSchemaEntry(key)
@@ -6356,9 +5190,7 @@ function boolSetting(key, raw) {
 function settingWriteCommand(key, value, type) {
   var raw
   if (type === "bool") raw = value ? "true" : "false"
-  // `omarchy bar set --json` stores whatever JSON it is handed, which is how a
-  // per-account map reaches shell.json. Only the value's own shape travels
-  // here; nothing secret is ever a setting.
+  // For per-account maps. Settings never hold secrets.
   else if (type === "json") raw = JSON.stringify(value === undefined ? null : value)
   else raw = String(Number(value) || 0)
   var script = "omarchy bar set io.github.elevate08.qs-bitwarden-cli "
@@ -6370,33 +5202,19 @@ function settingWriteCommand(key, value, type) {
 // Auto-lock
 // -------------------------------------------------------------------------
 //
-// Qt schedules every Timer on CLOCK_MONOTONIC, and Linux stops that clock
-// while the machine is suspended -- CLOCK_BOOTTIME on a laptop that has slept
-// overnight runs hours ahead of it. So a fifteen-minute auto-lock armed just
-// before the lid closed still had its full fifteen minutes to run when the lid
-// opened, and a vault left unattended all night came back to the desk exactly
-// as open as it was left. The countdown was only ever measuring the time the
-// shell was awake for, which is not the time the vault was exposed for.
-//
-// Only the wall clock knows about the part in between, so the deadline is kept
-// in wall-clock terms as well and polled. The monotonic Timer stays: it is the
-// one that is immune to the clock being stepped, and between the two it is
-// whichever notices first that does the locking.
+// Qt Timers use CLOCK_MONOTONIC, which stops during suspend, so the deadline
+// is also tracked on the wall clock and polled. Whichever notices first locks.
 var AUTO_LOCK_POLL_MS = 30000
 
-// Poll often enough that waking a suspended machine locks the vault in seconds
-// rather than minutes, but never longer than the window itself -- a one-minute
-// auto-lock must not be checked every thirty seconds and nothing shorter than
-// a second is worth waking up for.
+// Poll at most every 30 s (and at least every second), never longer than the
+// window itself.
 function autoLockPollMs(minutes) {
   var m = Math.floor(Number(minutes))
   if (!isFinite(m) || m <= 0) return AUTO_LOCK_POLL_MS
   return Math.max(1000, Math.min(m * 60 * 1000, AUTO_LOCK_POLL_MS))
 }
 
-// `armedAt` and `now` are both Date.now(). Zero minutes is the user asking for
-// no auto-lock at all, and an unarmed window has no deadline to have passed,
-// so both answer false rather than "lock immediately".
+// Times are Date.now(). Zero minutes (off) or an unarmed timer never expires.
 function autoLockExpired(armedAt, minutes, now) {
   var m = Math.floor(Number(minutes))
   if (!isFinite(m) || m <= 0) return false
@@ -6407,12 +5225,10 @@ function autoLockExpired(armedAt, minutes, now) {
 }
 
 // -------------------------------------------------------------------------
-// Password / Passphrase Generator
+// Password generator
 // -------------------------------------------------------------------------
 //
-// Mirrors the option set of the Bitwarden browser extension's generator and
-// delegates the actual generation to `bw generate`, so the output comes from
-// Bitwarden's own generator rather than a reimplementation of it.
+// The browser extension's options; generation is done by `bw`.
 
 var GENERATOR_DEFAULTS = {
   type: "password",       // "password" | "passphrase"
@@ -6449,8 +5265,7 @@ function clampInt(value, limit) {
   return Math.max(limit.min, Math.min(limit.max, n))
 }
 
-// At least one character set must be on, or `bw generate` errors out. Falling
-// back to lowercase keeps the control usable while the user toggles the rest.
+// At least one character set must be on, or `bw generate` fails.
 function normalizeGeneratorOptions(opts) {
   var o = generatorDefaults()
   for (var k in opts) if (opts[k] !== undefined) o[k] = opts[k]
@@ -6476,107 +5291,48 @@ function normalizeGeneratorOptions(opts) {
 // Generator over `bw serve`
 // -------------------------------------------------------------------------
 //
-// `bw generate` costs ~2.9s on this machine, and none of it is generation:
-// ~0.9s is the CLI's Node bootstrap and ~2s is Bitwarden's service container
-// coming up, all of it repaid on every option toggle. `bw serve` pays that
-// once and answers /generate in ~2ms.
-//
-// The served instance is deliberately started with **no session**, so it is a
-// locked vault that can generate passwords and nothing else -- /list and the
-// rest return errors. That matters: a loopback port has no authentication and
-// is reachable by every user on the machine, so an unlocked `bw serve` would
-// hand the whole vault to anyone who could curl it. A locked one exposes the
-// generator, which is not a secret. Vault reads stay on the CLI, where the
-// session key is ours alone.
+// `bw generate` costs ~2.9 s of CLI startup per call; `bw serve` pays it once
+// and answers in ~2 ms. It runs with no session, so it can only generate: the
+// loopback port is unauthenticated and open to every local user.
 var GENERATE_HOST = "127.0.0.1"
 var GENERATE_PORT = 8087
 
-// Started as a managed child so it dies with the shell rather than lingering.
-// BW_SESSION is cleared by the caller; see generatorServeEnv() in Service.qml.
+// A managed child, so it dies with the shell. The caller clears BW_SESSION
+// (generatorServeEnv() in Service.qml).
 function generateServeCommand() {
   return ["bw", "serve", "--hostname", GENERATE_HOST, "--port", String(GENERATE_PORT)]
-}
-
-// Whether whatever answered the generator port is someone else's server.
-//
-// A refused connection arrives as status 0, and that is the only answer that
-// leaves the port free for ours. Any HTTP status at all -- including the error
-// codes a careless squatter returns -- came from a process already bound to it,
-// and a "generated password" from a stranger's server is a password they know.
-function generatorPortIsForeign(status) {
-  return Number(status) !== 0
 }
 
 // -------------------------------------------------------------------------
 // Generator request bounds
 // -------------------------------------------------------------------------
 //
-// Refusing to trust a squatter's password is only half of it. The port is
-// loopback, unauthenticated and first-come. A process holding 8087 that accepts
-// the connection and answers nothing could stall indefinitely, and a squatter
-// could stream an endless body at loopback speeds.
-//
-// To enforce hard limits on both duration and volume, every request to bw serve
-// is executed via a managed curl child process whose output is bounded on the
-// producer side with `| head -c` and `--max-time`. This avoids Qt/QML's
-// XMLHttpRequest, which buffers responses directly into the shared shell
-// process memory before JavaScript can inspect or abort them.
+// The port is first-come, so whoever holds it could stall or stream forever.
+// Requests go through curl with a timeout and a `head -c` cap, keeping the
+// response out of the shell's memory until it is bounded.
 var GENERATE_RESPONSE_CAP = 64 * 1024
 var GENERATE_REQUEST_TIMEOUT_MS = 2000
 
-function generatorResponseCap() { return GENERATE_RESPONSE_CAP }
-function generatorRequestTimeoutMs() { return GENERATE_REQUEST_TIMEOUT_MS }
-
-// Builds a producer-bounded command to query the generator server.
-// Output is capped via `head -c` so no more than GENERATE_RESPONSE_CAP bytes
-// can pass through the pipe into the shell process heap.
 function generateServeRequestCommand(opts) {
   var url = generateServeUrl(opts)
   var timeoutSecs = Math.max(1, Math.round(GENERATE_REQUEST_TIMEOUT_MS / 1000))
-  // -q must be curl's first option to suppress ~/.curlrc. --noproxy makes the
-  // loopback guarantee independent of HTTP_PROXY/ALL_PROXY in the shell.
+  // -q (first) ignores ~/.curlrc; --noproxy keeps it on loopback.
   var script = "curl -q -s -S --noproxy '*' --max-time " + timeoutSecs + " --connect-timeout " + timeoutSecs
     + " " + shellQuote(url) + " | head -c " + Number(GENERATE_RESPONSE_CAP)
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// Both the declared length and what has actually arrived are checked. A
-// chunked response declares nothing at all, and a declared length is the
-// sender's word for it either way.
-function generatorResponseTooLarge(contentLength, received) {
-  var declared = Number(contentLength)
-  if (isFinite(declared) && declared > GENERATE_RESPONSE_CAP) return true
-  return Number(received) > GENERATE_RESPONSE_CAP
+// Whether a curl probe of the port found another server. Only a refused
+// connection (exit 7, no output) leaves it free for ours: an answer, a timeout
+// or a truncated stream all mean someone else is bound, and a password from a
+// stranger's server is one they know.
+function generatorProbeIsForeign(exitCode, stdout) {
+  return !(Number(exitCode) === 7 && String(stdout || "").trim() === "")
 }
 
-// What a finished probe means.
-//
-// When checking via a curl process: exit code 7 (CURLE_COULDNT_CONNECT) with
-// empty output is the only outcome that proves the port was silent and free
-// for our own server. Exit code 0 means another server answered; exit code 28
-// means a connection timed out; exit code 23/141 means an oversized stream was
-// cut short. All of those mean another process was bound to the port.
-//
-// When called with (status, aborted): status 0 is a refused connection (free),
-// while non-zero status or an aborted request means the port is occupied.
-function generatorProbeIsForeign(statusOrExitCode, abortedOrStdout) {
-  if (typeof abortedOrStdout === "boolean") {
-    if (abortedOrStdout) return true
-    return generatorPortIsForeign(statusOrExitCode)
-  }
-  var code = Number(statusOrExitCode)
-  var out = String(abortedOrStdout || "").trim()
-  if (code === 7 && out === "") return false
-  return true
-}
-
-// What to do when our own `bw serve` exits.
-//
-// The distinction that matters is between a shutdown we asked for and one we
-// did not. A server that dies on its own never bound, or died trying, and our
-// bind failing is exactly what a squatted port looks like from here -- so a
-// value the ready-poll already accepted may never have come from us at all and
-// cannot be left on screen to be copied into the vault.
+// What to do when our `bw serve` exits. An exit we did not ask for means it
+// never bound, so the port was squatted and any value already shown may not
+// be ours: drop it.
 function generatorServeExitAction(state) {
   var st = state || {}
   if (st.stopping) return { giveUp: false, dropValue: false, useCli: false }
@@ -6588,28 +5344,33 @@ function generatorServeExitAction(state) {
   }
 }
 
-// The serve API takes the same options as the CLI flags, as query parameters.
-function generateServeUrl(opts) {
+// The options as [name, value] pairs, where `true` is a bare flag. `bw
+// generate` takes them as --name flags and `bw serve` as query parameters.
+function generatorParams(opts) {
   var o = normalizeGeneratorOptions(opts)
-  var q = []
-
+  var p = []
+  var flag = function(name, on) { if (on) p.push([name, true]) }
   if (o.type === "passphrase") {
-    q.push("passphrase=true")
-    q.push("words=" + encodeURIComponent(String(o.words)))
-    q.push("separator=" + encodeURIComponent(String(o.separator)))
-    if (o.capitalize) q.push("capitalize=true")
-    if (o.includeNumber) q.push("includeNumber=true")
+    p.push(["passphrase", true], ["words", o.words], ["separator", o.separator])
+    flag("capitalize", o.capitalize)
+    flag("includeNumber", o.includeNumber)
   } else {
-    if (o.uppercase) q.push("uppercase=true")
-    if (o.lowercase) q.push("lowercase=true")
-    if (o.numbers) q.push("number=true")
-    if (o.special) q.push("special=true")
-    q.push("length=" + encodeURIComponent(String(o.length)))
-    if (o.numbers) q.push("minNumber=" + encodeURIComponent(String(o.minNumber)))
-    if (o.special) q.push("minSpecial=" + encodeURIComponent(String(o.minSpecial)))
-    if (o.ambiguous) q.push("ambiguous=true")
+    flag("uppercase", o.uppercase)
+    flag("lowercase", o.lowercase)
+    flag("number", o.numbers)
+    flag("special", o.special)
+    p.push(["length", o.length])
+    if (o.numbers) p.push(["minNumber", o.minNumber])
+    if (o.special) p.push(["minSpecial", o.minSpecial])
+    flag("ambiguous", o.ambiguous)
   }
+  return p
+}
 
+function generateServeUrl(opts) {
+  var q = generatorParams(opts).map(function(p) {
+    return p[0] + "=" + (p[1] === true ? "true" : encodeURIComponent(String(p[1])))
+  })
   return "http://" + GENERATE_HOST + ":" + GENERATE_PORT + "/generate?" + q.join("&")
 }
 
@@ -6626,25 +5387,11 @@ function parseServeGenerated(raw) {
 }
 
 function generateCommand(opts) {
-  var o = normalizeGeneratorOptions(opts)
   var args = ["generate"]
-
-  if (o.type === "passphrase") {
-    args.push("--passphrase", "--words", String(o.words), "--separator", String(o.separator))
-    if (o.capitalize) args.push("--capitalize")
-    if (o.includeNumber) args.push("--includeNumber")
-    return buildCappedCommand(args, MAX_TOKEN_BYTES)
-  }
-
-  if (o.uppercase) args.push("--uppercase")
-  if (o.lowercase) args.push("--lowercase")
-  if (o.numbers) args.push("--number")
-  if (o.special) args.push("--special")
-  args.push("--length", String(o.length))
-  if (o.numbers) args.push("--minNumber", String(o.minNumber))
-  if (o.special) args.push("--minSpecial", String(o.minSpecial))
-  if (o.ambiguous) args.push("--ambiguous")
-
+  generatorParams(opts).forEach(function(p) {
+    args.push("--" + p[0])
+    if (p[1] !== true) args.push(String(p[1]))
+  })
   return buildCappedCommand(args, MAX_TOKEN_BYTES)
 }
 
@@ -6671,8 +5418,7 @@ function generatorStrengthLabel(bits) {
   return "Weak"
 }
 
-// Rough strength read for the meter. Deliberately simple: it describes the
-// search space the options imply, not the specific string produced.
+// Strength of the search space the options imply, for the meter.
 function generatorStrength(opts) {
   var bits = generatorEntropyBits(normalizeGeneratorOptions(opts))
   return {
@@ -6686,9 +5432,7 @@ function generatorStrength(opts) {
 // Bitwarden Send
 // -------------------------------------------------------------------------
 //
-// Field names below are taken from a real `bw send --fullObject` response
-// rather than guessed: accessUrl carries the shareable link, passwordSet is a
-// boolean rather than the password itself, and type is 0 for text, 1 for file.
+// Field names from a real `bw send --fullObject`; type 0 is text, 1 file.
 
 var SEND_TYPE_TEXT = 0
 var SEND_TYPE_FILE = 1
@@ -6701,9 +5445,7 @@ function deleteSendCommand(sendId) {
   return buildCappedCommand(["send", "delete", "--", String(sendId)], MAX_MISC_BYTES)
 }
 
-// The payload travels in the environment, not argv. Both the flag form's
-// --password and an inlined `printf %s '<json>'` would land the Send password
-// in /proc/<pid>/cmdline, which other users can read.
+// The payload (which may hold the Send password) travels in the environment.
 var SEND_ENV = "QSBW_SEND"
 
 function sendEnvVar() {
@@ -6797,20 +5539,10 @@ function sendAccessLabel(send) {
 // Rendering vault text safely
 // ---------------------------------------------------------------------------
 
-// Qt's Text -- and every control built on one -- defaults to Text.AutoText,
-// which sniffs the string and renders it as HTML the moment it looks like
-// markup. Every Text this plugin owns pins `textFormat: Text.PlainText`, but
-// the shared kit controls (Ui.Button's label and tooltip) build their own Text
-// internally and expose no way to set the format, so a folder named
-// "<img src=x onerror=...>" would be parsed as markup in a credential UI.
-//
-// So neutralize the string before it is handed over. A value with no "<" and
-// no "&" cannot trip Qt's sniffer and passes through untouched -- which is
-// nearly everything. Anything else is HTML-escaped and wrapped in a <span>:
-// the escape means no character can be read as a tag, and the wrapper forces
-// the rich-text path deterministically so those entities are decoded back to
-// the literal characters the vault holds instead of being shown raw. The
-// white-space rule keeps the spacing plain text would have given.
+// Qt Text defaults to AutoText, which renders anything that looks like markup
+// as HTML, and kit controls (Ui.Button) give no way to change that. So vault
+// text containing "<" or "&" is HTML-escaped and wrapped in a pre-wrap <span>,
+// which renders back to the literal characters; anything else passes as is.
 function plainLabel(value) {
   var text = (value === undefined || value === null) ? "" : String(value)
   if (text.indexOf("<") < 0 && text.indexOf("&") < 0) return text
@@ -6819,20 +5551,9 @@ function plainLabel(value) {
     + "</span>"
 }
 
-// A vault value is any length the user typed, and Ui.Button sizes itself to
-// its label with no elide of its own -- so a folder named after a whole client
-// engagement makes one button wider than the panel, which a wrapping row
-// cannot rescue because it can only move a control to the next line, never
-// shrink one. Clip the value first, so the widest a button can get is bounded
-// by us rather than by the vault.
-//
-// Characters rather than pixels: the shell's font is `monospace` by default,
-// so a count is a width, and a clip that reads the font would have to run in
-// QML where it cannot be tested. The ellipsis is inside the budget, so `max`
-// is the true ceiling.
-//
-// Runs BEFORE plainLabel(). Afterwards the string may be wrapped in a <span>,
-// and slicing that would cut a tag in half and hand markup to the control.
+// Ui.Button sizes to its label without eliding, so vault text is clipped to
+// `max` characters (the font is monospace; the "..." counts). Call before
+// plainLabel(), which may add markup that must not be cut.
 function clipLabel(value, max) {
   var text = (value === undefined || value === null) ? "" : String(value)
   var limit = Math.max(1, Math.floor(Number(max) || 0))
@@ -6845,29 +5566,19 @@ function clipLabel(value, max) {
 // Vault host
 // -------------------------------------------------------------------------
 //
-// The bar is built once per monitor, so this plugin's bar widget is too. The
-// vault -- session, SSH agent supervisor, lock triggers, IPC -- lives in
-// Service.qml, which the shell loads once per shell and every bar copy reaches
-// through `bar.shell.serviceFor()`. A copy that cannot reach it (a replacement
-// bar hands widgets a service-less facade; the standalone QML tests have no
-// shell) hosts a private Service of its own, which is exactly the one-vault-
-// per-widget behaviour the plugin had before the service existed.
-//
-// The shared service is not guaranteed to be there the moment a view asks:
-// `bar` and its shell facade are injected just after the widget is created,
-// and a service that loads asynchronously is published a little later still.
-// So "not found yet" is a wait, and only a wait that outlasts the timeout is
-// taken as "there is no shared service". Choosing private too early would
-// start a second vault next to the shared one -- the contention this exists to
-// remove.
+// The bar (and this widget) exists once per monitor; the vault lives in
+// Service.qml, loaded once per shell and reached via `bar.shell.serviceFor()`.
+// A widget that cannot reach it (no shell facade, standalone tests) hosts a
+// private Service. The shared service can appear shortly after the widget is
+// created, so "not found" waits up to the timeout before going private.
 var VAULT_HOST_TIMEOUT_MS = 3000
 
 function vaultHostTimeoutMs() {
   return VAULT_HOST_TIMEOUT_MS
 }
 
-// "shared" | "private" | "wait". `found` is whether the shared service was
-// returned on this attempt; `elapsedMs` is how long this view has been asking.
+// "shared" | "private" | "wait", given whether the shared service was found
+// and how long this view has been asking.
 function vaultHostDecision(found, elapsedMs, timeoutMs) {
   if (found) return "shared"
   var limit = Number(timeoutMs)
@@ -6875,18 +5586,9 @@ function vaultHostDecision(found, elapsedMs, timeoutMs) {
   return Number(elapsedMs) >= limit ? "private" : "wait"
 }
 
-// Which attached view should act when the vault needs the screen: raise the
-// popout, move the cursor, show an SSH prompt. `views` is one summary per view
-// in attach order, `{ opened, screen }`; `focusedScreen` is the monitor
-// Hyprland has focused.
-//
-//   1. a view whose popout is already open -- the user is looking at it, and a
-//      prompt raised anywhere else would land behind their back;
-//   2. otherwise the view on the focused monitor, which is where a keyboard-
-//      summoned panel belongs;
-//   3. otherwise the first view, so there is always somewhere to show it --
-//      including before Hyprland has reported a focused monitor at all.
-//
+// Which view acts when the vault needs the screen (raise the popout, show an
+// SSH prompt). `views` is `{ opened, screen }` per view in attach order:
+// prefer an open popout, then the focused monitor, then the first view.
 // -1 only when there is no view.
 function presenterIndex(views, focusedScreen) {
   var list = Array.isArray(views) ? views : []

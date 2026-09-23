@@ -1,48 +1,19 @@
 #!/usr/bin/env node
-// The SSH agent is opt-in, and "opted in" is not the same as "usable". These
-// tests cover the four settings, the explicit disabled/enabled/error setup
-// state, the managed UWSM fragment lifecycle, and the advisory SSH_AUTH_SOCK
-// diagnostics -- which must never decide whether the companion runs.
+// The opt-in SSH agent: its settings, the disabled/enabled/error setup state,
+// the managed UWSM fragment, and SSH_AUTH_SOCK diagnostics (advisory only,
+// never deciding whether the companion runs).
 //
 //   node tests/ssh-agent-setup.test.js
 
+const { createSuite, loadModule, read, readPluginSource } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
-const repoRoot = path.join(__dirname, "..")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.SETTINGS_SCHEMA = SETTINGS_SCHEMA
-  exports.SETTINGS_GROUPS = SETTINGS_GROUPS
-  exports.groupedSettings = groupedSettings
-  exports.settingSchemaEntry = settingSchemaEntry
-  exports.boolSetting = boolSetting
-  exports.intSetting = intSetting
-  exports.sshAgentSetupState = sshAgentSetupState
-  exports.sshAgentApprovalWindowMax = sshAgentApprovalWindowMax
-  exports.visibleSettings = visibleSettings
-  exports.sshUiAvailable = sshUiAvailable
-  exports.sshAgentSocketPath = sshAgentSocketPath
-  exports.uwsmFragmentDisplayPath = uwsmFragmentDisplayPath
-  exports.uwsmFragmentContent = uwsmFragmentContent
-  exports.uwsmInspectCommand = uwsmInspectCommand
-  exports.uwsmWriteCommand = uwsmWriteCommand
-  exports.uwsmRemoveCommand = uwsmRemoveCommand
-  exports.parseUwsmInspection = parseUwsmInspection
-  exports.parseUwsmActionResult = parseUwsmActionResult
-  exports.sshAuthSockDiagnostic = sshAuthSockDiagnostic
-  exports.sshAuthSockTerminalCheck = sshAuthSockTerminalCheck
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done } = createSuite("ssh-agent-setup")
 
-const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "manifest.json"), "utf8"))
+const manifest = JSON.parse(read("manifest.json"))
 const manifestSchema = manifest.barWidget.schema
 const manifestDefaults = manifest.barWidget.defaults
 const manifestEntry = key => manifestSchema.find(e => e.key === key)
@@ -81,8 +52,8 @@ for (const want of expected) {
 const windowManifest = manifestEntry("sshAgentApprovalWindowSec")
 const windowModel = modelEntry("sshAgentApprovalWindowSec")
 eq("approval window minimum is 0", windowModel && windowModel.min, 0)
-eq("approval window maximum is 900", windowModel && windowModel.max, Model.sshAgentApprovalWindowMax())
-eq("approval window maximum is the documented cap", Model.sshAgentApprovalWindowMax(), 900)
+eq("approval window maximum is 900", windowModel && windowModel.max, Model.SSH_AGENT_APPROVAL_WINDOW_MAX_SEC)
+eq("approval window maximum is the documented cap", Model.SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, 900)
 eq("manifest agrees on the window minimum", windowManifest && windowManifest.min, 0)
 eq("manifest agrees on the window maximum", windowManifest && windowManifest.max, 900)
 check("the approval window says what 0 means",
@@ -141,11 +112,8 @@ for (const [label, deps, checked] of [
   ["an unreadable CLI version", unknownDeps, true],
   ["an unfinished probe", supportedDeps, false]
 ]) {
-  // Nothing collapsed, so every remaining setting is present as a row. The
-  // list also carries one heading row per group now, which is what makes a
-  // group foldable; the guarantee being checked is unchanged -- a hidden
-  // group takes its heading with it, and each group that remains gets
-  // exactly one.
+  // Every setting is a row, plus one heading row per group; a hidden group
+  // takes its heading with it.
   const rows = Model.visibleSettings(deps, checked)
   const settings = rows.filter(e => e.kind === "setting")
   const headers = rows.filter(e => e.kind === "group")
@@ -165,9 +133,8 @@ check("hiding the group does not mutate the schema",
 
 // --- every section is drawn, always -----------------------------------------
 //
-// The settings screen had collapsible sections for a while. They went: three
-// groups of three, seven and four rows do not need folding, and a fold is one
-// more state to be in and one more thing to leave shut by accident.
+//
+// Sections do not fold.
 
 const allRows = Model.visibleSettings(supportedDeps, true)
 check("every setting in the schema is drawn",
@@ -192,10 +159,8 @@ check("groups appear in the order the group list declares",
 
 // --- the status block belongs to its own section ----------------------------
 //
-// The SSH agent's status and routing block used to be drawn after all four
-// setting groups. That was survivable while nothing folded; with folding it
-// would leave a collapsed SSH Agent section with its status still on screen,
-// attached to nothing above it.
+//
+// The SSH status and routing block is drawn at the end of its own group.
 
 check("each group's last setting is marked, so a section can extend itself",
   (() => {
@@ -459,9 +424,4 @@ for (const [status, out] of [[0, "written\n"]]) {
     /restart\w*\s+the\s+shell\s+is\s+not\s+enough/i.test(r.message), r.message)
 }
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`ssh-agent-setup: ${pass} passed`)
+done()

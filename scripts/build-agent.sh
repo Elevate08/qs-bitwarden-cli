@@ -2,14 +2,9 @@
 # Build the plugin's helpers reproducibly: the SSH agent (agent/) and the
 # quick-unlock envelope tool (unlock-key/).
 #
-# The compiled helpers are committed to this repository. That is only
-# defensible if anyone can rebuild them from the committed source and get the
-# same bytes -- otherwise a binary is an unauditable blob that happens to sit
-# next to some source code. This script is the one entry point that produces
-# them, locally and
-# in CI, so there is a single definition of what "the release build" means.
-#
-# What fixes the output bytes:
+# The helpers are committed, which is only defensible if anyone can rebuild the
+# same bytes from source. This script is the single definition of the release
+# build, locally and in CI. What fixes the bytes:
 #
 #   Cargo.lock              the exact dependency set          (committed, per package)
 #   rust-toolchain.toml     the exact compiler                (committed, per package,
@@ -18,46 +13,31 @@
 #   --remap-path-prefix     build paths, which otherwise leak (below)
 #   the container image     glibc, ld and strip               (PINNED_IMAGE)
 #
-# The last one is why a bare runner is not enough. A GNU-linked binary carries
-# symbol version requirements from the glibc it built against, and `strip`
-# output differs between binutils releases -- so `ubuntu-latest` drifting
-# forward would change the bytes with nothing in the repository having changed.
-#
-# rustc does not consume SOURCE_DATE_EPOCH and embeds no build timestamp, so
-# that variable is deliberately not part of this. The git commit is likewise
-# not embedded: a binary tracked by the same commit that names it cannot be
-# reproduced from that commit.
+# The image matters because glibc symbol versions and `strip` output change
+# with the host. rustc embeds no timestamp (so no SOURCE_DATE_EPOCH), and no git
+# commit is embedded: a binary cannot name the commit that tracks it.
 
 set -o pipefail
 set -u
 
-# The pinned build environment. Changing it means regenerating the binary and
-# its checksum in the same commit.
-#
-# Pinned by digest rather than tag: a tag is a moving pointer, and
-# `rust:1.98.0-bookworm` is rebuilt on new Debian base images, which changes
-# glibc and binutils underneath an unchanged Rust version. This is the
-# multi-arch manifest digest published 2026-08-25.
+# The pinned build environment; changing it means rebuilding and re-summing
+# every binary in the same commit. By digest, not tag: the tag is rebuilt on
+# new Debian bases (new glibc/binutils). Multi-arch digest of 2026-08-25.
 PINNED_IMAGE="rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SUPPORTED_TARGET="x86_64-unknown-linux-gnu"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Architecture-scoped from the start. v1 ships x86_64 only, but a flat bin/
-# would have to be restructured the day a second target appears, and the
-# checksum file would have to change shape with it.
+# Architecture-scoped so a second target needs no restructuring (x86_64 only
+# for now).
 OUTPUT_ARCH="x86_64-linux"
 OUTPUT_DIR="$REPO_ROOT/bin/$OUTPUT_ARCH"
-# Every tracked artifact, as `<package directory>:<binary name>`. Separate
-# Cargo packages, each with its own manifest and lockfile: a crate added to one
-# must not change the other's bytes, and in a shared package it did (the SSH
-# helper went from f80366fe to 5c2fcc7b when the unlock tool was added beside
-# it, with no SSH source change).
+# Tracked artifacts as `<package directory>:<binary name>`. Separate packages
+# and lockfiles, so a crate added to one cannot change the other's bytes.
 ARTIFACTS=(
   "agent:qs-bitwarden-ssh-agent"
   "unlock-key:qs-bitwarden-unlock-key"
 )
-# One SHA256SUMS covering every tracked artifact, in the format `sha256sum -c`
-# reads, rather than a sidecar file per binary.
+# One SHA256SUMS for every artifact, in `sha256sum -c` format.
 SUMS_FILE="$REPO_ROOT/bin/SHA256SUMS"
 
 usage() {
@@ -102,26 +82,16 @@ require_lockfile() {
   done
 }
 
-# A target other than the one the committed binary is for would produce bytes
-# nobody can compare against it.
+# Only the target the committed binaries are for.
 require_target() {
   local target="${1:-$SUPPORTED_TARGET}"
   [ "$target" = "$SUPPORTED_TARGET" ] \
     || fail "unsupported target '$target'; this release builds only $SUPPORTED_TARGET"
 }
 
-# Are we already running inside the pinned build environment?
-#
-# This is the question that matters, and it is not the same as "can I start a
-# container". CI runs this script *inside* the pinned image, where no
-# container runtime exists and none is wanted -- an earlier version conflated
-# the two and refused to build in the one environment it was written for.
-#
-# QSBW_PINNED_BUILD is the claim, set by the release workflow and by this
-# script when it re-executes itself in a container. The compiler check below
-# is the part that does not take that claim on trust: if the environment says
-# it is pinned but carries a different rustc than rust-toolchain.toml names,
-# the claim is wrong and the build stops.
+# Whether we are already inside the pinned environment (CI runs this inside
+# the image, with no container runtime). QSBW_PINNED_BUILD is the claim, set by
+# CI and by this script's container re-exec; the checks below verify it.
 in_pinned_environment() {
   [ "${QSBW_PINNED_BUILD:-}" = "1" ] || return 1
   local pinned actual
@@ -130,11 +100,8 @@ in_pinned_environment() {
   [ -n "$pinned" ] && [ "$pinned" = "$actual" ] \
     || fail "this environment claims to be the pinned one but carries rustc ${actual:-unknown}, not $pinned"
 
-  # The compiler check alone is too weak: a host may happen to carry the same
-  # rustc while its glibc and binutils -- the things the image exists to pin --
-  # are entirely different. The pinned image is Debian bookworm, so verify
-  # that too. It is cheap, and it catches the case of a developer setting the
-  # variable on a machine that merely has the right Rust.
+  # The right rustc is not enough: also require the image's Debian bookworm,
+  # since glibc and binutils are what the image pins.
   local os_id os_codename
   os_id="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-}")"
   os_codename="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_CODENAME:-}")"
@@ -146,18 +113,16 @@ in_pinned_environment() {
 
 # A runtime we could use to *enter* the pinned environment from outside it.
 container_runtime() {
-  # Omarchy's own convention is `sudo docker`: it does not put users in the
-  # docker group, because that group is equivalent to passwordless root. A
-  # repository whose purpose is guarding private keys should not require that
-  # to build.
+  # Omarchy uses `sudo docker` rather than the docker group (which is
+  # equivalent to passwordless root).
   if docker info >/dev/null 2>&1; then echo "docker"; return 0; fi
   if sudo -n docker info >/dev/null 2>&1; then echo "sudo docker"; return 0; fi
   if podman info >/dev/null 2>&1; then echo "podman"; return 0; fi
   return 1
 }
 
-# Re-run this script inside the pinned image, so a local reproduction uses the
-# same glibc, linker and strip that produced the committed bytes.
+# Re-run inside the pinned image, with the glibc, linker and strip that
+# produced the committed bytes.
 reexec_in_container() {
   local runtime="$1"
   shift
@@ -172,28 +137,18 @@ reexec_in_container() {
 
 # --- the build itself ------------------------------------------------------
 
-# Compose the flags that remove build-path variance. The registry path is the
-# one that usually leaks: dependency source paths end up in panic messages and
-# debug sections, and $CARGO_HOME differs per machine and per CI runner.
+# Flags that remove build-path variance, including $CARGO_HOME's registry
+# paths, which leak into panic messages and debug sections.
 rustflags_for() {
   local src="$1" cargo_home="${2:-${CARGO_HOME:-$HOME/.cargo}}"
   printf -- '--remap-path-prefix=%s=/src --remap-path-prefix=%s/registry=/registry' \
     "$src" "$cargo_home"
 }
 
-# One cargo invocation, with everything that affects output stated explicitly.
-#
-# The target directory must live *inside* the source root. It is remapped
-# along with everything else under it, and build-script output paths reach the
-# binary: a target directory somewhere else is an unremapped path that changes
-# the bytes. That is not hypothetical -- the release build used a separate
-# temporary directory and produced a different digest from the two builds
-# --verify-reproducible had just declared identical.
-#
-# Every package builds into the same target directory. Each is its own Cargo
-# project, so a dependency shared between them is reused only where its
-# version, features and profile are identical -- the same artifact either
-# package would have built alone.
+# One cargo invocation with everything that affects output explicit. The
+# target dir must be inside the (remapped) source root: build-script output
+# paths reach the binary. All packages share it; shared dependencies are
+# reused only when identical.
 build_into() {
   local src="$1" spec package
   for spec in "${ARTIFACTS[@]}"; do
@@ -205,15 +160,9 @@ build_into() {
   done
 }
 
-# Export the committed tree somewhere clean and build it there.
-#
-# Every mode goes through this, so a release, a reproducibility check and a
-# drift comparison are literally the same procedure. They diverged once, and
-# the divergence was invisible until two digests of the same source disagreed.
-#
-# HEAD rather than the working tree: a release artifact should not contain
-# uncommitted changes, and the comparison modes have to build what the
-# repository actually says.
+# Export HEAD (not the working tree) to a clean directory and build there.
+# Every mode uses this, so release, reproducibility check and drift
+# comparison are the same procedure.
 build_clean_copy() {
   local dest="$1"
   mkdir -p "$dest" || return 1
@@ -228,9 +177,8 @@ digest() { sha256sum "$1" | cut -d' ' -f1; }
 
 # --- modes -----------------------------------------------------------------
 
-# Build twice from genuinely different absolute paths. Copying the source to a
-# second location is the point: a path that leaked into the binary shows up
-# here as a digest mismatch and nowhere else.
+# Build twice from different absolute paths; a leaked path shows up as a
+# digest mismatch.
 verify_reproducible() {
   if ! in_pinned_environment; then
     local runtime
@@ -274,12 +222,8 @@ verify_reproducible() {
 # Report drift without touching the repository, so it is safe in a PR gate.
 compare_tracked() {
 
-  # The comparison is only worth anything from inside the pinned environment.
-  # The tracked bytes were produced there, and the image pins glibc and
-  # binutils as well as the compiler -- so a host build with the right rustc
-  # and a different libc reports drift that does not exist. This mode is the
-  # PR gate: it was the one mode that could fail for a reason having nothing
-  # to do with the source it was asked about.
+  # Only meaningful inside the pinned environment, where the tracked bytes
+  # were built; a host build would report drift that does not exist.
   if ! in_pinned_environment; then
     local runtime
     if runtime="$(container_runtime)"; then
@@ -299,9 +243,8 @@ compare_tracked() {
   trap "rm -rf '$work'" EXIT
   local built spec name committed have fresh drifted=""
   built="$(build_clean_copy "$work/source")" || fail "the comparison build failed"
-  # Every artifact is compared and reported before the verdict, so one drift
-  # does not hide another. A binary that is not tracked yet is drift too: the
-  # candidate this source builds is exactly what has to be committed.
+  # Report every artifact before the verdict; an untracked binary is drift
+  # too.
   for spec in "${ARTIFACTS[@]}"; do
     name="$(binary_name "$spec")"
     committed="$OUTPUT_DIR/$name"
@@ -340,17 +283,13 @@ build_release() {
     install -m 0755 "$built/$name" "$OUTPUT_DIR/$name"
     listed+=("$OUTPUT_ARCH/$name")
   done
-  # Paths relative to bin/, so `sha256sum -c SHA256SUMS` works from there
-  # whatever the checkout is called. One line per artifact: the panel checks
-  # each binary against its own line, so one stale file never disables the
-  # other's feature.
+  # Paths relative to bin/, one line per artifact (the panel checks each
+  # binary against its own line).
   ( cd "$REPO_ROOT/bin" && sha256sum "${listed[@]}" > "$SUMS_FILE" )
   note "wrote ${listed[*]/#/bin/} and bin/SHA256SUMS"
 }
 
-# Report the decision without acting on it. Useful for a person wondering why
-# a build refused, and for tests that need to check the decision logic without
-# pulling an image and running two full builds to find out.
+# Report the decision without acting on it (for people, and for tests).
 explain() {
   if in_pinned_environment; then
     printf 'environment: pinned (building here directly)\n'

@@ -1,20 +1,14 @@
 #!/usr/bin/env node
-// The settings screen's structure -- what is pinned, what scrolls, how its
-// sections are drawn -- and the one invariant that is panel-wide rather than
-// settings-only: every scrolling view keeps its content clear of its own
-// scrollbar.
+// The settings screen's structure (what is pinned, what scrolls, how sections
+// are drawn), and that every scrolling view keeps clear of its scrollbar.
 //
 //   node tests/settings-screen.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, readPluginSource } = require("./harness")
 
 const panelSrc = readPluginSource("Panel.qml")
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("settings-screen")
 
 // The settings screen, from its wrapper Column to the end of the Flickable.
 const screenAt = panelSrc.indexOf("id: settingsScreen")
@@ -51,11 +45,8 @@ check("custom shield corrects its painted side bearings",
     && shield.includes("anchors.horizontalCenterOffset"),
   "expected corrected painted side bearings on the shield")
 
-// The centering above is what aligns the glyph with the panel-open indicator;
-// the renderer is not part of it -- both put the painted center on the same
-// pixel at scale 1.3333. QtRendering additionally drew saturated colour along
-// the glyph edges, which no other icon in the bar has, so the shield renders
-// the way the rest of Omarchy does.
+// NativeRendering, like the rest of Omarchy (QtRendering fringed the glyph
+// with colour).
 check("shield renders the way the rest of the bar does",
   shield.includes("renderType: Text.NativeRendering")
     && !shield.includes("renderType: Text.QtRendering"),
@@ -101,10 +92,8 @@ check("the indicator is held rather than bound",
   /property var settingsStickyEntry: null/.test(panelSrc),
   "it depends on delegate geometry, which a binding cannot read without fighting layout")
 
-// The bar names the section the view is inside, including at rest -- an empty
-// bar on the one position everybody starts from is worse than a redundant one.
-// Duplication is prevented at the other end instead: the in-list heading of
-// the section the bar names is drawn transparent.
+// The bar names a section even at rest; the named section's in-list heading
+// is hidden instead.
 check("the bar names a section from the top of the list, before any scrolling",
   /if \(row\.y > top \+ 1\) break/.test(panelSrc),
   "a heading at the top edge is the section the view is in")
@@ -127,7 +116,7 @@ check("the gap above it goes too",
 // Exactly one heading is ever yielding, so the content height is constant:
 // the one taking over collapses as the previous one is restored.
 check("only the pinned section's heading yields, so the height stays constant",
-  /Exactly one heading is ever in this state/.test(panelSrc),
+  /content height is stable/.test(panelSrc),
   "expected the reasoning recorded where the next reader will be standing")
 
 check("and only while part of that section is still on screen",
@@ -150,11 +139,8 @@ check("the bar empties rather than naming a section that is no longer in view",
 
 // --- the sections are not foldable ------------------------------------------
 //
-// They were, for a few commits. Three groups of three, seven and four rows do
-// not need folding, and a fold is one more state to be in and one more thing
-// to leave shut by accident. These assertions exist so it does not creep back
-// halfway -- a chevron with nothing behind it, or a heading that swallows a
-// click.
+//
+// Three small groups do not need folding; keep it from creeping back halfway.
 
 check("no collapse state is kept",
   !/collapsedGroups/.test(panelSrc), "settings sections are not foldable")
@@ -196,10 +182,9 @@ check("both helpers survive being called before the view exists",
 
 // --- every scrollbar gets a lane of its own ----------------------------------
 //
-// These bars are overlays. Left alone each one draws on top of whatever is at
-// the right edge of its view -- toggles, number fields, copy buttons, the ends
-// of elided text. Every scrolling view subtracts one shared gutter, so no bar
-// covers a control and the right-hand edges line up across screens.
+//
+// Overlay scrollbars would cover right-edge controls, so every scrolling view
+// subtracts one shared gutter.
 
 check("the gutter is measured from a real scrollbar, not guessed",
   /settingsScrollBar \? settingsScrollBar\.implicitWidth : 0/.test(panelSrc),
@@ -261,8 +246,4 @@ check("Remove Plugin Data sits under the danger heading, not beside Dependencies
     && panelSrc.indexOf('text: "Dependencies"') < panelSrc.indexOf('text: "DANGER ZONE"'),
   "ordering puts the destructive button in the wrong section")
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

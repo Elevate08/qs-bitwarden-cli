@@ -1,63 +1,26 @@
 #!/usr/bin/env node
-// What the panel must stop doing when the vault is not open.
+// What must stop when the vault is not open:
 //
-// Three ways it kept going anyway, all of them silent:
-//
-// 1. The auto-lock countdown ran on a Qt Timer, and Qt schedules on
-//    CLOCK_MONOTONIC, which Linux stops while the machine is suspended. A
-//    fifteen-minute lock armed just before the lid closed still had fifteen
-//    minutes left when the lid opened, so a vault left overnight came back
-//    open. The deadline is now kept in wall-clock terms as well.
-//
-// 2. The minute count behind that countdown came out of shell.json, and
-//    nothing validates shell.json. A non-numeric value reached QML as NaN and
-//    landed in an `int` property as 0, which is how "never lock" is spelled; a
-//    value past the schema's ceiling overflowed Timer.interval into a negative
-//    number, which never fires. Both readings were a vault that never locked.
-//
-// 3. Nothing cancels a `bw` that is already running, so a `bw list items`
-//    started a second before the lock finished afterwards and put the whole
-//    vault -- passwords and all -- back into a panel that had just dropped it.
+// 1. The auto-lock also runs on the wall clock (Qt Timers pause in suspend).
+// 2. Minute counts from shell.json are validated (NaN reads as 0 = never, and
+//    oversized values overflow Timer.interval).
+// 3. A `bw` read that finishes after a lock is discarded.
 //
 //   node tests/lock-state.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, functionBody, loadModule, read, readPluginSource } = require("./harness")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.intSetting = intSetting
-  exports.settingSchemaEntry = settingSchemaEntry
-  exports.SETTINGS_SCHEMA = SETTINGS_SCHEMA
-  exports.autoLockExpired = autoLockExpired
-  exports.autoLockPollMs = autoLockPollMs
-  exports.vaultReadIsStale = vaultReadIsStale
-  exports.parseItems = parseItems
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("lock-state")
 
 const panelSrc = readPluginSource("Panel.qml")
-const bodyOf = (name) => {
-  const start = panelSrc.indexOf(`function ${name}(`)
-  if (start === -1) return ""
-  let depth = 0
-  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
-    if (panelSrc[i] === "{") depth++
-    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
-  }
-  return ""
-}
+const bodyOf = name => functionBody(panelSrc, name)
 
 // --- 1. The schema is the same on both sides of shell.json ------------------
-// The settings screen clamps to SETTINGS_SCHEMA on the way out and the
-// marketplace shows manifest.json's min/max, so the two have to agree or the
-// clamp on the way back in enforces a range nobody was shown.
-const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
+// The settings screen clamps to SETTINGS_SCHEMA and the marketplace shows
+// manifest.json's min/max: they must agree.
+const manifest = JSON.parse(read("manifest.json"))
 const manifestEntries = {}
 for (const e of manifest.barWidget.schema) manifestEntries[e.key] = e
 
@@ -81,9 +44,7 @@ for (const entry of Model.SETTINGS_SCHEMA) {
 }
 
 // --- 2. Reading a setting back out of shell.json ----------------------------
-// `omarchy bar set` writes whatever it is handed -- a bare word becomes a JSON
-// string, --json stores any number at all -- and the README documents editing
-// the file by hand, so every one of these is reachable.
+// Every one of these can reach shell.json (`omarchy bar set`, hand edits).
 for (const [key, raw, want, why] of [
   ["autoLockMinutes", 15,        15,   "an ordinary value is untouched"],
   ["autoLockMinutes", "30",      30,   "the string form `omarchy bar set` writes without --json"],
@@ -95,10 +56,7 @@ for (const [key, raw, want, why] of [
   ["autoLockMinutes", true,      15,   "a boolean falls back to the default"],
   ["autoLockMinutes", 999999,    1440, "a count that would overflow Timer.interval is capped"],
   ["autoLockMinutes", 1e30,      1440, "so is one written in exponential notation"],
-  // The floor of every integer setting here doubles as its "off" sentinel, so
-  // clamping a negative up to it is the silent never-lock this clamp exists to
-  // refuse, reached from the other side. Below the range is a bad value, not a
-  // request for zero.
+  // The floor means "off", so below it is a bad value (default), not zero.
   ["autoLockMinutes", -5,        15,   "a negative count is the default, NOT 0/never"],
   ["autoLockMinutes", "-1",      15,   "including the string form"],
   ["autoLockMinutes", -Infinity, 15,   "and the one that arrives as -Infinity"],
@@ -274,7 +232,9 @@ for (const [name, starter, handler] of [
     new RegExp(`if \\(vaultReadIsStale\\("${name}"\\)\\)[\\s\\S]{0,140}return`).test(bodyOf(handler)), bodyOf(handler))
 }
 
-const droppedState = bodyOf("dropVaultState")
+const droppedState = bodyOf("dropVaultState") + bodyOf("resetItemForm")
+check("the local vault purge resets the item form",
+  /resetItemForm\(\)/.test(bodyOf("dropVaultState")), bodyOf("dropVaultState"))
 check("a queued TOTP request is pinned to the vault generation that queued it",
   /totpQueuedEpoch\s*=\s*vaultEpoch/.test(bodyOf("fetchTotp"))
     && /queuedEpoch\s*===\s*root\.vaultEpoch/.test(bodyOf("continueTotpQueue")),
@@ -298,7 +258,7 @@ check("remembered-session lookups record and verify their vault generation",
   bodyOf("onSessionHandoff") + "\n" + bodyOf("onKeyringLookupFinished"))
 check("logout closes any terminal handoff acceptance window",
   /terminalLoginStartedAt\s*=\s*0/.test(bodyOf("logoutAccount")), bodyOf("logoutAccount"))
-const abandonedAuth = bodyOf("abandonAuthSecrets")
+const abandonedAuth = bodyOf("abandonAuthSecrets") + bodyOf("clearLoginAttempt")
 check("abandoning authentication clears every typed or staged auth secret",
   ["masterPassword", "loginPassword", "loginClientId", "loginClientSecret", "login2faCode",
     "pendingUnlockPassword", "authPasswordWriteValue", "pinEntry"].every(prop =>
@@ -353,11 +313,8 @@ check("a PIN wrap cannot outlive the lock or abandonment it raced",
     && /epochOperationIsStale\("pinAdd"\)[\s\S]{0,300}?removeQuickUnlockMethod\(\{ kind: "remove", method: "pin" \}\)/
       .test(bodyOf("submitPinSetup")),
   bodyOf("submitPinSetup"))
-// Fingerprint setup no longer stores a password: it adds a wrap to the one
-// envelope. The invariant is the same -- nothing written for a vault
-// generation that has since ended may survive it -- and so is the shape: the
-// write is stamped, and a stale or abandoned completion takes the wrap back
-// out.
+// A fingerprint wrap written for a vault generation that ended (or an
+// abandoned setup) is removed again.
 check("a fingerprint wrap cannot outlive the lock or abandonment it raced",
   /beginEpochOperation\("fingerprintAdd"\)/.test(bodyOf("submitFingerprintSetup"))
     && /epochOperationIsStale\("fingerprintAdd"\)[\s\S]{0,300}?removeQuickUnlockMethod\(\{ kind: "remove", method: "fingerprint" \}\)/
@@ -414,5 +371,4 @@ for (const fn of ["onUnlockSuccess", "onSessionHandoff", "onKeyringLookupFinishe
     /vaultEpoch \+= 1/.test(bodyOf(fn)), bodyOf(fn))
 }
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

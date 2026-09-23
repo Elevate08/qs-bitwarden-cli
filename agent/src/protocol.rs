@@ -1,10 +1,7 @@
-//! Bounded, allowlisted SSH-agent protocol handling.
-//!
-//! Wire values follow RFC 9987. The handler answers identity listing, signing,
-//! and one extension -- OpenSSH's `session-bind@openssh.com`, read only for
-//! whether the connection carries forwarded requests. Every malformed,
-//! mutation, other extension, or unknown request receives the same one-byte
-//! failure and no diagnostic data.
+//! Bounded, allowlisted SSH-agent protocol handling (RFC 9987): identity
+//! listing, signing, and `session-bind@openssh.com` (read only for whether
+//! the connection is forwarded). Anything else, and anything malformed, gets
+//! the same one-byte failure with no diagnostics.
 
 use ssh_encoding::{Decode, Encode};
 use ssh_key::Signature;
@@ -21,19 +18,17 @@ const SIGN_RESPONSE: u8 = 14;
 const EXTENSION: u8 = 27;
 const SESSION_BIND: &[u8] = b"session-bind@openssh.com";
 
-/// RFC 4252 SSH_MSG_USERAUTH_REQUEST, the byte that follows the session
-/// identifier in the data a client signs to log in.
+/// RFC 4252 SSH_MSG_USERAUTH_REQUEST, which follows the session id in login
+/// signature data.
 const USERAUTH_REQUEST: u8 = 50;
-/// PROTOCOL.sshsig's raw six-byte preamble, the start of everything
-/// `ssh-keygen -Y sign` -- and so Git -- asks an agent to sign.
+/// PROTOCOL.sshsig's preamble, which starts `ssh-keygen -Y sign` (Git) data.
 const SSHSIG_PREAMBLE: &[u8] = b"SSHSIG";
-/// Longest login name or signature namespace carried into a prompt or a
-/// grant. Longer is not a shape OpenSSH produces, so it is classified as
-/// unrecognised rather than truncated into something that reads differently.
+/// Longest login name or namespace shown or granted. Longer is not something
+/// OpenSSH produces, so it is unrecognised rather than truncated.
 const MAX_SIGN_DETAIL: usize = 256;
 
-/// Parsed allowlisted request. It contains public key selection and the
-/// payload to be signed, but never private material.
+/// Parsed allowlisted request: key selection and payload, never private
+/// material.
 #[derive(Debug, Eq, PartialEq)]
 pub enum AgentRequest {
     Identities,
@@ -42,28 +37,22 @@ pub enum AgentRequest {
         message: Vec<u8>,
         flags: u32,
     },
-    /// `session-bind@openssh.com`. OpenSSH 8.9+ sends one on every agent
-    /// connection it opens: `is_forwarding` false before authenticating,
-    /// true on the connection it relays a remote host's requests over. The
-    /// host key, session identifier and signature are parsed for shape and
-    /// not kept -- the one thing this agent does with a bind is refuse to let
-    /// a forwarded request ride, or open, a grant.
+    /// `session-bind@openssh.com` (OpenSSH 8.9+), sent on every connection;
+    /// `is_forwarding` is true on one relaying a remote host's requests. The
+    /// rest is parsed for shape and dropped: a bind only stops forwarded
+    /// requests from using or opening grants.
     SessionBind {
         forwarding: bool,
     },
 }
 
-/// What a sign request is asking for, read from the data to be signed.
-///
-/// This is what a grant is scoped to beside the key and the program. Without
-/// it, approving `ssh-keygen` for Git's commit signatures approved any
-/// signature a process attributed to `ssh-keygen` could ask for -- a login to
-/// any server included -- because the agent never looked at what it signed.
+/// What a sign request asks for, read from the signed data. Grants are scoped
+/// to it (with the key and program), so approving Git signatures does not
+/// also approve logins.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SignKind {
-    /// A PROTOCOL.sshsig signature, as `ssh-keygen -Y sign` makes for Git.
-    /// The namespace says what the signature is for (`git`, `file`, ...),
-    /// and a signature for one is not valid for another.
+    /// A PROTOCOL.sshsig signature (as for Git); the namespace (`git`,
+    /// `file`, ...) says what it is for.
     SshSig { namespace: String },
     /// An RFC 4252 public-key login, as the user named.
     UserAuth { user: String },
@@ -91,12 +80,9 @@ impl SignKind {
     }
 }
 
-/// Classify the data a client asked to have signed with `public_blob`.
-///
-/// Both recognised shapes are parsed whole, with nothing left over; a partial
-/// match is `Other`. The two cannot be confused with each other: a login
-/// begins with the four-byte length of its session identifier, and `SSHS`
-/// read as one is over a gigabyte, far past the frame limit.
+/// Classify the data to be signed with `public_blob`. Both shapes must parse
+/// whole or it is `Other`; they cannot be confused (`SSHS` as a login's
+/// length prefix exceeds the frame limit).
 pub fn classify_sign(public_blob: &[u8], message: &[u8]) -> SignKind {
     sshsig_namespace(message)
         .map(|namespace| SignKind::SshSig { namespace })
@@ -118,10 +104,8 @@ fn sshsig_namespace(message: &[u8]) -> Option<String> {
     display_detail(namespace)
 }
 
-/// RFC 4252 section 7, and OpenSSH's host-bound variant which appends the
-/// server's host key. The key inside the request must be the key asked to
-/// sign it, as OpenSSH's own agent requires; a mismatch is not a login this
-/// key is making.
+/// RFC 4252 section 7 and OpenSSH's host-bound variant. The key inside must be
+/// the signing key, as OpenSSH's agent requires.
 fn userauth_user(public_blob: &[u8], message: &[u8]) -> Option<String> {
     let mut fields = message;
     let _session_id = Vec::<u8>::decode(&mut fields).ok()?;
@@ -150,8 +134,8 @@ fn userauth_user(public_blob: &[u8], message: &[u8]) -> Option<String> {
     display_detail(user)
 }
 
-/// A namespace or login name fit to show a person and to compare exactly:
-/// non-empty, bounded, UTF-8, and free of control characters.
+/// A namespace or login fit to display and compare exactly: non-empty,
+/// bounded UTF-8 without control characters.
 fn display_detail(bytes: Vec<u8>) -> Option<String> {
     if bytes.is_empty() || bytes.len() > MAX_SIGN_DETAIL {
         return None;
@@ -277,9 +261,8 @@ mod tests {
     use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, Signature};
     use std::fmt;
 
-    /// A private identity signed against directly. Production signing goes
-    /// through `KeyStore` and `ApprovalManager`; this exists only so the wire
-    /// handling can be proved without them.
+    /// A private identity for testing the wire handling directly; production
+    /// signing goes through `KeyStore` and `ApprovalManager`.
     struct Identity {
         key: PrivateKey,
         public_blob: Vec<u8>,
@@ -329,11 +312,8 @@ mod tests {
         }
     }
 
-    /// Handle exactly one length-prefixed agent frame.
-    ///
-    /// The length is checked before the body is sliced or any request field is
-    /// allocated. The returned frame is always small enough for the configured
-    /// cap; otherwise it is the normal agent failure frame.
+    /// Handle one length-prefixed frame. The length is checked before
+    /// anything is sliced or allocated; the reply always fits the cap.
     fn handle_frame(frame: &[u8], identities: &[Identity]) -> Vec<u8> {
         response(handle(frame, identities).unwrap_or_else(failure_payload))
     }
@@ -579,8 +559,7 @@ mod tests {
             &[SUCCESS]
         );
 
-        // Any other extension, a boolean that is not one, or a trailing byte
-        // is the ordinary failure.
+        // Other extensions, a non-boolean flag or a trailing byte all fail.
         for malformed in [
             session_bind(b"restrict-destination-v00@openssh.com", 1, b""),
             session_bind(b"session-bind@openssh.com", 2, b""),

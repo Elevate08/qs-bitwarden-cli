@@ -30,8 +30,8 @@ pub enum RuntimeError {
     ReadTimeout,
 }
 
-/// Open private runtime paths. The FIFO descriptor remains open read/write so
-/// writers do not observe transient EOF or SIGPIPE between loads.
+/// Open private runtime paths. The FIFO stays open read/write so writers never
+/// see EOF or SIGPIPE between loads.
 pub struct Runtime {
     directory: PathBuf,
     fifo_path: PathBuf,
@@ -76,8 +76,8 @@ impl PayloadAccumulator {
 }
 
 impl Runtime {
-    /// Create a fresh FIFO below `runtime_root`, refusing every existing FIFO
-    /// path and every directory that is not a same-owner real `0700` directory.
+    /// Create a fresh FIFO under `runtime_root`, refusing any existing path and
+    /// any directory that is not a same-owner real 0700 directory.
     pub fn create(runtime_root: &Path) -> Result<Self, RuntimeError> {
         let directory = ensure_runtime_directory(runtime_root)?;
         Self::create_in(directory)
@@ -151,9 +151,8 @@ impl Runtime {
     }
 }
 
-/// Async FIFO drain used by the current-thread companion. `AsyncFd` waits for
-/// readiness without a blocking worker thread, so control/lock messages remain
-/// serviceable while a producer is slow.
+/// Async FIFO drain: `AsyncFd` waits without a blocking thread, so control
+/// messages stay serviceable while a producer is slow.
 pub async fn read_payload_async(
     fifo: File,
     timeout: Duration,
@@ -168,11 +167,9 @@ pub async fn read_payload_async(
                 let mut file = inner.get_ref();
                 file.read(&mut chunk)
             }) {
-                // EOF, not a spurious wakeup. `try_io` only clears readiness
-                // on `WouldBlock`, so a producer that closed without a newline
-                // leaves this readable for good: continuing straight back would
-                // spin a core flat out until the timeout. Paced the same way
-                // the blocking twin above paces its idle reads.
+                // EOF: `try_io` only clears readiness on `WouldBlock`, so it
+                // stays readable; pace the retry (as the blocking reader does)
+                // instead of spinning until the timeout.
                 Ok(Ok(0)) => tokio::time::sleep(Duration::from_millis(1)).await,
                 Ok(Ok(count)) => {
                     if let Some(payload) = accumulator.push(&chunk[..count])? {
@@ -188,8 +185,8 @@ pub async fn read_payload_async(
     .map_err(|_| RuntimeError::ReadTimeout)?
 }
 
-/// Singleton-owned runtime. The lock is acquired before stale paths are ever
-/// inspected or removed, closing the restart race between two companions.
+/// Singleton runtime: the lock is taken before stale paths are touched, so two
+/// companions cannot race a restart.
 pub struct ServiceRuntime {
     runtime: Runtime,
     socket_path: PathBuf,

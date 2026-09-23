@@ -1,41 +1,14 @@
 #!/usr/bin/env node
-// Tests for the generator's option handling. Generation itself is `bw generate`;
-// what is worth testing is that we never hand it a combination it rejects.
+// Generator options: never hand `bw generate` a combination it rejects.
 //
 //   node tests/generator.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
-const path = require("path")
+const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
 const panelSrc = readPluginSource("Panel.qml")
-const bodyOf = (name) => {
-  const start = panelSrc.indexOf(`function ${name}(`)
-  if (start === -1) return ""
-  let depth = 0
-  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
-    if (panelSrc[i] === "{") depth++
-    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
-  }
-  return ""
-}
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.generateCommand = generateCommand
-  exports.generateServeUrl = generateServeUrl
-  exports.generateServeRequestCommand = generateServeRequestCommand
-  exports.parseServeGenerated = parseServeGenerated
-  exports.generateServeCommand = generateServeCommand
-  exports.normalizeGeneratorOptions = normalizeGeneratorOptions
-  exports.generatorDefaults = generatorDefaults
-  exports.generatorStrength = generatorStrength
-  exports.generatorPortIsForeign = generatorPortIsForeign
-  exports.generatorServeExitAction = generatorServeExitAction
-`)(Model)
+const bodyOf = name => functionBody(panelSrc, name)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("generator")
 const args = o => Model.generateCommand(o).join(" ")
 
 // `bw generate` errors if every character set is off; fall back rather than fail.
@@ -96,9 +69,7 @@ check("defaults are a fresh object each call",
 
 
 // --- the same options over `bw serve` ---------------------------------------
-// `bw generate` spends ~2.9s on CLI bootstrap and service init before it
-// generates anything; the serve API answers the same request in ~2ms. These
-// URLs were verified against a live locked `bw serve`.
+// `bw serve` URLs, verified against a live locked `bw serve`.
 
 const url = (o) => Model.generateServeUrl(o)
 
@@ -152,22 +123,6 @@ check("garbage yields nothing rather than throwing",
   Model.parseServeGenerated("<html>not json</html>") === "", "expected empty")
 check("an empty body yields nothing", Model.parseServeGenerated("") === "", "expected empty")
 
-
-// --- the loopback server is not trusted just because it answers --------------
-//
-// `bw serve` has no authentication and a loopback port is reachable by every
-// account on the machine, so an HTTP 200 is not evidence that the process which
-// sent it is ours. The only answer that leaves the port free for our own server
-// is a refused connection.
-
-check("a refused connection is the one answer that frees the port",
-  Model.generatorPortIsForeign(0) === false, "status 0 was treated as occupied")
-for (const status of [200, 404, 500, 401, 302]) {
-  check(`an HTTP ${status} means someone else is already bound`,
-    Model.generatorPortIsForeign(status) === true, `status ${status} was trusted`)
-}
-check("a status arriving as a string is still not mistaken for silence",
-  Model.generatorPortIsForeign("200") === true, "string status was trusted")
 
 // --- what our own server exiting means ---------------------------------------
 
@@ -249,5 +204,4 @@ check("a deferred generator request restarts only if the generator is still open
     resumeServeRequest),
   resumeServeRequest)
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

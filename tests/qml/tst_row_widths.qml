@@ -1,24 +1,10 @@
-// A row of buttons must fit the panel it is drawn in.
+// A row of buttons must fit the panel it is drawn in. A Row cannot shrink or
+// wrap, so an overflowing button is simply off the panel (it once hid Delete).
+// This reads the panel's QML, rebuilds each button label in the real font,
+// and fails any Row that does not fit. Flow and RowLayout rows are reported,
+// not failed, since they can wrap or shrink.
 //
-// QtQuick's Row is a positioner, not a layout: it cannot shrink a child and it
-// cannot start a second line. Anything wider than the panel is simply laid out
-// past the right edge, and the control that lands there is gone -- not clipped
-// with a scrollbar, not wrapped, just off the panel with no way to reach it.
-//
-// That is how "Suggested here" cost the detail view its Delete button. The
-// header holds four buttons only when the active window matched a login, and
-// the pinned label is one character wider than the unpinned one -- so the row
-// fit at 441px until the moment you clicked, and 454.5px after. Nothing in the
-// panel said so; the button was just missing.
-//
-// So this measures. It reads the panel's own QML, finds every Row of buttons,
-// rebuilds each label with the real font, and adds up what the kit will make
-// of them. A Row that does not fit fails here instead of in a screenshot.
-//
-// Rows declared as Flow or RowLayout are reported but not failed: those two
-// CAN wrap or shrink, which is the fix this test exists to push people toward.
-//
-// Needs the QML sources readable from QML, which Qt gates behind an env var:
+// Needs the QML sources readable from QML:
 //
 //   QML_XHR_ALLOW_FILE_READ=1 QT_QPA_PLATFORM=offscreen \
 //     /usr/lib/qt6/bin/qmltestrunner -input tests/qml
@@ -35,31 +21,24 @@ TestCase {
 
   // ---------------------------------------------------------------- budgets
   //
-  // Panel.qml draws into `fittedContentWidth(Style.space(450))`. Rows inside a
-  // Flickable lose `scrollGutter` (Style.space(10)) on top of that, and rather
-  // than track which rows are and are not inside one, every panel row is held
-  // to the narrower 440. The SSH prompt is its own card: Style.space(460) less
-  // panelPadding (18) and the card border (2) on each side.
-  //
-  // These are the sizes at the default [font] base-size of 12. A theme scales
-  // fonts and spacing by the same factor -- Style.space() multiplies by
-  // fontScale too -- so the ratio this test pins holds at any base size.
+  // Panel rows get fittedContentWidth(Style.space(450)) less the 10px scroll
+  // gutter, so all are held to 440. The SSH card is Style.space(460) less
+  // padding (18) and border (2) per side. At the default base size of 12;
+  // themes scale fonts and spacing alike, so the ratio holds.
   readonly property int panelBudget: 440
   readonly property int popupBudget: 420
 
   // ------------------------------------------------------- the kit's Button
   //
-  // qs.Ui.Button cannot be instantiated here: it imports qs.Commons, which
-  // imports Quickshell, whose plugin only loads inside the quickshell runtime.
-  // So its geometry is restated, from Ui/Button.qml:
+  // qs.Ui.Button cannot load here (it needs the Quickshell runtime), so its
+  // geometry is restated from Ui/Button.qml:
   //
   //   implicitWidth: row.implicitWidth + horizontalPadding * 2
   //                  + _reservedBorderLeft + _reservedBorderRight
   //
-  // where the inner row is `icon + Style.spacing.controlGap + label`, the
-  // padding is Style.spacing.controlPaddingX, and the reserved border is the
-  // widest any state can paint (1px a side at the default border width).
-  // `verify_button_geometry_is_still_the_kits` below fails if that changes.
+  // with row = icon + Style.spacing.controlGap + label, padding
+  // Style.spacing.controlPaddingX, and a 1px border per side.
+  // `test_button_geometry_is_still_the_kits` fails if that changes.
   readonly property int controlGap: 8
   readonly property int controlPaddingX: 10
   readonly property int reservedBorder: 2
@@ -82,15 +61,9 @@ TestCase {
     return labelMetrics.advanceWidth
   }
 
-  // One monospace cell at the icon size, NOT the glyph itself.
-  //
-  // These icons are Nerd Font private-use codepoints, which exist on a desktop
-  // running the shell and not on a CI runner -- and a missing glyph measures as
-  // the fallback's notdef box, so measuring them directly would quietly change
-  // every total the moment this runs somewhere without the font. In a patched
-  // monospace font a Nerd glyph occupies exactly one cell, so an ordinary
-  // character at the same pixel size is the same width and is everywhere.
-  // (Locally both measure 8.390625.)
+  // One monospace cell at the icon size, not the glyph: Nerd Font glyphs are
+  // absent on CI (they would measure as notdef), and occupy exactly one cell in
+  // a patched monospace font.
   function iconWidth(glyph) {
     if (!glyph) return 0
     iconMetrics.text = "M"
@@ -230,11 +203,8 @@ TestCase {
     { file: "UnlockForm.qml", budget: panelBudget }
   ]
 
-  // Every budget here is a pixel count, and pixel counts only mean anything
-  // while the font puts every character in the same width of cell. If this
-  // machine resolves `monospace` to something proportional, the numbers below
-  // are measuring a different panel than the one that ships -- say so rather
-  // than report a pass or a failure that was never about the layout.
+  // The budgets assume a monospace font; say so if `monospace` resolves to a
+  // proportional one.
   function test_the_font_is_monospaced() {
     var narrow = labelWidth("iiiiiiiiii", 11)
     var wide = labelWidth("MMMMMMMMMM", 11)
@@ -275,11 +245,8 @@ TestCase {
       }
     }
     verify(measured >= 12, "only measured " + measured + " rows -- the parser stopped seeing them")
-    // Every button is counted, including ones a `visible:` binding makes
-    // mutually exclusive -- the parser cannot evaluate those, and a row whose
-    // contents depend on runtime state is exactly the row that should wrap
-    // rather than be trusted to a hand-checked worst case. The remedy either
-    // way is one word: Flow.
+    // Buttons hidden by `visible:` bindings count too: a row whose contents
+    // vary at runtime should be a Flow.
     verify(offenders.length === 0,
       "these Rows lay a button out past the panel edge; make them a Flow, or "
       + "shorten the labels:\n    " + offenders.join("\n    "))
@@ -304,10 +271,7 @@ TestCase {
       "unpinned header needs " + unpinned.toFixed(1) + "px of " + panelBudget)
   }
 
-  // The filter row names each filter as well as showing its value, because
-  // three chips reading "All" say nothing about which is which. That costs
-  // width, and the row is allowed to wrap to pay for it -- so what has to hold
-  // is not that every combination fits one line, but these two things.
+  // Filter chips show name and value and may wrap, so what must hold is:
   function filterChip(name, value, glyph) {
     // Model.clipLabel(value, 20), restated.
     var clipped = value.length <= 20 ? value : value.slice(0, 17) + "..."
@@ -345,13 +309,10 @@ TestCase {
 
   // --------------------------------------------------- the wrapping is real
   //
-  // Everything above is arithmetic. This part instantiates the two containers
-  // the fix relies on and checks they behave, because both do something a Row
-  // does not: the header wraps, and the filter row shrink-wraps so it can stay
-  // centred while it fits and take the whole panel when it cannot.
   //
-  // The chips stand in for qs.Ui.Button -- which will not load here -- using
-  // the same implicitWidth this file already restates.
+  // Instantiates the Flow containers the fix relies on: the header wraps, and
+  // the filter row stays centred while it fits and spans the panel when not.
+  // Chips stand in for qs.Ui.Button with the restated implicitWidth.
   Component {
     id: chip
     Item {

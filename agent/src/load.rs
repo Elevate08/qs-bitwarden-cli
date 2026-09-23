@@ -63,10 +63,9 @@ impl LoadWindow {
         })
     }
 
-    /// Decode one complete bounded JSON payload and build an unpublished
-    /// candidate. Raw JSON and each PEM allocation wipe on drop. The nonce is
-    /// checked before `begin_load`, so a rejected payload cannot wipe a live
-    /// private set.
+    /// Decode one bounded JSON payload into an unpublished candidate. Raw JSON
+    /// and PEMs wipe on drop; the nonce is checked before `begin_load`, so a
+    /// rejected payload cannot wipe a live set.
     pub fn decode(
         &mut self,
         bytes: Zeroizing<Vec<u8>>,

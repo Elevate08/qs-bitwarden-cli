@@ -9,7 +9,7 @@ import path contains a directory named `qs`:
 
 ```bash
 mkdir -p /tmp/qs-imports && ln -sfn /usr/share/omarchy/shell /tmp/qs-imports/qs
-/usr/lib/qt6/bin/qmllint -I /tmp/qs-imports Service.qml Panel.qml FormPickerRow.qml UnlockForm.qml SshUnlockScreen.qml SshApprovalScreen.qml SshCaption.qml SshSectionHeader.qml
+/usr/lib/qt6/bin/qmllint -I /tmp/qs-imports *.qml
 ```
 
 Remaining `unqualified` and `missing-property` warnings are baseline Quickshell
@@ -27,51 +27,28 @@ omarchy plugin validate .
 
 ## Tests
 
-Regression suites require Node; the SSH-items boundary suite also exercises jq:
+Regression suites need Node (and jq for the SSH-items suite). Each suite's
+header says what it covers; run them all the way CI does:
 
 ```bash
-node tests/service-host.test.js     # one vault per shell: the service entry point, how each bar finds
-                                    # it or falls back to its own, the presenter, and the line between
-                                    # Service.qml (the vault) and Panel.qml (a per-monitor view of it)
-node tests/auth.test.js             # unlock/login commands, and that no credential reaches argv
-node tests/auth-prewarm.test.js     # private FIFO lifecycle, byte-exact password delivery, and cancellation
-node tests/context-match.test.js    # window-title matching and learned suggestions
-node tests/setup-settings.test.js   # dependency probe, settings writer, PIN crypto
-node tests/ssh-items.test.js         # bounded out-of-process vault sanitization and SSH private-key exclusion
-node tests/first-run.test.js        # a fresh install with no `bw` yet: the setup gate, the
-                                    # sequence that follows the install, and what the
-                                    # in-panel install button asks for
-node tests/generator.test.js        # generator option clamping and strength
-node tests/folders.test.js          # folder parsing, filtering and assignment
-node tests/sends.test.js            # Send payloads, parsing, and argv-safety
-node tests/collections.test.js      # organization collections and item ownership
-node tests/items.test.js            # item parsing, and that a list entry can build the detail view
-node tests/attachments.test.js      # attachment metadata, that a vault file name cannot escape ~/Downloads,
-                                    # that a symlink cannot redirect a download, and the transfer ceilings
-node tests/handoff-urls.test.js     # session-handoff file path, and which URI schemes may be opened
-node tests/rich-text.test.js        # vault text is drawn as text, never parsed as markup
-node tests/session-boot.test.js     # a remembered session dies with the boot that minted it
-node tests/stream-limits.test.js    # every stream the shell reads is capped by its producer
-node tests/lock-state.test.js       # the auto-lock survives a suspend, the timings are clamped
-                                    # on the way in, and a read of a vault that has since closed
-                                    # is refused rather than rendered
-node tests/lock-triggers.test.js    # locking on screen lock and on suspend, and the window in
-                                    # which a terminal login's session key is accepted
-node tests/sleep-monitor-lifetime.test.js # stdin closure and owner/direct-child TERM/KILL cleanup
-                                         # Linux /proc; stubbed logind and inhibitors
-node tests/hardening.test.js        # `--` before every server-chosen id, the custom-server check,
-                                    # and that logging out takes the learned suggestions with it
-node tests/buffer-scrub.test.js     # emptying the pipe buffers a lock used to leave full, and the
-                                    # deadline and size ceiling on every generator-port request
-node tests/initial-load.test.js     # items render before folders, organizations and status refresh
-node tests/performance.test.js      # deterministic small/typical/large/stress vault guardrails
+for t in tests/*.test.js; do node "$t" || echo "FAILED: $t"; done
 ```
 
-The vault lives in `Service.qml`, which the shell loads once, and `Panel.qml`
-is the bar widget drawn on each monitor. Suites that read the QML as text get it
-through `tests/plugin-source.js`, which returns the vault followed by the view
-with the view's `root.vault.` qualifier folded back; `service-host.test.js` is
-what keeps that fold exact.
+The helpers have their own Rust tests:
+
+```bash
+cargo test --manifest-path agent/Cargo.toml
+cargo test --manifest-path unlock-key/Cargo.toml
+```
+
+Shared helpers live in `tests/harness.js`: `loadModule()` evaluates a
+`.pragma library` file and exposes its top-level names, `createSuite()` records
+and reports checks, and `readPluginSource()` returns QML as text. The vault
+lives in `Service.qml` (loaded once per shell) and `Panel.qml` is the per-monitor
+view; for `Panel.qml`, `readPluginSource()` returns the vault followed by the
+view with `root.vault.` folded back to `root.`, and `service-host.test.js` keeps
+that fold exact. `tests/legacy-keyring.js` writes the pre-envelope keyring
+entries that migration tests start from.
 
 Multi-monitor behaviour can be checked on a single screen with a headless
 output, which gives the shell a second bar and the plugin a second view:
@@ -117,5 +94,3 @@ with no test output at all. If a run prints nothing whatsoever, that is why.
 
 `QT_ASSUME_STDERR_HAS_CONSOLE=1` is worth adding while debugging a QML test --
 without it `console.log()` from inside QML is silently dropped.
-
----

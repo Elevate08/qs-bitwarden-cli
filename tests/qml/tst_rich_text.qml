@@ -1,11 +1,6 @@
-// A Text left on its default textFormat sniffs its own string and renders it
-// as HTML the moment it looks like markup. That is a real hazard in a panel
-// whose strings come out of a vault, and it is invisible in code review --
-// nothing in the QML says "HTML". So it is pinned here against Qt itself
-// rather than against our reading of the docs.
-//
-// Rendering is observed through contentWidth: markup that Qt parsed is markup
-// Qt did not draw, so the parsed line is narrower than the literal one.
+// A Text on its default textFormat renders markup-like strings as HTML, which
+// vault strings make a real hazard. Pinned against Qt itself: parsed markup is
+// not drawn, so the parsed line's contentWidth is narrower.
 //
 //   QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml
 //

@@ -1,29 +1,15 @@
-//! A launch-time smoke test the panel can run before it trusts this binary.
-//!
-//! What this proves: the binary executes on this machine, its crypto library
-//! loads and computes correctly, its frame and control parsers work and reject
-//! what they should, and the kernel supports the process hardening the rest of
-//! the design depends on.
-//!
-//! What it deliberately does not prove: that signing produces a correct
-//! signature. Doing that needs a private key, and the only honest ways to get
-//! one are to generate it -- which would put a random-number generator into a
-//! key-holding binary's dependency tree for the sake of a smoke test -- or to
-//! embed one, which is exactly what this project refuses to do anywhere else.
-//! The verification path below exercises the same crypto backend; the signing
-//! path is covered by the test suite, where generating a disposable key costs
-//! nothing.
-//!
-//! It touches no filesystem, opens no socket, and needs no runtime directory,
-//! because it runs before any of those exist.
+//! Launch-time smoke test the panel runs before trusting this binary: it
+//! executes here, its crypto and parsers work, and the kernel supports the
+//! process hardening. Signing is not tested: that needs a private key, which
+//! would mean an RNG in the dependency tree or an embedded key (the test suite
+//! covers it). Touches no filesystem, socket or runtime directory.
 
 use crate::control::{parse_control_line, ControlError, ControlMessage, MAX_CONTROL_LINE};
 use crate::protocol::{self, AgentRequest, MAX_FRAME_LEN};
 use ssh_encoding::Encode;
 use ssh_key::{HashAlg, PublicKey};
 
-/// A disposable public key, generated for this check and belonging to nobody.
-/// Public material only -- there is no private counterpart anywhere.
+/// A disposable public key with no private counterpart anywhere.
 const FIXTURE_PUBLIC_KEY: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDgSTquIEW1Ui0iRAQcZZAjS1OIA/D6Q+Arq/JfoVLkh";
 
@@ -71,10 +57,8 @@ pub fn run() -> i32 {
     }
 }
 
-/// The hardening is applied for real, then read back. A kernel that refuses
-/// either of these is one where the design's assumptions about core dumps and
-/// same-UID inspection do not hold, and the panel should know before it hands
-/// this process any keys.
+/// Applies the hardening and reads it back; the panel should know before
+/// handing over keys if core-dump and ptrace protections are unavailable.
 fn hardening_available() -> bool {
     if crate::lifecycle::harden_process().is_err() {
         return false;
@@ -85,8 +69,7 @@ fn hardening_available() -> bool {
         && matches!(dumpable, Ok(rustix::process::DumpableBehavior::NotDumpable))
 }
 
-/// Parses a real public key and derives its fingerprint, which exercises the
-/// same ssh-key backend the signing path uses.
+/// Parse a public key and fingerprint it, using the signing path's backend.
 fn public_key_math() -> bool {
     let Ok(key) = PublicKey::from_openssh(FIXTURE_PUBLIC_KEY) else {
         return false;
@@ -131,8 +114,7 @@ fn frame_round_trip() -> bool {
     decoded && listed.len() > 4
 }
 
-/// The ceiling is checked before anything is allocated, so a claimed length
-/// beyond it must be refused rather than believed.
+/// A claimed length over the ceiling must be refused before allocating.
 fn frame_bounds() -> bool {
     let mut oversized = u32::try_from(MAX_FRAME_LEN + 1)
         .unwrap_or(u32::MAX)
@@ -143,8 +125,7 @@ fn frame_bounds() -> bool {
     protocol::decode_request(&oversized).is_none() && protocol::decode_request(&empty).is_none()
 }
 
-/// The control channel is versioned so an old bundled binary fails clearly
-/// after a plugin update rather than misreading a newer panel.
+/// Versioned, so a stale bundled binary fails clearly after an update.
 fn control_versions() -> bool {
     let hello = parse_control_line(br#"{"v":1,"type":"hello"}"#);
     let wrong_version = parse_control_line(br#"{"v":2,"type":"hello"}"#);

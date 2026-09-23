@@ -1,52 +1,18 @@
 #!/usr/bin/env node
-// Attachment metadata rides along with `bw list items`, so the panel lists an
-// item's files without a second CLI call; only the bytes are fetched, and only
-// on demand. Two things are worth pinning down here: that the metadata really
-// does survive both parse paths, and that a file name out of the vault -- which
-// is attacker-controlled text about to become part of a path we create --
-// cannot escape the download directory.
+// Attachment metadata comes with `bw list items`; only the bytes are fetched,
+// on demand. Checks that the metadata survives both parse paths and that a
+// vault file name cannot escape the download directory.
 //
 //   node tests/attachments.test.js
 
+const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 const panelSrc = readPluginSource("Panel.qml")
-const bodyOf = (name) => {
-  const start = panelSrc.indexOf(`function ${name}(`)
-  if (start === -1) return ""
-  let depth = 0
-  for (let i = panelSrc.indexOf("{", start); i < panelSrc.length; i++) {
-    if (panelSrc[i] === "{") depth++
-    else if (panelSrc[i] === "}" && --depth === 0) return panelSrc.slice(start, i + 1)
-  }
-  return ""
-}
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.parseItems = parseItems
-  exports.parseItemDetail = parseItemDetail
-  exports.itemDetailFromObject = itemDetailFromObject
-  exports.parseAttachments = parseAttachments
-  exports.formatAttachmentSize = formatAttachmentSize
-  exports.safeAttachmentFileName = safeAttachmentFileName
-  exports.attachmentDownloadCommand = attachmentDownloadCommand
-  exports.editItemCommand = editItemCommand
-  exports.deleteSendCommand = deleteSendCommand
-  exports.deleteItemCommand = deleteItemCommand
-  exports.getTotpCommand = getTotpCommand
-  exports.getItemCommand = getItemCommand
-  exports.parentDirectory = parentDirectory
-  exports.baseName = baseName
-  exports.filterItems = filterItems
-  exports.findContextualMatches = findContextualMatches
-  exports.itemDomains = itemDomains
-`)(Model)
+const bodyOf = name => functionBody(panelSrc, name)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("attachments")
 
 const withFiles = {
   object: "item", id: "11111111-1111-1111-1111-111111111111",
@@ -117,8 +83,7 @@ check("so does junk", Model.formatAttachmentSize("banana") === "", Model.formatA
 
 // --- a vault file name cannot escape the download directory ------------------
 //
-// This is the one that matters: the name is decrypted vault content, and the
-// download path is built from it.
+// The name is decrypted vault content, and the path is built from it.
 
 const traversals = [
   "../../.bashrc",
@@ -241,17 +206,9 @@ check("baseName names the saved file for the flash message",
 
 // --- the shape QML hands back ------------------------------------------------
 //
-// This is the one that would have caught the bug that shipped. A cipher parsed
-// from `bw` JSON holds real arrays, and every check in the model said
-// Array.isArray(). But the parsed cipher is stored in a QML `var` property and
-// read back through a ListView delegate, and Qt converts the nested arrays on
-// that trip into array-like objects: typeof "object", correct .length,
-// indexing works, Array.isArray() false. So the detail view built from that
-// object found no attachments on an item the list had just drawn a paperclip
-// on -- and no error anywhere, because an empty list is a valid answer.
-//
-// Node always gives real arrays, which is exactly why the first round of tests
-// passed while the panel was broken. So fake the conversion here.
+// A cipher stored in a QML `var` comes back with array-like objects for which
+// Array.isArray() is false (the detail view once found no attachments this
+// way). Node gives real arrays, so fake the conversion.
 
 const qmlish = (arr) => {
   // Array-like, deliberately not an Array -- what Qt hands back.
@@ -298,10 +255,7 @@ check("and so do custom fields",
   rtLogin.fields.length === 1 && rtLogin.fields[0].name === "recovery",
   JSON.stringify(rtLogin.fields))
 
-// itemDetailFromObject was taught the lesson; the two readers that run over
-// root.items on every keystroke and every panel open were not. Searching by
-// URL and matching an item to the focused site both read login.uris straight
-// off a round-tripped cipher.
+// The same for the per-keystroke readers: URL search and site matching.
 const rtListItem = Model.parseItems(JSON.stringify([login])).map(qmlish_obj)
 check("searching by URL still finds the item after the round trip",
   Model.filterItems(rtListItem, "github.com", "all", "all", "all").length === 1,
@@ -333,10 +287,8 @@ check("an object with a junk length is not a list",
     && Model.parseAttachments({ length: 1.5 }).length === 0
     && Model.parseAttachments({ length: "2" }).length === 0, "accepted a junk length")
 
-// Duck-typing takes the server's word for how long a list is, and the word is
-// free to be a lie: {"length": 200000000} is forty bytes that asked for a
-// two-hundred-million-element array. The byte cap on the item list cannot see
-// it coming. So the length is a ceiling, not an instruction.
+// A duck-typed length is the server's claim ({"length": 2e8} is 40 bytes), so
+// it is a ceiling, not an instruction.
 const manyUris = { length: 5000 }
 for (let i = 0; i < 5000; i++) manyUris[i] = { uri: "https://example" + i + ".com" }
 check("a list longer than any real item stops at the ceiling",
@@ -352,10 +304,7 @@ check("and a real array is held to the same ceiling",
 // and without it the parse takes the whole process down with it -- which, in
 // the panel, is the shell.
 const lengthLie = `
-  const fs = require("fs")
-  const M = {}
-  new Function("exports", fs.readFileSync(${JSON.stringify(path.join(__dirname, "..", "BitwardenModel.js"))}, "utf8")
-    .replace(/^\\.pragma library\\s*$/m, "") + "\\nexports.parseItems = parseItems")(M)
+  const M = require(${JSON.stringify(path.join(__dirname, "harness.js"))}).loadModule()
   M.parseItems(JSON.stringify([{
     object: "item", id: "x", type: 1, name: "n",
     attachments: { length: 200000000 },
@@ -376,10 +325,8 @@ check("a declared length of two hundred million does not take the shell process 
 
 // --- and the script actually run ---------------------------------------------
 //
-// String-matching the script only says what we wrote. What matters is what
-// bash does with it, so it is run for real here against a stub `bw` and a
-// throwaway HOME: the traversal has to end up inside the download directory,
-// and a name collision must never overwrite what is already there.
+// Run for real against a stub `bw` and a throwaway HOME: traversal ends inside
+// the download dir, and collisions never overwrite.
 
 const os = require("os")
 const { execFileSync } = require("child_process")
@@ -433,13 +380,9 @@ check("a failing bw exits non-zero rather than reporting a path for a file it ne
 
 // --- the size the server declares ---------------------------------------------
 //
-// The size is the one value out of the vault that reaches the script as a bare
-// word, and a big enough number is spelled "1e+30" in JavaScript. Bash reads
-// that as a non-integer, so `[ "$want" -gt "$max" ]` and the free-space test
-// both failed as errors rather than answering, and a failing test inside an
-// `if` is simply skipped -- the download then ran with neither ceiling and
-// said nothing about it. A hostile server picks this number, so it is checked
-// by running the script, not by reading it.
+// The declared size reaches the script unquoted, and JS prints huge numbers as
+// "1e+30", which `[ ]` errors on (skipping the checks inside `if`). Checked by
+// running the script.
 
 for (const absurd of ["1e21", "1e30", "1e40", "999999999999999999999999"]) {
   let refused = null
@@ -468,9 +411,7 @@ fs.rmSync(home, { recursive: true, force: true })
 
 // --- a server-chosen id cannot become an option to bw ------------------------
 //
-// Quoting defends against the shell, not against bw's own parser: `bw get item
-// --help` prints help rather than looking anything up, and every id here is the
-// server's to choose. `--` ends the options, and our own flags go before it.
+// `--` stops a server-chosen id like `--help` being read as an option.
 
 const optionish = "--help"
 const guarded = [
@@ -490,5 +431,4 @@ check("the attachment id goes last, after our own flags and the separator",
     .indexOf(`--output "$tmp" -- '--help'`) !== -1,
   Model.attachmentDownloadCommand(optionish, "i", "f.txt")[2])
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

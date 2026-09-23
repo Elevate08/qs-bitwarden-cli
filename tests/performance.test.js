@@ -1,21 +1,13 @@
 #!/usr/bin/env node
-// Deterministic synthetic-vault performance guardrails. These measure the
-// work the plugin owns after `bw list items` returns; they never read a real
-// vault or make a network request.
+// Synthetic-vault performance guardrails for the work after `bw list items`
+// returns; no real vault or network.
 //
 //   node tests/performance.test.js
 
 
-const fs = require("fs")
-const path = require("path")
+const { createSuite, loadModule } = require("./harness")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.parseItems = parseItems
-  exports.filterItems = filterItems
-  exports.findContextualMatches = findContextualMatches
-`)(Model)
+const Model = loadModule()
 
 const MIB = 1024 * 1024
 const tiers = [
@@ -29,9 +21,7 @@ const tiers = [
     parseP95Ms: 300, filterP95Ms: 150, contextP95Ms: 250 }
 ]
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("performance")
 
 function fakeItem(index, tier) {
   const ordinal = String(index).padStart(5, "0")
@@ -157,8 +147,4 @@ for (const row of results) {
     + `  ${(row.filter.toFixed(2) + "ms").padStart(10)}`
     + `  ${(row.context.toFixed(2) + "ms").padStart(11)}`)
 }
-console.log(`\n${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

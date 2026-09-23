@@ -1,27 +1,19 @@
 #!/usr/bin/env node
-// `bw list items` returns every decrypted cipher field. Before QML sees that
-// stream, supported ordinary items must be allowlisted and SSH keys reduced to
-// public metadata. These tests execute the real shell/jq pipeline with a fake
-// `bw`, so they cover the process boundary rather than a second JS sanitizer.
+// Before QML sees `bw list items`, ordinary items are allowlisted and SSH keys
+// reduced to public metadata. Runs the real shell/jq pipeline with a fake `bw`.
 //
 //   node tests/ssh-items.test.js
 
+const { createSuite, loadModule, readPluginSource } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { spawnSync } = require("child_process")
 const panelSrc = readPluginSource("Panel.qml")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.sanitizedListCommand = sanitizedListCommand
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("ssh-items")
 
 const PRIVATE_MARKER = "SSH_PRIVATE_MARKER_must_not_reach_QML"
 const UNKNOWN_MARKER = "UNKNOWN_TYPE_MARKER_must_not_reach_QML"
@@ -331,8 +323,4 @@ try {
   fs.rmSync(tempDir, { recursive: true, force: true })
 }
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

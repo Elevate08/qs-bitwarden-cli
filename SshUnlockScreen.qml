@@ -18,15 +18,6 @@ Column {
   width: parent ? parent.width : 0
   spacing: Style.space(12)
 
-  component UnlockCaption: Text {
-    textFormat: Text.PlainText
-    width: parent ? parent.width : 0
-    color: screen.panel.dim
-    font.family: screen.panel.fontFamily
-    font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
-  }
-
   function focusDefault() {
     if (!screen.active || !screen.visible) return
     screen.vault.prepareUnlock()
@@ -46,16 +37,15 @@ Column {
     panel: screen.panel
     vault: screen.vault
     buttonsFocusable: true
-    // Until `bw status` answers there is no unlock process to deliver a
-    // password to, and a PIN result is discarded, so offer nothing yet; the
-    // "Checking vault status..." box says why. Focus follows the fields in.
+    // Nothing to unlock until `bw status` answers; the "Checking vault
+    // status..." box says so. Focus follows the fields in.
     fieldsOffered: screen.vault.status === "locked"
     onFieldsOfferedChanged: if (fieldsOffered) screen.focusDefault()
 
     context: [
-      // The one line of context: who is asking, and for what. The popup only
-      // ever appears for a locked vault, so saying so again is noise.
-      UnlockCaption {
+      // Who is asking, and for what.
+      SshCaption {
+        panel: screen.panel
         text: {
           var request = screen.vault.sshUnlockRequest
           if (!request) return ""
@@ -94,14 +84,16 @@ Column {
     ]
   }
 
-  UnlockCaption {
+  SshCaption {
+    panel: screen.panel
     visible: screen.vault.errorMessage !== ""
     text: screen.vault.errorMessage
     color: screen.panel.urgent
     horizontalAlignment: Text.AlignHCenter
   }
 
-  UnlockCaption {
+  SshCaption {
+    panel: screen.panel
     visible: screen.vault.status === "unauthenticated"
     text: "Sign in from the Bitwarden panel before using vault SSH keys."
     color: screen.panel.urgent

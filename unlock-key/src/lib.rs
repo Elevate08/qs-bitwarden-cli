@@ -1,13 +1,11 @@
 //! The quick-unlock envelope: the master password encrypted once, and the key
 //! that encrypts it wrapped separately for each way of unlocking.
 //!
-//! This is the one piece of quick unlock the operating system cannot do. The
-//! panel composes the rest from system tools -- `systemd-creds` seals the whole
-//! envelope to this machine and user, `argon2` derives a key from the master
-//! password or the PIN, `fido2-assert` gets an `hmac-secret` from the key the
-//! user touches, `secret-tool` stores the result -- and hands this code only
-//! the derived key material, through the environment. Nothing here reads a
-//! file, opens a socket, or runs a key derivation that takes a password.
+//! The panel does the rest with system tools (`systemd-creds` seals the
+//! envelope to this machine and user, `argon2` derives keys from the password
+//! or PIN, `fido2-assert` yields an `hmac-secret`, `secret-tool` stores it) and
+//! passes only derived key material, via the environment. Nothing here reads
+//! files, opens sockets or derives keys from passwords.
 //!
 //! Layout, as JSON inside the systemd-creds seal:
 //!
@@ -22,8 +20,8 @@
 //!   fido[]       hmac-secret               -> KEK -> AEAD(KEK, DEK)
 //! ```
 //!
-//! The `master` wrap always exists: it is written the first time `bw` accepts
-//! a typed password, and opening it is how every later change is authorized.
+//! The `master` wrap always exists (written when `bw` first accepts a typed
+//! password); opening it authorizes every later change.
 
 use base64ct::{Base64, Encoding};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -33,9 +31,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-/// RLIMIT_CORE=0 and PR_SET_DUMPABLE=0, before the first secret is read, so a
-/// crash leaves no core file and no same-UID process can ptrace this one.
-/// The same hardening the SSH helper applies to itself.
+/// RLIMIT_CORE=0 and PR_SET_DUMPABLE=0 before any secret is read: no core
+/// file, no same-UID ptrace. As in the SSH helper.
 pub fn harden_process() -> Result<()> {
     use rustix::process::{self, DumpableBehavior, Resource, Rlimit};
     process::setrlimit(
@@ -49,9 +46,8 @@ pub fn harden_process() -> Result<()> {
     process::set_dumpable_behavior(DumpableBehavior::NotDumpable).map_err(|_| Error::Internal)
 }
 
-/// Compile-time proof that a type wipes its own memory when dropped. If a
-/// call to this stops compiling, a secret buffer here has become a plain
-/// allocation.
+/// Compile-time proof that a type zeroizes on drop; if a call stops compiling,
+/// a secret buffer has become a plain allocation.
 pub fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
 
 /// Envelope format version.
@@ -60,30 +56,26 @@ pub const VERSION: u8 = 1;
 pub const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 
-/// Largest master password accepted. Bitwarden sets no hard limit; this is a
-/// bound on what a caller can make this process allocate, far above any
-/// password a person types.
+/// Largest master password accepted: an allocation bound far above any real
+/// password (Bitwarden sets none).
 pub const MAX_PASSWORD_BYTES: usize = 4096;
 /// Largest envelope accepted on stdin.
 pub const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
-/// FIDO2 keys that can each hold a wrap. One per registered key is the
-/// expected shape; this only stops the envelope growing without bound.
+/// FIDO2 wraps allowed; bounds the envelope (one per key is normal).
 pub const MAX_FIDO_WRAPS: usize = 16;
 /// Account id, server URL, relying party and similar text fields.
 pub const MAX_TEXT_CHARS: usize = 1024;
 
-/// Argon2id floor for any wrap this code will open or create: Bitwarden's own
-/// Argon2 default (64 MiB, 3 passes), so a wrap of the master password is
-/// never a cheaper place to guess it than the account itself.
+/// Argon2id floor for any wrap: Bitwarden's default (64 MiB, 3 passes), so a
+/// wrap is never a cheaper target than the account.
 pub const ARGON2_MIN_MEMORY_KIB: u32 = 64 * 1024;
 pub const ARGON2_MIN_ITERATIONS: u32 = 3;
-/// Ceilings, so a hostile envelope cannot make the panel's `argon2` run
-/// consume the machine.
+/// Ceilings, so a hostile envelope cannot make `argon2` exhaust the machine.
 pub const ARGON2_MAX_MEMORY_KIB: u32 = 4 * 1024 * 1024;
 pub const ARGON2_MAX_ITERATIONS: u32 = 64;
 pub const ARGON2_MAX_PARALLELISM: u32 = 16;
-/// The Argon2 salt is the literal argument given to the `argon2` CLI, so it is
-/// stored as that text. Base64 of 16-48 random bytes.
+/// The salt is stored as the literal text passed to the `argon2` CLI: base64
+/// of 16-48 random bytes.
 const ARGON2_SALT_MIN_CHARS: usize = 22;
 const ARGON2_SALT_MAX_CHARS: usize = 64;
 /// FIDO2 hmac-secret salts and outputs are exactly 32 bytes.
@@ -211,8 +203,8 @@ struct PasswordWrap {
     c: String,
 }
 
-/// The DEK in the clear, protected only by the systemd-creds seal around the
-/// whole envelope. Held in a buffer that wipes itself, and never printed.
+/// The DEK itself, protected only by the systemd-creds seal. Zeroizing, never
+/// printed.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FingerprintWrap {
@@ -287,8 +279,8 @@ pub enum Method<'a> {
     Fido { credential: &'a str },
 }
 
-/// Everything about an envelope that is not secret: what the panel needs to
-/// run `argon2` or `fido2-assert` before it can open anything.
+/// The non-secret part of an envelope: what the panel needs to run `argon2`
+/// or `fido2-assert`.
 #[derive(Debug, Eq, PartialEq, Serialize)]
 pub struct Summary {
     pub v: u8,
@@ -309,9 +301,8 @@ pub struct FidoSummary {
 }
 
 impl Envelope {
-    /// A new envelope for a password `bw` has just accepted: a fresh DEK, the
-    /// password sealed under it, and the `master` wrap. No quick-unlock
-    /// method is enabled yet.
+    /// A new envelope for a password `bw` just accepted: a fresh DEK, the
+    /// password sealed under it, and the `master` wrap only.
     pub fn create(
         account: Account,
         password: &[u8],
@@ -338,8 +329,7 @@ impl Envelope {
         })
     }
 
-    /// Parse and fully validate. Anything that would be refused later is
-    /// refused here.
+    /// Parse and fully validate; anything refused later is refused here.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_ENVELOPE_BYTES {
             return Err(Error::Policy);
@@ -509,8 +499,7 @@ impl Envelope {
         Ok(())
     }
 
-    /// Disable one method. Needs no secret: removing a way in cannot open
-    /// anything. The `master` wrap is not a method and cannot be removed.
+    /// Disable one method; needs no secret. `master` cannot be removed.
     pub fn remove(&mut self, method: &Method) -> Result<()> {
         match method {
             Method::Pin => self.wraps.pin.take().map(drop).ok_or(Error::Missing),
@@ -533,15 +522,13 @@ impl Envelope {
         }
     }
 
-    /// The password was changed elsewhere and a method has not yet supplied
-    /// the DEK to rotate with.
+    /// The password changed elsewhere and no method has supplied the DEK yet.
     pub fn mark_stale(&mut self) {
         self.stale = true;
     }
 
-    /// Re-seal for a new master password. `auth` reaches the unchanged DEK --
-    /// the old password through `master`, or any method -- so every method's
-    /// wrap stays valid.
+    /// Re-seal for a new master password. `auth` (old password or any method)
+    /// reaches the unchanged DEK, so every wrap stays valid.
     pub fn rotate(
         &mut self,
         auth: &Via,
@@ -575,8 +562,7 @@ fn password_wrap(
     })
 }
 
-/// One KEK per purpose, so an Argon2 output for the PIN can never open the
-/// master wrap even if the two were somehow derived alike.
+/// One KEK per purpose, so a PIN-derived key can never open the master wrap.
 fn derive_kek(input: &[u8; KEY_LEN], purpose: &str) -> Result<Key> {
     let mut info = DOMAIN.to_vec();
     info.extend_from_slice(b" kek ");
@@ -588,8 +574,8 @@ fn derive_kek(input: &[u8; KEY_LEN], purpose: &str) -> Result<Key> {
     Ok(kek)
 }
 
-/// Associated data: the domain and each part, length-prefixed so no two
-/// different lists of parts encode the same.
+/// Associated data: the domain and length-prefixed parts, so distinct lists
+/// never encode the same.
 fn aad(parts: &[&[u8]]) -> Vec<u8> {
     let mut out = DOMAIN.to_vec();
     for part in parts {
@@ -739,8 +725,7 @@ fn deserialize_secret<'de, D: Deserializer<'de>>(
     String::deserialize(deserializer).map(Zeroizing::new)
 }
 
-/// 32 bytes of key material from the environment, as hex -- the way
-/// `argon2 -r` prints it.
+/// 32 bytes of key material as hex, as `argon2 -r` prints it.
 pub fn key_from_hex(text: &str) -> Result<Key> {
     let text = text.trim();
     if text.len() != KEY_LEN * 2 {
@@ -755,8 +740,7 @@ pub fn key_from_hex(text: &str) -> Result<Key> {
     Ok(key)
 }
 
-/// 32 bytes of key material from the environment, as base64 -- the way
-/// `fido2-assert` prints an hmac-secret.
+/// 32 bytes of key material as base64, as `fido2-assert` prints hmac-secret.
 pub fn key_from_base64(text: &str) -> Result<Key> {
     decode_key(text.trim())
 }
