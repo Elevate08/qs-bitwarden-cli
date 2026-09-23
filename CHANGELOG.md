@@ -56,6 +56,15 @@
 
 ### Fixed
 
+- **No unlock before the vault status is known.** For a few seconds after the
+  shell starts the lock screen is still checking the vault, and a master
+  password submitted then failed with "Could not deliver the password", while a
+  PIN was silently discarded. The Unlock button now says it is checking and
+  waits; what you type is kept.
+- **Removing the plugin with the SSH agent on leaves no runtime files.** The
+  helper is killed rather than shut down in that case, so its socket, FIFO and
+  lock stayed in `$XDG_RUNTIME_DIR` until logout. The panel now removes them
+  once the helper's lock is free.
 - **Quick-unlock descriptions match the envelope.** The FIDO2 setup screen,
   the settings rows and the Forget buttons still described the master password
   as kept as-is in the login keyring; they now describe the encrypted copy.

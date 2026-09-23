@@ -626,7 +626,7 @@ check("each method draws on its own, so only one is on screen",
     .every((name) => new RegExp(`visible: form\\.fieldsOffered && form\\.method === "${name}"`).test(unlockFormSrc)),
   unlockFormSrc)
 check("one Unlock Vault button submits whichever typed method is offered",
-  /visible: form\.fieldsOffered && form\.method !== "fingerprint"[\s\S]{0,400}?text: form\.busy \?[\s\S]{0,200}?: "Unlock Vault"[\s\S]{0,300}?onClicked: form\.submitCurrentMethod\(\)/.test(unlockFormSrc)
+  /visible: form\.fieldsOffered && form\.method !== "fingerprint"[\s\S]{0,400}?text: form\.busy \?[\s\S]{0,200}?"Unlock Vault"[\s\S]{0,300}?onClicked: form\.submitCurrentMethod\(\)/.test(unlockFormSrc)
     && /function submitCurrentMethod\(\)[\s\S]{0,200}?submitPinUnlock\(\)[\s\S]{0,120}?unlockVault\(\)/.test(unlockFormSrc),
   "the PIN and the master password must be submitted the same way")
 check("a failed fingerprint keeps its reason on whichever screen follows",

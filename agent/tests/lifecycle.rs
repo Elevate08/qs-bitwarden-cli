@@ -419,11 +419,22 @@ fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
         "a dismissed unlock must refuse at once, not at the deadline"
     );
 
-    // Logout takes the public projection with it.
+    // Logout takes the public projection with it. `vault_locked` is a
+    // barrier (answered in order with `locked`), so the listing below cannot
+    // race the logout through the control loop.
     input
         .write_all(b"{\"v\":1,\"type\":\"vault_logged_out\"}\n")
         .unwrap();
+    input
+        .write_all(b"{\"v\":1,\"type\":\"vault_locked\",\"epoch\":1}\n")
+        .unwrap();
     input.flush().unwrap();
+    loop {
+        let message = read_json_line(&mut output);
+        if message["type"] == "locked" {
+            break;
+        }
+    }
     assert_eq!(identity_count(&socket), 0);
 
     input

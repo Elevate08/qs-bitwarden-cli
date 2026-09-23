@@ -1069,6 +1069,14 @@ Item {
 
   // Ask the helper to stop by closing its control channel, so it drops keys
   // and removes its socket and FIFO; SIGTERM only if it does not exit.
+  // A helper killed with the shell objects (plugin disabled or removed)
+  // leaves its socket, FIFO and lock behind; remove them once it is gone.
+  Component.onDestruction: {
+    if (root.sshAgentPhase === "disabled" && !sshAgentProc.running) return
+    var cleanup = Model.sshAgentRuntimeCleanupCommand(root.sshAgentRuntimeDir)
+    if (cleanup) Quickshell.execDetached(cleanup)
+  }
+
   function stopSshAgentHelper() {
     if (!sshAgentProc.running) {
       sshAgentTerminateTimer.stop()
@@ -2381,6 +2389,7 @@ Item {
     if (target === "unlock") {
       unlockSubmitted = false
       isUnlocking = false
+      pendingUnlockPassword = ""
       if (unlockProc.running) unlockProc.running = false
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
       Qt.callLater(prepareUnlock)
@@ -3317,6 +3326,11 @@ Item {
 
   function submitPinUnlock() {
     if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
+    // As for the password: the PIN's result is discarded unless locked.
+    if (status !== "locked") {
+      pinUnlockError = "Still checking the vault. Try again in a moment."
+      return
+    }
     if (String(pinEntry || "").length < Model.pinMinLength()) {
       pinUnlockError = "PIN must be at least " + Model.pinMinLength() + " digits"
       return
@@ -3913,6 +3927,12 @@ Item {
   // -------------------------------------------------------------------------
 
   function unlockVault() {
+    // No `bw unlock` is waiting until status says locked (it is "checking"
+    // for a few seconds after a start); the typed text is kept.
+    if (status !== "locked") {
+      errorMessage = "Still checking the vault. Try again in a moment."
+      return
+    }
     pendingUnlockFrom = ""
     unlockVaultWithPassword(masterPassword)
   }
