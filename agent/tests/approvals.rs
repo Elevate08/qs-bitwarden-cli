@@ -306,6 +306,7 @@ fn a_grant_is_scoped_to_what_it_signed() {
     let others = [
         scope(SignKind::UserAuth {
             user: "root".into(),
+            host: String::new(),
         }),
         scope(SignKind::SshSig {
             namespace: "file".into(),
@@ -322,7 +323,13 @@ fn a_grant_is_scoped_to_what_it_signed() {
         );
     }
 
-    let login = |user: &str| scope(SignKind::UserAuth { user: user.into() });
+    let login_to = |user: &str, host: &str| {
+        scope(SignKind::UserAuth {
+            user: user.into(),
+            host: host.into(),
+        })
+    };
+    let login = |user: &str| login_to(user, "SHA256:github");
     let mut approvals = ApprovalManager::new(rustix::process::geteuid().as_raw());
     let ssh = peer(300, 60, "/usr/bin/ssh");
     let id = match approvals
@@ -338,9 +345,20 @@ fn a_grant_is_scoped_to_what_it_signed() {
         Ok(Submit::Granted(_))
     ));
     assert!(matches!(
-        approvals.submit(3, &key, ssh, login("root"), 1),
+        approvals.submit(3, &key, ssh.clone(), login("root"), 1),
         Ok(Submit::Pending(_))
     ));
+    // A login grant covers the one server it was approved for: the same user
+    // on another host, or on a host the client did not report, asks again.
+    for elsewhere in [login_to("git", "SHA256:elsewhere"), login_to("git", "")] {
+        assert!(
+            matches!(
+                approvals.submit(3, &key, ssh.clone(), elsewhere.clone(), 1),
+                Ok(Submit::Pending(_))
+            ),
+            "{elsewhere:?} must not ride a grant for another host"
+        );
+    }
 }
 
 /// Forwarded or unrecognised requests never open a grant, whatever the panel
@@ -349,7 +367,10 @@ fn a_grant_is_scoped_to_what_it_signed() {
 fn forwarded_and_unrecognised_requests_never_open_or_ride_a_grant() {
     let (_, key) = loaded_store(3);
     let ssh = peer(300, 60, "/usr/bin/ssh");
-    let login = SignKind::UserAuth { user: "git".into() };
+    let login = SignKind::UserAuth {
+        user: "git".into(),
+        host: "SHA256:github".into(),
+    };
     let forwarded = SignScope {
         kind: login.clone(),
         forwarded: true,

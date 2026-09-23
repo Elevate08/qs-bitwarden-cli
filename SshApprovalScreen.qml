@@ -107,6 +107,14 @@ Column {
     wrapMode: Text.WrapAnywhere
   }
 
+  // A login's server, as the client bound it; a login grant covers only it.
+  SshCaption {
+    panel: screen.panel
+    visible: vault.sshPrompt && vault.sshPrompt.destinationLabel !== ""
+    text: vault.sshPrompt ? vault.sshPrompt.destinationLabel : ""
+    wrapMode: Text.WrapAnywhere
+  }
+
   SshSectionHeader {
     panel: screen.panel
     text: "KEY"
