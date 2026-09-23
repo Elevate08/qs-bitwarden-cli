@@ -77,7 +77,8 @@ check("fingerprint setup adds a wrap through the master-password check",
 check("and drops the typed password as soon as it is handed over",
   /var typed = fpSetupMaster\s*\n\s*fpSetupMaster = ""/.test(fpSetup), fpSetup)
 check("a wrong password is named as such",
-  /wrong-password[\s\S]{0,80}That is not your master password/.test(fpSetup), fpSetup)
+  /root\.fpError = root\.quickUnlockErrorText\(why,/.test(fpSetup)
+    && /why === "wrong-password"\) return "That is not your master password\."/.test(bodyOf("quickUnlockErrorText")), fpSetup)
 check("setup asks to confirm, not to store",
   /placeholderText: "Confirm your master password\.\.\."/.test(panel)
     && !/Needed once, to store for fingerprint unlock/.test(panel), "old copy")
@@ -108,6 +109,40 @@ check("the held old password is taken once, and cleared when no typed unlock use
     && /\} else \{\s*rotationOldPassword = ""/.test(unlockSuccess)
     && /rotationOldPassword = ""/.test(bodyOf("dropEnvelopeState")),
   writer.slice(0, 400))
+
+// -------------------------------------------------------------------------
+// Review findings, 2026-09-22 (/code-review of release/1.10.1)
+// -------------------------------------------------------------------------
+
+// 1. A changed password with no method set up used to leave an envelope that
+//    nothing could open again, and every enable form calling the right password
+//    wrong. With only the master wrap there is nothing to keep: recreate.
+check("a master-only envelope is recreated when bw accepts a password it refuses",
+  /else if \(!root\.envelopeHasMethods\(\)\) \{[\s\S]{0,700}?unlockEnvelopeCreateCommand\(tool, account\), env, finish\)/
+    .test(writer), writer)
+check("and an unread summary counts as having methods, so nothing is dropped on a guess",
+  /if \(!envelopeSummary\) return envelopeChecked \? false : true/.test(bodyOf("envelopeHasMethods")),
+  bodyOf("envelopeHasMethods"))
+check("a stale envelope is named as stale at an enable form, not as a wrong password",
+  /envelopeSummary\.stale \? "stale" : "wrong-password"/.test(bodyOf("addQuickUnlockMethodWith"))
+    && /why === "stale"[\s\S]{0,200}?has not caught up yet/.test(bodyOf("quickUnlockErrorText")), "")
+// 2. The account id outlived logout, binding the next account's password to it.
+check("logout forgets which account the envelope belonged to",
+  /accountId = ""\s*\n\s*accountServer = ""/.test(bodyOf("dropEnvelopeState")), bodyOf("dropEnvelopeState"))
+// 3. bw could mint a session after the vault locked, and the panel adopted it.
+check("a session bw mints after the vault locked is not adopted",
+  /beginEpochOperation\("bwVerify"\)/.test(bodyOf("verifyWithBw"))
+    && /epochOperationIsStale\("bwVerify"\) \|\| root\.logoutPending \|\| root\.status !== "unlocked"\) \{[\s\S]{0,60}?s = ""[\s\S]{0,40}?done\(false\)/
+      .test(bodyOf("verifyWithBw")), bodyOf("verifyWithBw"))
+// 4. Removal returned early without a summary, so an abandoned setup's wrap
+//    written on the no-envelope path stayed.
+check("removing a method does not wait for a summary to exist",
+  !/if \(!envelopeSummary\) return/.test(bodyOf("removeQuickUnlockMethod")), bodyOf("removeQuickUnlockMethod"))
+// 5. A failed bw status never called back, leaving setup forms busy forever.
+check("an account that cannot be learned still answers its caller",
+  /function withEnvelopeAccount\(then, otherwise\)[\s\S]{0,600}?else if \(otherwise\) \{\s*otherwise\(\)/.test(service)
+    && /\}, function\(\) \{ finish\(false\) \}\)/.test(writer)
+    && /\}, function\(\) \{ done\(false, "failed", 0\) \}\)/.test(bodyOf("addQuickUnlockMethodWith")), "")
 
 // -------------------------------------------------------------------------
 // One at a time, and logout last
@@ -161,7 +196,7 @@ check("PIN setup adds a wrap through the master-password check, with the PIN in 
 check("PIN rules are unchanged: validated first, numeric, 4 minimum",
   /Model\.validatePin\(pinSetupPin, pinSetupConfirm\)/.test(pinSetup), pinSetup)
 check("a wrong master password is named as such",
-  /wrong-password[\s\S]{0,80}That is not your master password/.test(pinSetup), pinSetup)
+  /root\.pinError = root\.quickUnlockErrorText\(why,/.test(pinSetup), pinSetup)
 check("the old PIN-blob writer is gone",
   !/pinStoreProc|onPinStored|Model\.pinStoreCommand/.test(service), "still referenced")
 const pinUnlock = bodyOf("submitPinUnlock")
