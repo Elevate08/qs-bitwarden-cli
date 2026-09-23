@@ -1069,6 +1069,14 @@ Item {
 
   // Ask the helper to stop by closing its control channel, so it drops keys
   // and removes its socket and FIFO; SIGTERM only if it does not exit.
+  // A helper killed with the shell objects (plugin disabled or removed)
+  // leaves its socket, FIFO and lock behind; remove them once it is gone.
+  Component.onDestruction: {
+    if (root.sshAgentPhase === "disabled" && !sshAgentProc.running) return
+    var cleanup = Model.sshAgentRuntimeCleanupCommand(root.sshAgentRuntimeDir)
+    if (cleanup) Quickshell.execDetached(cleanup)
+  }
+
   function stopSshAgentHelper() {
     if (!sshAgentProc.running) {
       sshAgentTerminateTimer.stop()

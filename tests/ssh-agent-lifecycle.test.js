@@ -253,4 +253,50 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
     line.indexOf("BW_SESSION") < 0 && line.indexOf("privateKey") < 0 && line.indexOf("PRIVATE") < 0, line)
 }
 
+// --- a killed helper's runtime files -----------------------------------------
+//
+// A helper killed with the shell objects (plugin disabled or removed) cannot
+// remove its socket, FIFO and lock. The vault removes them from a detached
+// script once the lock is free, and only then.
+{
+  const fs = require("fs")
+  const os = require("os")
+  const { spawnSync } = require("child_process")
+  const names = ["ssh-agent.sock", "ssh-keys.fifo", "ssh-agent.lock"]
+  const setup = () => {
+    const rt = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-cleanup-"))
+    const dir = path.join(rt, "qs-bitwarden-cli")
+    fs.mkdirSync(dir, { mode: 0o700 })
+    for (const n of names) fs.writeFileSync(path.join(dir, n), "")
+    return { rt, dir }
+  }
+  const cmd = rt => Model.sshAgentRuntimeCleanupCommand(rt)
+
+  const held = setup()
+  const c = cmd(held.rt)
+  const started = Date.now()
+  const run = spawnSync("bash", ["-c", 'flock "$1" sleep 0.5 & sleep 0.1; shift; "$@"',
+    "_", path.join(held.dir, "ssh-agent.lock"), ...c], { encoding: "utf8" })
+  const waited = Date.now() - started
+  check("cleanup waits for a held lock, then removes the files",
+    run.status === 0 && !fs.existsSync(held.dir) && waited >= 400, `exit ${run.status}, waited ${waited} ms`)
+  fs.rmSync(held.rt, { recursive: true, force: true })
+
+  const linked = setup()
+  const real = path.join(linked.rt, "real")
+  fs.renameSync(linked.dir, real)
+  fs.symlinkSync(real, linked.dir)
+  spawnSync(cmd(linked.rt)[0], cmd(linked.rt).slice(1))
+  check("cleanup never follows a symlinked runtime directory",
+    names.every(n => fs.existsSync(path.join(real, n))), fs.readdirSync(real).join(","))
+  fs.rmSync(linked.rt, { recursive: true, force: true })
+
+  check("cleanup needs an absolute runtime directory", Model.sshAgentRuntimeCleanupCommand("relative") === null, "")
+
+  const vaultSrc = readPluginSource("Service.qml")
+  check("the vault runs the cleanup detached when it is destroyed with a helper",
+    /Component\.onDestruction:[\s\S]{0,200}sshAgentRuntimeCleanupCommand\(root\.sshAgentRuntimeDir\)[\s\S]{0,80}Quickshell\.execDetached\(cleanup\)/.test(vaultSrc),
+    "no cleanup on destruction")
+}
+
 done()

@@ -3727,6 +3727,23 @@ function sshAgentLockProbeCommand(runtimeDir) {
     "_", lock]
 }
 
+// Removes the helper's runtime files once nothing holds its lock, as its own
+// shutdown would. For a helper killed with the shell objects (plugin disabled
+// or removed), which cannot clean up after itself. Run detached; waits up to
+// 5 s for the lock and deletes while holding it, so a helper starting
+// meanwhile cannot lose a fresh socket. Never follows a symlink.
+function sshAgentRuntimeCleanupCommand(runtimeDir) {
+  var dir = runtimeFilePath(runtimeDir, "")
+  if (!dir) return null
+  return ["bash", "-c",
+    "d=\"${1%/}\"; l=\"$d/ssh-agent.lock\"; "
+    + "[ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$l\" ] && [ ! -L \"$l\" ] || exit 0; "
+    + "for _ in $(seq 50); do "
+    + "flock -n -E 75 \"$l\" rm -f -- \"$d/ssh-agent.sock\" \"$d/ssh-keys.fifo\" \"$l\"; "
+    + "[ $? -eq 75 ] || { rmdir -- \"$d\" 2>/dev/null; exit 0; }; sleep 0.1; done",
+    "_", dir]
+}
+
 function sshAgentLockHeld(exitCode) {
   return Number(exitCode) === 75
 }
