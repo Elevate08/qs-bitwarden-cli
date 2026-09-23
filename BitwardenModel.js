@@ -4336,13 +4336,20 @@ function sshExportDirPrelude() {
     + "fi; "
     + "case \"$__base\" in /*) ;; *) exit " + SSH_EXPORT_EXIT_NO_HOME + ";; esac; "
     + "__dir=\"$__base/" + SSH_EXPORT_SUBDIR + "\"; "
-    + "if [ -L \"$__dir\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
+    // Both components the plugin owns, not just the last: through a symlinked
+    // parent, export and clear would write and prune *.pub files elsewhere.
+    + "for __own in \"$(dirname \"$__dir\")\" \"$__dir\"; do "
+    + "  if [ -L \"$__own\" ]; then exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
+    + "done; "
 }
 
 function sshExportCommand() {
   var script = sshExportDirPrelude()
-    // A symlinked export dir was already refused by the prelude.
+    // A symlinked export dir or parent was already refused by the prelude.
     + "mkdir -p -m 700 \"$(dirname \"$__dir\")\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
+    // mkdir -p accepts an existing directory of any kind; recheck the parent
+    // it may have just created or found, before anything is written under it.
+    + "[ -d \"$(dirname \"$__dir\")\" ] && [ ! -L \"$(dirname \"$__dir\")\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "if [ -e \"$__dir\" ]; then "
     + "  [ -d \"$__dir\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "else (umask 077 && mkdir -- \"$__dir\") || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
