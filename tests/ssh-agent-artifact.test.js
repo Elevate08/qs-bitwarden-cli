@@ -285,10 +285,47 @@ check("something does run on a master push, and it is the publish",
 check("the publish only publishes -- it does not build or test",
   !/cargo (build|test|clippy)|npm |node |qmltestrunner|build-agent\.sh/.test(publish),
   "the master workflow has grown work that belongs on the release branch")
-check("the publish is the only thing granted write access",
+check("the build workflow stays read-only; publishing holds write",
   /permissions:\s*\n\s*contents:\s*write/.test(publish)
-    && /permissions:\s*\n\s*contents:\s*read/.test(workflow),
+    && /permissions:\s*\n\s*contents:\s*read/.test(workflow)
+    && !/contents:\s*write/.test(workflow),
   "write access is not where it was expected")
+
+// helper-rebuild.yml commits rebuilt helpers to eligible PRs. The job that
+// runs repository code has no write token; the one with it runs none, commits
+// only bin/, and dependency or toolchain changes are never auto-committed.
+const rebuild = read(".github/workflows/helper-rebuild.yml")
+const eligible = read("scripts/helper-autocommit-eligible.sh")
+const rebuildJobs = rebuild.split(/\n  (?=\w[\w-]*:\n)/)
+const buildJob = rebuildJobs.find(j => /^build:/.test(j)) || ""
+const commitJob = rebuildJobs.find(j => /^commit:/.test(j)) || ""
+check("the helper rebuild is read-only by default",
+  /^permissions:\n\s*contents: read\s*$/m.test(rebuild), "top-level permissions are not read-only")
+check("the job that builds holds no write token",
+  buildJob !== "" && !/write/.test(buildJob), buildJob.slice(0, 300))
+check("the job that commits runs no repository code",
+  commitJob !== "" && !/build-agent\.sh|cargo |scripts\//.test(commitJob), commitJob.slice(0, 300))
+check("every action in the helper rebuild is pinned to a commit",
+  [...rebuild.matchAll(/uses:\s*([^\s@]+)@(\S+)/g)].every(m => /^[0-9a-f]{40}$/.test(m[2])),
+  "an action is referenced by a moving tag")
+check("the rebuild uses the pinned image",
+  rebuild.includes(scriptPin[0].slice("PINNED_IMAGE=\"".length, -1)), "helper-rebuild.yml builds outside the pinned image")
+check("only bin/ is committed, after its checksums verify",
+  /sha256sum -c SHA256SUMS/.test(commitJob) && /refusing to commit anything outside bin\//.test(commitJob),
+  "the commit job could commit something other than the verified helpers")
+check("a branch that moved after the build is not committed to",
+  /git rev-parse HEAD\)" = "\$BUILT"/.test(commitJob), "stale bytes could land on a newer push")
+check("the new commit is re-checked",
+  /gh workflow run agent-build\.yml/.test(commitJob) && /workflow_dispatch:/.test(workflow),
+  "a push with GITHUB_TOKEN starts no workflow, so the commit would go unchecked")
+check("dependency and toolchain changes are rebuilt by a person",
+  /Cargo\.lock/.test(eligible) && /Cargo\.toml/.test(eligible) && /rust-toolchain\.toml/.test(eligible)
+    && /dependabot/.test(eligible) && /IS_FORK/.test(eligible),
+  "a lockfile change could be rebuilt and committed with nobody reading it")
+check("agent build tolerates drift only where helper-rebuild fixes it",
+  /steps\.compare\.outputs\.autofix != 'yes'/.test(workflow)
+    && /helper-autocommit-eligible\.sh/.test(workflow),
+  "the drift gate and the auto-commit disagree about which PRs are fixed")
 // Publishing from the tag announced a version before master contained it.
 check("the tag build leaves the release as a draft for master to publish",
   /gh release create "\$TAG"[^\n]*--draft/.test(read(".github/workflows/release.yml")),
