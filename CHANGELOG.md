@@ -100,6 +100,14 @@
   the settings rows and the Forget buttons still described the master password
   as kept as-is in the login keyring; they now describe the encrypted copy.
 
+### Dependencies
+
+- **`rustix` 1.1.4 -> 1.1.5** in both helpers (`agent/`, `unlock-key/`), the
+  crate behind their core-dump and no-debugger hardening and runtime-file
+  handling. Reviewed against upstream's release commit: timeout rounding,
+  `Debug` output and test-macro changes, and an unstable module renamed
+  behind a feature neither helper enables. Both helpers are rebuilt with it.
+
 ## [1.10.0] - 2026-09-17
 
 ### Added
