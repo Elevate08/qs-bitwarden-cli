@@ -52,8 +52,10 @@ FONT_BODY="${QSBW_PREVIEW_FONT_BODY:-CaskaydiaMono-NF-Regular}"
 # earns its place by naming what the release added.
 # Set either from the environment to try a phrase without touching the file:
 #   QSBW_BADGE_TITLE='SSH Agent Support' ./demo/compose-preview.sh --badge-only
-BADGE_KICKER="${QSBW_BADGE_KICKER:-NEW}"
-BADGE_TITLE="${QSBW_BADGE_TITLE:-Cards & Identities}"
+BADGE_KICKER="${QSBW_BADGE_KICKER:-NEW IN 1.11}"
+# Two lines: the phrase is wider than the corner beside the title.
+BADGE_TITLE="${QSBW_BADGE_TITLE:-Multiple Account Support
++ Security Improvements}"
 # Filled with the accent and lettered in the page's own black, rather than
 # outlined like the panels. A seventh accent-bordered rectangle read as one
 # more screenshot; this cannot be mistaken for one.
@@ -66,7 +68,7 @@ BADGE_BG="$ACCENT"
 # shunting into the title.
 BADGE_ZONE=640
 GAP=28        # between panels, and around the whole thing
-TITLE_SIZE=96
+TITLE_SIZE=84
 
 # Three columns, top to bottom. The vault list carries the folder drawer
 # because that shot shows both at once; the plain list would be redundant
@@ -79,8 +81,8 @@ TITLE_SIZE=96
 # Grouped to keep the three columns near the same height -- the page is as tall
 # as its tallest column, and an unbalanced one leaves a corner of empty black.
 COL1=(01-vault-list 08-generator)
-COL2=(04-card-detail 09-sends)
-COL3=(10-settings 13-ssh-approval)
+COL2=(04-card-detail 13-ssh-approval)
+COL3=(10-settings 14-accounts)
 
 # Not `magick ... | grep -q`: grep exits on the first match, magick takes a
 # SIGPIPE for it, and `set -o pipefail` reports the successful match as a
@@ -163,7 +165,7 @@ magick -background "$BADGE_BG" -fill "$BADGE_FG" \
   -font "$FONT" -pointsize 26 -interword-spacing 10 \
   label:"$BADGE_KICKER" "$work/kicker.png"
 magick -background "$BADGE_BG" -fill "$BADGE_FG" \
-  -font "$FONT" -pointsize 44 label:"$BADGE_TITLE" "$work/badge-title.png"
+  -font "$FONT" -pointsize "${QSBW_BADGE_SIZE:-30}" label:"$BADGE_TITLE" "$work/badge-title.png"
 
 # A solid block, not an outline: the panels are all accent-bordered rectangles
 # on black, so one more of those disappears among them. Inverting it -- accent

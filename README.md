@@ -309,9 +309,10 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>l</kbd> | **L**ock the vault |
 | <kbd>Alt</kbd>+<kbd>s</kbd> | Bitwarden **S**end |
 | <kbd>Alt</kbd>+<kbd>,</kbd> | Settings |
+| <kbd>Alt</kbd>+<kbd>a</kbd> | **A**ccounts: switch to another account, or add one |
 | <kbd>Esc</kbd> | Close the filter drawer, clear the search, or close the panel |
 
-`Alt` + any letter above runs the same action from inside the search box. Two are `Alt`-only: <kbd>Alt</kbd>+<kbd>s</kbd> opens **Send** (which has no bare letter, since <kbd>s</kbd> is Settings), and <kbd>Alt</kbd>+<kbd>,</kbd> opens **Settings**, so Settings is still reachable while searching.
+`Alt` + any letter above runs the same action from inside the search box. Three are `Alt`-only: <kbd>Alt</kbd>+<kbd>s</kbd> opens **Send** (which has no bare letter, since <kbd>s</kbd> is Settings), <kbd>Alt</kbd>+<kbd>,</kbd> opens **Settings**, so Settings is still reachable while searching, and <kbd>Alt</kbd>+<kbd>a</kbd> opens **Accounts**.
 
 ### Detail Inspector
 
@@ -366,6 +367,8 @@ The cursor starts on the option already in effect, so <kbd>Enter</kbd> never cha
 ## Optional features
 
 ### Several accounts
+
+<img src="docs/screenshots/14-accounts.png" width="420" align="right" alt="Account list">
 
 The panel can hold up to ten Bitwarden accounts at once -- a personal and a work account, say, or two servers. Press **Add Account** on the locked screen (or the account button in the header) and sign in; the first account stays signed in beside it. **Switch Account** on the locked screen, or the header's account button, lists them.
 
@@ -588,6 +591,11 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli status       # -> "unlocked" 
 
 # Which vault the bars share, and which monitor presents it (non-secret)
 omarchy-shell io.github.elevate08.qs-bitwarden-cli vaultHost    # -> {"host":"shared","views":2,"presenter":"DP-1",...}
+
+# The accounts the panel holds (emails and servers only), and switching to one;
+# switching locks the account active now
+omarchy-shell io.github.elevate08.qs-bitwarden-cli accounts     # -> {"adding":false,"accounts":[{"email":"you@example.com","server":"","active":true}]}
+omarchy-shell io.github.elevate08.qs-bitwarden-cli switchAccount work@example.com   # -> "switching" | "unknown" | "busy"
 ```
 
 `open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
