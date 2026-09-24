@@ -660,11 +660,21 @@ check("the fingerprint button says what the vault is doing once the finger is re
 check("fingerprint offers no field and no separate submit",
   !/form\.method === "fingerprint"[\s\S]{0,400}?TextField/.test(unlockFormSrc),
   "fingerprint asks for a finger, nothing else")
-check("the fallback cycles to the next method that is set up",
-  /nextMethod:\s*nextMethodAfter\(method\)/.test(unlockFormSrc)
-    && /text: "Use " \+ form\.methodLabel\(form\.nextMethod\) \+ " instead"/.test(unlockFormSrc)
-    && /visible: form\.fieldsOffered && form\.nextMethod !== ""/.test(unlockFormSrc),
-  "with one other method it is a toggle; with two it cycles")
+check("every available method is offered at once, one column each",
+  /availableMethods: \["fido", "fingerprint", "pin", "password"\]\s*\.filter\(function\(name\) \{ return methodAvailable\(name\) \}\)/.test(unlockFormSrc)
+    && /Repeater \{\s*model: form\.availableMethods/.test(unlockFormSrc)
+    && /selected: form\.method === modelData/.test(unlockFormSrc)
+    && /onClicked: form\.useMethod\(modelData\)/.test(unlockFormSrc)
+    && !/nextMethod/.test(unlockFormSrc),
+  "the methods must sit side by side, not behind a cycling button")
+check("the row is only drawn when there is a choice",
+  /visible: form\.fieldsOffered && form\.availableMethods\.length > 1/.test(unlockFormSrc),
+  "one method needs no picker")
+check("a method turned off in settings is not offered",
+  /if \(name === "fido"\) return form\.vault\.fidoReady/.test(unlockFormSrc)
+    && /if \(name === "fingerprint"\) return form\.vault\.fingerprintReady/.test(unlockFormSrc)
+    && /if \(name === "pin"\) return form\.vault\.pinReady/.test(unlockFormSrc),
+  "availability must follow the ready flags, which include the setting")
 check("a rejected PIN keeps its reason after the PIN method is gone",
   /visible: form\.fieldsOffered && form\.method !== "pin" && form\.vault\.pinUnlockError !== ""/.test(unlockFormSrc)
     && !/form\.vault\.pinError/.test(unlockFormSrc),

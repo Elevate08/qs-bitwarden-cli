@@ -21,15 +21,19 @@ Column {
   property alias context: contextSlot.data
 
   // One method at a time, first available of FIDO2, fingerprint, PIN, master
-  // password. `chosen` (set by "use X instead") is ignored once that method
-  // becomes unavailable, e.g. an exhausted PIN or a closed lid.
+  // password. `chosen` (set by picking another method in the row) is ignored
+  // once that method becomes unavailable, e.g. an exhausted PIN or a closed
+  // lid.
   property string chosen: ""
   readonly property string method: chosen !== "" && methodAvailable(chosen)
     ? chosen
     : (methodAvailable("fido") ? "fido"
       : (methodAvailable("fingerprint") ? "fingerprint"
         : (methodAvailable("pin") ? "pin" : "password")))
-  readonly property string nextMethod: nextMethodAfter(method)
+  // Every method set up and usable right now, in the order above; the row
+  // offers each one, and a method turned off in settings is not in it.
+  readonly property var availableMethods: ["fido", "fingerprint", "pin", "password"]
+    .filter(function(name) { return methodAvailable(name) })
   // The field this method types into (none for fingerprint or FIDO2).
   readonly property var focusField: method === "pin"
     ? pinField
@@ -87,21 +91,18 @@ Column {
     return name === "password"
   }
 
-  function nextMethodAfter(name) {
-    var order = ["fido", "fingerprint", "pin", "password"]
-    var from = order.indexOf(name)
-    for (var step = 1; step < order.length; step++) {
-      var candidate = order[(from + step) % order.length]
-      if (methodAvailable(candidate)) return candidate
-    }
-    return ""
+  function methodLabel(name) {
+    if (name === "fido") return "FIDO2 Key"
+    if (name === "fingerprint") return "Fingerprint"
+    if (name === "pin") return "PIN"
+    return "Password"
   }
 
-  function methodLabel(name) {
-    if (name === "fido") return "your FIDO2 key"
-    if (name === "fingerprint") return "fingerprint"
-    if (name === "pin") return "PIN"
-    return "master password"
+  function methodIcon(name) {
+    if (name === "fido") return "󰟵"
+    if (name === "fingerprint") return "󰈷"
+    if (name === "pin") return "󰌿"
+    return "󰌋"
   }
 
   function useMethod(name) {
@@ -165,9 +166,8 @@ Column {
       anchors.horizontalCenter: parent.horizontalCenter
       text: form.vault.status === "unlocked"
         ? "Loading SSH keys"
-        : ((form.vault.fidoReady || form.vault.fingerprintReady)
-          ? "Unlock Vault"
-          : "Enter Master Password")
+        : (form.method === "password" ? "Enter Master Password"
+          : (form.method === "pin" ? "Enter PIN" : "Unlock Vault"))
       color: form.panel.fg
       font.family: form.panel.fontFamily
       font.pixelSize: Style.font.title
@@ -388,17 +388,57 @@ Column {
     onClicked: form.submitCurrentMethod()
   }
 
-  // Cycles to the next available method.
-  Button {
-    visible: form.fieldsOffered && form.nextMethod !== ""
+  // Every available method side by side, one column each; the current one
+  // is selected. Only when there is a choice to make.
+  Row {
+    id: methodRow
+    visible: form.fieldsOffered && form.availableMethods.length > 1
     width: parent.width
-    text: "Use " + form.methodLabel(form.nextMethod) + " instead"
-    iconText: form.nextMethod === "fido"
-      ? "󰟵"
-      : (form.nextMethod === "fingerprint" ? "󰈷" : (form.nextMethod === "pin" ? "󰌿" : "󰌋"))
-    fontFamily: form.panel.fontFamily
-    fontSize: Style.font.bodySmall
-    focusable: form.buttonsFocusable
-    onClicked: form.useMethod(form.nextMethod)
+    spacing: Style.space(6)
+
+    Repeater {
+      model: form.availableMethods
+
+      delegate: Button {
+        id: methodTile
+        required property string modelData
+        width: (methodRow.width - methodRow.spacing * (form.availableMethods.length - 1))
+          / Math.max(1, form.availableMethods.length)
+        height: tileColumn.implicitHeight + Style.space(12)
+        bordered: true
+        selected: form.method === modelData
+        accent: Color.accent
+        fontFamily: form.panel.fontFamily
+        tooltipText: "Unlock with " + (modelData === "password" ? "your master password"
+          : (modelData === "fido" ? "your FIDO2 key" : form.methodLabel(modelData).toLowerCase()))
+        focusable: form.buttonsFocusable
+        onClicked: form.useMethod(modelData)
+
+        Column {
+          id: tileColumn
+          anchors.centerIn: parent
+          spacing: Style.space(2)
+
+          Text {
+            textFormat: Text.PlainText
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: form.methodIcon(methodTile.modelData)
+            color: methodTile.selected ? Style.selectedStateColor(methodTile.foreground, methodTile.accent) : methodTile.foreground
+            font.family: form.panel.fontFamily
+            font.pixelSize: Style.font.title
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: form.methodLabel(methodTile.modelData)
+            color: methodTile.selected ? Style.selectedStateColor(methodTile.foreground, methodTile.accent) : methodTile.foreground
+            font.family: form.panel.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: methodTile.selected
+          }
+        }
+      }
+    }
   }
 }
