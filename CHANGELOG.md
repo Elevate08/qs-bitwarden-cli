@@ -47,6 +47,14 @@
   locked screen's **Switch / Log Out** is now two buttons, **Switch Account**
   (or **Add Account** with one account) and **Log Out**.
 
+- **Every unlock method is one click away.** The locked screen (and the SSH
+  unlock popup) used to show one method at a time, with a "Use ... instead"
+  button to step through the others. Every method that is turned on and
+  usable now sits in one row, a column each -- FIDO2 key, fingerprint, PIN,
+  master password -- with the current one highlighted. A method turned off
+  in settings is not shown, and with only the master password there is no
+  row at all. The title follows the method picked ("Enter PIN" for the PIN).
+
 - **Fingerprint and FIDO2 unlock are forgotten only from settings.** The
   locked screen's **Forget Fingerprint** and **Forget FIDO2 Key** buttons, and
   their copies on the settings screen, are gone: turning **Unlock with

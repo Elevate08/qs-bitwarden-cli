@@ -200,7 +200,7 @@ check("both the panel and the SSH popup draw that form",
     && /UnlockForm \{/.test(read("SshUnlockScreen.qml")),
   "a surface that draws its own unlock controls will drift from the other")
 check("a plugged-in key leads, then the reader, then PIN, then the password",
-  /var order = \["fido", "fingerprint", "pin", "password"\]/.test(rawUnlockForm)
+  /availableMethods: \["fido", "fingerprint", "pin", "password"\]/.test(rawUnlockForm)
     && /methodAvailable\("fido"\) \? "fido"/.test(rawUnlockForm),
   "the key the user is holding should not sit behind another method")
 const rawFidoUnlock = read("FidoUnlock.qml")
