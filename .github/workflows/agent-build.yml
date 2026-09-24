@@ -255,9 +255,11 @@ jobs:
           echo 'Server = https://archive.archlinux.org/repos/2026/09/21/$repo/os/$arch' > /etc/pacman.d/mirrorlist
           pacman-key --init
           pacman-key --populate archlinux
-          pacman -Syu --noconfirm --needed quickshell argon2 jq nodejs
+          # diffutils: the envelope's write check compares with `cmp`, which
+          # every desktop has but the bare image does not.
+          pacman -Syu --noconfirm --needed quickshell argon2 jq nodejs diffutils
           # Log what was installed, so behaviour changes can be traced.
-          pacman -Q quickshell qt6-declarative nodejs argon2 jq
+          pacman -Q quickshell qt6-declarative nodejs argon2 jq diffutils
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

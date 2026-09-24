@@ -9,7 +9,7 @@
 // environment built from scratch (nothing of the caller's is passed on), so
 // it touches no real vault, keyring or shell. No network.
 //
-// Needs: quickshell (0.3+), argon2, jq.
+// Needs: quickshell (0.3+), argon2, jq, cmp (diffutils).
 //
 //   node tests/e2e/accounts.e2e.js
 
@@ -22,7 +22,7 @@ const { spawn, spawnSync } = require("child_process")
 const { check, done, failures } = createSuite("e2e-accounts")
 
 const which = name => spawnSync("bash", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim()
-const missing = ["quickshell", "argon2", "jq", "node"].filter(name => !which(name))
+const missing = ["quickshell", "argon2", "jq", "node", "cmp"].filter(name => !which(name))
 if (missing.length) {
   console.error(`e2e-accounts: cannot run without ${missing.join(", ")}`)
   process.exit(1)
