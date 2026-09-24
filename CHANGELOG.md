@@ -55,6 +55,13 @@
   in settings is not shown, and with only the master password there is no
   row at all. The title follows the method picked ("Enter PIN" for the PIN).
 
+- **The SSH approval prompt's decisions sit in one row.** Deny, Deny all,
+  Approve once and the time-boxed approval (now labelled "Approve 2m", with
+  the full wording in its tooltip) are tiles in a single row, like the
+  unlock methods, instead of wrapping onto a second line. Deny is still
+  first and still takes the keyboard focus. Deny, and Not now on the SSH
+  unlock prompt, show a plain X, with the Esc hint moved to their tooltip.
+
 - **Fingerprint and FIDO2 unlock are forgotten only from settings.** The
   locked screen's **Forget Fingerprint** and **Forget FIDO2 Key** buttons, and
   their copies on the settings screen, are gone: turning **Unlock with

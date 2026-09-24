@@ -4852,6 +4852,8 @@ function sshAgentPromptView(message, approvalWindowSec) {
     // A grant covers the program (path + key + kind of signature, and for a
     // login the server), so each new ssh-keygen that Git spawns rides it.
     grantLabel: grantOffered ? "Approve for this program · " + formatDuration(window) : "",
+    // The same, short enough for its tile in the decision row.
+    grantShortLabel: grantOffered ? "Approve " + formatDuration(window) : "",
     forwardedWarning: forwarded ? SSH_AGENT_FORWARDED_WARNING : "",
     provenanceNote: SSH_AGENT_PROVENANCE_NOTE
   }

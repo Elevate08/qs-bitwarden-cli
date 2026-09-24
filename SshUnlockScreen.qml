@@ -105,8 +105,9 @@ Column {
     spacing: Style.space(8)
 
     Button {
-      text: "Not now (Esc)"
-      iconText: "󰅘"
+      text: "Not now"
+      iconText: "󰅖"
+      tooltipText: "Refuse this request (Esc)"
       fontFamily: screen.panel.fontFamily
       fontSize: Style.font.bodySmall
       focusable: true
