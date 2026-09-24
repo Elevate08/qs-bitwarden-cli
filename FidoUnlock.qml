@@ -95,16 +95,33 @@ Item {
     probe = state
     applicable = state.applicable
     available = state.ready
-    if (available && armed) {
-      if (!hasProc.running) hasProc.running = true
-    }
+    if (available && armed) checkLegacy()
     if (startAfterProbe) {
       startAfterProbe = false
       if (scanning) launchAssert()
     }
   }
 
+  // Which account the legacy check asked about; an answer for one no longer
+  // active is dropped and asked again.
+  property string hasSlot: ""
+  property bool hasRecheck: false
+
+  function checkLegacy() {
+    if (hasProc.running) {
+      hasRecheck = true
+      return
+    }
+    hasRecheck = false
+    hasSlot = vault ? vault.activeSlot : ""
+    hasProc.running = true
+  }
+
   function onHasChecked(raw) {
+    if (vault && hasSlot !== vault.activeSlot) {
+      if (armed) hasRecheck = true
+      return
+    }
     legacyStored = String(raw || "").trim() === "yes"
     // An SSH request can raise the auth surface before the panel opens.
     if (ready && vault && vault.status === "locked" && vault.sshAuthSurfaceActive) startUnlock()
@@ -465,6 +482,16 @@ Item {
         clearProc.running = true
       }
     }
+  }
+
+  // Asks the legacy check again once its process is free (the Process can
+  // still read as running inside its own exit handler).
+  Timer {
+    id: hasRecheckTimer
+    interval: 150
+    repeat: true
+    running: fido.hasRecheck
+    onTriggered: fido.checkLegacy()
   }
 
   // Retry after the key had a moment, only while the conditions still hold.

@@ -29,6 +29,16 @@
   exit asked for the sweep while it still read as running, so the sweep was
   deferred with nothing left to ask again. It is now retried until it runs.
 
+- **Keyring work still running when you switch accounts finishes for the
+  account it started for.** Switching the moment an account unlocked could
+  leave its remembered session in the keyring (its cleanup ran against the
+  account switched to), drop a pending learned-suggestions write into the
+  other account's file, or, on an upgrade from 1.10 or earlier, report the
+  first account's old PIN or fingerprint entry as the new one's. After a
+  switch from an unlocked account, the new account's learned suggestions now
+  load too. Work that found its process busy is asked again by a timer rather
+  than from the process's own exit, where it could still read as running.
+
 ### Changed
 
 - **Log Out signs out of the account on screen only.** It used to clear every

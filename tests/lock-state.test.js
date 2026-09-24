@@ -296,14 +296,18 @@ check("fingerprint password retrieval requires a live verified attempt",
 check("remembered-session stores are generation-stamped and stale stores are cleared",
   /beginEpochOperation\("sessionStore"\)/.test(bodyOf("storeCurrentSession"))
     && /epochOperationIsStale\("sessionStore"\)/.test(bodyOf("onSessionStored"))
-    && /requestSessionCredentialClear\(\)/.test(bodyOf("onSessionStored")),
+    // The account it was written for, which a switch may have left.
+    && /requestSessionCredentialClear\(sessionStoreSlot\)/.test(bodyOf("onSessionStored"))
+    && /sessionStoreSlot = activeSlot/.test(bodyOf("storeCurrentSession")),
   bodyOf("storeCurrentSession") + "\n" + bodyOf("onSessionStored"))
 check("a newer session waits for an old store and its cleanup before being remembered",
   /keyringStoreProc\.running\s*\|\|\s*keyringClearProc\.running/.test(bodyOf("storeCurrentSession"))
     && /sessionStorePending\s*=\s*true/.test(bodyOf("storeCurrentSession"))
     && /sessionStorePending\s*=\s*rememberSession\s*&&\s*status\s*===\s*"unlocked"\s*&&\s*!!session/.test(bodyOf("onSessionStored"))
-    && /sessionStorePending[\s\S]{0,100}storeCurrentSession/.test(panelSrc.slice(
-      panelSrc.indexOf("id: keyringClearProc"), panelSrc.indexOf("id: listFoldersProc"))),
+    // Asked again by a timer, not the clear's exit handler: a Process can
+    // still read as running inside its own exit handler.
+    && /if \(sessionStorePending\) storeCurrentSession\(\)/.test(bodyOf("pumpSessionKeyring"))
+    && /id: busyRetryTimer[\s\S]{0,400}root\.sessionStorePending[\s\S]{0,200}root\.pumpSessionKeyring\(\)/.test(panelSrc),
   bodyOf("storeCurrentSession") + "\n" + bodyOf("onSessionStored"))
 // A PIN is now a wrap in the envelope, and the invariant carries over: a wrap
 // written for a vault generation that has ended, or a form that was left, is

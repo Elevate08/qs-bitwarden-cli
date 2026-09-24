@@ -55,7 +55,8 @@ const env = {
   XDG_CACHE_HOME: path.join(home, ".cache"),
   QT_QPA_PLATFORM: "offscreen",
   FAKE_BW_LOG: bwLog,
-  FAKE_KEYRING: keyring
+  FAKE_KEYRING: keyring,
+  FAKE_SESSION_STORE_DELAY: "1"
 }
 const accountsDir = path.join(env.XDG_DATA_HOME, "qs-bitwarden-cli", "accounts")
 
@@ -154,8 +155,8 @@ try {
   expect("A still has its PIN", s => s.pinReady)
   q("pinUnlock", "111111")
   expect("and it still works", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
-  check("B's keyring entries are gone and A's remain",
-    fs.readdirSync(keyring).sort().join() === "session,unlock_envelope", fs.readdirSync(keyring).join())
+  expect("B's keyring entries are gone and A's remain",
+    () => fs.readdirSync(keyring).sort().join() === "session,unlock_envelope")
   expect("B's directory is gone", () => addedDirs().length === 0)
 
   // --- cancelling an add, a restart, the product IPC, a duplicate ---
@@ -169,6 +170,7 @@ try {
   q("addAccount")
   q("login", "b@x", "pw-b@x")
   expect("B signs in again", s => s.status === "unlocked" && s.accounts.length === 2 && !s.adding)
+  expect("and its session is remembered", () => fs.readdirSync(keyring).some(n => /^session@[0-9a-f]{16}$/.test(n)))
 
   stopShell()
   startShell()
@@ -184,8 +186,19 @@ try {
   expect("to A, locked", s => s.slot === "default" && s.status === "locked")
   check("an unknown email is refused", product("switchAccount", "nobody@x") === "unknown", "")
 
+  // Switch the moment A unlocks, while its remembered session is still being
+  // written: the cleanup must reach A's entry, not B's.
   q("unlock", "pw-a@x")
   expect("A unlocks", s => s.status === "unlocked")
+  q("switchTo", "b@x")
+  expect("an immediate switch to B", s => s.status === "locked" && s.slot !== "default")
+  sleep(2500)
+  check("A's remembered session did not outlive the switch",
+    !fs.readdirSync(keyring).includes("session"), fs.readdirSync(keyring).join())
+  q("switchTo", "a@x")
+  expect("back to A", s => s.slot === "default" && s.status === "locked")
+  q("unlock", "pw-a@x")
+  expect("A unlocks again", s => s.status === "unlocked")
   const oldB = state().accounts.find(a => a.email === "b@x").slot
   q("addAccount")
   q("login", "b@x", "pw-b@x")
