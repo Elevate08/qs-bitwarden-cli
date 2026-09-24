@@ -67,6 +67,22 @@ impl SignScope {
     }
 }
 
+/// Whether a live grant answers this request: same unlock, key, kind of
+/// signature and program. The one rule both new and queued requests meet.
+fn grant_covers(
+    grant: &Grant,
+    epoch: u64,
+    public_blob: &[u8],
+    peer: &PeerContext,
+    scope: &SignScope,
+) -> bool {
+    scope.grantable()
+        && grant.epoch == epoch
+        && grant.public_blob == public_blob
+        && grant.kind == scope.kind
+        && grant.peer.shares_grant_scope(peer)
+}
+
 struct Pending {
     id: RequestId,
     epoch: u64,
@@ -121,13 +137,10 @@ impl ApprovalManager {
             return Err(ApprovalError::WrongUid);
         }
         self.expire(now_ms);
-        if scope.grantable()
-            && self.grants.iter().any(|grant| {
-                grant.epoch == epoch
-                    && grant.public_blob == public_blob
-                    && grant.kind == scope.kind
-                    && grant.peer.shares_grant_scope(&peer)
-            })
+        if self
+            .grants
+            .iter()
+            .any(|grant| grant_covers(grant, epoch, public_blob, &peer, &scope))
         {
             return Ok(Submit::Granted(Authorization {
                 epoch,
@@ -188,6 +201,39 @@ impl ApprovalManager {
             epoch: request.epoch,
             public_blob: request.public_blob,
         })
+    }
+
+    /// Pending requests a live grant now covers, taken out of the queue and
+    /// authorized as if they had arrived after it. An approval that opens a
+    /// grant settles the requests already queued behind it from the same
+    /// program, key and kind of signature, instead of leaving each to be
+    /// approved again.
+    pub fn release_granted(&mut self, now_ms: u64) -> Vec<(RequestId, Authorization)> {
+        self.expire(now_ms);
+        let grants = &self.grants;
+        let mut released = Vec::new();
+        self.pending.retain(|request| {
+            let covered = grants.iter().any(|grant| {
+                grant_covers(
+                    grant,
+                    request.epoch,
+                    &request.public_blob,
+                    &request.peer,
+                    &request.scope,
+                )
+            });
+            if covered {
+                released.push((
+                    request.id,
+                    Authorization {
+                        epoch: request.epoch,
+                        public_blob: request.public_blob.clone(),
+                    },
+                ));
+            }
+            !covered
+        });
+        released
     }
 
     pub fn disconnect(&mut self, id: RequestId) {

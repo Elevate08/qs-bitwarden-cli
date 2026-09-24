@@ -24,6 +24,14 @@
 
 ### Fixed
 
+- **Approving for a program also answers the requests already queued from
+  it.** Three `ssh -T git@github.com` at once queued three prompts, and
+  approving the first "for this program" left the other two waiting to be
+  approved one by one: the helper only consulted a grant for requests that
+  arrived after it. It now also settles the queued ones the new grant covers
+  -- same program, key, kind of signature and server, the same rule a new
+  request meets -- and anything else stays queued.
+
 - **A logout right after a sign-in no longer hangs on "Finishing logout".**
   The keyring sweep waits for any write still running, and the write's own
   exit asked for the sweep while it still read as running, so the sweep was
