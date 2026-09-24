@@ -1066,8 +1066,8 @@ check("the clear-all command is what it runs",
 check("it does not ask fingerprintStored or pinConfigured for permission first",
   forget !== "" && !/\bif\s*\(\s*(fingerprintStored|pinConfigured)\b/.test(forget), forget)
 check("the panel declares a process for the clear-all command",
-  /id:\s*keyringClearAllProc[\s\S]{0,120}Model\.keyringClearAllCommand\(\)/.test(panelSrc),
-  "expected a keyringClearAllProc bound to Model.keyringClearAllCommand()")
+  /id:\s*keyringClearAllProc[\s\S]{0,120}Model\.keyringClearAllCommand\(root\.activeSlot\)/.test(panelSrc),
+  "expected a keyringClearAllProc bound to the active account's Model.keyringClearAllCommand()")
 
 check("logout keeps new authentication blocked until CLI and keyring cleanup both finish",
   /logoutPending\s*=\s*true/.test(logout)

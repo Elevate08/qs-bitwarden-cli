@@ -242,7 +242,7 @@ check("a queued TOTP request is pinned to the vault generation that queued it",
 check("every status request records the current vault generation",
   /beginEpochOperation\("status"\)/.test(bodyOf("runStatusCheck")), bodyOf("runStatusCheck"))
 check("status completion refuses a result from an earlier vault generation",
-  /if \(epochOperationIsStale\("status"\)\) return/.test(bodyOf("onStatusFinished")),
+  /if \(epochOperationIsStale\("status"\)\) \{\s*restartStaleStatusProbe\(\)\s*return\s*\}/.test(bodyOf("onStatusFinished")),
   bodyOf("onStatusFinished"))
 check("status requests use the generation-stamped launcher",
   (panelSrc.match(/statusProc\.running\s*=\s*true/g) || []).length === 1
@@ -250,11 +250,11 @@ check("status requests use the generation-stamped launcher",
   `direct starts: ${(panelSrc.match(/statusProc\.running\s*=\s*true/g) || []).length}`)
 check("session handoff reads record and verify their vault generation",
   /beginEpochOperation\("sessionHandoff"\)/.test(bodyOf("refreshStatus"))
-    && /if \(epochOperationIsStale\("sessionHandoff"\)\) return/.test(bodyOf("onSessionHandoff")),
+    && /if \(epochOperationIsStale\("sessionHandoff"\)\) \{\s*restartStaleStatusProbe\(\)\s*return\s*\}/.test(bodyOf("onSessionHandoff")),
   bodyOf("refreshStatus") + "\n" + bodyOf("onSessionHandoff"))
 check("remembered-session lookups record and verify their vault generation",
   /beginEpochOperation\("keyringLookup"\)/.test(bodyOf("onSessionHandoff"))
-    && /if \(epochOperationIsStale\("keyringLookup"\)\) return/.test(bodyOf("onKeyringLookupFinished")),
+    && /if \(epochOperationIsStale\("keyringLookup"\)\) \{\s*restartStaleStatusProbe\(\)\s*return\s*\}/.test(bodyOf("onKeyringLookupFinished")),
   bodyOf("onSessionHandoff") + "\n" + bodyOf("onKeyringLookupFinished"))
 check("logout closes any terminal handoff acceptance window",
   /terminalLoginStartedAt\s*=\s*0/.test(bodyOf("logoutAccount")), bodyOf("logoutAccount"))

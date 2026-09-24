@@ -179,18 +179,15 @@ check("the toggle reflects a stored FIDO password, not just the setting",
   /case "fidoUnlock": return fidoUnlock && fidoStored/.test(panelSrc),
   "settingValue has no fido case")
 const rawPanel = read("Panel.qml")
-check("the locked screen's Forget FIDO2 Key is declared once and placed twice",
-  (rawPanel.match(/ForgetFidoButton \{/g) || []).length === 2
+check("the locked screen's Forget FIDO2 Key is declared once and placed once",
+  (rawPanel.match(/ForgetFidoButton \{/g) || []).length === 1
     && /component ForgetFidoButton: Button \{[\s\S]{0,300}Forget FIDO2 Key[\s\S]{0,220}onClicked: root\.vault\.forgetFidoUnlock\(\)/
       .test(rawPanel),
-  "both slots must share one declaration")
-check("with a Forget Fingerprint beside it, it takes its own centred line",
-  /anchors\.horizontalCenter: parent\.horizontalCenter\s*spacing: Style\.space\(8\)\s*ForgetFidoButton \{\s*visible: root\.vault\.fidoStored && root\.vault\.fingerprintStored/
+  "one declaration, one placement")
+check("it shares a centred row with Forget Fingerprint, under the account buttons",
+  /visible: root\.vault\.fingerprintStored \|\| root\.vault\.fidoStored\s*anchors\.horizontalCenter: parent\.horizontalCenter[\s\S]{0,500}Forget Fingerprint[\s\S]{0,400}ForgetFidoButton \{\s*visible: root\.vault\.fidoStored\s*\}/
     .test(rawPanel),
-  "the three must read as one centred block")
-check("without one, it takes the empty slot inline instead",
-  /ForgetFidoButton \{\s*visible: root\.vault\.fidoStored && !root\.vault\.fingerprintStored/.test(rawPanel),
-  "a machine with no fingerprint configured must not strand the button on its own line")
+  "the forget buttons must read as one centred block of their own")
 
 // The locked screen and the SSH popup draw the same UnlockForm, so the button
 // is declared once and both surfaces get it.

@@ -4,7 +4,7 @@ Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
 every item type without opening a browser.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.10.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.11.0-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -365,15 +365,26 @@ The cursor starts on the option already in effect, so <kbd>Enter</kbd> never cha
 
 ## Optional features
 
+### Several accounts
+
+The panel can hold up to ten Bitwarden accounts at once -- a personal and a work account, say, or two servers. Press **Add Account** on the locked screen (or the account button in the header) and sign in; the first account stays signed in beside it. **Switch Account** on the locked screen, or the header's account button, lists them.
+
+- **Each account keeps its own sign-in and its own quick unlock.** A PIN, fingerprint or FIDO2 key set up for one account is that account's; switching never asks you to log in again or set anything up again. The same fingerprint or key can unlock every account -- nothing is re-enrolled, each account's stored password just gets its own way in.
+- **Only one account is unlocked at a time.** Switching locks the one you leave, drops its items from memory and tells the SSH agent, then shows the lock screen of the one you picked, with its unlock methods ready.
+- **Log Out** signs out of the account on screen only, deletes its stored password and learned suggestions, and moves to the next account. The others are untouched.
+- The quick-unlock settings are shared switches: turning PIN, fingerprint or FIDO2 unlock off in settings removes it from the account on screen.
+
+The first account lives where a terminal `bw` finds it (`~/.config/Bitwarden CLI`), exactly as before. Each account added beside it gets a private directory of its own under `~/.local/share/qs-bitwarden-cli/accounts/`, which `bw` is pointed at with `BITWARDENCLI_APPDATA_DIR`; the list of accounts (emails and servers, nothing secret) is `registry.json` in the same place. Upgrading needs nothing: your current account becomes the first one, with everything it had.
+
 ### How quick unlock stores your password
 
-PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unlock` accepts nothing else. The plugin keeps it **once**, in a single keyring item (`service=qs-bitwarden-cli, account=unlock_envelope`):
+PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unlock` accepts nothing else. The plugin keeps it **once** per account, in a single keyring item (`service=qs-bitwarden-cli, account=unlock_envelope`, or `unlock_envelope@<slot>` for an account added beside the first):
 
 - The first time `bw` accepts a password you typed -- a login, or unlocking with your master password -- it is encrypted under a random key with XChaCha20-Poly1305, and the whole item is sealed to this machine and your user with `systemd-creds --user`. A copy taken off this machine is useless.
 - Each unlock method you turn on adds its own way to that one key, and none of them stores the password again. Turning a method off removes only its way in.
 - The master password you are asked for when turning a method on is a **check** against the stored one, not a new copy: a wrong one is refused, and nothing you type there is stored.
 - If you change your master password elsewhere, the next unlock with the new one re-seals the stored copy and keeps every method.
-- Logging out deletes it.
+- Logging out of an account deletes its copy; other accounts keep theirs.
 
 The small helper that does the encryption (`bin/x86_64-linux/qs-bitwarden-unlock-key`) ships and is verified exactly like the SSH helper; if it is missing or fails its check, quick unlock is unavailable and your master password still works. Everything else is the operating system: `argon2`, `systemd-creds`, `fido2-assert` and `secret-tool`.
 
@@ -407,7 +418,7 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 
 PAM can prove that you are present, but a fingerprint releases no secret, so it cannot encrypt anything by itself. Fingerprint unlock is the one method whose way in is protected only by the machine seal, which means **a program running as you while you are logged in can open the stored password without your finger**. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock. It is off by default and worth leaving off on a shared or unattended machine -- and with it on, a PIN or a key does not make the stored password any safer.
 
-Its way in is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, or log out.
+Its way in is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, or log out -- for the account on screen; other accounts keep theirs.
 
 **A closed lid takes the option off the screen.** The reader is on the laptop body, so with the lid shut -- clamshell mode, or simply closed on a docked machine -- there is nothing to touch. While it is down, the locked screen hides **Unlock with Fingerprint**, the SSH prompt does the same, and the reader is not armed on open. Omarchy's own detector (`omarchy-hw-laptop-closed`) decides, and a machine with no lid never reports one. Nothing is forgotten: the settings toggle is unchanged, and the option is back the moment the lid opens. A FIDO2 key on a cable is unaffected.
 
@@ -429,7 +440,7 @@ The key will not produce that secret without a touch, so unlocking needs the key
 
 Registrations made with `+pin` or `+verification` (a key PIN at every system prompt) are not used: the panel cannot collect the key's PIN yet, and a touch alone would be weaker than what the registration asks of the system.
 
-Its way in is removed when you turn the setting off, press **Forget FIDO2 Key** on the locked screen, or log out. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
+Its way in is removed when you turn the setting off, press **Forget FIDO2 Key** on the locked screen, or log out -- for the account on screen; other accounts keep theirs. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
 
 ### SSH agent
 
