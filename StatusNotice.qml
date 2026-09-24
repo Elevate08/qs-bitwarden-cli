@@ -2,8 +2,8 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// A transient panel-local notice. It anchors to its parent as an overlay and
-// deliberately reports no height to the parent's content layout.
+// A transient notice overlaid at the bottom of its parent; it takes no space
+// in the parent's layout.
 BorderSurface {
   id: root
 
@@ -48,8 +48,7 @@ BorderSurface {
     NumberAnimation { duration: 140; easing.type: Easing.OutQuad }
   }
 
-  // Consume pointer presses on the floating surface so covered controls
-  // cannot be activated through it.
+  // Swallow clicks so controls underneath cannot be activated through it.
   MouseArea {
     anchors.fill: parent
     acceptedButtons: Qt.AllButtons
@@ -62,8 +61,8 @@ BorderSurface {
     spacing: Style.space(8)
 
     Text {
-      textFormat: Text.PlainText
       id: noticeIcon
+      textFormat: Text.PlainText
       anchors.verticalCenter: parent.verticalCenter
       text: root.showsError ? "󰅚" : "󰋼"
       color: root.tone
@@ -93,8 +92,8 @@ BorderSurface {
       }
 
       Text {
-        textFormat: Text.PlainText
         id: noticeMessage
+        textFormat: Text.PlainText
         width: parent.width
         text: root.showsError ? root.errorMessage : root.statusMessage
         color: root.foreground
@@ -104,9 +103,7 @@ BorderSurface {
       }
     }
 
-    // An error the user can do something about carries the doing with it. A
-    // failed save is the case this exists for: the message says the vault
-    // refused it, and the button is the way back to what was typed.
+    // Optional recovery action for an error (e.g. back to a failed save's form).
     PanelActionButton {
       id: noticeActionButton
       visible: root.showsError && root.actionLabel !== ""

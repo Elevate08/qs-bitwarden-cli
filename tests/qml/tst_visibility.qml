@@ -1,10 +1,8 @@
 import QtQuick
 import QtTest
 
-// UnlockForm resets its password eye in its own onVisibleChanged, and relies
-// on `visible` being effective visibility: hiding any ancestor -- the panel's
-// lock screen, the SSH unlock screen -- notifies the form too. This pins that,
-// so nobody adds per-screen or parent-watching resets to work around it.
+// UnlockForm resets its password eye on visibility change and relies on
+// `visible` being effective visibility, so hiding any ancestor notifies it.
 TestCase {
   name: "Visibility"
   when: windowShown

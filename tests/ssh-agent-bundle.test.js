@@ -1,42 +1,20 @@
 #!/usr/bin/env node
-// The plugin ships a compiled helper, so the panel checks it before trusting
-// it: that it exists, is executable, is the right architecture, matches its
-// recorded checksum, passes its own self-test, and speaks the protocol this
-// panel does. Every one of those can fail on a real machine -- a partial
-// clone, an LFS placeholder, a stale artifact after `git pull`, a helper from
-// a newer plugin version -- and each must disable only this optional feature.
-//
-// Be clear about what the checksum is for. bin/SHA256SUMS sits beside the
-// binary and beside the QML that reads it, so anyone able to replace one can
-// replace the others. It is not tamper detection. It catches corruption,
-// truncation, and staleness, which are the failures that actually happen.
+// The shipped helper is checked before use (exists, executable, architecture,
+// checksum, self-test, protocol), and any failure (partial clone, LFS
+// placeholder, stale binary) disables only the SSH feature. SHA256SUMS sits
+// beside the binary, so it catches corruption and staleness, not tampering.
 //
 //   node tests/ssh-agent-bundle.test.js
 
+const { createSuite, loadModule, readPluginSource, repoRoot } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { spawnSync } = require("child_process")
 
-const repoRoot = path.join(__dirname, "..")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.sshAgentBundledRelative = sshAgentBundledRelative
-  exports.sshAgentDevelopmentRelative = sshAgentDevelopmentRelative
-  exports.sshAgentHelperCandidates = sshAgentHelperCandidates
-  exports.sshAgentHelperInspectCommand = sshAgentHelperInspectCommand
-  exports.parseSshAgentHelperInspection = parseSshAgentHelperInspection
-  exports.sshAgentHelperReady = sshAgentHelperReady
-  exports.sshAgentHelperSourceLabel = sshAgentHelperSourceLabel
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done } = createSuite("ssh-agent-bundle")
 
 // -------------------------------------------------------------------------
 // The shipped artifact is really in the repository
@@ -56,10 +34,13 @@ check("it is a real ELF binary",
   fs.existsSync(bundled) && fs.readFileSync(bundled).subarray(0, 4).toString("latin1") === "\x7fELF",
   "no ELF magic")
 
-const recorded = fs.existsSync(sums) ? fs.readFileSync(sums, "utf8").trim() : ""
-check("the checksum file records a path relative to bin/",
-  /^[0-9a-f]{64}\s+x86_64-linux\/qs-bitwarden-ssh-agent$/.test(recorded),
-  recorded)
+// SHA256SUMS names every shipped helper, one line each.
+const sumLines = fs.existsSync(sums) ? fs.readFileSync(sums, "utf8").trim().split("\n") : []
+check("every checksum line records a path relative to bin/",
+  sumLines.length > 0 && sumLines.every(l => /^[0-9a-f]{64}  x86_64-linux\/[a-z0-9-]+$/.test(l)),
+  sumLines.join(" | "))
+const recorded = sumLines.find(l => l.endsWith("  x86_64-linux/qs-bitwarden-ssh-agent")) || ""
+check("the SSH helper has its own line", recorded !== "", sumLines.join(" | "))
 if (fs.existsSync(bundled) && recorded) {
   const actual = spawnSync("sha256sum", [bundled], { encoding: "utf8" }).stdout.split(" ")[0]
   eq("the tracked binary matches its tracked checksum", actual, recorded.split(/\s+/)[0])
@@ -70,11 +51,11 @@ if (fs.existsSync(bundled) && recorded) {
 // -------------------------------------------------------------------------
 
 eq("the bundled path is architecture-scoped",
-  Model.sshAgentBundledRelative(), "bin/x86_64-linux/qs-bitwarden-ssh-agent")
+  Model.SSH_AGENT_BUNDLED_RELATIVE, "bin/x86_64-linux/qs-bitwarden-ssh-agent")
 eq("the development path is cargo's debug output",
-  Model.sshAgentDevelopmentRelative(), "agent/target/debug/qs-bitwarden-ssh-agent")
+  Model.SSH_AGENT_DEVELOPMENT_RELATIVE, "agent/target/debug/qs-bitwarden-ssh-agent")
 
-const candidates = Model.sshAgentHelperCandidates("/opt/bw")
+const candidates = Model.helperCandidates("/opt/bw", Model.SSH_AGENT_HELPER_SPEC)
 eq("both candidates are offered", candidates.length, 2)
 eq("the shipped helper is preferred", candidates[0].path, "/opt/bw/bin/x86_64-linux/qs-bitwarden-ssh-agent")
 eq("the development build is the fallback", candidates[1].path, "/opt/bw/agent/target/debug/qs-bitwarden-ssh-agent")
@@ -82,9 +63,9 @@ eq("the preferred one is labelled", candidates[0].source, "bundled")
 eq("the fallback is labelled", candidates[1].source, "development")
 check("every candidate path is absolute",
   candidates.every(c => c.path.charAt(0) === "/"), JSON.stringify(candidates))
-eq("no plugin directory yields no candidates", Model.sshAgentHelperCandidates("").length, 0)
+eq("no plugin directory yields no candidates", Model.helperCandidates("", Model.SSH_AGENT_HELPER_SPEC).length, 0)
 eq("a traversing plugin directory yields no candidates",
-  Model.sshAgentHelperCandidates("/opt/../etc").length, 0)
+  Model.helperCandidates("/opt/../etc", Model.SSH_AGENT_HELPER_SPEC).length, 0)
 
 // A development build being present must not hide a broken shipped one from
 // the diagnostics, but it should still let the panel run.
@@ -119,14 +100,14 @@ const inspect = (pluginDir) => {
   eq("its protocol version is reported", result.protocol, 1)
   eq("its checksum is confirmed", result.checksum, "match")
   eq("its self-test passed", result.selfTest, "pass")
-  eq("the panel would enable the feature", Model.sshAgentHelperReady(result), true)
+  eq("the panel would enable the feature", Model.helperReady(result), true)
 }
 
 // Nothing there at all.
 inTemp(dir => {
   const result = inspect(dir)
   eq("a missing helper is reported", result.state, "missing")
-  eq("and the feature stays off", Model.sshAgentHelperReady(result), false)
+  eq("and the feature stays off", Model.helperReady(result), false)
   check("the message says what to do", /build|install|clone/i.test(result.message), result.message)
 })
 
@@ -140,7 +121,7 @@ inTemp(dir => {
   fs.copyFileSync(sums, path.join(dir, "bin", "SHA256SUMS"))
   const result = inspect(dir)
   eq("a non-executable helper is reported", result.state, "not-executable")
-  eq("and the feature stays off", Model.sshAgentHelperReady(result), false)
+  eq("and the feature stays off", Model.helperReady(result), false)
 })
 
 // Corrupt or truncated -- a partial clone, or an interrupted download.
@@ -155,7 +136,7 @@ inTemp(dir => {
   const result = inspect(dir)
   check("a truncated helper is refused", result.state !== "ok", JSON.stringify(result))
   eq("the checksum is what catches it", result.checksum, "mismatch")
-  eq("and the feature stays off", Model.sshAgentHelperReady(result), false)
+  eq("and the feature stays off", Model.helperReady(result), false)
   check("the message names staleness or corruption",
     /stale|corrupt|match|update/i.test(result.message), result.message)
 })
@@ -169,7 +150,7 @@ inTemp(dir => {
   fs.copyFileSync(sums, path.join(dir, "bin", "SHA256SUMS"))
   const result = inspect(dir)
   check("an LFS placeholder is refused", result.state !== "ok", JSON.stringify(result))
-  eq("and the feature stays off", Model.sshAgentHelperReady(result), false)
+  eq("and the feature stays off", Model.helperReady(result), false)
 })
 
 // A development build with no shipped artifact: the dev loop must keep working.
@@ -181,7 +162,7 @@ inTemp(dir => {
   const result = inspect(dir)
   eq("a development build is usable", result.state, "ok")
   eq("and is identified as such", result.source, "development")
-  eq("the feature is enabled from it", Model.sshAgentHelperReady(result), true)
+  eq("the feature is enabled from it", Model.helperReady(result), true)
   check("no checksum is claimed for an untracked build",
     result.checksum === "unchecked", result.checksum)
 })
@@ -206,6 +187,36 @@ inTemp(dir => {
 // Failure isolation
 // -------------------------------------------------------------------------
 
+// SHA256SUMS lists every shipped helper. Checking the whole file would let a
+// stale unlock tool disable the SSH agent -- the two features have nothing to
+// do with each other, so each helper is checked against its own line only.
+inTemp(dir => {
+  const target = path.join(dir, "bin", "x86_64-linux")
+  fs.mkdirSync(target, { recursive: true })
+  fs.copyFileSync(bundled, path.join(target, "qs-bitwarden-ssh-agent"))
+  fs.chmodSync(path.join(target, "qs-bitwarden-ssh-agent"), 0o755)
+  fs.writeFileSync(path.join(target, "qs-bitwarden-unlock-key"), "stale\n", { mode: 0o755 })
+  fs.writeFileSync(path.join(dir, "bin", "SHA256SUMS"), recorded + "\n"
+    + "0".repeat(64) + "  x86_64-linux/qs-bitwarden-unlock-key\n")
+  const result = inspect(dir)
+  eq("another helper's stale line does not disable this one", result.state, "ok")
+  eq("and this one's own line still matches", result.checksum, "match")
+})
+
+// The other direction: a SHA256SUMS that simply omits this helper. A plain
+// `sha256sum -c` passes for a file the list does not mention.
+inTemp(dir => {
+  const target = path.join(dir, "bin", "x86_64-linux")
+  fs.mkdirSync(target, { recursive: true })
+  fs.copyFileSync(bundled, path.join(target, "qs-bitwarden-ssh-agent"))
+  fs.chmodSync(path.join(target, "qs-bitwarden-ssh-agent"), 0o755)
+  fs.writeFileSync(path.join(dir, "bin", "SHA256SUMS"),
+    "0".repeat(64) + "  x86_64-linux/qs-bitwarden-unlock-key\n")
+  const result = inspect(dir)
+  eq("a checksum file with no line for this helper is a mismatch", result.checksum, "mismatch")
+  eq("so the shipped helper is refused", result.state, "checksum-mismatch")
+})
+
 // The settings diagnostics live in SshAgentSettings.qml; the supervision that
 // feeds them is still in Panel.qml. Both, or a check lands on whichever half
 // happens to hold its pattern today.
@@ -213,17 +224,12 @@ const panelSrc = ["Panel.qml", "SshAgentSettings.qml"]
   .map(readPluginSource)
   .join("\n")
 check("the helper is inspected before the supervisor is allowed to start",
-  /sshAgentHelperReady\(/.test(panelSrc), "nothing gates startup on the inspection")
+  /helperReady\(sshAgentHelper\)/.test(panelSrc), "nothing gates startup on the inspection")
 check("a failed inspection disables only the agent",
-  /sshAgentSupervisable[\s\S]{0,400}?sshAgentHelperReady|sshAgentHelperReady[\s\S]{0,400}?sshAgentSupervisable/.test(panelSrc),
+  /sshAgentSupervisable[\s\S]{0,400}?helperReady\(sshAgentHelper\)|helperReady\(sshAgentHelper\)[\s\S]{0,400}?sshAgentSupervisable/.test(panelSrc),
   "the inspection result does not feed the supervisable gate")
 check("the source in use is shown in the settings diagnostics",
   /sshAgentHelperSourceLabel\(/.test(panelSrc),
   "a user cannot tell whether they are running the shipped or the local helper")
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`ssh-agent-bundle: ${pass} passed`)
+done()

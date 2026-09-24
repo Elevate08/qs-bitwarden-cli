@@ -1,47 +1,20 @@
 #!/usr/bin/env node
-// The panel supervises the SSH companion; it never waits on it. These tests
-// cover the pure supervision logic (path resolution, the minimal environment,
-// the bounded NDJSON reader, and the restart state machine) and then drive
-// that logic with real child processes -- a fake helper and, when it has been
-// built, the real one -- so the handshake is proven across the process
-// boundary rather than against a mock.
+// Supervision of the SSH companion, which the panel never waits on: path
+// resolution, the minimal environment, the bounded NDJSON reader and the
+// restart state machine, then the handshake with real child processes (a fake
+// helper, and the real one when built).
 //
 //   node tests/ssh-agent-control.test.js
 
+const { createSuite, loadModule, readPluginSource, repoRoot } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const os = require("os")
 const path = require("path")
 const { spawn } = require("child_process")
 
-const repoRoot = path.join(__dirname, "..")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.pluginDirFromUrl = pluginDirFromUrl
-  exports.sshAgentHelperPath = sshAgentHelperPath
-  exports.sshAgentHelperCommand = sshAgentHelperCommand
-  exports.sshAgentHelperEnv = sshAgentHelperEnv
-  exports.sshAgentHelloLine = sshAgentHelloLine
-  exports.sshAgentShutdownLine = sshAgentShutdownLine
-  exports.parseAgentEvent = parseAgentEvent
-  exports.sshAgentRestartDelayMs = sshAgentRestartDelayMs
-  exports.sshAgentInitialState = sshAgentInitialState
-  exports.sshAgentReduce = sshAgentReduce
-  exports.sshAgentMaxRestarts = sshAgentMaxRestarts
-  exports.sshAgentHandshakeTimeoutMs = sshAgentHandshakeTimeoutMs
-  exports.sshAgentMaxLineBytes = sshAgentMaxLineBytes
-  exports.sshAgentElsewhereRetryMs = sshAgentElsewhereRetryMs
-  exports.sshAgentLockProbeCommand = sshAgentLockProbeCommand
-  exports.sshAgentLockHeld = sshAgentLockHeld
-  exports.sshAgentSetupState = sshAgentSetupState
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done, failures } = createSuite("ssh-agent-control")
 
 // -------------------------------------------------------------------------
 // Absolute, plugin-relative helper path
@@ -60,10 +33,10 @@ eq("plugin dir refuses an encoded traversal", Model.pluginDirFromUrl("file:///op
 eq("plugin dir refuses an empty url", Model.pluginDirFromUrl(""), "")
 eq("plugin dir refuses a non-string", Model.pluginDirFromUrl(null), "")
 
-eq("helper path is plugin-relative and absolute",
-  Model.sshAgentHelperPath("/opt/bw"), "/opt/bw/agent/target/debug/qs-bitwarden-ssh-agent")
-eq("helper path refuses a relative plugin dir", Model.sshAgentHelperPath("opt/bw"), "")
-eq("helper path refuses an empty plugin dir", Model.sshAgentHelperPath(""), "")
+eq("plugin dir loses trailing slashes", Model.cleanAbsoluteDir("/opt/bw//"), "/opt/bw")
+eq("plugin dir refuses a relative path", Model.cleanAbsoluteDir("opt/bw"), "")
+eq("plugin dir refuses an empty path", Model.cleanAbsoluteDir(""), "")
+eq("plugin dir refuses a dot segment", Model.cleanAbsoluteDir("/opt/../etc"), "")
 
 // The source is chosen by the bundle inspection (see ssh-agent-bundle.test.js),
 // and the command follows it rather than guessing. Launching an unvetted
@@ -295,10 +268,8 @@ eq("a failed supervisor stays failed", failedIgnores.state.phase, "failed")
 check("a failed supervisor starts nothing", failedIgnores.actions.every(a => !a.start),
   JSON.stringify(failedIgnores.actions))
 
-// The loop that actually happens in practice: the helper starts fine, answers
-// the handshake, serves briefly, and dies -- over and over. Completing a
-// handshake must not wipe the failure history, or a helper that crashes a
-// second after every start is restarted forever.
+// The real-world loop: start, handshake, die, repeat. A handshake must not
+// reset the failure count, or such a helper restarts forever.
 {
   let crashy = Model.sshAgentInitialState()
   let scheduled = 0
@@ -324,18 +295,14 @@ check("a failed supervisor starts nothing", failedIgnores.actions.every(a => !a.
   check("that loop leaves the gate closed", crashy.gateOpen === false, JSON.stringify(crashy))
 }
 
-// A helper that ran healthily for a long time is not a crash loop.
 // -------------------------------------------------------------------------
-// Served elsewhere (issue #30)
+// Served elsewhere
 // -------------------------------------------------------------------------
 //
-// The helper takes an exclusive lock on its runtime directory and exits when
-// another process already holds it. That exit looks exactly like a crash, and
-// counted as one it walked the supervisor into CRASH_LOOP with a message that
-// sent the user hunting for a broken binary. The panel probes the lock after a
-// start that never reached `ready`, and a held lock is its own state.
+// A helper that loses the runtime lock to another process exits like a crash;
+// the panel probes the lock, and a held lock is its own state, not CRASH_LOOP.
 
-const retryElsewhere = Model.sshAgentElsewhereRetryMs()
+const retryElsewhere = Model.SSH_AGENT_ELSEWHERE_RETRY_MS
 check("the elsewhere retry is slow, not a backoff step",
   retryElsewhere >= 10000 && retryElsewhere <= 120000, String(retryElsewhere))
 
@@ -450,6 +417,7 @@ check("only the probe's conflict code means held",
     "probe exit must report lockHeld")
 }
 
+// A helper that ran healthily for a long time is not a crash loop.
 const healthy = drive(reachReady(0).state, [{ kind: "exited", exitCode: 0, nowMs: 10 * 60 * 1000 }])
 eq("a long healthy run resets the backoff", healthy.last.restartInMs, Model.sshAgentRestartDelayMs(1))
 eq("a long healthy run keeps supervising", healthy.state.phase, "backoff")
@@ -650,10 +618,8 @@ check("the supervisor uses a minimal environment",
   /id:\s*sshAgentProc[\s\S]{0,600}?clearEnvironment:\s*true/.test(panelSrc),
   "sshAgentProc does not clear its environment")
 
-// The helper cleans up its socket and FIFO when its control channel closes,
-// and not when it is signalled. A stop that goes straight to SIGTERM leaves
-// both behind for the next start to reclaim, so the supervisor has to ask
-// before it terminates.
+// The helper removes its socket and FIFO when its control channel closes, not
+// on a signal, so stopping asks first.
 check("stopping the helper closes its control channel first",
   /function stopSshAgentHelper\(\)[\s\S]{0,600}?stdinEnabled = false/.test(panelSrc),
   "the stop path never closes stdin")
@@ -668,11 +634,6 @@ check("starting the helper reopens its control channel",
   "a restarted helper would have no control channel")
 
 processTests().then(() => {
-  if (failures.length) {
-    console.error(`\n${failures.length} failed, ${pass} passed\n`)
-    failures.forEach(f => console.error(`  FAIL ${f}`))
-    process.exit(1)
-  }
-  console.log(`ssh-agent-control: ${pass} passed`)
+  done()
   try { fs.rmSync(tmpRoot, { recursive: true, force: true }) } catch (e) {}
 })

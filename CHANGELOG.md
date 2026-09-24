@@ -1,5 +1,105 @@
 # Changelog
 
+## [1.10.1] - 2026-09-23
+
+### Security
+
+- **A login grant covers one server.** A grant for SSH logins as `git`
+  covered `git` on every server for its window, and the prompt never said
+  which server a login was for. The helper now reads the server host key from
+  OpenSSH's `session-bind@openssh.com` (and from host-bound logins, which must
+  agree with it), shows its `SHA256:` fingerprint in the prompt and under
+  **ACTIVE APPROVALS**, and scopes the grant to it. A client that reports no
+  server gets a prompt saying so. The fingerprint is what the SSH client
+  reported; the helper does not verify the server's signature on the bind.
+
+- **Suggestions say they come from the window title.** A page writes its own
+  title, so a phishing page titled `github.com` was offered your GitHub login
+  under a "Suggested for github.com" banner that read like a verified
+  address. The banner now reads "Matches window title", and the README says
+  suggestions are no defence against a look-alike site.
+
+- **The public-key export refuses a symlinked parent.** Only the final `ssh`
+  directory was checked, so a symlinked `~/.local/share/qs-bitwarden-cli`
+  made export and clear write and delete `*.pub` files elsewhere. Both
+  directories the plugin owns are now refused if they are symlinks.
+
+- **No private key is committed.** The screenshot fixture carried a throwaway
+  Ed25519 private key. `demo/capture.sh` now generates one per run and
+  deletes it afterwards; the old key remains in history and was never used
+  for anything but screenshots.
+
+- **CI's helper-commit gate comes from the base branch.** The eligibility
+  script ran from the pull request's own checkout, so a pull request could
+  change the rule that decides whether CI commits its binaries. Both
+  workflows now run the base branch's copy, and anything that stops it
+  running counts as "not eligible".
+
+- **A signing grant covers one kind of signature.** Approving a program for a
+  window used to cover any signature that program asked for with that key, so
+  approving `ssh-keygen` for Git's commit signatures also let anything the
+  helper attributed to `ssh-keygen` log in to a server as you. The helper now
+  reads what it is asked to sign and scopes the grant to it: SSHSIG signatures
+  in one namespace (`git` for commits and tags), or SSH logins as one user.
+  Anything else is approved once and never for a window. The prompt and
+  **ACTIVE APPROVALS** say which kind a request or grant is.
+
+- **Forwarded requests are recognised, and never granted.** The helper refused
+  OpenSSH's `session-bind@openssh.com`, so it could not tell a remote host's
+  forwarded request from your own `ssh` -- and a grant for `/usr/bin/ssh`
+  answered both, letting the far end of an `ssh -A` session sign without a
+  prompt for as long as the grant ran. Binds are now read, a forwarded request
+  is labelled in the prompt, and it can neither open a grant nor use one. The
+  documentation said forwarded requests were already labelled; they were not.
+
+- **Quick unlock keeps your master password once, encrypted.** Fingerprint and
+  FIDO2 unlock each kept a plaintext copy of the master password in the login
+  keyring, readable by any program running as you, and PIN unlock kept a third
+  copy under AES-CBC with a PBKDF2-derived key and no MAC -- a 6-digit PIN
+  space fell to one GPU in about a minute, and about 1 in 256 wrong PINs
+  "decrypted". Now there is one keyring item: the password encrypted with
+  XChaCha20-Poly1305 under a random key, sealed to this machine and user with
+  `systemd-creds --user`, and bound to your Bitwarden account. It is written
+  the first time `bw` accepts a password you typed. Each method adds its own
+  way to the key, and none stores the password:
+  - **PIN**: Argon2id (256 MiB, 4 passes) from the OS `argon2` tool -- about
+    0.75 s of one CPU core per guess, on this machine only. A wrong PIN
+    always fails. PIN rules are unchanged; the weak-PIN warning now gives
+    real numbers.
+  - **FIDO2**: the key's `hmac-secret` for the credential Omarchy already
+    registered through pam-u2f, so nobody re-enrolls. The key refuses to
+    produce it without a touch, so unlocking now needs the key itself. The
+    plugin's PAM stack is gone.
+  - **Fingerprint**: a finger releases no secret, so its way in is protected
+    by the machine seal alone -- still better than plaintext, and the settings
+    screen says plainly that with it on the stored password is only as safe
+    as fingerprint unlock.
+
+  Turning a method on asks for your master password as a check against the
+  stored one; a wrong one is refused and nothing typed there is stored. A
+  master password changed elsewhere re-seals the stored copy at the next
+  unlock with the new one, keeping every method. Upgrading needs nothing: the
+  old entries move in as each method is next used and are deleted once the
+  new copy opens. The encryption runs in a new helper,
+  `qs-bitwarden-unlock-key`, built, checked, attested and shipped like the
+  SSH helper; without it quick unlock is unavailable and the master password
+  still works.
+
+### Fixed
+
+- **No unlock before the vault status is known.** For a few seconds after the
+  shell starts the lock screen is still checking the vault, and a master
+  password submitted then failed with "Could not deliver the password", while a
+  PIN was silently discarded. The Unlock button now says it is checking and
+  waits; what you type is kept.
+- **Removing the plugin with the SSH agent on leaves no runtime files.** The
+  helper is killed rather than shut down in that case, so its socket, FIFO and
+  lock stayed in `$XDG_RUNTIME_DIR` until logout. The panel now removes them
+  once the helper's lock is free.
+- **Quick-unlock descriptions match the envelope.** The FIDO2 setup screen,
+  the settings rows and the Forget buttons still described the master password
+  as kept as-is in the login keyring; they now describe the encrypted copy.
+
 ## [1.10.0] - 2026-09-17
 
 ### Added

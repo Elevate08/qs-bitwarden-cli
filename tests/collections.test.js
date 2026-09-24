@@ -1,28 +1,13 @@
 #!/usr/bin/env node
-// Tests for organization collections on the item form.
-//
-// Field names were read from a real `bw list org-collections` response
-// (id / organizationId / name / externalId / object) and from the item
-// template, which carries collectionIds.
+// Organization collections on the item form; field names from a real
+// `bw list org-collections` and the item template.
 //
 //   node tests/collections.test.js
 
-const fs = require("fs")
-const path = require("path")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.listOrgCollectionsCommand = listOrgCollectionsCommand
-  exports.parseCollections = parseCollections
-  exports.collectionName = collectionName
-  exports.buildCreatePayload = buildCreatePayload
-  exports.buildEditPayload = buildEditPayload
-  exports.validateItemForm = validateItemForm
-`)(Model)
+const { createSuite, loadModule } = require("./harness")
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("collections")
 
 // --- command ---
 check("collections are listed per organization with a producer-side byte limit",
@@ -43,8 +28,8 @@ check("an entry without an id is dropped", cols.length === 2, JSON.stringify(col
 check("organizationId is carried through", cols[0].organizationId === "o1", JSON.stringify(cols[0]))
 check("malformed JSON yields an empty list",
   Model.parseCollections("{{").length === 0 && Model.parseCollections("").length === 0, "expected []")
-check("collectionName resolves a known id", Model.collectionName(cols, "c2") === "Ops", Model.collectionName(cols, "c2"))
-check("collectionName is empty for an unknown id", Model.collectionName(cols, "zz") === "", "expected empty")
+check("nameById resolves a known id", Model.nameById(cols, "c2") === "Ops", Model.nameById(cols, "c2"))
+check("nameById is empty for an unknown id", Model.nameById(cols, "zz") === "", "expected empty")
 
 // --- payloads ---
 // A personal item has no collections; sending the key at all would be wrong.
@@ -83,5 +68,4 @@ check("a personal item needs no collection",
 check("a blank title is still refused first",
   Model.validateItemForm("   ", "o1", ["c1"]).includes("title"), Model.validateItemForm("   ", "o1", ["c1"]))
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

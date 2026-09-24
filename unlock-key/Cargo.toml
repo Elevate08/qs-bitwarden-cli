@@ -1,0 +1,46 @@
+[package]
+name = "qs-bitwarden-unlock-key"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+description = "The quick-unlock envelope for the qs-bitwarden-cli Quickshell panel"
+
+# A package of its own rather than a second binary in agent/: a module or a
+# dependency added to that crate changes the SSH helper's committed bytes even
+# when the helper never calls it, and each of those binaries is committed,
+# checksummed and attested. Keeping the two apart means each changes only when
+# its own source does.
+#
+# Each dependency and its feature set was reviewed deliberately, and the
+# comments below say why each is here. Anything added needs the same review:
+# this process handles the master password and the keys that open it.
+[dependencies]
+# Authenticated encryption for the envelope. The OS supplies every other piece
+# -- systemd-creds seals, argon2 derives, fido2-assert touches the key -- but
+# nothing on the system does AEAD with a caller-supplied key without putting
+# that key in argv. XChaCha20-Poly1305: a wrong key or a flipped byte fails
+# every time, and its 24-byte nonces are safe to draw at random for every seal.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# HKDF-SHA256 turns an Argon2 output or a FIDO2 hmac-secret into a key for one
+# stated purpose.
+hkdf = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+# Nonces and the data key, straight from the kernel.
+getrandom = { version = "0.2", default-features = false }
+# Binary fields in the envelope's JSON, in constant time.
+base64ct = { version = "1.8", default-features = false, features = ["alloc"] }
+# Every buffer holding the password or a key wipes itself when dropped.
+zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
+# The envelope is JSON; unknown fields are refused.
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# RLIMIT_CORE=0 and PR_SET_DUMPABLE=0 before the first secret is read.
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
+
+[profile.release]
+# As for the SSH helper: no unwinding through secret-holding frames, and no
+# symbols in the committed binary.
+panic = "abort"
+strip = "symbols"

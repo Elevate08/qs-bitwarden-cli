@@ -6,18 +6,11 @@ import Quickshell.Services.Pam
 import qs.Commons
 import "BitwardenModel.js" as Model
 
-// The vault, once per shell.
-//
-// Omarchy builds its bar once per monitor, so Panel.qml -- the bar widget -- is
-// instantiated once per monitor as well. Everything that must exist exactly
-// once no matter how many monitors are attached lives here instead: the shell
-// loads a plugin's `service` entry point a single time and hands the same
-// object to every bar copy through `bar.shell.serviceFor()`. Each Panel.qml is
-// a view of this object (issue #30).
-//
-// Where the shared service cannot be reached, a view creates a private one
-// (Model.vaultHostDecision), so this file must also work as one view's own
-// vault. A private host is marked so that nothing here assumes it is alone.
+// The vault, once per shell. The bar (and Panel.qml) exists once per monitor;
+// the shell loads this `service` entry point once and hands it to every bar
+// via `bar.shell.serviceFor()`, and each Panel.qml is a view of it. A view
+// that cannot reach it creates a private one (Model.vaultHostDecision), so
+// this must also work as a single view's own vault.
 Item {
   id: root
 
@@ -25,31 +18,27 @@ Item {
   property var shell: null
   property var manifest: null
 
-  // True when a view created this instance for itself because the shared
-  // service was unavailable.
+  // Created by a view for itself because the shared service was unavailable.
   property bool privateHost: false
 
   // -------------------------------------------------------------------------
   // Views
   // -------------------------------------------------------------------------
   //
-  // Every live bar copy attached to this vault, in attach order. A view
-  // attaches once it has resolved its host and detaches when it is destroyed --
-  // a monitor unplugged takes its view with it and leaves the vault running.
+  // Attached bar copies, in attach order. A view detaches when destroyed (an
+  // unplugged monitor), leaving the vault running.
   property var views: []
   readonly property int viewCount: views.length
 
   function attachView(view) {
     if (!view || views.indexOf(view) !== -1) return
-    // Settings first: attaching the first view is what starts the vault, and it
-    // must start with the user's settings rather than the defaults.
+    // Settings first: the first attach starts the vault, with these settings.
     if (view.settings) updateSettings(view.settings)
     views = views.concat([view])
   }
 
-  // The view that acts when the vault needs the screen -- see
-  // Model.presenterIndex(). Re-evaluated whenever a view attaches or detaches,
-  // opens or closes its popout, or Hyprland moves focus to another monitor.
+  // The view that acts when the vault needs the screen; see
+  // Model.presenterIndex().
   readonly property string focusedScreen: Hyprland.focusedMonitor
     ? String(Hyprland.focusedMonitor.name || "") : ""
   readonly property var presenter: {
@@ -61,14 +50,13 @@ Item {
     return index >= 0 ? views[index] : nullPresenter
   }
 
-  // Every attached view, for what each copy of a control must agree on.
+  // Runs fn on every attached view.
   function eachView(fn) {
     var list = views.slice()
     for (var i = 0; i < list.length; i++) fn(list[i])
   }
 
-  // Whether any view's popout is open. The logic's `opened` -- it used to be
-  // the widget's own.
+  // Whether any view's popout is open.
   readonly property bool opened: {
     for (var i = 0; i < views.length; i++) {
       if (views[i].opened === true) return true
@@ -76,12 +64,11 @@ Item {
     return false
   }
 
-  // Live once a view is attached. See onLiveChanged below.
+  // Live once a view is attached; see onLiveChanged.
   readonly property bool live: viewCount > 0
   property bool started: false
 
-  // Stands in for a presenter when no view is attached, so a command finishing
-  // after the last monitor's bar went away has nothing to throw on.
+  // Presenter stand-in when no view is attached, so late callbacks are safe.
   QtObject {
     id: nullPresenter
     readonly property bool opened: false
@@ -110,11 +97,9 @@ Item {
   // Settings
   // -------------------------------------------------------------------------
   //
-  // The plugin's settings are its bar entry's inline object in shell.json. A
-  // service is handed only a snapshot of the shell config at load, which would
-  // go stale on the first edit, so the views -- whose `settings` the bar keeps
-  // current -- push them here instead. `allowMultiple` is false, so every view
-  // carries the same entry and whichever pushed last is authoritative.
+  // The bar entry's inline object in shell.json. A service only gets a load-time
+  // snapshot, so views (whose `settings` the bar keeps current) push them here;
+  // every view carries the same entry.
   property var settings: ({})
 
   function updateSettings(next) {
@@ -127,10 +112,8 @@ Item {
   }
 
 
-  // Configuration settings from shell.json. The numbers go through the schema
-  // on the way in as well as on the way out -- nothing validates shell.json,
-  // and a bad minute count does not fail loudly, it just stops the vault ever
-  // locking itself. See intSetting() in BitwardenModel.js.
+  // Settings, validated on the way in (nothing validates shell.json); see
+  // intSetting() in BitwardenModel.js.
   readonly property int autoLockMinutes: Model.intSetting("autoLockMinutes", setting("autoLockMinutes"))
   readonly property int clearClipboardSec: Model.intSetting("clearClipboardSec", setting("clearClipboardSec"))
   readonly property bool lockOnScreenLock: Model.boolSetting("lockOnScreenLock", setting("lockOnScreenLock", true))
@@ -143,8 +126,7 @@ Item {
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
-  // The SSH agent is opt-in. Nothing starts a helper, creates a socket, or
-  // touches a FIFO while this is false.
+  // Opt-in: nothing starts, binds or opens a FIFO while false.
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
   readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", true))
@@ -167,67 +149,50 @@ Item {
   property string loginClientId: ""
   property string loginClientSecret: ""
   property bool show2faField: false
-  // Whether the login attempt now running carries --code. It is the only way
-  // to tell a rejected two-step code from a new-device-verification challenge;
-  // see loginNeedsDeviceVerification() in BitwardenModel.js.
+  // Whether the running attempt carries --code; distinguishes a rejected code
+  // from new-device verification (loginNeedsDeviceVerification()).
   property bool loginAttemptHadCode: false
-  // Set once Bitwarden has asked to verify this device with an emailed OTP.
-  // bw can only answer that interactively, so the panel stops asking for a
-  // code it cannot use and points at the terminal login instead.
+  // Bitwarden asked for new-device verification.
   property bool loginDeviceVerification: false
 
-  // Which two-step method this login tells bw to use, or -1 for "let bw
-  // decide", which is right whenever the account has exactly one. See
-  // TWO_FACTOR_METHODS in BitwardenModel.js.
+  // The two-step method passed to bw, or -1 to let bw decide (right when the
+  // account has one). See TWO_FACTOR_METHODS.
   property int login2faMethod: rememberedTwoFactorMethod
-  // Whether that method came from the user picking it in this login rather
-  // than from the remembered setting. A remembered method can be stale -- it
-  // is remembered per email -- so an unconfirmed one is dropped and
-  // retried without, where a confirmed one is reported as not configured.
+  // Picked in this login rather than remembered. A remembered method may be
+  // stale, so an unconfirmed one is dropped and retried without.
   property bool login2faMethodConfirmed: false
   property bool show2faMethodPicker: false
-  // New-device verification collects its code in its own stage, because it is
-  // answered on a different path from a two-step code and must not be mistaken
-  // for one. See deviceVerificationLoginCommand() in BitwardenModel.js.
+  // New-device verification has its own code stage and login path; see
+  // deviceVerificationLoginCommand().
   property string loginDeviceCode: ""
   property bool showDeviceCodeField: false
-  // Set while the one login that runs with bw's prompts enabled is in flight,
-  // so both its environment and its result are read differently.
+  // The one login with bw's prompts enabled is in flight.
   property bool deviceVerificationAttempt: false
   property bool deviceVerificationPending: false
-  // When the login reached a stage that is waiting on a second factor, as
-  // epoch ms, or 0 if it is not. A closed panel keeps that login alive for
-  // SECOND_FACTOR_WINDOW_MS, because an emailed code cannot be read without
-  // leaving the panel. See secondFactorWindowOpen() in BitwardenModel.js.
+  // When the login began waiting on a second factor (epoch ms, 0 if not). A
+  // closed panel keeps it alive for SECOND_FACTOR_WINDOW_MS.
   property double secondFactorStartedAt: 0
-  // Whether this login has already spent its one automatic retry at handing
-  // the password to bw. See onAuthPasswordWriterExited().
+  // This login's one automatic retry at delivering the password is spent.
   property bool loginPasswordRetryUsed: false
-  // The email login is four stages deep now: credentials, the method question
-  // when bw asks it, the two-step code, and new-device verification. Only one
-  // is ever on screen.
+  // Email login stages: credentials, method picker, two-step code, device
+  // verification. One at a time.
   readonly property bool loginCredentialsStage:
     !show2faField && !show2faMethodPicker && !showDeviceCodeField
   readonly property string login2faMethodLabel: Model.twoFactorMethodLabel(login2faMethod)
-  // The method the last attempt actually sent, so its answer can be read
-  // against it.
+  // The method the last attempt sent.
   property int loginAttemptMethod: -1
-  // Keyed by login address, so two vaults on one machine each keep their own
-  // answer. Tracks loginEmail as it is typed, which is what makes the method
-  // apply the moment the address is complete.
+  // Per login email; follows loginEmail as it is typed.
   readonly property var twoFactorMethodStore: setting("twoFactorMethods", null)
   readonly property int rememberedTwoFactorMethod:
     Model.rememberedTwoFactorMethodFor(twoFactorMethodStore, loginEmail)
 
-  // When the panel last launched a terminal login, as epoch ms, or 0 if it
-  // never did. A session key left in the runtime directory is only adopted in
-  // the minutes after this; see sessionHandoffReadCommand().
+  // When the panel last launched a terminal login (epoch ms, 0 if never); a
+  // handoff is only read shortly after. See sessionHandoffReadCommand().
   property double terminalLoginStartedAt: 0
 
   // Navigation: "main" | "detail" | "edit" | "settings" | "setup" | "pin" |
   // "fingerprint" | "generator" | "sends" | "sshApproval" | "locked". Lock and
-  // login visibility follow `status`; "locked" is set on a lock but nothing
-  // reads it, so it only moves the panel off whatever screen was open.
+  // login screens follow `status`; "locked" only moves off the open screen.
   property string currentScreen: "main"
   property string screenBeforeSettings: "main"
 
@@ -237,16 +202,11 @@ Item {
   property bool setupDismissed: false
   property string listReadMode: "sanitized"
   property var sshCapability: Model.defaultSshCapability()
-  // True while the panel should be showing setup rather than probing `bw`.
-  // See setupGateActive() in BitwardenModel.js for why the gate exists.
+  // Show setup instead of probing `bw`; see setupGateActive().
   readonly property bool setupGated: Model.setupGateActive(dependencies, depsChecked, setupDismissed)
-  // Whether the first `bw status` has been started. The probe waits behind the
-  // dependency check on a fresh install, so something has to remember that it
-  // still owes the vault a look once the tools arrive.
+  // The first `bw status` was started; on a fresh install it waits for setup.
   property bool statusProbeStarted: false
-  // Set the moment a required tool is seen missing, cleared once the probe
-  // that follows the install has run. It is what turns "the install finished
-  // in a terminal we do not own" into a panel that moves on by itself.
+  // A required tool was seen missing; cleared after the post-install probe.
   property bool setupWasGated: false
   property string settingsFlash: ""
   property int settingsIndex: 0
@@ -254,8 +214,8 @@ Item {
 
   // Vault data
   property var items: []
-  // `bw list items` costs seconds on a large vault, so a reopen reuses what is
-  // already in memory until it goes stale. Any mutation reloads unconditionally.
+  // Reuse loaded data until stale (`bw list items` is slow); mutations always
+  // reload.
   property double itemsLoadedAt: 0
   property double orgsLoadedAt: 0
   property double foldersLoadedAt: 0
@@ -267,8 +227,7 @@ Item {
   property string selectedOrg: "all" // "all" | "personal" | orgId
   property var folders: []
   property string selectedFolder: "all" // "all" | "none" | folderId
-  // Which bottom filter group is open: "" | "folders" | "organizations" | "types".
-  // Only one at a time, so the panel grows by one list at most.
+  // The open filter group: "" | "folders" | "organizations" | "types".
   property string openFilterGroup: ""
   property int filterOptionIndex: 0
 
@@ -276,16 +235,14 @@ Item {
   readonly property int filterVisibleRows: 5
   readonly property var currentFilterOptions: openFilterGroup === "" ? [] : filterOptions(openFilterGroup)
   readonly property int currentFilterVisibleRows: openFilterGroup === "types" ? currentFilterOptions.length : filterVisibleRows
-  // The drawer's own height. The panel adds this to its cap so the window
-  // opens downward like a drawer instead of squeezing the item list.
+  // Added to the panel's height cap so the drawer opens downward.
   readonly property int filterDrawerHeight: openFilterGroup === ""
     ? 0
     : Style.space(30) + Math.min(currentFilterVisibleRows, currentFilterOptions.length) * filterRowHeight + Style.space(8)
   property string formFolderId: ""
   property string newFolderName: ""
-  // Which picker in the item form is expanded. Custom-field controls use
-  // "customAdd", "customLabel:<row>" or "customLinked:<row>" alongside
-  // folder/organization.
+  // The expanded item-form picker: folder, organization, "customAdd",
+  // "customLabel:<row>" or "customLinked:<row>".
   property string formPicker: ""
   property var formCollections: []
   property var formCollectionIds: []
@@ -298,13 +255,7 @@ Item {
   // Selected item detail
   property var detailItem: null
   property string detailPassword: ""
-  // Which sensitive fields on the open item are currently shown, by field key.
-  //
-  // One flag used to serve all of them, which was invisible while a login had
-  // exactly one secret to hide. A card has two and an identity three, and
-  // revealing a card number also uncovered its security code -- and, on an
-  // identity, the social security, passport and licence numbers at once. The
-  // eye on each field now speaks only for that field.
+  // Revealed sensitive fields of the open item, by key; each eye is separate.
   property var revealedFields: ({})
 
   function isFieldRevealed(key) { return Boolean(revealedFields[key]) }
@@ -317,18 +268,11 @@ Item {
     revealedFields = next
   }
 
-  // What `v` reaches: the one secret the open item is mostly about. A card has
-  // a number, a login has a password. An identity has three identifiers and no
-  // principal one, so `v` leaves it alone rather than picking arbitrarily --
-  // each field carries its own eye.
+  // The field `v` reveals: card number or password. None for identities.
   readonly property string primaryRevealKey:
     detailIsCard ? "cardNumber" : (detailIsLoginLike ? "password" : "")
 
-  // Which detail blocks the open item is entitled to. The login fields --
-  // username, password, TOTP, website -- used to be gated on "not an SSH
-  // key", which was the same question while logins and notes were the only
-  // other types. A card answers "not an SSH key" too, and would have drawn
-  // an empty password row under its number.
+  // Which detail blocks the open item shows.
   readonly property int detailTypeCode: detailItem ? Number(detailItem.typeCode || 1) : 1
   readonly property bool detailIsLoginLike: detailTypeCode === 1 || detailTypeCode === 2
   readonly property bool detailIsCard: detailTypeCode === 3
@@ -337,9 +281,7 @@ Item {
   readonly property var detailCard: detailItem ? (detailItem.card || null) : null
   readonly property var detailIdentity: detailItem ? (detailItem.identity || null) : null
 
-  // Expiry reads as one value, so it is composed once here rather than in the
-  // binding that draws it. A card with only one half filled in shows that
-  // half rather than a stray slash.
+  // "MM / YY", or whichever half is set.
   readonly property string detailCardExpiry: {
     if (!detailCard) return ""
     var m = String(detailCard.expMonth || "").trim()
@@ -350,19 +292,12 @@ Item {
 
   readonly property string detailIdentityName: detailIdentity ? Model.identityFullName(detailIdentity) : ""
 
-  // The postal parts, in the order an envelope wants them, with the empty
-  // lines left out instead of drawn as blanks.
+  // Postal lines in envelope order, empty parts skipped.
   readonly property string detailIdentityAddress: {
     if (!detailIdentity) return ""
-    var street = [detailIdentity.address1, detailIdentity.address2, detailIdentity.address3]
-      .map(function(part) { return String(part || "").trim() })
-      .filter(function(part) { return part !== "" })
-    var locality = [detailIdentity.city, detailIdentity.state, detailIdentity.postalCode]
-      .map(function(part) { return String(part || "").trim() })
-      .filter(function(part) { return part !== "" })
-      .join(" ")
-    var country = String(detailIdentity.country || "").trim()
-    return street.concat(locality ? [locality] : []).concat(country ? [country] : []).join("\n")
+    var id = detailIdentity
+    return Model.nonEmptyParts([id.address1, id.address2, id.address3,
+      Model.nonEmptyParts([id.city, id.state, id.postalCode]).join(" "), id.country]).join("\n")
   }
   property string liveTotp: ""
   property int totpSecRemaining: 30
@@ -373,36 +308,31 @@ Item {
   property string totpCopyItemId: ""
   property string passwordCopyItemId: ""
 
-  // Attachment downloads. One `bw get attachment` runs at a time and the rest
-  // wait in the queue, so "Save all" on an item with six files does not fire
-  // six CLI bootstraps at once. `attachmentSaved` maps an attachment id to the
-  // path it landed on, which is what turns the row's Download button into Open
-  // and Show in folder; it is cleared whenever a different item is opened.
+  // Attachment downloads run one at a time from a queue. `attachmentSaved`
+  // maps attachment id to saved path (for Open / Show in folder); cleared when
+  // another item opens.
   property var attachmentQueue: []
   property string attachmentBusyId: ""
   property var attachmentSaved: ({})
 
-  // Follow-up TOTP sequential copy state (Enter -> Password -> Enter -> TOTP)
+  // Enter copies the password, then a second Enter copies the TOTP.
   property var totpFollowupItem: null
   property string totpFollowupCode: ""
   property bool totpFollowupActive: false
 
-  // The save currently in flight, or null. Holds what the list showed before
-  // it, and the form that produced it, so a failure can put both back.
+  // The save in flight, with the list and form before it, so a failure can
+  // restore both.
   property var pendingSave: null
-  // The delete currently in flight, or null. Holds the row it removed so a
-  // refusal can put it back.
+  // The delete in flight, with the removed row for restoring on refusal.
   property var pendingDelete: null
 
-  // A save that came back refused. The list has been restored to what the
-  // vault actually holds; this is what the user typed, kept so it can be
-  // reopened rather than retyped.
+  // A refused save's form, kept so it can be reopened rather than retyped.
   property var failedSave: null
 
-  // Add / Edit Form State
+  // Item form
   property bool formIsEditing: false
   property string formItemId: ""
-  property int formTypeCode: 1 // 1: Login, 2: Secure Note
+  property int formTypeCode: 1 // 1 login, 2 note, 3 card, 4 identity
   property string formName: ""
   property string formUsername: ""
   property string formPassword: ""
@@ -418,10 +348,8 @@ Item {
   property string formCustomFieldLabelDraft: ""
   property bool showDeleteConfirm: false
 
-  // Card and identity boxes. Flat strings rather than one object per type,
-  // because that is what every other field on this form is and what the
-  // TextField two-way binding above expects; formTypeFields() gathers them
-  // back into the shape the payload builders want.
+  // Card and identity fields, flat like the rest of the form; formTypeFields()
+  // gathers them for the payload builders.
   property string formCardholderName: ""
   property string formCardBrand: ""
   property string formCardNumber: ""
@@ -448,19 +376,15 @@ Item {
   property string formIdPostalCode: ""
   property string formIdCountry: ""
 
-  // When the current auto-lock window started, in wall-clock terms, so a
-  // suspend cannot hide from the countdown. See the autoLockWatchdog Timer.
+  // When the auto-lock window started (wall clock, so suspend counts).
   property double autoLockArmedAt: 0
 
-  // The vault generation. Moves on whenever the vault changes hands -- locked,
-  // logged out of, unlocked again -- and every `bw` reader records the one it
-  // started under, so an answer from a vault that is no longer open can be
-  // recognised as such when it arrives. See vaultReadIsStale().
+  // The vault generation: advances on lock, logout and unlock. Readers record
+  // it so answers for a vault no longer open are dropped (vaultReadIsStale()).
   property int vaultEpoch: 0
   property var readEpochs: ({})
 
-  // Processes whose collectors still have to be emptied after a lock. Anything
-  // that was running at the time stays here until it finishes. See
+  // Processes whose collectors still need emptying after a lock; see
   // scrubSecretBuffers().
   property var scrubPending: []
 
@@ -472,8 +396,7 @@ Item {
   property bool metadataForceRefresh: false
   property bool statusRefreshAfterItems: false
   property bool statusCheckAuthoritative: true
-  // Whether this unlocked session has already tried to repair an unsynced
-  // vault. See the lastSync check in onStatusFinished().
+  // This session already tried to repair an unsynced vault (onStatusFinished()).
   property bool initialSyncAttempted: false
   property bool syncReloadPending: false
   property string errorMessage: ""
@@ -481,43 +404,32 @@ Item {
   property bool cursorActive: false
 
   // Fingerprint unlock state.
-  // PAM only proves presence, so a verified finger is used as the gate on
-  // reading the master password back out of the login keyring.
   property bool fingerprintAvailable: false   // PAM stack + reader + enrolled finger
-  property bool fingerprintStored: false      // master password present in keyring
+  property bool fingerprintStored: false      // a fingerprint way into the envelope, or the legacy entry
   property bool fingerprintScanning: false
-  property bool fingerprintAuthorized: false // a live PAM success may consume one keyring lookup
+  property bool fingerprintAuthorized: false // a live PAM success may consume one envelope open
   property string fingerprintMessage: ""
-  // Why the last fingerprint attempt failed. Separate from fingerprintMessage,
-  // which is the progress of an attempt in front of the reader: the reason a
-  // scan failed still has to be readable on the PIN or password screen the
-  // user moves to, where there is no reader and no attempt.
+  // Why the last attempt failed; kept apart from fingerprintMessage (progress)
+  // so it is still shown on the PIN or password screen.
   property string fingerprintError: ""
-  // FIDO2 unlock state. The gate itself lives in FidoUnlock.qml, which reaches
-  // the vault only for the setting it runs on and for the password a verified
-  // touch releases; these forward what the locked screen and the settings row
-  // read, the same way the fingerprint's own state is read. Its stored entry is
-  // its own (account=fido_password), so this never borrows the fingerprint's.
+  // FIDO2 unlock lives in FidoUnlock.qml; these forward what the lock screen
+  // and settings read.
   readonly property bool fidoReady: fidoUnlocker.ready
   readonly property bool fidoAvailable: fidoUnlocker.available
   readonly property bool fidoStored: fidoUnlocker.stored
   readonly property bool fidoScanning: fidoUnlocker.scanning
-  // True between a verified touch and the unlock it starts, so the button can
-  // say "Unlocking..." rather than re-inviting a touch already given.
+  // Between a verified touch and the unlock it starts.
   readonly property bool fidoAuthorized: fidoUnlocker.authorized
   readonly property string fidoMessage: fidoUnlocker.message
-  // Writable through to the setup form in FidoUnlock.qml: the screen edits the
-  // field, and the controller owns what the value means.
+  // Edited by the setup screen; owned by FidoUnlock.qml.
   property alias fidoSetupMaster: fidoUnlocker.setupMaster
-  // The setup form's error, not a failed touch: fidoError below is the
-  // fingerprint's counterpart, read by the unlock form on every method.
+  // The setup form's error; fidoError is a failed touch.
   property alias fidoSetupError: fidoUnlocker.error
   property alias fidoBusy: fidoUnlocker.busy
   readonly property string fidoError: fidoUnlocker.failure
   property string pendingUnlockPassword: ""   // held only until the unlock lands
-  // Authentication processes are started before submission and wait on a
-  // private FIFO. These flags distinguish that harmless waiting state from an
-  // attempt whose password has actually been delivered.
+  // Auth processes start early and wait on a private FIFO; these tell that
+  // waiting apart from an attempt whose password was delivered.
   property bool unlockSubmitted: false
   property bool loginSubmitted: false
   property bool loginSubmitAfterPrewarmStop: false
@@ -525,18 +437,14 @@ Item {
   property string loginPrewarmSignature: ""
   property string authPasswordWriteTarget: ""
   property string authPasswordWriteValue: ""
-  // The value the keyring store process reads. Set from whichever path is
-  // storing: the explicit setup form, or the automatic refresh after unlock.
-  property string masterToStore: ""
-  // Item JSON on its way to `bw encode`. Held here so the create/edit processes
-  // can pass it in the environment instead of on the command line.
+  // Item JSON for create/edit, passed in the environment.
   property string itemPayloadJson: ""
   property bool fpSetupActive: false
   property string fpSetupMaster: ""
   property string fpError: ""
   property bool fpBusy: false
-  // Which credential source drove the in-flight unlock, so a stale stored
-  // secret can be discarded rather than retried forever. "" | "fingerprint" | "fido" | "pin"
+  // What drove the in-flight unlock, so a stale stored secret is discarded
+  // rather than retried: "" | "fingerprint" | "fido" | "pin".
   property string pendingUnlockFrom: ""
 
   // Send state
@@ -554,48 +462,38 @@ Item {
   property string sendFormPassword: ""
   property int sendIndex: 0
 
-  // Generator state (session-scoped, mirroring the browser extension's options)
+  // Generator state (session-scoped; the browser extension's options)
   property var genOpts: Model.generatorDefaults()
   property string genValue: ""
   property bool genBusy: false
   property bool genRegeneratePending: false
   property string genRequestSignature: ""
-  // `bw serve` state. Ready means the loopback generator answered; failed
-  // means we stopped trying and the CLI carries the feature instead -- most
-  // likely because something else already holds the port, in which case we
-  // must not talk to it: a "generated password" from a stranger's server is
-  // a password they know.
+  // `bw serve`: ready once it answers; failed means the CLI is used instead,
+  // usually because someone else holds the port (whose answers must not be
+  // trusted).
   property bool generateServeReady: false
   property bool generateServeStarting: false
   property bool generateServeFailed: false
-  // Set while we are the ones shutting the server down, so its exit is not
-  // mistaken for the bind failure that gives up on the port.
+  // We are stopping it, so its exit is not a bind failure.
   property bool generateServeStopping: false
   property bool generateCliStopping: false
   property bool generateServeRequestStopping: false
   property bool generateServeRequestPending: false
   property var generateServeRequestPendingOptions: null
   property var generateServeRequestPendingCallback: null
-  // Where Back and Esc go, and whether the generator can hand its value
-  // somewhere. Opened from the item form it fills the password field in and
-  // returns; opened on its own it is just the generator. One screen either
-  // way, so the item form offers Bitwarden's own generator rather than a
-  // second, weaker one of its own.
+  // Where Back/Esc go. Opened from the item form, the generator fills its
+  // password field and returns there.
   property string generatorReturnScreen: "main"
   readonly property bool generatorFeedsForm: generatorReturnScreen === "edit"
 
   // PIN unlock state
-  property bool pinConfigured: false        // ciphertext present in the keyring
+  property bool pinConfigured: false        // a PIN way into the envelope, or the legacy blob
   property string pinEntry: ""              // locked-screen input
   property int pinAttempts: 0
   readonly property int pinMaxAttempts: 5
-  // The PIN setup form's own error: a PIN that is too short to save, a missing
-  // master password, a keyring that refused the write.
+  // The PIN setup form's error.
   property string pinError: ""
-  // Why an unlock with the PIN failed, which is a different thing from the
-  // above and is read on whatever screen the user moves to next. Keeping the
-  // two apart is what stops a half-finished setup putting "PIN must be at
-  // least N digits" on a screen with no PIN on it.
+  // Why a PIN unlock failed, shown on whatever screen the user moves to.
   property string pinUnlockError: ""
   property string pinSetupPin: ""
   property string pinSetupConfirm: ""
@@ -603,23 +501,15 @@ Item {
   property bool pinBusy: false
   property bool pinUnlockSubmitted: false
   readonly property bool pinReady: pinUnlock && pinConfigured
-  // Long enough to save, short enough to be a bad idea. Drives the red state
-  // on the PIN field during setup; see pinWeakWarning() in BitwardenModel.js.
+  // Valid but weak: turns the setup field red (pinWeakWarning()).
   readonly property bool pinSetupWeak: Model.isPinWeak(pinSetupPin)
   readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME") || ""
-  // The fingerprint reader is on the laptop body, so a closed lid puts it out
-  // of reach and the option must not be offered. Omarchy's detector decides;
-  // see LidState.qml. The FIDO2 key on a cable is unaffected either way.
+  // A closed lid puts the fingerprint reader out of reach (LidState.qml).
   readonly property bool lidClosed: lidState.closed
-  // A lid shut during a scan takes the reader out of reach, and the first
-  // reading can land after the auto-arm has already started one. Nothing else
-  // watches fingerprintReady falling, so the conversation would sit in PAM with
-  // no button on screen behind it.
+  // Cancel a scan when the lid closes; nothing else watches fingerprintReady.
   onLidClosedChanged: if (lidClosed && fingerprintScanning) cancelFingerprintUnlock()
-  // Whether the vault can be unlocked with a finger *right now*: enrolled,
-  // stored, and with the reader within reach. Everything that offers the option
-  // -- the locked screen's button, the SSH prompt's, and the auto-arm -- reads
-  // this, so gating it here is what hides them all.
+  // Enrolled, stored and reachable. Everything that offers fingerprint unlock
+  // reads this.
   readonly property bool fingerprintReady: fingerprintUnlock && fingerprintAvailable && fingerprintStored && !lidClosed
 
   // Contextual suggestions state
@@ -627,7 +517,7 @@ Item {
   property var detectedContext: null
   property var suggestedItems: []
   property bool suggestionsDismissed: false
-  property var associations: ({ version: 1, keys: {} })
+  property var associations: Model.emptyAssociations()
   property var learnedIds: ({})
   property string pendingAssociationsJson: ""
   property bool associationsWritePending: false
@@ -647,29 +537,23 @@ Item {
   readonly property bool logoutCleanupFailed: logoutPending && logoutCredentialsDone
     && logoutCredentialsExitCode !== 0
 
-  // Startup waits for the first view. A vault with no view attached is inert:
-  // it is either the shared service before any monitor's bar has found it, or a
-  // bar's own standby vault that the shared one made unnecessary. Neither may
-  // probe `bw`, start the SSH agent or claim the IPC target.
+  // Start with the first view. Until then the vault is inert: no `bw`, SSH
+  // agent or IPC target.
   onLiveChanged: {
     if (!root.live || root.started) return
     root.started = true
-    // The dependency probe goes first, and the status probe follows from it in
-    // onDependenciesChecked. On a machine that already has `bw` the two are a
-    // few milliseconds apart; on a fresh install the order is the difference
-    // between opening on the setup screen and opening on a login form that
-    // cannot succeed.
+    // Dependencies first; the status probe follows in onDependenciesChecked,
+    // so a fresh install opens on setup rather than a doomed login form.
     root.checkDependencies()
     root.loadAssociations()
-    // Explicit as well as bound: onSshAgentSupervisableChanged carries every
-    // later change, but a shell that starts with the feature already enabled
-    // evaluates that binding to true once, at creation, with nothing yet
-    // listening.
+    // Also called explicitly: a binding already true at creation never fires
+    // its change handler.
     root.syncSshAgentSupervision()
-    // Everything above is the startup value, not a user action. Only changes
-    // after this point are transitions worth reacting to.
+    // Only changes after this are user transitions.
     root.sshAgentSettingsReady = true
     if (root.sshAgentEnabled) root.inspectSshAgentHelper()
+    root.inspectUnlockKey()
+    root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
   }
 
@@ -683,8 +567,7 @@ Item {
     { id: "favorite", label: "Favorites", icon: "󰓒" }
   ]
 
-  // SSH keys need a CLI that can decrypt them. Until the probe confirms one,
-  // the type filter that can only ever come back empty is not offered.
+  // No SSH type filter until the probe confirms an SSH-capable CLI.
   readonly property bool sshUiAvailable: Model.sshUiAvailable(dependencies, depsChecked)
   readonly property var visibleCategories: sshUiAvailable
     ? categories
@@ -694,32 +577,24 @@ Item {
   // SSH companion supervision
   // -------------------------------------------------------------------------
   //
-  // The decisions live in Model.sshAgentReduce(); this side owns the Process,
-  // the clock and the timers. Every event goes through applySshAgentEvent(),
-  // which is the only place the state object is replaced, so the mirrored
-  // properties below and the real state can never drift apart.
-  //
-  // Nothing here is on the path of an ordinary vault operation. A helper that
-  // will not start, will not handshake, or crashes repeatedly leaves login,
-  // unlock, list, copy, sync, edit, Send and the generator exactly as they
-  // are; it only closes the signing gate and parks in an error state.
+  // Decisions live in Model.sshAgentReduce(); this side owns the Process, clock
+  // and timers. applySshAgentEvent() is the only place the state is replaced.
+  // Nothing here is on the path of ordinary vault operations: a failing helper
+  // only closes the signing gate.
 
-  // Resolved from Panel.qml's own URL, so the helper is launched by an
-  // absolute path inside the plugin directory rather than off PATH.
+  // From this file's URL, so the helper runs by absolute path, not from PATH.
   readonly property string sshAgentPluginDir: Model.pluginDirFromUrl(String(Qt.resolvedUrl(".")))
   readonly property string sshAgentRuntimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
-  // What the shipped helper turned out to be. Checked once when the feature
-  // is enabled, and again whenever the plugin directory changes, because a
-  // plugin update can replace the binary under a running shell.
-  property var sshAgentHelper: ({ state: "unknown", source: "", version: "",
-    protocol: 0, checksum: "unchecked", selfTest: "", message: "" })
+  // Inspected when enabled and whenever the plugin dir changes (an update can
+  // replace the binary under a running shell).
+  property var sshAgentHelper: Model.uninspectedHelper()
 
   readonly property bool sshAgentSupervisable: sshAgentEnabled
     && sshAgentPluginDir !== "" && sshAgentRuntimeDir !== ""
     // A helper that fails inspection disables this feature and nothing else:
     // no supervisor, so no socket, no FIFO, and no agent branch in the vault
     // read. The rest of the plugin never sees it.
-    && Model.sshAgentHelperReady(sshAgentHelper)
+    && Model.helperReady(sshAgentHelper)
 
   function inspectSshAgentHelper() {
     if (sshAgentHelperProc.running) return
@@ -731,10 +606,400 @@ Item {
     root.sshAgentHelper = Model.parseSshAgentHelperInspection(raw)
   }
 
+  // The quick-unlock tool, inspected at every start: the envelope is written
+  // after each password login, before anyone opens settings. Failing disables
+  // only PIN, fingerprint and FIDO2 unlock.
+  property var unlockKeyHelper: Model.uninspectedHelper()
+  readonly property bool unlockKeyReady: Model.helperReady(unlockKeyHelper)
+
+  function inspectUnlockKey() {
+    if (unlockKeyProc.running || sshAgentPluginDir === "") return
+    unlockKeyProc.command = Model.unlockKeyInspectCommand(root.sshAgentPluginDir)
+    unlockKeyProc.running = true
+  }
+
+  function onUnlockKeyInspected(raw) {
+    root.unlockKeyHelper = Model.parseUnlockKeyInspection(raw)
+    root.envelopeReadinessChanged()
+  }
+
+  // -------------------------------------------------------------------------
+  // The quick-unlock envelope
+  // -------------------------------------------------------------------------
+  //
+  // One keyring item holds the master password, written when `bw` first
+  // accepts a typed password; each quick-unlock method adds a way into it. Jobs
+  // run one at a time, since concurrent writers would lose updates.
+
+  // Besides the tool: argon2 and systemd-creds --user.
+  property var quickUnlockPrereqs: ({ argon2: false, creds: false, ready: false, message: "", checked: false })
+  readonly property bool quickUnlockAvailable: unlockKeyReady && quickUnlockPrereqs.ready
+  readonly property string quickUnlockUnavailableReason: !unlockKeyReady
+    ? String(unlockKeyHelper.message || "")
+    : String(quickUnlockPrereqs.message || "")
+
+  // Which account an envelope belongs to, from `bw status`.
+  property string accountId: ""
+  property string accountServer: ""
+
+  // The secret-free summary, or null if none (`envelopeChecked`: read yet).
+  property var envelopeSummary: null
+  property bool envelopeChecked: false
+
+  property var envelopeJobs: []
+  property var envelopeJob: null
+
+  // A quick-unlock password `bw` refused (changed elsewhere). Kept until the
+  // next typed unlock re-seals the envelope with it, keeping every method.
+  property string rotationOldPassword: ""
+  // The legacy plaintext fingerprint entry, migrated at the first chance.
+  property bool legacyFingerprintStored: false
+  property bool legacyMigrationAttempted: false
+  property bool fingerprintFromEnvelope: false
+  // The legacy PIN blob, migrated at the next PIN unlock (when both PIN and
+  // password are in hand).
+  property bool legacyPinStored: false
+  property bool pinFromEnvelope: false
+  // Set by FidoUnlock when the password came from the envelope's FIDO wrap.
+  property bool fidoFromEnvelope: false
+  // The PIN that decrypted a legacy blob, held until that unlock settles.
+  property string pendingPinForMigration: ""
+
+  function inspectQuickUnlockPrereqs() {
+    if (!quickUnlockPrereqProc.running) quickUnlockPrereqProc.running = true
+  }
+
+  function onQuickUnlockPrereqs(raw) {
+    var parsed = Model.parseQuickUnlockPrereqs(raw)
+    parsed.checked = true
+    root.quickUnlockPrereqs = parsed
+    root.envelopeReadinessChanged()
+  }
+
+  function envelopeTool() {
+    return Model.unlockKeyPath(sshAgentPluginDir, unlockKeyHelper.source)
+  }
+
+  function envelopeAccount() {
+    return { id: accountId, server: accountServer }
+  }
+
+  function envelopeReadinessChanged() {
+    if (!quickUnlockAvailable) return
+    if (!envelopeChecked) refreshEnvelope()
+    maybeMigrateLegacyFingerprint()
+  }
+
+  // Queue one envelope process: { command, env, secretOutput, writes,
+  // onDone(exitCode, stdout) }. `env` holds secrets and is dropped on start.
+  function queueEnvelopeJob(job) {
+    var jobs = envelopeJobs.slice()
+    jobs.push(job)
+    envelopeJobs = jobs
+    pumpEnvelopeJobs()
+  }
+
+  function pumpEnvelopeJobs() {
+    if (envelopeProc.running || envelopeJob !== null || envelopeJobs.length === 0) return
+    var jobs = envelopeJobs.slice()
+    var job = jobs.shift()
+    envelopeJobs = jobs
+    envelopeJob = job
+    envelopeProc.command = job.command
+    envelopeProc.environment = job.env || {}
+    job.env = null
+    envelopeProc.running = true
+  }
+
+  function onEnvelopeJobExited(exitCode) {
+    if (finishScrubRun(envelopeProc)) {
+      pumpEnvelopeJobs()
+      return
+    }
+    var job = envelopeJob
+    var out = String(envelopeStdout.text || "")
+    envelopeJob = null
+    envelopeProc.environment = {}
+    // The output was the master password: scrub the collector.
+    if (job && job.secretOutput) clearProcessCollectorSoon(envelopeProc)
+    if (job && job.onDone && !logoutPending) job.onDone(exitCode, out)
+    out = ""
+    if (logoutPending && allCredentialsClearPending) Qt.callLater(requestAllCredentialClear)
+    Qt.callLater(pumpEnvelopeJobs)
+  }
+
+  // Logout: nothing queued may run after the keyring is cleared.
+  function dropEnvelopeState() {
+    envelopeJobs = []
+    // The next login may be another account.
+    accountId = ""
+    accountServer = ""
+    envelopeSummary = null
+    envelopeChecked = false
+    rotationOldPassword = ""
+    legacyFingerprintStored = false
+    legacyMigrationAttempted = false
+    fingerprintFromEnvelope = false
+    legacyPinStored = false
+    pinFromEnvelope = false
+    pendingPinForMigration = ""
+    fidoFromEnvelope = false
+  }
+
+  function refreshEnvelope() {
+    if (!quickUnlockAvailable) return
+    queueEnvelopeJob({
+      command: Model.unlockEnvelopeInspectCommand(envelopeTool()),
+      onDone: function(code, out) {
+        if (code === 0) {
+          try { root.envelopeSummary = JSON.parse(out) } catch (e) { root.envelopeSummary = null }
+        } else if (code === Model.envelopeExitCodes().absent) {
+          root.envelopeSummary = null
+        }
+        root.envelopeChecked = true
+        root.recomputeFingerprintStored()
+        root.recomputePinConfigured()
+      }
+    })
+  }
+
+  function recomputePinConfigured() {
+    pinConfigured = Boolean(envelopeSummary && envelopeSummary.pin) || legacyPinStored
+  }
+
+  function recomputeFingerprintStored() {
+    fingerprintStored = Boolean(envelopeSummary && envelopeSummary.fingerprint) || legacyFingerprintStored
+  }
+
+  // Runs `then()` once the account is known (asking `bw status` if needed),
+  // else `otherwise()`.
+  function withEnvelopeAccount(then, otherwise) {
+    if (accountId) { then(); return }
+    queueEnvelopeJob({
+      command: Model.statusCommand(),
+      env: bwEnv(),
+      onDone: function(code, out) {
+        var st = code === 0 ? Model.parseStatus(out) : null
+        if (st && st.userId) {
+          root.accountId = st.userId
+          root.accountServer = st.serverUrl
+          then()
+        } else if (otherwise) {
+          otherwise()
+        }
+      }
+    })
+  }
+
+  // The only writer of the stored password: called when `bw` just accepted a
+  // typed password (login, unlock, or an enable form's check), never with one
+  // a quick-unlock method produced. `done(ok)` is optional.
+  function storeAcceptedMasterPassword(password, done) {
+    var pw = String(password || "")
+    var finish = function(ok) { if (done) done(ok) }
+    if (!pw || !quickUnlockAvailable) { finish(false); return }
+    var oldPassword = rotationOldPassword
+    rotationOldPassword = ""
+    withEnvelopeAccount(function() {
+      var E = Model.envelopeExitCodes()
+      var tool = root.envelopeTool()
+      var account = root.envelopeAccount()
+      var env = {}
+      env[Model.keyringSecretEnvVar()] = pw
+      root.queueEnvelopeJob({
+        command: Model.unlockEnvelopeOpenCommand(tool, account, { kind: "master" }),
+        env: env, secretOutput: true,
+        onDone: function(code) {
+          if (code === 0) { finish(true); return }
+          if (code === E.absent || code === 6 || code === E.unseal) {
+            root.writeEnvelope(Model.unlockEnvelopeCreateCommand(tool, account), env, finish)
+            return
+          }
+          if (code === 3) {
+            // `bw` accepts it but the envelope does not: changed elsewhere.
+            // Re-seal through whatever still opens it, keeping every method.
+            var rotate = {}
+            rotate[Model.envelopeNewSecretEnvVar()] = pw
+            if (oldPassword) {
+              rotate[Model.keyringSecretEnvVar()] = oldPassword
+              root.writeEnvelope(Model.unlockEnvelopeUpdateCommand(tool, account,
+                { kind: "rotate", auth: { kind: "master" } }), rotate, finish)
+            } else if (root.envelopeSummary && root.envelopeSummary.fingerprint) {
+              root.writeEnvelope(Model.unlockEnvelopeUpdateCommand(tool, account,
+                { kind: "rotate", auth: { kind: "fingerprint" } }), rotate, finish)
+            } else if (!root.envelopeHasMethods()) {
+              // No methods to keep: this password becomes the envelope.
+              root.writeEnvelope(Model.unlockEnvelopeCreateCommand(tool, account), env, finish)
+            } else {
+              // Nothing reaches the data key yet; the next quick unlock will
+              // produce the old password and come back here.
+              root.writeEnvelope(Model.unlockEnvelopeUpdateCommand(tool, account, { kind: "mark-stale" }),
+                {}, finish)
+            }
+            return
+          }
+          console.log("qs-bitwarden envelope: check failed with " + code)
+          finish(false)
+        }
+      })
+    }, function() { finish(false) })
+  }
+
+  // Whether any method has a way in. Unknown (no summary yet) counts as yes:
+  // never drop methods on a guess.
+  function envelopeHasMethods() {
+    if (!envelopeSummary) return envelopeChecked ? false : true
+    return Boolean(envelopeSummary.pin || envelopeSummary.fingerprint
+      || (Array.isArray(envelopeSummary.fido) && envelopeSummary.fido.length > 0))
+  }
+
+  function writeEnvelope(command, env, done, quiet) {
+    queueEnvelopeJob({
+      command: command, env: env, writes: true,
+      onDone: function(code) {
+        if (code !== 0 && (!quiet || quiet.indexOf(code) === -1)) {
+          console.log("qs-bitwarden envelope: write failed with " + code)
+        }
+        root.refreshEnvelope()
+        if (done) done(code === 0, code)
+      }
+    })
+  }
+
+  // An enable form's password is checked against the stored one, never stored
+  // anew; `op` (the add) is authorized by it opening the master wrap. With no
+  // envelope, `bw` checks it, it is stored as an accepted password, then the
+  // method is added.
+  function addQuickUnlockMethod(password, op, extraEnv, done) {
+    addQuickUnlockMethodWith(password, function(tool, account) {
+      return Model.unlockEnvelopeUpdateCommand(tool, account, op)
+    }, extraEnv, done)
+  }
+
+  // The same, for a method whose command is more than an update (FIDO2
+  // touches the key first). `done(ok, why, exitCode)`.
+  function addQuickUnlockMethodWith(password, makeCommand, extraEnv, done) {
+    var pw = String(password || "")
+    if (!quickUnlockAvailable) { done(false, "unavailable", 0); return }
+    withEnvelopeAccount(function() {
+      var env = {}
+      env[Model.keyringSecretEnvVar()] = pw
+      if (extraEnv) for (var k in extraEnv) env[k] = extraEnv[k]
+      var command = makeCommand(root.envelopeTool(), root.envelopeAccount())
+      root.queueEnvelopeJob({
+        command: command, env: env, writes: true,
+        onDone: function(code) {
+          var E = Model.envelopeExitCodes()
+          if (code === 0) { root.refreshEnvelope(); done(true, "", 0); return }
+          if (code === 3) {
+            // A stale envelope opens with nobody's current password.
+            done(false, root.envelopeSummary && root.envelopeSummary.stale ? "stale" : "wrong-password", code)
+            return
+          }
+          if (code !== E.absent && code !== 6 && code !== E.unseal) { done(false, "failed", code); return }
+          root.verifyWithBw(pw, function(ok) {
+            if (!ok) { done(false, "wrong-password", 3); return }
+            root.storeAcceptedMasterPassword(pw, function(stored) {
+              if (!stored) { done(false, "failed", 0); return }
+              var again = {}
+              again[Model.keyringSecretEnvVar()] = pw
+              if (extraEnv) for (var k2 in extraEnv) again[k2] = extraEnv[k2]
+              root.writeEnvelope(command, again, function(added, addCode) {
+                done(added, added ? "" : "failed", added ? 0 : addCode)
+              })
+            })
+          })
+        }
+      })
+    }, function() { done(false, "failed", 0) })
+  }
+
+  // No envelope: `bw` checks the password. The session key it mints replaces
+  // the current one and is adopted like an unlock's.
+  function verifyWithBw(password, done) {
+    var env = {}
+    env[Model.keyringSecretEnvVar()] = String(password || "")
+    beginEpochOperation("bwVerify")
+    queueEnvelopeJob({
+      command: Model.bwVerifyPasswordCommand(),
+      env: bwEnv(env), secretOutput: true,
+      onDone: function(code, out) {
+        var s = code === 0 ? Model.extractSessionToken(out) : ""
+        // Locked or logged out meanwhile: adopting the new session would
+        // unlock behind the panel's back.
+        if (root.epochOperationIsStale("bwVerify") || root.logoutPending || root.status !== "unlocked") {
+          s = ""
+          done(false)
+          return
+        }
+        if (!s) { done(false); return }
+        root.session = s
+        root.storeCurrentSession()
+        done(true)
+      }
+    })
+  }
+
+  function quickUnlockErrorText(why, fallback) {
+    if (why === "wrong-password") return "That is not your master password."
+    if (why === "stale") {
+      return "Your master password was changed and the stored copy has not caught up yet. "
+        + "Unlock once with a PIN, fingerprint or key you already have set up, then with your new password."
+    }
+    return fallback
+  }
+
+  // Not gated on envelopeSummary: a wrap from this same flow may not be in it
+  // yet.
+  function removeQuickUnlockMethod(op) {
+    if (!quickUnlockAvailable || !accountId) return
+    // No envelope, or no such method in it, is the state removal wanted.
+    writeEnvelope(Model.unlockEnvelopeUpdateCommand(envelopeTool(), envelopeAccount(), op), {}, null,
+      [Model.envelopeExitCodes().absent, 7])
+  }
+
+  // Migrates the legacy PIN blob at the PIN unlock that decrypted it; the blob
+  // is deleted only once the new PIN wrap yields the same password.
+  function migrateLegacyPin(password, pin) {
+    if (!quickUnlockAvailable) return
+    withEnvelopeAccount(function() {
+      var env = {}
+      env[Model.keyringSecretEnvVar()] = password
+      env[Model.pinEnvVar()] = pin
+      var codes = Model.legacyMigrationExitCodes()
+      root.queueEnvelopeJob({
+        command: Model.legacyPinMigrationCommand(root.envelopeTool(), root.envelopeAccount()),
+        env: env, writes: true,
+        onDone: function(code) {
+          if (code === 0 || code === codes.none) root.legacyPinStored = false
+          else console.log("qs-bitwarden envelope: PIN migration left the legacy blob (" + code + ")")
+          root.refreshEnvelope()
+        }
+      })
+    })
+  }
+
+  // Migrates the legacy fingerprint entry, once per session.
+  function maybeMigrateLegacyFingerprint() {
+    if (legacyMigrationAttempted || !legacyFingerprintStored || !quickUnlockAvailable || !accountId) return
+    legacyMigrationAttempted = true
+    var codes = Model.legacyMigrationExitCodes()
+    queueEnvelopeJob({
+      command: Model.legacyFingerprintMigrationCommand(envelopeTool(), envelopeAccount()),
+      writes: true,
+      onDone: function(code) {
+        if (code === 0 || code === codes.none) root.legacyFingerprintStored = false
+        if (code !== 0 && code !== codes.none) {
+          console.log("qs-bitwarden envelope: fingerprint migration left the legacy entry (" + code + ")")
+        }
+        root.refreshEnvelope()
+      }
+    })
+  }
+
   property var sshAgentState: Model.sshAgentInitialState()
-  // Mirrors of sshAgentState. QML cannot bind through a plain JS object, and
-  // the handshake timeout and backoff timers have to be driven by bindings
-  // rather than by anything that waits.
+  // Mirrors of sshAgentState, since bindings (the timers) cannot follow a
+  // plain JS object.
   property string sshAgentPhase: "disabled"
   property bool sshAgentGateOpen: false
   property string sshAgentSocketPath: ""
@@ -754,14 +1019,10 @@ Item {
     root.sshAgentErrorCode = step.state.errorCode
     root.sshAgentErrorMessage = step.state.errorMessage
 
-    // The state above is committed before any of this runs, because stopping
-    // the Process can re-enter this function with the child's exit before the
-    // outer call returns. That order is what makes the re-entry safe: the
-    // inner reduction sees the phase it should, and no action set here is one
-    // the inner call also sets.
+    // State is committed first: stopping the Process can re-enter with the
+    // exit before this returns, and must see the new phase.
     var action = step.action
-    // Cancel before scheduling: a stop that arrives while a restart is armed
-    // must not leave the timer running against a helper nobody asked for.
+    // Cancel before scheduling, so a stop never leaves a restart armed.
     if (action.cancelRestart) sshAgentRestartTimer.stop()
     if (action.stop) stopSshAgentHelper()
     if (action.writeHello && sshAgentProc.running) sshAgentProc.write(Model.sshAgentHelloLine())
@@ -773,11 +1034,10 @@ Item {
     if (action.message) root.onSshAgentMessage(action.message)
   }
 
-  // A helper that exits before its handshake may have found the runtime lock
-  // already held -- by another shell, say -- rather than failed. It exits 1
-  // either way, so the lock is asked directly before the exit is reported, and
-  // a held lock parks the supervisor instead of counting toward CRASH_LOOP.
-  // An exit after `ready`, or while stopping, is reported at once.
+  // An exit before `ready` may be a lost runtime lock (another shell), not a
+  // crash; the helper exits 1 either way. The lock is probed before
+  // reporting, and a held lock parks the supervisor without counting toward
+  // CRASH_LOOP.
   property int sshAgentPendingExitCode: 0
 
   function onSshAgentHelperExited(exitCode) {
@@ -802,17 +1062,21 @@ Item {
 
   function startSshAgentHelper() {
     sshAgentTerminateTimer.stop()
-    // A previous stop closed this. The control channel is the helper's only
-    // input, so it has to be open again before the handshake is written.
+    // Reopen stdin (the control channel) closed by a previous stop.
     sshAgentProc.stdinEnabled = true
     sshAgentProc.running = true
   }
 
-  // Stopping the helper is a request, not a signal. Its designed shutdown is
-  // the control channel closing: it drops its keys, unlinks its socket and
-  // FIFO, and exits. SIGTERM -- which is all `running = false` does -- skips
-  // every one of those, leaving a socket and FIFO behind for the next start
-  // to clean up. So ask, then terminate only if it does not go.
+  // Ask the helper to stop by closing its control channel, so it drops keys
+  // and removes its socket and FIFO; SIGTERM only if it does not exit.
+  // A helper killed with the shell objects (plugin disabled or removed)
+  // leaves its socket, FIFO and lock behind; remove them once it is gone.
+  Component.onDestruction: {
+    if (root.sshAgentPhase === "disabled" && !sshAgentProc.running) return
+    var cleanup = Model.sshAgentRuntimeCleanupCommand(root.sshAgentRuntimeDir)
+    if (cleanup) Quickshell.execDetached(cleanup)
+  }
+
   function stopSshAgentHelper() {
     if (!sshAgentProc.running) {
       sshAgentTerminateTimer.stop()
@@ -829,14 +1093,11 @@ Item {
   // Signing authorization
   // -------------------------------------------------------------------------
   //
-  // One prompt at a time, never over a locked screen, and never claiming more
-  // about the requesting process than the companion actually checked.
+  // One prompt at a time, never over a locked screen, claiming nothing the
+  // companion did not check.
 
-  // What is actually on screen. A live signing request outranks navigation:
-  // the panel's own flows reset currentScreen freely -- opening the panel,
-  // finishing an unlock -- and each of those would otherwise drop a prompt
-  // that a blocked client is waiting on. Screen visibility binds to this
-  // rather than to currentScreen, so no later assignment can hide a prompt.
+  // What is on screen. A live signing request outranks navigation, so flows
+  // that reset currentScreen cannot hide a prompt a client is waiting on.
   readonly property string activeScreen: sshPrompt !== null && !sshAgentApprovalPopup ? "sshApproval" : currentScreen
 
   property var sshPrompt: null            // the approval_required being shown
@@ -849,32 +1110,24 @@ Item {
   readonly property int sshTotalPendingCount: sshPendingCount + sshUnlockPendingCount
   readonly property bool sshApprovalPopupOpen: sshAgentApprovalPopup
     && (sshPrompt !== null || sshUnlockRequest !== null)
-  // Password, PIN, and fingerprint completion handlers must accept the
-  // transient overlay as a real authentication surface even while the
-  // anchored panel stays closed.
+  // Completion handlers treat the SSH popup as an auth surface even with the
+  // panel closed.
   readonly property bool sshAuthSurfaceActive: opened || sshApprovalPopupOpen
-  // What the companion last announced, and the live view of it. The
-  // announcement is a snapshot; the view is that snapshot re-derived against
-  // a ticking clock, so a grant counts down on screen and disappears when it
-  // lapses instead of waiting for the next thing to happen.
+  // The last announced grants, and a view re-derived each tick so countdowns
+  // move and lapsed grants disappear.
   property var sshGrantsAnnounced: []
   property double sshGrantTick: 0
   readonly property var sshGrants: Model.sshAgentGrantsAt(sshGrantsAnnounced, sshGrantTick)
   property var sshCooldown: Model.sshAgentCooldownInitial()
-  // Whether the current cooldown has already been announced. Reset when it
-  // lapses, so a later one is announced again but the same one is not
-  // repeated on every refused request.
+  // The current cooldown was announced; reset when it lapses.
   property bool sshCooldownAnnounced: false
   readonly property var sshCooldownStatus: Model.sshAgentCooldownStatus(sshCooldown, sshCooldownTick)
-  // A one-second tick so the remaining time in the status actually counts
-  // down; bindings on Date.now() would never re-evaluate on their own.
+  // One-second tick for the countdown (Date.now() does not re-evaluate).
   property double sshCooldownTick: 0
   property double sshPromptStartedMs: 0
   property int sshPromptRemainingSec: 0
   property string screenBeforeSshApproval: "main"
-  // Whether the signing request is what put the panel on screen. If it was,
-  // answering hands the desktop back; if the user already had the panel open,
-  // it is theirs and they are returned to what they were doing.
+  // The request opened the panel, so answering closes it again.
   property bool sshPromptOpenedPanel: false
 
   function sshAgentWrite(line) {
@@ -882,11 +1135,8 @@ Item {
     if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(line)
   }
 
-  // Whether a request may raise UI at all. A locked screen never does, and a
-  // process that has had two refusals in a row is put on a cooldown so it
-  // cannot keep reopening the panel.
-  // Called wherever the cooldown may have just started. The announcement is
-  // the only thing that tells a user why their SSH command suddenly fails.
+  // Announce a cooldown that may have just started: it is the only
+  // explanation for suddenly failing SSH commands.
   function noteSshCooldown() {
     root.sshCooldownTick = Date.now()
     var status = Model.sshAgentCooldownStatus(root.sshCooldown, Date.now())
@@ -898,48 +1148,43 @@ Item {
     }
   }
 
-  // The only way out of a running cooldown other than waiting it out. It has
-  // to be explicit: the cooldown suppresses the prompts an approval would
-  // answer, so nothing the requesting process does can end it, and nothing it
-  // does should. A person pressing this is the signal that the requests are
-  // wanted after all.
+  // The only way to end a cooldown early; the requester cannot, since no
+  // prompts are shown during it.
   function resumeSshSigning() {
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "resumed", Date.now())
     noteSshCooldown()
   }
 
   function sshAgentMayPrompt() {
-    // An unknown screen state counts as locked. The poll runs every few
-    // seconds while the agent is serving, so a reading older than this means
-    // the poll is not running and the panel cannot tell -- and the cost of
-    // guessing wrong is a credential prompt on a locked desktop.
+    // A stale lock reading (the poll is not running) counts as locked.
     var fresh = root.screenLockCheckedAt > 0
       && (Date.now() - root.screenLockCheckedAt) < (Model.screenLockPollMs() * 4)
     if (!Model.sshAgentShouldPrompt(fresh ? { screenLocked: root.screenIsLocked } : null)) return false
     return !Model.sshAgentCooldownActive(root.sshCooldown, Date.now())
   }
 
-  function showSshApproval(message) {
-    root.sshPrompt = Model.sshAgentPromptView(message, root.sshAgentApprovalWindowSec)
+  // Starts a request's countdown; true when the popup (not the panel) shows it.
+  function startSshPromptClock() {
     root.sshPromptStartedMs = Date.now()
     root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
-    if (root.sshAgentApprovalPopup) {
-      root.sshPromptOpenedPanel = false
-      return
-    }
+    if (!root.sshAgentApprovalPopup) return false
+    root.sshPromptOpenedPanel = false
+    return true
+  }
+
+  function showSshApproval(message) {
+    root.sshPrompt = Model.sshAgentPromptView(message, root.sshAgentApprovalWindowSec)
+    if (startSshPromptClock()) return
     if (root.currentScreen !== "sshApproval") root.screenBeforeSshApproval = root.currentScreen
     // Recorded before opening, because open() is what makes it true.
     if (!root.sshUnlockRaw) root.sshPromptOpenedPanel = !root.opened
-    // Open first. Opening runs onPanelOpened(), which sends an unlocked panel
-    // to the item list, so claiming the screen before that would simply be
-    // undone -- the prompt would be live with nothing on screen.
+    // Open first: opening sends an unlocked panel to the list, which would
+    // undo claiming the screen.
     if (!root.opened) root.open()
     root.currentScreen = "sshApproval"
   }
 
-  // shell.json hot-reloads. If the preference changes while a client is
-  // blocked, move the same request to the newly selected surface rather than
-  // making it invisible until its deadline expires.
+  // The preference hot-reloads; move a pending request to the new surface.
   onSshAgentApprovalPopupChanged: {
     if (!(root.sshPrompt || root.sshUnlockRequest)) return
     if (root.sshAgentApprovalPopup) {
@@ -969,9 +1214,7 @@ Item {
         ? "main" : root.screenBeforeSshApproval
     }
     if (popupWasUsed) clearSshPopupUnlockState()
-    // Answered -- approved or denied alike -- so give the desktop back if the
-    // request is what took it. A panel the user opened themselves stays open
-    // on whatever screen they were using.
+    // Close the panel if the request opened it; otherwise leave it as it was.
     if (openedForThis && root.opened) root.close()
   }
 
@@ -998,8 +1241,8 @@ Item {
     dismissSshApproval()
   }
 
-  // The popup is deliberately short lived. Do not let a dismissed or expired
-  // request leave a password, PIN, PAM conversation, or prewarmed CLI behind.
+  // Leave no password, PIN, PAM conversation or prewarmed CLI behind a
+  // dismissed or expired popup.
   function clearSshPopupUnlockState() {
     cancelFingerprintUnlock()
     cancelFidoUnlock()
@@ -1067,8 +1310,7 @@ Item {
     dismissSshApproval()
   }
 
-  // The companion expires the request; this only stops the panel showing a
-  // question whose answer would now be rejected anyway.
+  // The companion expires the request; this just stops showing it.
   function expireSshRequest() {
     if (!sshPrompt && !sshUnlockRequest) return
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "timeout", Date.now())
@@ -1076,10 +1318,8 @@ Item {
     dismissSshApproval()
   }
 
-  // Git SSH signing needs paths, so the validated public set is projected to
-  // files. Only what the companion vouched for is written, and only its
-  // public form -- sshExportIdentities() refuses anything that is not an
-  // OpenSSH public line.
+  // Git SSH signing needs key files: write the companion's validated public
+  // keys (sshExportIdentities() refuses anything else).
   function exportSshPublicKeys() {
     var payload = Model.sshExportPayload(root.sshPendingPublicKeys)
     root.sshPendingPublicKeys = []
@@ -1089,9 +1329,8 @@ Item {
     sshExportProc.stdinEnabled = false
   }
 
-  // Logout, account change and disabling remove the projection. A lock does
-  // not: public identities stay advertised while locked, so their files stay
-  // with them.
+  // Removed on logout, account change and disable; kept on lock, like the
+  // public identities themselves.
   function clearSshPublicKeys() {
     root.sshPendingPublicKeys = []
     root.sshPendingPublicEpoch = -1
@@ -1127,8 +1366,7 @@ Item {
 
   function onSshAgentMessage(message) {
     if (message.type === "approval_required") {
-      // A request that cannot raise UI is refused rather than left hanging:
-      // the client gets its answer now instead of waiting out the deadline.
+      // Refuse now rather than let the client wait out the deadline.
       if (!sshAgentMayPrompt()) {
         sshAgentWrite(Model.sshAgentDenyLine(message.requestId))
         return
@@ -1152,12 +1390,7 @@ Item {
       }
       root.sshUnlockRaw = message
       root.sshUnlockRequest = Model.sshAgentPromptView(message, 0)
-      root.sshPromptStartedMs = Date.now()
-      root.sshPromptRemainingSec = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000)
-      if (root.sshAgentApprovalPopup) {
-        root.sshPromptOpenedPanel = false
-        return
-      }
+      if (startSshPromptClock()) return
       root.sshPromptOpenedPanel = !root.opened
       if (!root.opened) root.open()
       return
@@ -1167,11 +1400,9 @@ Item {
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
         if (message.reason === "released") {
-          // A released sign request returns immediately as an approval, so the
-          // popup stays up and becomes that. A released identity listing has
-          // just been answered from the freshly loaded keys -- nothing follows
-          // it, and leaving the prompt up strands it on screen with the client
-          // already served.
+          // A released sign request comes back as an approval, so the popup
+          // stays for it; a released identity listing is already answered, so
+          // the prompt closes.
           var listingAnswered = root.sshUnlockRequest !== null
             && root.sshUnlockRaw !== null
             && root.sshUnlockRaw.reason === "list-identities"
@@ -1211,16 +1442,13 @@ Item {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
       root.sshAgentKeysLoadedAt = Date.now()
       root.sshAgentLoadFailStreak = 0
-      // The set is complete: every public_key for this epoch arrived ahead of
-      // this message.
+      // Every public_key for this epoch arrived before this message.
       if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
       return
     }
     if (message.type === "load_failed") {
-      // The helper dropped its private set and kept serving. Distinct from
-      // `locked`, which is the ack for vault_locked and must not start a load.
-      // A failure for an older load is stale: a newer one has already begun
-      // and marked its epoch, and clearing that would read the vault again.
+      // The helper dropped its private keys but keeps serving (unlike
+      // `locked`, the vault_locked ack). Ignore failures of older loads.
       if (message.epoch !== root.sshAgentEpoch) return
       root.sshAgentLoadFailStreak += 1
       root.sshAgentLoadedForVaultEpoch = -1
@@ -1228,9 +1456,7 @@ Item {
       return
     }
     if (message.type === "locked") {
-      // The companion has denied signing, dropped its grants and private keys,
-      // and kept only the public projection. That is what the kill timer was
-      // waiting for.
+      // The lock ack: signing denied, grants and private keys dropped.
       sshAgentLockAckTimer.stop()
       return
     }
@@ -1245,40 +1471,30 @@ Item {
   // Key loading (the agent branch of the shared vault read)
   // -------------------------------------------------------------------------
   //
-  // The companion's keystore requires a strictly increasing epoch per load, so
-  // this counter only ever goes up. It survives helper restarts harmlessly: a
-  // restarted companion begins again at 0, and every value the panel sends is
-  // still greater than that.
+  // The companion requires a strictly increasing epoch per load, so this only
+  // goes up; a restarted companion starts from 0, below any value sent.
   property int sshAgentEpoch: 0
   property string sshAgentLoadId: ""
   property bool sshAgentLoadActive: false
-  // Whether the read now running carries the agent branch, and whether it has
-  // already been retried without it. The retry exists so an optional feature
-  // can never cost the user their item list.
+  // The running read carries the agent branch / was already retried without
+  // it (so the agent can never cost the user the item list).
   property bool listAgentBranchActive: false
   property bool listRetriedWithoutAgent: false
 
-  // A nonce is generated ahead of the load that will use it. Reading
-  // /dev/urandom is fast, but it is still a process, and the ordinary item
-  // list must never wait on the agent feature -- so a load that finds no
-  // nonce ready simply runs without the branch and primes one for next time.
+  // The nonce is primed ahead of time so the item list never waits on it; a
+  // load without one runs without the branch and primes one for next time.
   property string sshAgentNextLoadId: ""
-  // What the companion last reported it was serving. Public metadata only --
-  // a count, not the keys -- and it is what tells the panel whether a locked
-  // companion still has a public cache to answer identity listings from.
+  // Keys the companion reported serving (a count only); tells whether a locked
+  // companion still has a public cache.
   property int sshAgentKeyCount: 0
-  // The validated public identities the companion reported for the epoch
-  // currently loading. Accumulated per key, because a single message carrying
-  // all of them would exceed the control-line ceiling at the key limit.
+  // Public identities reported for the loading epoch, one message per key
+  // (all at once would exceed the line limit).
   property var sshPendingPublicKeys: []
   property int sshPendingPublicEpoch: -1
   property double sshAgentKeysLoadedAt: 0
-  // The vault epoch a key load has already been started for. dropVaultState()
-  // advances vaultEpoch on every lock and logout, so this is what tells a
-  // startup load apart from one that has already happened for this session.
+  // The vault epoch a key load was started for, so a startup load runs once.
   property int sshAgentLoadedForVaultEpoch: -1
-  // Auto-retries of a failed FIFO load. One extra attempt; a persistently
-  // bad payload must not relaunch the item list forever.
+  // Auto-retries of a failed FIFO load (one), so a bad payload cannot loop.
   property int sshAgentLoadFailStreak: 0
 
   function primeSshAgentLoadId() {
@@ -1293,10 +1509,9 @@ Item {
     if (root.sshAgentNextLoadId !== "") maybeStartupLoad()
   }
 
-  // Close an open load window. Called on success, on failure, and on a lock
-  // that cancels the read underneath it. The companion holds every candidate
-  // unpublished until this arrives, and discards it on a failed status, so a
-  // window that is never closed is the one outcome to avoid.
+  // Close the load window on success, failure or a cancelling lock. The
+  // companion publishes nothing until then and discards on failure, so every
+  // window must be closed.
   function endSshAgentLoad(ok) {
     if (!sshAgentLoadActive) return
     sshAgentLoadActive = false
@@ -1307,9 +1522,8 @@ Item {
     primeSshAgentLoadId()
   }
 
-  // A lock abandons the current loadId and stops the whole read. The pipeline
-  // runs as its own process group, so terminating the wrapper reaps `bw`, the
-  // caps, `tee` and both `jq` stages with it.
+  // Abandon the loadId and stop the read; its process group takes bw, tee and
+  // jq with it.
   function cancelSshAgentLoad() {
     if (listProc.running) listProc.running = false
     endSshAgentLoad(false)
@@ -1317,11 +1531,9 @@ Item {
     listRetriedWithoutAgent = false
   }
 
-  // Every vault transition reaches the companion through here, so the ordering
-  // rules live in one place: deny first, cancel work in flight, then let the
-  // panel get on with its own lock. Nothing below ever waits on the helper.
-  function applySshAgentLifecycle(event) {
-    var action = Model.sshAgentLifecycleTransition(event, {
+  // The vault as the companion's state table sees it.
+  function sshAgentVaultContext() {
+    return {
       enabled: root.sshAgentEnabled,
       helperReady: root.sshAgentGateOpen,
       loggedIn: root.status !== "unauthenticated",
@@ -1329,7 +1541,13 @@ Item {
       loading: root.sshAgentLoadActive,
       hasPublicCache: root.sshAgentKeyCount > 0,
       epoch: root.sshAgentEpoch
-    })
+    }
+  }
+
+  // Every vault transition reaches the companion here: deny first, cancel work
+  // in flight, then lock. Never waits on the helper.
+  function applySshAgentLifecycle(event) {
+    var action = Model.sshAgentLifecycleTransition(event, sshAgentVaultContext())
 
     if (action.cancelLoad) cancelSshAgentLoad()
     for (var i = 0; i < action.controlLines.length; i++) {
@@ -1340,10 +1558,8 @@ Item {
       root.sshAgentKeysLoadedAt = 0
       clearSshPublicKeys()
     }
-    // The acknowledgment is a courtesy the panel gives the companion two
-    // seconds to return. It is not a precondition for locking: `bw lock` has
-    // already been launched by the caller, and a companion that cannot
-    // confirm a lock is one that must not keep running.
+    // The ack is not a precondition: a companion that cannot confirm the lock
+    // within the timeout is killed.
     if (action.awaitLockAck) sshAgentLockAckTimer.restart()
     if (action.stopHelper) stopSshAgentHelper()
     if (action.startLoad && !listProc.running) loadItems(false)
@@ -1365,22 +1581,16 @@ Item {
     if (sshAgentGateOpen) sendSshAgentOptions()
     if (!sshAgentGateOpen) {
       endSshAgentLoad(false)
-      // The keystore lives in the helper's memory. Whatever it held went with
-      // it, so the panel must stop claiming those keys are still served.
+      // Its keys went with the process.
       root.sshAgentKeyCount = 0
       return
     }
-    // A new helper is empty even when the vault epoch has not moved -- the
-    // epoch tracks the vault, not the process. Clearing this is what makes a
-    // restarted or re-enabled helper eligible for a load, instead of leaving
-    // it keyless until something unrelated happens to bump the epoch.
+    // A new helper is empty even if the vault epoch did not move; allow a load.
     root.sshAgentLoadedForVaultEpoch = -1
     root.sshAgentLoadFailStreak = 0
     primeSshAgentLoadId()
-    // Startup is not evidence that the vault is locked: rememberSession can
-    // restore a session key, so the panel can already be unlocked when the
-    // companion finishes its handshake with an empty keystore. Deferred by a
-    // beat so the nonce that was just primed is actually ready.
+    // A remembered session may already be unlocked. Deferred a beat so the
+    // just-primed nonce is ready.
     sshAgentStartupLoadTimer.restart()
   }
 
@@ -1391,28 +1601,20 @@ Item {
     onTriggered: root.maybeStartupLoad()
   }
 
-  // Two things have to be true before a startup load makes sense -- the helper
-  // is serving, and the vault is actually unlocked -- and on a shell restart
-  // they arrive in either order: the handshake can easily beat the first
-  // `bw status`. So both edges call this, and the vault epoch keeps it to one
-  // load rather than one per edge.
+  // A startup load needs a serving helper and an unlocked vault, which can
+  // arrive in either order; both edges call this and the epoch keeps it to one.
   function maybeStartupLoad() {
     if (!sshAgentGateOpen || root.status !== "unlocked") return
-    // A read already running is the common case at startup: the panel's first
-    // item read is launched before the helper has finished handshaking, so it
-    // carries no agent branch. onListFinished() calls back here once it lands.
+    // The first item read usually starts before the handshake; onListFinished()
+    // calls back when it lands.
     if (sshAgentLoadActive || listProc.running) return
     if (sshAgentLoadedForVaultEpoch === root.vaultEpoch) return
-    // Without a nonce the read would run with no agent branch, load nothing,
-    // and still spend the attempt. The nonce is re-primed as each load closes,
-    // so a retry right after a failure usually lands here first;
-    // onSshAgentLoadIdRead() calls back once it is ready.
+    // No nonce yet: onSshAgentLoadIdRead() calls back when it is ready.
     if (!Model.isValidLoadId(sshAgentNextLoadId)) {
       primeSshAgentLoadId()
       return
     }
-    // Marked before the attempt, not after it, so one failed attempt cannot
-    // turn into a read that relaunches itself.
+    // Marked before the attempt, so a failure cannot relaunch itself.
     sshAgentLoadedForVaultEpoch = root.vaultEpoch
     applySshAgentLifecycle("startup")
   }
@@ -1422,15 +1624,11 @@ Item {
     maybeStartupLoad()
   }
 
-  // The vault is unlocked but its keys are still being read. Ask now rather
-  // than after: approving needs the key's identity and the requesting
-  // program, and both are already known. The companion records the approval
-  // and applies it the moment the keys land, re-checking that the approved
-  // key is actually present before it signs.
+  // Unlocked but keys still loading: ask for approval now. The companion
+  // applies it once the keys land, re-checking the key is present.
   function promoteUnlockToApproval() {
     if (root.status !== "unlocked" || !root.sshUnlockRaw || root.sshPrompt) return
-    // A listing is satisfied by the load itself; there is no signature to
-    // authorise, so it stays a wait rather than becoming an approval.
+    // A listing is answered by the load itself; nothing to approve.
     if (root.sshUnlockRaw.reason === "list-identities") return
     var raw = root.sshUnlockRaw
     root.sshPromotedOldId = raw.requestId
@@ -1440,8 +1638,7 @@ Item {
     showSshApproval(raw)
   }
 
-  // The bound on the companion's lock acknowledgment. A helper that cannot
-  // confirm it has dropped its keys is a helper that must not keep running.
+  // Kills a helper that does not confirm the lock in time.
   Timer {
     id: sshAgentLockAckTimer
     interval: Model.sshAgentLockAckTimeoutMs()
@@ -1449,8 +1646,7 @@ Item {
     onTriggered: if (sshAgentProc.running) sshAgentProc.running = false
   }
 
-  // Disabled / enabled / error, as the design's table defines them. Derived,
-  // never stored: it can only ever say what the supervisor is actually doing.
+  // Disabled / enabled / error, derived from the supervisor.
   readonly property var sshAgentSetup: Model.sshAgentSetupState({
     enabled: sshAgentEnabled,
     supervisable: sshAgentSupervisable,
@@ -1462,11 +1658,9 @@ Item {
   // Client routing (advisory)
   // -------------------------------------------------------------------------
   //
-  // Where SSH_AUTH_SOCK points decides nothing above. The companion binds a
-  // deterministic path and never reads it; this is only about whether the
-  // user's *clients* will find that socket. The panel sees the graphical
-  // session's environment and nothing else, so everything here is phrased as
-  // a hint with a check the user can run in the terminal they actually use.
+  // Whether clients will find the companion's socket. Only the graphical
+  // session's SSH_AUTH_SOCK is visible here, so this is phrased as a hint with
+  // a command to check in the user's own terminal.
   readonly property string sshAuthSock: Quickshell.env("SSH_AUTH_SOCK") || ""
   readonly property var sshRouting: Model.sshAuthSockDiagnostic(sshAuthSock, sshAgentRuntimeDir)
 
@@ -1474,9 +1668,8 @@ Item {
   readonly property var sshRoutingNotice: Model.sshAgentRoutingNotice(uwsmFragment, sshRouting)
   property bool uwsmBusy: false
   property string uwsmFlash: ""
-  // Set when the session already points at another agent. Writing the fragment
-  // would make Bitwarden the primary agent at the next login, which is not
-  // something to do silently on one click.
+  // Set when the session points at another agent; replacing it needs a
+  // confirmation.
   property bool uwsmConfirmPending: false
 
   function inspectUwsmFragment() {
@@ -1496,9 +1689,7 @@ Item {
     uwsmWriteProc.running = true
   }
 
-  // Clearing everything the plugin stored outside its own folder. Confirmed
-  // rather than absorbed by the first click: it drops a stored master
-  // password and every learned suggestion, and none of it comes back.
+  // Removing all stored data is confirmed first; it cannot be undone.
   property bool pluginDataConfirmPending: false
   property bool pluginDataBusy: false
   property string pluginDataFlash: ""
@@ -1523,8 +1714,7 @@ Item {
     var result = Model.parsePluginDataRemoval(exitCode, stdout)
     root.pluginDataBusy = false
     root.pluginDataFlash = result.message
-    // The keyring entry is part of what was just deleted, so what the panel
-    // believes about a stored master password must not be kept.
+    // The stored master password went with it.
     if (result.ok) root.fingerprintStored = false
   }
 
@@ -1532,8 +1722,7 @@ Item {
     uwsmConfirmPending = false
   }
 
-  // Safe to call unconditionally: the script removes the file only when it is
-  // byte-for-byte the one this plugin writes, and refuses a symlink outright.
+  // Safe unconditionally: only our exact file is removed, never a symlink.
   function removeUwsmFragment() {
     if (uwsmBusy) return
     uwsmConfirmPending = false
@@ -1549,14 +1738,8 @@ Item {
     root.inspectUwsmFragment()
   }
 
-  // Turning the agent off takes the routing file with it, but only if it is
-  // the exact file this plugin wrote. Anything the user manages by hand is
-  // left alone with instructions rather than deleted on a toggle.
-  //
-  // Gated on startup having finished, because this must fire on a real
-  // transition and not on the initial evaluation of the binding. Without the
-  // guard, every shell start with the feature off would delete a routing file
-  // the user never touched -- a filesystem change nobody asked for.
+  // Disabling the agent removes our routing file (never a user's). Only on a
+  // real transition after startup, not the binding's initial evaluation.
   property bool sshAgentSettingsReady: false
 
   onSshAgentEnabledChanged: {
@@ -1564,42 +1747,31 @@ Item {
     inspectUwsmFragment()
     if (!sshAgentSettingsReady) return
     if (!sshAgentEnabled) {
-      // Stopping the helper goes through the supervisor, which knows nothing
-      // about the public projection. Without this, the files of a feature
-      // that is no longer running are left behind on disk.
+      // The supervisor does not know about the public key files.
       applySshAgentLifecycle("disable")
       removeUwsmFragment()
       return
     }
-    // And turning it back on puts the file back, because taking it away on
-    // one toggle and not restoring it on the other is a trap: SSH_AUTH_SOCK
-    // is fixed at login, so the session that flips the setting keeps working
-    // either way and the damage only appears at the next boot, long past the
-    // point where anyone would connect the two. The inspection above is
-    // asynchronous, so the decision waits for its answer.
+    // Re-enabling restores the file, or the next login would silently lose
+    // routing. Waits for the inspection's answer.
     uwsmRestorePending = true
   }
 
-  // Only ever set by re-enabling the agent, and cleared by the first
-  // inspection that follows. It restores what disabling removed; it never
-  // routes a session that was not already routed, and it never overrules a
-  // file this plugin did not write.
+  // Set only by re-enabling; restores what disabling removed, never more.
   property bool uwsmRestorePending: false
 
   function applyUwsmRestore() {
     if (!uwsmRestorePending) return
     uwsmRestorePending = false
     if (!sshAgentEnabled || uwsmBusy) return
-    // "absent" only: a foreign file, a symlink, an unreadable one or no HOME
-    // are all cases the plugin refuses to touch, and it must keep refusing
-    // here. An agent already owning SSH_AUTH_SOCK is a decision the user
-    // makes at the button, with the conflict named.
+    // Only "absent": never touch a foreign file or symlink, and replacing
+    // another agent is the user's call at the button.
     if (uwsmFragment.state !== "absent" || sshRouting.state === "elsewhere") return
     beginUwsmSetup()
   }
 
   // -------------------------------------------------------------------------
-  // Lifecycle & Open / Close
+  // Open and close
   // -------------------------------------------------------------------------
 
   function open(view) {
@@ -1614,10 +1786,8 @@ Item {
     fingerprintMessage = ""
     fingerprintError = ""
 
-    // controller.show() flips `opened`, which runs onPanelOpened via
-    // onOpenedChanged. Only drive it directly when the panel was already open
-    // and that signal will not fire -- otherwise every open did its startup
-    // work twice, including two `bw status` calls at ~3s each.
+    // show() flips `opened`, which runs onPanelOpened; call it directly only
+    // if the panel was already open (else the startup work runs twice).
     var wasOpen = opened
     var target = view || presenter
     target.showPopout()
@@ -1633,13 +1803,11 @@ Item {
     cancelAuthPrewarm()
     if (pendingSecondFactorLogin()) suspendPendingLogin()
     else abandonAuthSecrets()
-    // Closing a setup form is cancellation even if its keyring writer has
-    // already started; its completion handler will clear a stale write.
+    // Closing a setup form cancels it; a write already running is discarded.
     abandonPinSetup()
     abandonFingerprintSetup()
     cancelFingerprintUnlock()
-    // Released, not cancelled: closing the panel must leave the key's request
-    // adoptable, or reopening asks a busy authenticator for a second one.
+    // Released, not cancelled: the key's request stays adoptable.
     releaseFidoUnlock()
     cancelAttachmentDownloads()
     stopGeneratorServe()
@@ -1681,8 +1849,7 @@ Item {
     associationsWriteProc.running = true
   }
 
-  // Called whenever the user acts on an item while a window context is active.
-  // Silent by design: teaching happens as a side effect of normal use.
+  // Learn silently from any pick made while a window context is active.
   function learnFromPick(item) {
     if (!suggestOnOpen || !item || !item.id || !detectedContext || !Model.isLoginItem(item)) return
     if (Model.isAssociated(associations, detectedContext, item.id)) return
@@ -1720,24 +1887,13 @@ Item {
     rebuildFilter()
   }
 
-  // Put the cursor somewhere sensible when a screen appears -- not hold it
-  // there. Those are the same thing right up until something announces a
-  // screen the user is already typing on, and something does: a logout sets
-  // the status itself and then runs `bw status` to confirm it, which takes a
-  // few seconds and arrives to say "unauthenticated" in the middle of the
-  // master password being typed. Re-focusing on that news moved the cursor
-  // from the password field to the email field mid-word, so the rest of the
-  // password went into an unmasked field that was about to be submitted as an
-  // email address.
-  //
-  // So a screen that already holds the cursor keeps it. Moving between screens
-  // still focuses, because the field holding focus then belongs to the screen
-  // being left rather than the one arriving.
+  // Focus the right field when a screen appears, but never move focus off a
+  // field on the same screen: a logout's confirming `bw status` arriving
+  // mid-typing once moved the cursor from the password to the email field.
   function focusAppropriateField() {
     if (sshApprovalPopupOpen) return
     Qt.callLater(function() {
-      // Setup has no field to type into, and the ones this would reach for are
-      // on screens that are not showing.
+      // Setup has no field.
       if (currentScreen === "setup") return
       if (status === "unlocked" && currentScreen === "main") {
         if (!presenter.fieldHasFocus("search")) presenter.focusField("search")
@@ -1747,8 +1903,7 @@ Item {
         else presenter.focusField("pass")
       } else if (status === "unauthenticated") {
         if (presenter.loginFieldHasFocus()) return
-        // A login resumed on a challenge opens on the field that is waiting,
-        // not back at the top of the form.
+        // A resumed login focuses the waiting challenge field.
         if (showDeviceCodeField) presenter.focusField("deviceCode")
         else if (show2faField) presenter.focusField("code2fa")
         else if (!show2faMethodPicker) presenter.focusField("email")
@@ -1760,8 +1915,7 @@ Item {
     if (opened) onPanelOpened()
     else {
       cancelFingerprintUnlock()
-      // Not a cancel: see releaseSurface() in FidoUnlock.qml. The key keeps the
-      // request either way, so the conversation is kept to consume the touch.
+      // Not a cancel; see releaseSurface() in FidoUnlock.qml.
       fidoUnlocker.releaseSurface()
       cancelAuthPrewarm()
       if (pendingSecondFactorLogin()) suspendPendingLogin()
@@ -1782,8 +1936,7 @@ Item {
     detectActiveWindowContext()
     refreshFingerprintAvailability()
 
-    // A signing request outranks the item list: it is the reason the panel
-    // opened, and a client is blocked on the answer.
+    // A signing request, which a client is blocked on, outranks the list.
     if (sshPrompt) {
       currentScreen = "sshApproval"
       return
@@ -1792,8 +1945,7 @@ Item {
       currentScreen = "main"
       ensureItemsFresh()
     } else if (status === "locked") {
-      // Still check for a handed-over session: a terminal login leaves the
-      // panel locked, which is precisely when the handoff matters.
+      // A terminal login leaves the panel locked, so check for a handoff.
       refreshStatus()
       prepareUnlock()
       armPresenceUnlock()
@@ -1803,40 +1955,28 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // Status & Keyring Handlers
+  // Status and keyring
   // -------------------------------------------------------------------------
 
   function refreshStatus() {
     errorMessage = ""
     if (logoutPending) return
-    // The dependency probe owns the first status transition. Opening the
-    // panel before that short probe returns must wait rather than trying to
-    // execute a CLI that a first-run install may not have yet.
+    // Wait for the dependency probe, which owns the first status transition.
     if (!depsChecked) {
       checkDependencies()
       return
     }
-    // Nothing to ask while a required tool is missing. Every caller reaches
-    // here on some ordinary event -- a panel open, an IPC nudge -- and none of
-    // them should be able to walk the user past setup into a login form that
-    // has no CLI behind it.
+    // Never walk past setup into a login form with no CLI behind it.
     if (setupGated) {
       currentScreen = "setup"
       return
     }
-    // Past the gate, so the vault has been asked about. Recorded here rather
-    // than at the one call site that waits on the dependency probe, so a panel
-    // opened before that probe reports does not earn a second `bw status` --
-    // three seconds each, and the first open is where they are felt.
+    // Recorded here so a panel opened before the dependency probe reports does
+    // not start a second slow `bw status`.
     statusProbeStarted = true
-    // A terminal login may have left a session waiting. Check before anything
-    // else, including the locked-with-no-session short circuit below, since
-    // that is exactly the state a terminal login leaves the panel in.
-    //
-    // Only a login this panel actually launched, and only for as long as one
-    // could still be in progress. Outside that window the file is removed
-    // rather than read: nobody is expecting a key, so nothing adopts it, and
-    // leaving a live one in the runtime directory is the worse outcome.
+    // A terminal login may have left a session: check first (it leaves the
+    // panel locked). Only read within the window after we launched one;
+    // otherwise the file is just removed.
     if (sessionHandoffProc.running) return
     var expecting = Model.handoffWindowOpen(terminalLoginStartedAt, Date.now())
     if (!expecting) terminalLoginStartedAt = 0
@@ -1851,17 +1991,14 @@ Item {
     if (handed) {
       cancelAuthPrewarm()
       abandonAuthSecrets()
-      // Consumed, so the window shuts behind it rather than staying open for
-      // whatever is written there next.
+      // Consumed: close the window.
       terminalLoginStartedAt = 0
       session = handed
       vaultEpoch += 1
       storeCurrentSession()
 
-      // bw minted this key moments ago, so trust it and start loading rather
-      // than spending another `bw status` (~3.3s) to be told what we know.
-      // The status check still runs, but alongside the loads instead of in
-      // front of them -- it only fills in the account email.
+      // bw just minted this key: trust it and load now; `bw status` runs
+      // alongside, only for the account email.
       status = "unlocked"
       currentScreen = "main"
       itemsLoadedAt = 0
@@ -1911,12 +2048,9 @@ Item {
 
   function onStatusFinished(rawJson) {
     if (epochOperationIsStale("status")) return
-    // A `bw status` answers about the world as it was when it started, and it
-    // takes seconds. Landing mid-login, that answer is "unauthenticated" --
-    // truthfully, for the moment it was asked -- and acting on it cancelled the
-    // login in flight: SIGTERM to a process the user had just submitted, the
-    // button dropping back out of "Verifying...", and nothing shown at all. The
-    // attempt is the newer news; it will set the state itself when it lands.
+    // A slow `bw status` landing mid-login reports "unauthenticated" as of when
+    // it started; acting on it would cancel the submitted login. The attempt
+    // will set the state itself.
     if (authAttemptInFlight()) {
       return
     }
@@ -1924,6 +2058,11 @@ Item {
     var authoritative = statusCheckAuthoritative
     statusCheckAuthoritative = true
     var st = Model.parseStatus(rawJson)
+    if (st && st.userId) {
+      accountId = st.userId
+      accountServer = st.serverUrl
+      Qt.callLater(maybeMigrateLegacyFingerprint)
+    }
     if (!authoritative) {
       if (st && st.userEmail) {
         userEmail = st.userEmail
@@ -1950,9 +2089,7 @@ Item {
 
     if (st.unlocked) {
       cancelAuthPrewarm()
-      // A vault unlocked from another monitor, a terminal handoff, or the CLI
-      // leaves a presence gate waiting on a touch that can no longer unlock
-      // anything -- a key blinking for an interaction nobody asked for.
+      // Unlocked elsewhere: stop waiting on a finger or key touch.
       cancelFingerprintUnlock()
       cancelFidoUnlock()
       abandonAuthSecrets()
@@ -1961,14 +2098,8 @@ Item {
       ensureItemsFresh()
       resetAutoLockTimer()
       focusAppropriateField()
-      // A vault that has never synced holds no ciphers, so the item list is
-      // empty and correct -- which looks exactly like a vault with nothing in
-      // it. `bw login` is supposed to have synced by now, and reports success
-      // whether or not it managed to: it calls fullSync() without
-      // allowThrowOnError, so a sync that throws is swallowed, lastSync is
-      // never set, and the session it prints is a working session onto an
-      // empty local vault. That is not a state to render as an empty vault,
-      // so repair it once and reload.
+      // No lastSync means an empty local vault: `bw login` swallows a failed
+      // sync and still prints a session. Repair it once and reload.
       if (!st.lastSync && session && !initialSyncAttempted && !isSyncing) {
         initialSyncAttempted = true
         syncVault()
@@ -1996,7 +2127,7 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // In-Plugin Login & Authentication
+  // Login and authentication
   // -------------------------------------------------------------------------
 
   function emailLoginSignature() {
@@ -2035,16 +2166,14 @@ Item {
     login2faMethodConfirmed = false
     showDeviceCodeField = false
     loginDeviceCode = ""
-    // Back to the remembered method, not to nothing: a fresh attempt should
-    // start from what worked last time.
+    // Back to the remembered method.
     login2faMethod = rememberedTwoFactorMethod
     syncLoginFieldsToState()
   }
 
-  // The user answering bw's provider question. The pick is not trusted yet --
-  // it is sent on its own first, without a code, which makes bw either mail
-  // the code (Email), accept it silently (Authenticator, YubiKey), or say the
-  // account does not have it. So a wrong pick costs nothing typed.
+  // The user's answer to bw's method question. Sent first without a code, so
+  // bw mails one (Email), proceeds (Authenticator, YubiKey), or refuses; a
+  // wrong pick costs nothing typed.
   function chooseTwoFactorMethod(method) {
     if (!Model.isTwoFactorMethod(method)) return
     errorMessage = ""
@@ -2056,10 +2185,8 @@ Item {
     submitLogin()
   }
 
-  // Answering bw's new-device prompt, which is the only challenge it will not
-  // take from a flag. The code the user just typed goes to the command's
-  // environment, the password down the usual FIFO, and bw runs with its
-  // prompts enabled for this one call.
+  // Answers bw's new-device prompt (no flag can): the code goes in the env,
+  // the password down the FIFO, and bw runs with prompts on for this call.
   function submitDeviceVerification() {
     if (loginSubmitted) return
     var code = String(loginDeviceCode || "").trim()
@@ -2076,8 +2203,7 @@ Item {
     }
     errorMessage = ""
     isLoading = true
-    // A prewarmed process was started for the ordinary login and cannot answer
-    // this; stop it and start the interactive one when it is gone.
+    // A prewarmed ordinary login cannot answer this; restart when it exits.
     if (loginProc.running) {
       deviceVerificationPending = true
       loginSubmitAfterPrewarmStop = false
@@ -2093,8 +2219,7 @@ Item {
     loginPrewarmSignature = ""
     loginAttemptHadCode = false
     loginAttemptMethod = login2faMethod
-    // Set before the process starts, because both the environment binding and
-    // the exit handler read it.
+    // Before starting: the env binding and exit handler read it.
     deviceVerificationAttempt = true
     loginProc.command = Model.deviceVerificationLoginCommand(
       String(loginEmail || "").trim(), resolvedLoginServerUrl(), login2faMethod)
@@ -2103,9 +2228,8 @@ Item {
     writeAuthPassword("login", loginPassword)
   }
 
-  // A login stopped on a challenge it cannot answer without leaving the panel.
-  // Only these survive a close, only while the window is open, and only while
-  // there is still a password to submit with the answer.
+  // A login waiting on an emailed challenge survives a close, within its
+  // window and while the password is still held.
   function pendingSecondFactorLogin() {
     if (status !== "unauthenticated" || loginMethod !== "email") return false
     if (!show2faField && !showDeviceCodeField && !show2faMethodPicker) return false
@@ -2113,15 +2237,13 @@ Item {
     return Model.secondFactorWindowOpen(secondFactorStartedAt, Date.now())
   }
 
-  // Every view's login fields, re-pointed at the state behind them. See
-  // syncLoginFields() in the View section for why this is never skipped.
+  // Re-point every view's login fields at the state (see syncLoginFields()).
   function syncLoginFieldsToState() {
     eachView(function(view) { view.syncSensitiveFields() })
   }
 
-  // Closing on a challenge keeps the stage and the password, and drops the
-  // code -- whatever was half-typed before going to look it up is not the code
-  // that is about to be read.
+  // Closing on a challenge keeps the stage and password but drops the
+  // half-typed code.
   function suspendPendingLogin() {
     login2faCode = ""
     loginDeviceCode = ""
@@ -2130,9 +2252,8 @@ Item {
     syncLoginFieldsToState()
   }
 
-  // What a stopped login process owes whoever stopped it. `mayScrub` is false
-  // when the run that just ended was itself the scrub, so one cannot schedule
-  // another.
+  // What a stopped login owes its stopper. `mayScrub` is false when the run
+  // that ended was itself a scrub.
   function resumeDeferredLogin(mayScrub) {
     if (deviceVerificationPending) {
       deviceVerificationPending = false
@@ -2172,9 +2293,8 @@ Item {
     var email = String(loginEmail || "").trim()
     var serverUrl = resolvedLoginServerUrl()
     if (!email || Model.validateServerUrl(serverUrl)) return
-    // Configuring a custom server changes bw's persistent global state. Do it
-    // only after explicit submission, never merely because the password field
-    // received focus. Default-cloud logins still get the full prewarm win.
+    // `bw config server` changes bw's global state: only on explicit submit,
+    // never on field focus.
     if (serverUrl) return
 
     var signature = emailLoginSignature()
@@ -2216,8 +2336,8 @@ Item {
     if (loginProc.running) loginProc.running = false
   }
 
-  function abandonAuthSecrets() {
-    masterPassword = ""
+  // Login credentials and challenge state, back to the first stage.
+  function clearLoginAttempt() {
     loginPassword = ""
     loginClientId = ""
     loginClientSecret = ""
@@ -2235,6 +2355,11 @@ Item {
     deviceVerificationPending = false
     secondFactorStartedAt = 0
     loginPasswordRetryUsed = false
+  }
+
+  function abandonAuthSecrets() {
+    masterPassword = ""
+    clearLoginAttempt()
     pendingUnlockPassword = ""
     pendingUnlockFrom = ""
     authPasswordWriteValue = ""
@@ -2264,6 +2389,7 @@ Item {
     if (target === "unlock") {
       unlockSubmitted = false
       isUnlocking = false
+      pendingUnlockPassword = ""
       if (unlockProc.running) unlockProc.running = false
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
       Qt.callLater(prepareUnlock)
@@ -2271,11 +2397,8 @@ Item {
       loginSubmitted = false
       isLoading = false
       if (loginProc.running) loginProc.running = false
-      // The writer polls for bw's FIFO and gives up if bw has not opened it in
-      // time, which a cold start after the panel has been closed can outrun.
-      // Unlock has always re-armed itself here; login left the button for the
-      // user to press again, which is what having to click Verify twice was.
-      // Once, so a genuinely broken delivery still reports rather than looping.
+      // The writer gives up if bw has not opened the FIFO in time, which a cold
+      // start can outrun. Retry once, like unlock does.
       if (!loginPasswordRetryUsed) {
         loginPasswordRetryUsed = true
         var retryDevice = deviceVerificationAttempt
@@ -2295,8 +2418,7 @@ Item {
       return
     }
 
-    // Checked before either branch, because both send the master password to
-    // whatever this names. See validateServerUrl() for what it refuses.
+    // Validated first: both branches send the master password here.
     var serverUrl = resolvedLoginServerUrl()
     var serverProblem = Model.validateServerUrl(serverUrl)
     if (serverProblem) {
@@ -2379,8 +2501,7 @@ Item {
     }
   }
 
-  // Every exit from onLoginOutput says which branch it took. Read with:
-  //   quickshell log -f | grep qs-bitwarden
+  // Logs which branch each login exit took (`quickshell log -f | grep qs-bitwarden`).
   function logLogin(branch, out, err, exitCode) {
     console.log("qs-bitwarden login " + Model.loginDiagnostic(out, err, exitCode, branch))
   }
@@ -2393,16 +2514,14 @@ Item {
     var wasDeviceAttempt = deviceVerificationAttempt
     deviceVerificationAttempt = false
 
-    // The interactive login answers for itself. Its output is a prompt session
-    // rather than one of bw's one-line refusals, so none of the detectors
-    // below should be allowed to read it.
+    // An interactive login's output is a prompt session; the detectors below
+    // must not read it.
     if (wasDeviceAttempt && !(exitCode === 0 && out.length > 10)) {
       var detail = Model.sanitizeInteractiveStderr(err, loginDeviceCode)
       loginDeviceCode = ""
       loginDeviceVerification = true
-      // 124 is `timeout`; the prompt error is inquirer finding nothing left to
-      // read. Both mean bw wanted something this login could not give it, and
-      // a terminal is the only thing that can.
+      // A timeout (124) or inquirer out of input: bw wanted something only a
+      // terminal can give.
       if (exitCode === 124 || Model.loginPromptRanOutOfInput(out, err)) {
         showDeviceCodeField = false
         logLogin("device-unanswerable", out, err, exitCode)
@@ -2420,10 +2539,9 @@ Item {
       return
     }
 
-    // Checked before the second-factor branch, which matches the same sentence.
-    // A code went out and bw still says a code is required, so this is the
-    // new-device challenge -- asking for the code again would loop forever on
-    // one bw cannot be given. The terminal login can answer it.
+    // Before the second-factor check, which matches the same sentence: a code
+    // was sent and still "required" means new-device verification, which only
+    // the terminal login can answer.
     if (Model.loginNeedsDeviceVerification(out, err, loginAttemptHadCode)) {
       resetEmailLoginSecondFactor()
       loginDeviceVerification = true
@@ -2435,8 +2553,7 @@ Item {
       return
     }
 
-    // No --method can answer this one and no terminal helps: the account's
-    // two-step methods are ones the CLI cannot perform at all.
+    // The account's two-step methods are all ones the CLI cannot do.
     if (Model.loginHasNoUsableProvider(out, err)) {
       resetEmailLoginSecondFactor()
       logLogin("no-usable-provider", out, err, exitCode)
@@ -2445,14 +2562,10 @@ Item {
       return
     }
 
-    // bw asking which two-step method to use. Answering it by guessing is what
-    // costs a real failed attempt, so the panel puts the question to the user.
+    // bw asks which two-step method to use; ask the user rather than guess.
     if (Model.loginNeedsMethodChoice(out, err)) {
-      // A method that was only remembered, never confirmed against this
-      // account, is the likeliest thing to be wrong here -- shell.json holds
-      // one method for whichever account logged in last. Drop it and let the
-      // untargeted attempt say what this account actually needs. The method
-      // only ever goes from set to unset here, so this cannot loop.
+      // A remembered (unconfirmed) method is the likeliest culprit: drop it
+      // and retry untargeted. Only ever set -> unset, so no loop.
       if (Model.isTwoFactorMethod(loginAttemptMethod) && !login2faMethodConfirmed) {
         forgetTwoFactorMethod()
         login2faMethod = -1
@@ -2478,17 +2591,10 @@ Item {
     }
 
     if (Model.loginNeedsSecondFactor(out, err)) {
-      // A code must never be sent without the method it belongs to. bw only
-      // puts the token on the wire when a provider came with it, so without
-      // --method the first request is a bare password grant -- and for an
-      // email provider the server answers that by issuing a fresh code,
-      // invalidating the one the user is about to type. Confirmed against
-      // bw 2026.2.0: the same command with --method succeeds and without it
-      // returns "Two-step token is invalid."
-      //
-      // The method cannot be inferred, so it is asked for once per account
-      // before any code is collected. An authenticator would survive being
-      // asked in the wrong order; an emailed code would not.
+      // Never send a code without its --method: without one bw sends a bare
+      // password grant, and for Email the server issues a new code that
+      // invalidates the typed one (seen with bw 2026.2.0). So ask for the
+      // method once per account before collecting a code.
       if (!Model.isTwoFactorMethod(login2faMethod)) {
         show2faField = false
         login2faCode = ""
@@ -2513,6 +2619,10 @@ Item {
 
     if (exitCode === 0 && out.length > 10) {
       rememberTwoFactorMethod(login2faMethod)
+      // Typed and accepted by `bw`: the stored password for a fresh login
+      // (storeAcceptedMasterPassword()).
+      pendingUnlockPassword = String(loginPassword || "")
+      pendingUnlockFrom = ""
       loginPassword = ""
       login2faCode = ""
       logLogin("success", out, err, exitCode)
@@ -2527,11 +2637,7 @@ Item {
       logLogin("failed-no-stderr", out, err, exitCode)
       errorMessage = "Login failed. Please check your credentials."
     } else {
-      // bw exited cleanly and said nothing at all. Handing that to the unlock
-      // path was silent by construction: prepareUnlock() refuses it because
-      // the vault is not locked, so the password went to a FIFO nobody had
-      // created and failed two seconds later, after the next click had already
-      // cleared the message. Say what happened instead.
+      // A clean exit with no output: say so rather than fail silently later.
       logLogin("clean-exit-no-session", out, err, exitCode)
       errorMessage = "Bitwarden reported no error but returned no session. "
         + "Please try again, or use the terminal login."
@@ -2543,8 +2649,7 @@ Item {
       errorMessage = "Finishing logout. Please wait a moment."
       return
     }
-    // The panel knows whether this is a login or an unlock, so the terminal
-    // does not have to spend a `bw status` round trip working it out.
+    // The panel knows login vs unlock, sparing the terminal a `bw status`.
     var mode = (status === "locked") ? "unlock" : "login"
     var serverUrl = mode === "login" ? resolvedLoginServerUrl() : ""
     var serverProblem = Model.validateServerUrl(serverUrl)
@@ -2568,8 +2673,7 @@ Item {
     logoutCredentialsExitCode = 0
     terminalLoginStartedAt = 0
     lockVault()
-    // Stronger than the lock above: logout takes the public projection with
-    // it, so a new account cannot inherit the last one's identities.
+    // Logout also drops the public projection, so a new account inherits none.
     applySshAgentLifecycle("logout")
     forgetStoredCredentials()
     pendingUnlockPassword = ""
@@ -2674,7 +2778,7 @@ Item {
   }
 
   function credentialStoresRunning() {
-    return keyringStoreProc.running || pinStoreProc.running || keyringStoreMasterProc.running
+    return keyringStoreProc.running || envelopeProc.running
   }
 
   function requestAllCredentialClear() {
@@ -2682,9 +2786,8 @@ Item {
       allCredentialsClearPending = true
       return
     }
-    // A clear that wins the race against an older store is not cleanup: that
-    // store can recreate the credential immediately afterward. Logout remains
-    // pending until every writer has exited and this final sweep has run.
+    // A store still running could recreate the credential after this clear;
+    // logout waits for every writer, then sweeps.
     if (credentialStoresRunning()) {
       allCredentialsClearPending = true
       return
@@ -2693,24 +2796,13 @@ Item {
     keyringClearAllProc.running = true
   }
 
-  // Logging out takes the keyring with it. Two of the entries there are the
-  // master password -- fingerprint unlock keeps it as it is, PIN unlock keeps
-  // it encrypted -- and both are written to the default collection so they
-  // survive a reboot, which is exactly why a logout has to be the end of them.
-  //
-  // Nothing here asks whether we think an entry exists. `fingerprintStored`
-  // and `pinConfigured` describe what the settings screen last saw, and both
-  // go false for reasons that leave the keyring untouched: an unplugged
-  // reader, an uninstalled fprintd, a dependency probe that has not answered
-  // yet. Gating the clear on them is how a master password came to outlive the
-  // account it belonged to. See keyringClearAllCommand() for why asking
-  // unconditionally is free.
+  // Logout clears every keyring entry the plugin writes, unconditionally:
+  // flags like fingerprintStored reflect settings, not the keyring (see
+  // keyringClearAllCommand()).
   function forgetStoredCredentials() {
+    dropEnvelopeState()
     requestAllCredentialClear()
-    // The learned-suggestion store is this account's data too -- which domains
-    // and apps it holds logins for, and when each was last used -- and unlike
-    // everything else here it is a plain file with no expiry. It goes with the
-    // account rather than waiting for the next user of this machine to read it.
+    // Learned suggestions are this account's data too (a plain file).
     associationsEpoch += 1
     pendingAssociationsJson = ""
     associationsWritePending = false
@@ -2738,20 +2830,18 @@ Item {
     if (pinUnlock) writeSetting("pinUnlock", false, "bool")
   }
 
-  // -------------------------------------------------------------------------
-  // Fingerprint Unlock
+  // Process environments
   // -------------------------------------------------------------------------
 
-  // Secrets go to secret-tool through the environment, never argv. See
-  // keyringStoreScript() in BitwardenModel.js for why stdin is not usable.
+  // Secrets reach processes in the environment, never argv
+  // (keyringStoreScript()).
   function associationsEnv() {
     var env = {}
     env[Model.associationsEnvVar()] = String(pendingAssociationsJson || "")
     return env
   }
 
-  // BW_SESSION rather than --session: bw reads it natively, and it keeps the
-  // token out of /proc/<pid>/cmdline, which any local user can read.
+  // BW_SESSION rather than --session keeps the token out of argv.
   function bwEnv(extra) {
     var env = {}
     if (session) env[Model.sessionEnvVar()] = String(session)
@@ -2759,50 +2849,37 @@ Item {
     return env
   }
 
-  // Authentication credentials enter short-lived processes through the
-  // environment. Direct password flows move BW_PASSWORD from the writer into
-  // bw's private FIFO; API login reads BW_PASSWORD, BW_CLIENTID and
-  // BW_CLIENTSECRET natively. None reaches an argv -- neither bw's nor that of
-  // the shell wrapping it.
-  // /proc/<pid>/cmdline is world-readable on a default install; environ is not.
-  //
-  // Read as a binding by loginProc and unlockProc, so it always reflects the
-  // fields as they are when the process starts.
+  // Credentials in the environment, never argv: BW_PASSWORD (read from the
+  // FIFO by password flows), BW_CLIENTID and BW_CLIENTSECRET for API login.
+  // Read as a binding by loginProc and unlockProc.
   function authEnv(password, clientId, clientSecret, code) {
     var env = bwEnv()
     env[Model.noInteractionEnvVar()] = "true"
     if (password) env[Model.passwordEnvVar()] = String(password)
     if (clientId) env[Model.clientIdEnvVar()] = String(clientId)
     if (clientSecret) env[Model.clientSecretEnvVar()] = String(clientSecret)
-    // The only one bw has no environment option for; see the comment on
-    // TWOFACTOR_CODE_ENV in BitwardenModel.js.
+    // No env option exists for this; see TWOFACTOR_CODE_ENV.
     if (code) env[Model.twoFactorCodeEnvVar()] = String(code)
     return env
   }
 
   function loginProcessEnv() {
     if (loginMethod === "apikey") {
-      // This is a live Process binding. Keep fields out of its retained value
-      // until an actual API login starts, instead of duplicating credentials
-      // into both the form and the process object while the user is typing.
+      // A live Process binding: only carry the API fields once a login starts.
       if (!loginSubmitted) return authEnv("", "", "", "")
       return authEnv(loginPassword,
                      String(loginClientId || "").trim(),
                      String(loginClientSecret || "").trim(),
                      String(login2faCode || "").trim())
     }
-    // The one login allowed to prompt. BW_NOINTERACTION is left out rather
-    // than set to anything, since bw tests it against the literal "true", and
-    // the code goes in for the command's own printf to read -- authEnv() is
-    // not used here precisely because it would put the flag back.
+    // The one login allowed to prompt: BW_NOINTERACTION omitted (so not
+    // authEnv()), and the code set for the command's printf.
     if (deviceVerificationAttempt) {
       var deviceEnv = bwEnv()
       deviceEnv[Model.deviceCodeEnvVar()] = String(loginDeviceCode || "").trim()
       return deviceEnv
     }
-    // Email/password login reads its password from the FIFO writer. Keeping it
-    // out of the long-lived prewarmed process also keeps partial typing out of
-    // that process's environment.
+    // The password arrives via the FIFO writer, not this long-lived process.
     return authEnv("", "", "", String(login2faCode || "").trim())
   }
 
@@ -2824,10 +2901,9 @@ Item {
     return bwEnv(e)
   }
 
-  function pinEnv(pin, secret) {
+  function pinEnv(pin) {
     var env = {}
     env[Model.pinEnvVar()] = String(pin || "")
-    if (secret) env[Model.keyringSecretEnvVar()] = String(secret)
     return env
   }
 
@@ -2900,8 +2976,7 @@ Item {
       sendError = String(stderrText || "").trim() || "Could not create the Send"
       return
     }
-    // bw prints the access URL; put it straight on the clipboard, since a Send
-    // is useless until the link reaches someone.
+    // Copy the new Send's link straight away.
     var created = null
     try { created = JSON.parse(stdoutText) } catch (e) { created = null }
     var url = created && created.accessUrl ? String(created.accessUrl) : String(stdoutText || "").trim()
@@ -2949,17 +3024,14 @@ Item {
   // Generator
   // -------------------------------------------------------------------------
 
-  // Reached from the header button on any screen and from the item form's
-  // Generate button, which is the same thing: the form is just a caller that
-  // wants the value back.
+  // From the header on any screen, or from the item form's Generate button
+  // (which wants the value back).
   function openGenerator() {
     closeFilterGroup()
     generatorReturnScreen = (currentScreen === "edit") ? "edit" : "main"
     screenBeforeSettings = "main"
     currentScreen = "generator"
-    // A form asking for a password wants a new one every time. A standalone
-    // visit keeps whatever was last generated, so reopening does not throw
-    // away a value you were about to copy.
+    // The form wants a fresh value; a standalone visit keeps the last one.
     if (generatorFeedsForm || !genValue) regenerate()
   }
 
@@ -2971,22 +3043,18 @@ Item {
     if (toForm) Qt.callLater(function() { presenter.focusField("formPass") })
   }
 
-  // The whole point of the round trip: put the value in the field the caller
-  // was on, and go back to it.
+  // Put the value in the caller's field and return to it.
   function useGeneratedPassword() {
     if (!generatorFeedsForm || genBusy || !genValue) return
     formPassword = genValue
-    // Show it. A password you cannot read is hard to trust, and it is going
-    // into a form you are still filling in rather than straight to the vault.
+    // Shown, since it goes into a form still being filled in.
     formPasswordRevealed = true
     closeGenerator()
     flashNotification("Generated password filled in")
   }
 
-  // Generation is delegated to Bitwarden's own generator either way; the only
-  // question is how we reach it. `bw serve` answers in ~2ms against ~2.9s for
-  // a fresh `bw generate`, so the server is started on first use and the CLI
-  // stays as the fallback for when it cannot be.
+  // `bw serve` (~2 ms per request) is started on first use; `bw generate`
+  // (~2.9 s) is the fallback.
   function generatorOptionsSignature() {
     return JSON.stringify(Model.normalizeGeneratorOptions(genOpts))
   }
@@ -3010,8 +3078,7 @@ Item {
       return
     }
     startGeneratorServe()
-    // Nothing to wait on if the server is already coming up -- onExited or the
-    // ready poll will drive the request.
+    // A starting server will drive the request itself.
     if (!generateServeStarting) regenerateViaCli()
   }
 
@@ -3023,9 +3090,7 @@ Item {
     generateProc.running = true
   }
 
-  // A locked server: no session in its environment, so it can generate and
-  // nothing else. See the comment on generateServeCommand in BitwardenModel.js
-  // for why that restriction is the whole point.
+  // No session in its environment, so it can only generate.
   function generatorServeEnv() {
     var env = {}
     env[Model.sessionEnvVar()] = null
@@ -3033,28 +3098,18 @@ Item {
     return env
   }
 
-  // Nothing about an HTTP 200 proves the process that sent it is ours. Another
-  // account can bind the port first and answer /generate with passwords it
-  // already knows, and the panel would show one as freshly generated. There is
-  // no handshake to lean on -- `bw serve` prints no banner and offers no
-  // authentication -- so the evidence has to be that the port was silent before
-  // our own server took it. Anything already answering means the serve path is
-  // not available, and the CLI carries the feature instead.
+  // A 200 does not prove the answer is ours: another account could bind the
+  // port first and serve known passwords. So the port must be silent before
+  // our server takes it; otherwise the CLI is used.
   function startGeneratorServe() {
     if (generateServeReady || generateServeStarting || generateServeFailed) return
     generateServeStarting = true
     probeGeneratorPort()
   }
 
-  // Every request to the generator port goes through a bounded child process
-  // rather than QML's XMLHttpRequest. XMLHttpRequest buffers responses in
-  // shared shell process memory before JavaScript can inspect or abort them,
-  // leaving the shell vulnerable to unbounded allocations from a rogue local
-  // port responder. The child process bounds both duration (--max-time) and
-  // payload volume (| head -c 65536) on the producer side, ensuring no more
-  // than 64KB ever enters the shell process.
-  //
-  // `done` is called with (exitCode, stdout, stderr).
+  // Generator requests go through a capped curl child, not XMLHttpRequest
+  // (which buffers unbounded responses in the shell). `done(exitCode, stdout,
+  // stderr)`.
   property var generateServeRequestCallback: null
 
   function generatorRequest(opts, done) {
@@ -3091,8 +3146,7 @@ Item {
         if (root.genBusy) root.regenerateViaCli()
         return
       }
-      // The screen can close while a probe is in flight, and starting a server
-      // for a screen nobody is looking at is the exposure this all avoids.
+      // Screen closed mid-probe: do not start a server nobody is looking at.
       if (root.currentScreen !== "generator") {
         root.generateServeStarting = false
         return
@@ -3108,8 +3162,7 @@ Item {
     generateServePoll.stop()
     generateServeStarting = false
     generateServeReady = false
-    // A deliberate shutdown is not the permanent bind failure, so the next
-    // visit is free to start a server again.
+    // A deliberate shutdown: the next visit may start one again.
     generateServeFailed = false
     genBusy = false
     genRegeneratePending = false
@@ -3133,9 +3186,7 @@ Item {
     }
   }
 
-  // The server is up when it answers. Polling rather than trusting a fixed
-  // delay: bw takes a couple of seconds to bind, and the first generator open
-  // should not sit behind a guess.
+  // Poll until the server answers (binding takes a couple of seconds).
   function pollGeneratorServe() {
     if (generateServeRequestProc.running) return
     generatorRequest(root.genOpts, function(exitCode, stdout, stderr) {
@@ -3156,8 +3207,7 @@ Item {
         root.onGenerated(value, 0)
         return
       }
-      // The server went away mid-session, or stopped behaving like one; fall
-      // back and stop trusting it.
+      // Gone or misbehaving: fall back and stop trusting it.
       root.generateServeReady = false
       root.regenerateViaCli()
     })
@@ -3184,8 +3234,7 @@ Item {
     genValue = v
   }
 
-  // Every control funnels through here, so a change always regenerates --
-  // matching the extension's live behaviour -- and options stay normalised.
+  // Every control changes options here: normalise and regenerate.
   function setGenOpt(key, value) {
     var next = {}
     for (var k in genOpts) next[k] = genOpts[k]
@@ -3200,7 +3249,7 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // PIN Unlock
+  // PIN unlock
   // -------------------------------------------------------------------------
 
   function refreshPinConfigured() {
@@ -3208,7 +3257,8 @@ Item {
   }
 
   function onPinConfiguredChecked(raw) {
-    pinConfigured = String(raw || "").trim() === "yes"
+    legacyPinStored = String(raw || "").trim() === "yes"
+    recomputePinConfigured()
   }
 
   function beginPinSetup() {
@@ -3223,54 +3273,64 @@ Item {
   }
 
   function abandonPinSetup() {
-    if (pinStoreProc.running) invalidateEpochOperation("pinStore")
+    // A wrap still being written is removed when it lands (submitPinSetup()).
+    if (pinBusy) invalidateEpochOperation("pinAdd")
     pinBusy = false
     pinSetupPin = ""
     pinSetupConfirm = ""
     pinSetupMaster = ""
   }
 
-  // Encrypting needs the master password, and the vault does not keep it in
-  // memory once unlocked, so setting a PIN has to ask for it.
+  // The typed master password must open the envelope; a PIN wrap (Argon2id of
+  // the PIN) is added. Nothing typed is stored.
   function submitPinSetup() {
-    if (pinBusy || pinStoreProc.running) return
+    if (pinBusy) return
     var err = Model.validatePin(pinSetupPin, pinSetupConfirm)
     if (err) { pinError = err; return }
-    if (!pinSetupMaster) { pinError = "Master password is required to encrypt the PIN"; return }
+    if (!quickUnlockAvailable) { pinError = quickUnlockUnavailableReason; return }
+    if (!pinSetupMaster) { pinError = "Confirm your master password to set a PIN"; return }
 
     pinError = ""
     pinUnlockError = ""
     pinBusy = true
-    beginEpochOperation("pinStore")
-    pinStoreProc.running = true
-  }
-
-  function onPinStored(exitCode) {
-    pinBusy = false
-    if (epochOperationIsStale("pinStore")) {
-      pinConfigured = false
-      pinSetupPin = ""
-      pinSetupConfirm = ""
-      pinSetupMaster = ""
-      requestPinCredentialClear()
-      return
-    }
-    if (exitCode !== 0) {
-      pinError = "Could not save the PIN. Is the OS keyring available?"
-      return
-    }
-    pinConfigured = true
-    pinSetupPin = ""
-    pinSetupConfirm = ""
+    var typed = pinSetupMaster
+    var pin = {}
+    pin[Model.pinEnvVar()] = pinSetupPin
     pinSetupMaster = ""
-    pinAttempts = 0
-    writeSetting("pinUnlock", true, "bool")
-    flashNotification("PIN unlock enabled")
-    currentScreen = "settings"
+    beginEpochOperation("pinAdd")
+    addQuickUnlockMethod(typed, { kind: "add-pin" }, pin, function(ok, why) {
+      typed = ""
+      pin = null
+      root.pinBusy = false
+      // Stale by the time it landed: remove the unwanted wrap.
+      if (root.epochOperationIsStale("pinAdd") || root.currentScreen !== "pin") {
+        if (ok) root.removeQuickUnlockMethod({ kind: "remove", method: "pin" })
+        return
+      }
+      if (!ok) {
+        root.pinError = root.quickUnlockErrorText(why, "Could not save the PIN. Is the OS keyring available?")
+        return
+      }
+      // The older PIN blob, if any, is superseded.
+      root.legacyPinStored = false
+      root.requestPinCredentialClear()
+      root.pinSetupPin = ""
+      root.pinSetupConfirm = ""
+      root.pinAttempts = 0
+      root.recomputePinConfigured()
+      root.writeSetting("pinUnlock", true, "bool")
+      root.flashNotification("PIN unlock enabled")
+      root.currentScreen = "settings"
+    })
   }
 
   function submitPinUnlock() {
     if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
+    // As for the password: the PIN's result is discarded unless locked.
+    if (status !== "locked") {
+      pinUnlockError = "Still checking the vault. Try again in a moment."
+      return
+    }
     if (String(pinEntry || "").length < Model.pinMinLength()) {
       pinUnlockError = "PIN must be at least " + Model.pinMinLength() + " digits"
       return
@@ -3278,8 +3338,53 @@ Item {
     pinUnlockError = ""
     pinBusy = true
     pinUnlockSubmitted = true
+    if (quickUnlockAvailable && accountId && envelopeSummary && envelopeSummary.pin) {
+      var env = {}
+      env[Model.pinEnvVar()] = String(pinEntry || "")
+      queueEnvelopeJob({
+        command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
+        env: env, secretOutput: true,
+        onDone: function(code, out) { root.onEnvelopePinResult(code, out) }
+      })
+      return
+    }
     pinUnlockProc.command = Model.pinUnlockCommand()
     pinUnlockProc.running = true
+  }
+
+  // The envelope's answer to a PIN; exit 3 is a wrong PIN.
+  function onEnvelopePinResult(code, out) {
+    var accepting = pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"
+    pinUnlockSubmitted = false
+    pinBusy = false
+    if (!accepting) return
+    if (code === 0 && out) {
+      pinAttempts = 0
+      pinFromEnvelope = true
+      pendingUnlockFrom = "pin"
+      unlockVaultWithPassword(out)
+      return
+    }
+    if (code === 3) {
+      countWrongPin()
+      return
+    }
+    pinEntry = ""
+    pinUnlockError = "Could not read the stored password. Unlock with your master password."
+    refreshEnvelope()
+  }
+
+  function countWrongPin() {
+    pinAttempts += 1
+    pinEntry = ""
+    if (pinAttempts >= pinMaxAttempts) {
+      // Stop taking guesses and remove the PIN's way in (a UI limit; Argon2
+      // is the real cost).
+      clearPin()
+      pinUnlockError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
+    } else {
+      pinUnlockError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
+    }
   }
 
   function onPinUnlockResult(exitCode, password) {
@@ -3293,26 +3398,23 @@ Item {
     var pw = String(password || "")
 
     if (exitCode !== 0 || !pw) {
-      pinAttempts += 1
-      pinEntry = ""
-      if (pinAttempts >= pinMaxAttempts) {
-        // Refuse to keep serving guesses at the UI. The ciphertext goes too,
-        // so re-enabling requires the master password again.
-        clearPin()
-        pinUnlockError = "Too many incorrect PINs. PIN unlock has been removed -- use your master password."
-      } else {
-        pinUnlockError = "Incorrect PIN (" + pinAttempts + " of " + pinMaxAttempts + ")"
-      }
+      countWrongPin()
       return
     }
 
+    // A legacy blob: keep the PIN until this unlock settles, to migrate it.
     pinAttempts = 0
+    pendingPinForMigration = String(pinEntry || "")
     pendingUnlockFrom = "pin"
     unlockVaultWithPassword(pw)
   }
 
   function clearPin() {
     requestPinCredentialClear()
+    legacyPinStored = false
+    if (envelopeSummary && envelopeSummary.pin) {
+      removeQuickUnlockMethod({ kind: "remove", method: "pin" })
+    }
     pinConfigured = false
     pinEntry = ""
     pinAttempts = 0
@@ -3332,7 +3434,7 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // Setup Wizard & Settings
+  // Setup and settings
   // -------------------------------------------------------------------------
 
   function checkDependencies() {
@@ -3393,8 +3495,7 @@ Item {
 
   function installOne(dep) {
     if (!dep) return
-    // Omarchy's setup command owns its own rows; `pkg add` on one of those
-    // would install a package and leave the row exactly as red as it was.
+    // Rows Omarchy sets up itself are not a package install.
     if (dep.setup) {
       runFingerprintSetup()
       return
@@ -3405,9 +3506,7 @@ Item {
     flashNotification("Installing " + dep.pkg + " -- this screen updates itself")
   }
 
-  // Stepping past setup. The gate is what was holding the first status probe
-  // back, so opening it has to release that probe as well -- otherwise the
-  // panel would sit on a login screen it never actually asked `bw` about.
+  // Skip setup, releasing the status probe it was holding back.
   function dismissSetup() {
     setupDismissed = true
     currentScreen = status === "unlocked" ? "main"
@@ -3420,9 +3519,12 @@ Item {
     flashNotification("Fingerprint setup opened -- this screen updates itself")
   }
 
-  // A setting whose dependency is missing is inert; the cursor may sit on it,
-  // but changing it would silently do nothing.
+  // A setting whose dependency is missing does nothing if changed.
   function settingBlocked(entry) {
+    return settingDependencyMissing(entry) || quickUnlockToolMissing(entry)
+  }
+
+  function settingDependencyMissing(entry) {
     if (!entry || !entry.requires) return false
     for (var i = 0; i < dependencies.items.length; i++) {
       if (dependencies.items[i].key === entry.requires) return !dependencies.items[i].ready
@@ -3430,16 +3532,43 @@ Item {
     return false
   }
 
-  // Group headings are rows in the list but not controls, so the cursor steps
-  // over them rather than stopping on one and doing nothing when activated.
+  // Quick-unlock options need the tool to switch on, never to switch off.
+  // "unknown" (before the first inspection) is not a verdict.
+  function quickUnlockToolMissing(entry) {
+    if (!entry || !Model.isQuickUnlockSetting(entry.key)) return false
+    if (unlockKeyHelper.state === "unknown" || !quickUnlockPrereqs.checked) return false
+    if (quickUnlockAvailable) return false
+    return !settingValue(entry)
+  }
+
+  // The stored password is only as protected as the weakest way in; with
+  // fingerprint on (no secret involved) a PIN or key adds nothing, and those
+  // rows say so.
+  function settingNote(entry) {
+    if (!entry || (entry.key !== "pinUnlock" && entry.key !== "fidoUnlock")) return ""
+    if (!settingValue(entry) || !fingerprintUnlock || !fingerprintStored) return ""
+    return "Fingerprint unlock is also on, so the stored password is only as protected as "
+      + "fingerprint unlock: a program running as you can open it without the "
+      + (entry.key === "pinUnlock" ? "PIN." : "key.")
+  }
+
+  // Shown instead of the description, so an inert control says why.
+  function settingBlockedReason(entry) {
+    if (settingDependencyMissing(entry)) return "Needs fingerprint setup -- see Dependencies below."
+    if (quickUnlockToolMissing(entry)) {
+      return quickUnlockUnavailableReason + " Your master password still unlocks the vault."
+    }
+    return ""
+  }
+
+  // The cursor steps over group headings.
   function moveSettingsCursor(delta) {
     var n = settingsEntries.length
     if (n === 0) return
     var step = delta < 0 ? -1 : 1
     var i = settingsIndex + delta
     while (i >= 0 && i < n && settingsEntries[i] && settingsEntries[i].kind === "group") i += step
-    // A heading at the far end leaves nowhere further to go in that direction;
-    // the cursor stays where it was rather than landing on the heading.
+    // Only a heading beyond: stay put.
     if (i < 0 || i >= n) return
     settingsIndex = i
   }
@@ -3510,8 +3639,7 @@ Item {
     currentScreen = (screenBeforeSettings === "settings" ? "main" : screenBeforeSettings)
   }
 
-  // Persisted via `omarchy bar set`, which owns shell.json. The shell reloads
-  // on write, so setting() reflects the new value without us caching it.
+  // Via `omarchy bar set`; the shell reloads, so setting() sees the change.
   function writeSetting(key, value, type) {
     settingWriteProc.command = Model.settingWriteCommand(key, value, type)
     settingWriteProc.running = true
@@ -3519,9 +3647,7 @@ Item {
     settingsFlashTimer.restart()
   }
 
-  // The remembered two-step method is not a preference anybody set, so it is
-  // written without the settings screen's "Saved" flash -- it is a note the
-  // login leaves for the next one, and it has no row to flash next to.
+  // For internal notes like the remembered two-step method: no "Saved" flash.
   function writeSettingQuietly(key, value, type) {
     settingWriteProc.command = Model.settingWriteCommand(key, value, type)
     settingWriteProc.running = true
@@ -3540,9 +3666,8 @@ Item {
     if (next) writeSettingQuietly("twoFactorMethods", next, "json")
   }
 
-  // Read back through the same properties the plugin actually runs on, so the
-  // settings screen can never show a different value than the one in effect.
-  // (setting() alone would miss the manifest defaults for unset keys.)
+  // Read through the properties actually in effect (setting() alone would
+  // miss manifest defaults).
   function settingValue(entry) {
     if (!entry) return 0
     switch (entry.key) {
@@ -3568,21 +3693,21 @@ Item {
 
   function refreshFingerprintAvailability() {
     checkDependencies()
-    // FIDO2 readiness comes from its own probe, run here so the setup form
-    // opens on the right branch rather than flipping once the probe answers.
+    // Probe now so the setup form opens on the right branch.
     fidoUnlocker.refresh()
   }
 
   function onFingerprintStoredChecked(raw) {
-    fingerprintStored = String(raw || "").trim() === "yes"
+    legacyFingerprintStored = String(raw || "").trim() === "yes"
+    recomputeFingerprintStored()
+    maybeMigrateLegacyFingerprint()
     if (sshAuthSurfaceActive && status === "locked") armPresenceUnlock()
   }
 
   function startFingerprintUnlock() {
     if (!fingerprintReady || status !== "locked" || isUnlocking) return
     if (fingerprintScanning || fingerprintPam.active) return
-    // Release rather than cancel: the key holds its request regardless, and
-    // keeping the conversation lets a return to the key adopt it.
+    // Release, not cancel: a return to the key can adopt its request.
     fidoUnlocker.releaseSurface()
     if (!userName) {
       fingerprintError = "Cannot determine current user for fingerprint verification"
@@ -3616,6 +3741,10 @@ Item {
       fingerprintAuthorized = true
       // The button under this says "Unlocking..." on its own now.
       fingerprintMessage = "󰈷  Fingerprint verified"
+      if (quickUnlockAvailable && accountId && envelopeSummary && envelopeSummary.fingerprint) {
+        openEnvelopeForFingerprint()
+        return
+      }
       if (!keyringLookupMasterProc.running) {
         keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
         keyringLookupMasterProc.running = true
@@ -3629,6 +3758,33 @@ Item {
     }
   }
 
+  // After PAM success, via the envelope's fingerprint wrap, falling back to
+  // the legacy entry until it is migrated.
+  function openEnvelopeForFingerprint() {
+    queueEnvelopeJob({
+      command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "fingerprint" }),
+      secretOutput: true,
+      onDone: function(code, out) {
+        if (code === 0 && out) {
+          root.fingerprintFromEnvelope = true
+          root.onFingerprintPasswordRetrieved(out)
+          return
+        }
+        var E = Model.envelopeExitCodes()
+        if ((code === 7 || code === E.absent) && root.legacyFingerprintStored
+            && !keyringLookupMasterProc.running) {
+          keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
+          keyringLookupMasterProc.running = true
+          return
+        }
+        root.fingerprintAuthorized = false
+        root.fingerprintMessage = ""
+        root.fingerprintError = "Could not read the stored password. Unlock with your master password."
+        root.refreshEnvelope()
+      }
+    })
+  }
+
   // Only ever called after PamResult.Success.
   function onFingerprintPasswordRetrieved(raw) {
     if (!fingerprintAuthorized || !sshAuthSurfaceActive || status !== "locked") {
@@ -3637,8 +3793,7 @@ Item {
       return
     }
     fingerprintAuthorized = false
-    // The keyring command removes secret-tool's output newline. Do not trim
-    // here: spaces at either end can be part of the actual master password.
+    // Not trimmed: edge spaces can be part of the password.
     var pw = String(raw || "")
     if (!pw) {
       fingerprintStored = false
@@ -3650,8 +3805,7 @@ Item {
     unlockVaultWithPassword(pw)
   }
 
-  // Enrolling asks for the master password up front, the same way setting a
-  // PIN does, rather than silently capturing it on some later unlock.
+  // Enrolling asks for the master password up front, like PIN setup.
   function beginFingerprintSetup() {
     fpSetupMaster = ""
     fpError = ""
@@ -3660,62 +3814,61 @@ Item {
   }
 
   function abandonFingerprintSetup() {
-    var active = fpSetupActive
-    if (active && keyringStoreMasterProc.running) invalidateEpochOperation("masterStore")
+    // A wrap still being written is removed when it lands.
+    if (fpBusy) invalidateEpochOperation("fingerprintAdd")
     fpSetupActive = false
     fpBusy = false
     fpSetupMaster = ""
-    if (active) masterToStore = ""
   }
 
+  // The typed master password must open the envelope; a fingerprint wrap is
+  // added. Nothing typed is stored.
   function submitFingerprintSetup() {
-    if (fpBusy || keyringStoreMasterProc.running) return
+    if (fpBusy) return
+    if (!quickUnlockAvailable) {
+      fpError = quickUnlockUnavailableReason
+      return
+    }
     if (!fpSetupMaster) {
-      fpError = "Master password is required to enable fingerprint unlock"
+      fpError = "Confirm your master password to enable fingerprint unlock"
       return
     }
     fpError = ""
     fpBusy = true
     fpSetupActive = true
-    masterToStore = fpSetupMaster
-    beginEpochOperation("masterStore")
-    keyringStoreMasterProc.running = true
-  }
-
-  function onMasterPasswordStored(exitCode) {
-    masterToStore = ""
-    pendingUnlockPassword = ""
-    if (epochOperationIsStale("masterStore")) {
-      fpSetupActive = false
-      fpBusy = false
-      fpSetupMaster = ""
-      fingerprintStored = false
-      requestMasterCredentialClear()
-      return
-    }
-    fingerprintStored = (exitCode === 0)
-
-    if (fpSetupActive) {
-      fpSetupActive = false
-      fpBusy = false
-      fpSetupMaster = ""
-      if (exitCode !== 0) {
-        fpError = "Could not save the master password. Is the OS keyring available?"
+    var typed = fpSetupMaster
+    fpSetupMaster = ""
+    beginEpochOperation("fingerprintAdd")
+    addQuickUnlockMethod(typed, { kind: "add-fingerprint" }, null, function(ok, why) {
+      typed = ""
+      root.fpBusy = false
+      // Stale by the time it landed: remove the unwanted wrap.
+      if (root.epochOperationIsStale("fingerprintAdd") || !root.fpSetupActive) {
+        root.fpSetupActive = false
+        if (ok) root.removeQuickUnlockMethod({ kind: "remove", method: "fingerprint" })
         return
       }
-      writeSetting("fingerprintUnlock", true, "bool")
-      flashNotification("Fingerprint unlock enabled")
-      currentScreen = "settings"
-      return
-    }
-
-    if (exitCode !== 0) {
-      errorMessage = "Could not save master password to the OS keyring, so fingerprint unlock is unavailable."
-    }
+      root.fpSetupActive = false
+      if (!ok) {
+        root.fpError = root.quickUnlockErrorText(why, "Could not enable fingerprint unlock. Is the OS keyring available?")
+        return
+      }
+      // The plaintext entry, if an older version left one, is superseded.
+      root.legacyFingerprintStored = false
+      root.requestMasterCredentialClear()
+      root.recomputeFingerprintStored()
+      root.writeSetting("fingerprintUnlock", true, "bool")
+      root.flashNotification("Fingerprint unlock enabled")
+      root.currentScreen = "settings"
+    })
   }
 
   function forgetFingerprintUnlock() {
     requestMasterCredentialClear()
+    legacyFingerprintStored = false
+    if (envelopeSummary && envelopeSummary.fingerprint) {
+      removeQuickUnlockMethod({ kind: "remove", method: "fingerprint" })
+    }
     fingerprintStored = false
     cancelFingerprintUnlock()
     fingerprintMessage = ""
@@ -3728,10 +3881,8 @@ Item {
       cancelFingerprintUnlock()
       fingerprintMessage = ""
       fingerprintError = ""
-      // Not `if (fingerprintStored)`. That flag is false whenever the reader
-      // or fprintd is missing, which says nothing about whether the master
-      // password is still sitting in the keyring -- and turning the feature
-      // off is precisely when it must not be.
+      // Unconditional: fingerprintStored also goes false when the reader or
+      // fprintd is missing, and a way in may still be stored.
       forgetFingerprintUnlock()
     } else {
       refreshFingerprintAvailability()
@@ -3739,17 +3890,14 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // FIDO2 Unlock
+  // FIDO2 unlock
   // -------------------------------------------------------------------------
   //
-  // FidoUnlock.qml owns the whole gate -- its PAM stack, its probe, its
-  // keyring entry and the setup form. These are the names the locked screen and
-  // the settings row use, kept parallel to the fingerprint's so the two methods
-  // read the same way from the outside (and so both halves of the settings
-  // screen can dispatch on a single action name).
+  // FidoUnlock.qml owns the probe, the key request and the setup form; these
+  // names parallel the fingerprint's for the lock screen and settings.
 
-  // One gate at a time: two armed conversations mean two devices waiting, and
-  // whichever answers second is a touch given to nothing.
+  // One presence method at a time: a second would wait for a touch that goes
+  // nowhere.
   function startFidoUnlock() {
     cancelFingerprintUnlock()
     fidoUnlocker.startUnlock()
@@ -3762,26 +3910,29 @@ Item {
   function runFidoSetup() { fidoUnlocker.runOmarchySetup() }
   function forgetFidoUnlock() { fidoUnlocker.forget("") }
 
-  // Which presence gate arms when the vault needs the screen: the FIDO2 key
-  // when one is plugged in and ready, the reader otherwise. Both buttons remain
-  // available either way -- this only decides which is already waiting.
+  // Arm the FIDO2 key if one is ready, else the reader; both stay offered.
   function armPresenceUnlock() {
     if (fidoReady) {
       startFidoUnlock()
       return
     }
-    // A key plugged in since the last probe is not ready yet as far as this
-    // knows, and the answer arrives too late to choose from. Ask now: the
-    // probe arms the key itself when it lands on a locked vault.
+    // Re-probe: a key plugged in since the last probe arms itself when the
+    // answer lands.
     if (fidoUnlock) fidoUnlocker.refresh()
     startFingerprintUnlock()
   }
 
   // -------------------------------------------------------------------------
-  // Vault Unlock & Lock
+  // Unlock and lock
   // -------------------------------------------------------------------------
 
   function unlockVault() {
+    // No `bw unlock` is waiting until status says locked (it is "checking"
+    // for a few seconds after a start); the typed text is kept.
+    if (status !== "locked") {
+      errorMessage = "Still checking the vault. Try again in a moment."
+      return
+    }
     pendingUnlockFrom = ""
     unlockVaultWithPassword(masterPassword)
   }
@@ -3796,9 +3947,8 @@ Item {
     cancelFidoUnlock()
     errorMessage = ""
     isUnlocking = true
-    // Kept only until the unlock result is known; cleared on both paths below.
-    // The short-lived FIFO writer reads it as BW_PASSWORD. unlockProc was
-    // already bootstrapping while the user typed and never receives it.
+    // Held until the result; the FIFO writer reads it as BW_PASSWORD (the
+    // prewarmed unlockProc never sees it).
     pendingUnlockPassword = p
     prepareUnlock()
     unlockSubmitted = true
@@ -3811,11 +3961,28 @@ Item {
     var err = String(stderrText || "").trim()
 
     if (exitCode === 0 && out) {
+      fingerprintFromEnvelope = false
       onUnlockSuccess(out)
     } else {
-      pendingUnlockPassword = ""
-      // A stored secret the vault no longer accepts is useless: drop it rather
-      // than fail on every open, and say which one went stale.
+      var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
+        || (pendingUnlockFrom === "pin" && pinFromEnvelope)
+        || (pendingUnlockFrom === "fido" && fidoFromEnvelope)
+      if (!fromEnvelope) pendingUnlockPassword = ""
+      pendingPinForMigration = ""
+      // A stored secret the vault rejects: say which method went stale.
+      if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
+        // Changed elsewhere: keep the method and remember the old password so
+        // the next typed unlock re-seals the envelope.
+        pendingUnlockFrom = ""
+        fingerprintFromEnvelope = false
+        rotationOldPassword = pendingUnlockPassword
+        pendingUnlockPassword = ""
+        fingerprintMessage = "Your master password was changed. Unlock with the new one once; fingerprint unlock will follow it."
+        errorMessage = ""
+        focusAppropriateField()
+        Qt.callLater(prepareUnlock)
+        return
+      }
       if (pendingUnlockFrom === "fingerprint") {
         pendingUnlockFrom = ""
         requestMasterCredentialClear()
@@ -3826,9 +3993,33 @@ Item {
         Qt.callLater(prepareUnlock)
         return
       }
+      if (pendingUnlockFrom === "fido" && fidoFromEnvelope) {
+        // Changed elsewhere, as for fingerprint.
+        pendingUnlockFrom = ""
+        fidoFromEnvelope = false
+        rotationOldPassword = pendingUnlockPassword
+        pendingUnlockPassword = ""
+        fidoUnlocker.failure = "Your master password was changed. Unlock with the new one once; FIDO2 unlock will follow it."
+        errorMessage = ""
+        focusAppropriateField()
+        Qt.callLater(prepareUnlock)
+        return
+      }
       if (pendingUnlockFrom === "fido") {
         pendingUnlockFrom = ""
         fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
+        errorMessage = ""
+        focusAppropriateField()
+        Qt.callLater(prepareUnlock)
+        return
+      }
+      if (pendingUnlockFrom === "pin" && pinFromEnvelope) {
+        // Changed elsewhere, as for fingerprint.
+        pendingUnlockFrom = ""
+        pinFromEnvelope = false
+        rotationOldPassword = pendingUnlockPassword
+        pendingUnlockPassword = ""
+        pinUnlockError = "Your master password was changed. Unlock with the new one once; PIN unlock will follow it."
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
@@ -3857,23 +4048,7 @@ Item {
   function onUnlockSuccess(rawSession) {
     var s = Model.extractSessionToken(rawSession)
     masterPassword = ""
-    loginPassword = ""
-    loginClientId = ""
-    loginClientSecret = ""
-    login2faCode = ""
-    show2faField = false
-    loginDeviceVerification = false
-    loginAttemptHadCode = false
-    show2faMethodPicker = false
-    login2faMethodConfirmed = false
-    login2faMethod = rememberedTwoFactorMethod
-    loginAttemptMethod = -1
-    showDeviceCodeField = false
-    loginDeviceCode = ""
-    deviceVerificationAttempt = false
-    deviceVerificationPending = false
-    secondFactorStartedAt = 0
-    loginPasswordRetryUsed = false
+    clearLoginAttempt()
     initialSyncAttempted = false
     syncLoginFieldsToState()
     isUnlocking = false
@@ -3891,18 +4066,20 @@ Item {
 
     storeCurrentSession()
 
-    // Opting in stores the master password so a finger can stand in for it later.
-    // Keep an existing enrolment current after a master password change. It no
-    // longer creates one -- that is what the setup form is for.
-    if (fingerprintUnlock && fingerprintAvailable && fingerprintStored
-        && pendingUnlockPassword && pendingUnlockFrom === ""
-        && !keyringStoreMasterProc.running) {
-      masterToStore = pendingUnlockPassword
-      beginEpochOperation("masterStore")
-      keyringStoreMasterProc.running = true
+    // A typed password `bw` accepted is the only source of the stored one;
+    // this also re-seals after a change made elsewhere.
+    if (pendingUnlockPassword && pendingUnlockFrom === "") {
+      storeAcceptedMasterPassword(pendingUnlockPassword)
     } else {
-      pendingUnlockPassword = ""
+      rotationOldPassword = ""
     }
+    if (pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword) {
+      migrateLegacyPin(pendingUnlockPassword, pendingPinForMigration)
+    }
+    pendingPinForMigration = ""
+    pinFromEnvelope = false
+    fidoFromEnvelope = false
+    pendingUnlockPassword = ""
     pendingUnlockFrom = ""
     pinEntry = ""
     pinAttempts = 0
@@ -3920,17 +4097,14 @@ Item {
     closeFilterGroup()
     cancelAuthPrewarm()
     clearClipboard()
-    // Before bw lock is launched, so the companion's deny transition is not
-    // sequenced behind it. The panel's own lock never waits on the answer.
+    // Before `bw lock`, so the companion denies first; never waited on.
     applySshAgentLifecycle("lock")
     if (session) {
       lockProc.command = Model.lockCommand()
       lockProc.running = true
     }
-    // Not `if (rememberSession)`. The setting says whether to write a token,
-    // not whether one is there: turning it off after a session was remembered
-    // used to mean the lock skipped the erase and left the token behind.
-    // Clearing an entry that was never written is a no-op nobody reads.
+    // Unconditional: the setting may have been turned off after a session
+    // was stored. Clearing nothing is harmless.
     requestSessionCredentialClear()
 
     dropVaultState()
@@ -3940,9 +4114,7 @@ Item {
     fingerprintError = ""
     flashNotification("Vault locked")
     focusAppropriateField()
-    // Whichever gate the lock screen is about to offer, not the reader every
-    // time: locking from an open panel with a key plugged in used to arm the
-    // fingerprint, so a touch went to the focused field instead of to PAM.
+    // Arm whichever method the lock screen offers.
     if (sshAuthSurfaceActive) armPresenceUnlock()
   }
 
@@ -3952,10 +4124,8 @@ Item {
       || sends.length > 0 || itemPayloadJson !== "" || sendPayloadJson !== ""
   }
 
-  // One local purge for every way an open vault stops being usable. Keeping
-  // this separate from the `bw lock` and keyring side effects lets a status
-  // transition fail closed without pretending that a remote/local CLI error
-  // was a successful Bitwarden lock command.
+  // The local purge for every way an open vault becomes unusable, separate
+  // from `bw lock` and the keyring so a failed status can fail closed.
   function dropVaultState() {
     initialSyncAttempted = false
     pinUnlockSubmitted = false
@@ -3983,27 +4153,7 @@ Item {
     detailItem = null
     revealedFields = ({})
     attachmentSaved = ({})
-    formIsEditing = false
-    formItemId = ""
-    formTypeCode = 1
-    clearTypeFields()
-    formName = ""
-    formUsername = ""
-    formUri = ""
-    formNotes = ""
-    formCustomFields = []
-    formNewCustomFieldType = 0
-    formNewCustomFieldName = ""
-    formCustomFieldLabelDraft = ""
-    formFavorite = false
-    formOrgId = ""
-    formFolderId = ""
-    formPicker = ""
-    formCollections = []
-    formCollectionIds = []
-    formCollectionsLoading = false
-    newFolderName = ""
-    creatingFolder = false
+    resetItemForm()
     totpFollowupActive = false
     isLoading = false
     isUnlocking = false
@@ -4020,14 +4170,9 @@ Item {
     dropVaultSecrets()
   }
 
-  // A locked vault means the panel is holding nothing out of it, and nothing
-  // that would open it again. detailPassword and liveTotp were always dropped
-  // here; the rest were not, and each of them is the same kind of thing -- a
-  // generated password nobody copied, an item or Send form left mid-compose,
-  // the payload JSON on its way to bw, the master password typed into whichever
-  // setup form was open. The vault relocks after fifteen idle minutes and the
-  // shell process lives for the whole desktop session, so a property that
-  // survives a lock survives everything.
+  // A locked vault holds nothing from the vault and nothing that would reopen
+  // it: generated values, half-typed forms, payload JSON, setup passwords. The
+  // shell lives all session, so anything surviving a lock survives everything.
   function dropVaultSecrets() {
     detailPassword = ""
     liveTotp = ""
@@ -4050,43 +4195,21 @@ Item {
     sendPayloadJson = ""
     sendFormText = ""
     sendFormPassword = ""
-    loginPassword = ""
-    login2faCode = ""
-    show2faField = false
-    loginDeviceVerification = false
-    loginAttemptHadCode = false
-    show2faMethodPicker = false
-    login2faMethodConfirmed = false
-    login2faMethod = rememberedTwoFactorMethod
-    loginAttemptMethod = -1
-    showDeviceCodeField = false
-    loginDeviceCode = ""
-    deviceVerificationAttempt = false
-    deviceVerificationPending = false
-    secondFactorStartedAt = 0
-    loginPasswordRetryUsed = false
-    loginClientId = ""
-    loginClientSecret = ""
+    clearLoginAttempt()
     syncLoginFieldsToState()
     pinEntry = ""
     pinSetupPin = ""
     pinSetupConfirm = ""
     pinSetupMaster = ""
     fpSetupMaster = ""
-    masterToStore = ""
     pendingAssociationsJson = ""
     fidoUnlocker.dropSecrets()
     scrubSecretBuffers()
   }
 
-  // Emptying those properties leaves the values they were copied out of still
-  // sitting in the collectors that read them, which is the same residue one
-  // step upstream. See the collector-scrubbing note in BitwardenModel.js for
-  // why running a command that prints nothing is the way to clear one.
-  //
-  // Built on demand rather than held as a property: these ids are declared
-  // below this point, and a list bound at creation time would be a list of
-  // undefineds.
+  // The collectors those values came from still hold them; they are scrubbed
+  // too (see "Collector scrubbing" in BitwardenModel.js). Built on demand:
+  // these ids are declared further down.
   function secretProcesses() {
     return [
       statusProc, sessionHandoffProc, keyringLookupProc, pinUnlockProc, keyringLookupMasterProc,
@@ -4104,10 +4227,7 @@ Item {
     if (scrubPending.length) scrubRetry.restart()
   }
 
-  // A process still running when the vault locked cannot be scrubbed yet --
-  // its buffer is in the middle of being written, and taking its command away
-  // would abandon a read someone is still waiting on. It stays in the queue
-  // and the retry comes back for it.
+  // Running processes are skipped (their read is still wanted) and retried.
   function scrubStep() {
     var pass = Model.scrubPass(scrubPending)
     for (var i = 0; i < pass.start.length; i++) {
@@ -4117,10 +4237,8 @@ Item {
     scrubPending = pass.waiting
   }
 
-  // Complete a scrub before its handler can reuse the same Process. What
-  // arrives from a scrub is an empty string and exit status zero, which reads
-  // as a successful login, empty vault or saved item unless every handler asks
-  // here first.
+  // Must be asked first by every handler: a scrub's empty, zero-exit result
+  // would otherwise read as a success.
   function finishScrubRun(proc) {
     if (!Model.isScrubCommand(proc.command)) return false
     scrubPending = Model.finishScrub(scrubPending, proc)
@@ -4131,9 +4249,8 @@ Item {
   function clearProcessCollectorSoon(proc) {
     Qt.callLater(function() {
       if (proc.running) return
-      // Deferred by a callLater, so a submit can arrive between the schedule
-      // and the run. Taking the process here would make that submit wait on
-      // the scrub instead of on its own login.
+      // A submit can land between scheduling and running; do not take its
+      // process for the scrub.
       if (proc === loginProc
           && (loginSubmitAfterPrewarmStop || loginPrepareAfterPrewarmStop
               || deviceVerificationPending || loginSubmitted)) return
@@ -4143,15 +4260,12 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // Vault Data Operations
+  // Vault data
   // -------------------------------------------------------------------------
 
-  // Stamped on a reader as it starts, and checked again where its answer
-  // arrives. A `bw` already in flight when the vault locks cannot be called
-  // back -- it is past the point where the session mattered -- so the only
-  // place left to refuse its answer is the completion handler. See the Vault
-  // generation section of BitwardenModel.js for what that answer costs when
-  // nobody refuses it.
+  // Stamped when a reader starts and checked when its answer arrives: a `bw`
+  // in flight at lock time cannot be recalled, only refused (see "Vault
+  // generation" in BitwardenModel.js).
   function beginEpochOperation(name) {
     readEpochs[name] = vaultEpoch
   }
@@ -4172,21 +4286,16 @@ Item {
     return epochOperationIsStale(name) || !session
   }
 
-  // The first post-authentication process is always the item list. Organization
-  // and folder metadata each need another bw bootstrap, so they are scheduled
-  // only after items have reached the model and had time to paint.
+  // Items first; organizations and folders (each another bw start) only after
+  // the list has painted.
   function beginInitialVaultLoad(showSpinner, forceMetadata) {
     metadataLoadPending = true
     metadataForceRefresh = forceMetadata === true
     loadItems(showSpinner)
   }
 
-  // Open-time load: skip the CLI entirely when the in-memory vault is fresh.
-  // Stale-while-revalidate. `bw list items` is a CLI bootstrap plus a full
-  // vault decrypt, so blocking the panel on it means a spinner on every open
-  // once the cache ages out. Show what we already have immediately, refresh
-  // behind it, and swap the list in when it lands. The spinner is only for
-  // the case where there is genuinely nothing to show yet.
+  // Stale-while-revalidate: show what is in memory at once and refresh behind
+  // it; the spinner is only for when there is nothing to show.
   function ensureItemsFresh() {
     var haveItems = items.length > 0
     var stale = (Date.now() - itemsLoadedAt) >= itemsFreshMs
@@ -4200,8 +4309,7 @@ Item {
     beginInitialVaultLoad(!haveItems, false)
   }
 
-  // `showSpinner` defaults to true, so existing callers are unchanged; a
-  // background revalidation passes false and refreshes without the UI moving.
+  // `showSpinner` defaults to true; background refreshes pass false.
   function loadItems(showSpinner) {
     if (!session) return
     if (showSpinner !== false) isLoading = true
@@ -4215,9 +4323,8 @@ Item {
     startVaultListRead(false)
   }
 
-  // The one place the item read is launched, so the agent branch and its
-  // retry-without-it cannot drift apart. `retrying` is the second attempt
-  // after a fan-out read failed; it never carries the branch.
+  // The only launcher of the item read, with or without the agent branch.
+  // `retrying` (after a failed fan-out) never carries the branch.
   function startVaultListRead(retrying) {
     var useAgent = !retrying && sshAgentGateOpen && Model.isValidLoadId(sshAgentNextLoadId)
     if (useAgent) {
@@ -4236,9 +4343,7 @@ Item {
     listProc.running = true
   }
 
-  // The nonce reaches `jq` through the environment rather than argv, because
-  // /proc/<pid>/cmdline is world-readable and the nonce's whole purpose is
-  // being unguessable by another process running as this user.
+  // The nonce goes to jq in the environment, not argv.
   function vaultListEnv(loadId) {
     var env = root.bwEnv()
     env[Model.loadIdEnvVar()] = loadId !== "" ? loadId : null
@@ -4258,8 +4363,7 @@ Item {
       flashNotification("Vault synced with Bitwarden")
     }
     if (metadataLoadPending) deferredMetadataTimer.restart()
-    // The first read of a session usually beats the helper's handshake, so it
-    // carries no keys. Now that it has landed, check whether one is owed.
+    // The first read usually beat the handshake; see whether a load is owed.
     maybeStartupLoad()
   }
 
@@ -4275,8 +4379,7 @@ Item {
       return
     }
 
-    // The optional feature is never allowed to cost the user their item list.
-    // One retry, without the branch, before anything is reported as an error.
+    // The agent must never cost the item list: retry once without it.
     if (hadAgentBranch && !listRetriedWithoutAgent && !vaultReadIsStale("items")) {
       listRetriedWithoutAgent = true
       beginVaultRead("items")
@@ -4298,9 +4401,7 @@ Item {
     }
   }
 
-  // Each of these is its own `bw` invocation, and organizations and folders
-  // change rarely -- new ones arrive through this panel, which invalidates
-  // them explicitly. `force` is for exactly that case.
+  // Rarely change; this panel's own changes pass `force`.
   function loadOrganizations(force) {
     if (!session) return
     if (!force && organizations.length > 0 && (Date.now() - orgsLoadedAt) < metaFreshMs) return
@@ -4342,8 +4443,7 @@ Item {
       return
     }
     openFilterGroup = group
-    // Start on whichever option is currently active, so Enter is a no-op
-    // rather than a surprise.
+    // Start on the active option, so Enter changes nothing.
     var opts = filterOptions(group)
     filterOptionIndex = 0
     for (var i = 0; i < opts.length; i++) {
@@ -4351,8 +4451,7 @@ Item {
     }
   }
 
-  // Any action that is not part of the drawer closes it, so it never lingers
-  // over the results the user just filtered down to.
+  // Any other action closes the drawer.
   function closeFilterGroup() {
     if (openFilterGroup !== "") openFilterGroup = ""
   }
@@ -4369,8 +4468,7 @@ Item {
     applyFilterOption(openFilterGroup, opts[filterOptionIndex].id)
   }
 
-  // Labels for the collapsed buttons, so the current filter is readable
-  // without opening anything.
+  // Labels for the collapsed filter buttons.
   function folderFilterLabel() {
     if (selectedFolder === "all") return "All"
     if (selectedFolder === "none") return "Unfiled"
@@ -4393,8 +4491,7 @@ Item {
     return "All"
   }
 
-  // Option rows for whichever group is open, in one shape so the three lists
-  // render identically.
+  // Option rows for the open group, in one shape for all three lists.
   function filterOptions(group) {
     var out = []
     var i
@@ -4428,17 +4525,11 @@ Item {
     formPicker = (formPicker === which) ? "" : which
   }
 
-  // What Escape does, wherever it is pressed. Kept here rather than inline in
-  // the key handler because it has two callers: PanelKeyCatcher's
-  // closeRequested, and the shortcut interceptor -- the catcher goes `blocked`
-  // on every screen with a text field, which used to take Escape down with it.
-  //
-  // Innermost thing first: a drawer or picker closes before the screen it is
-  // on, and a screen goes back before the panel closes.
+  // Escape, from the key catcher and the shortcut interceptor alike (the
+  // catcher is blocked on screens with a text field). Innermost first: a
+  // drawer or picker, then the screen, then the panel.
   function handleEscape() {
-    // Ahead of every other screen: a signing request is a question with a
-    // client blocked on the answer, so dismissing it has to mean "no" rather
-    // than "later".
+    // A signing request first: dismissing it means "no".
     if (currentScreen === "sshApproval" || sshUnlockRequest) {
       denySshRequest()
       return
@@ -4455,15 +4546,13 @@ Item {
       if (sendMode === "create") {
         sendError = ""
         sendMode = "list"
-        // Leaving the composer does not change the screen, so nothing else
-        // takes focus off its (now hidden) name field.
+        // The screen does not change, so re-home focus from the hidden field.
         restoreScreenFocus()
       } else {
         currentScreen = "main"
       }
     } else if (currentScreen === "generator") {
-      // Back to the item form when that is where this came from, leaving
-      // the password field as it was.
+      // Back to the item form if opened from it.
       closeGenerator()
     } else if (currentScreen === "fingerprint") {
       fpError = ""
@@ -4480,9 +4569,7 @@ Item {
     } else if (currentScreen === "setup") {
       dismissSetup()
     } else if (currentScreen === "edit") {
-      // Editing is abandoned, not saved -- the form is scratch space until
-      // Save, and Escape is how you throw it away. Back where the form was
-      // opened from, which is what the form's own Cancel button does.
+      // Escape discards the form, like its Cancel button.
       currentScreen = formIsEditing ? "detail" : "main"
     } else if (currentScreen === "detail") {
       currentScreen = "main"
@@ -4491,22 +4578,13 @@ Item {
     }
   }
 
-  // Qt does not clear active focus when an item is hidden, so leaving a screen
-  // whose field had focus leaves that field owning the keyboard from behind
-  // whatever replaced it -- which is how Escape on the item form reached the
-  // search box and closed the panel. Re-home focus whenever the screen
-  // changes, and the stale owner goes with it.
+  // Qt keeps focus on hidden items, so a field on the screen just left would
+  // keep the keyboard. Re-home focus on every screen change.
   onCurrentScreenChanged: {
-    // The server lives as long as the screen that needs it and no longer. A
-    // loopback port has no authentication and every account on the machine can
-    // reach it, and `bw serve` answers /status with the account email and user
-    // id whether the vault is locked or not. Holding that open for hours to
-    // save a second on a screen visited for a few is the wrong trade.
+    // Only while its screen is up: the port is open to every local account,
+    // and `bw serve` reports the account email even when locked.
     if (currentScreen !== "generator") stopGeneratorServe()
-    // Both setup forms ask for the master password, and both used to keep it
-    // for the rest of the shell's life: Cancel and Escape only reset the error
-    // line. Leaving the form is the answer either way, so the clearing lives
-    // here rather than at each of the ways out.
+    // Leaving a setup form drops its typed master password.
     if (currentScreen !== "pin") abandonPinSetup()
     if (currentScreen !== "fingerprint") abandonFingerprintSetup()
     if (currentScreen !== "fido") fidoUnlocker.abandonSetup()
@@ -4533,8 +4611,7 @@ Item {
     formPicker = ""
   }
 
-  // Changing owner invalidates the collection choice: collections belong to a
-  // single organization, and a personal item cannot have any.
+  // Collections belong to one organization; changing owner resets them.
   function setFormOrganization(id) {
     formOrgId = id
     formPicker = ""
@@ -4611,8 +4688,7 @@ Item {
     var created = null
     try { created = JSON.parse(stdoutText) } catch (e) { created = null }
     newFolderName = ""
-    // Creating a folder from the item form is only ever a prelude to filing
-    // the item into it, so select it straight away.
+    // Created from the item form, so file the item in it.
     if (created && created.id) formFolderId = String(created.id)
     flashNotification("Folder created")
     loadFolders(true)
@@ -4656,9 +4732,7 @@ Item {
     attachmentSaved = ({})
     currentScreen = "detail"
 
-    // The list already fetched the whole item, so render from that rather than
-    // spending a second CLI round trip on data we are holding. Only fall back
-    // to `bw get item` if this item somehow arrived without its raw object.
+    // Render from the list's raw object; `bw get item` only as a fallback.
     var detail = item.rawObject ? Model.itemDetailFromObject(item.rawObject) : null
     if (detail) {
       isLoading = false
@@ -4676,8 +4750,7 @@ Item {
       getItemProc.running = true
     }
 
-    // The TOTP code is time-based, so it is the one thing the list cannot
-    // carry. It loads alongside rather than in front of the detail view.
+    // The TOTP is time-based, so it is fetched alongside.
     if (item.hasTotp) {
       fetchTotp(item.id)
     }
@@ -4703,9 +4776,8 @@ Item {
     attachmentQueue = []
     attachmentBusyId = ""
     invalidateEpochOperation("attachment")
-    // A download holds decrypted bytes and the session it inherited at start.
-    // The supervised process group removes its private staging directory and
-    // cannot commit a file after the vault or panel has closed.
+    // Its process group cleans up its staging dir and commits nothing after
+    // a lock or close.
     if (attachmentProc.running) attachmentProc.running = false
   }
 
@@ -4718,8 +4790,7 @@ Item {
     resetAutoLockTimer()
     errorMessage = ""
     var next = attachmentQueue.slice()
-    // The declared size travels with the job so the saver can refuse an
-    // oversized attachment before it starts, and check the disk has room.
+    // The declared size lets the saver refuse early and check free space.
     next.push({ id: att.id, fileName: att.fileName, itemId: detailItem.id, size: att.size })
     attachmentQueue = next
     pumpAttachmentQueue()
@@ -4755,8 +4826,7 @@ Item {
     var path = String(savedPath || "").trim()
 
     if (exitCode !== 0 || !path) {
-      // bw's own message is the useful one -- "Not found." for an attachment
-      // that has since been deleted, or a permission error on the directory.
+      // bw's own message is the useful one ("Not found.", permissions).
       var err = String(stderrText || "").trim().split("\n")[0]
       errorMessage = err ? ("Could not save the attachment: " + err)
                          : "Could not save the attachment"
@@ -4838,9 +4908,8 @@ Item {
     totpQueuedItemId = ""
     totpQueuedEpoch = -1
     if (queued) {
-      // Reserve this Process before deferring its restart. Without the flag, a
-      // newer request can start in this one-event-loop gap and then be
-      // overwritten by the older queued request.
+      // Reserve the Process before the deferred restart, so a newer request
+      // cannot slip in and be overwritten.
       totpRestartPending = true
       totpRequestItemId = queued
       Qt.callLater(function() {
@@ -4870,7 +4939,7 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // CRUD Operations (Add, Edit, Delete)
+  // Create, edit, delete
   // -------------------------------------------------------------------------
 
   function customFieldTypeLabel(type) {
@@ -4886,9 +4955,8 @@ Item {
     return value === true || String(value).toLowerCase() === "true"
   }
 
-  // These ids are Bitwarden's LinkedIdType values. Secure Notes intentionally
-  // return no choices, matching the browser extension: there is no native
-  // username, card, or identity field for a note to point at.
+  // Bitwarden LinkedIdType values. Notes have none, as in the browser
+  // extension.
   function customFieldLinkedOptions(typeCode) {
     if (Number(typeCode) === 1) return [
       { id: 100, label: "Username" }, { id: 101, label: "Password" }
@@ -4966,12 +5034,9 @@ Item {
     formPicker = ""
   }
 
-  // A Repeater may expose an object model row as a delegate-local QVariantMap.
-  // Writing `modelData.value` can therefore update what the row draws without
-  // updating the array saveItemForm later serializes. Always write through the
-  // form's authoritative array. No property-change signal is needed here: the
-  // editor already owns the value it just drew, and avoiding an array reassign
-  // keeps focus stable while the user types.
+  // Write through the form's own array: a Repeater's modelData may be a
+  // delegate-local copy that saveItemForm never sees. No reassignment, so
+  // focus stays put while typing.
   function setFormCustomFieldValue(index, value) {
     if (index < 0 || index >= formCustomFields.length) return
     formCustomFields[index].value = value
@@ -5017,9 +5082,8 @@ Item {
     if (nextType === formTypeCode) return
     formTypeCode = nextType
     formPicker = ""
-    // A linked field belongs to its cipher type. When a new item changes type,
-    // retain its label but reset the link to a valid target; a Secure Note has
-    // no target, so the field becomes ordinary text instead of an invalid link.
+    // On a type change, reset a linked field to a valid target, or to plain
+    // text for a note (which has none).
     var options = customFieldLinkedOptions(nextType)
     if (formNewCustomFieldType === 3 && options.length === 0) formNewCustomFieldType = 0
     var next = copyCustomFieldsForForm(formCustomFields)
@@ -5036,9 +5100,8 @@ Item {
     formCustomFields = next
   }
 
-  // The card or identity boxes, in the shape buildCreatePayload and
-  // buildEditPayload want. Returns null for a login or a note, and null is
-  // exactly what tells buildEditPayload to leave an existing sub-object alone.
+  // Card or identity fields for the payload builders; null for logins and
+  // notes, which tells buildEditPayload to leave the sub-object alone.
   function formTypeFields() {
     if (formTypeCode === 3) {
       return {
@@ -5062,8 +5125,35 @@ Item {
     return null
   }
 
-  // Every card and identity box, emptied. Called wherever the form resets so
-  // a new item never opens wearing the last one's card number.
+  // An empty item form (a new login).
+  function resetItemForm() {
+    formIsEditing = false
+    formItemId = ""
+    formTypeCode = 1
+    clearTypeFields()
+    formName = ""
+    formUsername = ""
+    formPassword = ""
+    formTotp = ""
+    formUri = ""
+    formNotes = ""
+    formCustomFields = []
+    formNewCustomFieldType = 0
+    formNewCustomFieldName = ""
+    formCustomFieldLabelDraft = ""
+    formFavorite = false
+    formOrgId = ""
+    formFolderId = ""
+    formPicker = ""
+    formCollections = []
+    formCollectionIds = []
+    formCollectionsLoading = false
+    newFolderName = ""
+    creatingFolder = false
+    formPasswordRevealed = false
+  }
+
+  // Empty every card and identity field on form reset.
   function clearTypeFields() {
     formCardholderName = ""; formCardBrand = ""; formCardNumber = ""
     formCardExpMonth = ""; formCardExpYear = ""; formCardCode = ""
@@ -5112,35 +5202,15 @@ Item {
 
   function startAddNewItem() {
     closeFilterGroup()
-    formIsEditing = false
-    formItemId = ""
-    formTypeCode = 1
-    clearTypeFields()
-    formName = ""
-    formUsername = ""
-    formPassword = ""
-    formTotp = ""
-    formUri = ""
-    formNotes = ""
-    formCustomFields = []
-    formNewCustomFieldType = 0
-    formNewCustomFieldName = ""
-    formCustomFieldLabelDraft = ""
-    formFavorite = false
+    resetItemForm()
     formOrgId = selectedOrg !== "all" ? selectedOrg : ""
     formFolderId = (selectedFolder !== "all" && selectedFolder !== "none") ? selectedFolder : ""
-    newFolderName = ""
-    formPicker = ""
-    formCollections = []
-    formCollectionIds = []
     if (formOrgId && formOrgId !== "personal") loadOrgCollections(formOrgId)
-    formPasswordRevealed = false
     errorMessage = ""
     currentScreen = "edit"
   }
 
-  // The item form as one object, so a save that fails can be reopened exactly
-  // as it was rather than costing the user everything they typed.
+  // The whole form, so a failed save can be reopened exactly.
   function captureItemForm() {
     return {
       isEditing: formIsEditing, itemId: formItemId, typeCode: formTypeCode,
@@ -5194,8 +5264,7 @@ Item {
       if (item && item.typeCode === 5) errorMessage = "SSH keys are read-only public records"
       return
     }
-    // The vault has not answered about this row yet, and on a create it does
-    // not have an id to edit. Editing it would race the save it is waiting on.
+    // Not saved yet (a create has no id): editing would race the save.
     if (item.pending) {
       errorMessage = "Still saving this item -- one moment"
       return
@@ -5223,9 +5292,7 @@ Item {
     formNewCustomFieldType = 0
     formNewCustomFieldName = ""
     formCustomFieldLabelDraft = ""
-    // The list row carries the parsed card and identity, so an edit opens with
-    // the real values in the boxes rather than blanks that would be written
-    // straight back over them on save.
+    // Open with the real card/identity values, not blanks saved over them.
     loadTypeFields(item)
     if (formOrgId && formOrgId !== "personal") loadOrgCollections(formOrgId)
     formPasswordRevealed = false
@@ -5233,23 +5300,16 @@ Item {
     currentScreen = "edit"
   }
 
-  // A save takes as long as `bw` takes -- a second or two of CLI startup, vault
-  // decryption and a round trip, none of which this plugin can shorten. What it
-  // can do is stop making the user watch. The form closes as soon as the
-  // command is launched and the list shows the item as it will be, marked as
-  // saving, and the authoritative row replaces it when the vault answers.
-  //
-  // One at a time. There is a single process per kind, and starting a second
-  // command on a running one would lose the first; a save while one is in
-  // flight is refused with a reason rather than silently dropped.
+  // The form closes as soon as the save starts; the list shows the item marked
+  // as saving until the vault's answer replaces it. One save at a time (one
+  // process); another is refused with a reason.
   function saveItemForm() {
     if (pendingSave) {
       errorMessage = "Still saving " + pendingSave.name + " -- one moment"
       return
     }
 
-    // Bitwarden refuses an organization item with no collection; say so here
-    // rather than letting the CLI fail after the form is gone.
+    // Catch what the CLI would refuse before the form is gone.
     var problem = Model.validateItemForm(formName, formOrgId, formCollectionIds, formCustomFields)
     if (problem) {
       errorMessage = problem
@@ -5268,8 +5328,7 @@ Item {
     errorMessage = ""
     beginVaultRead("itemSave")
 
-    // An edit keeps the item's id; a create has none until the server assigns
-    // one, so the row carries a provisional id the response swaps out.
+    // A create gets a provisional id until the server assigns one.
     var rowId = editing ? formItemId : Model.pendingItemId(Date.now())
     var optimistic = Model.optimisticItem(payload, rowId)
 
@@ -5277,11 +5336,9 @@ Item {
       id: rowId,
       isCreate: !editing,
       name: String(formName || "Untitled").trim(),
-      // What the list held before, so a failed save can put it back rather
-      // than leaving the panel showing something the vault never accepted.
+      // The list's row before, restored if the save fails.
       previous: editing ? Model.findItemById(items, rowId) : null,
-      // The form as it was, so a failed save can be reopened and retried
-      // instead of costing the user everything they typed.
+      // The form, reopenable if the save fails.
       form: captureItemForm()
     }
 
@@ -5304,9 +5361,7 @@ Item {
 
   function onSaveItemFinished(exitCode, stdoutText, stderrText) {
     isLoading = false
-    // The payload carries the item's password in the clear, the same way a
-    // Send payload does, so it goes the same way the Send one does: as soon as
-    // the process that needed it has exited.
+    // Holds the password in clear; dropped once its process exits.
     itemPayloadJson = ""
 
     var save = pendingSave
@@ -5314,10 +5369,8 @@ Item {
     if (vaultReadIsStale("itemSave")) return
 
     if (exitCode !== 0) {
-      // The vault refused it, so the list must stop showing it as though it
-      // had not. The optimistic row is taken back out -- replaced by what was
-      // there before on an edit, removed entirely on a create -- and what the
-      // user typed is kept so they can reopen it instead of retyping it.
+      // Refused: restore the previous row (or remove a created one) and keep
+      // the form for reopening.
       if (save) {
         items = Model.replaceItemById(items, save.id, save.previous)
         itemsLoadedAt = Date.now()
@@ -5332,16 +5385,8 @@ Item {
 
     flashNotification(save && save.isCreate ? "Item created successfully!" : "Item updated successfully!")
 
-    // The save printed the item the vault now holds, so the list can be
-    // brought up to date from that instead of re-reading and re-decrypting
-    // every other item to learn about this one. On a create the row being
-    // replaced is the provisional one, whose id the server has just assigned.
-    //
-    // Any doubt falls back to the full read. The command prints a marker when
-    // the item was stored but could not be sanitised, and spliceSavedItem
-    // returns null on an envelope it does not recognise; in both cases the
-    // item is in the vault and the list simply has to catch up the slow way.
-    // A list that quietly disagrees with the vault is worse than a slow one.
+    // Update the list from the saved item the command printed. If it was not
+    // sanitized (marker) or not recognised (null), reload the full list.
     var spliced = String(stdoutText).indexOf(Model.savedUnsanitizedMarker()) === 0
       ? null : Model.spliceSavedItem(items, stdoutText, save ? save.id : "")
     if (!spliced) {
@@ -5355,10 +5400,7 @@ Item {
     refreshDerivedFromItems()
   }
 
-  // A delete costs the same second or two of `bw` a save does, and used to
-  // spend it on a frozen detail screen and then spend more of it re-reading
-  // the whole vault to learn about the one row that had gone. The row goes
-  // now and the panel comes back; if the vault refuses, the row returns.
+  // The row disappears at once; if the vault refuses, it comes back.
   function deleteCurrentItem() {
     if (!detailItem || !detailItem.id || detailItem.typeCode === 5) return
     if (detailItem.pending || Model.isPendingItemId(detailItem.id)) {
@@ -5398,14 +5440,12 @@ Item {
     if (vaultReadIsStale("itemDelete")) return
 
     if (exitCode === 0) {
-      // The row is already gone and nothing else about the vault changed, so
-      // there is nothing left to read.
+      // Nothing else changed; no reload needed.
       flashNotification("Item deleted")
       return
     }
 
-    // Still in the vault, so it belongs back in the list. Nothing was typed
-    // here, so putting the row back is the whole of the recovery.
+    // Still in the vault: put the row back.
     if (removal && removal.previous) {
       items = Model.replaceItemById(items, removal.id, removal.previous)
       itemsLoadedAt = Date.now()
@@ -5417,13 +5457,11 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // Filtering & Selection
+  // Filtering and selection
   // -------------------------------------------------------------------------
 
-  // Everything downstream of `items`. Suggestions are derived from the item
-  // list too, so a change to it that only called rebuildFilter() would leave
-  // the suggested rows describing the vault as it was. Both the full load and
-  // a single spliced save come through here so they cannot drift.
+  // Everything derived from `items` (filter and suggestions); every change to
+  // the list comes through here.
   function refreshDerivedFromItems() {
     if (activeWindowData) {
       handleActiveWindowDetected(activeWindowData)
@@ -5432,9 +5470,7 @@ Item {
     }
   }
 
-  // The search box calls this on every keystroke; the rebuild itself waits for
-  // typing to pause. A function rather than the timer, because an id is not
-  // reachable from the views.
+  // Called per keystroke; the rebuild waits for typing to pause.
   function scheduleFilterRebuild() {
     searchDebounceTimer.restart()
   }
@@ -5468,9 +5504,8 @@ Item {
     }
   }
 
-  // What the list says when it has nothing to show. The SSH filter gets its own
-  // answer: a vault that returned no SSH keys is not the same as a server that
-  // never confirmed it can store them, and only the first is worth waiting on.
+  // Empty-list text. For SSH, "no keys" and "server support unconfirmed"
+  // differ.
   function emptyListMessage() {
     if (selectedCategory === "sshKey" && filteredItems.length === 0 && sshCapability
         && sshCapability.state === "unconfirmed") {
@@ -5504,14 +5539,9 @@ Item {
     selectCategory(visibleCategories[nextIndex].id)
   }
 
-  // Every main-screen shortcut in one place. Reached two ways: bare letters
-  // when the list has focus, and Alt+letter from inside the search box, where
-  // a bare letter is search text and must stay that way.
-  // Alt+letter. Same table as the bare letters, except Alt+s opens Sends --
-  // Send has no bare letter of its own, and plain s is already Settings.
+  // Alt+letter, from inside the search box (bare letters are search text).
+  // Same table as the bare letters, except Alt+s is Sends and Alt+, Settings.
   function runAltShortcut(lower) {
-    // Alt+s is Send, which has no bare letter of its own, so Settings keeps
-    // its own Alt binding on the comma rather than losing one.
     if (lower === "s") { openSends(); return true }
     if (lower === ",") { openSettings(); return true }
     return runShortcut(lower)
@@ -5539,8 +5569,7 @@ Item {
 
   function moveCursor(delta) {
     if (filteredItems.length === 0) return
-    // Moving to an item means the user is done filtering; get the list out of
-    // the way rather than leaving it covering the results.
+    // Done filtering: close the drawer off the results.
     openFilterGroup = ""
     selectedIndex = Math.max(0, Math.min(filteredItems.length - 1, selectedIndex + delta))
     presenter.revealListIndex(selectedIndex)
@@ -5554,16 +5583,14 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // Clipboard Actions & Sequential Password -> TOTP Follow-Up
+  // Clipboard, and the password -> TOTP follow-up
   // -------------------------------------------------------------------------
 
   function copyToClipboard(text, label) {
     if (!text) return
     resetAutoLockTimer()
-    // The value goes through the environment: `printf %s '<secret>'` would put
-    // the password or TOTP code straight into /proc/<pid>/cmdline. Remove that
-    // variable before starting wl-copy, whose clipboard owner can outlive this
-    // short shell after it forks into the background.
+    // Via the environment, not argv; unset before starting wl-copy, whose
+    // clipboard owner outlives this shell.
     Quickshell.execDetached({
       command: ["bash", "-c", "printf '%s' \"$QSBW_CLIP\" | env -u QSBW_CLIP wl-copy --sensitive"],
       environment: { "QSBW_CLIP": String(text) }
@@ -5595,9 +5622,7 @@ Item {
   function onPasswordCopyFinished(exitCode, text) {
     var requested = passwordCopyItemId
     passwordCopyItemId = ""
-    // The clipboard has its own expiry; the pipe buffer needs one too. Once
-    // the value has been handed to wl-copy there is no reason to keep a second
-    // plaintext copy in this long-lived Process object.
+    // Drop the collector's plaintext copy once wl-copy has it.
     clearProcessCollectorSoon(copyPasswordProc)
     if (vaultReadIsStale("passwordCopy")) return
     var password = String(text || "")
@@ -5608,17 +5633,8 @@ Item {
     errorMessage = "Could not read this password"
   }
 
-  // Smart sequential Enter handler: Copies Password, then arms and auto-copies TOTP
-  // Enter on a list row does the obvious thing for the item under it. For a
-  // login that is "copy the password", which is what this used to be and the
-  // only thing it did: every other type fell out of the guard below and Enter
-  // did nothing at all, on an item whose whole content was one keystroke away.
-  //
-  // A card, an identity, a note and an SSH key have no default secret to put
-  // on the clipboard, and neither does a login that was saved without a
-  // password. In all of those cases the useful answer is to open the item,
-  // which is what a user pressing Enter on a row they cannot copy from was
-  // reaching for anyway.
+  // Enter on a row: copy a login's password (then arm the TOTP follow-up);
+  // for anything without a default secret, open the item.
   function handleSmartEnter(item) {
     openFilterGroup = ""
     if (!item) return
@@ -5717,8 +5733,7 @@ Item {
   }
 
   function resetAutoLockTimer() {
-    // Recorded even when auto-lock is off, so turning it back on mid-session
-    // starts counting from the last thing the user did rather than from zero.
+    // Recorded even with auto-lock off, so enabling it counts from now.
     autoLockArmedAt = Date.now()
     if (autoLockMinutes > 0) {
       autoLockTimer.interval = autoLockMinutes * 60 * 1000
@@ -5739,9 +5754,7 @@ Item {
 
   Timer {
     id: deferredMetadataTimer
-    // One frame at 60 Hz is ~17 ms. Fifty milliseconds leaves room for the
-    // parsed item model to polish and render before two more bw processes
-    // begin their startup work.
+    // Lets the parsed list render before two more bw processes start.
     interval: 50
     repeat: false
     onTriggered: {
@@ -5776,10 +5789,7 @@ Item {
     onTriggered: {
       if (root.totpFollowupItem && root.totpFollowupItem.hasTotp) {
         root.copyTotpCode(root.totpFollowupItem)
-        // The code itself stays out of the notification. It is already on the
-        // clipboard, and a notification is not a private channel: the daemon
-        // keeps history and can render the body over a lock screen. The panel
-        // shows the digits on screen instead, where you asked for them.
+        // The code stays out of the notification (history, lock screen).
         Quickshell.execDetached(["omarchy-notification-send", "-g", "󰥔", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", "2FA verification code ready to paste"])
         root.totpFollowupActive = false
       }
@@ -5803,12 +5813,8 @@ Item {
     }
   }
 
-  // The timer above measures the time the shell was awake for, which on a
-  // laptop is not the time the vault was exposed for: Qt schedules on
-  // CLOCK_MONOTONIC and Linux stops that clock across a suspend, so a lock
-  // armed before the lid closed still had its full countdown left when the lid
-  // opened. This is the wall-clock half of the same deadline; see the
-  // Auto-lock section of BitwardenModel.js.
+  // The wall-clock half of the auto-lock: the Timer above stops during suspend
+  // (see "Auto-lock" in BitwardenModel.js).
   Timer {
     id: autoLockWatchdog
     interval: Model.autoLockPollMs(root.autoLockMinutes)
@@ -5832,14 +5838,10 @@ Item {
   // Locking on screen lock and on suspend
   // -------------------------------------------------------------------------
   //
-  // Both are the same conclusion the auto-lock reaches on a timer, arrived at
-  // from evidence instead: the vault is no longer being attended. Neither
-  // replaces the countdown -- a vault left open at an unlocked desk is still
-  // the case only elapsed time can catch.
+  // Evidence the vault is unattended, alongside (not instead of) the auto-lock.
 
-  // The last reading from the screen-lock poll, with the moment it was taken.
-  // The agent needs this even when lockOnScreenLock is off, because it must
-  // never raise an approval prompt over a locked screen.
+  // The last screen-lock reading and when it was taken. The agent needs it
+  // even with lockOnScreenLock off: no prompt may appear over a locked screen.
   property bool screenIsLocked: false
   property double screenLockCheckedAt: 0
 
@@ -5853,17 +5855,13 @@ Item {
   function onSleepSignal(line) {
     var token = String(line || "").trim()
     if (token === Model.wakeSignalToken()) {
-      // Coming back is not by itself a reason to do anything -- the watchdog
-      // below already notices a countdown that expired across the suspend --
-      // but the panel should not be showing a vault state from before the lid
-      // closed either.
+      // The watchdog handles an expired countdown; just refresh stale state.
       if (opened) refreshStatus()
       return
     }
     if (token !== Model.sleepSignalToken()) return
     if (!lockOnSuspend || status !== "unlocked") return
-    // Synchronous as far as the session key in this process is concerned; the
-    // keyring clear it spawns is what the inhibitor's held second is for.
+    // The keyring clear it spawns is what the inhibitor's held second is for.
     lockVault()
   }
 
@@ -5871,20 +5869,16 @@ Item {
     id: screenLockPoll
     interval: Model.screenLockPollMs()
     repeat: true
-    // Nothing to ask while the setting is off or the vault is already locked,
-    // which between them is every state but the one this is for.
-    // Also while the agent is serving: an approval prompt must never appear
-    // over a locked screen, and that needs a current reading regardless of
-    // whether the vault is set to lock with the screen.
+    // Only when it could matter: the setting is on and the vault unlocked, or
+    // the agent is serving (it needs a current reading for prompts).
     running: (root.lockOnScreenLock && root.status === "unlocked") || root.sshAgentGateOpen
     onTriggered: {
       if (!screenLockStateProc.running) screenLockStateProc.running = true
     }
   }
 
-  // Comes back for the processes that were mid-read when the vault locked.
-  // Stops as soon as the queue empties, which is the same tick for everything
-  // that was already idle.
+  // Retries processes that were mid-read at lock time; stops when the queue
+  // empties.
   Timer {
     id: scrubRetry
     interval: Model.scrubRetryMs()
@@ -5911,6 +5905,33 @@ Item {
       waitForEnd: true
       onStreamFinished: root.onSshAgentHelperInspected(text)
     }
+  }
+
+  Process {
+    id: unlockKeyProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onUnlockKeyInspected(text)
+    }
+  }
+
+  Process {
+    id: quickUnlockPrereqProc
+    command: Model.quickUnlockPrereqCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onQuickUnlockPrereqs(text)
+    }
+  }
+
+  // Every envelope operation, one at a time; see queueEnvelopeJob().
+  Process {
+    id: envelopeProc
+    stdout: StdioCollector {
+      id: envelopeStdout
+      waitForEnd: true
+    }
+    onExited: function(exitCode) { root.onEnvelopeJobExited(exitCode) }
   }
 
   Process {
@@ -5975,25 +5996,17 @@ Item {
     onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmRemoveStdout.text) }
   }
 
-  // The SSH companion. Tracked and non-detached so it dies with the shell and
-  // with a configuration reload, rather than outliving the panel that holds
-  // its control channel: the helper treats stdin EOF as "drop the keys and
-  // exit", and that only works if this Process really owns the child.
-  //
-  // clearEnvironment strips everything the shell was started with -- PATH,
-  // HOME, and above all BW_SESSION -- and `environment` puts back the single
-  // variable the helper reads. It runs no `bw` and spawns nothing, so it needs
-  // nothing else.
+  // The SSH companion: tracked, non-detached, so it dies with the shell and
+  // owns the child (stdin EOF tells it to drop its keys and exit). Its
+  // environment is cleared to just XDG_RUNTIME_DIR; it runs no `bw`.
   Process {
     id: sshAgentProc
-    // Whichever candidate the inspection accepted -- the shipped artifact by
-    // preference, a local development build otherwise.
+    // The candidate the inspection accepted.
     command: Model.sshAgentHelperCommand(root.sshAgentPluginDir, root.sshAgentHelper.source)
     clearEnvironment: true
     environment: Model.sshAgentHelperEnv(root.sshAgentRuntimeDir) || ({})
     stdinEnabled: true
-    // Attached from startup, so the `ready` that answers hello cannot be
-    // missed by a parser wired up after the fact.
+    // Attached from the start, so `ready` cannot be missed.
     stdout: SplitParser {
       onRead: function(line) { root.applySshAgentEvent({ kind: "line", line: line, nowMs: Date.now() }) }
     }
@@ -6004,9 +6017,7 @@ Item {
     }
   }
 
-  // The bound on the handshake. QML never waits for `ready`; it arms this and
-  // carries on, and a helper that has not answered by the time it fires is
-  // stopped and retried like any other failure.
+  // Handshake bound: a helper without `ready` in time is stopped and retried.
   Timer {
     id: sshAgentHandshakeTimer
     interval: Model.sshAgentHandshakeTimeoutMs()
@@ -6015,8 +6026,7 @@ Item {
     onTriggered: root.applySshAgentEvent({ kind: "handshakeTimeout", nowMs: Date.now() })
   }
 
-  // Only while there is something to count down. A grant is at most fifteen
-  // minutes, so this is never a timer that runs for the life of the shell.
+  // Only while a grant is counting down (at most 15 minutes).
   Timer {
     id: sshGrantCountdown
     interval: 1000
@@ -6046,9 +6056,7 @@ Item {
     }
   }
 
-  // The grace period between asking the helper to shut down and making it.
-  // Two seconds is far longer than dropping keys and unlinking two paths
-  // takes, and short enough that a wedged helper does not delay a restart.
+  // Grace between asking the helper to stop and killing it.
   Timer {
     id: sshAgentTerminateTimer
     interval: 2000
@@ -6056,18 +6064,15 @@ Item {
     onTriggered: if (sshAgentProc.running) sshAgentProc.running = false
   }
 
-  // Capped restart backoff. The interval is set by the reducer before each
-  // restart; the timer only reports that it elapsed.
+  // Restart backoff; the reducer sets the interval.
   Timer {
     id: sshAgentRestartTimer
     repeat: false
     onTriggered: root.applySshAgentEvent({ kind: "restartTimer", nowMs: Date.now() })
   }
 
-  // Long-lived: it holds the sleep inhibitor that makes the lock land before
-  // the machine is frozen, so it runs whenever the setting is on rather than
-  // only while the vault happens to be unlocked -- a suspend announcement is
-  // no use to a panel that started listening after it.
+  // Holds the sleep inhibitor, so it runs whenever the setting is on, not only
+  // while unlocked (it must already be listening when suspend is announced).
   Process {
     id: sleepMonitorProc
     running: root.live && root.lockOnSuspend
@@ -6098,7 +6103,7 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // Processes (Quickshell.Io)
+  // Processes
   // -------------------------------------------------------------------------
 
   Process {
@@ -6116,11 +6121,8 @@ Item {
 
   Process {
     id: sessionHandoffProc
-    // Set by refreshStatus(), which decides whether this is a read or a
-    // discard. Defaults to the discard form so a run that somehow starts
-    // without going through there cannot adopt a key -- and a scrub, which
-    // replaces this command with one that reads nothing at all, only makes
-    // that stricter.
+    // Set by refreshStatus(). Defaults to the discard form, so a run not
+    // started there can never adopt a key.
     command: Model.sessionHandoffReadCommand(false)
     stdout: StdioCollector {
       id: sessionHandoffStdout
@@ -6267,8 +6269,7 @@ Item {
     }
   }
 
-  // The generator server. A managed Process rather than execDetached, so it
-  // exits with the shell instead of outliving it.
+  // The generator server: managed, so it exits with the shell.
   Process {
     id: generateServeProc
     command: Model.generateServeCommand()
@@ -6327,27 +6328,15 @@ Item {
     }
   }
 
-  // ---- PIN unlock ----
+  // ---- Legacy PIN blob ----
   //
-  // PIN and master password are handed over in the environment; encrypt-and-store
-  // and lookup-and-decrypt each run inside one process, so the plaintext never
-  // travels back through QML on its way to or from the keyring.
-
-  Process {
-    id: pinStoreProc
-    command: Model.pinStoreCommand()
-    environment: root.pinEnv(root.pinSetupPin, root.pinSetupMaster)
-    onExited: function(exitCode) {
-      root.onPinStored(exitCode)
-      if (root.logoutPending && root.allCredentialsClearPending)
-        Qt.callLater(root.requestAllCredentialClear)
-    }
-  }
+  // Decrypted in one process with the PIN from the environment, so only the
+  // result reaches QML.
 
   Process {
     id: pinUnlockProc
     command: Model.pinUnlockCommand()
-    environment: root.pinEnv(root.pinEntry, "")
+    environment: root.pinEnv(root.pinEntry)
     stdout: StdioCollector { id: pinUnlockStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(pinUnlockProc)) return
@@ -6381,12 +6370,8 @@ Item {
     }
   }
 
-  // An install runs in a terminal this panel does not own, so there is nothing
-  // to wait on and no exit code to hear about. Re-probing while the setup
-  // screen is up is what closes that loop: the moment `bw` lands on PATH the
-  // screen turns green and onDependenciesChecked moves on to the vault, with
-  // no second visit to a Re-check button. Only while the panel is open and
-  // only on that screen, so it costs nothing the rest of the time.
+  // An install runs in a terminal we do not own, so re-probe while the setup
+  // screen is open; the moment `bw` appears the panel moves on.
   Timer {
     id: setupPollTimer
     interval: 2500
@@ -6395,10 +6380,8 @@ Item {
     onTriggered: root.checkDependencies()
   }
 
-  // The whole first paint now waits behind the dependency probe. If that probe
-  // never reports -- a shell that will not start, a mangled PATH -- the vault
-  // should still be reachable instead of the panel sitting on "checking"
-  // forever, so the status probe goes ahead on its own after a few seconds.
+  // If the dependency probe never reports (broken PATH), probe status anyway
+  // after a few seconds rather than sit on "checking".
   Timer {
     id: statusProbeFallbackTimer
     interval: 4000
@@ -6406,10 +6389,7 @@ Item {
     repeat: false
     onTriggered: {
       if (root.statusProbeStarted || root.setupGated) return
-      // Four seconds of silence from a probe that takes milliseconds means it
-      // is not coming. Treating that as "checked, nothing missing" is what
-      // gets past refreshStatus()'s own !depsChecked guard -- an unanswered
-      // probe must not be the thing that keeps the vault out of reach.
+      // Treat the silent probe as checked so refreshStatus() can proceed.
       root.depsChecked = true
       root.refreshStatus()
     }
@@ -6441,17 +6421,6 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onFingerprintStoredChecked(text)
-    }
-  }
-
-  Process {
-    id: keyringStoreMasterProc
-    command: Model.keyringStoreMasterPasswordCommand()
-    environment: root.secretEnv(root.masterToStore)
-    onExited: function(exitCode) {
-      root.onMasterPasswordStored(exitCode)
-      if (root.logoutPending && root.allCredentialsClearPending)
-        Qt.callLater(root.requestAllCredentialClear)
     }
   }
 
@@ -6554,16 +6523,14 @@ Item {
     }
   }
 
-  // The lid, for the fingerprint reader's reachability. Its own file; the vault
-  // reads only whether the lid is shut.
+  // Lid state, for the fingerprint reader's reachability.
   LidState {
     id: lidState
     vault: root
   }
 
-  // FIDO2 unlock, in its own file. It is handed the vault and the setting and
-  // gives back a password once a key touch has been verified; everything else
-  // FIDO2 -- its PAM stack, its probe, its keyring entry -- stays in there.
+  // FIDO2 unlock: given the vault and setting, returns a password after a
+  // verified touch.
   FidoUnlock {
     id: fidoUnlocker
     vault: root
@@ -6575,9 +6542,8 @@ Item {
     }
   }
 
-  // Polls rather than counting down, for the same reason the auto-lock does:
-  // a monotonic timer stops while the machine is suspended, and a login left
-  // pending across a lid close must expire on the time that actually passed.
+  // Polled on the wall clock, like the auto-lock, so a login pending across a
+  // suspend expires on real time.
   Timer {
     id: pendingLoginTimer
     interval: 1000
@@ -6602,12 +6568,8 @@ Item {
       waitForEnd: true
     }
     onExited: function(exitCode) {
-      // A scrub is started from this same handler and claims the process for a
-      // moment, so a submit arriving in that moment waits on the scrub's exit
-      // rather than the login's. Returning here without dispatching used to
-      // drop that submit on the floor -- the click did nothing at all, and the
-      // one after it worked because by then nothing held the process. That was
-      // "I had to press Verify twice".
+      // A scrub started here briefly holds the process; a submit arriving then
+      // is dispatched when the scrub exits (else it would need a second click).
       if (root.finishScrubRun(loginProc)) {
         if (!root.loginSubmitted) root.resumeDeferredLogin(false)
         return
@@ -6806,7 +6768,7 @@ Item {
   }
 
   // -------------------------------------------------------------------------
-  // IPC Handler
+  // IPC
   // -------------------------------------------------------------------------
 
   IpcHandler {
@@ -6826,8 +6788,7 @@ Item {
     }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
-    // Which vault this view is showing and how many views share it. Non-secret:
-    // it exists so a multi-monitor report can be checked from a terminal.
+    // Which vault this view shows and how many views share it (non-secret).
     function vaultHost(): string {
       var screens = []
       for (var i = 0; i < root.views.length; i++) {
@@ -6843,43 +6804,21 @@ Item {
         screens: screens
       })
     }
-    // Non-secret diagnostics for the SSH agent. No key material, no
-    // fingerprints, no process paths -- just enough to tell why a signature
-    // was or was not answered.
+    // Non-secret SSH agent diagnostics: no keys, fingerprints or paths.
     function sshAgentStatus(): string {
       return JSON.stringify({
         enabled: root.sshAgentEnabled,
         phase: root.sshAgentPhase,
-        // Named for what it is: the control channel to the helper is up and
-        // handshaked. It is not "signing is allowed" -- that is the vault
-        // state below, and reading this as the former is misleading next to a
-        // locked vault.
+        // The handshaked control channel, not "signing allowed" (see vaultState).
         helperChannelOpen: root.sshAgentGateOpen,
-        vaultState: Model.sshAgentVaultState({
-          enabled: root.sshAgentEnabled,
-          helperReady: root.sshAgentGateOpen,
-          loggedIn: root.status !== "unauthenticated",
-          unlocked: root.status === "unlocked",
-          loading: root.sshAgentLoadActive,
-          hasPublicCache: root.sshAgentKeyCount > 0
-        }),
+        vaultState: Model.sshAgentVaultState(root.sshAgentVaultContext()),
         setupState: root.sshAgentSetup.state,
-        // Which binary is actually running, and whether its digest was
-        // checked. A shipped helper and a silently substituted development
-        // build behave identically until one of them misbehaves, and without
-        // these two fields the terminal cannot tell them apart at all.
+        // Which binary runs and whether its digest was checked.
         helperSource: root.sshAgentHelper.source,
         helperChecksum: root.sshAgentHelper.checksum,
-        // Why inspection rejected it, in the inspector's own vocabulary:
-        // checksum-mismatch, not-elf, wrong-architecture, not-executable,
-        // self-test-failed. errorCode covers the running helper and stays
-        // empty for all of these, so without this the terminal is told the
-        // feature is in error and never told what the error was.
+        // Why inspection rejected it (errorCode covers only the running helper).
         helperState: root.sshAgentHelper.state,
-        // What the panel believes about client routing: the file it last
-        // inspected, and whether that produced a notice. Both are read from
-        // the same state the settings screen draws, so a disagreement between
-        // this and the screen is itself the answer.
+        // Routing as the settings screen sees it.
         routingFragment: root.uwsmFragment.state,
         routingNotice: root.sshRoutingNotice.text !== "",
         errorCode: root.sshAgentErrorCode,

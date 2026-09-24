@@ -314,10 +314,8 @@ fn disposable_key_load_identity_and_approved_sign_cross_the_real_socket() {
     assert!(child.wait().unwrap().success());
 }
 
-/// A lock drops the private set but keeps the public projection, and the
-/// design's state table says a locked-with-cache agent still lists identities:
-/// otherwise every `ssh` after a lock raises an unlock prompt, including the
-/// ones authenticating with an on-disk key. Signing is what the lock denies.
+/// A lock drops private keys but keeps the public projection, so identity
+/// listings still work (no unlock prompt for every `ssh`); signing is denied.
 #[test]
 fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
     let temp = TempDir::new();
@@ -384,11 +382,8 @@ fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
     // Locked with a cache: still listed, because public keys are not secret.
     assert_eq!(identity_count(&socket), 1);
 
-    // The private set is gone, so signing cannot proceed. The request is held
-    // and an unlock is asked for rather than failed outright -- refusing a
-    // client that has no way to retry is worse than asking. Dismissing that
-    // unlock is what turns it into a refusal, and it must do so at once
-    // rather than leaving the client to wait out the deadline.
+    // Signing is held with an unlock request rather than failed; dismissing
+    // the unlock refuses at once instead of waiting out the deadline.
     let socket_for_client = socket.clone();
     let blob = public_blob.clone();
     let client = std::thread::spawn(move || {
@@ -424,11 +419,22 @@ fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
         "a dismissed unlock must refuse at once, not at the deadline"
     );
 
-    // Logout takes the public projection with it.
+    // Logout takes the public projection with it. `vault_locked` is a
+    // barrier (answered in order with `locked`), so the listing below cannot
+    // race the logout through the control loop.
     input
         .write_all(b"{\"v\":1,\"type\":\"vault_logged_out\"}\n")
         .unwrap();
+    input
+        .write_all(b"{\"v\":1,\"type\":\"vault_locked\",\"epoch\":1}\n")
+        .unwrap();
     input.flush().unwrap();
+    loop {
+        let message = read_json_line(&mut output);
+        if message["type"] == "locked" {
+            break;
+        }
+    }
     assert_eq!(identity_count(&socket), 0);
 
     input
@@ -438,10 +444,8 @@ fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
     assert!(child.wait().unwrap().success());
 }
 
-/// A sign request against a locked-but-cached vault must not simply fail: the
-/// design has it raise an unlock, hold the request across the load, and then
-/// ask for approval. The unlock and the approval carry different request ids,
-/// because they are different decisions.
+/// A sign request against a locked-but-cached vault raises an unlock, is held
+/// across the load, then asks for approval, with a distinct request id each.
 #[test]
 fn a_locked_sign_request_raises_unlock_then_approval() {
     let mut agent = TestAgent::start();
@@ -494,11 +498,8 @@ fn a_locked_sign_request_raises_unlock_then_approval() {
     agent.shutdown();
 }
 
-/// The approval decision needs the key's identity and the requesting program,
-/// both of which come from the public cache. None of it depends on the vault
-/// read finishing, so a user may approve while keys are still loading and the
-/// signature is produced the moment they arrive -- rather than being made to
-/// wait several seconds and only then be asked.
+/// Approval needs only public data, so one given during a load is honoured
+/// as soon as the keys arrive.
 #[test]
 fn an_approval_given_during_a_load_is_honoured_when_keys_arrive() {
     let mut agent = TestAgent::start();
@@ -535,9 +536,7 @@ fn an_approval_given_during_a_load_is_honoured_when_keys_arrive() {
     agent.shutdown();
 }
 
-/// The same path must still refuse when the key that comes back is not the
-/// one that was approved. The approval names a key; the load decides whether
-/// that key is actually present.
+/// ...but only if the approved key is actually in the load.
 #[test]
 fn an_approval_given_during_a_load_still_requires_the_approved_key() {
     let mut agent = TestAgent::start();
@@ -572,10 +571,8 @@ fn an_approval_given_during_a_load_still_requires_the_approved_key() {
     agent.shutdown();
 }
 
-/// A freshly started companion has no public cache, so `ssh-add -L` is empty
-/// and no client will ever offer a vault key -- which means no sign request,
-/// and no way to ask for an unlock. Unlock-on-demand exists for exactly that
-/// cliff, and it has to begin at the identity listing rather than at signing.
+/// A fresh companion lists no identities, so no sign request could ever ask
+/// for an unlock; unlock-on-demand must start at the identity listing.
 #[test]
 fn unlock_on_demand_raises_an_unlock_for_an_empty_identity_listing() {
     let mut agent = TestAgent::start();
@@ -639,9 +636,8 @@ fn concurrent_identity_listings_coalesce_into_one_unlock() {
     agent.shutdown();
 }
 
-/// A vault with more keys than the old 16-slot control channel must still
-/// finish loading. PublicKey messages are try_send'd on a current-thread
-/// runtime that cannot drain until the emit loop returns.
+/// More keys than the old 16-slot channel must still finish loading: the
+/// try_send'd messages cannot drain until the emit loop returns.
 #[test]
 fn a_load_of_more_than_sixteen_keys_still_reports_keys_loaded() {
     let mut agent = TestAgent::start();
@@ -656,9 +652,8 @@ fn a_load_of_more_than_sixteen_keys_still_reports_keys_loaded() {
     agent.shutdown();
 }
 
-/// The largest burst one load can produce: every key at the cap announced,
-/// plus each held sign request withdrawn and re-raised as an approval. None of
-/// it can drain before the burst ends, so the channel has to hold all of it.
+/// The largest burst: every key announced, plus each held request withdrawn
+/// and re-raised. The channel must hold it all.
 #[test]
 fn a_full_load_releasing_every_held_request_keeps_the_helper_alive() {
     let mut agent = TestAgent::start();
@@ -704,9 +699,8 @@ fn a_full_load_releasing_every_held_request_keeps_the_helper_alive() {
     agent.shutdown();
 }
 
-/// A malformed FIFO payload must lock and keep serving, not take SSH_AUTH_SOCK
-/// down. The panel retries a failed load; a dead helper cannot. `load_failed`
-/// is distinct from `locked` so a lock acknowledgment is not confused with it.
+/// A malformed FIFO payload locks and keeps serving (the panel retries);
+/// `load_failed`, not `locked`, so it is not taken as a lock ack.
 #[test]
 fn a_malformed_load_leaves_the_helper_running_and_accepts_a_retry() {
     let mut agent = TestAgent::start();
@@ -795,17 +789,23 @@ fn granting_and_revoking_announce_the_live_set() {
     let blob = public_blob.clone();
     let client = std::thread::spawn(move || {
         let mut stream = UnixStream::connect(&socket).unwrap();
-        stream.write_all(&sign_request(&blob)).unwrap();
+        stream
+            .write_all(&sign_request_for(&blob, &git_signature_data()))
+            .unwrap();
         let first = read_agent_frame(&mut stream);
         // A second signature on the same connection rides the grant, with no
         // further prompt -- which is the whole point of offering one.
-        stream.write_all(&sign_request(&blob)).unwrap();
+        stream
+            .write_all(&sign_request_for(&blob, &git_signature_data()))
+            .unwrap();
         (first, read_agent_frame(&mut stream))
     });
 
     let approval = agent.read();
     let request_id = approval["requestId"].as_u64().unwrap();
     assert_eq!(approval["grantOffered"], true);
+    assert_eq!(approval["operation"], "sshsig");
+    assert_eq!(approval["operationDetail"], "git");
     agent.send(&format!(
         "{{\"v\":1,\"type\":\"approve\",\"requestId\":{request_id},\"grantSeconds\":120}}"
     ));
@@ -814,6 +814,8 @@ fn granting_and_revoking_announce_the_live_set() {
     assert_eq!(changed["type"], "grants_changed");
     let grants = changed["grants"].as_array().unwrap();
     assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0]["operation"], "sshsig");
+    assert_eq!(grants[0]["operationDetail"], "git");
     assert!(grants[0]["expiresInSec"].as_u64().unwrap() <= 120);
     assert!(grants[0]["expiresInSec"].as_u64().unwrap() > 0);
     let grant_id = grants[0]["grantId"].as_u64().unwrap();
@@ -835,11 +837,182 @@ fn granting_and_revoking_announce_the_live_set() {
     agent.shutdown();
 }
 
-/// The panel validates the bundled helper before it trusts it, and needs the
-/// helper's own answers to do that: what version it is, what protocol it
-/// speaks, and whether its crypto actually works on this machine. Both must
-/// answer without touching the filesystem, opening a socket, or needing a
-/// runtime directory -- they run before any of that exists.
+/// A login names the server its session was bound to, and a grant for it
+/// covers that server only: the same login elsewhere asks again.
+#[test]
+fn a_login_grant_covers_only_the_server_it_was_approved_for() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let (proceed, go) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        let log_in_to = |host_key: &[u8], session: u8| {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream
+                .write_all(&session_bind_to(host_key, &[session; 32], false))
+                .unwrap();
+            assert_eq!(read_agent_frame(&mut stream)[4], 6);
+            stream
+                .write_all(&sign_request_for(
+                    &blob,
+                    &login_data_in(&[session; 32], b"git", &blob),
+                ))
+                .unwrap();
+            read_agent_frame(&mut stream)
+        };
+        let first = log_in_to(b"github host key", 0x31);
+        let again = log_in_to(b"github host key", 0x32);
+        go.recv().unwrap();
+        let elsewhere = log_in_to(b"another host key", 0x33);
+        (first, again, elsewhere)
+    });
+
+    let approval = agent.read();
+    assert_eq!(approval["operation"], "ssh-auth");
+    let github = approval["hostKey"].as_str().unwrap().to_owned();
+    assert!(github.starts_with("SHA256:"));
+    let request_id = approval["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"approve\",\"requestId\":{request_id},\"grantSeconds\":120}}"
+    ));
+    let changed = agent.read();
+    assert_eq!(changed["type"], "grants_changed");
+    assert_eq!(changed["grants"][0]["hostKey"], github.as_str());
+    proceed.send(()).unwrap();
+
+    let other = agent.read();
+    assert_eq!(
+        other["type"], "approval_required",
+        "a login grant does not cover another server"
+    );
+    let other_host = other["hostKey"].as_str().unwrap();
+    assert!(other_host.starts_with("SHA256:") && other_host != github);
+    let other_id = other["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"deny\",\"requestId\":{other_id}}}"
+    ));
+
+    let (first, again, elsewhere) = client.join().unwrap();
+    assert_eq!(first[4], 14);
+    assert_eq!(again[4], 14, "the same server rides the grant");
+    assert_eq!(elsewhere, [0, 0, 0, 1, 5]);
+    agent.shutdown();
+}
+
+/// A grant for Git signatures does not cover a login from the same program.
+#[test]
+fn a_grant_covers_only_the_kind_of_signature_it_was_given_for() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let (proceed, go) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream
+            .write_all(&sign_request_for(&blob, &git_signature_data()))
+            .unwrap();
+        let signed = read_agent_frame(&mut stream);
+        go.recv().unwrap();
+        stream
+            .write_all(&sign_request_for(&blob, &login_data(b"root", &blob)))
+            .unwrap();
+        (signed, read_agent_frame(&mut stream))
+    });
+
+    let approval = agent.read();
+    let request_id = approval["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"approve\",\"requestId\":{request_id},\"grantSeconds\":120}}"
+    ));
+    assert_eq!(agent.read()["type"], "grants_changed");
+    proceed.send(()).unwrap();
+
+    let login = agent.read();
+    assert_eq!(
+        login["type"], "approval_required",
+        "a login is not covered by a grant for Git signatures"
+    );
+    assert_eq!(login["operation"], "ssh-auth");
+    assert_eq!(login["operationDetail"], "root");
+    assert_eq!(login["grantOffered"], true);
+    let login_id = login["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"deny\",\"requestId\":{login_id}}}"
+    ));
+
+    let (signed, refused) = client.join().unwrap();
+    assert_eq!(signed[4], 14);
+    assert_eq!(refused, [0, 0, 0, 1, 5]);
+    agent.shutdown();
+}
+
+/// A request on a forwarding-bound connection is labelled, never offered a
+/// grant, cannot open one, and cannot ride the local `ssh`'s grant.
+#[test]
+fn a_forwarded_request_is_labelled_and_never_granted() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let (proceed, go) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream.write_all(&session_bind(true)).unwrap();
+        let bound = read_agent_frame(&mut stream);
+        // The far end sending "not forwarded" must not clear the flag.
+        stream.write_all(&session_bind(false)).unwrap();
+        let rebound = read_agent_frame(&mut stream);
+        let mut signed = Vec::new();
+        for _ in 0..2 {
+            stream
+                .write_all(&sign_request_for(&blob, &login_data(b"git", &blob)))
+                .unwrap();
+            signed.push(read_agent_frame(&mut stream));
+            go.recv().unwrap();
+        }
+        (bound, rebound, signed)
+    });
+
+    for round in 0..2 {
+        let approval = agent.read();
+        assert_eq!(
+            approval["type"], "approval_required",
+            "round {round}: a forwarded request must always prompt"
+        );
+        assert_eq!(approval["forwarded"], true);
+        assert_eq!(approval["grantOffered"], false);
+        assert_eq!(approval["operation"], "ssh-auth");
+        let request_id = approval["requestId"].as_u64().unwrap();
+        // A panel that offers the window anyway still gets a single signature.
+        agent.send(&format!(
+            "{{\"v\":1,\"type\":\"approve\",\"requestId\":{request_id},\"grantSeconds\":120}}"
+        ));
+        proceed.send(()).unwrap();
+    }
+
+    let (bound, rebound, signed) = client.join().unwrap();
+    assert_eq!(bound, [0, 0, 0, 1, 6]);
+    assert_eq!(rebound, [0, 0, 0, 1, 6]);
+    assert!(signed.iter().all(|frame| frame[4] == 14));
+    // No grant was ever opened, so none was ever announced: the next control
+    // message is the lock acknowledgement, not a grants_changed.
+    agent.drain_control();
+    agent.shutdown();
+}
+
+/// `--version` and `--self-test` answer without filesystem, socket or runtime
+/// directory: the panel runs them before any of that exists.
 #[test]
 fn version_and_self_test_answer_without_touching_the_system() {
     let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");
@@ -893,9 +1066,7 @@ fn version_and_self_test_answer_without_touching_the_system() {
     );
 }
 
-/// An unknown flag must not be mistaken for "run as the agent". The panel
-/// launches this binary with no arguments; anything else is a mistake worth
-/// reporting rather than silently starting a key-holding daemon.
+/// An unknown flag is refused, never taken as "run as the agent".
 #[test]
 fn an_unknown_argument_is_refused() {
     let executable = env!("CARGO_BIN_EXE_qs-bitwarden-ssh-agent");
@@ -942,10 +1113,8 @@ impl TestAgent {
         let socket = PathBuf::from(ready["socketPath"].as_str().unwrap());
         let fifo = PathBuf::from(ready["fifoPath"].as_str().unwrap());
 
-        // Every read below blocks on the agent's stdout, so a message the
-        // agent never sends would hang the whole suite instead of failing it.
-        // The watchdog kills the child, which closes stdout and turns that
-        // hang into an EOF the assertions report.
+        // A watchdog kills the child if a read would hang, turning the hang
+        // into an EOF the assertions report.
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let watching = alive.clone();
         let pid = child.id();
@@ -976,18 +1145,9 @@ impl TestAgent {
         self.input.flush().unwrap();
     }
 
-    /// Wait until the control loop has processed everything sent so far.
-    ///
-    /// Control messages are read in order on one channel, so a message whose
-    /// effect is observable acts as a barrier for every message before it.
-    /// `vault_locked` is that message: it answers with `locked`, and locking
-    /// an empty store changes nothing a test then depends on.
-    ///
-    /// Needed because a test that sends `options` and then connects a client
-    /// is racing the control loop. That race is invisible on a fast machine
-    /// and cost a CI run: the client's listing arrived first, was answered
-    /// with an empty list instead of raising an unlock, and the test waited
-    /// for a message that was never going to come.
+    /// Wait until the control loop processed everything sent so far, using
+    /// `vault_locked` (answered in order with `locked`) as a barrier. Without
+    /// it, a client connecting right after `options` can race the loop.
     fn drain_control(&mut self) {
         self.send("{\"v\":1,\"type\":\"vault_locked\",\"epoch\":0}");
         let acknowledged = self.read();
@@ -1083,16 +1243,75 @@ impl Drop for TestAgent {
     }
 }
 
-/// A framed SSH_AGENTC_SIGN_REQUEST for one public blob.
+/// A framed SSH_AGENTC_SIGN_REQUEST for one public blob, over data the agent
+/// does not recognise -- so it is signed on a prompt and never under a grant.
 fn sign_request(public_blob: &[u8]) -> Vec<u8> {
+    sign_request_for(public_blob, b"payload")
+}
+
+fn sign_request_for(public_blob: &[u8], data: &[u8]) -> Vec<u8> {
     let mut request = Vec::new();
     13_u8.encode(&mut request).unwrap();
     public_blob.encode(&mut request).unwrap();
-    b"payload".as_slice().encode(&mut request).unwrap();
+    data.encode(&mut request).unwrap();
     0_u32.encode(&mut request).unwrap();
-    let mut framed = u32::try_from(request.len()).unwrap().to_be_bytes().to_vec();
-    framed.extend_from_slice(&request);
+    frame(&request)
+}
+
+fn frame(payload: &[u8]) -> Vec<u8> {
+    let mut framed = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+    framed.extend_from_slice(payload);
     framed
+}
+
+/// What `ssh-keygen -Y sign -n git` asks an agent to sign for a commit.
+fn git_signature_data() -> Vec<u8> {
+    let mut data = b"SSHSIG".to_vec();
+    b"git".as_slice().encode(&mut data).unwrap();
+    b"".as_slice().encode(&mut data).unwrap();
+    b"sha512".as_slice().encode(&mut data).unwrap();
+    [0x5a_u8; 64].as_slice().encode(&mut data).unwrap();
+    data
+}
+
+/// The data an SSH client signs to log in as `user` with `public_blob`.
+fn login_data(user: &[u8], public_blob: &[u8]) -> Vec<u8> {
+    login_data_in(&[0x11; 32], user, public_blob)
+}
+
+/// `login_data` on the session with key-exchange hash `session_id`.
+fn login_data_in(session_id: &[u8], user: &[u8], public_blob: &[u8]) -> Vec<u8> {
+    let mut data = Vec::new();
+    session_id.encode(&mut data).unwrap();
+    50_u8.encode(&mut data).unwrap();
+    user.encode(&mut data).unwrap();
+    b"ssh-connection".as_slice().encode(&mut data).unwrap();
+    b"publickey".as_slice().encode(&mut data).unwrap();
+    1_u8.encode(&mut data).unwrap();
+    b"ssh-ed25519".as_slice().encode(&mut data).unwrap();
+    public_blob.encode(&mut data).unwrap();
+    data
+}
+
+/// A framed `session-bind@openssh.com`, as OpenSSH sends on each agent
+/// connection it opens.
+fn session_bind(forwarding: bool) -> Vec<u8> {
+    session_bind_to(b"host key", &[0x22; 32], forwarding)
+}
+
+/// A bind of session `session_id` to the server with `host_key`.
+fn session_bind_to(host_key: &[u8], session_id: &[u8], forwarding: bool) -> Vec<u8> {
+    let mut request = Vec::new();
+    27_u8.encode(&mut request).unwrap();
+    b"session-bind@openssh.com"
+        .as_slice()
+        .encode(&mut request)
+        .unwrap();
+    host_key.encode(&mut request).unwrap();
+    session_id.encode(&mut request).unwrap();
+    b"host signature".as_slice().encode(&mut request).unwrap();
+    u8::from(forwarding).encode(&mut request).unwrap();
+    frame(&request)
 }
 
 /// Number of identities the agent offers over its real socket.

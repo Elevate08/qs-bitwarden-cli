@@ -1,30 +1,12 @@
 #!/usr/bin/env node
-// Regression tests for the context-aware suggestion matcher in BitwardenModel.js.
-//
-// The matcher is heuristic and works from window titles alone, so it is easy to
-// regress in both directions: too strict and the right login stops appearing,
-// too loose and every .com item is suggested on every site. Run with:
+// The window-title suggestion matcher: heuristic, so easy to regress either
+// way (right login missing, or every .com item suggested everywhere).
 //
 //   node tests/context-match.test.js
 
-const fs = require("fs")
-const path = require("path")
+const { createSuite, loadModule } = require("./harness")
 
-const src = fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-const Model = {}
-new Function("exports", src.replace(/^\.pragma library\s*$/m, "") + `
-  exports.findContextualMatches = findContextualMatches
-  exports.cleanWindowContext = cleanWindowContext
-  exports.parseHost = parseHost
-  exports.parseAssociations = parseAssociations
-  exports.serializeAssociations = serializeAssociations
-  exports.recordAssociation = recordAssociation
-  exports.forgetAssociation = forgetAssociation
-  exports.isAssociated = isAssociated
-  exports.emptyAssociations = emptyAssociations
-  exports.MAX_TITLE_CHARS = MAX_TITLE_CHARS
-  exports.MAX_ASSOC_BYTES = MAX_ASSOC_BYTES
-`)(Model)
+const Model = loadModule()
 
 const items = [
   { id: "1",  name: "GitHub",        uris: ["https://github.com"] },
@@ -98,12 +80,7 @@ const floodItems = ["github","amazon","google","reddit","proton","cloudflare","c
   "auth0","twilio","sendgrid","mailgun","shopify","squarespace","wordpress","medium"]
   .map((b, i) => ({ id: String(i), name: b, uris: ["https://www." + b + ".com"] }))
 
-let pass = 0
-const failures = []
-
-function check(label, ok, detail) {
-  if (ok) { pass++ } else { failures.push(label + "\n    " + detail) }
-}
+const { check, done } = createSuite("context-match")
 
 const sshLike = { id: "ssh-public", name: "GitHub deploy key", typeCode: 5,
   uris: ["https://github.com"], publicKey: "ssh-ed25519 AAAA" }
@@ -155,10 +132,8 @@ check("clients list picks most recent non-shell window",
 // Learned associations
 // ---------------------------------------------------------------------------
 
-// The case that no title heuristic can solve: an authentik portal on
-// auth.example.xyz titled "Home - authentik". The title and the stored URL
-// share no word at all.
-// Named so that neither the name nor the URL shares a word with the page title.
+// No heuristic can match this: an authentik portal titled "Home - authentik"
+// whose name and URL share no word with the title. Learning must.
 const authentikItem = { id: "auth-1", name: "Personal SSO", uris: ["https://auth.example.xyz"] }
 const withAuthentik = items.concat([authentikItem])
 const authentikWindow = { class: "chromium", title: "Home - authentik - Chromium", mapped: true }
@@ -254,9 +229,8 @@ check("undefined associations are safe",
 // A window title is written by the page, not by the user
 // ---------------------------------------------------------------------------
 //
-// Everything below is about one input: document.title, chosen by whatever the
-// browser is pointed at, arriving here through hyprctl. It is read on every
-// panel open, on the GUI thread, with the whole vault to compare it against.
+// document.title is chosen by the page, and matched on the GUI thread against
+// the whole vault on every open.
 
 // The title reaches the matcher clipped, so the per-item work the matcher does
 // over it cannot be scaled up by the page.
@@ -267,10 +241,8 @@ check("a page-chosen title is clipped before matching",
     && clippedCtx.rawTitle.length <= Model.MAX_TITLE_CHARS,
   `matchText=${clippedCtx.matchText.length} rawTitle=${clippedCtx.rawTitle.length}`)
 
-// The host scanner used to be a single unanchored regex, and a long run of
-// letters with no dot in it drove it into quadratic backtracking: ~2.5s of
-// frozen shell for a 63 kB title, growing with the square of the length.
-// hyprctl hands over as much as a megabyte, so this is the honest size.
+// Long dotless runs once drove the host regex quadratic (~2.5 s for 63 kB);
+// hyprctl can hand over a megabyte.
 const hostileTitle = "a".repeat(100000) + " - Chromium"
 const hostileWindow = { class: "chromium", title: hostileTitle, mapped: true }
 const bigVault = []
@@ -322,8 +294,4 @@ check("the newest lesson survives trimming",
   Model.findContextualMatches(withAuthentik, authentikWindow, stillLearned).matches.map(m => m.id).join() === "auth-1",
   "expected the just-learned item to still be suggested")
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) {
-  console.error("\nFAILURES:\n  " + failures.join("\n  "))
-  process.exit(1)
-}
+done()

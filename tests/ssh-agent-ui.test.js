@@ -1,54 +1,17 @@
 #!/usr/bin/env node
-// The approval prompt is the one place a user is asked to authorise a
-// signature, so what it shows has to be accurate about what the companion
-// actually verified -- and what it did not. These tests cover the prompt's
-// presentation, the deny/approve/grant control lines, the denial cooldown
-// that stops a same-UID process reopening the panel forever, and the rule
-// that no prompt is ever raised over a locked screen.
+// The approval prompt must say accurately what the companion verified and what
+// it did not. Covers its presentation, the deny/approve/grant control lines,
+// the denial cooldown, and never prompting over a locked screen.
 //
 //   node tests/ssh-agent-ui.test.js
 
+const { createSuite, loadModule, read, readPluginSource, repoRoot } = require("./harness")
 const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
 const path = require("path")
 
-const repoRoot = path.join(__dirname, "..")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(repoRoot, "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.parseAgentEvent = parseAgentEvent
-  exports.sshAgentApproveLine = sshAgentApproveLine
-  exports.sshAgentDenyLine = sshAgentDenyLine
-  exports.sshAgentUnlockCancelledLine = sshAgentUnlockCancelledLine
-  exports.sshAgentRevokeGrantLine = sshAgentRevokeGrantLine
-  exports.sshAgentRevokeGrantsLine = sshAgentRevokeGrantsLine
-  exports.sshAgentPromptView = sshAgentPromptView
-  exports.sshAgentGrantViews = sshAgentGrantViews
-  exports.sshAgentGrantsAt = sshAgentGrantsAt
-  exports.sshAgentDevelopmentHelperWarning = sshAgentDevelopmentHelperWarning
-  exports.sshAgentRoutingNotice = sshAgentRoutingNotice
-  exports.pluginDataRemoveCommand = pluginDataRemoveCommand
-  exports.parsePluginDataRemoval = parsePluginDataRemoval
-  exports.sshAgentShouldPrompt = sshAgentShouldPrompt
-  exports.sshAgentCooldownInitial = sshAgentCooldownInitial
-  exports.sshAgentCooldownAfter = sshAgentCooldownAfter
-  exports.sshAgentCooldownActive = sshAgentCooldownActive
-  exports.sshAgentCooldownStatus = sshAgentCooldownStatus
-  exports.sshAgentLoadingNote = sshAgentLoadingNote
-  exports.sshAgentOptionsLine = sshAgentOptionsLine
-  exports.sshAgentRequestDeadlineMs = sshAgentRequestDeadlineMs
-  exports.sshAgentEnqueuePrompt = sshAgentEnqueuePrompt
-  exports.sshAgentDequeuePrompt = sshAgentDequeuePrompt
-  exports.sshAgentRemovePrompt = sshAgentRemovePrompt
-  exports.sshAgentPendingCount = sshAgentPendingCount
-  exports.plainLabel = plainLabel
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done } = createSuite("ssh-agent-ui")
 
 // -------------------------------------------------------------------------
 // The companion's new messages must survive the bounded reader
@@ -138,6 +101,38 @@ check("a forwarded request is flagged", forwarded.forwardedWarning.length > 0, f
 eq("a forwarded request offers no grant", forwarded.grantOffered, false)
 eq("an ordinary request has no forwarding warning", view.forwardedWarning, "")
 
+// What is being signed. A grant covers one kind of signature, so the prompt
+// names the kind the companion classified -- and nothing it did not.
+const labelled = (operation, operationDetail) =>
+  Model.sshAgentPromptView(Object.assign({}, request, { operation, operationDetail }), 120)
+eq("a Git signature is named as one", labelled("sshsig", "git").operationLabel, "Git commit or tag signature")
+check("another namespace is shown as-is",
+  /"file"/.test(labelled("sshsig", "file").operationLabel), labelled("sshsig", "file").operationLabel)
+eq("a login names its user", labelled("ssh-auth", "root").operationLabel, "SSH login as root")
+check("unrecognised data says so",
+  /unrecognised/i.test(labelled("ssh-sign", "").operationLabel), labelled("ssh-sign", "").operationLabel)
+eq("an unknown operation is not passed through", labelled("delete-everything", "x").operation, "")
+eq("and gets no label", labelled("delete-everything", "x").operationLabel, "")
+// A login names the server its session was bound to; a grant covers only it.
+const HOST = "SHA256:LgZpRzWEAbVvBimxTv69/UB88PD8jyOSDqfozr+iNX0"
+const loginTo = (hostKey, operation) => Model.sshAgentPromptView(
+  Object.assign({}, request, { operation: operation || "ssh-auth", operationDetail: "git", hostKey }), 120)
+eq("a login carries its server's host key", loginTo(HOST).hostKey, HOST)
+check("and names it in the prompt", loginTo(HOST).destinationLabel.indexOf(HOST) >= 0, loginTo(HOST).destinationLabel)
+check("a login with no reported server says so",
+  /not reported/i.test(loginTo("").destinationLabel), loginTo("").destinationLabel)
+eq("a host key of any other shape is dropped", loginTo("SHA256:x\nforged").hostKey, "")
+eq("a Git signature has no server", loginTo(HOST, "sshsig").hostKey, "")
+eq("and no destination line", loginTo(HOST, "sshsig").destinationLabel, "")
+eq("a login grant shows its server",
+  Model.sshAgentGrantViews([{ grantId: 12, keyName: "k", fingerprint: "SHA256:z", pid: 7,
+    processPath: "/usr/bin/ssh", operation: "ssh-auth", operationDetail: "git", hostKey: HOST,
+    expiresInSec: 60 }], 1_000)[0].hostKey, HOST)
+
+check("an absurd login name is bounded",
+  labelled("ssh-auth", "u".repeat(5000)).operationLabel.length <= 300,
+  String(labelled("ssh-auth", "u".repeat(5000)).operationLabel.length))
+
 // A vault item's name is attacker-controllable by whoever shares the
 // collection it came from, and the process path comes from outside too.
 const hostile = Model.sshAgentPromptView(Object.assign({}, request, {
@@ -180,11 +175,16 @@ check("an expiring grant says so", grants[1].remainingLabel.length > 0, grants[1
 check("no grant view carries key material",
   grants.every(g => JSON.stringify(g).indexOf("PRIVATE") < 0), "leaked")
 eq("a malformed grant list yields nothing", Model.sshAgentGrantViews(null).length, 0)
+const scoped = Model.sshAgentGrantViews([
+  { grantId: 11, keyName: "work", fingerprint: "SHA256:z", pid: 7, processPath: "/usr/bin/ssh-keygen",
+    operation: "sshsig", operationDetail: "git", expiresInSec: 60 }
+], 1_000)
+eq("a grant says what kind of signature it covers", scoped[0].operationLabel, "Git commit or tag signature")
+eq("and still says so as it counts down",
+  Model.sshAgentGrantsAt(scoped, 31_000)[0].operationLabel, "Git commit or tag signature")
 
-// A grant is announced once and then nothing is said until it changes, so the
-// remaining time has to be re-derived rather than remembered. Without this the
-// settings screen showed "1m 59s left" for the whole two minutes and then the
-// row disappeared, having never counted down.
+// A grant is announced once, so its remaining time must be re-derived each
+// tick or it never counts down.
 const announced = Model.sshAgentGrantViews(
   [{ grantId: 9, keyName: "personal ed25519", fingerprint: "SHA256:x", pid: 48213, processPath: "/usr/bin/ssh", expiresInSec: 120 }],
   10_000)
@@ -202,10 +202,8 @@ eq("and so does every view before the first tick",
   Model.sshAgentGrantsAt(announced, 0).length, 1)
 eq("a malformed set re-derives to nothing", Model.sshAgentGrantsAt(null, 1).length, 0)
 
-// A development helper is a state you can sit in for days without noticing,
-// signing with a binary that has no recorded digest and no provenance. The
-// warning has to say why that matters, and distinguish a shipped helper that
-// was rejected from one that was simply never there.
+// The development-helper warning says why it matters and whether the shipped
+// helper was rejected or just absent.
 const rejected = Model.sshAgentDevelopmentHelperWarning({ source: "development", checksum: "mismatch" })
 check("a rejected shipped helper is named as the reason", /checksum/i.test(rejected), rejected)
 const absent = Model.sshAgentDevelopmentHelperWarning({ source: "development", checksum: "unchecked" })
@@ -254,10 +252,8 @@ mixed = Model.sshAgentCooldownAfter(mixed, "approved", 100)
 mixed = Model.sshAgentCooldownAfter(mixed, "denied", 200)
 eq("an approval resets the denial run", Model.sshAgentCooldownActive(mixed, 200), false)
 
-// An approval cannot end a cooldown that is already running -- the cooldown is
-// precisely what stops the prompt an approval would answer. Only an explicit
-// resume ends it early; otherwise a user who dismissed two prompts waits out
-// the full five minutes with nothing they can do about it.
+// No prompt can appear during a cooldown, so only an explicit resume ends it
+// early.
 let stuck = Model.sshAgentCooldownInitial()
 stuck = Model.sshAgentCooldownAfter(stuck, "denied", 0)
 stuck = Model.sshAgentCooldownAfter(stuck, "denied", 100)
@@ -305,24 +301,17 @@ check("the status never names a key or a process",
 // Unlocking runs one `bw list items`, which takes seconds on a real vault.
 // The request that triggered the unlock is held across it, so without a
 // loading state the user unlocks and then watches nothing happen.
-const waiting = Model.sshAgentPromptView(Object.assign({}, request, { type: "unlock_required" }), 120)
-check("a held request can say it is still loading",
-  typeof Model.sshAgentLoadingNote === "function", "no loading note is available")
-if (typeof Model.sshAgentLoadingNote === "function") {
-  const note = Model.sshAgentLoadingNote()
-  check("the loading note says keys are on the way", /load/i.test(note), note)
-  check("the loading note does not promise it is instant",
-    !/instant|immediat/i.test(note), note)
-}
+const note = Model.sshAgentLoadingNote()
+check("the loading note says keys are on the way", /load/i.test(note), note)
+check("the loading note does not promise it is instant",
+  !/instant|immediat/i.test(note), note)
 
 // -------------------------------------------------------------------------
 // The panel wiring
 // -------------------------------------------------------------------------
 
-// Every file the SSH markup lives in: the settings sections and the approval
-// screen have their own, and Panel.qml keeps the rest. Reading only the first
-// would leave every "this must NOT appear" check below passing on content that
-// had simply moved.
+// Every file with SSH markup, so "must NOT appear" checks cannot pass on
+// content that merely moved.
 const sshUiFiles = [
   "Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml",
   "SshApprovalPopup.qml", "SshUnlockScreen.qml", "UnlockForm.qml",
@@ -340,15 +329,12 @@ const unlockSrc = ["SshUnlockScreen.qml", "UnlockForm.qml"]
   .map(readPluginSource)
   .join("\n")
 const unlockFormSrc = fs.existsSync(path.join(repoRoot, "UnlockForm.qml"))
-  ? fs.readFileSync(path.join(repoRoot, "UnlockForm.qml"), "utf8") : ""
+  ? read("UnlockForm.qml") : ""
 const sshUnlockOnly = fs.existsSync(path.join(repoRoot, "SshUnlockScreen.qml"))
-  ? fs.readFileSync(path.join(repoRoot, "SshUnlockScreen.qml"), "utf8") : ""
+  ? read("SshUnlockScreen.qml") : ""
 
-// plainLabel() wraps its argument in a span when the text contains markup
-// characters, which a PlainText control then renders literally. The field is
-// matched with whatever object it hangs off, because the settings sections
-// reach the panel as `panel` and the screens as `root`: pinning the prefix
-// would let these checks pass on content that had only moved between files.
+// Fields matched with any owner (`panel` in settings sections, `root` in
+// screens), so checks cannot pass on content that moved between files.
 for (const field of [
   "sshAgentVersion",
   "modelData.keyName",
@@ -372,17 +358,12 @@ check("there is a dedicated approval screen",
 check("an approval_required message raises the prompt",
   /message\.type === "approval_required"[\s\S]{0,600}?showSshApproval\(message\)/.test(panelSrc),
   "approval_required never raises the prompt")
-// Opening the panel sends an unlocked one to the item list, so a prompt that
-// claimed the screen first would be silently undone -- live state, blank
-// screen. Both halves of that ordering are pinned here because the failure is
-// invisible: everything reports healthy while nothing is drawn.
+// Opening the panel sends it to the item list, so a prompt must open it before
+// claiming the screen (else: live state, blank screen).
 check("the legacy panel is opened before its approval screen is claimed",
   /function showSshApproval\(message\)[\s\S]{0,1200}?sshAgentApprovalPopup[\s\S]{0,400}?return[\s\S]{0,600}?root\.open\(\)[\s\S]{0,200}?currentScreen = "sshApproval"/.test(panelSrc),
   "the screen is claimed before opening, so opening resets it")
-// Pinned on the ordering rather than on a character distance: what matters is
-// that a live prompt claims the screen and returns before the branch that
-// would send an unlocked panel to the item list, not how much housekeeping
-// happens above it.
+// Pinned on ordering, not character distance.
 const openedBody = panelSrc.slice(panelSrc.indexOf("function onPanelOpened()"),
   panelSrc.indexOf("function onPanelClosed") > 0
     ? panelSrc.indexOf("function onPanelClosed")
@@ -395,10 +376,8 @@ check("a withdrawn prompt counts toward the cooldown, an answered one does not",
   /message\.reason === "released"[\s\S]{0,800}?\} else \{[\s\S]{0,200}?sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(panelSrc),
   "an unanswered prompt never feeds the cooldown, and a released one must not")
 
-// The panel resets currentScreen in several of its own flows -- opening the
-// panel, finishing an unlock -- each of which silently dropped a live prompt
-// before. Screen visibility binds to activeScreen, which a live request wins,
-// so no later assignment can hide a question a client is blocked on.
+// Screen visibility binds to activeScreen, which a live request wins, so no
+// currentScreen assignment can hide it.
 check("a live prompt outranks navigation state",
   /readonly property string activeScreen: sshPrompt !== null && !sshAgentApprovalPopup \? "sshApproval" : currentScreen/.test(panelSrc),
   "no activeScreen; a stray currentScreen assignment can hide the prompt")
@@ -412,10 +391,8 @@ check("raising the prompt switches to the approval screen",
 check("a request that cannot prompt is denied rather than left hanging",
   /message\.type === "approval_required"[\s\S]{0,400}?sshAgentMayPrompt\(\)[\s\S]{0,200}?sshAgentDenyLine/.test(panelSrc),
   "a suppressed request is not answered")
-// A prompt that opened the panel on the user's behalf should hand the desktop
-// back when it is answered -- approved or denied alike. A panel the user had
-// already opened is theirs, so answering returns them to the screen they were
-// on rather than closing it under them.
+// A prompt that opened the panel closes it when answered; one the user opened
+// stays.
 check("answering a prompt that opened the panel closes it again",
   /function dismissSshApproval\(\)[\s\S]{0,900}?openedForThis && root\.opened\) root\.close\(\)/.test(panelSrc),
   "the panel stays open after an answer it opened itself for")
@@ -482,10 +459,8 @@ check("entering the cooldown is announced once, not on every refusal",
 check("a request the cooldown refuses does not feed the cooldown",
   /!sshAgentMayPrompt\(\)\)\s*\{\s*sshAgentWrite\(Model\.sshAgentDenyLine\(message\.requestId\)\)\s*return/.test(panelSrc),
   "a suppressed request records an outcome, so a busy process can hold the cooldown open")
-// SSH_AUTH_SOCK is fixed at login, so it says what routing *was*. A session
-// that started routed keeps reporting "matches" after the file is deleted,
-// which is precisely the window in which a warning would still be useful --
-// the notice therefore has to read the file, not the environment.
+// SSH_AUTH_SOCK is fixed at login, so the notice reads the routing file, not
+// the environment.
 const routed = { state: "matches" }
 eq("a deleted fragment is caught even while this session still points here",
   Model.sshAgentRoutingNotice({ state: "absent" }, routed).urgent, true)
@@ -611,11 +586,14 @@ check("the popup follows the panel's monitor",
 check("the popup exists only for opted-in pending SSH work",
   /sshAgentApprovalPopup\s*&&\s*\(panel\.sshPrompt !== null \|\| panel\.sshUnlockRequest !== null\)/.test(popupSrc),
   "the popup is not gated by both the setting and a pending request")
+check("popup mode claims the request without opening the panel",
+  /function startSshPromptClock\(\)[\s\S]{0,300}?if \(!root\.sshAgentApprovalPopup\) return false[\s\S]{0,80}?return true/.test(panelSrc),
+  "startSshPromptClock does not stop at the popup")
 check("popup mode leaves the anchored panel closed for approvals",
-  /function showSshApproval\(message\)[\s\S]{0,900}?if \(root\.sshAgentApprovalPopup\)[\s\S]{0,240}?return/.test(panelSrc),
+  /function showSshApproval\(message\)[\s\S]{0,300}?if \(startSshPromptClock\(\)\) return[\s\S]{0,600}?root\.open\(\)/.test(panelSrc),
   "showSshApproval always opens the panel")
 check("popup mode leaves the anchored panel closed for unlock requests",
-  /message\.type === "unlock_required"[\s\S]{0,1400}?if \(root\.sshAgentApprovalPopup\)[\s\S]{0,240}?return/.test(panelSrc),
+  /message\.type === "unlock_required"[\s\S]{0,900}?if \(startSshPromptClock\(\)\) return[\s\S]{0,200}?root\.open\(\)/.test(panelSrc),
   "unlock_required always opens the panel")
 check("changing presentation mode cannot strand a live request off-screen",
   /onSshAgentApprovalPopupChanged:[\s\S]{0,900}?sshPrompt \|\| root\.sshUnlockRequest[\s\S]{0,900}?root\.open\(\)/.test(panelSrc),
@@ -651,10 +629,8 @@ check("UnlockForm resets the eye when it hides, whichever screen hides it",
 
 // --- one unlock method at a time --------------------------------------------
 //
-// Fingerprint leads when enrolled, then a configured PIN, then the master
-// password, which is always available and so is the last stop. A method that
-// stops being available drops out on its own: too many PIN attempts clears the
-// PIN, `pinReady` goes false, and the form moves on without watching for it.
+// The first available of fingerprint, PIN, master password; an unavailable
+// method (e.g. PIN cleared after too many attempts) drops out by itself.
 check("the offered method is the first one that is actually set up",
   /method:\s*chosen[\s\S]{0,400}?methodAvailable\("fingerprint"\)\s*\?\s*"fingerprint"[\s\S]{0,120}?methodAvailable\("pin"\)\s*\?\s*"pin"\s*:\s*"password"/.test(unlockFormSrc),
   "fingerprint, then PIN, then master password")
@@ -666,7 +642,7 @@ check("each method draws on its own, so only one is on screen",
     .every((name) => new RegExp(`visible: form\\.fieldsOffered && form\\.method === "${name}"`).test(unlockFormSrc)),
   unlockFormSrc)
 check("one Unlock Vault button submits whichever typed method is offered",
-  /visible: form\.fieldsOffered && form\.method !== "fingerprint"[\s\S]{0,400}?text: form\.busy \?[\s\S]{0,200}?: "Unlock Vault"[\s\S]{0,300}?onClicked: form\.submitCurrentMethod\(\)/.test(unlockFormSrc)
+  /visible: form\.fieldsOffered && form\.method !== "fingerprint"[\s\S]{0,400}?text: form\.busy \?[\s\S]{0,200}?"Unlock Vault"[\s\S]{0,300}?onClicked: form\.submitCurrentMethod\(\)/.test(unlockFormSrc)
     && /function submitCurrentMethod\(\)[\s\S]{0,200}?submitPinUnlock\(\)[\s\S]{0,120}?unlockVault\(\)/.test(unlockFormSrc),
   "the PIN and the master password must be submitted the same way")
 check("a failed fingerprint keeps its reason on whichever screen follows",
@@ -794,9 +770,4 @@ check("popup accepts Shift+Escape to deny all requests",
   /event\.modifiers\s*&\s*Qt\.ShiftModifier[\s\S]{0,120}?popup\.panel\.denyAllSshRequests\(\)/.test(popupSrc),
   "popup does not handle Shift+Escape for deny all")
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`ssh-agent-ui: ${pass} passed`)
+done()

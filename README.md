@@ -4,7 +4,7 @@ Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
 every item type without opening a browser.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.10.0-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.10.1-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -61,6 +61,12 @@ folder, organization and type without leaving the keyboard.
 **Suggestions** read the focused window or browser tab and pin the matching
 credential to the top, so <kbd>Enter</kbd> is usually the only key you need.
 Pick an item once for a site a title cannot match, and it is remembered.
+
+Suggestions come from the window **title**, because that is all Hyprland
+exposes -- not the tab's real address. A page chooses its own title, so a
+phishing page titled `github.com` is suggested your GitHub login just like
+the real one. Check the address bar before you paste; unlike browser
+autofill, this is no defence against a look-alike site.
 
 <br clear="all">
 
@@ -155,8 +161,9 @@ Opt-in. Serves the SSH keys in your vault to `ssh`, Git and `ssh-keygen -Y sign`
 while the vault is unlocked, from a helper process that holds the private keys
 in memory -- never on disk, never in QML.
 
-Every signature names the key, its fingerprint and the program asking. One
-approval can cover a whole rebase; live grants are listed and revocable.
+Every signature says what is being signed and names the key, its fingerprint
+and the program asking. One approval can cover a whole rebase -- and only the
+rebase's signatures; live grants are listed and revocable.
 
 **[Setup, verification and threat model →](docs/ssh-agent.md)**
 
@@ -233,10 +240,11 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
     and mobile apps -- not the CLI.
 [^bio-linux]: On Linux the desktop app's biometric unlock goes through a polkit
     agent rather than a fingerprint reader directly.
-[^fido]: **This plugin** verifies the key itself through its own PAM stack,
-    loaded from the plugin directory, against the registration
-    `omarchy setup security fido2` writes. No Bitwarden client offers FIDO2
-    unlock, so there is no upstream column to match.
+[^fido]: **This plugin** asks the key for its `hmac-secret` on the
+    registration `omarchy setup security fido2` writes, and that secret opens
+    the stored password -- so unlocking needs the key, not only a touch. No
+    Bitwarden client offers FIDO2 unlock, so there is no upstream column to
+    match.
 [^totp]: All three read TOTP codes -- `bw get totp` on the CLI. The check
     here is for the follow-up: <kbd>Enter</kbd> copies the password and then
     replaces it with the live code a few seconds later, so a login and its
@@ -357,15 +365,29 @@ The cursor starts on the option already in effect, so <kbd>Enter</kbd> never cha
 
 ## Optional features
 
+### How quick unlock stores your password
+
+PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unlock` accepts nothing else. The plugin keeps it **once**, in a single keyring item (`service=qs-bitwarden-cli, account=unlock_envelope`):
+
+- The first time `bw` accepts a password you typed -- a login, or unlocking with your master password -- it is encrypted under a random key with XChaCha20-Poly1305, and the whole item is sealed to this machine and your user with `systemd-creds --user`. A copy taken off this machine is useless.
+- Each unlock method you turn on adds its own way to that one key, and none of them stores the password again. Turning a method off removes only its way in.
+- The master password you are asked for when turning a method on is a **check** against the stored one, not a new copy: a wrong one is refused, and nothing you type there is stored.
+- If you change your master password elsewhere, the next unlock with the new one re-seals the stored copy and keeps every method.
+- Logging out deletes it.
+
+The small helper that does the encryption (`bin/x86_64-linux/qs-bitwarden-unlock-key`) ships and is verified exactly like the SSH helper; if it is missing or fails its check, quick unlock is unavailable and your master password still works. Everything else is the operating system: `argon2`, `systemd-creds`, `fido2-assert` and `secret-tool`.
+
+Upgrading from 1.10.0 or earlier needs nothing from you. The old entries -- a plaintext copy for fingerprint and for FIDO2, an encrypted one for the PIN -- are moved in as each method is next used, and deleted once the new copy opens.
+
+**The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. A fingerprint releases no secret to encrypt with, so with fingerprint unlock on, a program running as you while you are logged in can open it. A PIN or a FIDO2 key cannot be bypassed that way; root, as always, can read anything.
+
 ### PIN unlock
 
-Turn on **Unlock with PIN** in the settings screen. You are asked for your master password once (it is needed to encrypt) and for a PIN. Six digits or more is what the screen asks for; four and five are accepted but shown in red with the number of combinations spelled out, so a weak PIN is a decision rather than an accident.
+Turn on **Unlock with PIN** in the settings screen. Confirm your master password and choose a PIN. Six digits or more is what the screen asks for; four and five are accepted but shown with the real cost of guessing them, so a weak PIN is a decision rather than an accident.
 
-**How it differs from fingerprint unlock.** Fingerprint unlock keeps your master password in the login keyring in the clear, because PAM can only prove presence. A PIN can do better: the master password is encrypted with a key derived from the PIN (PBKDF2-SHA256, 600,000 iterations, salted) and only the ciphertext is stored, so reading the keyring is not by itself enough. A wrong PIN fails decryption, which means correctness needs no stored hash and there is no hash to attack.
+The PIN reaches the stored password through **Argon2id** (256 MiB of memory, 4 passes, about 0.75 s of one CPU core per guess), from the OS `argon2` tool. Because the stored item is sealed to this machine, guessing has to happen here, as you: roughly 2 hours of one core for 4 digits, 21 hours for 5, and 9 days for 6. A wrong PIN always fails -- the encryption is authenticated, so there is no "decrypts to garbage" case.
 
-**The honest limit.** A short PIN is a small search space, and if the ciphertext leaks, the iteration count is the only thing standing between an attacker and your master password. Five wrong attempts at the panel deletes the stored ciphertext, but that is a UI throttle and does nothing against an offline attack on a copy of the blob. Concretely: 4 digits is 10,000 candidates, which is minutes of offline guessing even at 600,000 PBKDF2 rounds each; 6 digits is 1,000,000, and 8 is 100,000,000. Pick accordingly.
-
-The stored ciphertext is removed when you turn the setting off, after five wrong attempts, or when the vault rejects the decrypted password (for example after a master password change).
+Five wrong attempts at the panel removes the PIN's way in, and turning it back on needs your master password. That is a limit on the screen, not on a copy of the keyring; the Argon2 cost is what stands behind it.
 
 ### Fingerprint unlock
 
@@ -378,17 +400,16 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 
 **How it works**
 
-1. Switch **Unlock with fingerprint** on in the settings screen. It asks for your master password once -- the same way setting a PIN does -- and stores it in the login keyring under `service=qs-bitwarden-cli, account=master_password`.
-2. On every later lock, opening the panel arms the reader. A verified fingerprint releases the stored password to `bw unlock`; the password field remains available as a fallback at all times.
-3. Unlocking with your master password afterwards refreshes the stored copy, so changing your master password does not silently strand the enrolment.
+1. Switch **Unlock with fingerprint** on in the settings screen and confirm your master password.
+2. On every later lock, opening the panel arms the reader. A verified fingerprint opens the stored password for `bw unlock`; the password field remains available as a fallback at all times.
 
 **Security trade-off -- read before enabling**
 
-PAM can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. Fingerprint unlock therefore keeps your master password in the OS login keyring and treats a verified fingerprint as the gate on reading it back. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock, and it means **anyone who can read your unlocked login keyring can read your master password**. It is off by default and worth leaving off on a shared or unattended machine.
+PAM can prove that you are present, but a fingerprint releases no secret, so it cannot encrypt anything by itself. Fingerprint unlock is the one method whose way in is protected only by the machine seal, which means **a program running as you while you are logged in can open the stored password without your finger**. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock. It is off by default and worth leaving off on a shared or unattended machine -- and with it on, a PIN or a key does not make the stored password any safer.
 
-The stored password is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, log out of the account, or when the vault rejects it (for example after a master password change, which then prompts you for the new one).
+Its way in is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, or log out.
 
-**A closed lid takes the option off the screen.** The reader is on the laptop body, so with the lid shut -- clamshell mode, or simply closed on a docked machine -- there is nothing to touch. While it is down, the locked screen hides **Unlock with Fingerprint**, the SSH prompt does the same, and the reader is not armed on open; the note asking you to unlock once with your master password stays, because that is still true. Omarchy's own detector (`omarchy-hw-laptop-closed`) decides, and a machine with no lid never reports one. Nothing is forgotten: the stored password stays in the keyring, the settings toggle is unchanged, and the option is back the moment the lid opens. A FIDO2 key on a cable is unaffected.
+**A closed lid takes the option off the screen.** The reader is on the laptop body, so with the lid shut -- clamshell mode, or simply closed on a docked machine -- there is nothing to touch. While it is down, the locked screen hides **Unlock with Fingerprint**, the SSH prompt does the same, and the reader is not armed on open. Omarchy's own detector (`omarchy-hw-laptop-closed`) decides, and a machine with no lid never reports one. Nothing is forgotten: the settings toggle is unchanged, and the option is back the moment the lid opens. A FIDO2 key on a cable is unaffected.
 
 ### FIDO2 key unlock
 
@@ -396,22 +417,19 @@ Set `fidoUnlock` to `true` to unlock the vault with a FIDO2 authenticator (a Yub
 
 **Requirements**
 
-- A FIDO2 key registered through `omarchy setup security fido2`. That one command detects the key, installs `libfido2`/`pam-u2f`, registers it, and wires it for the system's own authentication prompts; the plugin reads the same registration (`/etc/fido2/fido2`) and offers the command itself when no key is registered yet. The option stays hidden on a machine with no key.
-- A running, unlocked OS keyring, as used by `rememberSession`.
-
-Unlike the fingerprint stack, the PAM configuration is shipped **inside the plugin** and loaded from the plugin's own directory (Quickshell's `configDirectory`, i.e. Linux-PAM's `pam_start_confdir`), so enabling FIDO2 unlock needs no privileged change to `/etc/pam.d`.
+- A FIDO2 key registered through `omarchy setup security fido2`. That one command detects the key, installs `libfido2`/`pam-u2f`, registers it, and wires it for the system's own authentication prompts; the plugin uses that same registration (`/etc/fido2/fido2`) and offers the command itself when no key is registered yet. The option stays hidden on a machine with no key.
+- A key that supports the `hmac-secret` extension, which current YubiKeys and most FIDO2 keys do.
 
 **How it works**
 
-1. Switch **Unlock with FIDO2 key** on in the settings screen. If no key is registered, it first hands off to `omarchy setup security fido2`; otherwise it asks for your master password once -- the same way setting a PIN or a fingerprint does -- and stores it in the login keyring under `service=qs-bitwarden-cli, account=fido_password`.
-2. On every later lock, opening the panel arms the key if one is plugged in (falling back to the fingerprint reader otherwise). A verified key touch releases the stored password to `bw unlock`; the password field remains available as a fallback at all times.
-3. Unlocking with your master password afterwards refreshes the stored copy.
+1. Switch **Unlock with FIDO2 key** on in the settings screen. If no key is registered, it first hands off to `omarchy setup security fido2`; otherwise confirm your master password and touch the key once.
+2. On every later lock, opening the panel arms the key if one is plugged in (falling back to the fingerprint reader otherwise). One touch asks the key for a secret only it can produce -- its `hmac-secret` for the registered credential -- and that secret opens the stored password. The password field remains available as a fallback at all times.
 
-**Security trade-off -- read before enabling**
+The key will not produce that secret without a touch, so unlocking needs the key itself, not just a program able to read your keyring. Each registered key that is plugged in when you turn the option on gets its own way in, so a backup key works too.
 
-The same one the fingerprint section states, and for the same reason: a FIDO2 key can prove that you are present, but it cannot produce your Bitwarden master password, and `bw unlock` accepts nothing else. FIDO2 unlock therefore keeps your master password in the OS login keyring and treats a verified key touch as the gate on reading it back, so **anyone who can read your unlocked login keyring can read your master password**. It is off by default.
+Registrations made with `+pin` or `+verification` (a key PIN at every system prompt) are not used: the panel cannot collect the key's PIN yet, and a touch alone would be weaker than what the registration asks of the system.
 
-The stored password is removed when you turn the setting off, press **Forget FIDO2 Key** on the locked screen, log out of the account, or when the vault rejects it. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
+Its way in is removed when you turn the setting off, press **Forget FIDO2 Key** on the locked screen, or log out. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
 
 ### SSH agent
 
@@ -488,9 +506,9 @@ The following settings are read from the plugin's own entry in the
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
-| `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Stores your master password in the OS login keyring -- see [Optional: Fingerprint Unlock](#fingerprint-unlock). |
-| `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator. Reuses the registration `omarchy setup security fido2` writes and stores your master password in the OS login keyring -- see [FIDO2 key unlock](#fido2-key-unlock). |
-| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN. Stores the master password encrypted under a PIN-derived key -- see [Optional: PIN Unlock](#pin-unlock). |
+| `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. |
+| `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |
+| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN, through Argon2id -- see [PIN unlock](#pin-unlock). |
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](docs/ssh-agent.md). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
 | `sshAgentApprovalPopup` | `boolean` | `true` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show prompts in the panel. Multiple concurrent requests are queued sequentially with a "1 of N" counter and "Deny all" option. Escape and outside click deny. |
@@ -607,7 +625,8 @@ Nothing will prompt you -- there are no `ignore` conditions to trip, because
 cargo's own semver rules already hold `0.10` back from `0.11`.
 
 Every accepted bump, major or not, changes the shipped bytes and so needs the
-binary rebuilt in the same change -- see the `needs-binary-rebuild` label:
+binary rebuilt in the same change, by hand -- see the `needs-binary-rebuild`
+label:
 
 ```bash
 gh pr checkout <n>
@@ -615,11 +634,15 @@ gh pr checkout <n>
 git commit -am "deps: rebuild the agent binary" && git push
 ```
 
-CI never does this for you. `--compare-tracked` proves the committed bytes are
-what the committed source builds; it cannot tell you whether that source is
-trustworthy, and a malicious crate builds just as reproducibly as an honest
-one. Reading the `Cargo.lock` diff before you commit the binary is the only
-check that covers that, which is why the rebuild stays a human step.
+For other source changes CI does it: on a pull request into a release branch
+from this repository, `helper-rebuild.yml` rebuilds the helpers in the pinned
+image and commits them to the PR branch. It never does so when `Cargo.lock`,
+`Cargo.toml` or `rust-toolchain.toml` changed, or for Dependabot or a fork.
+`--compare-tracked` proves the committed bytes are what the committed source
+builds; it cannot tell you whether that source is trustworthy, and a malicious
+crate builds just as reproducibly as an honest one. Reading the `Cargo.lock`
+diff before you commit the binary is the only check that covers that, which
+is why dependency rebuilds stay a human step.
 
 ---
 

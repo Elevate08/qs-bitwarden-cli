@@ -1,0 +1,146 @@
+# Rebuilds the committed helper binaries for a pull request and commits them
+# to the PR branch, so a source change needs no second, hand-made commit.
+#
+# Only when scripts/helper-autocommit-eligible.sh -- the base branch's copy,
+# never the PR's own -- says so: a same-repository
+# PR into a release branch that leaves Cargo.lock, Cargo.toml and
+# rust-toolchain.toml alone. Dependency and toolchain changes are still rebuilt
+# by a person, because reading that diff is the only check against a
+# malicious crate (which builds just as reproducibly as an honest one).
+#
+# Two jobs, so the job that runs repository code never holds a write token:
+#
+#   build   read-only, in the digest-pinned image: compare, rebuild, upload
+#   commit  contents/actions write, runs no repository code: verify the
+#           artifact's checksums, commit only bin/, push, then dispatch
+#           agent-build.yml so the new commit gets its own checks
+
+name: helper rebuild
+
+on:
+  pull_request:
+    branches: ['release/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helper-rebuild-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: rebuild the helpers if they drifted
+    runs-on: ubuntu-24.04
+    container:
+      image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+    outputs:
+      rebuilt: ${{ steps.rebuild.outputs.rebuilt }}
+
+    steps:
+      - name: Check out the pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The head, not the merge preview: the bytes are committed onto it.
+          # Full history, for `git archive` and the diff against the base.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Compare, and rebuild if eligible
+        id: rebuild
+        env:
+          QSBW_PINNED_BUILD: '1'
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if ./scripts/build-agent.sh --compare-tracked; then
+            echo "rebuilt=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The base branch's copy of the gate, not this PR's: a pull request
+          # cannot edit the script that judges it. (It could still edit this
+          # workflow, which is a diff a reviewer sees.) Anything that stops
+          # it running reads as "no".
+          eligible="$(git show "origin/${GITHUB_BASE_REF}:scripts/helper-autocommit-eligible.sh" 2>/dev/null | bash)"
+          if [ "$eligible" != "yes" ]; then
+            echo "::notice::the helpers drifted but this PR is not eligible for a CI commit; agent build reports it"
+            echo "rebuilt=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ./scripts/build-agent.sh
+          cat bin/SHA256SUMS
+          echo "rebuilt=yes" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the rebuilt helpers
+        if: steps.rebuild.outputs.rebuilt == 'yes'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helper-rebuild
+          path: |
+            bin/x86_64-linux/qs-bitwarden-ssh-agent
+            bin/x86_64-linux/qs-bitwarden-unlock-key
+            bin/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  commit:
+    name: commit the rebuilt helpers
+    needs: build
+    if: needs.build.outputs.rebuilt == 'yes'
+    runs-on: ubuntu-24.04
+    permissions:
+      # Push bin/ to this PR's branch, and dispatch agent-build.yml on it (a
+      # push made with this token starts no workflow by itself).
+      contents: write
+      actions: write
+
+    steps:
+      - name: Check out the pull request branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Refuse a branch that moved since the build
+        env:
+          BUILT: ${{ github.event.pull_request.head.sha }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$BUILT" ] || {
+            echo "::error::the branch moved after these helpers were built; the newer push rebuilds them"
+            exit 1
+          }
+
+      - name: Download the rebuilt helpers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: helper-rebuild
+          path: candidate
+
+      - name: Verify and stage only bin/
+        run: |
+          ( cd candidate && sha256sum -c SHA256SUMS )
+          cp candidate/x86_64-linux/qs-bitwarden-ssh-agent \
+             candidate/x86_64-linux/qs-bitwarden-unlock-key bin/x86_64-linux/
+          cp candidate/SHA256SUMS bin/SHA256SUMS
+          rm -rf candidate
+          chmod 755 bin/x86_64-linux/qs-bitwarden-ssh-agent bin/x86_64-linux/qs-bitwarden-unlock-key
+          ( cd bin && sha256sum -c SHA256SUMS )
+          git add bin/SHA256SUMS bin/x86_64-linux/qs-bitwarden-ssh-agent \
+                  bin/x86_64-linux/qs-bitwarden-unlock-key
+          other="$(git status --porcelain | grep -v '^M  bin/' || true)"
+          [ -z "$other" ] || { echo "::error::refusing to commit anything outside bin/:"; echo "$other"; exit 1; }
+
+      - name: Commit, push and re-check
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "build: rebuild helpers" \
+            -m "Built in the digest-pinned image by $RUN_URL from $(git rev-parse --short HEAD)." \
+            -m "$(cat bin/SHA256SUMS)"
+          git push origin "HEAD:$HEAD_REF"
+          gh workflow run agent-build.yml --ref "$HEAD_REF"

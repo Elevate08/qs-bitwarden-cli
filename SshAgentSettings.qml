@@ -3,16 +3,9 @@ import qs.Commons
 import qs.Ui
 import "BitwardenModel.js" as Model
 
-// The SSH agent's own settings sections, lifted out of Panel.qml so that file
-// is not the only place this feature can be read.
-//
-// Two separate things, deliberately drawn apart. The top half is what the
-// feature is doing; the bottom half is whether the user's terminals will
-// reach it. Neither one gates the other. The approval screen lives with the
-// other screens in Panel.qml, because that is what it is.
-//
-// `panel` is the Panel root: this section reads its vault and agent state and
-// calls back into it for every action. Nothing here holds state of its own.
+// The SSH agent settings sections: what the agent is doing, then whether the
+// user's terminals reach it (routing). Neither gates the other. Stateless;
+// reads the vault and calls back into it.
 Column {
   id: section
 
@@ -56,9 +49,7 @@ Column {
     }
   }
 
-  // Which helper is running. A developer with a local build and a
-  // user on a release see the same panel otherwise, and confusing
-  // the two wastes an afternoon.
+  // Which helper is running (shipped or local build).
   SshCaption {
     panel: section.panel
     visible: vault.sshAgentHelper.source !== ""
@@ -67,9 +58,7 @@ Column {
     color: vault.sshAgentHelper.source === "development" ? panel.urgent : panel.dim
   }
 
-  // Why the feature is unavailable, when it is. These are the
-  // failures a real clone produces: a stale binary, a dropped file
-  // mode, an LFS placeholder.
+  // Why the feature is unavailable, if it is.
   SshCaption {
     panel: section.panel
     visible: vault.sshAgentEnabled && vault.sshAgentHelper.message !== ""
@@ -77,19 +66,15 @@ Column {
     color: panel.urgent
   }
 
-  // The helper's own version, once it has said hello. Non-secret,
-  // and the quickest way to tell a stale bundled binary apart from
-  // a working one.
+  // The helper's version, once it said hello.
   SshCaption {
     panel: section.panel
     visible: vault.sshAgentVersion !== ""
     text: "Helper version " + vault.sshAgentVersion
   }
 
-  // Routing is the thing most likely to be missing when the agent looks
-  // healthy and SSH still does not use it. Said here because this is the
-  // block a user reads first, and decided by the routing file rather than by
-  // this session's SSH_AUTH_SOCK -- see sshAgentRoutingNotice for why.
+  // The most likely reason a healthy agent goes unused. Judged by the routing
+  // file; see sshAgentRoutingNotice().
   SshCaption {
     panel: section.panel
     visible: vault.sshAgentSetup.state === "enabled" && !vault.sshAgentSetup.busy
@@ -111,8 +96,7 @@ Column {
     color: vault.sshRouting.state === "matches" ? panel.dim : panel.fg
   }
 
-  // The check the user runs in the terminal they actually use --
-  // which is the only place the answer is authoritative.
+  // Only the user's own terminal gives the authoritative answer.
   Text {
     textFormat: Text.PlainText
     width: parent.width
@@ -128,9 +112,7 @@ Column {
     text: vault.uwsmFragment.message
   }
 
-  // Replacing the session's primary agent is a real decision, so the
-  // conflict is stated and confirmed rather than absorbed by the
-  // first click.
+  // Replacing the session's agent is confirmed, not done on the first click.
   SshCaption {
     panel: section.panel
     visible: vault.uwsmConfirmPending
@@ -147,10 +129,8 @@ Column {
     color: panel.fg
   }
 
-  // A Flow, because which of these four are showing is decided by the routing
-  // state: the idle pair and the confirming pair are each narrow enough, but
-  // nothing in a Row enforces that, and a Row answers a set that is too wide by
-  // laying the last button out past the panel edge rather than wrapping it.
+  // A Flow, so whichever buttons the routing state shows wrap instead of
+  // overflowing the panel.
   Flow {
     width: parent.width
     spacing: Style.space(8)
@@ -208,9 +188,7 @@ Column {
     text: "ACTIVE APPROVALS"
   }
 
-  // Every live grant, with the process it belongs to and what is
-  // left of it. A grant is a window in which signing happens with
-  // no prompt, so it has to be visible and revocable while it runs.
+  // Live grants sign without prompting, so each is listed and revocable.
   Repeater {
     model: vault.sshGrants
 
@@ -224,6 +202,8 @@ Column {
         width: parent.width - Style.space(110)
         text: modelData.keyName + "  ·  "
           + modelData.processName
+          + (modelData.operationLabel ? "  ·  " + modelData.operationLabel : "")
+          + (modelData.hostKey ? "  ·  " + modelData.hostKey : "")
           + "  ·  " + modelData.remainingLabel
       }
 

@@ -2,19 +2,13 @@
 
 use crate::keystore::{AuthorizationPermit, KeyStore};
 use crate::peer::PeerContext;
+use crate::protocol::SignKind;
 
 /// Requests pending approval and held for an unlock, counted together.
 pub const MAX_PENDING: usize = 4;
-/// How long a person has to answer a prompt before the request is abandoned.
-///
-/// This is a human deadline, not a machine one: the panel has to open, the
-/// user has to notice it, read a fingerprint, and decide. Thirty seconds --
-/// the figure the original design carried -- turned out to be shorter than
-/// that takes in practice, and expired prompts under a user who was simply
-/// reading them, and each expiry counted toward the denial cooldown.
-///
-/// The bound that actually reclaims resources promptly is the client
-/// disconnect, which the server watches for while a request is pending.
+/// How long a person has to answer a prompt. Two minutes, since 30 s expired
+/// while users were still reading (each expiry counts toward the cooldown).
+/// Client disconnects, watched while pending, reclaim resources sooner.
 pub const REQUEST_LIFETIME_MS: u64 = 120_000;
 const MAX_GRANT_SECONDS: u64 = 900;
 
@@ -51,9 +45,25 @@ impl Authorization {
     /// Recheck epoch, lock state, and key identity at the final signing point.
     pub fn finalize(self, store: &KeyStore) -> Option<AuthorizationPermit> {
         let permit = store.authorize(&self.public_blob)?;
-        // `authorize` is current-state authoritative. The explicit epoch check
-        // keeps a token from a previous unlock from crossing after a reload.
+        // The epoch check stops a token from a previous unlock after a reload.
         (store.epoch() == self.epoch).then_some(permit)
+    }
+}
+
+/// What one sign request asks for, beyond the key and the requesting program.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignScope {
+    pub kind: SignKind,
+    /// Arrived over a connection OpenSSH bound for agent forwarding.
+    pub forwarded: bool,
+}
+
+impl SignScope {
+    /// Whether approving may open a grant, and a live grant may answer. Never
+    /// for forwarded requests (the grant would cover local `ssh`, letting the
+    /// remote host sign) or unrecognised data (a grant must say what it covers).
+    pub fn grantable(&self) -> bool {
+        !self.forwarded && self.kind != SignKind::Other
     }
 }
 
@@ -62,6 +72,7 @@ struct Pending {
     epoch: u64,
     public_blob: Vec<u8>,
     peer: PeerContext,
+    scope: SignScope,
     deadline_ms: u64,
 }
 
@@ -71,6 +82,9 @@ pub struct Grant {
     pub id: GrantId,
     pub public_blob: Vec<u8>,
     pub peer: PeerContext,
+    /// The one kind of signature this grant answers: logins as one user, or
+    /// SSHSIG in one namespace.
+    pub kind: SignKind,
     pub epoch: u64,
     pub expires_at_ms: u64,
 }
@@ -100,17 +114,21 @@ impl ApprovalManager {
         epoch: u64,
         public_blob: &[u8],
         peer: PeerContext,
+        scope: SignScope,
         now_ms: u64,
     ) -> Result<Submit, ApprovalError> {
         if peer.uid != self.expected_uid {
             return Err(ApprovalError::WrongUid);
         }
         self.expire(now_ms);
-        if self.grants.iter().any(|grant| {
-            grant.epoch == epoch
-                && grant.public_blob == public_blob
-                && grant.peer.shares_grant_scope(&peer)
-        }) {
+        if scope.grantable()
+            && self.grants.iter().any(|grant| {
+                grant.epoch == epoch
+                    && grant.public_blob == public_blob
+                    && grant.kind == scope.kind
+                    && grant.peer.shares_grant_scope(&peer)
+            })
+        {
             return Ok(Submit::Granted(Authorization {
                 epoch,
                 public_blob: public_blob.to_vec(),
@@ -129,6 +147,7 @@ impl ApprovalManager {
             epoch,
             public_blob: public_blob.to_vec(),
             peer,
+            scope,
             deadline_ms: now_ms.saturating_add(REQUEST_LIFETIME_MS),
         });
         Ok(Submit::Pending(id))
@@ -147,7 +166,9 @@ impl ApprovalManager {
             .position(|request| request.id == id)
             .ok_or(ApprovalError::UnknownRequest)?;
         let request = self.pending.remove(index);
-        if grant_seconds > 0 {
+        // Enforced here, not trusted to the panel: a non-grantable request is
+        // approved once whatever window came back.
+        if grant_seconds > 0 && request.scope.grantable() {
             let grant_id = self.next_grant_id;
             self.next_grant_id = self
                 .next_grant_id
@@ -158,6 +179,7 @@ impl ApprovalManager {
                 id: grant_id,
                 public_blob: request.public_blob.clone(),
                 peer: request.peer,
+                kind: request.scope.kind,
                 epoch: request.epoch,
                 expires_at_ms: now_ms.saturating_add(duration_ms),
             });
@@ -177,8 +199,8 @@ impl ApprovalManager {
         self.grants.retain(|grant| grant.expires_at_ms > now_ms);
     }
 
-    /// Lock, logout, account change, suspend, screen lock, disable, and epoch
-    /// change all use this same deny/cancel operation.
+    /// The one deny/cancel for lock, logout, account change, suspend, screen
+    /// lock, disable and epoch change.
     pub fn invalidate_all(&mut self) {
         self.pending.clear();
         self.grants.clear();
@@ -197,9 +219,8 @@ impl ApprovalManager {
             .retain(|grant| !grant.peer.shares_grant_scope(peer));
     }
 
-    /// Reserve an identifier for a request the caller holds itself -- one
-    /// waiting on an unlock rather than on an approval. Drawn from the same
-    /// sequence, so no two live requests can ever share an id.
+    /// Reserve an id for a request the caller holds (waiting on an unlock),
+    /// from the same sequence as pending ones.
     pub fn reserve_request_id(&mut self) -> Result<RequestId, ApprovalError> {
         let id = self.next_id;
         self.next_id = self
@@ -209,14 +230,12 @@ impl ApprovalManager {
         Ok(id)
     }
 
-    /// Same-UID enforcement, for requests the caller holds itself rather than
-    /// registering as pending.
+    /// Same-UID check for requests the caller holds.
     pub fn expects_uid(&self, uid: u32) -> bool {
         uid == self.expected_uid
     }
 
-    /// How many more requests may exist across both the pending set and any
-    /// the caller is holding. The four-request bound covers them together.
+    /// Remaining capacity across pending and held requests (four in total).
     pub fn capacity_remaining(&self, held: usize) -> usize {
         MAX_PENDING.saturating_sub(self.pending.len() + held)
     }

@@ -1,29 +1,17 @@
 #!/usr/bin/env node
-// The helper ships as committed bytes, which is only defensible if anyone can
-// rebuild them from the committed source. These tests guard the parts of that
-// promise which rot silently: a digest that drifts between the build script
-// and the workflow, an image pinned by tag instead of digest, a build that
-// would claim reproducibility it cannot support, or a toolchain pin nothing
-// actually enforces.
-//
-// They deliberately do not run a build. The build needs a container this
-// machine may not have; what can be checked here is that the definition is
-// coherent and refuses the right things.
+// Guards the reproducible-build definition of the committed helpers: pinned
+// digests that agree, an image pinned by digest, no unsupported
+// reproducibility claims, and an enforced toolchain pin. No build is run (it
+// needs a container); only that the definition is coherent.
 //
 //   node tests/ssh-agent-artifact.test.js
 
-const fs = require("fs")
+const { createSuite, read, repoRoot } = require("./harness")
 const path = require("path")
 const { spawnSync } = require("child_process")
 
-const repoRoot = path.join(__dirname, "..")
-const read = p => fs.readFileSync(path.join(repoRoot, p), "utf8")
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
-const eq = (label, actual, expected) =>
-  check(label, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
+const { check, eq, done } = createSuite("ssh-agent-artifact")
 
 const script = read("scripts/build-agent.sh")
 const workflow = read(".github/workflows/agent-build.yml")
@@ -121,10 +109,8 @@ const wrongTarget = spawnSync("bash", [path.join(repoRoot, "scripts/build-agent.
 eq("an unsupported target is refused", wrongTarget.status, 1)
 check("the refusal names the target", /aarch64/.test(wrongTarget.stderr), wrongTarget.stderr.slice(0, 160))
 
-// The pinned environment is entered, not started: CI runs this script inside
-// the image, where no container runtime exists. Conflating "am I pinned" with
-// "can I start a container" made the script refuse in the one place it was
-// written for, so both halves are pinned down here.
+// CI runs the script inside the image (no container runtime), so "am I
+// pinned" must not mean "can I start a container".
 check("the script recognises being inside the pinned environment",
   /in_pinned_environment\(\)/.test(script) && /QSBW_PINNED_BUILD/.test(script),
   "the script cannot tell it is already in the pinned image")
@@ -138,11 +124,7 @@ check("a container runtime is used to enter the image, not required to be in it"
   /reexec_in_container/.test(script),
   "no path re-executes the build inside the pinned image")
 
-// Asked through --explain rather than by running it. Invoking
-// --verify-reproducible here would pull a 700MB image and run two full
-// release builds just to observe a decision -- which is what this file's
-// header promises not to do, and what it was doing on any machine with a
-// container runtime until CI pointed it out.
+// Via --explain, so no image is pulled and no build runs.
 const explain = run("--explain")
 eq("--explain reports without acting", explain.status, 0)
 check("--explain names the environment it would build in",
@@ -165,10 +147,8 @@ check("an unpinned build is possible but must be asked for",
   /--allow-unpinned/.test(script) && /not reproducible/.test(script),
   "no way to build without a container, or no warning that it is not the release artifact")
 
-// The comparison is only meaningful from inside the pinned image: the tracked
-// bytes were produced there, and it pins glibc and binutils as well as the
-// compiler. Run against a host toolchain it reports drift that is not drift --
-// which, for the mode that exists to be a PR gate, is the worst way to fail.
+// Only meaningful inside the pinned image; a host toolchain reports false
+// drift.
 check("--compare-tracked enters the pinned image like every other build mode",
   /compare_tracked\(\)[\s\S]{0,700}?in_pinned_environment[\s\S]{0,300}?reexec_in_container "\$runtime" --compare-tracked/.test(script),
   "the drift check builds with whatever toolchain the host happens to have")
@@ -181,12 +161,8 @@ check("--compare-tracked reports drift without writing to the repository",
     && !/compare_tracked\(\)[\s\S]{0,1400}?install -m/.test(script),
   "the drift check writes into the repository")
 
-// Every mode must build the same way. They did not: the release build put its
-// target directory outside the remapped source root while the comparison
-// modes put it inside, so the bytes CI offered as the candidate differed from
-// the bytes --verify-reproducible had just declared identical. Committing
-// those would have made the first --compare-tracked fail, or passed by luck
-// and shipped a binary nobody could reproduce.
+// Every mode must use one builder (the target dir once differed between
+// modes, and so did the bytes).
 check("every build mode goes through one builder",
   (script.match(/build_clean_copy /g) || []).length >= 3,
   "the modes do not share a build procedure, so they can diverge again")
@@ -197,10 +173,7 @@ check("no mode passes its own target directory",
   !/build_into "[^"]*" "[^"]*"/.test(script),
   "a per-mode target directory is how the two paths diverged before")
 
-// The artifact paths and the flag name are what Task 18 and its verification
-// step refer to. They were wrong once -- a flat bin/ and a --check flag the
-// task list never mentions -- and the cost of that is only paid later, when
-// the binary is committed and everything has to be moved.
+// Paths and flag names the release process refers to.
 check("the artifact is architecture-scoped",
   /OUTPUT_ARCH="x86_64-linux"/.test(script) && /OUTPUT_DIR="\$REPO_ROOT\/bin\/\$OUTPUT_ARCH"/.test(script),
   "a flat bin/ has to be restructured the day a second target appears")
@@ -208,8 +181,57 @@ check("checksums go to one SHA256SUMS, not a sidecar per binary",
   /SUMS_FILE="\$REPO_ROOT\/bin\/SHA256SUMS"/.test(script),
   "no bin/SHA256SUMS")
 check("the checksum file is written relative to bin/ so sha256sum -c works there",
-  /cd "\$REPO_ROOT\/bin" && sha256sum "\$OUTPUT_ARCH\/\$OUTPUT_NAME"/.test(script),
+  /listed\+=\("\$OUTPUT_ARCH\/\$name"\)/.test(script)
+    && /cd "\$REPO_ROOT\/bin" && sha256sum "\$\{listed\[@\]\}" > "\$SUMS_FILE"/.test(script),
   "absolute or checkout-relative paths in SHA256SUMS would only verify here")
+
+// -------------------------------------------------------------------------
+// More than one helper
+// -------------------------------------------------------------------------
+
+// Each helper is its own Cargo package. In one package, adding the unlock
+// tool changed the SSH helper's bytes with no SSH source change -- which is
+// exactly the unexplained bin/ change the trust path exists to flag.
+check("every shipped helper is built, from its own package",
+  /ARTIFACTS=\([\s\S]*?"agent:qs-bitwarden-ssh-agent"[\s\S]*?"unlock-key:qs-bitwarden-unlock-key"[\s\S]*?\)/.test(script),
+  "the build script does not list both helpers")
+check("every package is built with the same procedure",
+  /for spec in "\$\{ARTIFACTS\[@\]\}"[\s\S]{0,200}?cd "\$src\/\$package"[\s\S]{0,200}?cargo build --locked --release/.test(script),
+  "a helper is built some other way than the loop every mode shares")
+const unlockToolchain = read("unlock-key/rust-toolchain.toml")
+eq("both packages pin the same compiler",
+  (/channel\s*=\s*"([^"]+)"/.exec(unlockToolchain) || [])[1], pinnedChannel && pinnedChannel[1])
+check("and the script refuses packages that disagree",
+  /every package must name the same one/.test(script),
+  "the pinned image carries one rustc; a second channel would build with the wrong one")
+check("the unlock tool's release profile strips and aborts too",
+  /strip\s*=\s*"symbols"/.test(read("unlock-key/Cargo.toml"))
+    && /panic\s*=\s*"abort"/.test(read("unlock-key/Cargo.toml")),
+  "the unlock tool handles the master password and ships with symbols or unwinding")
+check("the unlock tool's cargo config sets no rustflags either",
+  !/^\s*rustflags\s*=/m.test(read("unlock-key/.cargo/config.toml")),
+  "config.toml assigns rustflags, which RUSTFLAGS in the environment would silently drop")
+check("a helper not yet tracked counts as drift, not as nothing to compare",
+  /\(not tracked\)/.test(script),
+  "a new helper could ship uncommitted with the comparison reporting success")
+for (const step of [/cargo fmt --check/, /cargo clippy --locked --all-targets/]) {
+  check(`CI runs ${step.source.replace(/\\/g, "")} for every package`,
+    new RegExp(`for package in agent unlock-key;[\\s\\S]{0,120}?${step.source}`).test(workflow),
+    "one package's gates do not cover the other")
+}
+check("CI tests the unlock tool",
+  /working-directory: unlock-key\s*\n\s*run: cargo test --locked --all-targets/.test(workflow),
+  "the unlock tool's tests never run in CI")
+check("CI applies the dependency policy to both packages",
+  /cargo deny --manifest-path agent\/Cargo\.toml --config deny\.toml check/.test(workflow)
+    && /cargo deny --manifest-path unlock-key\/Cargo\.toml --config deny\.toml check/.test(workflow),
+  "a package's dependencies are not checked against deny.toml")
+check("the uploaded candidate carries both helpers and the checksum file",
+  /bin\/x86_64-linux\/qs-bitwarden-ssh-agent\s*\n\s*bin\/x86_64-linux\/qs-bitwarden-unlock-key\s*\n\s*bin\/SHA256SUMS/.test(workflow),
+  "a maintainer committing the candidate would commit a SHA256SUMS naming a binary not in it")
+check("Dependabot watches the unlock tool's lockfile too",
+  /directory: \/unlock-key/.test(read(".github/dependabot.yml")),
+  "the unlock tool's dependencies would never be proposed for update")
 check("the usage text lists the flags that exist",
   /--compare-tracked/.test(script.split("USAGE")[1] || "") && !/\[--check\]/.test(script),
   "usage advertises a flag the script does not accept")
@@ -224,11 +246,8 @@ check("CI compares the tracked binary against a clean rebuild",
 check("the comparison is skipped only when no binary is tracked",
   /if \[ ! -f bin\/x86_64-linux\/qs-bitwarden-ssh-agent \]/.test(workflow),
   "the comparison could pass by absence rather than by matching")
-// `./scripts/build-agent.sh` with no flags writes bin/ and bin/SHA256SUMS.
-// Run the comparison after it and the tracked binary it reads back is the
-// candidate that step just wrote -- so it compares a build with itself and
-// passes whatever the committed bytes are. That is not hypothetical: it is
-// what this workflow did until a stale binary sailed through a green run.
+// The comparison must run before the no-flag build writes bin/, or it
+// compares a build with itself.
 const compareAt = workflow.indexOf("name: Compare the tracked binary")
 const candidateAt = workflow.indexOf("name: Build the candidate artifact")
 check("the comparison runs before anything overwrites bin/",
@@ -244,41 +263,21 @@ check("drift is still fatal on a same-repository run",
     && /github\.event\.pull_request\.head\.repo\.fork != true/.test(workflow),
   "recording drift replaced failing on it")
 
-// These gates ran on neither the branch nor the files that needed them: the
-// trigger still named the SSH agent's feature branch after that work reached
-// master, and a paths filter of agent/** kept the panel -- Panel.qml,
-// BitwardenModel.js, tests/ -- entirely outside the workflow. PR #13 merged
-// with `no checks reported`.
-//
-// This used to require master on both triggers. It no longer does, and the
-// guarantee it was protecting has not been given up -- it moved. Work reaches
-// master only by merging a release branch, and master's protection requires
-// that branch to be up to date first, so the tree master ends up with is the
-// tree these gates already passed on the release branch at the commit they
-// passed on. Re-running on the master push would check the same tree twice.
-//
-// So what has to be true is that the release branches really are gated, which
-// the next check asserts, and that master is not silently left with nothing at
-// all -- it gets publish-on-master.yml, asserted below. Master being absent
-// from these triggers is deliberate and is pinned here so that reintroducing
-// it is a decision rather than a reflex.
+// No paths filter (it once let panel changes merge unchecked), and master is
+// deliberately not a trigger: it only receives up-to-date release branches
+// that already passed. Pinned so reintroducing it is a decision.
 check("master is deliberately not gated here; the release branch it comes from is",
   !/push:\s*\n\s*branches:\s*\[[^\]]*master/.test(workflow)
     && !/pull_request:\s*\n\s*branches:\s*\[[^\]]*master/.test(workflow),
   "master is back in these triggers -- if that is intended, this check and the "
     + "trigger comment both need updating, because it means the same tree is checked twice")
-// A release is assembled on a release branch before it is tagged, so the same
-// gates have to cover it. Listing master alone let a PR into `release/1.7.0`
-// merge with `no checks reported` -- PR #13's hole reached through the base
-// branch instead of through a paths filter.
+// Release branches, where releases are assembled, must be gated.
 check("CI runs against release branches too, where a release is assembled",
   /push:\s*\n\s*branches:\s*\[[^\]]*'release\/\*\*'/.test(workflow)
     && /pull_request:\s*\n\s*branches:\s*\[[^\]]*'release\/\*\*'/.test(workflow),
   "the workflow does not run on release-branch pushes and PRs into them")
-// Master is not unwatched, it just has exactly one job. A release is built,
-// verified and attested on its release branch and left as a draft; reaching
-// master is what publishes it. If that workflow ever starts building or
-// testing, the reason master was taken off the gates above stops holding.
+// Master's one job is publishing; if it starts building or testing, the
+// reasoning above no longer holds.
 const publish = read(".github/workflows/publish-on-master.yml")
 check("something does run on a master push, and it is the publish",
   /push:\s*\n\s*branches:\s*\[master\]/.test(publish),
@@ -286,10 +285,47 @@ check("something does run on a master push, and it is the publish",
 check("the publish only publishes -- it does not build or test",
   !/cargo (build|test|clippy)|npm |node |qmltestrunner|build-agent\.sh/.test(publish),
   "the master workflow has grown work that belongs on the release branch")
-check("the publish is the only thing granted write access",
+check("the build workflow stays read-only; publishing holds write",
   /permissions:\s*\n\s*contents:\s*write/.test(publish)
-    && /permissions:\s*\n\s*contents:\s*read/.test(workflow),
+    && /permissions:\s*\n\s*contents:\s*read/.test(workflow)
+    && !/contents:\s*write/.test(workflow),
   "write access is not where it was expected")
+
+// helper-rebuild.yml commits rebuilt helpers to eligible PRs. The job that
+// runs repository code has no write token; the one with it runs none, commits
+// only bin/, and dependency or toolchain changes are never auto-committed.
+const rebuild = read(".github/workflows/helper-rebuild.yml")
+const eligible = read("scripts/helper-autocommit-eligible.sh")
+const rebuildJobs = rebuild.split(/\n  (?=\w[\w-]*:\n)/)
+const buildJob = rebuildJobs.find(j => /^build:/.test(j)) || ""
+const commitJob = rebuildJobs.find(j => /^commit:/.test(j)) || ""
+check("the helper rebuild is read-only by default",
+  /^permissions:\n\s*contents: read\s*$/m.test(rebuild), "top-level permissions are not read-only")
+check("the job that builds holds no write token",
+  buildJob !== "" && !/write/.test(buildJob), buildJob.slice(0, 300))
+check("the job that commits runs no repository code",
+  commitJob !== "" && !/build-agent\.sh|cargo |scripts\//.test(commitJob), commitJob.slice(0, 300))
+check("every action in the helper rebuild is pinned to a commit",
+  [...rebuild.matchAll(/uses:\s*([^\s@]+)@(\S+)/g)].every(m => /^[0-9a-f]{40}$/.test(m[2])),
+  "an action is referenced by a moving tag")
+check("the rebuild uses the pinned image",
+  rebuild.includes(scriptPin[0].slice("PINNED_IMAGE=\"".length, -1)), "helper-rebuild.yml builds outside the pinned image")
+check("only bin/ is committed, after its checksums verify",
+  /sha256sum -c SHA256SUMS/.test(commitJob) && /refusing to commit anything outside bin\//.test(commitJob),
+  "the commit job could commit something other than the verified helpers")
+check("a branch that moved after the build is not committed to",
+  /git rev-parse HEAD\)" = "\$BUILT"/.test(commitJob), "stale bytes could land on a newer push")
+check("the new commit is re-checked",
+  /gh workflow run agent-build\.yml/.test(commitJob) && /workflow_dispatch:/.test(workflow),
+  "a push with GITHUB_TOKEN starts no workflow, so the commit would go unchecked")
+check("dependency and toolchain changes are rebuilt by a person",
+  /Cargo\.lock/.test(eligible) && /Cargo\.toml/.test(eligible) && /rust-toolchain\.toml/.test(eligible)
+    && /dependabot/.test(eligible) && /IS_FORK/.test(eligible),
+  "a lockfile change could be rebuilt and committed with nobody reading it")
+check("agent build tolerates drift only where helper-rebuild fixes it",
+  /steps\.compare\.outputs\.autofix != 'yes'/.test(workflow)
+    && /helper-autocommit-eligible\.sh/.test(workflow),
+  "the drift gate and the auto-commit disagree about which PRs are fixed")
 // Publishing from the tag announced a version before master contained it.
 check("the tag build leaves the release as a draft for master to publish",
   /gh release create "\$TAG"[^\n]*--draft/.test(read(".github/workflows/release.yml")),
@@ -300,10 +336,7 @@ check("no paths filter decides which changes are checked",
   "a paths filter is how the panel went unchecked; these gates are cheap enough to always run")
 check("the workflow is read-only",
   /permissions:\s*\n\s*contents:\s*read/.test(workflow), "the workflow requests more than read access")
-// A tag is a moving pointer. Pinning actions by commit is the same argument
-// as pinning the build image by digest, applied to the code that runs the
-// build -- and a workflow that establishes trust in bytes should not itself
-// depend on a mutable reference.
+// Actions pinned by commit, like the image by digest.
 const actionUses = [...workflow.matchAll(/uses:\s*([^\s@]+)@(\S+)/g)]
 check("every third-party action is used at least once", actionUses.length > 0, "no actions used")
 check("every action is pinned to a full commit SHA",
@@ -323,11 +356,8 @@ check("CI enforces the dependency policy", /cargo deny/.test(workflow), "nothing
 check("the policy file is named explicitly rather than discovered",
   /cargo deny[^\n]*--config deny\.toml/.test(workflow),
   "a discovered config can silently be the wrong one, or none at all")
-// apt answers a failed index with a warning and exit 0. That is how a 502
-// from the archive passed `apt-get update` and came back four minutes later
-// as `Unable to locate package` on six Qt packages -- the wrong error, in the
-// wrong step, about the wrong thing. Error-Mode=any is what makes a mirror
-// outage report itself as one.
+// apt exits 0 on a failed index; Error-Mode=any makes the fetch fail where it
+// happens.
 check("a failed package index fails the step that fetched it",
   /apt-get update[^\n]*APT::Update::Error-Mode=any/.test(workflow),
   "apt warns and exits 0 on a failed index, so the real error surfaces later and misattributed")
@@ -384,12 +414,7 @@ check("dependency updates are told the binary must be rebuilt",
 check("no secrets are referenced",
   !/secrets\./.test(workflow), "a build gate should need no secrets")
 check("the panel tests get the tools they shell out to",
-  /jq/.test(workflow) && /openssh-client/.test(workflow),
-  "the pipeline and signing tests would fail without jq and ssh-keygen")
+  /jq/.test(workflow) && /openssh-client/.test(workflow) && /apt-get install[^\n]*\bargon2\b/.test(workflow),
+  "the pipeline, signing and envelope tests would fail without jq, ssh-keygen and argon2")
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`ssh-agent-artifact: ${pass} passed`)
+done()

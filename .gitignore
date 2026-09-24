@@ -1,5 +1,6 @@
 .claude/
 agent/target/
+unlock-key/target/
 docs/screenshots/.preview-base.png
 docs/screenshots/.preview-base.png.anchor
 

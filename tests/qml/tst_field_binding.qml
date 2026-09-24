@@ -1,15 +1,10 @@
 import QtQuick
 import QtTest
 
-// The panel's secret fields are `text: root.vault.<secret>` with an
-// onTextChanged that writes back. Every path that clears a secret clears only
-// the property, so the field must still be following it by then.
-//
-// This pins the Qt behaviour syncLoginFields() and syncSensitiveFields() in
-// Panel.qml rely on, against TextInput (what the kit's TextField is built on):
-// typing keeps the binding, a plain `field.text = value` drops it for good,
-// and Qt.binding puts it back. A sync that copies a value instead of
-// re-pointing the field is what left an item form showing stale text.
+// Secret fields bind `text` to a vault property and write back on change;
+// clearing only clears the property. Pins what syncLoginFields() and
+// syncSensitiveFields() rely on: typing keeps the binding, `field.text =`
+// drops it for good, and Qt.binding restores it.
 TestCase {
   id: tc
   name: "FieldBinding"

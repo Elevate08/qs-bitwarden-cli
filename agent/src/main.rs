@@ -1,5 +1,5 @@
 use qs_bitwarden_ssh_agent::approvals::{
-    ApprovalManager, Authorization, RequestId, Submit, MAX_PENDING,
+    ApprovalManager, Authorization, RequestId, SignScope, Submit, MAX_PENDING,
 };
 use qs_bitwarden_ssh_agent::control::{
     parse_control_line, ControlMessage, LoadStatus, MAX_CONTROL_LINE,
@@ -42,7 +42,15 @@ enum Output {
         pid: u32,
         #[serde(rename = "processPath")]
         process_path: String,
+        /// `sshsig`, `ssh-auth`, or `ssh-sign` for data not recognised.
         operation: &'static str,
+        /// The SSHSIG namespace or the login name; empty for `ssh-sign`.
+        #[serde(rename = "operationDetail")]
+        operation_detail: String,
+        /// For `ssh-auth`, the server host key fingerprint the client bound
+        /// the session to, unverified; "" when it reported none.
+        #[serde(rename = "hostKey")]
+        host_key: String,
         forwarded: bool,
         #[serde(rename = "grantOffered")]
         grant_offered: bool,
@@ -51,10 +59,8 @@ enum Output {
         v: u8,
         epoch: u64,
     },
-    /// A candidate load was refused. Distinct from `locked`: that message
-    /// acknowledges `vault_locked`. Confusing the two left an unlocked vault
-    /// with no keys, because the panel treated a failed load as a lock-ack
-    /// and never started another.
+    /// A candidate load was refused. Not `locked`, which acknowledges
+    /// `vault_locked`; the panel retries this one.
     LoadFailed {
         v: u8,
         epoch: u64,
@@ -65,9 +71,8 @@ enum Output {
         #[serde(rename = "keyCount")]
         key_count: usize,
     },
-    /// A signature was asked for against a locked vault whose public cache
-    /// still knows the key. The request is held, not failed, until the panel
-    /// either unlocks or cancels.
+    /// A signature asked for against a locked vault whose public cache knows
+    /// the key; held until the panel unlocks or cancels.
     UnlockRequired {
         v: u8,
         #[serde(rename = "requestId")]
@@ -79,26 +84,30 @@ enum Output {
         pid: u32,
         #[serde(rename = "processPath")]
         process_path: String,
-        /// Whether approving this request may also open a grant. Stated by
-        /// the companion so the panel never has to assume it.
+        /// As on `approval_required`; empty for an identity listing.
+        operation: &'static str,
+        #[serde(rename = "operationDetail")]
+        operation_detail: String,
+        /// For `ssh-auth`, the server host key fingerprint the client bound
+        /// the session to, unverified; "" when it reported none.
+        #[serde(rename = "hostKey")]
+        host_key: String,
+        forwarded: bool,
+        /// Whether approving may also open a grant, so the panel never assumes.
         #[serde(rename = "grantOffered")]
         grant_offered: bool,
     },
-    /// A request the panel may still be prompting for has gone: the client
-    /// disconnected, the deadline passed, or a lock cancelled it. Without
-    /// this the prompt would sit there asking about something that no longer
-    /// exists, which is how people learn to click prompts away.
+    /// A request the panel may still be prompting for is gone (client left,
+    /// deadline passed, or a lock), so the prompt can close.
     RequestCancelled {
         v: u8,
         #[serde(rename = "requestId")]
         request_id: u64,
         reason: &'static str,
     },
-    /// One validated public identity, in the OpenSSH one-line form. Sent per
-    /// key rather than as a list: at the documented 128-key limit a single
-    /// message would exceed the 64 KiB control-line ceiling. The panel
-    /// accumulates them for an epoch and writes the projection when the
-    /// matching `keys_loaded` arrives.
+    /// One validated public identity in OpenSSH form. One message per key,
+    /// since 128 keys would exceed the 64 KiB line limit; the panel collects
+    /// them until `keys_loaded`.
     PublicKey {
         v: u8,
         epoch: u64,
@@ -126,6 +135,11 @@ struct GrantView {
     pid: u32,
     #[serde(rename = "processPath")]
     process_path: String,
+    operation: &'static str,
+    #[serde(rename = "operationDetail")]
+    operation_detail: String,
+    #[serde(rename = "hostKey")]
+    host_key: String,
     #[serde(rename = "expiresInSec")]
     expires_in_sec: u64,
 }
@@ -136,40 +150,34 @@ struct PendingSign {
     flags: u32,
 }
 
-/// A signature asked for while the vault was locked. It is kept whole rather
-/// than failed, so the unlock the panel is being asked for can release the
-/// very request that triggered it.
+/// A signature asked for while locked, kept whole so the unlock it triggers
+/// can release it.
 struct HeldSign {
     reply: oneshot::Sender<Vec<u8>>,
     public_blob: Vec<u8>,
     message: Vec<u8>,
     flags: u32,
     peer: qs_bitwarden_ssh_agent::peer::PeerContext,
+    scope: SignScope,
     deadline_ms: u64,
-    /// Set when the user approved before the load finished, carrying the
-    /// grant window they chose. Approving needs the key's identity and the
-    /// requesting program, both of which come from the public cache -- none
-    /// of it depends on the vault read, so making the user wait for that read
-    /// and only then asking is pure delay. The approval still decides
-    /// nothing: the load must produce the very key that was approved, and the
-    /// final epoch/state/key check runs immediately before signing.
+    /// The grant window, if the user approved before the load finished (the
+    /// prompt needs only public data). Decides nothing by itself: the load
+    /// must produce the approved key, and the final epoch/state/key check still
+    /// runs before signing.
     approved: Option<u64>,
 }
 
-/// Identity listings waiting on an unlock, and the one request id that was
-/// raised for all of them. A fresh companion has no public cache, so the very
-/// first `ssh` of a session lists nothing and would never produce a sign
-/// request to unlock from. Coalesced deliberately: several clients starting
-/// at once is normal, and each must not cost its own prompt.
+/// Identity listings waiting on an unlock, sharing one request id. A fresh
+/// companion has no public cache, so the session's first `ssh` would list
+/// nothing and never lead to a sign request; concurrent clients share one
+/// prompt.
 struct HeldIdentities {
     request_id: RequestId,
     deadline_ms: u64,
     waiting: Vec<oneshot::Sender<Vec<u8>>>,
 }
 
-/// How long a held request waits for an unlock before giving up. The same
-/// bound the approval path uses, for the same reason -- and unlocking asks
-/// more of the user than approving does, so it certainly needs no less.
+/// How long a held request waits for an unlock (same as approvals).
 const HELD_LIFETIME_MS: u64 = qs_bitwarden_ssh_agent::approvals::REQUEST_LIFETIME_MS;
 
 struct ActiveLoad {
@@ -219,13 +227,11 @@ impl ControlReader {
     }
 }
 
-/// Control output is `try_send`, and the writer task cannot run on the
-/// current-thread runtime until the select loop yields, so the channel must
-/// hold the largest burst one loop iteration produces. That is a successful
-/// load: a `public_key` per key and `keys_loaded`, then for every held sign
-/// request a `request_cancelled` and an `approval_required`, then the held
-/// identity listing's `request_cancelled`. A full channel fails `emit`, and a
-/// failed `emit` ends the helper.
+/// Control output uses `try_send`, and the writer cannot run until the select
+/// loop yields, so the channel holds one iteration's largest burst: a
+/// successful load (a `public_key` per key and `keys_loaded`, then two
+/// messages per held sign request and one for held listings). A full channel
+/// fails `emit`, which ends the helper.
 const CONTROL_OUTPUT_CAPACITY: usize = MAX_KEYS + 1 + 2 * MAX_PENDING + 1 + 8;
 
 fn emit(output: &mpsc::Sender<Output>, message: Output) -> Result<(), ()> {
@@ -245,11 +251,9 @@ async fn write_output(mut messages: mpsc::Receiver<Output>) {
     }
 }
 
-/// What the panel asks this binary before it trusts it.
-///
-/// Argument handling is deliberately exhaustive: the panel launches the helper
-/// with no arguments, so anything else is a mistake, and silently starting a
-/// key-holding daemon in response to a typo is the wrong answer.
+/// What the panel asks this binary before trusting it. Arguments are handled
+/// exhaustively: the panel passes none, and a typo must not start a
+/// key-holding daemon.
 fn dispatch_arguments() -> Option<i32> {
     let mut args = std::env::args().skip(1);
     let first = args.next()?;
@@ -284,8 +288,7 @@ fn dispatch_arguments() -> Option<i32> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    // Before the runtime does anything: these modes answer and exit, and must
-    // not depend on a runtime directory, a socket, or any of the setup below.
+    // These modes answer and exit before any runtime setup.
     if let Some(code) = dispatch_arguments() {
         std::process::exit(code);
     }
@@ -356,10 +359,8 @@ async fn run() -> Result<(), ()> {
                         release_held_identities(&mut held_identities, &store, &output_tx, "logged-out")?;
                     }
                     ControlMessage::Approve { request_id, grant_seconds, .. } => {
-                        // A held request is one still waiting on a load. The
-                        // approval is recorded now and applied the moment the
-                        // keys arrive, so the user is not made to wait out the
-                        // vault read before being asked.
+                        // A held request still waiting on a load: record the
+                        // approval now and apply it when the keys arrive.
                         if let Some(request) = held.get_mut(&request_id) {
                             request.approved = Some(grant_seconds);
                             continue;
@@ -376,8 +377,7 @@ async fn run() -> Result<(), ()> {
                     ControlMessage::Deny { request_id, .. } | ControlMessage::UnlockCancelled { request_id, .. } => {
                         approvals.disconnect(request_id);
                         if let Some(sign) = pending.remove(&request_id) { let _ = sign.reply.send(protocol::failure_response()); }
-                        // The panel asked, so it needs no request_cancelled
-                        // back: it already knows this one is over.
+                        // The panel asked, so no request_cancelled back.
                         if let Some(request) = held.remove(&request_id) { let _ = request.reply.send(protocol::failure_response()); }
                         if held_identities.as_ref().is_some_and(|w| w.request_id == request_id) {
                             release_held_identities(&mut held_identities, &store, &output_tx, "cancelled")?;
@@ -449,8 +449,8 @@ async fn run() -> Result<(), ()> {
                 for id in expired {
                     approvals.disconnect(id);
                     if let Some(sign) = pending.remove(&id) { let _ = sign.reply.send(protocol::failure_response()); }
-                    // Whatever ended it -- a client that walked away or a
-                    // deadline that passed -- the panel may still be prompting.
+                    // Client left or deadline passed; the panel may still be
+                    // prompting.
                     emit(&output_tx, Output::RequestCancelled { v: 1, request_id: id, reason: "withdrawn" })?;
                 }
                 let stale: Vec<_> = held.iter().filter_map(|(id, request)| (request.reply.is_closed() || request.deadline_ms <= now).then_some(*id)).collect();
@@ -494,16 +494,16 @@ fn handle_client(
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
     match event.request {
-        // Deliberately not behind `gate_open`. Public keys are not secret, and
-        // a locked vault that still lists them is what stops every `ssh` after
-        // a lock from raising an unlock prompt for a connection that may have
-        // nothing to do with the vault. The cache is empty when logged out or
-        // locked before any load, so those answer with an empty list, and a
-        // lock clears the private set that signing needs regardless.
+        // The server answers binds itself and never forwards one here.
+        AgentRequest::SessionBind { .. } => {
+            let _ = event.reply.send(protocol::failure_response());
+        }
+        // Not behind `gate_open`: public keys are not secret, and listing them
+        // while locked keeps unrelated `ssh` connections from raising unlock
+        // prompts. The cache is empty when logged out or never loaded.
         AgentRequest::Identities => {
-            // An empty cache with unlock-on-demand on is the one case where a
-            // listing may raise UI: without it the first client of a session
-            // sees nothing and no sign request can ever follow to ask.
+            // An empty cache with unlock-on-demand is the one case a listing
+            // raises UI; otherwise a session's first client could never unlock.
             if store.public_identities().is_empty()
                 && unlock_on_demand
                 && approvals.expects_uid(event.peer.uid)
@@ -523,6 +523,10 @@ fn handle_client(
                             fingerprint: String::new(),
                             pid: event.peer.pid,
                             process_path: event.peer.executable.to_string_lossy().into_owned(),
+                            operation: "",
+                            operation_detail: String::new(),
+                            host_key: String::new(),
+                            forwarded: event.forwarded,
                             grant_offered: false,
                         },
                     )?;
@@ -546,11 +550,13 @@ fn handle_client(
             message,
             flags,
         } => {
+            let scope = SignScope {
+                kind: protocol::classify_sign(&public_blob, &message, &event.binds),
+                forwarded: event.forwarded,
+            };
             if !gate_open {
-                // A locked vault that still knows this key asks the panel to
-                // unlock and keeps the request, rather than failing a client
-                // that has no way to retry. A key the cache does not know is
-                // simply not ours to sign for.
+                // Locked but the cache knows the key: ask the panel to unlock
+                // and hold the request. Unknown keys are not ours.
                 let Some(key) = store
                     .public_identities()
                     .iter()
@@ -579,7 +585,11 @@ fn handle_client(
                         fingerprint: key.fingerprint.clone(),
                         pid: event.peer.pid,
                         process_path: event.peer.executable.to_string_lossy().into_owned(),
-                        grant_offered: true,
+                        operation: scope.kind.operation(),
+                        operation_detail: scope.kind.detail().to_owned(),
+                        host_key: scope.kind.host().to_owned(),
+                        forwarded: scope.forwarded,
+                        grant_offered: scope.grantable(),
                     },
                 )?;
                 held.insert(
@@ -590,6 +600,7 @@ fn handle_client(
                         message,
                         flags,
                         peer: event.peer,
+                        scope,
                         deadline_ms: elapsed_ms(started).saturating_add(HELD_LIFETIME_MS),
                         approved: None,
                     },
@@ -604,6 +615,7 @@ fn handle_client(
                 store.epoch(),
                 &public_blob,
                 event.peer.clone(),
+                scope.clone(),
                 elapsed_ms(started),
             ) {
                 Ok(Submit::Granted(authorization)) => {
@@ -631,9 +643,11 @@ fn handle_client(
                             fingerprint: key.fingerprint.clone(),
                             pid: event.peer.pid,
                             process_path,
-                            operation: "ssh-sign",
-                            forwarded: false,
-                            grant_offered: true,
+                            operation: scope.kind.operation(),
+                            operation_detail: scope.kind.detail().to_owned(),
+                            host_key: scope.kind.host().to_owned(),
+                            forwarded: scope.forwarded,
+                            grant_offered: scope.grantable(),
                         },
                     )?;
                     pending.insert(
@@ -654,10 +668,8 @@ fn handle_client(
     Ok(())
 }
 
-/// Release every request that was waiting on an unlock, now that one has
-/// happened. Each goes through the ordinary approval path at the *new* epoch,
-/// so an unlock authorises nothing by itself -- it only gets the request back
-/// to the point where the user can be asked.
+/// Release requests held for an unlock. Each goes through the ordinary
+/// approval path at the new epoch; an unlock authorises nothing by itself.
 fn release_held(
     held: &mut HashMap<RequestId, HeldSign>,
     store: &KeyStore,
@@ -667,8 +679,7 @@ fn release_held(
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
     for (old_id, request) in held.drain().collect::<Vec<_>>() {
-        // The prompt the panel is showing is about to be replaced by an
-        // approval prompt with its own id, so withdraw the old one first.
+        // Withdraw the unlock prompt; an approval prompt with its own id follows.
         emit(
             output,
             Output::RequestCancelled {
@@ -681,15 +692,15 @@ fn release_held(
             let _ = request.reply.send(protocol::failure_response());
             continue;
         }
-        // Already approved while the load was running: submit at the new
-        // epoch and consume the approval straight away. Every check the
-        // ordinary path makes still runs -- the key must be present, the
-        // vault unlocked, and the epoch current at the signing primitive.
+        // Approved during the load: submit at the new epoch and consume the
+        // approval. The ordinary checks (key present, unlocked, current epoch)
+        // still run.
         if let Some(grant_seconds) = request.approved {
             let response = match approvals.submit(
                 store.epoch(),
                 &request.public_blob,
                 request.peer.clone(),
+                request.scope.clone(),
                 elapsed_ms(started),
             ) {
                 Ok(Submit::Granted(authorization)) => {
@@ -710,6 +721,7 @@ fn release_held(
             store.epoch(),
             &request.public_blob,
             request.peer.clone(),
+            request.scope.clone(),
             elapsed_ms(started),
         ) {
             Ok(Submit::Granted(authorization)) => {
@@ -737,9 +749,11 @@ fn release_held(
                         fingerprint: key.fingerprint.clone(),
                         pid: request.peer.pid,
                         process_path: request.peer.executable.to_string_lossy().into_owned(),
-                        operation: "ssh-sign",
-                        forwarded: false,
-                        grant_offered: true,
+                        operation: request.scope.kind.operation(),
+                        operation_detail: request.scope.kind.detail().to_owned(),
+                        host_key: request.scope.kind.host().to_owned(),
+                        forwarded: request.scope.forwarded,
+                        grant_offered: request.scope.grantable(),
                     },
                 )?;
                 pending.insert(
@@ -759,9 +773,8 @@ fn release_held(
     Ok(())
 }
 
-/// Answer every identity listing that was waiting on an unlock. On success
-/// that is the real cache; otherwise it is the empty list a locked companion
-/// would have returned anyway, which is a normal answer rather than a failure.
+/// Answer identity listings held for an unlock: the real cache on success,
+/// otherwise the empty list a locked companion returns anyway.
 fn release_held_identities(
     held_identities: &mut Option<HeldIdentities>,
     store: &KeyStore,
@@ -810,8 +823,7 @@ fn cancel_held(
     Ok(())
 }
 
-/// Announce the live grant set, but only when it has actually changed --
-/// otherwise the hundred-millisecond tick would narrate it forever.
+/// Announce the grant set only when it changed (the tick is 100 ms).
 fn emit_grants_if_changed(
     snapshot: &mut Vec<u64>,
     approvals: &ApprovalManager,
@@ -838,6 +850,9 @@ fn emit_grants_if_changed(
                 fingerprint: key.map(|key| key.fingerprint.clone()).unwrap_or_default(),
                 pid: grant.peer.pid,
                 process_path: grant.peer.executable.to_string_lossy().into_owned(),
+                operation: grant.kind.operation(),
+                operation_detail: grant.kind.detail().to_owned(),
+                host_key: grant.kind.host().to_owned(),
                 expires_in_sec: grant.expires_at_ms.saturating_sub(now_ms) / 1000,
             }
         })
@@ -911,8 +926,7 @@ fn finish_load_if_ready(
     match result {
         Ok(report) => {
             *gate_open = true;
-            // Ahead of keys_loaded, so the panel has the whole set by the
-            // time it is told the load finished.
+            // Before keys_loaded, so the panel has the whole set.
             for identity in store.public_identities() {
                 emit(
                     output,
@@ -937,9 +951,7 @@ fn finish_load_if_ready(
             Ok(LoadOutcome::Published)
         }
         Err(()) => {
-            // A bad FIFO payload is a failed load, not a dead helper. Emit
-            // load_failed rather than locked so the panel can retry instead of
-            // treating this as a lock acknowledgment.
+            // A bad FIFO payload is a failed load (retryable), not a lock ack.
             store.lock(load.epoch);
             *gate_open = false;
             eprintln!("qs-bitwarden-ssh-agent: key load failed");

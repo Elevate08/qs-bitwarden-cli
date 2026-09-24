@@ -1,80 +1,25 @@
 #!/usr/bin/env node
-// Tests for the FIDO2 unlock helpers: the plugin-local PAM stack, the readiness
-// probe, and the Omarchy setup hand-off.
-//
-// The property under test that matters most is that the shipped PAM stack can
-// actually be loaded by Quickshell from inside the plugin directory -- i.e. it
-// carries a single `auth` rule for pam_u2f against Omarchy's global authfile,
-// and no `include`/`account` line that could only resolve under /etc/pam.d.
+// FIDO2 unlock: the probe that maps registered credentials to plugged-in keys,
+// the Omarchy setup hand-off, and FidoUnlock.qml turning one touch into the
+// key's hmac-secret for the envelope's FIDO wrap. The pipelines themselves run
+// for real, against a stand-in fido2-assert, in tests/unlock-envelope.test.js.
 //
 //   node tests/fido-unlock.test.js
 
+const { createSuite, loadModule, read, readPluginSource, repoRoot } = require("./harness")
 const fs = require("fs")
 const path = require("path")
 
-const Fido = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "FidoModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.fidoPamConfigName = fidoPamConfigName
-  exports.fidoPamDirectory = fidoPamDirectory
-  exports.fidoAuthfile = fidoAuthfile
-  exports.fidoSetupCommand = fidoSetupCommand
-  exports.fidoRemoveCommand = fidoRemoveCommand
-  exports.fidoProbeCommand = fidoProbeCommand
-  exports.parseFidoProbe = parseFidoProbe
-  exports.FIDO_PAM_DIR = FIDO_PAM_DIR
-  exports.FIDO_PAM_CONFIG = FIDO_PAM_CONFIG
-  exports.FIDO_AUTHFILE = FIDO_AUTHFILE
-  exports.FIDO_MAX_PROBE_BYTES = FIDO_MAX_PROBE_BYTES
-`)(Fido)
+const Fido = loadModule("FidoModel.js")
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("fido-unlock")
 
-// --- the PAM stack ----------------------------------------------------------
-const pamDir = path.join(__dirname, "..", Fido.FIDO_PAM_DIR)
-const pamPath = path.join(pamDir, Fido.FIDO_PAM_CONFIG)
-check("the PAM directory is plugin-relative, not absolute",
-  typeof Fido.FIDO_PAM_DIR === "string" && Fido.FIDO_PAM_DIR.charAt(0) !== "/"
-    && Fido.FIDO_PAM_DIR.indexOf("..") === -1,
-  Fido.FIDO_PAM_DIR)
-check("the stack file exists where Quickshell will look for it",
-  fs.existsSync(pamPath) && fs.statSync(pamPath).isFile(),
-  pamPath)
-
-const pamText = fs.existsSync(pamPath) ? fs.readFileSync(pamPath, "utf8") : ""
-const pamRules = pamText.split("\n")
-  .map(line => line.replace(/#.*$/, "").trim())
-  .filter(line => line !== "")
-
-check("the stack is a single auth rule",
-  pamRules.length === 1 && /^auth\s+/.test(pamRules[0]),
-  JSON.stringify(pamRules))
-check("PamContext only reads auth, so no account/session/password rule is shipped",
-  !pamRules.some(r => /^(account|session|password)\s/.test(r)),
-  JSON.stringify(pamRules))
-// An `include` in this stack would be resolved inside the plugin directory by
-// pam_start_confdir, where system-local-login does not exist -- so it must not
-// appear at all.
-check("no include rule that could only resolve under /etc/pam.d",
-  !pamRules.some(r => /\binclude\b/.test(r)),
-  JSON.stringify(pamRules))
-check("the rule names pam_u2f with a required control flag",
-  /\bauth\s+required\s+pam_u2f\.so\b/.test(pamRules[0] || ""),
-  pamRules[0])
-check("the rule reads Omarchy's global authfile",
-  (pamRules[0] || "").includes("authfile=" + Fido.FIDO_AUTHFILE),
-  pamRules[0])
-check("the rule asks pam-u2f to cue the touch prompt",
-  /\bcue\b/.test(pamRules[0] || ""),
-  pamRules[0])
-// The relying party must stay pam-u2f's default, because that is what Omarchy's
-// single registration was created for; pinning it here would break the
-// system's own prompts too.
-check("the rule pins no origin/appid",
-  !/\borigin=|\bappid=/.test(pamRules[0] || ""),
-  pamRules[0])
+// --- no PAM stack any more -------------------------------------------------
+const rawFidoUnlockEarly = read("FidoUnlock.qml")
+check("no PAM stack ships with the plugin",
+  !fs.existsSync(path.join(repoRoot, "pam")), "pam/ still exists")
+check("the controller holds no PAM conversation",
+  !/Quickshell\.Services\.Pam|PamContext/.test(rawFidoUnlockEarly), "PamContext is still in FidoUnlock.qml")
 
 // --- the probe --------------------------------------------------------------
 const probe = Fido.fidoProbeCommand()
@@ -85,9 +30,20 @@ const probeScript = probe[2] || ""
 check("the probe caps its own output",
   probeScript.includes("head -c " + Fido.FIDO_MAX_PROBE_BYTES),
   probeScript)
-check("the probe checks for the pam-u2f tools",
-  probeScript.includes("command -v pamu2fcfg") && probeScript.includes("command -v fido2-token"),
+check("the probe checks for libfido2's tools, which pam-u2f itself depends on",
+  probeScript.includes("command -v fido2-assert") && probeScript.includes("command -v fido2-token"),
   probeScript)
+// Finding which key holds a credential must cost no touch and release no
+// secret. An hmac-secret request for a credential a key does not hold waits
+// for a touch before saying so (measured), so it is never used to search.
+check("the probe finds credentials with a silent assertion",
+  /fido2-assert -G -t up=false/.test(probeScript), probeScript)
+check("and never asks for an hmac-secret while searching",
+  !/fido2-assert[^|;]* -h\b/.test(probeScript), probeScript)
+check("it reads only this user's line of the authfile",
+  /awk -F: -v u="\$\(id -un\)" '\$1 == u/.test(probeScript), probeScript)
+check("the relying party is pam-u2f's default, the one the registration was made for",
+  /__rp="pam:\/\/\$\(hostname/.test(probeScript), probeScript)
 check("the probe requires a regular, non-empty, non-symlink authfile",
   probeScript.includes("[ -f '" + Fido.FIDO_AUTHFILE + "' ]")
     && probeScript.includes("[ -s '" + Fido.FIDO_AUTHFILE + "' ]")
@@ -102,8 +58,8 @@ check("the probe carries no secret and never touches the keyring",
 
 // --- parsing ----------------------------------------------------------------
 const all = Fido.parseFidoProbe("fido_installed=1\nfido_registered=1\nfido_token=1\n")
-check("installed + registered + present is ready",
-  all.ready === true && all.applicable === true,
+check("installed + registered + present is applicable, but not ready without a credential found on the key",
+  all.ready === false && all.applicable === true,
   JSON.stringify(all))
 
 const noToken = Fido.parseFidoProbe("fido_installed=1\nfido_registered=1\nfido_token=0\n")
@@ -128,8 +84,30 @@ check("a malformed probe answer is not read as ready",
   Fido.parseFidoProbe("garbage\n=1\nfido_installed\n").ready === false,
   JSON.stringify(Fido.parseFidoProbe("garbage\n=1\nfido_installed\n")))
 check("trailing whitespace and blank lines are tolerated",
-  Fido.parseFidoProbe("  fido_installed=1 \r\n\n fido_registered=1\n\r\n fido_token=1\n").ready === true,
-  JSON.stringify(Fido.parseFidoProbe("  fido_installed=1 \r\n\n fido_registered=1\n\r\n fido_token=1\n")))
+  Fido.parseFidoProbe("  fido_installed=1 \r\n\n fido_registered=1\n\r\n fido_token=1\n rp=pam://h \n cred=QUJD|+presence|/dev/hidraw1 \n").ready === true,
+  "")
+
+// Readiness now also needs a usable credential on a plugged-in key.
+const base = "fido_installed=1\nfido_registered=1\nfido_token=1\nrp=pam://host\n"
+const withCred = Fido.parseFidoProbe(base + "cred=QUJD|+presence|/dev/hidraw2\n")
+check("a credential on a plugged-in key is usable, and ready",
+  withCred.ready === true && withCred.usable.length === 1 && withCred.usable[0].device === "/dev/hidraw2"
+    && withCred.rp === "pam://host", JSON.stringify(withCred))
+const absentKey = Fido.parseFidoProbe(base + "cred=QUJD|+presence|-\n")
+check("a registered credential whose key is not plugged in is not usable",
+  absentKey.ready === false && absentKey.usable.length === 0 && absentKey.credentials.length === 1,
+  JSON.stringify(absentKey))
+const pinCred = Fido.parseFidoProbe(base + "cred=QUJD|+presence+pin|/dev/hidraw2\n")
+check("a registration that asks for the key's PIN is listed but never used",
+  pinCred.ready === false && pinCred.pinOnly === true && pinCred.credentials[0].needsPin === true,
+  JSON.stringify(pinCred))
+check("so is one that asks for user verification",
+  Fido.parseFidoProbe(base + "cred=QUJD|+verification|/dev/hidraw2\n").pinOnly === true, "")
+check("a credential id that is not base64 is dropped",
+  Fido.parseFidoProbe(base + "cred=a'b|+presence|/dev/hidraw2\n").credentials.length === 0, "")
+check("a relying party that is not pam://<host> is not trusted",
+  Fido.parseFidoProbe(base.replace("rp=pam://host", "rp=https://evil") + "cred=QUJD|+presence|/dev/x\n").ready === false,
+  "")
 
 // --- setup hand-off ---------------------------------------------------------
 const setup = Fido.fidoSetupCommand()
@@ -143,28 +121,10 @@ check("removal hands off to Omarchy too, so the system's own prompts are unwired
   remove.slice(6).join(" ") === "omarchy remove security fido2",
   remove.join(" "))
 
-// --- naming -----------------------------------------------------------------
-check("the configured name is the file that is actually shipped",
-  Fido.fidoPamConfigName() === Fido.FIDO_PAM_CONFIG
-    && fs.existsSync(path.join(pamDir, Fido.fidoPamConfigName())),
-  Fido.fidoPamConfigName())
-
 // --- the keyring entry, and the vault wiring --------------------------------
 
-const { readPluginSource } = require("./plugin-source")
 
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.keyringStoreFidoPasswordCommand = keyringStoreFidoPasswordCommand
-  exports.keyringLookupFidoPasswordCommand = keyringLookupFidoPasswordCommand
-  exports.keyringClearFidoPasswordCommand = keyringClearFidoPasswordCommand
-  exports.keyringHasFidoPasswordCommand = keyringHasFidoPasswordCommand
-  exports.keyringClearAllCommand = keyringClearAllCommand
-  exports.SETTINGS_SCHEMA = SETTINGS_SCHEMA
-  exports.boolSetting = boolSetting
-  exports.KEYRING_FIDO = KEYRING_FIDO
-`)(Model)
+const Model = loadModule()
 
 check("the FIDO entry is its own keyring account, not the fingerprint's",
   Model.KEYRING_FIDO === "fido_password",
@@ -176,21 +136,10 @@ check("the presence check reads the FIDO account and never the fingerprint's",
     && !hasCmd.includes("master_password"),
   hasCmd)
 
-const lookupCmd = Model.keyringLookupFidoPasswordCommand().join(" ")
-check("the retrieval reads the FIDO account",
-  lookupCmd.includes("account 'fido_password'") && !lookupCmd.includes("master_password"),
-  lookupCmd)
-
 const clearCmd = Model.keyringClearFidoPasswordCommand().join(" ")
 check("clearing reaches the FIDO account",
   clearCmd.includes("fido_password") && !clearCmd.includes("master_password"),
   clearCmd)
-
-const storeCmd = Model.keyringStoreFidoPasswordCommand()
-check("the store takes the password from the environment, never argv",
-  storeCmd[2].includes("QSBW_SECRET") && storeCmd[2].includes("account 'fido_password'")
-    && storeCmd[2].includes("FIDO2 unlock") && !storeCmd[2].includes("master_password"),
-  storeCmd[2])
 
 // Logging out has to take every credential the plugin holds, and the FIDO
 // entry is one of them.
@@ -229,7 +178,7 @@ check("keyboard activation reaches the same FIDO actions",
 check("the toggle reflects a stored FIDO password, not just the setting",
   /case "fidoUnlock": return fidoUnlock && fidoStored/.test(panelSrc),
   "settingValue has no fido case")
-const rawPanel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const rawPanel = read("Panel.qml")
 check("the locked screen's Forget FIDO2 Key is declared once and placed twice",
   (rawPanel.match(/ForgetFidoButton \{/g) || []).length === 2
     && /component ForgetFidoButton: Button \{[\s\S]{0,300}Forget FIDO2 Key[\s\S]{0,220}onClicked: root\.vault\.forgetFidoUnlock\(\)/
@@ -245,21 +194,21 @@ check("without one, it takes the empty slot inline instead",
 
 // The locked screen and the SSH popup draw the same UnlockForm, so the button
 // is declared once and both surfaces get it.
-const rawUnlockForm = fs.readFileSync(path.join(__dirname, "..", "UnlockForm.qml"), "utf8")
+const rawUnlockForm = read("UnlockForm.qml")
 check("the shared unlock form offers the key only when it can actually unlock",
   /visible: form\.fieldsOffered && form\.method === "fido"[\s\S]{0,700}onClicked: form\.vault\.startFidoUnlock\(\)/.test(rawUnlockForm)
     && /if \(name === "fido"\) return form\.vault\.fidoReady/.test(rawUnlockForm),
   "the unlock form has no FIDO button, or offers it without fidoReady")
 check("both the panel and the SSH popup draw that form",
   /UnlockForm \{/.test(rawPanel)
-    && /UnlockForm \{/.test(fs.readFileSync(path.join(__dirname, "..", "SshUnlockScreen.qml"), "utf8")),
+    && /UnlockForm \{/.test(read("SshUnlockScreen.qml")),
   "a surface that draws its own unlock controls will drift from the other")
 check("a plugged-in key leads, then the reader, then PIN, then the password",
   /var order = \["fido", "fingerprint", "pin", "password"\]/.test(rawUnlockForm)
     && /methodAvailable\("fido"\) \? "fido"/.test(rawUnlockForm),
   "the key the user is holding should not sit behind another method")
-const rawFidoUnlock = fs.readFileSync(path.join(__dirname, "..", "FidoUnlock.qml"), "utf8")
-const rawService = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+const rawFidoUnlock = read("FidoUnlock.qml")
+const rawService = read("Service.qml")
 check("readiness is probed on startup, not only when the setting changes",
   /Component\.onCompleted: if \(armed\) refresh\(\)/.test(rawFidoUnlock),
   "a setting already true at build time fires no onArmedChanged, so nothing would probe")
@@ -275,16 +224,16 @@ check("a verified key says the vault is unlocking rather than asking again",
 // the panel again inside that window meets a device that is simply busy.
 check("a failure too fast to be an answer is retried, not reported",
   /function deviceStillBusy\(\)[\s\S]{0,400}?busyRetries < busyRetryLimit[\s\S]{0,200}?startedAtMs\) < busyFailureMs[\s\S]{0,200}?abandonedAtMs\) < busyWindowMs/.test(rawFidoUnlock)
-    && /if \(result !== PamResult\.Success && deviceStillBusy\(\)\)[\s\S]{0,80}?retryAfterBusy\(\)/.test(rawFidoUnlock),
-  "pam_u2f reports a busy key as 'not recognised', which is not what happened")
-check("only an abandoned conversation starts that window",
-  /function cancelUnlock\(\)[\s\S]{0,300}?if \(pam\.active\) abandonedAtMs = Date\.now\(\)/.test(rawFidoUnlock),
-  "a conversation that ended on its own leaves the key free")
+    && /exitCode === codes\.assert \|\| exitCode === codes\.noSecret\) \{\s*if \(deviceStillBusy\(\)\) \{\s*retryAfterBusy\(\)/.test(rawFidoUnlock),
+  "a busy key fails fast with FIDO_ERR_UNSUPPORTED_OPTION, which is not what happened")
+check("only an abandoned request starts that window",
+  /function cancelUnlock\(\)[\s\S]{0,300}?if \(assertProc\.running\) \{\s*abandonedAtMs = Date\.now\(\)/.test(rawFidoUnlock),
+  "a request that ended on its own leaves the key free")
 check("the retry stops when the screen that wanted it is gone",
   /id: busyRetryTimer[\s\S]{0,500}?status !== "locked"[\s\S]{0,120}?sshAuthSurfaceActive[\s\S]{0,120}?busyRetries = 0/.test(rawFidoUnlock),
   "a closed panel must not keep re-arming the key")
-check("a verified touch clears the busy state",
-  /busyRetries = 0[\s\S]{0,80}?abandonedAtMs = 0[\s\S]{0,80}?authorized = true/.test(rawFidoUnlock),
+check("a successful touch clears the busy state",
+  /exitCode === codes\.legacyUsed\) \{\s*busyRetries = 0\s*abandonedAtMs = 0/.test(rawFidoUnlock),
   "the next lock must start from a clean count")
 check("locking with the panel open arms whichever gate is about to be offered",
   /function lockVault\(\)[\s\S]{0,1200}?if \(sshAuthSurfaceActive\) armPresenceUnlock\(\)/.test(rawService)
@@ -292,7 +241,7 @@ check("locking with the panel open arms whichever gate is about to be offered",
   "arming the reader with a key plugged in sends the touch to the focused field")
 check("the form arms the method it offers, so no caller has to remember to",
   /function armOfferedMethod\(\)[\s\S]{0,400}?startFidoUnlock\(\)[\s\S]{0,120}?startFingerprintUnlock\(\)/
-    .test(fs.readFileSync(path.join(__dirname, "..", "UnlockForm.qml"), "utf8")),
+    .test(read("UnlockForm.qml")),
   "a presence method on screen with nothing waiting behind it is the bug this prevents")
 check("only one presence gate is ever armed",
   /function startFidoUnlock\(\)[\s\S]{0,300}?cancelFingerprintUnlock\(\)/.test(rawService)
@@ -300,47 +249,66 @@ check("only one presence gate is ever armed",
   "two armed gates mean two devices waiting, and the second touch answers nothing")
 check("a method that stops being offered takes its device with it",
   /onMethodChanged:[\s\S]{0,300}?releaseFidoUnlock\(\)[\s\S]{0,120}?cancelFingerprintUnlock\(\)/
-    .test(fs.readFileSync(path.join(__dirname, "..", "UnlockForm.qml"), "utf8")),
+    .test(read("UnlockForm.qml")),
   "an unplugged key or a shut lid must not leave a reader waiting behind the next screen")
-check("stepping back from the key keeps its conversation but drops the touch",
+check("stepping back from the key keeps its request but drops the touch",
   /function releaseSurface\(\)[\s\S]{0,700}?scanning = false[\s\S]{0,120}?authorized = false/.test(rawFidoUnlock)
     && /onOpenedChanged[\s\S]{0,400}?fidoUnlocker\.releaseSurface\(\)/.test(rawService)
     && !/onOpenedChanged[\s\S]{0,400}?cancelFidoUnlock\(\)/.test(rawService),
   "aborting buys nothing -- the key holds the request either way -- and loses the touch")
-check("a returning screen adopts the conversation rather than asking twice",
-  /function startUnlock\(\)[\s\S]{0,500}?if \(pam\.active\) \{[\s\S]{0,200}?scanning = true/.test(rawFidoUnlock),
+check("a returning screen adopts the request rather than asking twice",
+  /function startUnlock\(\)[\s\S]{0,500}?if \(assertProc\.running\) \{[\s\S]{0,200}?scanning = true/.test(rawFidoUnlock),
   "a second request to a key already holding one is refused by the device")
 check("the setup screen hands off to Omarchy when no key is registered",
-  /vault\.runFidoSetup\(\)/.test(fs.readFileSync(path.join(__dirname, "..", "FidoSetupScreen.qml"), "utf8")),
+  /vault\.runFidoSetup\(\)/.test(read("FidoSetupScreen.qml")),
   "FidoSetupScreen has no Omarchy hand-off")
 
-// --- the lock-time scrub, and re-arming after it ------------------------------
+// --- the password the touch produces -----------------------------------------
 //
-// Locking the vault empties every collector that could hold a secret by running
-// that process once with an empty command, and the replacement stays in place.
-// A read that is not re-armed before its next run therefore prints nothing --
-// which is exactly how FIDO2 unlock came to sit on "Key verified, unlocking..."
-// forever while the keyring was never read. The fingerprint path re-arms its
-// own lookup for the same reason; this pins that FIDO2 does too.
-const controllerSrc = fs.readFileSync(path.join(__dirname, "..", "FidoUnlock.qml"), "utf8")
-check("the FIDO lookup's collector is scrubbed on lock, like every other secret read",
-  /function secretProcesses\(\)\s*\{\s*return \[lookupProc\]/.test(controllerSrc),
-  "lookupProc must be scrubbed, or the master password would outlive the lock in its buffer")
-check("and the command is re-armed before the lookup is run again",
-  /lookupProc\.command = Model\.keyringLookupFidoPasswordCommand\(\)[\s\S]{0,140}lookupProc\.running = true/
-    .test(controllerSrc),
-  "onResult must restore the lookup command before re-running it; the scrub left it empty")
-check("no lookup run is left depending on the scrub's leftover command",
-  !/if \(!lookupProc\.running\) lookupProc\.running = true/.test(controllerSrc),
-  "a bare `running = true` re-runs the empty scrub command and reads nothing")
+//
+// The assert collector holds the password on success: taken, then scrubbed,
+// and on the lock-time scrub list.
+const controllerSrc = rawFidoUnlock
+check("the assert process's collector is scrubbed on lock, like every other secret read",
+  /function secretProcesses\(\)\s*\{\s*return \[assertProc\]/.test(controllerSrc),
+  "assertProc must be scrubbed, or the master password would outlive the lock in its buffer")
+check("and after every answer",
+  /var out = String\(assertStdout\.text \|\| ""\)\s*\n\s*if \(vault\) vault\.clearProcessCollectorSoon\(assertProc\)/
+    .test(controllerSrc), "")
+check("its command is set fresh before every run, never left to the scrub's leftover",
+  /assertProc\.command = target\.mode === "envelope"[\s\S]{0,200}?assertProc\.running = true/.test(controllerSrc)
+    && !/if \(!assertProc\.running\) assertProc\.running = true/.test(controllerSrc), "")
+check("which key holds the credential is asked again before each touch",
+  /startAfterProbe = true\s*\n\s*if \(!probeProc\.running\) probeProc\.running = true/.test(controllerSrc)
+    && /if \(startAfterProbe\) \{\s*startAfterProbe = false\s*if \(scanning\) launchAssert\(\)/.test(controllerSrc),
+  "a replugged key lands on another hidraw node")
+check("a credential with a wrap is preferred; the plaintext entry only migrates",
+  /mode: "envelope"[\s\S]{0,400}?if \(legacyStored && usable\.length > 0 && probe\.rp\)[\s\S]{0,100}?mode: "legacy"/
+    .test(controllerSrc), "")
+check("a migrating touch drops the plaintext entry once the envelope has it",
+  /var migrated = exitCode === 0 && mode === "legacy"\s*if \(migrated\) \{[\s\S]{0,250}?legacyStored = false/.test(controllerSrc), "")
+check("a PIN-requiring registration gets a reason, not a failed touch",
+  /if \(probe\.pinOnly\)[\s\S]{0,200}?asks for its PIN/.test(controllerSrc), "")
+check("setup is a master-password check and one touch, through the vault's shared path",
+  /vault\.addQuickUnlockMethodWith\(typed, function\(tool, account\) \{\s*return Model\.fidoEnrollCommand\(tool, account, target\)/
+    .test(controllerSrc)
+    && /var typed = setupMaster\s*\n\s*setupMaster = ""/.test(controllerSrc), "")
+check("a wrap whose setup was abandoned, locked or logged out mid-write is removed",
+  /vault\.epochOperationIsStale\("fidoAdd"\) \|\| !setupActive\)[\s\S]{0,200}?removeQuickUnlockMethod\(\{ kind: "remove", method: "fido", cred: target\.cred \}\)/
+    .test(controllerSrc)
+    && /if \(busy && vault\) vault\.invalidateEpochOperation\("fidoAdd"\)/.test(controllerSrc), "")
+check("forgetting removes every FIDO wrap as well as the plaintext entry",
+  /function forget\([\s\S]{0,300}?removeQuickUnlockMethod\(\{ kind: "remove", method: "fido", cred: creds\[i\]\.cred \}\)[\s\S]{0,200}?requestClear\(\)/
+    .test(controllerSrc), "")
+check("the old store and lookup processes are gone",
+  !/id: storeProc|id: lookupProc|keyringStoreFidoPasswordCommand|keyringLookupFidoPasswordCommand/.test(controllerSrc), "")
 
-// --- the PAM conversation is torn down with the fingerprint's -----------------
+// --- the key's request is torn down with the fingerprint's -----------------
 //
-// A FIDO2 authenticator answers one conversation at a time, so a conversation
-// left waiting for a touch from a closed panel makes the next one fail -- and
-// the panel says so, with "Key not recognised". Every place the vault drops a
-// pending fingerprint attempt has to drop the FIDO2 one beside it.
-const serviceSrc = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+//
+// A key answers one request at a time, so wherever the vault drops a pending
+// fingerprint attempt it must drop the FIDO2 one too.
+const serviceSrc = read("Service.qml")
 const cancelSites = [
   ["the panel closing", /function close\(\)[\s\S]*?cancelFingerprintUnlock\(\)\s*cancelFidoUnlock\(\)/],
   ["the panel closing from onOpenedChanged", /onOpenedChanged:[\s\S]*?cancelFingerprintUnlock\(\)\s*cancelFidoUnlock\(\)/],
@@ -357,9 +325,4 @@ check("logging out drops the FIDO2 attempt too",
   /function forgetStoredCredentials\(\)[\s\S]*?fidoUnlocker\.reset\(\)/.test(serviceSrc),
   "reset() cancels a live conversation and clears the state")
 
-if (failures.length) {
-  console.error(`FAIL ${failures.length}\n`)
-  for (const f of failures) console.error(`  x ${f}\n`)
-  process.exit(1)
-}
-console.log(`ok ${pass}`)
+done()

@@ -1,25 +1,16 @@
-# Protected release of the plugin and its SSH agent helper.
+# Protected release of the plugin and its helpers. agent-build.yml proves the
+# committed bytes match the source; this turns that into a release, and is the
+# only workflow holding a token that can write. Three stages:
 #
-# The helper ships as committed bytes. `agent-build.yml` proves on every branch
-# push that those bytes are what the committed source builds; this workflow is
-# what turns that proof into a published release, and it is deliberately the
-# only place in the repository that holds a token able to write anything.
+#   gates    agent-build.yml's checks, re-run against the tag
+#   verify   release-only checks (tag vs manifest, changelog and binary
+#            versions; bytes vs SHA256SUMS) plus SBOM, dependency report and
+#            debug symbols
+#   release  the only job with write, id-token and attestation permissions,
+#            behind the `release` environment
 #
-# The shape is three stages, and the split is the point:
-#
-#   gates    every check the branch already runs, re-run against the tag,
-#            from the branch's own definition rather than a copy of it
-#   verify   the release-only questions -- does the tag agree with the
-#            manifest, the changelog, and the binary's own reported version;
-#            do the committed bytes still match the committed checksum -- plus
-#            the SBOM, dependency report and debug symbols a release publishes
-#   release  the only job with write, id-token and attestations permission,
-#            behind the `release` environment so a human approves the moment
-#            elevated credentials come into existence
-#
-# Nothing before the last stage can write to the repository, mint an OIDC
-# token, or sign an attestation. A dependency that misbehaves during the build
-# runs in a job that has nothing to steal and nothing to publish.
+# Nothing before the last stage can write, mint an OIDC token or attest, so a
+# misbehaving dependency in the build has nothing to steal.
 
 name: release
 
@@ -27,28 +18,23 @@ on:
   push:
     tags:
       - 'v*'
-  # Verification without publication: every gate and every report, on any ref.
-  # The release job refuses anything that is not a tag, so a dispatch run can
-  # rehearse the whole path without creating a release or an attestation.
+  # Every gate and report on any ref, without publishing (the release job
+  # refuses non-tags): a safe rehearsal.
   workflow_dispatch:
 
-# Read-only by default. The release job raises this for itself and nothing
-# else inherits it.
+# Read-only by default; the release job raises its own.
 permissions:
   contents: read
 
 concurrency:
-  # Never cancel a release in flight. A half-published release is worse than a
-  # queued one, and a tag is pushed once.
+  # Never cancel a release in flight; a half-published one is worse.
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   gates:
     name: every branch gate, against the tag
-    # Called rather than copied. A release that re-implements the branch's
-    # checks drifts from them silently, and the release is the copy where that
-    # matters most.
+    # Called, not copied, so the release runs exactly the branch's checks.
     uses: ./.github/workflows/agent-build.yml
     permissions:
       contents: read
@@ -61,15 +47,10 @@ jobs:
       contents: read
     defaults:
       run:
-        # A container job's default shell is the image's `sh`, not the runner's
-        # bash. The scan below uses an array, and `sh` answered that with
-        # `Syntax error: "(" unexpected` -- found by rehearsing this workflow
-        # rather than by reading it. Declared for the whole job so the next
-        # step that reaches for a bashism does not rediscover it.
+        # A container job defaults to `sh`; the steps below use bash arrays.
         shell: bash
-    # The same digest scripts/build-agent.sh pins, for the same reason: the
-    # debug-symbol build below has to come from the toolchain that produced
-    # the release, not from whatever the runner image carries this week.
+    # The digest scripts/build-agent.sh pins, so the debug build matches the
+    # release toolchain.
     container:
       image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
 
@@ -80,8 +61,7 @@ jobs:
           fetch-depth: 0
 
       - name: Name the version this run claims
-        # A dispatch run has no tag, so it verifies the manifest against
-        # itself. A tag run is the one that has to agree with something.
+        # A dispatch run has no tag and checks the manifest against itself.
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           manifest="$(grep -oP '"version"\s*:\s*"\K[^"]+' manifest.json | head -1)"
@@ -107,29 +87,30 @@ jobs:
           echo "version $VERSION agrees across the tag, manifest.json and CHANGELOG.md"
 
       - name: The committed bytes are the ones the committed checksum names
-        # `--compare-tracked` in the gates job already proved these bytes are
-        # what this source builds. This is the cheaper, different question the
-        # panel asks at launch: does the checksum shipped beside the binary
-        # still describe the binary. A release must not ship the two out of
-        # step, whatever the reason.
+        # The panel's launch-time question: does the shipped SHA256SUMS still
+        # describe each binary (the gates proved source -> bytes).
         run: |
-          binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
-          test -f "$binary" || { echo "::error::no tracked helper at $binary"; exit 1; }
-          test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
           ( cd bin && sha256sum -c SHA256SUMS )
-          file "$binary"
-          file "$binary" | grep -q 'ELF 64-bit LSB.*x86-64' || {
-            echo "::error::$binary is not an x86-64 ELF"
-            exit 1
-          }
-          ldd "$binary" || true
+          for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
+                        bin/x86_64-linux/qs-bitwarden-unlock-key; do
+            test -f "$binary" || { echo "::error::no tracked helper at $binary"; exit 1; }
+            test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
+            # Each binary needs its own line: `sha256sum -c` ignores omissions.
+            grep -qE "  ${binary#bin/}\$" bin/SHA256SUMS || {
+              echo "::error::bin/SHA256SUMS has no line for $binary"
+              exit 1
+            }
+            file "$binary"
+            file "$binary" | grep -q 'ELF 64-bit LSB.*x86-64' || {
+              echo "::error::$binary is not an x86-64 ELF"
+              exit 1
+            }
+            ldd "$binary" || true
+          done
 
       - name: The helper reports the versions the panel expects
-        # Three numbers have to line up, and nothing else checks all three:
-        # the crate version the binary was built from, the control-protocol
-        # version the panel speaks, and the binary's own report of both. A
-        # protocol bump that reaches the helper but not the panel would
-        # disable the feature at every user's next launch.
+        # Crate version, the panel's control-protocol version, and the binary's
+        # own report must agree; a mismatch disables SSH at users' next launch.
         run: |
           binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
           reported="$("./$binary" --version)"
@@ -146,10 +127,26 @@ jobs:
           }
           "./$binary" --self-test
 
+      - name: The unlock tool reports the versions the panel expects
+        # The same for the unlock tool and its envelope format.
+        run: |
+          binary=bin/x86_64-linux/qs-bitwarden-unlock-key
+          reported="$("./$binary" --version)"
+          echo "$reported"
+          crate="$(grep -oP '^version\s*=\s*"\K[^"]+' unlock-key/Cargo.toml | head -1)"
+          panel="$(grep -oP 'UNLOCK_KEY_ENVELOPE_VERSION\s*=\s*\K\d+' BitwardenModel.js | head -1)"
+          echo "$reported" | grep -qF "qs-bitwarden-unlock-key $crate" || {
+            echo "::error::the unlock tool reports a version that is not unlock-key/Cargo.toml's $crate"
+            exit 1
+          }
+          echo "$reported" | grep -qF "(envelope v$panel)" || {
+            echo "::error::the unlock tool's envelope format is not the v$panel the panel reads"
+            exit 1
+          }
+          "./$binary" --self-test
+
       - name: Collect the dependency and licence report
-        # The same policy the gates job enforces, published as evidence rather
-        # than only as a pass/fail. A user asking "what is in this binary and
-        # under what terms" should not have to install a Rust toolchain.
+        # The gates' dependency policy, published as evidence.
         run: |
           mkdir -p dist
           cargo install cargo-deny --locked
@@ -157,6 +154,11 @@ jobs:
             list --layout crate --format json > dist/dependency-licences.json
           cargo tree --manifest-path agent/Cargo.toml --locked \
             --edges normal --target x86_64-unknown-linux-gnu > dist/dependency-tree.txt
+          # The unlock tool is its own package with its own dependency set.
+          cargo deny --manifest-path unlock-key/Cargo.toml --config deny.toml \
+            list --layout crate --format json > dist/unlock-key-dependency-licences.json
+          cargo tree --manifest-path unlock-key/Cargo.toml --locked \
+            --edges normal --target x86_64-unknown-linux-gnu > dist/unlock-key-dependency-tree.txt
 
       - name: Collect the SBOM
         run: |
@@ -164,35 +166,34 @@ jobs:
           cargo cyclonedx --manifest-path agent/Cargo.toml --format json \
             --describe binaries --target x86_64-unknown-linux-gnu
           mv agent/qs-bitwarden-ssh-agent_bin.cdx.json dist/qs-bitwarden-ssh-agent.cdx.json
+          cargo cyclonedx --manifest-path unlock-key/Cargo.toml --format json \
+            --describe binaries --target x86_64-unknown-linux-gnu
+          mv unlock-key/qs-bitwarden-unlock-key_bin.cdx.json dist/qs-bitwarden-unlock-key.cdx.json
 
       - name: Collect debug symbols
-        # The release profile sets `strip = "symbols"`, so the shipped binary
-        # carries no symbol table and none can be extracted from it. What can
-        # be published is a companion build: same commit, same pinned
-        # toolchain, same flags, with debug information turned on.
-        #
-        # Its addresses are NOT the shipped binary's -- enabling debug info
-        # changes the link, and the entry point and .text layout move with it.
-        # That is measured, not assumed. So this file is for debugging this
-        # source version under gdb, not for symbolising an address from a user's
-        # copy of the shipped helper, and dist/DEBUG-SYMBOLS.md says so where
-        # whoever downloads it will read it.
+        # The shipped binary is stripped, so symbols come from a companion
+        # build (same commit, toolchain and flags, debug info on). Its
+        # addresses differ from the shipped binary's, as dist/DEBUG-SYMBOLS.md
+        # says: it is for debugging this source under gdb.
         run: |
           src="$PWD"
-          CARGO_TARGET_DIR="$src/target-debuginfo" \
-          CARGO_PROFILE_RELEASE_STRIP=none \
-          CARGO_PROFILE_RELEASE_DEBUG=full \
-          RUSTFLAGS="--remap-path-prefix=$src=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry=/registry" \
-            cargo build --manifest-path agent/Cargo.toml --locked --release \
-              --target x86_64-unknown-linux-gnu
-          built="$src/target-debuginfo/x86_64-unknown-linux-gnu/release/qs-bitwarden-ssh-agent"
-          objcopy --only-keep-debug "$built" dist/qs-bitwarden-ssh-agent.debug
-          gzip -9 dist/qs-bitwarden-ssh-agent.debug
+          for spec in agent:qs-bitwarden-ssh-agent unlock-key:qs-bitwarden-unlock-key; do
+            package="${spec%%:*}"; name="${spec#*:}"
+            CARGO_TARGET_DIR="$src/target-debuginfo" \
+            CARGO_PROFILE_RELEASE_STRIP=none \
+            CARGO_PROFILE_RELEASE_DEBUG=full \
+            RUSTFLAGS="--remap-path-prefix=$src=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry=/registry" \
+              cargo build --manifest-path "$package/Cargo.toml" --locked --release \
+                --target x86_64-unknown-linux-gnu
+            built="$src/target-debuginfo/x86_64-unknown-linux-gnu/release/$name"
+            objcopy --only-keep-debug "$built" "dist/$name.debug"
+            gzip -9 "dist/$name.debug"
+          done
           cat > dist/DEBUG-SYMBOLS.md <<'NOTE'
           # Debug symbols
 
-          `qs-bitwarden-ssh-agent.debug.gz` comes from a companion build of the
-          tagged commit: the same source, the same pinned container, the same
+          `qs-bitwarden-ssh-agent.debug.gz` and `qs-bitwarden-unlock-key.debug.gz`
+          come from companion builds of the tagged commit: the same source, the same pinned container, the same
           `--remap-path-prefix` flags, but built with debug information instead
           of the release profile's `strip = "symbols"`.
 
@@ -202,34 +203,23 @@ jobs:
           these symbols to debug this version of the source; do not use them to
           translate an address taken from a shipped helper.
 
-          The shipped binary deliberately carries no symbols: it is a process
-          that holds decrypted private keys, and its release profile also sets
-          `panic = "abort"` and disables core dumps at startup.
+          The shipped binaries deliberately carry no symbols: one holds
+          decrypted private keys and the other the master password, and both
+          release profiles also set `panic = "abort"` and disable core dumps at
+          startup.
           NOTE
 
       - name: Refuse to publish anything that looks like key material
-        # The reports come from a lockfile and a dependency tree, and the suite
-        # that ran before them makes disposable keys in temporary directories.
-        # Neither should be able to reach dist/ -- but "should not" is the kind
-        # of claim that is worth one grep.
+        # Make sure no key material reached dist/ (the suite creates
+        # disposable keys). Two patterns:
         #
-        # Two patterns, applied to different things, because a single one would
-        # be either useless or a landmine:
+        #   b3BlbnNzaC1rZXktdjE  base64 "openssh-key-v1", the start of every
+        #                        OpenSSH private key body; checked in every
+        #                        artifact (absent from compiled output).
+        #   BEGIN ... PRIVATE KEY  PEM headers, in text reports only (the
+        #                        helper's own PEM labels are compiled in).
         #
-        #   b3BlbnNzaC1rZXktdjE  base64 of "openssh-key-v1", which begins the
-        #                        body of every OpenSSH private key. Checked
-        #                        against every artifact including the symbols,
-        #                        because it appears in real key material and
-        #                        not in compiled output -- verified against
-        #                        both a generated key and the shipped binary.
-        #   BEGIN ... PRIVATE KEY  a PEM header, checked against the text
-        #                        reports only. The helper parses PEM, so its
-        #                        own label strings are compiled into it, and
-        #                        scanning the symbols for this would fail every
-        #                        release for the wrong reason.
-        #
-        # Compressed artifacts are decompressed for the scan rather than
-        # skipped, or gzip would be all it takes to walk a secret past this.
+        # Compressed artifacts are decompressed for the scan.
         run: |
           found=0
           for f in dist/*; do
@@ -268,25 +258,13 @@ jobs:
   release:
     name: attest and publish
     needs: verify
-    # Only a tag publishes. A dispatch run stops after verification, which is
-    # what makes it safe to rehearse.
+    # Only a tag publishes; a dispatch run stops after verification.
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
-    # The protection boundary, and still the only job in the repository that
-    # asks for anything beyond read.
-    #
-    # It used to also require a reviewer to click approve here. That was a
-    # third human gate on a path that already has two, and the wrong two to
-    # add it to: the work was reviewed on the release branch, where the PRs
-    # are and where the gates run, and the tag that reaches this job is pushed
-    # deliberately. What this job produces is a draft, so approving it was not
-    # even the moment anything went public -- that is the merge to master,
-    # which is itself a pull request.
-    #
-    # The environment stays, for what it does rather than for the click: it
-    # scopes these permissions to this one job, records the deployment, and
-    # carries a branch policy that lets only `v*` tags reach it -- so a branch
-    # cannot deploy here however the workflow is triggered.
+    # The only job asking for more than read. No reviewer click: the work was
+    # reviewed on the release branch, and this only makes a draft. The
+    # environment scopes these permissions, records the deployment, and only
+    # admits `v*` tags.
     environment:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
@@ -306,27 +284,29 @@ jobs:
           path: dist
 
       - name: Run the shipped bytes on the runner, outside the build container
-        # The gates job runs the helper inside the image that built it, which
-        # cannot tell whether it also runs anywhere else. This is a plain
-        # x86-64 Linux host with a different glibc: a binary that only works
-        # in its own build container is not a release.
+        # Also run the helper on a plain host with a different glibc, not only
+        # inside its build container.
         run: |
-          binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
           ( cd bin && sha256sum -c SHA256SUMS )
-          test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
           ldd --version | head -1
-          "./$binary" --version
-          "./$binary" --self-test
-          sha256sum "$binary"
+          for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
+                        bin/x86_64-linux/qs-bitwarden-unlock-key; do
+            test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
+            "./$binary" --version
+            "./$binary" --self-test
+            sha256sum "$binary"
+          done
 
       - name: Attest the shipped bytes
-        # Binds this digest to this repository, this workflow and this commit.
-        # Verified by:
+        # Binds these digests to this repo, workflow and commit. Verify with
         #   gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
         #      --repo ${{ github.repository }}
+        # and the same for bin/x86_64-linux/qs-bitwarden-unlock-key.
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: bin/x86_64-linux/qs-bitwarden-ssh-agent
+          subject-path: |
+            bin/x86_64-linux/qs-bitwarden-ssh-agent
+            bin/x86_64-linux/qs-bitwarden-unlock-key
 
       - name: Publish the release
         env:
@@ -334,9 +314,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           version="${TAG#v}"
-          # The changelog section for exactly this version, without the next
-          # one. A release whose notes are the whole file is a release nobody
-          # reads.
+          # Only this version's changelog section.
           awk -v v="## [$version]" '
             index($0, v) == 1 { inside = 1; next }
             inside && /^## \[/ { exit }
@@ -349,17 +327,12 @@ jobs:
           cp bin/SHA256SUMS dist/SHA256SUMS
           notes=dist/release-notes.md
           assets=(dist/*.json dist/*.txt dist/*.gz dist/DEBUG-SYMBOLS.md dist/SHA256SUMS
-                  bin/x86_64-linux/qs-bitwarden-ssh-agent)
+                  bin/x86_64-linux/qs-bitwarden-ssh-agent
+                  bin/x86_64-linux/qs-bitwarden-unlock-key)
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
-          # Created as a draft. A tag is pushed on a release branch, before
-          # that work has reached master, and a published release at that
-          # moment would be announcing a version the default branch does not
-          # yet contain. publish-on-master.yml takes the draft public when the
-          # tagged commit lands on master, which is the moment the release is
-          # real. Everything that costs anything -- the gates, the reports, the
-          # attestation, the assets -- has already happened here, on the
-          # release branch, where it belongs.
+          # A draft: the tag is on a release branch not yet merged to master.
+          # publish-on-master.yml publishes it when the commit lands there.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::notice::release $TAG exists; uploading assets to it"
             gh release upload "$TAG" "${assets[@]}" --clobber

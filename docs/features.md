@@ -16,26 +16,32 @@ Every feature the plugin has, and why each one works the way it does. The
   - **The terminal reopens the panel for you** on success, then closes itself; you only have to dismiss it if something went wrong and there is an error worth reading.
   - Two `bw status` calls used to sit on that path, each around three seconds on a real vault: one in the terminal to decide login-versus-unlock, one in the panel to confirm a key `bw` had just minted. Neither is needed -- the panel already knows which state it is in, and the confirming check now starts only after the item list has been rendered instead of sitting in front of it.
 
+- **One stored password for quick unlock**:
+  - The master password is kept once, in one keyring item: encrypted under a random key (XChaCha20-Poly1305) and sealed to this machine and user with `systemd-creds --user`. It is written the first time `bw` accepts a password you typed, and each quick-unlock method only adds a way into it. See [How quick unlock stores your password](../README.md#how-quick-unlock-stores-your-password).
+  - Turning a method on asks for your master password as a check against the stored one -- a wrong one is refused, and nothing typed there is stored.
+  - A master password changed elsewhere is picked up at the next unlock with the new one; every method keeps working.
+  - Upgrading moves the old per-method entries in as each method is next used, and deletes them once the new copy opens.
+
 - **PIN Unlock** (opt-in, `pinUnlock`):
-  - Unlock with a numeric PIN instead of typing the master password. **6 digits or more is the recommendation**, 4 is the hard floor, and there is no upper limit. A PIN under 6 digits is accepted but the field turns red and tells you how small the search space you just chose is -- every extra digit multiplies an attacker's work by ten.
-  - Unlike fingerprint unlock, the master password is **not** stored in the clear: it is encrypted with a key derived from your PIN (PBKDF2-SHA256, 600,000 iterations, salted) and only the ciphertext is kept, so reading the keyring alone does not reveal it.
-  - A wrong PIN simply fails to decrypt, so no PIN hash is stored and there is none to attack.
-  - Five wrong attempts removes the stored ciphertext entirely; re-enabling needs the master password again. So does a master password change, which is detected on the first failed unlock.
+  - Unlock with a numeric PIN instead of typing the master password. **6 digits or more is the recommendation**, 4 is the hard floor, and there is no upper limit. A PIN under 6 digits is accepted, with the real cost of guessing it spelled out.
+  - The PIN reaches the stored password through Argon2id (256 MiB, 4 passes, about 0.75 s per guess), and the stored item is sealed to this machine -- so guessing has to happen here: about 2 hours of one CPU core for 4 digits, 9 days for 6.
+  - A wrong PIN always fails; there is no stored PIN hash.
+  - Five wrong attempts removes the PIN's way in; re-enabling needs the master password again.
 
 - **Fingerprint Unlock** (opt-in, `fingerprintUnlock`):
   - Unlock the vault with an enrolled fingerprint instead of retyping your master password.
   - Verifies through the same PAM stack as the Omarchy lock screen (`/etc/pam.d/omarchy-lock-fingerprint`), so it works wherever `omarchy setup security fingerprint` has been run.
-  - Enrolling asks for your master password up front in the settings screen, rather than quietly capturing it on some later unlock.
+  - Turning it on asks you to confirm your master password up front, rather than quietly capturing it on some later unlock.
   - The reader is armed automatically whenever you open the panel on a locked vault; the master password field always stays available as a fallback.
-  - A closed lid takes the option off the screen: the reader is on the laptop body, so with the lid shut (clamshell mode, or a lid closed on a docked machine) the unlock button is hidden and the reader is not armed, on the locked screen and in the SSH prompt alike. Nothing is forgotten -- the stored password and the settings toggle are untouched, and the option returns when the lid opens. Omarchy's `omarchy-hw-laptop-closed` decides.
-  - See [Optional: Fingerprint Unlock](../README.md#fingerprint-unlock) for the security trade-off before enabling it.
+  - A closed lid takes the option off the screen: the reader is on the laptop body, so with the lid shut (clamshell mode, or a lid closed on a docked machine) the unlock button is hidden and the reader is not armed, on the locked screen and in the SSH prompt alike. Nothing is forgotten, and the option returns when the lid opens. Omarchy's `omarchy-hw-laptop-closed` decides.
+  - A fingerprint releases no secret, so with it on a program running as you can open the stored password. See [Fingerprint unlock](../README.md#fingerprint-unlock) before enabling it.
 
 - **FIDO2 Key Unlock** (opt-in, `fidoUnlock`):
-  - Unlock the vault with a FIDO2 authenticator -- a YubiKey or any compliant key -- instead of retyping your master password.
-  - Reuses the registration Omarchy's own setup writes (`omarchy setup security fido2` to `/etc/fido2/fido2`), so one registration serves the vault and the system's own authentication prompts alike. The setup screen offers that command when no key is registered yet.
-  - Verifies the key through a PAM stack **shipped inside the plugin** and loaded from the plugin's own directory (Quickshell's `configDirectory`), so enabling it needs no privileged change to `/etc/pam.d`. pam-u2f is asked only for user presence, so a touch is all it takes.
-  - Enrolling asks for your master password up front, and stores it in the keyring under its own `account=fido_password`, separate from the fingerprint's entry. The key is armed automatically on lock when one is plugged in; the fingerprint reader is the fallback, and the master password field always stays available.
-  - See [FIDO2 key unlock](../README.md#fido2-key-unlock) for the security trade-off before enabling it.
+  - Unlock the vault with a FIDO2 authenticator -- a YubiKey or any compliant key with `hmac-secret` -- instead of retyping your master password.
+  - Uses the registration Omarchy's own setup writes (`omarchy setup security fido2` to `/etc/fido2/fido2`), so one registration serves the vault and the system's own authentication prompts alike, and nobody re-enrolls. The setup screen offers that command when no key is registered yet.
+  - One touch asks the key for its `hmac-secret`, which opens the stored password. The key will not produce it without a touch, so unlocking needs the key itself, not just access to the keyring.
+  - Each plugged-in registered key gets its own way in; registrations that ask for the key's PIN (`+pin`, `+verification`) are not used. The key is armed automatically on lock when one is plugged in; the fingerprint reader is the fallback, and the master password field always stays available.
+  - See [FIDO2 key unlock](../README.md#fido2-key-unlock).
 
 - **SSH Agent** (opt-in, `sshAgentEnabled`):
   - Serves the SSH keys in your vault to `ssh`, `git` and `ssh-keygen -Y sign` while the vault is unlocked, from a separate helper process that holds the private keys in memory and drops them on lock, logout, or exit. They are never written to disk and never reach QML.
@@ -45,7 +51,8 @@ Every feature the plugin has, and why each one works the way it does. The
 - **Context-Aware Password Suggestions (Active Window / Browser Tab)**:
   - Reads the active window on open (`hyprctl activewindow -j`, falling back to the `hyprctl clients -j` focus history when the panel itself holds focus).
   - Recognises the current site from the browser's page title and matches it against each item's URLs and name using Bitwarden-style host and base-domain rules, brand aliases (a `Gmail` tab matches a `google.com` item), and word-boundary matching that ignores public suffixes and generic labels such as `www`, `login`, or `com`.
-  - Places a highlighted **`󰌠 Suggested for <App / Website>`** banner and pins matching credentials to the top of the list with pre-selection, so pressing <kbd>Enter</kbd> immediately copies the right credential.
+  - Places a highlighted **`󰌠 Matches window title: <App / Website>`** banner and pins matching credentials to the top of the list with pre-selection, so pressing <kbd>Enter</kbd> immediately copies the right credential.
+  - **Not phishing protection.** Hyprland exposes a window's title, not the tab's address, and a page writes its own title: one titled `github.com` on any domain is matched to a `github.com` item. The banner therefore says what the title matched, never "this site", and the address bar remains the thing to check before pasting.
   - Only the strongest tier of matches is shown (at most 6), and a title with nothing identifiable in it produces no suggestions rather than a guess.
   - Standalone desktop apps match on window class; terminals only suggest for remote `ssh`/`mosh`/`sftp` hosts, never for local shells.
   - **It learns.** Opening or copying an item while a window is active records that window against the item, and it is suggested outright next time -- ahead of every heuristic. This is what handles sites a title can never match: a portal on `auth.example.xyz` titled `Home - authentik` shares no word with the stored credential, so pick it once and it sticks. Learned suggestions are marked `󰐾` rather than `󰌠`.

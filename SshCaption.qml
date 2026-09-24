@@ -1,9 +1,7 @@
 import QtQuick
 import qs.Commons
 
-// Shared caption used by the SSH screens. Text defaults to AutoText, so the
-// format is stated even where the string is constant today. Callers may
-// override `color`; the default is the bar's dim foreground.
+// Caption text for the SSH screens, in the bar's dim foreground by default.
 Text {
   required property var panel
 

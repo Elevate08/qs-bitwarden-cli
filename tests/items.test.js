@@ -1,43 +1,14 @@
 #!/usr/bin/env node
-// The item detail view is built from what `bw list items` already returned
-// rather than from a second `bw get item`. That is only correct if the two
-// produce the same detail, so that equivalence is the property under test.
+// The detail view is built from `bw list items` data rather than `bw get item`,
+// which is only right if both give the same detail.
 //
 //   node tests/items.test.js
 
-const fs = require("fs")
-const { readPluginSource } = require("./plugin-source")
+const { createSuite, loadModule, readPluginSource } = require("./harness")
 const path = require("path")
-const Model = {}
-new Function("exports", fs.readFileSync(path.join(__dirname, "..", "BitwardenModel.js"), "utf8")
-  .replace(/^\.pragma library\s*$/m, "") + `
-  exports.parseItems = parseItems
-  exports.parseItemDetail = parseItemDetail
-  exports.itemDetailFromObject = itemDetailFromObject
-  exports.itemTypeGlyph = itemTypeGlyph
-  exports.parseSanitizedItems = parseSanitizedItems
-  exports.filterItems = filterItems
-  exports.buildCreatePayload = buildCreatePayload
-  exports.buildEditPayload = buildEditPayload
-  exports.validateItemForm = validateItemForm
-  exports.matchesQuery = matchesQuery
-  exports.createItemCommand = createItemCommand
-  exports.spliceSavedItem = spliceSavedItem
-  exports.optimisticItem = optimisticItem
-  exports.replaceItemById = replaceItemById
-  exports.findItemById = findItemById
-  exports.pendingItemId = pendingItemId
-  exports.isPendingItemId = isPendingItemId
-  exports.savedUnsanitizedMarker = savedUnsanitizedMarker
-  exports.identityFullName = identityFullName
-  exports.getItemCommand = getItemCommand
-  exports.editItemCommand = editItemCommand
-  exports.deleteItemCommand = deleteItemCommand
-`)(Model)
+const Model = loadModule()
 
-let pass = 0
-const failures = []
-const check = (l, ok, d) => ok ? pass++ : failures.push(`${l}\n    ${d}`)
+const { check, done } = createSuite("items")
 
 // Shaped like a real `bw list items` entry, which carries the complete cipher
 // -- this is what makes the second CLI call unnecessary.
@@ -163,10 +134,8 @@ check("identity fields survive too",
 
 // --- cards and identities are first-class, not decoration --------------------
 //
-// The model parsed both of these long before anything drew them, so these
-// assertions guard the half that was always right as much as the half that
-// was added: what the list shows, what search can find, and above all what
-// survives an edit.
+//
+// What the list shows, what search finds, and what survives an edit.
 
 check("an identity carries the fields Bitwarden actually returns",
   identityDetail.identity.middleName === "Q" && identityDetail.identity.company === "Acme"
@@ -208,12 +177,8 @@ check("creating an identity emits an identity object",
     && createdIdentity.identity.ssn === "",
   JSON.stringify(createdIdentity))
 
-// The regression that matters most here. The form can rename a card without
-// ever showing its number, and the writers set every key they know -- so an
-// edit that passes no type fields must leave the sub-object entirely alone,
-// not blank it. This is what the `&& typeFields` guard in buildEditPayload is
-// for, and it is worth an assertion because nothing about the call site looks
-// dangerous.
+// A rename passes no type fields and must leave the card untouched (the
+// `&& typeFields` guard in buildEditPayload), not blank it.
 const renamedCard = Model.buildEditPayload({ typeCode: 3, rawObject: card },
   "Renamed", "", "", "", "", "", false, null, null, null)
 check("renaming a card leaves its number, expiry and code untouched",
@@ -283,11 +248,8 @@ check("a blank custom-field label blocks the save with a useful row number",
 
 // --- the encoder swap --------------------------------------------------------
 //
-// `bw encode` base64-encodes stdin and does nothing else -- no vault, no
-// session, no network. It cost a full Bitwarden CLI startup, measured at 2.7
-// seconds, on every save, folder creation and Send. coreutils does it in about
-// two milliseconds. These assertions hold the two halves of that swap: the
-// output really is identical, and the payload still never reaches argv.
+// coreutils base64 replaced `bw encode` (~2.7 s of CLI startup per save): the
+// output must be identical and the payload must still stay out of argv.
 
 const { execFileSync } = require("child_process")
 const encodeSamples = [
@@ -321,11 +283,8 @@ for (const [label, cmd] of [
 
 // --- splicing a save into the list ------------------------------------------
 //
-// A save used to be followed by re-listing and re-decrypting the whole vault
-// to learn about the one item just written. The save's own response is the
-// authoritative post-save state, so the list is brought up to date from that.
-// These assertions cover the ways that can go wrong, because a list that
-// quietly disagrees with the vault is worse than a slow one.
+// The list is updated from the save's own response instead of a full reload;
+// these cover the ways that can go wrong.
 
 const envelope = (...objs) => JSON.stringify({
   sshCapability: "unconfirmed", items: objs, sshKeys: []
@@ -411,10 +370,8 @@ check("a failed save is never reported as a success",
 
 // --- saving without making the user wait -------------------------------------
 //
-// A save costs whatever `bw` costs: a second or two of CLI startup, vault
-// decryption and a round trip, none of which this plugin can shorten. So the
-// form closes when the command is launched and the list shows the item as it
-// will be, marked as saving, until the vault answers.
+// The form closes when the save starts and the list shows the item as
+// saving until the vault answers.
 
 const draftCard = { type: 3, name: "Draft Visa", notes: "", favorite: false,
   card: { brand: "Visa", number: "4111111111111111", code: "999",
@@ -488,13 +445,8 @@ check("unparseable JSON still yields null from the string form",
 
 // --- the type glyphs -------------------------------------------------------
 //
-// Pinned by codepoint, because a wrong one is invisible in review: the glyph
-// renders as a small picture in the editor and the name is nowhere in the
-// source. Two of these were wrong for exactly that reason -- Secure Note drew
-// md-fan (a ceiling fan) and Card drew md-close_octagon_outline (a stop sign),
-// both under comments claiming otherwise. The values below are the same ones
-// the type filter chips in Panel.qml use, which is the point: a row and the
-// chip that selects it should not disagree.
+// Pinned by codepoint (a wrong glyph is invisible in review), and the same as
+// the type filter chips in Panel.qml.
 
 const glyphs = [
   [1, 0xF030B, "md-key_variant", "Login"],
@@ -508,18 +460,14 @@ for (const [typeCode, cp, name, label] of glyphs) {
     `U+${got.codePointAt(0).toString(16).toUpperCase()}`)
   check(`${label} is one glyph, not a sequence`, [...got].length === 1, JSON.stringify(got))
 }
-// itemTypeName() already answers "login" for anything it does not recognise,
-// so a cipher type Bitwarden adds later renders as a login rather than as
-// nothing. That also means itemTypeGlyph's own `default:` shield can never be
-// reached -- pinned here so the next reader does not go looking for it.
+// itemTypeName() maps unknown types to "login", so itemTypeGlyph's default
+// shield is unreachable.
 check("an unrecognised type is drawn as a login, not as the unreachable shield",
   Model.itemTypeGlyph(99).codePointAt(0) === 0xF030B,
   Model.itemTypeGlyph(99).codePointAt(0).toString(16))
 
-// A key icon on the password controls, not a refresh icon. Pinned by button
-// rather than by count, because what broke this was a bulk glyph replacement
-// that meant to touch one new button and silently rewrote every other use of
-// the same codepoint. A count alone would have moved with it.
+// A key icon on the password controls, pinned per button (a bulk glyph
+// replacement once changed them all).
 const panelSrc = readPluginSource("Panel.qml")
 const KEY = String.fromCodePoint(0xF0306)
 const passwordButtons = [
@@ -540,5 +488,4 @@ check("the Generate... button wears it too",
   /text: "Generate\.\.\."[\s\S]{0,80}iconText: "\u{F0306}"/u.test(panelSrc),
   "the field-level generator shortcut")
 
-console.log(`${pass} passed, ${failures.length} failed`)
-if (failures.length) { console.error("\nFAILURES:\n  " + failures.join("\n  ")); process.exit(1) }
+done()

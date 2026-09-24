@@ -15,8 +15,8 @@ pub enum VaultState {
     LockedEmpty,
 }
 
-/// Single-owner state tracker. Mutating methods are the authorization
-/// linearization points used by the keystore actor.
+/// Single-owner state; mutating methods are the authorization linearization
+/// points.
 pub(crate) struct StateTracker {
     epoch: u64,
     state: VaultState,
@@ -48,8 +48,7 @@ impl StateTracker {
     }
 
     pub(crate) fn lock(&mut self, epoch: u64, has_public_cache: bool) {
-        // This assignment is the deny-signing linearization point. Private
-        // values are dropped by the owner only after this returns.
+        // The deny-signing linearization point; private keys are dropped after.
         self.epoch = self.epoch.max(epoch);
         self.state = if has_public_cache {
             VaultState::LockedCached

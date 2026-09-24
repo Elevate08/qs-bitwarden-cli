@@ -2,9 +2,8 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// The lock-screen unlock controls: fingerprint, PIN, and master password.
-// Shared by Panel SCREEN 2 and the SSH unlock popup so those copies cannot
-// drift (stale-PIN error, eye-reveal reset).
+// The lock-screen unlock controls (FIDO2, fingerprint, PIN, master password),
+// shared by the panel lock screen and the SSH unlock popup.
 Column {
   id: form
 
@@ -13,25 +12,17 @@ Column {
 
   readonly property alias passwordField: passwordField
   readonly property alias pinField: pinField
-  // The popup opts in so Tab can reach Deny/Unlock. The panel lock screen
-  // leaves these false so KeyboardPanel stays on the PIN/password field.
+  // The popup lets Tab reach the buttons; the panel keeps focus on the field.
   property bool buttonsFocusable: false
-  // Whether the PIN and password controls are drawn. SCREEN 2 is shown while
-  // status is still "checking" and keeps its fields there; hidden once the
-  // vault is unlocked, so the SSH load title can take over. The SSH popup
-  // narrows this to "locked": a submit before status is known cannot succeed.
+  // Whether the PIN/password controls are drawn: while locked or checking by
+  // default; the SSH popup narrows it to "locked".
   property bool fieldsOffered: form.vault.status === "locked" || form.vault.status === "checking"
-  // Drawn between the header and the unlock controls. The SSH popup puts its
-  // request context here so the title stays on top; the panel passes nothing.
+  // Drawn between the header and the controls (the SSH popup's request context).
   property alias context: contextSlot.data
 
-  // One method at a time. A plugged-in FIDO2 key leads -- it is the one the
-  // user chose to have in their hand -- then the fingerprint reader, then a
-  // configured PIN, then the master password, which is always there and so is
-  // the last stop. `chosen` is what the "use X instead" button set; it is
-  // ignored the moment that method stops being available, which is how an
-  // exhausted PIN (the vault clears it after too many attempts) or a closed
-  // lid hands over without anything having to watch for the failure.
+  // One method at a time, first available of FIDO2, fingerprint, PIN, master
+  // password. `chosen` (set by "use X instead") is ignored once that method
+  // becomes unavailable, e.g. an exhausted PIN or a closed lid.
   property string chosen: ""
   readonly property string method: chosen !== "" && methodAvailable(chosen)
     ? chosen
@@ -39,21 +30,20 @@ Column {
       : (methodAvailable("fingerprint") ? "fingerprint"
         : (methodAvailable("pin") ? "pin" : "password")))
   readonly property string nextMethod: nextMethodAfter(method)
-  // The field this method types into, for the panel's focus target and the
-  // popup's focusDefault(). Fingerprint has none.
+  // The field this method types into (none for fingerprint or FIDO2).
   readonly property var focusField: method === "pin"
     ? pinField
     : (method === "password" ? passwordField : null)
-  // A FIDO2 attempt, on the same three phases as the fingerprint's.
+  // A FIDO2 attempt: scanning, authorized, then unlocking.
   readonly property bool fidoBusy: form.vault.fidoScanning
     || form.vault.fidoAuthorized
     || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fido")
-  // A fingerprint attempt, from the touch prompt to the unlock it starts:
-  // scanning, then authorized while the keyring is read, then the unlock the
-  // stored password drives.
+  // A fingerprint attempt: scanning, authorized, then unlocking.
   readonly property bool fingerprintBusy: form.vault.fingerprintScanning
     || form.vault.fingerprintAuthorized
     || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fingerprint")
+  // Submitting needs a known locked vault; typing does not.
+  readonly property bool canSubmit: form.vault.status === "locked"
   readonly property bool busy: method === "pin"
     ? (form.vault.pinBusy || form.vault.isUnlocking)
     : form.vault.isUnlocking
@@ -61,9 +51,8 @@ Column {
   width: parent ? parent.width : 0
   spacing: Style.space(14)
 
-  // `visible` is effective visibility, so this also runs when SCREEN 2 or the
-  // SSH unlock screen hides the form (tests/qml/tst_visibility.qml). A method
-  // picked by hand lasts as long as the screen that offered it.
+  // Effective visibility, so this also runs when a parent hides the form. A
+  // hand-picked method lasts as long as the screen that offered it.
   onVisibleChanged: {
     if (!visible) {
       resetReveal()
@@ -73,19 +62,15 @@ Column {
     armOfferedMethod()
   }
 
-  // A method that stops being offered -- a key unplugged, a lid shut, a PIN
-  // spent -- must not leave its reader or key waiting behind the screen that
-  // replaced it.
+  // A method no longer offered must not leave its reader or key waiting.
   onMethodChanged: {
     if (method !== "fido") form.vault.releaseFidoUnlock()
     if (method !== "fingerprint") form.vault.cancelFingerprintUnlock()
     armOfferedMethod()
   }
 
-  // The offered method is the armed one. Every path that puts this form on
-  // screen goes through here, so none of them has to remember to arm anything
-  // -- and a presence method is never offered without something waiting behind
-  // it, which is what leaves a key blinking or a touch going to a text field.
+  // Arms the offered presence method; every path that shows the form comes
+  // through here.
   function armOfferedMethod() {
     if (!visible || !fieldsOffered || form.vault.status !== "locked") return
     if (form.vault.isUnlocking) return
@@ -160,8 +145,7 @@ Column {
       textFormat: Text.PlainText
       anchors.horizontalCenter: parent.horizontalCenter
       text: form.method === "fido" ? "󰟵" : (form.fingerprintBusy ? "󰈷" : "󰌋")
-      // Accent whichever glyph is showing: the key over the PIN and password
-      // screens reads as part of the same prompt as the fingerprint does.
+      // Accent the key glyph on the PIN and password screens too.
       color: Color.accent
       opacity: 0.85
       font.family: form.panel.fontFamily
@@ -208,8 +192,7 @@ Column {
     spacing: Style.space(12)
   }
 
-  // Only on the FIDO2 screen, for the reason the fingerprint prompt is scoped
-  // to its own: no other screen has a key to touch.
+  // Only on the FIDO2 screen: no other has a key to touch.
   Text {
     textFormat: Text.PlainText
     visible: form.method === "fido" && form.vault.fidoMessage !== ""
@@ -222,25 +205,22 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // Only on the fingerprint screen: a PIN or password screen has no reader to
-  // touch, and the prompt outlives the scan the lock screen starts by itself.
+  // Only on the fingerprint screen.
   Text {
     textFormat: Text.PlainText
     visible: form.method === "fingerprint" && form.vault.fingerprintMessage !== ""
     width: parent.width
     horizontalAlignment: Text.AlignHCenter
     text: form.vault.fingerprintMessage
-    // Accent for the whole fingerprint attempt, not only the scan: the verified
-    // line is the same thought as the touch prompt and should not fade into an
-    // ordinary note halfway through.
+    // Accented for the whole attempt, verification included.
     color: form.fingerprintBusy ? Color.accent : form.panel.dim
     font.family: form.panel.fontFamily
     font.pixelSize: Style.font.bodySmall
     wrapMode: Text.WordWrap
   }
 
-  // Why the last FIDO2 attempt failed, on every screen, for the same reason a
-  // failed fingerprint travels: an unreadable key is when the user moves on.
+  // Why the last FIDO2 attempt failed, on every screen, so it follows the user
+  // to the next method.
   Text {
     textFormat: Text.PlainText
     visible: form.vault.fidoError !== ""
@@ -253,9 +233,7 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // Why the last fingerprint attempt failed, on every screen: an unreadable
-  // finger is exactly when the user moves to the PIN or password, and the
-  // reason has to come with them.
+  // Why the last fingerprint attempt failed, on every screen, likewise.
   Text {
     textFormat: Text.PlainText
     visible: form.vault.fingerprintError !== ""
@@ -268,7 +246,7 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // Offered on the master-password screen, which is the one that can enrol.
+  // Offered on the master-password screen, which can enrol.
   Text {
     textFormat: Text.PlainText
     visible: form.method === "password" && form.vault.fingerprintUnlock
@@ -282,8 +260,7 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // A PIN the vault rejected, kept on screen after the PIN method has gone --
-  // an exhausted PIN clears itself, and the reason must survive that.
+  // A rejected PIN stays shown after an exhausted PIN method disappears.
   Text {
     textFormat: Text.PlainText
     visible: form.fieldsOffered && form.method !== "pin" && form.vault.pinUnlockError !== ""
@@ -296,14 +273,11 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // Fingerprint asks for a finger and nothing else: no field, and no Unlock
-  // button to press afterwards.
+  // Fingerprint needs no field and no Unlock button.
   Button {
     visible: form.fieldsOffered && form.method === "fingerprint"
     width: parent.width
-    // A read finger ends the scan and starts the unlock, and the button went
-    // back to inviting a touch that was already given. It says what the vault
-    // is doing instead, the same way the typed methods do.
+    // Once a finger is read, say what the vault is doing.
     text: form.vault.isUnlocking
       ? "Unlocking..."
       : (form.vault.fingerprintScanning ? "Waiting for fingerprint..." : "Unlock with Fingerprint")
@@ -398,24 +372,23 @@ Column {
     }
   }
 
-  // One Unlock Vault button for both typed methods, so the PIN and the master
-  // password are submitted the same way.
+  // One Unlock button for both typed methods.
   Button {
     visible: form.fieldsOffered && form.method !== "fingerprint" && form.method !== "fido"
     width: parent.width
-    text: form.busy ? (form.method === "pin" ? "Checking..." : "Unlocking...") : "Unlock Vault"
-    iconText: form.busy ? "󰑐" : "󰌋"
-    iconSpinning: form.busy
+    text: form.busy ? (form.method === "pin" ? "Checking..." : "Unlocking...")
+      : (form.canSubmit ? "Unlock Vault" : "Checking vault status...")
+    iconText: form.busy || !form.canSubmit ? "󰑐" : "󰌋"
+    iconSpinning: form.busy || !form.canSubmit
     selected: true
     accent: Color.accent
     fontFamily: form.panel.fontFamily
     focusable: form.buttonsFocusable
-    enabled: !form.busy
+    enabled: !form.busy && form.canSubmit
     onClicked: form.submitCurrentMethod()
   }
 
-  // The way back to anything else that is set up. One button rather than a
-  // list: with two methods it is a toggle, with three it cycles.
+  // Cycles to the next available method.
   Button {
     visible: form.fieldsOffered && form.nextMethod !== ""
     width: parent.width

@@ -2,22 +2,11 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// SCREEN: FIDO2 unlock setup.
-//
-// Reached from the Security settings row. It asks for the master password once
-// -- the way the PIN and fingerprint forms do -- and stores it in the OS login
-// keyring, to be released to `bw unlock` only after a key touch has been
-// verified. A FIDO2 key cannot produce the master password any more than a
-// fingerprint can, so the same presence-gate trade applies; the copy states it
-// where the decision is made.
-//
-// When Omarchy has not registered a key on this machine yet, the form stands
-// down and hands off to Omarchy's own setup, which registers the key and wires
-// it for the system's own authentication prompts as well -- the same
-// registration this vault reads.
-//
-// `panel` is the Panel root; `vault` is the Service.qml the panel draws. The
-// screen holds no state: it edits the vault's setup fields and calls back.
+// SCREEN: FIDO2 unlock setup, from the Security settings. Asks for the master
+// password once and adds a FIDO2 way into the quick-unlock envelope, opened
+// later by a key touch. Without an Omarchy key registration it hands off to
+// `omarchy setup security fido2`, which also wires the system's own prompts.
+// Stateless: edits the vault's setup fields and calls back.
 Column {
   id: screen
 
@@ -25,9 +14,7 @@ Column {
   required property var vault
   property bool active: vault.activeScreen === "fido"
 
-  // The form opens on its own field. Service.qml's restoreScreenFocus leaves
-  // this screen alone for the same reason it leaves the PIN and fingerprint
-  // forms alone: each one focuses itself.
+  // Focuses its own field (restoreScreenFocus leaves setup forms alone).
   onActiveChanged: {
     if (!active) return
     Qt.callLater(function() {
@@ -58,25 +45,15 @@ Column {
     Text {
       textFormat: Text.PlainText
       width: parent.width
-      text: "A FIDO2 key proves you are present but cannot produce your master password, and bw unlock accepts nothing else. The password is stored in the OS login keyring, and a verified key touch is the gate on reading it back."
+      text: "Your master password is already stored encrypted and sealed to this machine. A touch asks the key for a secret only it can produce, and enabling this lets that secret open the password, so unlocking needs the key itself."
       color: panel.dim
       font.family: panel.fontFamily
       font.pixelSize: Style.font.bodySmall
       wrapMode: Text.WordWrap
     }
-
-    Text {
-      textFormat: Text.PlainText
-      width: parent.width
-      text: "Anyone who can read your unlocked login keyring can read the password. A PIN stores it encrypted instead."
-      color: Color.urgent
-      font.family: panel.fontFamily
-      font.pixelSize: Style.font.caption
-      wrapMode: Text.WordWrap
-    }
   }
 
-  // Nothing to store behind yet: Omarchy has not registered a key here.
+  // No key registered by Omarchy yet.
   Column {
     visible: !vault.fidoAvailable
     width: parent.width

@@ -1,26 +1,15 @@
 #!/usr/bin/env node
-// A release is where this repository's committed binary stops being an
-// internal claim and becomes something other people install. These tests guard
-// the parts of that path which fail quietly: an elevated permission that leaks
-// out of the one job meant to hold it, an action pinned to a moving tag, a
-// publication that never re-checked the bytes it publishes, or a release whose
-// version agrees with nothing.
-//
-// They do not run a release. What can be checked here is that the definition
-// grants the least it can, verifies before it publishes, and says out loud
-// what its artifacts are and are not.
+// The release path: elevated permissions confined to one job, actions pinned,
+// bytes re-checked before publishing, versions that agree. No release is run;
+// only the definition is checked.
 //
 //   node tests/release-provenance.test.js
 
-const fs = require("fs")
+const { createSuite, read } = require("./harness")
 const path = require("path")
 
-const repoRoot = path.join(__dirname, "..")
-const read = p => fs.readFileSync(path.join(repoRoot, p), "utf8")
 
-let pass = 0
-const failures = []
-const check = (label, ok, detail) => ok ? pass++ : failures.push(`${label}\n    ${detail}`)
+const { check, done } = createSuite("release-provenance")
 
 const release = read(".github/workflows/release.yml")
 const build = read(".github/workflows/agent-build.yml")
@@ -104,10 +93,9 @@ check("the release calls the branch's gates instead of copying them",
 check("the branch workflow is callable",
   /^\s*workflow_call:/m.test(build),
   "release.yml calls a workflow that does not accept being called")
-// The gates run as part of the release, so they share the called workflow's
-// concurrency group. Scoped by ref alone, a branch build and a release could
-// cancel each other -- which is exactly what release.yml's own
-// `cancel-in-progress: false` exists to prevent.
+// The gates run inside the release, so their concurrency group is scoped by
+// workflow too; by ref alone a branch build and a release could cancel each
+// other.
 check("a branch build and a release cannot cancel each other",
   /group: agent-build-\$\{\{ github\.workflow \}\}/.test(build)
     && /cancel-in-progress: \$\{\{ github\.workflow != 'release' \}\}/.test(build),
@@ -132,10 +120,7 @@ check("the helper's reported versions are checked against the panel's",
   "a protocol bump could ship to users and disable the feature at launch")
 check("the shipped binary is executed, not merely compiled",
   /--self-test/.test(verify), "nothing runs the bytes being released")
-// A container job's default shell is the image's `sh`. The scan step uses an
-// array, and sh has none: the first rehearsal of this workflow died on
-// `Syntax error: "(" unexpected` after every expensive step had already
-// passed.
+// A container job defaults to `sh`, which has no arrays.
 check("the container job declares bash rather than taking the image's sh",
   /defaults:\n\s*run:\n(?:\s*#[^\n]*\n)*\s*shell: bash/.test(verify),
   "a bashism in a container step fails at the end of a long job")
@@ -144,10 +129,19 @@ const releaseJob = jobs.get("release") || ""
 check("the release job runs the bytes outside the build container",
   !/container:/.test(releaseJob) && /--self-test/.test(releaseJob),
   "a binary that only works inside its own build image would still be published")
-check("the attestation names the shipped binary as its subject",
-  /attest-build-provenance@[0-9a-f]{40}[\s\S]{0,300}?subject-path: bin\/x86_64-linux\/qs-bitwarden-ssh-agent/
-    .test(releaseJob),
-  "the provenance attestation does not bind the tracked bytes")
+// Every shipped binary is a subject. An attestation that covers one of two
+// leaves the other with no provenance behind it -- and the README tells users
+// to verify both.
+const attestation = /attest-build-provenance@[0-9a-f]{40}[\s\S]{0,500}?subject-path: \|?([\s\S]*?)\n\s*\n/
+  .exec(releaseJob)
+for (const binary of ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key"]) {
+  check(`the attestation names ${binary} as a subject`,
+    !!attestation && attestation[1].includes(`bin/x86_64-linux/${binary}`),
+    "the provenance attestation does not bind these tracked bytes")
+  check(`${binary} is published as a release asset`,
+    new RegExp(`assets=\\([\\s\\S]*?bin/x86_64-linux/${binary}[\\s\\S]*?\\)`).test(releaseJob),
+    "a binary that is attested but not attached cannot be verified by anyone")
+}
 check("the verification command is written down where a reviewer will find it",
   /gh attestation verify/.test(release),
   "users are given provenance with no documented way to check it")
@@ -187,9 +181,4 @@ check("the binary, its build script and the agent source stay owned",
   /^\/bin\/\s+@/m.test(owners) && /build-agent\.sh\s+@/m.test(owners) && /^\/agent\/\s+@/m.test(owners),
   "a change to the trust path could merge without review")
 
-if (failures.length) {
-  console.error(`\n${failures.length} failed, ${pass} passed\n`)
-  failures.forEach(f => console.error(`  FAIL ${f}`))
-  process.exit(1)
-}
-console.log(`release-provenance: ${pass} passed`)
+done()

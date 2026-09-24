@@ -17,7 +17,8 @@ above, or you are cleaning up after a plugin that is already gone, this is the
 same work by hand:
 
 ```bash
-# Session key, and the master password stored for PIN/fingerprint unlock
+# Session key, and the encrypted master password quick unlock uses (plus any
+# per-method entries left by 1.10.0 or earlier)
 secret-tool clear service qs-bitwarden-cli
 
 # Learned window-title -> vault item suggestions
@@ -43,11 +44,11 @@ working that out from an empty bar is not a pleasant few minutes. Every command
 above goes through the shell or touches only this plugin's own paths.
 
 The agent's socket, FIFO and lock under `$XDG_RUNTIME_DIR` are removed when the
-helper shuts down, which is what turning the agent off does. Removing the
-plugin while the agent is still running kills the helper instead, so those
-three files are left until you log out and the tmpfs goes with the session; a
-stale socket at the routed path is harmless but answers nothing. Deleting the
-directory by hand is safe once no helper is running.
+helper shuts down, which is what turning the agent off does. If the plugin is
+removed with the agent still running, the helper is killed instead, and the
+panel removes those three files from a detached script once the helper's lock
+is released. Deleting the directory by hand is also safe once no helper is
+running.
 
 Two more paths are written but need no cleaning up, because neither outlives
 the moment it is used: the session handoff file under `$XDG_RUNTIME_DIR`, which
