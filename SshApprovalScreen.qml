@@ -186,9 +186,9 @@ Column {
       id: denyButton
       panel: screen.panel
       width: decisionRow.tileWidth
-      glyph: "󰅘"
-      label: "Deny (Esc)"
-      tooltipText: "Refuse this request"
+      glyph: "󰅖"
+      label: "Deny"
+      tooltipText: "Refuse this request (Esc)"
       focusable: true
       onClicked: vault.denySshRequest()
     }

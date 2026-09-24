@@ -59,7 +59,8 @@
   Approve once and the time-boxed approval (now labelled "Approve 2m", with
   the full wording in its tooltip) are tiles in a single row, like the
   unlock methods, instead of wrapping onto a second line. Deny is still
-  first and still takes the keyboard focus.
+  first and still takes the keyboard focus. Deny, and Not now on the SSH
+  unlock prompt, show a plain X, with the Esc hint moved to their tooltip.
 
 - **Fingerprint and FIDO2 unlock are forgotten only from settings.** The
   locked screen's **Forget Fingerprint** and **Forget FIDO2 Key** buttons, and
