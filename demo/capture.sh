@@ -33,13 +33,16 @@ export QSBW_DEMO_SSH_KEY="$DEMO_KEY_DIR/id_ed25519"
 DEMO_DIRS="$(mktemp -d)"
 DEMO_DATA="$DEMO_DIRS/data"
 DEMO_STATE="$DEMO_DIRS/state"
+(umask 077 && mkdir -p "$DEMO_DATA/qs-bitwarden-cli/accounts" "$DEMO_STATE")
+
 # A second, made-up account beside the fixture's, so the locked screen offers
 # Switch Account and the account list has something to list. Never signed in:
-# only its row is ever drawn.
-(umask 077 && mkdir -p "$DEMO_DATA/qs-bitwarden-cli/accounts" "$DEMO_STATE")
-cat > "$DEMO_DATA/qs-bitwarden-cli/accounts/registry.json" <<'JSON'
+# only its row is ever drawn. Not for the login shot, which shows a first run.
+seed_second_account() {
+  cat > "$DEMO_DATA/qs-bitwarden-cli/accounts/registry.json" <<'JSON'
 {"version":1,"active":"default","accounts":[{"slot":"0123456789abcdef","email":"work@example.com","userId":"11111111-1111-1111-1111-111111111111","server":"https://vault.bitwarden.eu","lastUsed":1}]}
 JSON
+}
 
 restore() {
   echo "restoring the real shell..."
@@ -119,9 +122,8 @@ clear_search() {
 # --- SSH signing approval ---------------------------------------------------
 #
 # The approval screen exists only while a real signing request is waiting, so
-# it cannot be navigated to -- it has to be raised. `ssh-add -T` asks the agent
-# to sign one challenge with one key and nothing else, which is the smallest
-# request that produces this prompt.
+# it cannot be navigated to -- it has to be raised, here with the signature Git
+# asks for on every signed commit.
 #
 # Everything here is the fixture vault: the key is the throwaway pair made at
 # the top of this script, and the socket belongs to the fixture shell started
@@ -143,10 +145,18 @@ capture_ssh_approval() {
     fi
   done
 
-  "${IPC[@]}" open >/dev/null 2>&1; sleep 2
+  # Closed: with the centered approval popup (the default) the prompt is its
+  # own card, and an open panel behind it is the larger accent rectangle the
+  # cropper would pick instead. With the popup off the request opens the
+  # panel itself.
+  "${IPC[@]}" close >/dev/null 2>&1; sleep 2
   # In the background: it blocks until the prompt is answered, which is the
   # point -- the prompt has to still be on screen when the shot is taken.
-  SSH_AUTH_SOCK="$sock" ssh-add -T "$pub" >/dev/null 2>&1 &
+  # A Git commit signature (SSHSIG, namespace "git"), the everyday request:
+  # the prompt names it and offers the timed approval, which `ssh-add -T`'s
+  # unrecognised challenge never does. The signed file is a throwaway.
+  printf 'demo commit\n' > "$DEMO_DIRS/commit.txt"
+  SSH_AUTH_SOCK="$sock" ssh-keygen -Y sign -n git -f "$pub" "$DEMO_DIRS/commit.txt" >/dev/null 2>&1 &
   local asker=$!
   sleep "${QSBW_SSH_SETTLE:-4}"
   shot 13-ssh-approval
@@ -161,6 +171,7 @@ capture_ssh_approval() {
 # iterated on, and re-running the whole sequence to retake it costs a minute
 # and five shells.
 if [ -n "${QSBW_ONLY_SSH:-}" ]; then
+  seed_second_account
   start_shell unlocked
   capture_ssh_approval
   echo "done -> $OUT"
@@ -179,6 +190,10 @@ start_shell unauthenticated
 "${IPC[@]}" open >/dev/null 2>&1; sleep 4
 shot 12-login
 "${IPC[@]}" close >/dev/null 2>&1 || true
+# QSBW_ONLY_LOGIN=1 retakes this shot alone.
+if [ -n "${QSBW_ONLY_LOGIN:-}" ]; then echo "done -> $OUT"; exit 0; fi
+
+seed_second_account
 
 # --- locked -----------------------------------------------------------------
 

@@ -368,6 +368,8 @@ The cursor starts on the option already in effect, so <kbd>Enter</kbd> never cha
 
 ### Several accounts
 
+<img src="docs/screenshots/14-accounts.png" width="420" align="right" alt="Account list">
+
 The panel can hold up to ten Bitwarden accounts at once -- a personal and a work account, say, or two servers. Press **Add Account** on the locked screen (or the account button in the header) and sign in; the first account stays signed in beside it. **Switch Account** on the locked screen, or the header's account button, lists them.
 
 - **Each account keeps its own sign-in and its own quick unlock.** A PIN, fingerprint or FIDO2 key set up for one account is that account's; switching never asks you to log in again or set anything up again. The same fingerprint or key can unlock every account -- nothing is re-enrolled, each account's stored password just gets its own way in.
