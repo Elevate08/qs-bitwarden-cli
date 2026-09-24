@@ -4521,7 +4521,7 @@ function sshAgentHostKey(operation, hostKey) {
 function sshAgentDestinationLabel(operation, hostKey) {
   if (operation !== "ssh-auth") return ""
   return hostKey
-    ? "Server host key " + hostKey + " (compare with `ssh-keygen -lF <host>`)"
+    ? "Server host key " + hostKey
     : "Server not reported by the SSH client"
 }
 
