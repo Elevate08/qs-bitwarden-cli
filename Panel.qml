@@ -245,16 +245,6 @@ Panel {
     return self ? self.y + self.height : 0
   }
 
-  // "Forget FIDO2 key" on the locked screen, beside Forget Fingerprint.
-  component ForgetFidoButton: Button {
-    text: "Forget FIDO2 Key"
-    iconText: "󰟵"
-    tooltipText: "Stop unlocking with this FIDO2 key"
-    fontFamily: root.fontFamily
-    fontSize: Style.font.caption
-    onClicked: root.vault.forgetFidoUnlock()
-  }
-
   // A form row: label, optional caption note, and a NumberField.
   component NumberRow: Row {
     id: numberRow
@@ -2401,32 +2391,6 @@ Panel {
                   root.vault.currentScreen = "setup"
                 }
               }
-
-              Button {
-                visible: root.vault.fingerprintStored
-                text: "Forget Fingerprint"
-                iconText: "󰈷"
-                tooltipText: "Stop unlocking with fingerprint"
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: root.vault.forgetFingerprintUnlock()
-              }
-            }
-
-            // Its own row: a third button would elide a label.
-            Row {
-              width: parent.width
-              spacing: Style.space(8)
-
-              Button {
-                visible: root.vault.fidoStored
-                text: "Forget FIDO2 Key"
-                iconText: "󰟵"
-                tooltipText: "Stop unlocking with this FIDO2 key"
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: root.vault.forgetFidoUnlock()
-              }
             }
 
             // Destructive actions below, set apart.
@@ -3112,27 +3076,6 @@ Panel {
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.logoutAccount()
-            }
-          }
-
-          // This account's presence methods, on their own row.
-          Row {
-            visible: root.vault.fingerprintStored || root.vault.fidoStored
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: Style.space(8)
-
-            Button {
-              visible: root.vault.fingerprintStored
-              text: "Forget Fingerprint"
-              iconText: "󰈷"
-              tooltipText: "Stop unlocking this account with fingerprint"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.vault.forgetFingerprintUnlock()
-            }
-
-            ForgetFidoButton {
-              visible: root.vault.fidoStored
             }
           }
         }

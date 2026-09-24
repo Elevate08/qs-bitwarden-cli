@@ -418,7 +418,7 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 
 PAM can prove that you are present, but a fingerprint releases no secret, so it cannot encrypt anything by itself. Fingerprint unlock is the one method whose way in is protected only by the machine seal, which means **a program running as you while you are logged in can open the stored password without your finger**. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock. It is off by default and worth leaving off on a shared or unattended machine -- and with it on, a PIN or a key does not make the stored password any safer.
 
-Its way in is removed when you turn the setting off, press **Forget Fingerprint** on the locked screen, or log out -- for the account on screen; other accounts keep theirs.
+Its way in is removed when you turn the setting off or log out -- for the account on screen; other accounts keep theirs.
 
 **A closed lid takes the option off the screen.** The reader is on the laptop body, so with the lid shut -- clamshell mode, or simply closed on a docked machine -- there is nothing to touch. While it is down, the locked screen hides **Unlock with Fingerprint**, the SSH prompt does the same, and the reader is not armed on open. Omarchy's own detector (`omarchy-hw-laptop-closed`) decides, and a machine with no lid never reports one. Nothing is forgotten: the settings toggle is unchanged, and the option is back the moment the lid opens. A FIDO2 key on a cable is unaffected.
 
@@ -440,7 +440,7 @@ The key will not produce that secret without a touch, so unlocking needs the key
 
 Registrations made with `+pin` or `+verification` (a key PIN at every system prompt) are not used: the panel cannot collect the key's PIN yet, and a touch alone would be weaker than what the registration asks of the system.
 
-Its way in is removed when you turn the setting off, press **Forget FIDO2 Key** on the locked screen, or log out -- for the account on screen; other accounts keep theirs. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
+Its way in is removed when you turn the setting off or log out -- for the account on screen; other accounts keep theirs. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
 
 ### SSH agent
 

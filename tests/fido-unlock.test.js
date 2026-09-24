@@ -179,15 +179,14 @@ check("the toggle reflects a stored FIDO password, not just the setting",
   /case "fidoUnlock": return fidoUnlock && fidoStored/.test(panelSrc),
   "settingValue has no fido case")
 const rawPanel = read("Panel.qml")
-check("the locked screen's Forget FIDO2 Key is declared once and placed once",
-  (rawPanel.match(/ForgetFidoButton \{/g) || []).length === 1
-    && /component ForgetFidoButton: Button \{[\s\S]{0,300}Forget FIDO2 Key[\s\S]{0,220}onClicked: root\.vault\.forgetFidoUnlock\(\)/
-      .test(rawPanel),
-  "one declaration, one placement")
-check("it shares a centred row with Forget Fingerprint, under the account buttons",
-  /visible: root\.vault\.fingerprintStored \|\| root\.vault\.fidoStored\s*anchors\.horizontalCenter: parent\.horizontalCenter[\s\S]{0,500}Forget Fingerprint[\s\S]{0,400}ForgetFidoButton \{\s*visible: root\.vault\.fidoStored\s*\}/
-    .test(rawPanel),
-  "the forget buttons must read as one centred block of their own")
+// Quick unlock is forgotten only by turning its setting off: no Forget
+// button on the locked screen or anywhere else in the panel.
+check("no Forget Fingerprint or Forget FIDO2 Key button anywhere in the panel",
+  !/Forget Fingerprint|Forget FIDO2|ForgetFidoButton/.test(rawPanel), "a Forget button is back")
+check("turning the settings off is what forgets them",
+  /modelData\.action === "fingerprint"[\s\S]{0,120}if \(checked\) root\.vault\.forgetFingerprintUnlock\(\)/.test(rawPanel)
+    && /modelData\.action === "fido"[\s\S]{0,120}if \(checked\) root\.vault\.forgetFidoUnlock\(\)/.test(rawPanel),
+  "the settings toggles no longer forget")
 
 // The locked screen and the SSH popup draw the same UnlockForm, so the button
 // is declared once and both surfaces get it.
