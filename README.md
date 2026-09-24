@@ -588,6 +588,11 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli status       # -> "unlocked" 
 
 # Which vault the bars share, and which monitor presents it (non-secret)
 omarchy-shell io.github.elevate08.qs-bitwarden-cli vaultHost    # -> {"host":"shared","views":2,"presenter":"DP-1",...}
+
+# The accounts the panel holds (emails and servers only), and switching to one;
+# switching locks the account active now
+omarchy-shell io.github.elevate08.qs-bitwarden-cli accounts     # -> {"adding":false,"accounts":[{"email":"you@example.com","server":"","active":true}]}
+omarchy-shell io.github.elevate08.qs-bitwarden-cli switchAccount work@example.com   # -> "switching" | "unknown" | "busy"
 ```
 
 `open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
