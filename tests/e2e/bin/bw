@@ -1,0 +1,47 @@
+#!/bin/bash
+# Fake bw: one account per data directory, like the real one.
+d="${BITWARDENCLI_APPDATA_DIR:-$HOME/.config/Bitwarden CLI}"
+printf '%s\t%s\n' "${BITWARDENCLI_APPDATA_DIR:-<own>}" "$*" >> "$FAKE_BW_LOG"
+mkdir -p "$d"
+state="$d/fake-state"; sess="$d/fake-session"
+logged_in() { [ -f "$state" ]; }
+field() { sed -n "s/^$1=//p" "$state"; }
+new_session() { printf '%s' "$(head -c 33 /dev/urandom | base64 -w0 | tr '+/' '-_')" > "$sess"; cat "$sess"; }
+read_pw() {
+  local pf="" pe=""
+  while [ $# -gt 0 ]; do case "$1" in --passwordfile) pf="$2"; shift 2;; --passwordenv) pe="$2"; shift 2;; *) shift;; esac; done
+  if [ -n "$pf" ]; then cat "$pf"; elif [ -n "$pe" ]; then printf '%s' "${!pe}"; fi
+}
+case "$1" in
+  -v|--version) echo 2026.8.0 ;;
+  status)
+    if ! logged_in; then echo '{"serverUrl":null,"status":"unauthenticated"}'; exit 0; fi
+    st=locked
+    if [ -n "${BW_SESSION:-}" ] && [ -f "$sess" ] && [ "$BW_SESSION" = "$(cat "$sess")" ]; then st=unlocked; fi
+    printf '{"serverUrl":"https://vault.bitwarden.com","lastSync":"2026-09-24T00:00:00.000Z","userEmail":"%s","userId":"%s","status":"%s"}\n' "$(field email)" "$(field id)" "$st" ;;
+  login)
+    shift; email="$1"; shift
+    if logged_in; then echo "You are already logged in as $(field email)." >&2; exit 1; fi
+    pw="$(read_pw "$@")"
+    [ "$pw" = "pw-$email" ] || { echo "Username or password is incorrect. Try again." >&2; exit 1; }
+    printf 'email=%s\nid=id-%s\n' "$email" "$(printf '%s' "$email" | md5sum | cut -c1-12)" > "$state"
+    new_session ;;
+  unlock)
+    shift
+    logged_in || { echo "You are not logged in." >&2; exit 1; }
+    pw="$(read_pw "$@")"
+    [ "$pw" = "pw-$(field email)" ] || { echo "Invalid master password." >&2; exit 1; }
+    new_session ;;
+  lock) rm -f "$sess"; echo "Your vault is locked." ;;
+  logout) rm -f "$sess" "$state"; echo "You have logged out." ;;
+  sync) echo "Syncing complete." ;;
+  config) exit 0 ;;
+  list)
+    case "$2" in
+      items)
+        [ -n "${BW_SESSION:-}" ] && [ -f "$sess" ] && [ "$BW_SESSION" = "$(cat "$sess")" ] || { echo "Vault is locked." >&2; exit 1; }
+        printf '[{"object":"item","id":"item-%s","organizationId":null,"folderId":null,"type":1,"name":"Login of %s","notes":null,"favorite":false,"login":{"username":"%s","password":"x","totp":null,"uris":[]},"collectionIds":[],"revisionDate":"2026-01-01T00:00:00.000Z"}]' "$(field id)" "$(field email)" "$(field email)" ;;
+      *) echo '[]' ;;
+    esac ;;
+  *) exit 0 ;;
+esac

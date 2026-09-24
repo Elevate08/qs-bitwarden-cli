@@ -179,18 +179,14 @@ check("the toggle reflects a stored FIDO password, not just the setting",
   /case "fidoUnlock": return fidoUnlock && fidoStored/.test(panelSrc),
   "settingValue has no fido case")
 const rawPanel = read("Panel.qml")
-check("the locked screen's Forget FIDO2 Key is declared once and placed twice",
-  (rawPanel.match(/ForgetFidoButton \{/g) || []).length === 2
-    && /component ForgetFidoButton: Button \{[\s\S]{0,300}Forget FIDO2 Key[\s\S]{0,220}onClicked: root\.vault\.forgetFidoUnlock\(\)/
-      .test(rawPanel),
-  "both slots must share one declaration")
-check("with a Forget Fingerprint beside it, it takes its own centred line",
-  /anchors\.horizontalCenter: parent\.horizontalCenter\s*spacing: Style\.space\(8\)\s*ForgetFidoButton \{\s*visible: root\.vault\.fidoStored && root\.vault\.fingerprintStored/
-    .test(rawPanel),
-  "the three must read as one centred block")
-check("without one, it takes the empty slot inline instead",
-  /ForgetFidoButton \{\s*visible: root\.vault\.fidoStored && !root\.vault\.fingerprintStored/.test(rawPanel),
-  "a machine with no fingerprint configured must not strand the button on its own line")
+// Quick unlock is forgotten only by turning its setting off: no Forget
+// button on the locked screen or anywhere else in the panel.
+check("no Forget Fingerprint or Forget FIDO2 Key button anywhere in the panel",
+  !/Forget Fingerprint|Forget FIDO2|ForgetFidoButton/.test(rawPanel), "a Forget button is back")
+check("turning the settings off is what forgets them",
+  /modelData\.action === "fingerprint"[\s\S]{0,120}if \(checked\) root\.vault\.forgetFingerprintUnlock\(\)/.test(rawPanel)
+    && /modelData\.action === "fido"[\s\S]{0,120}if \(checked\) root\.vault\.forgetFidoUnlock\(\)/.test(rawPanel),
+  "the settings toggles no longer forget")
 
 // The locked screen and the SSH popup draw the same UnlockForm, so the button
 // is declared once and both surfaces get it.
@@ -204,7 +200,7 @@ check("both the panel and the SSH popup draw that form",
     && /UnlockForm \{/.test(read("SshUnlockScreen.qml")),
   "a surface that draws its own unlock controls will drift from the other")
 check("a plugged-in key leads, then the reader, then PIN, then the password",
-  /var order = \["fido", "fingerprint", "pin", "password"\]/.test(rawUnlockForm)
+  /availableMethods: \["fido", "fingerprint", "pin", "password"\]/.test(rawUnlockForm)
     && /methodAvailable\("fido"\) \? "fido"/.test(rawUnlockForm),
   "the key the user is holding should not sit behind another method")
 const rawFidoUnlock = read("FidoUnlock.qml")

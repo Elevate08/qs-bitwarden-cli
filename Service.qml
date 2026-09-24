@@ -526,6 +526,11 @@ Item {
   property int associationsReadEpoch: -1
   property bool sessionStorePending: false
   property bool sessionClearPending: false
+  // Which account's session the running store writes, and the accounts
+  // whose session clears wait behind a running one: a switch can land
+  // between a request and its run.
+  property string sessionStoreSlot: ""
+  property var sessionClearSlots: []
   property bool pinClearPending: false
   property bool masterClearPending: false
   property bool allCredentialsClearPending: false
@@ -545,7 +550,9 @@ Item {
     // Dependencies first; the status probe follows in onDependenciesChecked,
     // so a fresh install opens on setup rather than a doomed login form.
     root.checkDependencies()
-    root.loadAssociations()
+    // Which account is active; learned suggestions and the status probe wait
+    // for it.
+    root.loadAccountRegistry()
     // Also called explicitly: a binding already true at creation never fires
     // its change handler.
     root.syncSshAgentSupervision()
@@ -681,11 +688,12 @@ Item {
   }
 
   function envelopeAccount() {
-    return { id: accountId, server: accountServer }
+    return { id: accountId, server: accountServer, slot: activeSlot }
   }
 
   function envelopeReadinessChanged() {
-    if (!quickUnlockAvailable) return
+    // Which account's envelope is only known once the registry is read.
+    if (!quickUnlockAvailable || !accountsLoaded) return
     if (!envelopeChecked) refreshEnvelope()
     maybeMigrateLegacyFingerprint()
   }
@@ -693,6 +701,8 @@ Item {
   // Queue one envelope process: { command, env, secretOutput, writes,
   // onDone(exitCode, stdout) }. `env` holds secrets and is dropped on start.
   function queueEnvelopeJob(job) {
+    // Answers for an account no longer active are dropped (onEnvelopeJobExited()).
+    job.slot = activeSlot
     var jobs = envelopeJobs.slice()
     jobs.push(job)
     envelopeJobs = jobs
@@ -722,7 +732,7 @@ Item {
     envelopeProc.environment = {}
     // The output was the master password: scrub the collector.
     if (job && job.secretOutput) clearProcessCollectorSoon(envelopeProc)
-    if (job && job.onDone && !logoutPending) job.onDone(exitCode, out)
+    if (job && job.onDone && !logoutPending && job.slot === activeSlot) job.onDone(exitCode, out)
     out = ""
     if (logoutPending && allCredentialsClearPending) Qt.callLater(requestAllCredentialClear)
     Qt.callLater(pumpEnvelopeJobs)
@@ -749,7 +759,7 @@ Item {
   function refreshEnvelope() {
     if (!quickUnlockAvailable) return
     queueEnvelopeJob({
-      command: Model.unlockEnvelopeInspectCommand(envelopeTool()),
+      command: Model.unlockEnvelopeInspectCommand(envelopeTool(), activeSlot),
       onDone: function(code, out) {
         if (code === 0) {
           try { root.envelopeSummary = JSON.parse(out) } catch (e) { root.envelopeSummary = null }
@@ -759,6 +769,12 @@ Item {
         root.envelopeChecked = true
         root.recomputeFingerprintStored()
         root.recomputePinConfigured()
+        // A switched-to account's methods are known only now.
+        if (root.armAfterEnvelope) {
+          root.armAfterEnvelope = false
+          if (root.sshAuthSurfaceActive && root.status === "locked" && !root.isUnlocking
+              && !root.fingerprintScanning && !root.fidoScanning) root.armPresenceUnlock()
+        }
       }
     })
   }
@@ -783,6 +799,7 @@ Item {
         if (st && st.userId) {
           root.accountId = st.userId
           root.accountServer = st.serverUrl
+          root.noteActiveAccount(st)
           then()
         } else if (otherwise) {
           otherwise()
@@ -995,6 +1012,331 @@ Item {
         root.refreshEnvelope()
       }
     })
+  }
+
+  // -------------------------------------------------------------------------
+  // Accounts
+  // -------------------------------------------------------------------------
+  //
+  // Each signed-in account keeps its own bw data directory and keyring
+  // entries (see "Accounts" in BitwardenModel.js), so switching never signs
+  // one out or drops its quick-unlock methods. One account is active, and
+  // only it can be unlocked: switching locks the one being left.
+
+  property var accountRegistry: Model.emptyAccountRegistry()
+  property bool accountsLoaded: false
+  property string activeSlot: Model.defaultAccountSlot()
+  readonly property var accountRows: Model.accountRows(accountRegistry, activeSlot)
+  readonly property int accountCount: accountRegistry.accounts.length
+  readonly property bool accountsFull: accountCount >= Model.maxAccounts()
+  // The active slot's bw data directory; "" for bw's own.
+  readonly property string accountAppDataDir: Model.accountAppDataDir(activeSlot,
+    Quickshell.env("XDG_DATA_HOME") || "", Quickshell.env("HOME") || "")
+  // An "Add account" sign-in not finished yet, and the account Cancel returns to.
+  property bool addingAccount: false
+  property string slotBeforeAdd: ""
+  property string screenBeforeAccounts: "main"
+  // Arm the lock screen's presence method once the new account's envelope
+  // has been read (refreshEnvelope()).
+  property bool armAfterEnvelope: false
+  // A status probe stopped by a switch; its stale answer restarts the probe.
+  property bool statusRefreshPending: false
+  property bool statusCheckQueued: false
+  property string pendingAccountsJson: ""
+  property bool accountsWritePending: false
+  // Slots to sign out of and delete, one process at a time.
+  property var slotRemovalQueue: []
+
+  // Never leave a non-default slot's `bw` in bw's own directory: without a
+  // home to put it in, point it where nothing can be created.
+  function accountAppDataEnv() {
+    var env = {}
+    if (activeSlot === Model.defaultAccountSlot()) return env
+    env[Model.appDataEnvVar()] = accountAppDataDir || "/dev/null/qs-bitwarden-cli-no-home"
+    return env
+  }
+
+  function accountsEnv() {
+    var env = {}
+    env[Model.accountsEnvVar()] = String(pendingAccountsJson || "")
+    return env
+  }
+
+  function loadAccountRegistry() {
+    if (!accountsReadProc.running) accountsReadProc.running = true
+  }
+
+  function onAccountRegistryLoaded(raw) {
+    var registry = Model.parseAccountRegistry(raw)
+    var slot = registry.active
+    // A registry naming a slot it no longer lists: its most recent account.
+    if (slot !== Model.defaultAccountSlot() && !Model.registryHasAccount(registry, slot)) {
+      slot = Model.registryNextAccount(registry, "") || Model.defaultAccountSlot()
+    }
+    registry.active = slot
+    accountRegistry = registry
+    activeSlot = slot
+    accountsLoaded = true
+    loadAssociations()
+    refreshAccountCredentials()
+    // The status probe waited for this (refreshStatus()).
+    if (depsChecked && !setupGated && !statusProbeStarted) refreshStatus()
+  }
+
+  function saveAccountRegistry() {
+    pendingAccountsJson = Model.serializeAccountRegistry(accountRegistry)
+    if (accountsWriteProc.running) {
+      accountsWritePending = true
+      return
+    }
+    accountsWritePending = false
+    accountsWriteProc.running = true
+  }
+
+  function onAccountRegistryWritten(exitCode) {
+    if (exitCode !== 0) console.warn("qs-bitwarden-cli: could not save the account list (exit " + exitCode + ")")
+    if (accountsWritePending) {
+      accountsWritePending = false
+      accountsWriteProc.running = true
+      return
+    }
+    pendingAccountsJson = ""
+  }
+
+  // What `bw status` says the active slot holds.
+  function noteActiveAccount(st) {
+    if (!accountsLoaded || logoutPending || !st || !st.userId) return
+    var known = Model.registryAccount(accountRegistry, activeSlot)
+    if (known && known.userId === st.userId && known.server === st.serverUrl
+        && (known.email === st.userEmail || !st.userEmail) && accountRegistry.active === activeSlot) {
+      addingAccount = false
+      return
+    }
+    var noted = Model.registryNoteAccount(accountRegistry, activeSlot,
+      { userId: st.userId, email: st.userEmail, server: st.serverUrl }, Date.now())
+    if (noted.full) {
+      console.warn("qs-bitwarden-cli: account list full; this sign-in is not remembered")
+      return
+    }
+    accountRegistry = noted.registry
+    addingAccount = false
+    slotBeforeAdd = ""
+    saveAccountRegistry()
+    for (var i = 0; i < noted.retired.length; i++) retireAccountSlot(noted.retired[i], true)
+    if (noted.retired.length > 0) {
+      flashNotification("This account was already added; its older sign-in was replaced")
+    }
+  }
+
+  // Signs a slot out and deletes it. `clearKeyring` also removes its keyring
+  // entries and learned suggestions (a logout has already cleared them).
+  function retireAccountSlot(slot, clearKeyring) {
+    if (!Model.isAccountSlot(slot) || slot === activeSlot) return
+    slotRemovalQueue = slotRemovalQueue.concat([{ slot: slot, clearKeyring: clearKeyring === true }])
+    pumpSlotRemovals()
+  }
+
+  function pumpSlotRemovals() {
+    if (slotRemovalProc.running || slotRemovalQueue.length === 0) return
+    var queue = slotRemovalQueue.slice()
+    var next = queue.shift()
+    slotRemovalQueue = queue
+    slotRemovalProc.command = next.clearKeyring
+      ? Model.accountSlotRetireCommand(next.slot)
+      : Model.accountSlotRemoveCommand(next.slot)
+    slotRemovalProc.running = true
+  }
+
+  // Everything held for the account being left, as a lock drops the vault
+  // plus what a lock keeps: its email, envelope summary and method flags.
+  // Nothing in the keyring or on disk is touched.
+  function leaveActiveAccount() {
+    closeFilterGroup()
+    cancelAuthPrewarm()
+    abandonAuthSecrets()
+    abandonPinSetup()
+    abandonFingerprintSetup()
+    fidoUnlocker.abandonSetup()
+    stopGeneratorServe()
+    // The companion drops this account's keys and public projection.
+    applySshAgentLifecycle("account-change")
+    clearClipboard()
+    if (session) {
+      lockProc.command = Model.lockCommand()
+      lockProc.running = true
+    }
+    requestSessionCredentialClear()
+    // The status chain may still be answering for the account being left.
+    // Checked before the lock's scrub borrows the same processes.
+    if (sessionHandoffProc.running || keyringLookupProc.running || statusProc.running) {
+      statusRefreshPending = true
+      if (keyringLookupProc.running) keyringLookupProc.running = false
+      if (statusProc.running) statusProc.running = false
+    }
+    dropVaultState()
+    dropEnvelopeState()
+    terminalLoginStartedAt = 0
+    cancelFingerprintUnlock()
+    fidoUnlocker.reset()
+    legacyPinStored = false
+    pinConfigured = false
+    fingerprintStored = false
+    pinEntry = ""
+    pinAttempts = 0
+    pinError = ""
+    pinUnlockError = ""
+    fingerprintMessage = ""
+    fingerprintError = ""
+    errorMessage = ""
+    userEmail = ""
+    loginEmail = ""
+    associationsEpoch += 1
+    // A write still owed is the old account's; the running one finishes into
+    // its own file.
+    associationsWritePending = false
+    associations = Model.emptyAssociations()
+    suggestedItems = []
+    detectedContext = null
+    learnedIds = ({})
+    syncLoginFieldsToState()
+  }
+
+  // The per-account checks a start runs, for the account now active.
+  function refreshAccountCredentials() {
+    if (!accountsLoaded) return
+    if (pinUnlock) refreshPinConfigured()
+    if (fingerprintAvailable && fingerprintUnlock) refreshLegacyFingerprint()
+    envelopeReadinessChanged()
+    if (fidoUnlock) fidoUnlocker.refresh()
+  }
+
+  function enterAccount(slot) {
+    activeSlot = slot
+    if (Model.registryHasAccount(accountRegistry, slot)) {
+      accountRegistry = Model.registrySetActive(accountRegistry, slot, Date.now())
+      saveAccountRegistry()
+    }
+    armAfterEnvelope = true
+    loadAssociations()
+    refreshAccountCredentials()
+  }
+
+  function canChangeAccount() {
+    return accountsLoaded && !logoutPending && !isUnlocking && !loginSubmitted
+  }
+
+  function switchAccount(slot) {
+    if (!canChangeAccount() || !Model.registryHasAccount(accountRegistry, slot)) return
+    if (slot === activeSlot && !addingAccount) {
+      closeAccounts()
+      return
+    }
+    var abandoned = abandonedAddSlot()
+    leaveActiveAccount()
+    addingAccount = false
+    slotBeforeAdd = ""
+    enterAccount(slot)
+    if (abandoned) retireAccountSlot(abandoned, true)
+    status = "checking"
+    currentScreen = "locked"
+    refreshStatus()
+    focusAppropriateField()
+  }
+
+  // An add given up before its sign-in finished leaves nothing behind. bw's
+  // own directory is never cleaned up this way: nothing of ours is in it.
+  function abandonedAddSlot() {
+    if (!addingAccount || activeSlot === Model.defaultAccountSlot()) return ""
+    return Model.registryHasAccount(accountRegistry, activeSlot) ? "" : activeSlot
+  }
+
+  // Signs another account in beside the ones already here.
+  function beginAddAccount() {
+    if (!canChangeAccount()) return
+    if (accountsFull) {
+      errorMessage = "The panel keeps up to " + Model.maxAccounts() + " accounts. Log out of one to add another."
+      return
+    }
+    var slot = Model.slotForNewAccount(accountRegistry)
+    if (!slot) return
+    var before = addingAccount ? slotBeforeAdd : activeSlot
+    var abandoned = abandonedAddSlot()
+    if (abandoned === slot) abandoned = ""
+    leaveActiveAccount()
+    addingAccount = true
+    slotBeforeAdd = Model.registryHasAccount(accountRegistry, before) ? before : ""
+    enterAccount(slot)
+    if (abandoned) retireAccountSlot(abandoned, true)
+    if (slot === Model.defaultAccountSlot()) {
+      // bw's own directory may already hold a sign-in the list lost.
+      status = "checking"
+      currentScreen = "locked"
+      refreshStatus()
+    } else {
+      status = "unauthenticated"
+      currentScreen = "login"
+    }
+    focusAppropriateField()
+  }
+
+  function cancelAddAccount() {
+    if (!addingAccount || !slotBeforeAdd) return
+    switchAccount(slotBeforeAdd)
+  }
+
+  // The account list, from any screen. Its rows are the accounts, then "Add
+  // account"; the cursor starts on the active one.
+  property int accountIndex: 0
+
+  function openAccounts() {
+    closeFilterGroup()
+    if (currentScreen !== "accounts") screenBeforeAccounts = currentScreen
+    accountIndex = 0
+    for (var i = 0; i < accountRows.length; i++) if (accountRows[i].active) accountIndex = i
+    currentScreen = "accounts"
+    Qt.callLater(function() { presenter.focusField("keyCatcher") })
+  }
+
+  function moveAccountCursor(delta) {
+    var n = accountRows.length + 1
+    accountIndex = Math.max(0, Math.min(n - 1, accountIndex + delta))
+  }
+
+  function activateAccountRow() {
+    if (accountIndex < accountRows.length) switchAccount(accountRows[accountIndex].slot)
+    else beginAddAccount()
+  }
+
+  function closeAccounts() {
+    if (currentScreen !== "accounts") return
+    var back = screenBeforeAccounts
+    if (back === "accounts" || back === "") back = "main"
+    if (status !== "unlocked") back = status === "unauthenticated" ? "login" : "locked"
+    currentScreen = back
+  }
+
+  // After a logout: the next most recent account, or a clean sign-in. The
+  // logged-out slot's directory is deleted once it is no longer active.
+  function moveOffRemovedAccount(removed) {
+    accountRegistry = Model.registryRemoveAccount(accountRegistry, removed)
+    var next = Model.registryNextAccount(accountRegistry, removed)
+    loginEmail = ""
+    syncLoginFieldsToState()
+    if (next) {
+      enterAccount(next)
+    } else {
+      var fresh = Model.slotForNewAccount(accountRegistry)
+      accountRegistry = Model.registrySetActive(accountRegistry, fresh)
+      saveAccountRegistry()
+      activeSlot = fresh
+      loadAssociations()
+    }
+    if (removed !== Model.defaultAccountSlot()) retireAccountSlot(removed, false)
+    if (!next) return false
+    status = "checking"
+    currentScreen = "locked"
+    refreshStatus()
+    return true
   }
 
   property var sshAgentState: Model.sshAgentInitialState()
@@ -1396,10 +1738,13 @@ Item {
       return
     }
     if (message.type === "request_cancelled") {
-      // The request was cancelled by the client, timed out, or released on unlock.
+      // The request was cancelled by the client, timed out, released on
+      // unlock, or answered by a grant the user just approved ("granted").
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
-        if (message.reason === "released") {
+        if (message.reason === "granted") {
+          // Answered, not ignored: no cooldown.
+        } else if (message.reason === "released") {
           // A released sign request comes back as an approval, so the popup
           // stays for it; a released identity listing is already answered, so
           // the prompt closes.
@@ -1714,8 +2059,22 @@ Item {
     var result = Model.parsePluginDataRemoval(exitCode, stdout)
     root.pluginDataBusy = false
     root.pluginDataFlash = result.message
+    if (!result.ok) return
     // The stored master password went with it.
-    if (result.ok) root.fingerprintStored = false
+    root.fingerprintStored = false
+    // So did the other accounts' sign-ins and the list of them; bw's own
+    // (default) sign-in is the one left.
+    var wasElsewhere = root.activeSlot !== Model.defaultAccountSlot()
+    if (wasElsewhere) root.leaveActiveAccount()
+    root.accountRegistry = Model.emptyAccountRegistry()
+    root.addingAccount = false
+    root.slotBeforeAdd = ""
+    if (wasElsewhere) {
+      root.enterAccount(Model.defaultAccountSlot())
+      root.status = "checking"
+      root.currentScreen = "locked"
+      root.refreshStatus()
+    }
   }
 
   function cancelUwsmSetup() {
@@ -1825,10 +2184,18 @@ Item {
     activeWindowProc.running = true
   }
 
+  // A read requested while the process is busy (another account's read, or
+  // a lock's scrub) is asked again by busyRetryTimer.
+  property bool associationsReloadPending: false
+
   function loadAssociations() {
-    if (associationsReadProc.running) return
+    if (associationsReadProc.running) {
+      associationsReloadPending = true
+      return
+    }
+    associationsReloadPending = false
     associationsReadEpoch = associationsEpoch
-    associationsReadProc.command = Model.associationsReadCommand()
+    associationsReadProc.command = Model.associationsReadCommand(activeSlot)
     associationsReadProc.running = true
   }
 
@@ -1893,8 +2260,8 @@ Item {
   function focusAppropriateField() {
     if (sshApprovalPopupOpen) return
     Qt.callLater(function() {
-      // Setup has no field.
-      if (currentScreen === "setup") return
+      // Setup and the account list have no field.
+      if (currentScreen === "setup" || currentScreen === "accounts") return
       if (status === "unlocked" && currentScreen === "main") {
         if (!presenter.fieldHasFocus("search")) presenter.focusField("search")
       } else if (status === "locked" || status === "checking") {
@@ -1971,13 +2338,25 @@ Item {
       currentScreen = "setup"
       return
     }
+    // Which account to ask about; onAccountRegistryLoaded() calls back.
+    if (!accountsLoaded) {
+      loadAccountRegistry()
+      return
+    }
     // Recorded here so a panel opened before the dependency probe reports does
     // not start a second slow `bw status`.
     statusProbeStarted = true
     // A terminal login may have left a session: check first (it leaves the
     // panel locked). Only read within the window after we launched one;
     // otherwise the file is just removed.
-    if (sessionHandoffProc.running) return
+    if (sessionHandoffProc.running) {
+      // One started for an earlier vault, or a lock's scrub of it, restarts
+      // this when it exits.
+      if (epochOperationIsStale("sessionHandoff") || Model.isScrubCommand(sessionHandoffProc.command)) {
+        statusRefreshPending = true
+      }
+      return
+    }
     var expecting = Model.handoffWindowOpen(terminalLoginStartedAt, Date.now())
     if (!expecting) terminalLoginStartedAt = 0
     beginEpochOperation("sessionHandoff")
@@ -1985,8 +2364,31 @@ Item {
     sessionHandoffProc.running = true
   }
 
+  // A probe stopped by an account switch answered for the old account; ask
+  // again for the new one.
+  function restartStaleStatusProbe() {
+    if (!statusRefreshPending) return
+    statusRefreshPending = false
+    statusCheckQueued = false
+    Qt.callLater(refreshStatus)
+  }
+
+  // A lock scrubs the status chain's processes (scrubSecretBuffers()); a
+  // probe that found one busy waits for this.
+  function onStatusProbeProcessFreed() {
+    if (statusRefreshPending) {
+      restartStaleStatusProbe()
+    } else if (statusCheckQueued) {
+      statusCheckQueued = false
+      Qt.callLater(runStatusCheck)
+    }
+  }
+
   function onSessionHandoff(raw) {
-    if (epochOperationIsStale("sessionHandoff")) return
+    if (epochOperationIsStale("sessionHandoff")) {
+      restartStaleStatusProbe()
+      return
+    }
     var handed = Model.extractSessionToken(String(raw || "").trim())
     if (handed) {
       cancelAuthPrewarm()
@@ -2015,8 +2417,12 @@ Item {
     if (session) {
       runStatusCheck()
     } else if (rememberSession && status !== "locked") {
+      if (keyringLookupProc.running) {
+        statusRefreshPending = true
+        return
+      }
       beginEpochOperation("keyringLookup")
-      keyringLookupProc.command = Model.keyringLookupCommand()
+      keyringLookupProc.command = Model.keyringLookupCommand(activeSlot)
       keyringLookupProc.running = true
     } else {
       runStatusCheck()
@@ -2024,7 +2430,10 @@ Item {
   }
 
   function onKeyringLookupFinished(rawToken) {
-    if (epochOperationIsStale("keyringLookup")) return
+    if (epochOperationIsStale("keyringLookup")) {
+      restartStaleStatusProbe()
+      return
+    }
     var token = String(rawToken || "").trim()
     if (token) {
       session = token
@@ -2034,7 +2443,12 @@ Item {
   }
 
   function runStatusCheck(authoritative) {
-    if (statusProc.running) return
+    if (statusProc.running) {
+      // A probe for another account (or a locked vault), or a lock's scrub,
+      // is still exiting: run once it has.
+      if (epochOperationIsStale("status") || Model.isScrubCommand(statusProc.command)) statusCheckQueued = true
+      return
+    }
     statusCheckAuthoritative = authoritative !== false
     beginEpochOperation("status")
     statusProc.command = Model.statusCommand()
@@ -2047,7 +2461,10 @@ Item {
   }
 
   function onStatusFinished(rawJson) {
-    if (epochOperationIsStale("status")) return
+    if (epochOperationIsStale("status")) {
+      restartStaleStatusProbe()
+      return
+    }
     // A slow `bw status` landing mid-login reports "unauthenticated" as of when
     // it started; acting on it would cancel the submitted login. The attempt
     // will set the state itself.
@@ -2061,6 +2478,7 @@ Item {
     if (st && st.userId) {
       accountId = st.userId
       accountServer = st.serverUrl
+      noteActiveAccount(st)
       Qt.callLater(maybeMigrateLegacyFingerprint)
     }
     if (!authoritative) {
@@ -2661,11 +3079,15 @@ Item {
     // Opens the window in which a handed-over session key is accepted. See
     // refreshStatus().
     terminalLoginStartedAt = Date.now()
-    Quickshell.execDetached(Model.terminalLoginCommand(mode, serverUrl))
+    Quickshell.execDetached(Model.terminalLoginCommand(mode, serverUrl, activeSlot))
   }
 
+  // Signs the active account out and forgets it; other accounts keep their
+  // sign-ins and quick-unlock methods.
   function logoutAccount() {
     if (logoutPending) return
+    addingAccount = false
+    slotBeforeAdd = ""
     logoutPending = true
     logoutCliDone = false
     logoutCredentialsDone = false
@@ -2707,7 +3129,10 @@ Item {
     logoutPending = false
     status = "unauthenticated"
     currentScreen = "login"
-    if (logoutExitCode === 0) flashNotification("Logged out")
+    var email = String(Model.registryAccount(accountRegistry, activeSlot)
+      ? Model.registryAccount(accountRegistry, activeSlot).email : "")
+    var movedOn = moveOffRemovedAccount(activeSlot)
+    if (logoutExitCode === 0) flashNotification(movedOn && email ? "Logged out of " + email : "Logged out")
     else errorMessage = "Bitwarden logout did not complete cleanly. Please try again."
     focusAppropriateField()
   }
@@ -2735,13 +3160,16 @@ Item {
     }
     sessionStorePending = false
     beginEpochOperation("sessionStore")
+    sessionStoreSlot = activeSlot
+    keyringStoreProc.command = Model.keyringStoreCommand(activeSlot)
     keyringStoreProc.running = true
   }
 
   function onSessionStored(exitCode) {
     if (epochOperationIsStale("sessionStore") || status !== "unlocked" || !session) {
       sessionStorePending = rememberSession && status === "unlocked" && !!session
-      requestSessionCredentialClear()
+      // The account it was written for, which may no longer be active.
+      requestSessionCredentialClear(sessionStoreSlot)
       return
     }
     sessionStorePending = false
@@ -2750,12 +3178,29 @@ Item {
     }
   }
 
-  function requestSessionCredentialClear() {
+  // Runs the next clear or store that waited behind the keyring processes.
+  function pumpSessionKeyring() {
+    if (keyringClearProc.running || keyringStoreProc.running) return
+    if (sessionClearSlots.length > 0) {
+      var waiting = sessionClearSlots.slice()
+      var next = waiting.shift()
+      sessionClearSlots = waiting
+      requestSessionCredentialClear(next)
+      return
+    }
+    if (sessionStorePending) storeCurrentSession()
+  }
+
+  // `slot` defaults to the active account's.
+  function requestSessionCredentialClear(slot) {
+    var target = Model.isAccountSlot(slot) ? slot : activeSlot
     if (keyringClearProc.running) {
+      if (sessionClearSlots.indexOf(target) === -1) sessionClearSlots = sessionClearSlots.concat([target])
       sessionClearPending = true
       return
     }
     sessionClearPending = false
+    keyringClearProc.command = Model.keyringClearCommand(target)
     keyringClearProc.running = true
   }
 
@@ -2787,9 +3232,12 @@ Item {
       return
     }
     // A store still running could recreate the credential after this clear;
-    // logout waits for every writer, then sweeps.
+    // logout waits for every writer, then sweeps. A writer's exit handler
+    // asks again, but the Process can still read as running then, so a
+    // timer keeps asking until it does not.
     if (credentialStoresRunning()) {
       allCredentialsClearPending = true
+      credentialClearRetry.restart()
       return
     }
     allCredentialsClearPending = false
@@ -2827,7 +3275,16 @@ Item {
     pinAttempts = 0
     pinError = ""
     pinUnlockError = ""
-    if (pinUnlock) writeSetting("pinUnlock", false, "bool")
+    if (pinUnlock && !otherAccountsExist()) writeSetting("pinUnlock", false, "bool")
+  }
+
+  // The quick-unlock settings are shared by every account; each account's own
+  // envelope says which it has. Only a sole account turns a setting off.
+  function otherAccountsExist() {
+    for (var i = 0; i < accountRegistry.accounts.length; i++) {
+      if (accountRegistry.accounts[i].slot !== activeSlot) return true
+    }
+    return false
   }
 
   // Process environments
@@ -2841,9 +3298,10 @@ Item {
     return env
   }
 
-  // BW_SESSION rather than --session keeps the token out of argv.
+  // BW_SESSION rather than --session keeps the token out of argv. Every `bw`
+  // runs in the active account's data directory (accountAppDataEnv()).
   function bwEnv(extra) {
-    var env = {}
+    var env = accountAppDataEnv()
     if (session) env[Model.sessionEnvVar()] = String(session)
     if (extra) for (var k in extra) env[k] = extra[k]
     return env
@@ -3092,7 +3550,7 @@ Item {
 
   // No session in its environment, so it can only generate.
   function generatorServeEnv() {
-    var env = {}
+    var env = accountAppDataEnv()
     env[Model.sessionEnvVar()] = null
     env[Model.noInteractionEnvVar()] = "true"
     return env
@@ -3252,13 +3710,41 @@ Item {
   // PIN unlock
   // -------------------------------------------------------------------------
 
+  // The legacy checks record which account they ask about; an answer for an
+  // account no longer active is dropped and asked again.
+  property string pinCheckSlot: ""
+  property string masterCheckSlot: ""
+  // A check asked for while its process was busy; busyRetryTimer asks again.
+  property bool pinRecheck: false
+  property bool masterRecheck: false
+
   function refreshPinConfigured() {
-    if (!keyringHasPinProc.running) keyringHasPinProc.running = true
+    if (keyringHasPinProc.running) {
+      pinRecheck = true
+      return
+    }
+    pinRecheck = false
+    pinCheckSlot = activeSlot
+    keyringHasPinProc.running = true
   }
 
   function onPinConfiguredChecked(raw) {
+    if (pinCheckSlot !== activeSlot) {
+      if (pinUnlock) pinRecheck = true
+      return
+    }
     legacyPinStored = String(raw || "").trim() === "yes"
     recomputePinConfigured()
+  }
+
+  function refreshLegacyFingerprint() {
+    if (keyringHasMasterProc.running) {
+      masterRecheck = true
+      return
+    }
+    masterRecheck = false
+    masterCheckSlot = activeSlot
+    keyringHasMasterProc.running = true
   }
 
   function beginPinSetup() {
@@ -3348,7 +3834,7 @@ Item {
       })
       return
     }
-    pinUnlockProc.command = Model.pinUnlockCommand()
+    pinUnlockProc.command = Model.pinUnlockCommand(activeSlot)
     pinUnlockProc.running = true
   }
 
@@ -3418,7 +3904,7 @@ Item {
     pinConfigured = false
     pinEntry = ""
     pinAttempts = 0
-    if (pinUnlock) writeSetting("pinUnlock", false, "bool")
+    if (pinUnlock && !otherAccountsExist()) writeSetting("pinUnlock", false, "bool")
   }
 
   function disablePinUnlock() {
@@ -3444,14 +3930,15 @@ Item {
   function onDependenciesChecked(raw) {
     dependencies = Model.parseDependencies(raw)
     depsChecked = true
-    if (pinUnlock) refreshPinConfigured()
+    // The legacy entries checked here are the active account's.
+    if (pinUnlock && accountsLoaded) refreshPinConfigured()
 
     // Fingerprint availability comes from the same probe, so keep them in step.
     for (var i = 0; i < dependencies.items.length; i++) {
       if (dependencies.items[i].key === "fprintd") fingerprintAvailable = dependencies.items[i].ready
     }
     if (fingerprintAvailable && fingerprintUnlock) {
-      if (!keyringHasMasterProc.running) keyringHasMasterProc.running = true
+      if (accountsLoaded) refreshLegacyFingerprint()
     } else {
       fingerprintStored = false
     }
@@ -3698,6 +4185,10 @@ Item {
   }
 
   function onFingerprintStoredChecked(raw) {
+    if (masterCheckSlot !== activeSlot) {
+      if (fingerprintUnlock) masterRecheck = true
+      return
+    }
     legacyFingerprintStored = String(raw || "").trim() === "yes"
     recomputeFingerprintStored()
     maybeMigrateLegacyFingerprint()
@@ -3746,7 +4237,7 @@ Item {
         return
       }
       if (!keyringLookupMasterProc.running) {
-        keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
+        keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand(activeSlot)
         keyringLookupMasterProc.running = true
       }
     } else if (result === PamResult.MaxTries) {
@@ -3773,7 +4264,7 @@ Item {
         var E = Model.envelopeExitCodes()
         if ((code === 7 || code === E.absent) && root.legacyFingerprintStored
             && !keyringLookupMasterProc.running) {
-          keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand()
+          keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand(root.activeSlot)
           keyringLookupMasterProc.running = true
           return
         }
@@ -4063,6 +4554,9 @@ Item {
     status = "unlocked"
     currentScreen = "main"
     flashNotification("Vault unlocked successfully!")
+    // A sign-in the account list does not know yet: `bw status` names it
+    // once the list has painted (noteActiveAccount()).
+    if (!accountId || !Model.registryHasAccount(accountRegistry, activeSlot)) statusRefreshAfterItems = true
 
     storeCurrentSession()
 
@@ -4566,6 +5060,8 @@ Item {
       currentScreen = "settings"
     } else if (currentScreen === "settings") {
       closeSettings()
+    } else if (currentScreen === "accounts") {
+      closeAccounts()
     } else if (currentScreen === "setup") {
       dismissSetup()
     } else if (currentScreen === "edit") {
@@ -5543,6 +6039,7 @@ Item {
   // Same table as the bare letters, except Alt+s is Sends and Alt+, Settings.
   function runAltShortcut(lower) {
     if (lower === "s") { openSends(); return true }
+    if (lower === "a") { openAccounts(); return true }
     if (lower === ",") { openSettings(); return true }
     return runShortcut(lower)
   }
@@ -6114,8 +6611,15 @@ Item {
       waitForEnd: true
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(statusProc)) return
+      if (root.finishScrubRun(statusProc)) {
+        root.onStatusProbeProcessFreed()
+        return
+      }
       root.onStatusFinished(exitCode === 0 ? statusStdout.text : "")
+      if (root.statusCheckQueued) {
+        root.statusCheckQueued = false
+        Qt.callLater(root.runStatusCheck)
+      }
     }
   }
 
@@ -6129,27 +6633,33 @@ Item {
       waitForEnd: true
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(sessionHandoffProc)) return
+      if (root.finishScrubRun(sessionHandoffProc)) {
+        root.onStatusProbeProcessFreed()
+        return
+      }
       root.onSessionHandoff(exitCode === 0 ? sessionHandoffStdout.text : "")
     }
   }
 
   Process {
     id: keyringLookupProc
-    command: Model.keyringLookupCommand()
+    command: Model.keyringLookupCommand(root.activeSlot)
     stdout: StdioCollector {
       id: keyringLookupStdout
       waitForEnd: true
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(keyringLookupProc)) return
+      if (root.finishScrubRun(keyringLookupProc)) {
+        root.onStatusProbeProcessFreed()
+        return
+      }
       root.onKeyringLookupFinished(exitCode === 0 ? keyringLookupStdout.text : "")
     }
   }
 
   Process {
     id: keyringStoreProc
-    command: Model.keyringStoreCommand()
+    command: Model.keyringStoreCommand(root.activeSlot)
     environment: root.secretEnv(root.session)
     onExited: function(exitCode) {
       root.onSessionStored(exitCode)
@@ -6160,14 +6670,9 @@ Item {
 
   Process {
     id: keyringClearProc
-    command: Model.keyringClearCommand()
-    onExited: function(exitCode) {
-      if (root.sessionClearPending) {
-        Qt.callLater(root.requestSessionCredentialClear)
-        return
-      }
-      if (root.sessionStorePending) Qt.callLater(root.storeCurrentSession)
-    }
+    command: Model.keyringClearCommand(root.activeSlot)
+    // What waits behind this clear is run by busyRetryTimer.
+    onExited: function(exitCode) {}
   }
 
   // ---- Fingerprint unlock ----
@@ -6335,7 +6840,7 @@ Item {
 
   Process {
     id: pinUnlockProc
-    command: Model.pinUnlockCommand()
+    command: Model.pinUnlockCommand(root.activeSlot)
     environment: root.pinEnv(root.pinEntry)
     stdout: StdioCollector { id: pinUnlockStdout; waitForEnd: true }
     onExited: function(exitCode) {
@@ -6346,7 +6851,7 @@ Item {
 
   Process {
     id: keyringHasPinProc
-    command: Model.keyringHasPinCommand()
+    command: Model.keyringHasPinCommand(root.activeSlot)
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onPinConfiguredChecked(text)
@@ -6355,7 +6860,7 @@ Item {
 
   Process {
     id: keyringClearPinProc
-    command: Model.keyringClearPinCommand()
+    command: Model.keyringClearPinCommand(root.activeSlot)
     onExited: function(exitCode) {
       if (root.pinClearPending) Qt.callLater(root.requestPinCredentialClear)
     }
@@ -6417,7 +6922,7 @@ Item {
 
   Process {
     id: keyringHasMasterProc
-    command: Model.keyringHasMasterPasswordCommand()
+    command: Model.keyringHasMasterPasswordCommand(root.activeSlot)
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onFingerprintStoredChecked(text)
@@ -6426,7 +6931,7 @@ Item {
 
   Process {
     id: keyringLookupMasterProc
-    command: Model.keyringLookupMasterPasswordCommand()
+    command: Model.keyringLookupMasterPasswordCommand(root.activeSlot)
     stdout: StdioCollector {
       id: keyringLookupMasterStdout
       waitForEnd: true
@@ -6445,16 +6950,25 @@ Item {
 
   Process {
     id: keyringClearMasterProc
-    command: Model.keyringClearMasterPasswordCommand()
+    command: Model.keyringClearMasterPasswordCommand(root.activeSlot)
     onExited: function(exitCode) {
       if (root.masterClearPending) Qt.callLater(root.requestMasterCredentialClear)
     }
   }
 
+  // Asks again for a sweep deferred behind a writer; see
+  // requestAllCredentialClear().
+  Timer {
+    id: credentialClearRetry
+    interval: 100
+    repeat: false
+    onTriggered: if (root.logoutPending && root.allCredentialsClearPending) root.requestAllCredentialClear()
+  }
+
   // Logout's clean sweep; see forgetStoredCredentials().
   Process {
     id: keyringClearAllProc
-    command: Model.keyringClearAllCommand()
+    command: Model.keyringClearAllCommand(root.activeSlot)
     onExited: function(exitCode) {
       if (root.allCredentialsClearPending) {
         Qt.callLater(root.requestAllCredentialClear)
@@ -6464,11 +6978,54 @@ Item {
     }
   }
 
+  // Asks again for the reads above that found their process busy. A Process
+  // can still read as running inside its own exit handler, so waiting on the
+  // exit is not enough.
+  Timer {
+    id: busyRetryTimer
+    interval: 150
+    repeat: true
+    running: root.live && (root.pinRecheck || root.masterRecheck || root.associationsReloadPending
+      || root.sessionClearSlots.length > 0 || root.sessionStorePending)
+    onTriggered: {
+      root.pumpSessionKeyring()
+      if (root.pinRecheck) root.refreshPinConfigured()
+      if (root.masterRecheck) root.refreshLegacyFingerprint()
+      if (root.associationsReloadPending) root.loadAssociations()
+    }
+  }
+
+  // ---- Accounts ----
+
+  Process {
+    id: accountsReadProc
+    command: Model.accountRegistryReadCommand()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onAccountRegistryLoaded(text)
+    }
+  }
+
+  Process {
+    id: accountsWriteProc
+    command: Model.accountRegistryWriteCommand()
+    environment: root.accountsEnv()
+    onExited: function(exitCode) { root.onAccountRegistryWritten(exitCode) }
+  }
+
+  Process {
+    id: slotRemovalProc
+    onExited: function(exitCode) {
+      if (exitCode !== 0) console.warn("qs-bitwarden-cli: could not remove a signed-out account (exit " + exitCode + ")")
+      Qt.callLater(root.pumpSlotRemovals)
+    }
+  }
+
   // ---- Learned associations ----
 
   Process {
     id: associationsReadProc
-    command: Model.associationsReadCommand()
+    command: Model.associationsReadCommand(root.activeSlot)
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -6480,7 +7037,7 @@ Item {
 
   Process {
     id: associationsWriteProc
-    command: Model.associationsWriteCommand()
+    command: Model.associationsWriteCommand(root.activeSlot)
     environment: root.associationsEnv()
     onExited: function(exitCode) {
       if (root.associationsClearPending) {
@@ -6493,18 +7050,21 @@ Item {
       if (exitCode !== 0) {
         console.warn("qs-bitwarden-cli: could not save learned suggestions (exit " + exitCode + ")")
       }
-      if (root.associationsWritePending) {
+      // Never re-run with nothing to write: a lock empties the payload, and
+      // an empty write would replace the file with nothing.
+      if (root.associationsWritePending && root.pendingAssociationsJson !== "") {
         root.associationsWritePending = false
         associationsWriteProc.running = true
         return
       }
+      root.associationsWritePending = false
       root.pendingAssociationsJson = ""
     }
   }
 
   Process {
     id: associationsClearProc
-    command: Model.associationsClearCommand()
+    command: Model.associationsClearCommand(root.activeSlot)
   }
 
   PamContext {
@@ -6788,6 +7348,30 @@ Item {
     }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
+    // The accounts the panel holds (emails and servers only) and which is
+    // active.
+    function accounts(): string {
+      var rows = root.accountRows
+      var out = []
+      for (var i = 0; i < rows.length; i++) {
+        out.push({ email: rows[i].email, server: rows[i].server, active: rows[i].active })
+      }
+      return JSON.stringify({ adding: root.addingAccount, accounts: out })
+    }
+    // Switches to the account with this email (case-insensitive); locks the
+    // one active now.
+    function switchAccount(email: string): string {
+      var want = String(email || "").trim().toLowerCase()
+      var rows = root.accountRows
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].email.toLowerCase() === want) {
+          if (!root.canChangeAccount()) return "busy"
+          root.switchAccount(rows[i].slot)
+          return "switching"
+        }
+      }
+      return "unknown"
+    }
     // Which vault this view shows and how many views share it (non-secret).
     function vaultHost(): string {
       var screens = []

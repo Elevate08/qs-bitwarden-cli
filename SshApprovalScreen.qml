@@ -170,49 +170,60 @@ Column {
     width: parent.width
   }
 
-  // Deny first, and no bare-Enter default: a stray key must not sign.
+  // Deny first, and no bare-Enter default: a stray key must not sign. Every
+  // decision in one row, a column each, like the unlock methods.
   Row {
+    id: decisionRow
     width: parent.width
-    spacing: Style.space(8)
+    spacing: Style.space(6)
 
-    Button {
+    readonly property bool denyAllOffered: vault.sshPendingCount > 1
+    readonly property bool grantOffered: vault.sshPrompt !== null && vault.sshPrompt.grantOffered === true
+    readonly property int count: 2 + (denyAllOffered ? 1 : 0) + (grantOffered ? 1 : 0)
+    readonly property real tileWidth: (width - spacing * (count - 1)) / count
+
+    ChoiceTile {
       id: denyButton
-      text: "Deny (Esc)"
-      iconText: "󰅘"
-      fontFamily: panel.fontFamily
-      fontSize: Style.font.bodySmall
+      panel: screen.panel
+      width: decisionRow.tileWidth
+      glyph: "󰅖"
+      label: "Deny"
+      tooltipText: "Refuse this request (Esc)"
       focusable: true
       onClicked: vault.denySshRequest()
     }
 
-    Button {
-      visible: vault.sshPendingCount > 1
-      text: "Deny all (" + vault.sshPendingCount + ")"
-      iconText: "󰅙"
-      fontFamily: panel.fontFamily
-      fontSize: Style.font.bodySmall
+    ChoiceTile {
+      visible: decisionRow.denyAllOffered
+      panel: screen.panel
+      width: decisionRow.tileWidth
+      glyph: "󰅙"
+      label: "Deny all (" + vault.sshPendingCount + ")"
+      tooltipText: "Refuse this request and every one waiting behind it"
       focusable: true
       onClicked: vault.denyAllSshRequests()
     }
 
-    Button {
-      text: "Approve once"
-      iconText: "󰄬"
-      fontFamily: panel.fontFamily
-      fontSize: Style.font.bodySmall
+    ChoiceTile {
+      panel: screen.panel
+      width: decisionRow.tileWidth
+      glyph: "󰄬"
+      label: "Approve once"
+      tooltipText: "Sign this one request"
       focusable: true
       onClicked: vault.approveSshRequest(0)
     }
-  }
 
-  Button {
-    visible: vault.sshPrompt && vault.sshPrompt.grantOffered
-    text: vault.sshPrompt ? vault.sshPrompt.grantLabel : ""
-    iconText: "󰔟"
-    tooltipText: "Sign further requests of this same kind from this same program with this key, without asking again, until the window expires"
-    fontFamily: panel.fontFamily
-    fontSize: Style.font.bodySmall
-    focusable: true
-    onClicked: vault.approveSshRequest(vault.sshPrompt ? vault.sshPrompt.grantSeconds : 0)
+    ChoiceTile {
+      visible: decisionRow.grantOffered
+      panel: screen.panel
+      width: decisionRow.tileWidth
+      glyph: "󰔟"
+      label: vault.sshPrompt ? vault.sshPrompt.grantShortLabel : ""
+      tooltipText: (vault.sshPrompt ? vault.sshPrompt.grantLabel + ": sign" : "Sign")
+        + " further requests of this same kind from this same program with this key, without asking again, until the window expires"
+      focusable: true
+      onClicked: vault.approveSshRequest(vault.sshPrompt ? vault.sshPrompt.grantSeconds : 0)
+    }
   }
 }

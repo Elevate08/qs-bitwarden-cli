@@ -1,5 +1,88 @@
 # Changelog
 
+## [1.11.0] - 2026-09-24
+
+### Added
+
+- **Several accounts at once.** The panel holds up to ten Bitwarden accounts
+  side by side. **Add Account** signs another one in without signing the
+  first out, and **Switch Account** (on the locked screen, and the account
+  button in the header) moves between them. Each account keeps its own
+  sign-in and its own PIN, fingerprint and FIDO2 unlock, so switching never
+  means a master password, a two-step code or setting quick unlock up again.
+  The same finger or key unlocks every account; nothing is re-enrolled.
+  Only one account is unlocked at a time: switching locks the one being left,
+  drops its items from memory and tells the SSH agent the account changed.
+
+  `bw` keeps one account per data directory, so each account added beside the
+  first gets a private one under `~/.local/share/qs-bitwarden-cli/accounts/`,
+  given to `bw` in `BITWARDENCLI_APPDATA_DIR`, and its keyring entries are
+  named with its slot (`unlock_envelope@<slot>`). The first account stays in
+  `bw`'s own directory under the names it always had, so upgrading changes
+  nothing for it and a terminal `bw` still sees it. The IPC target gains
+  `accounts` and `switchAccount <email>`.
+
+### Fixed
+
+- **Approving for a program also answers the requests already queued from
+  it.** Three `ssh -T git@github.com` at once queued three prompts, and
+  approving the first "for this program" left the other two waiting to be
+  approved one by one: the helper only consulted a grant for requests that
+  arrived after it. It now also settles the queued ones the new grant covers
+  -- same program, key, kind of signature and server, the same rule a new
+  request meets -- and anything else stays queued.
+
+- **A logout right after a sign-in no longer hangs on "Finishing logout".**
+  The keyring sweep waits for any write still running, and the write's own
+  exit asked for the sweep while it still read as running, so the sweep was
+  deferred with nothing left to ask again. It is now retried until it runs.
+
+- **Keyring work still running when you switch accounts finishes for the
+  account it started for.** Switching the moment an account unlocked could
+  leave its remembered session in the keyring (its cleanup ran against the
+  account switched to), drop a pending learned-suggestions write into the
+  other account's file, or, on an upgrade from 1.10 or earlier, report the
+  first account's old PIN or fingerprint entry as the new one's. After a
+  switch from an unlocked account, the new account's learned suggestions now
+  load too. Work that found its process busy is asked again by a timer rather
+  than from the process's own exit, where it could still read as running.
+
+### Changed
+
+- **Log Out signs out of the account on screen only.** It used to clear every
+  keyring entry the plugin had written; it now clears that account's entries,
+  learned suggestions and data directory, and moves to the next account. The
+  locked screen's **Switch / Log Out** is now two buttons, **Switch Account**
+  (or **Add Account** with one account) and **Log Out**.
+
+- **Every unlock method is one click away.** The locked screen (and the SSH
+  unlock popup) used to show one method at a time, with a "Use ... instead"
+  button to step through the others. Every method that is turned on and
+  usable now sits in one row, a column each -- FIDO2 key, fingerprint, PIN,
+  master password -- with the current one highlighted. A method turned off
+  in settings is not shown, and with only the master password there is no
+  row at all. The title follows the method picked ("Enter PIN" for the PIN).
+
+- **The SSH approval prompt's decisions sit in one row.** Deny, Deny all,
+  Approve once and the time-boxed approval (now labelled "Approve 2m", with
+  the full wording in its tooltip) are tiles in a single row, like the
+  unlock methods, instead of wrapping onto a second line. Deny is still
+  first and still takes the keyboard focus. Deny, and Not now on the SSH
+  unlock prompt, show a plain X, with the Esc hint moved to their tooltip.
+
+- **Fingerprint and FIDO2 unlock are forgotten only from settings.** The
+  locked screen's **Forget Fingerprint** and **Forget FIDO2 Key** buttons, and
+  their copies on the settings screen, are gone: turning **Unlock with
+  fingerprint** or **Unlock with FIDO2 key** off is the one way to remove it,
+  as it already was for the PIN.
+
+- **Learned suggestions are kept per account**, in
+  `associations@<slot>.json` for an account added beside the first.
+
+- **Remove Plugin Data also removes the accounts added in the panel**, whose
+  sign-ins live in the plugin's data directory. `bw`'s own sign-in is left
+  alone, as before.
+
 ## [1.10.1] - 2026-09-23
 
 ### Security

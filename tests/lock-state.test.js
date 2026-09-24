@@ -242,7 +242,7 @@ check("a queued TOTP request is pinned to the vault generation that queued it",
 check("every status request records the current vault generation",
   /beginEpochOperation\("status"\)/.test(bodyOf("runStatusCheck")), bodyOf("runStatusCheck"))
 check("status completion refuses a result from an earlier vault generation",
-  /if \(epochOperationIsStale\("status"\)\) return/.test(bodyOf("onStatusFinished")),
+  /if \(epochOperationIsStale\("status"\)\) \{\s*restartStaleStatusProbe\(\)\s*return\s*\}/.test(bodyOf("onStatusFinished")),
   bodyOf("onStatusFinished"))
 check("status requests use the generation-stamped launcher",
   (panelSrc.match(/statusProc\.running\s*=\s*true/g) || []).length === 1
@@ -250,11 +250,11 @@ check("status requests use the generation-stamped launcher",
   `direct starts: ${(panelSrc.match(/statusProc\.running\s*=\s*true/g) || []).length}`)
 check("session handoff reads record and verify their vault generation",
   /beginEpochOperation\("sessionHandoff"\)/.test(bodyOf("refreshStatus"))
-    && /if \(epochOperationIsStale\("sessionHandoff"\)\) return/.test(bodyOf("onSessionHandoff")),
+    && /if \(epochOperationIsStale\("sessionHandoff"\)\) \{\s*restartStaleStatusProbe\(\)\s*return\s*\}/.test(bodyOf("onSessionHandoff")),
   bodyOf("refreshStatus") + "\n" + bodyOf("onSessionHandoff"))
 check("remembered-session lookups record and verify their vault generation",
   /beginEpochOperation\("keyringLookup"\)/.test(bodyOf("onSessionHandoff"))
-    && /if \(epochOperationIsStale\("keyringLookup"\)\) return/.test(bodyOf("onKeyringLookupFinished")),
+    && /if \(epochOperationIsStale\("keyringLookup"\)\) \{\s*restartStaleStatusProbe\(\)\s*return\s*\}/.test(bodyOf("onKeyringLookupFinished")),
   bodyOf("onSessionHandoff") + "\n" + bodyOf("onKeyringLookupFinished"))
 check("logout closes any terminal handoff acceptance window",
   /terminalLoginStartedAt\s*=\s*0/.test(bodyOf("logoutAccount")), bodyOf("logoutAccount"))
@@ -296,14 +296,18 @@ check("fingerprint password retrieval requires a live verified attempt",
 check("remembered-session stores are generation-stamped and stale stores are cleared",
   /beginEpochOperation\("sessionStore"\)/.test(bodyOf("storeCurrentSession"))
     && /epochOperationIsStale\("sessionStore"\)/.test(bodyOf("onSessionStored"))
-    && /requestSessionCredentialClear\(\)/.test(bodyOf("onSessionStored")),
+    // The account it was written for, which a switch may have left.
+    && /requestSessionCredentialClear\(sessionStoreSlot\)/.test(bodyOf("onSessionStored"))
+    && /sessionStoreSlot = activeSlot/.test(bodyOf("storeCurrentSession")),
   bodyOf("storeCurrentSession") + "\n" + bodyOf("onSessionStored"))
 check("a newer session waits for an old store and its cleanup before being remembered",
   /keyringStoreProc\.running\s*\|\|\s*keyringClearProc\.running/.test(bodyOf("storeCurrentSession"))
     && /sessionStorePending\s*=\s*true/.test(bodyOf("storeCurrentSession"))
     && /sessionStorePending\s*=\s*rememberSession\s*&&\s*status\s*===\s*"unlocked"\s*&&\s*!!session/.test(bodyOf("onSessionStored"))
-    && /sessionStorePending[\s\S]{0,100}storeCurrentSession/.test(panelSrc.slice(
-      panelSrc.indexOf("id: keyringClearProc"), panelSrc.indexOf("id: listFoldersProc"))),
+    // Asked again by a timer, not the clear's exit handler: a Process can
+    // still read as running inside its own exit handler.
+    && /if \(sessionStorePending\) storeCurrentSession\(\)/.test(bodyOf("pumpSessionKeyring"))
+    && /id: busyRetryTimer[\s\S]{0,400}root\.sessionStorePending[\s\S]{0,200}root\.pumpSessionKeyring\(\)/.test(panelSrc),
   bodyOf("storeCurrentSession") + "\n" + bodyOf("onSessionStored"))
 // A PIN is now a wrap in the envelope, and the invariant carries over: a wrap
 // written for a vault generation that has ended, or a form that was left, is

@@ -76,6 +76,7 @@ eq("the prompt derives the process name from the path", view.processName, "ssh")
 eq("the prompt shows the pid", view.pid, 48213)
 eq("the prompt offers a grant", view.grantOffered, true)
 check("the grant button states its window", /2m|120/.test(view.grantLabel), view.grantLabel)
+check("and so does its short tile label", view.grantShortLabel === "Approve 2m", view.grantShortLabel)
 // A grant covers one program, not one process.
 // The button has to say so, or it promises a narrower thing than it does.
 check("the grant button says what it actually covers",
@@ -660,11 +661,21 @@ check("the fingerprint button says what the vault is doing once the finger is re
 check("fingerprint offers no field and no separate submit",
   !/form\.method === "fingerprint"[\s\S]{0,400}?TextField/.test(unlockFormSrc),
   "fingerprint asks for a finger, nothing else")
-check("the fallback cycles to the next method that is set up",
-  /nextMethod:\s*nextMethodAfter\(method\)/.test(unlockFormSrc)
-    && /text: "Use " \+ form\.methodLabel\(form\.nextMethod\) \+ " instead"/.test(unlockFormSrc)
-    && /visible: form\.fieldsOffered && form\.nextMethod !== ""/.test(unlockFormSrc),
-  "with one other method it is a toggle; with two it cycles")
+check("every available method is offered at once, one column each",
+  /availableMethods: \["fido", "fingerprint", "pin", "password"\]\s*\.filter\(function\(name\) \{ return methodAvailable\(name\) \}\)/.test(unlockFormSrc)
+    && /Repeater \{\s*model: form\.availableMethods/.test(unlockFormSrc)
+    && /selected: form\.method === modelData/.test(unlockFormSrc)
+    && /onClicked: form\.useMethod\(modelData\)/.test(unlockFormSrc)
+    && !/nextMethod/.test(unlockFormSrc),
+  "the methods must sit side by side, not behind a cycling button")
+check("the row is only drawn when there is a choice",
+  /visible: form\.fieldsOffered && form\.availableMethods\.length > 1/.test(unlockFormSrc),
+  "one method needs no picker")
+check("a method turned off in settings is not offered",
+  /if \(name === "fido"\) return form\.vault\.fidoReady/.test(unlockFormSrc)
+    && /if \(name === "fingerprint"\) return form\.vault\.fingerprintReady/.test(unlockFormSrc)
+    && /if \(name === "pin"\) return form\.vault\.pinReady/.test(unlockFormSrc),
+  "availability must follow the ready flags, which include the setting")
 check("a rejected PIN keeps its reason after the PIN method is gone",
   /visible: form\.fieldsOffered && form\.method !== "pin" && form\.vault\.pinUnlockError !== ""/.test(unlockFormSrc)
     && !/form\.vault\.pinError/.test(unlockFormSrc),
@@ -763,8 +774,19 @@ check("deny all rejects active and queued requests",
 check("approval screen displays 1 of N when multiple requests are queued",
   /text:\s*"1 of "\s*\+\s*panel\.sshPendingCount/.test(approvalSrc),
   "approval screen does not display queue counter")
+// The helper answers queued requests a new grant covers and withdraws their
+// prompts as "granted": answered, so it must never count toward the cooldown.
+check("a prompt withdrawn because a grant answered it costs no cooldown",
+  /message\.reason === "granted"\) \{\s*\/\/[^\n]*\n\s*\} else if \(message\.reason === "released"\)/.test(panelSrc)
+    && /\} else \{\s*root\.sshCooldown = Model\.sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(panelSrc),
+  "a granted withdrawal would be counted as an unanswered prompt")
+// Every decision sits in one row of tiles; Deny stays first and focused.
+check("the approval decisions share one row, Deny first",
+  /Row \{\s*id: decisionRow[\s\S]*?ChoiceTile \{\s*id: denyButton[\s\S]*?label: "Deny all[\s\S]*?label: "Approve once"[\s\S]*?grantShortLabel/.test(approvalSrc)
+    && !/^\s*Button \{/m.test(approvalSrc), "")
 check("approval screen provides a Deny all button when multiple requests exist",
-  /text:\s*"Deny all \("\s*\+\s*panel\.sshPendingCount\s*\+\s*"\)"/.test(approvalSrc),
+  /label:\s*"Deny all \("\s*\+\s*panel\.sshPendingCount\s*\+\s*"\)"/.test(approvalSrc)
+    && /onClicked: panel\.denyAllSshRequests\(\)/.test(approvalSrc),
   "approval screen is missing Deny all button")
 check("popup accepts Shift+Escape to deny all requests",
   /event\.modifiers\s*&\s*Qt\.ShiftModifier[\s\S]{0,120}?popup\.panel\.denyAllSshRequests\(\)/.test(popupSrc),

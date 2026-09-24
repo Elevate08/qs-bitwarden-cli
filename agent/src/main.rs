@@ -373,6 +373,9 @@ async fn run() -> Result<(), ()> {
                             })
                             .unwrap_or_else(|_| protocol::failure_response());
                         let _ = sign.reply.send(response);
+                        if grant_seconds > 0 {
+                            settle_granted(&mut approvals, &mut pending, &store, started, &output_tx)?;
+                        }
                     }
                     ControlMessage::Deny { request_id, .. } | ControlMessage::UnlockCancelled { request_id, .. } => {
                         approvals.disconnect(request_id);
@@ -769,6 +772,34 @@ fn release_held(
                 let _ = request.reply.send(protocol::failure_response());
             }
         }
+    }
+    // Held requests come out in no particular order: one approved with a grant
+    // may follow another from the same program that has just been queued.
+    settle_granted(approvals, pending, store, started, output)
+}
+
+/// Answers the queued requests a grant just opened covers, and withdraws
+/// their prompts from the panel ("granted": answered, not refused).
+fn settle_granted(
+    approvals: &mut ApprovalManager,
+    pending: &mut HashMap<RequestId, PendingSign>,
+    store: &KeyStore,
+    started: Instant,
+    output: &mpsc::Sender<Output>,
+) -> Result<(), ()> {
+    for (id, authorization) in approvals.release_granted(elapsed_ms(started)) {
+        if let Some(sign) = pending.remove(&id) {
+            let response = authorized_signature(store, authorization, &sign.message, sign.flags);
+            let _ = sign.reply.send(response);
+        }
+        emit(
+            output,
+            Output::RequestCancelled {
+                v: 1,
+                request_id: id,
+                reason: "granted",
+            },
+        )?;
     }
     Ok(())
 }

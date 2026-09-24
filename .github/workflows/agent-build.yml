@@ -232,6 +232,46 @@ jobs:
         working-directory: unlock-key
         run: cargo test --locked --all-targets
 
+  e2e:
+    name: panel end-to-end
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # The real Service.qml in a headless Quickshell (tests/e2e/). Quickshell
+    # is not packaged for Ubuntu, so this runs in Arch: the image is pinned by
+    # digest, and packages come from the Arch Linux Archive's snapshot of the
+    # image's own day, so every run installs the same packages, each checked
+    # against the image's pacman keyring. Like every job here it has a
+    # read-only token and no secrets; the tests run as an unprivileged user,
+    # with no network use and an environment they build from scratch.
+    container:
+      image: archlinux:base@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6
+
+    steps:
+      - name: Install from the dated Arch snapshot
+        run: |
+          # Refuse to install anything unsigned.
+          grep -Eq '^SigLevel[[:space:]]*=[[:space:]]*Required' /etc/pacman.conf \
+            || { echo "::error::pacman does not require package signatures"; exit 1; }
+          echo 'Server = https://archive.archlinux.org/repos/2026/09/21/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman-key --init
+          pacman-key --populate archlinux
+          # diffutils: the envelope's write check compares with `cmp`, which
+          # every desktop has but the bare image does not.
+          pacman -Syu --noconfirm --needed quickshell argon2 jq nodejs diffutils
+          # Log what was installed, so behaviour changes can be traced.
+          pacman -Q quickshell qt6-declarative nodejs argon2 jq diffutils
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing the tests run can read the token from .git/config.
+          persist-credentials: false
+
+      - name: Run the end-to-end tests as an unprivileged user
+        run: |
+          useradd --create-home e2e
+          # Read-only use of the checkout: the tests write only under /tmp.
+          runuser -u e2e -- node tests/e2e/accounts.e2e.js
+
   javascript:
     name: panel tests
     runs-on: ubuntu-24.04

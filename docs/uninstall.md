@@ -4,7 +4,8 @@
 Data** on the settings screen. Between them those clear everything this plugin
 put outside its own folder: the helper stops cleanly and takes its socket,
 FIFO and routing file with it, and the button clears the keyring entries, the
-learned suggestions and the exported public keys. Both have to happen before
+learned suggestions, the exported public keys and the sign-ins of any accounts
+added beside the first. Both have to happen before
 the next step, because `omarchy plugin remove` has no uninstall hook -- once
 the folder is gone there is no code left to run.
 
@@ -28,6 +29,9 @@ rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
 # and its settings with it. If a stale one is left -- from a plugin removed
 # some other way -- clear it through the shell, never by editing the file:
 #   omarchy plugin disable io.github.elevate08.qs-bitwarden-cli
+
+# Accounts added beside the first: their own bw data directories and the list
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/accounts"
 
 # SSH agent, if you used it: the exported public keys and the routing file
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh"
