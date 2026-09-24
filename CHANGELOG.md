@@ -47,6 +47,12 @@
   locked screen's **Switch / Log Out** is now two buttons, **Switch Account**
   (or **Add Account** with one account) and **Log Out**.
 
+- **Fingerprint and FIDO2 unlock are forgotten only from settings.** The
+  locked screen's **Forget Fingerprint** and **Forget FIDO2 Key** buttons, and
+  their copies on the settings screen, are gone: turning **Unlock with
+  fingerprint** or **Unlock with FIDO2 key** off is the one way to remove it,
+  as it already was for the PIN.
+
 - **Learned suggestions are kept per account**, in
   `associations@<slot>.json` for an account added beside the first.
 
