@@ -25,12 +25,27 @@ DEMO_KEY_DIR="$(mktemp -d)"
 ssh-keygen -q -t ed25519 -N '' -C demo@example.com -f "$DEMO_KEY_DIR/id_ed25519"
 export QSBW_DEMO_SSH_KEY="$DEMO_KEY_DIR/id_ed25519"
 
+# The fixture shell's own data and state. The plugin keeps its account list,
+# learned suggestions and projected SSH keys under these, and the fixture
+# shell must not read or rewrite yours; the keyring is already a shim
+# (demo/bin/secret-tool). Your config (shell.json) and runtime dir are shared,
+# since the shell needs them to draw at all.
+DEMO_DIRS="$(mktemp -d)"
+DEMO_DATA="$DEMO_DIRS/data"
+DEMO_STATE="$DEMO_DIRS/state"
+# A second, made-up account beside the fixture's, so the locked screen offers
+# Switch Account and the account list has something to list. Never signed in:
+# only its row is ever drawn.
+(umask 077 && mkdir -p "$DEMO_DATA/qs-bitwarden-cli/accounts" "$DEMO_STATE")
+cat > "$DEMO_DATA/qs-bitwarden-cli/accounts/registry.json" <<'JSON'
+{"version":1,"active":"default","accounts":[{"slot":"0123456789abcdef","email":"work@example.com","userId":"11111111-1111-1111-1111-111111111111","server":"https://vault.bitwarden.eu","lastUsed":1}]}
+JSON
+
 restore() {
   echo "restoring the real shell..."
-  rm -rf -- "$DEMO_KEY_DIR"
-  # The fixture vault's SSH key gets projected to the same directory the real
-  # one uses. The real shell rewrites its own keys on the next load but will
-  # not remove a file it never wrote, so a demo key would sit there for good.
+  rm -rf -- "$DEMO_KEY_DIR" "$DEMO_DIRS"
+  # Before the fixture shell had its own data dir, its SSH key was projected
+  # beside the real ones; the real shell never removes a file it did not write.
   rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh/Demo Deploy Key.pub"
   pkill -f "quickshell -n -p /usr/share/omarchy/shell" 2>/dev/null || true
   sleep 1
@@ -48,6 +63,7 @@ start_shell() {
   pkill -f "quickshell -n -p /usr/share/omarchy/shell" 2>/dev/null || true
   sleep 1
   PATH="$REPO/demo/bin:$PATH" QSBW_DEMO_STATUS="$1" \
+    XDG_DATA_HOME="$DEMO_DATA" XDG_STATE_HOME="$DEMO_STATE" \
     nohup quickshell -n -p /usr/share/omarchy/shell >/dev/null 2>&1 &
   sleep 6
   # Park the pointer so hover states and tooltips stay out of the shots.
@@ -113,7 +129,7 @@ clear_search() {
 # The request is denied rather than approved, so no signature is ever made.
 capture_ssh_approval() {
   local sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qs-bitwarden-cli/ssh-agent.sock"
-  local pub="${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh/Demo Deploy Key.pub"
+  local pub="$DEMO_DATA/qs-bitwarden-cli/ssh/Demo Deploy Key.pub"
 
   # The helper starts with the panel and projects its public keys after the
   # vault loads, so wait for the file rather than guessing at a delay.
@@ -213,6 +229,11 @@ wtype -k Escape 2>/dev/null; sleep 1
 
 wtype -M alt -k comma -m alt 2>/dev/null; sleep 3
 shot 10-settings
+wtype -k Escape 2>/dev/null; sleep 1
+
+# The fixture account and the made-up second one (see DEMO_DIRS above).
+wtype -M alt -k a -m alt 2>/dev/null; sleep 2
+shot 14-accounts
 
 "${IPC[@]}" close >/dev/null 2>&1 || true
 

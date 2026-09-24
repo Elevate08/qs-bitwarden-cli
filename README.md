@@ -309,9 +309,10 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>l</kbd> | **L**ock the vault |
 | <kbd>Alt</kbd>+<kbd>s</kbd> | Bitwarden **S**end |
 | <kbd>Alt</kbd>+<kbd>,</kbd> | Settings |
+| <kbd>Alt</kbd>+<kbd>a</kbd> | **A**ccounts: switch to another account, or add one |
 | <kbd>Esc</kbd> | Close the filter drawer, clear the search, or close the panel |
 
-`Alt` + any letter above runs the same action from inside the search box. Two are `Alt`-only: <kbd>Alt</kbd>+<kbd>s</kbd> opens **Send** (which has no bare letter, since <kbd>s</kbd> is Settings), and <kbd>Alt</kbd>+<kbd>,</kbd> opens **Settings**, so Settings is still reachable while searching.
+`Alt` + any letter above runs the same action from inside the search box. Three are `Alt`-only: <kbd>Alt</kbd>+<kbd>s</kbd> opens **Send** (which has no bare letter, since <kbd>s</kbd> is Settings), <kbd>Alt</kbd>+<kbd>,</kbd> opens **Settings**, so Settings is still reachable while searching, and <kbd>Alt</kbd>+<kbd>a</kbd> opens **Accounts**.
 
 ### Detail Inspector
 

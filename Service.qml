@@ -6039,6 +6039,7 @@ Item {
   // Same table as the bare letters, except Alt+s is Sends and Alt+, Settings.
   function runAltShortcut(lower) {
     if (lower === "s") { openSends(); return true }
+    if (lower === "a") { openAccounts(); return true }
     if (lower === ",") { openSettings(); return true }
     return runShortcut(lower)
   }

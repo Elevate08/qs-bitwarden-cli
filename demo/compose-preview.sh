@@ -52,8 +52,10 @@ FONT_BODY="${QSBW_PREVIEW_FONT_BODY:-CaskaydiaMono-NF-Regular}"
 # earns its place by naming what the release added.
 # Set either from the environment to try a phrase without touching the file:
 #   QSBW_BADGE_TITLE='SSH Agent Support' ./demo/compose-preview.sh --badge-only
-BADGE_KICKER="${QSBW_BADGE_KICKER:-NEW}"
-BADGE_TITLE="${QSBW_BADGE_TITLE:-Cards & Identities}"
+BADGE_KICKER="${QSBW_BADGE_KICKER:-NEW IN 1.11}"
+# Two lines: the phrase is wider than the corner beside the title.
+BADGE_TITLE="${QSBW_BADGE_TITLE:-Multiple Account Support
++ Security Improvements}"
 # Filled with the accent and lettered in the page's own black, rather than
 # outlined like the panels. A seventh accent-bordered rectangle read as one
 # more screenshot; this cannot be mistaken for one.
@@ -163,7 +165,7 @@ magick -background "$BADGE_BG" -fill "$BADGE_FG" \
   -font "$FONT" -pointsize 26 -interword-spacing 10 \
   label:"$BADGE_KICKER" "$work/kicker.png"
 magick -background "$BADGE_BG" -fill "$BADGE_FG" \
-  -font "$FONT" -pointsize 44 label:"$BADGE_TITLE" "$work/badge-title.png"
+  -font "$FONT" -pointsize "${QSBW_BADGE_SIZE:-34}" label:"$BADGE_TITLE" "$work/badge-title.png"
 
 # A solid block, not an outline: the panels are all accent-bordered rectangles
 # on black, so one more of those disappears among them. Inverting it -- accent
