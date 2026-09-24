@@ -76,6 +76,7 @@ eq("the prompt derives the process name from the path", view.processName, "ssh")
 eq("the prompt shows the pid", view.pid, 48213)
 eq("the prompt offers a grant", view.grantOffered, true)
 check("the grant button states its window", /2m|120/.test(view.grantLabel), view.grantLabel)
+check("and so does its short tile label", view.grantShortLabel === "Approve 2m", view.grantShortLabel)
 // A grant covers one program, not one process.
 // The button has to say so, or it promises a narrower thing than it does.
 check("the grant button says what it actually covers",
@@ -779,8 +780,13 @@ check("a prompt withdrawn because a grant answered it costs no cooldown",
   /message\.reason === "granted"\) \{\s*\/\/[^\n]*\n\s*\} else if \(message\.reason === "released"\)/.test(panelSrc)
     && /\} else \{\s*root\.sshCooldown = Model\.sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(panelSrc),
   "a granted withdrawal would be counted as an unanswered prompt")
+// Every decision sits in one row of tiles; Deny stays first and focused.
+check("the approval decisions share one row, Deny first",
+  /Row \{\s*id: decisionRow[\s\S]*?ChoiceTile \{\s*id: denyButton[\s\S]*?label: "Deny all[\s\S]*?label: "Approve once"[\s\S]*?grantShortLabel/.test(approvalSrc)
+    && !/^\s*Button \{/m.test(approvalSrc), "")
 check("approval screen provides a Deny all button when multiple requests exist",
-  /text:\s*"Deny all \("\s*\+\s*panel\.sshPendingCount\s*\+\s*"\)"/.test(approvalSrc),
+  /label:\s*"Deny all \("\s*\+\s*panel\.sshPendingCount\s*\+\s*"\)"/.test(approvalSrc)
+    && /onClicked: panel\.denyAllSshRequests\(\)/.test(approvalSrc),
   "approval screen is missing Deny all button")
 check("popup accepts Shift+Escape to deny all requests",
   /event\.modifiers\s*&\s*Qt\.ShiftModifier[\s\S]{0,120}?popup\.panel\.denyAllSshRequests\(\)/.test(popupSrc),

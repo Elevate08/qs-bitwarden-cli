@@ -2524,8 +2524,9 @@ Panel {
 
             Button {
               visible: !root.vault.sshAgentLoadActive
-              text: "Not now (Esc)"
-              iconText: "󰅘"
+              text: "Not now"
+              iconText: "󰅖"
+              tooltipText: "Refuse this request (Esc)"
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.denySshRequest()
