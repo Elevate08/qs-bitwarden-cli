@@ -412,3 +412,96 @@ fn forwarded_and_unrecognised_requests_never_open_or_ride_a_grant() {
         "a remote host's request must not ride the local ssh's grant"
     );
 }
+
+/// Three `ssh -T git@github.com` at once queue three prompts. Approving the
+/// first for the program must settle the other two, which the grant covers,
+/// and nothing it does not.
+#[test]
+fn a_grant_settles_the_requests_already_queued_behind_it() {
+    let (store, key) = loaded_store(3);
+    let mut approvals = ApprovalManager::new(rustix::process::geteuid().as_raw());
+    let submit =
+        |approvals: &mut ApprovalManager, peer: PeerContext, scope: SignScope| match approvals
+            .submit(3, &key, peer, scope, 0)
+            .unwrap()
+        {
+            Submit::Pending(id) => id,
+            Submit::Granted(_) => panic!("nothing is granted yet"),
+        };
+    let first = submit(
+        &mut approvals,
+        peer(100, 1, "/usr/bin/ssh"),
+        git_signature(),
+    );
+    let second = submit(
+        &mut approvals,
+        peer(101, 2, "/usr/bin/ssh"),
+        git_signature(),
+    );
+    let third = submit(
+        &mut approvals,
+        peer(102, 3, "/usr/bin/ssh"),
+        git_signature(),
+    );
+    // Not covered: another program, another kind of signature.
+    let other_program = submit(
+        &mut approvals,
+        peer(103, 4, "/usr/bin/git"),
+        git_signature(),
+    );
+    assert_eq!(approvals.pending_count(), 4);
+
+    // Approved once, no grant: nothing else moves.
+    approvals.approve(first, 0, 10).unwrap();
+    assert!(approvals.release_granted(10).is_empty());
+    assert_eq!(approvals.pending_count(), 3);
+
+    // Approved for the program: the one still queued from it is released.
+    approvals.approve(second, 120, 20).unwrap();
+    let released = approvals.release_granted(20);
+    let ids: Vec<_> = released.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, vec![third]);
+    assert!(!approvals.is_pending(third));
+    assert!(
+        approvals.is_pending(other_program),
+        "another program still asks"
+    );
+    // And what it releases still has to pass the keystore's final check.
+    let (_, authorization) = released.into_iter().next().unwrap();
+    assert!(authorization.finalize(&store).is_some());
+}
+
+/// A queued request of another kind, or a forwarded one, is never settled by
+/// a grant: only what a new request could ride may be released.
+#[test]
+fn a_grant_settles_only_what_it_would_answer_new() {
+    let (_, key) = loaded_store(3);
+    let mut approvals = ApprovalManager::new(rustix::process::geteuid().as_raw());
+    let pend = |approvals: &mut ApprovalManager, scope: SignScope| match approvals
+        .submit(3, &key, peer(100, 1, "/usr/bin/ssh"), scope, 0)
+        .unwrap()
+    {
+        Submit::Pending(id) => id,
+        Submit::Granted(_) => panic!("nothing is granted yet"),
+    };
+    let granted = pend(&mut approvals, git_signature());
+    let other_kind = pend(
+        &mut approvals,
+        scope(SignKind::SshSig {
+            namespace: "file".into(),
+        }),
+    );
+    let forwarded = pend(
+        &mut approvals,
+        SignScope {
+            kind: SignKind::SshSig {
+                namespace: "git".into(),
+            },
+            forwarded: true,
+        },
+    );
+    approvals.approve(granted, 120, 10).unwrap();
+    assert!(approvals.release_granted(10).is_empty());
+    assert!(approvals.is_pending(other_kind));
+    assert!(approvals.is_pending(forwarded));
+}

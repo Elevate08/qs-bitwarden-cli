@@ -774,6 +774,12 @@ check("deny all rejects active and queued requests",
 check("approval screen displays 1 of N when multiple requests are queued",
   /text:\s*"1 of "\s*\+\s*panel\.sshPendingCount/.test(approvalSrc),
   "approval screen does not display queue counter")
+// The helper answers queued requests a new grant covers and withdraws their
+// prompts as "granted": answered, so it must never count toward the cooldown.
+check("a prompt withdrawn because a grant answered it costs no cooldown",
+  /message\.reason === "granted"\) \{\s*\/\/[^\n]*\n\s*\} else if \(message\.reason === "released"\)/.test(panelSrc)
+    && /\} else \{\s*root\.sshCooldown = Model\.sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(panelSrc),
+  "a granted withdrawal would be counted as an unanswered prompt")
 // Every decision sits in one row of tiles; Deny stays first and focused.
 check("the approval decisions share one row, Deny first",
   /Row \{\s*id: decisionRow[\s\S]*?ChoiceTile \{\s*id: denyButton[\s\S]*?label: "Deny all[\s\S]*?label: "Approve once"[\s\S]*?grantShortLabel/.test(approvalSrc)

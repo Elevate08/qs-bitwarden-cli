@@ -1738,10 +1738,13 @@ Item {
       return
     }
     if (message.type === "request_cancelled") {
-      // The request was cancelled by the client, timed out, or released on unlock.
+      // The request was cancelled by the client, timed out, released on
+      // unlock, or answered by a grant the user just approved ("granted").
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
-        if (message.reason === "released") {
+        if (message.reason === "granted") {
+          // Answered, not ignored: no cooldown.
+        } else if (message.reason === "released") {
           // A released sign request comes back as an approval, so the popup
           // stays for it; a released identity listing is already answered, so
           // the prompt closes.
