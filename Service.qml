@@ -526,6 +526,11 @@ Item {
   property int associationsReadEpoch: -1
   property bool sessionStorePending: false
   property bool sessionClearPending: false
+  // Which account's session the running store writes, and the accounts
+  // whose session clears wait behind a running one: a switch can land
+  // between a request and its run.
+  property string sessionStoreSlot: ""
+  property var sessionClearSlots: []
   property bool pinClearPending: false
   property bool masterClearPending: false
   property bool allCredentialsClearPending: false
@@ -1186,6 +1191,9 @@ Item {
     userEmail = ""
     loginEmail = ""
     associationsEpoch += 1
+    // A write still owed is the old account's; the running one finishes into
+    // its own file.
+    associationsWritePending = false
     associations = Model.emptyAssociations()
     suggestedItems = []
     detectedContext = null
@@ -1197,7 +1205,7 @@ Item {
   function refreshAccountCredentials() {
     if (!accountsLoaded) return
     if (pinUnlock) refreshPinConfigured()
-    if (fingerprintAvailable && fingerprintUnlock && !keyringHasMasterProc.running) keyringHasMasterProc.running = true
+    if (fingerprintAvailable && fingerprintUnlock) refreshLegacyFingerprint()
     envelopeReadinessChanged()
     if (fidoUnlock) fidoUnlocker.refresh()
   }
@@ -2173,8 +2181,16 @@ Item {
     activeWindowProc.running = true
   }
 
+  // A read requested while the process is busy (another account's read, or
+  // a lock's scrub) is asked again by busyRetryTimer.
+  property bool associationsReloadPending: false
+
   function loadAssociations() {
-    if (associationsReadProc.running) return
+    if (associationsReadProc.running) {
+      associationsReloadPending = true
+      return
+    }
+    associationsReloadPending = false
     associationsReadEpoch = associationsEpoch
     associationsReadProc.command = Model.associationsReadCommand(activeSlot)
     associationsReadProc.running = true
@@ -3141,13 +3157,16 @@ Item {
     }
     sessionStorePending = false
     beginEpochOperation("sessionStore")
+    sessionStoreSlot = activeSlot
+    keyringStoreProc.command = Model.keyringStoreCommand(activeSlot)
     keyringStoreProc.running = true
   }
 
   function onSessionStored(exitCode) {
     if (epochOperationIsStale("sessionStore") || status !== "unlocked" || !session) {
       sessionStorePending = rememberSession && status === "unlocked" && !!session
-      requestSessionCredentialClear()
+      // The account it was written for, which may no longer be active.
+      requestSessionCredentialClear(sessionStoreSlot)
       return
     }
     sessionStorePending = false
@@ -3156,12 +3175,29 @@ Item {
     }
   }
 
-  function requestSessionCredentialClear() {
+  // Runs the next clear or store that waited behind the keyring processes.
+  function pumpSessionKeyring() {
+    if (keyringClearProc.running || keyringStoreProc.running) return
+    if (sessionClearSlots.length > 0) {
+      var waiting = sessionClearSlots.slice()
+      var next = waiting.shift()
+      sessionClearSlots = waiting
+      requestSessionCredentialClear(next)
+      return
+    }
+    if (sessionStorePending) storeCurrentSession()
+  }
+
+  // `slot` defaults to the active account's.
+  function requestSessionCredentialClear(slot) {
+    var target = Model.isAccountSlot(slot) ? slot : activeSlot
     if (keyringClearProc.running) {
+      if (sessionClearSlots.indexOf(target) === -1) sessionClearSlots = sessionClearSlots.concat([target])
       sessionClearPending = true
       return
     }
     sessionClearPending = false
+    keyringClearProc.command = Model.keyringClearCommand(target)
     keyringClearProc.running = true
   }
 
@@ -3671,13 +3707,41 @@ Item {
   // PIN unlock
   // -------------------------------------------------------------------------
 
+  // The legacy checks record which account they ask about; an answer for an
+  // account no longer active is dropped and asked again.
+  property string pinCheckSlot: ""
+  property string masterCheckSlot: ""
+  // A check asked for while its process was busy; busyRetryTimer asks again.
+  property bool pinRecheck: false
+  property bool masterRecheck: false
+
   function refreshPinConfigured() {
-    if (!keyringHasPinProc.running) keyringHasPinProc.running = true
+    if (keyringHasPinProc.running) {
+      pinRecheck = true
+      return
+    }
+    pinRecheck = false
+    pinCheckSlot = activeSlot
+    keyringHasPinProc.running = true
   }
 
   function onPinConfiguredChecked(raw) {
+    if (pinCheckSlot !== activeSlot) {
+      if (pinUnlock) pinRecheck = true
+      return
+    }
     legacyPinStored = String(raw || "").trim() === "yes"
     recomputePinConfigured()
+  }
+
+  function refreshLegacyFingerprint() {
+    if (keyringHasMasterProc.running) {
+      masterRecheck = true
+      return
+    }
+    masterRecheck = false
+    masterCheckSlot = activeSlot
+    keyringHasMasterProc.running = true
   }
 
   function beginPinSetup() {
@@ -3871,7 +3935,7 @@ Item {
       if (dependencies.items[i].key === "fprintd") fingerprintAvailable = dependencies.items[i].ready
     }
     if (fingerprintAvailable && fingerprintUnlock) {
-      if (accountsLoaded && !keyringHasMasterProc.running) keyringHasMasterProc.running = true
+      if (accountsLoaded) refreshLegacyFingerprint()
     } else {
       fingerprintStored = false
     }
@@ -4118,6 +4182,10 @@ Item {
   }
 
   function onFingerprintStoredChecked(raw) {
+    if (masterCheckSlot !== activeSlot) {
+      if (fingerprintUnlock) masterRecheck = true
+      return
+    }
     legacyFingerprintStored = String(raw || "").trim() === "yes"
     recomputeFingerprintStored()
     maybeMigrateLegacyFingerprint()
@@ -6599,13 +6667,8 @@ Item {
   Process {
     id: keyringClearProc
     command: Model.keyringClearCommand(root.activeSlot)
-    onExited: function(exitCode) {
-      if (root.sessionClearPending) {
-        Qt.callLater(root.requestSessionCredentialClear)
-        return
-      }
-      if (root.sessionStorePending) Qt.callLater(root.storeCurrentSession)
-    }
+    // What waits behind this clear is run by busyRetryTimer.
+    onExited: function(exitCode) {}
   }
 
   // ---- Fingerprint unlock ----
@@ -6911,6 +6974,23 @@ Item {
     }
   }
 
+  // Asks again for the reads above that found their process busy. A Process
+  // can still read as running inside its own exit handler, so waiting on the
+  // exit is not enough.
+  Timer {
+    id: busyRetryTimer
+    interval: 150
+    repeat: true
+    running: root.live && (root.pinRecheck || root.masterRecheck || root.associationsReloadPending
+      || root.sessionClearSlots.length > 0 || root.sessionStorePending)
+    onTriggered: {
+      root.pumpSessionKeyring()
+      if (root.pinRecheck) root.refreshPinConfigured()
+      if (root.masterRecheck) root.refreshLegacyFingerprint()
+      if (root.associationsReloadPending) root.loadAssociations()
+    }
+  }
+
   // ---- Accounts ----
 
   Process {
@@ -6966,11 +7046,14 @@ Item {
       if (exitCode !== 0) {
         console.warn("qs-bitwarden-cli: could not save learned suggestions (exit " + exitCode + ")")
       }
-      if (root.associationsWritePending) {
+      // Never re-run with nothing to write: a lock empties the payload, and
+      // an empty write would replace the file with nothing.
+      if (root.associationsWritePending && root.pendingAssociationsJson !== "") {
         root.associationsWritePending = false
         associationsWriteProc.running = true
         return
       }
+      root.associationsWritePending = false
       root.pendingAssociationsJson = ""
     }
   }

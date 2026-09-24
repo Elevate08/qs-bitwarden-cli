@@ -320,6 +320,22 @@ check("a probe that finds the lock's scrub in its way runs once the scrub is don
 check("a logout sweep deferred behind a writer is retried until it runs",
   /credentialClearRetry\.restart\(\)/.test(body("requestAllCredentialClear"))
     && /id: credentialClearRetry[\s\S]{0,200}root\.requestAllCredentialClear\(\)/.test(src), body("requestAllCredentialClear"))
+// Races between a switch and keyring work still running for the account left.
+check("a session clear names the account it is for, and queues behind a running one",
+  /var target = Model\.isAccountSlot\(slot\) \? slot : activeSlot/.test(body("requestSessionCredentialClear"))
+    && /keyringClearProc\.command = Model\.keyringClearCommand\(target\)/.test(body("requestSessionCredentialClear"))
+    && /sessionClearSlots\.concat\(\[target\]\)/.test(body("requestSessionCredentialClear")), body("requestSessionCredentialClear"))
+check("a suggestions write owed to the account being left is dropped",
+  /associationsWritePending = false/.test(leave), leave)
+check("and a write is never re-run with nothing to write",
+  /associationsWritePending && root\.pendingAssociationsJson !== ""/.test(src), "")
+check("a suggestions read that finds its process busy is asked again",
+  /associationsReloadPending = true/.test(body("loadAssociations"))
+    && /root\.associationsReloadPending\) root\.loadAssociations\(\)/.test(src), body("loadAssociations"))
+check("legacy checks drop an answer for an account no longer active",
+  /pinCheckSlot !== activeSlot/.test(body("onPinConfiguredChecked"))
+    && /masterCheckSlot !== activeSlot/.test(body("onFingerprintStoredChecked"))
+    && /hasSlot !== vault\.activeSlot/.test(fs.readFileSync(path.join(repoRoot, "FidoUnlock.qml"), "utf8")), "")
 check("the probes of the account being left are stopped before the lock borrows them",
   leave.indexOf("statusRefreshPending = true") !== -1 && leave.indexOf("statusRefreshPending = true") < leave.indexOf("dropVaultState()"), leave)
 
