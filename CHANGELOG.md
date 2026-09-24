@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.11.0] - 2026-09-24
+
+### Added
+
+- **Several accounts at once.** The panel holds up to ten Bitwarden accounts
+  side by side. **Add Account** signs another one in without signing the
+  first out, and **Switch Account** (on the locked screen, and the account
+  button in the header) moves between them. Each account keeps its own
+  sign-in and its own PIN, fingerprint and FIDO2 unlock, so switching never
+  means a master password, a two-step code or setting quick unlock up again.
+  The same finger or key unlocks every account; nothing is re-enrolled.
+  Only one account is unlocked at a time: switching locks the one being left,
+  drops its items from memory and tells the SSH agent the account changed.
+
+  `bw` keeps one account per data directory, so each account added beside the
+  first gets a private one under `~/.local/share/qs-bitwarden-cli/accounts/`,
+  given to `bw` in `BITWARDENCLI_APPDATA_DIR`, and its keyring entries are
+  named with its slot (`unlock_envelope@<slot>`). The first account stays in
+  `bw`'s own directory under the names it always had, so upgrading changes
+  nothing for it and a terminal `bw` still sees it. The IPC target gains
+  `accounts` and `switchAccount <email>`.
+
+### Changed
+
+- **Log Out signs out of the account on screen only.** It used to clear every
+  keyring entry the plugin had written; it now clears that account's entries,
+  learned suggestions and data directory, and moves to the next account. The
+  locked screen's **Switch / Log Out** is now two buttons, **Switch Account**
+  (or **Add Account** with one account) and **Log Out**.
+
+- **Learned suggestions are kept per account**, in
+  `associations@<slot>.json` for an account added beside the first.
+
+- **Remove Plugin Data also removes the accounts added in the panel**, whose
+  sign-ins live in the plugin's data directory. `bw`'s own sign-in is left
+  alone, as before.
+
 ## [1.10.1] - 2026-09-23
 
 ### Security

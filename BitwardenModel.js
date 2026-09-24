@@ -66,6 +66,286 @@ function shellQuote(value) {
   return "'" + String(value || "").replace(/'/g, "'\\''") + "'"
 }
 
+// -------------------------------------------------------------------------
+// Accounts
+// -------------------------------------------------------------------------
+//
+// `bw` holds one account per data directory, so each account the panel knows
+// lives in a slot: "default" is bw's own directory (the account a terminal
+// `bw` sees, and the only one before multi-account), any other slot a private
+// directory named by 16 hex digits, given to bw in BITWARDENCLI_APPDATA_DIR.
+// A slot's keyring entries are the legacy names with "@<slot>" appended, so
+// the default slot keeps its entries as they are, and no lookup for one slot
+// can match another's (secret-tool matches attributes exactly).
+var DEFAULT_ACCOUNT_SLOT = "default"
+var ACCOUNT_SLOT_RE = /^[0-9a-f]{16}$/
+var APPDATA_ENV = "BITWARDENCLI_APPDATA_DIR"
+var ACCOUNTS_ENV = "QSBW_ACCOUNTS"
+var ACCOUNTS_VERSION = 1
+var MAX_ACCOUNTS = 10
+var MAX_ACCOUNTS_BYTES = 64 * 1024
+var ACCOUNTS_SUBDIR = "qs-bitwarden-cli/accounts"
+var ACCOUNTS_DIR = "${XDG_DATA_HOME:-$HOME/.local/share}/" + ACCOUNTS_SUBDIR
+
+function defaultAccountSlot() { return DEFAULT_ACCOUNT_SLOT }
+function appDataEnvVar() { return APPDATA_ENV }
+function accountsEnvVar() { return ACCOUNTS_ENV }
+function maxAccounts() { return MAX_ACCOUNTS }
+
+function isAccountSlot(slot) {
+  return slot === DEFAULT_ACCOUNT_SLOT || ACCOUNT_SLOT_RE.test(String(slot))
+}
+
+// Anything that is not a slot means the default one, which is what every
+// caller got before slots existed.
+function accountSlot(slot) {
+  return typeof slot === "string" && isAccountSlot(slot) ? slot : DEFAULT_ACCOUNT_SLOT
+}
+
+function keyringEntryName(base, slot) {
+  var s = accountSlot(slot)
+  return s === DEFAULT_ACCOUNT_SLOT ? base : base + "@" + s
+}
+
+// The slot's bw data directory, or "" for the default slot (bw's own). Built
+// from the caller's environment, since a Process environment is not a shell.
+function accountAppDataDir(slot, xdgDataHome, home) {
+  var s = accountSlot(slot)
+  if (s === DEFAULT_ACCOUNT_SLOT) return ""
+  var base = String(xdgDataHome || "")
+  if (!base || base.charAt(0) !== "/") {
+    var h = String(home || "")
+    if (!h || h.charAt(0) !== "/") return ""
+    base = h.replace(/\/+$/, "") + "/.local/share"
+  }
+  return base.replace(/\/+$/, "") + "/" + ACCOUNTS_SUBDIR + "/" + s
+}
+
+// For scripts not started with the vault's environment (a terminal login):
+// the same directory, derived in the shell.
+function accountAppDataExport(slot) {
+  var s = accountSlot(slot)
+  if (s === DEFAULT_ACCOUNT_SLOT) return ""
+  return "export " + APPDATA_ENV + "=\"" + ACCOUNTS_DIR + "/" + s + "\"; "
+}
+
+// bw creates its data directory with its default umask; create a slot's
+// first, private, and refuse a symlink in its place.
+function appDataDirPrelude() {
+  return "if [ -n \"${" + APPDATA_ENV + ":-}\" ]; then "
+    + "__acct_parent=\"$(dirname -- \"$" + APPDATA_ENV + "\")\"; "
+    + "if [ -L \"$__acct_parent\" ]; then exit 1; fi; "
+    + "(umask 077 && mkdir -p -- \"$__acct_parent\") || exit 1; "
+    + "__acct_dir=\"$" + APPDATA_ENV + "\"; " + privateDirScript("__acct_dir")
+    + "fi; "
+}
+
+// A fresh slot not already in `taken`. Not a secret, so Math.random is enough.
+function newAccountSlot(taken) {
+  var used = {}
+  for (var i = 0; taken && i < taken.length; i++) used[taken[i]] = true
+  for (var attempt = 0; attempt < 32; attempt++) {
+    var slot = ""
+    while (slot.length < 16) slot += Math.floor(Math.random() * 16).toString(16)
+    if (!used[slot]) return slot
+  }
+  return ""
+}
+
+function emptyAccountRegistry() {
+  return { version: ACCOUNTS_VERSION, active: DEFAULT_ACCOUNT_SLOT, accounts: [] }
+}
+
+function cleanAccountText(value, max) {
+  return String(value === undefined || value === null ? "" : value)
+    .replace(/[\x00-\x1f\x7f]/g, "").slice(0, max)
+}
+
+// The registry file: which slots hold which account, and the active one.
+// Nothing in it is secret; anything malformed is dropped rather than trusted.
+function parseAccountRegistry(raw) {
+  var parsed = null
+  try { parsed = JSON.parse(String(raw || "")) } catch (e) { parsed = null }
+  var out = emptyAccountRegistry()
+  if (!parsed || typeof parsed !== "object" || Number(parsed.version) !== ACCOUNTS_VERSION) return out
+  var seen = {}
+  var list = Array.isArray(parsed.accounts) ? parsed.accounts : []
+  for (var i = 0; i < list.length && out.accounts.length < MAX_ACCOUNTS; i++) {
+    var a = list[i]
+    if (!a || typeof a !== "object" || typeof a.slot !== "string" || !isAccountSlot(a.slot)) continue
+    if (seen[a.slot]) continue
+    seen[a.slot] = true
+    out.accounts.push({
+      slot: a.slot,
+      email: cleanAccountText(a.email, 320),
+      userId: cleanAccountText(a.userId, 128),
+      server: cleanAccountText(a.server, 512),
+      lastUsed: Math.max(0, Math.floor(Number(a.lastUsed)) || 0)
+    })
+  }
+  if (typeof parsed.active === "string" && isAccountSlot(parsed.active)) out.active = parsed.active
+  return out
+}
+
+function serializeAccountRegistry(registry) {
+  var r = registry || emptyAccountRegistry()
+  return JSON.stringify({ version: ACCOUNTS_VERSION, active: accountSlot(r.active), accounts: r.accounts || [] })
+}
+
+function copyAccountRegistry(registry) {
+  var r = registry || emptyAccountRegistry()
+  var accounts = []
+  for (var i = 0; r.accounts && i < r.accounts.length; i++) {
+    var a = r.accounts[i]
+    accounts.push({ slot: a.slot, email: a.email, userId: a.userId, server: a.server, lastUsed: a.lastUsed })
+  }
+  return { version: ACCOUNTS_VERSION, active: accountSlot(r.active), accounts: accounts }
+}
+
+function registryAccount(registry, slot) {
+  var list = registry && registry.accounts ? registry.accounts : []
+  for (var i = 0; i < list.length; i++) if (list[i].slot === slot) return list[i]
+  return null
+}
+
+function registryHasAccount(registry, slot) {
+  return registryAccount(registry, slot) !== null
+}
+
+// Records what `bw status` says the slot holds. Another slot already holding
+// the same account (same user on the same server) is retired: two sign-ins of
+// one account would only disagree. Returns { registry, retired: [slots] }.
+function registryNoteAccount(registry, slot, info, now) {
+  var r = copyAccountRegistry(registry)
+  var s = accountSlot(slot)
+  var userId = cleanAccountText(info && info.userId, 128)
+  var server = cleanAccountText(info && info.server, 512)
+  var retired = []
+  var kept = []
+  for (var i = 0; i < r.accounts.length; i++) {
+    var a = r.accounts[i]
+    if (a.slot !== s && userId && a.userId === userId && a.server === server) retired.push(a.slot)
+    else kept.push(a)
+  }
+  r.accounts = kept
+  var entry = registryAccount(r, s)
+  if (!entry) {
+    if (r.accounts.length >= MAX_ACCOUNTS) return { registry: registry, retired: [], full: true }
+    entry = { slot: s, email: "", userId: "", server: "", lastUsed: 0 }
+    r.accounts.push(entry)
+  }
+  entry.email = cleanAccountText(info && info.email, 320) || entry.email
+  entry.userId = userId || entry.userId
+  entry.server = server
+  entry.lastUsed = Math.max(0, Math.floor(Number(now)) || 0)
+  r.active = s
+  return { registry: r, retired: retired, full: false }
+}
+
+function registryRemoveAccount(registry, slot) {
+  var r = copyAccountRegistry(registry)
+  r.accounts = r.accounts.filter(function(a) { return a.slot !== slot })
+  return r
+}
+
+function registrySetActive(registry, slot, now) {
+  var r = copyAccountRegistry(registry)
+  r.active = accountSlot(slot)
+  var entry = registryAccount(r, r.active)
+  if (entry && now !== undefined) entry.lastUsed = Math.max(0, Math.floor(Number(now)) || 0)
+  return r
+}
+
+// Where a new sign-in goes: the default slot while nothing holds it, so a
+// single account always lives where a terminal `bw` finds it.
+function slotForNewAccount(registry) {
+  if (!registryHasAccount(registry, DEFAULT_ACCOUNT_SLOT)) return DEFAULT_ACCOUNT_SLOT
+  var taken = (registry.accounts || []).map(function(a) { return a.slot })
+  return newAccountSlot(taken)
+}
+
+// The account to show after `leaving` goes away: the most recently used
+// other one, or "" if none.
+function registryNextAccount(registry, leaving) {
+  var best = null
+  var list = registry && registry.accounts ? registry.accounts : []
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].slot === leaving) continue
+    if (!best || list[i].lastUsed > best.lastUsed) best = list[i]
+  }
+  return best ? best.slot : ""
+}
+
+function accountServerLabel(server) {
+  var s = String(server || "").trim().replace(/\/+$/, "")
+  if (!s || s === BITWARDEN_US_SERVER || s === "https://bitwarden.com") return ""
+  if (s === BITWARDEN_EU_SERVER || s === "https://bitwarden.eu") return "EU"
+  return s.replace(/^https?:\/\//i, "")
+}
+
+// Rows for the account picker, sorted by email; nothing secret.
+function accountRows(registry, activeSlot) {
+  var list = registry && registry.accounts ? registry.accounts.slice() : []
+  list.sort(function(a, b) {
+    var x = String(a.email).toLowerCase()
+    var y = String(b.email).toLowerCase()
+    return x < y ? -1 : (x > y ? 1 : (a.slot < b.slot ? -1 : 1))
+  })
+  return list.map(function(a) {
+    var server = accountServerLabel(a.server)
+    return {
+      slot: a.slot,
+      email: a.email || "Account",
+      server: server,
+      label: (a.email || "Account") + (server ? " (" + server + ")" : ""),
+      active: a.slot === activeSlot
+    }
+  })
+}
+
+// A slot that another sign-in replaced: its keyring entries and learned
+// suggestions too (a logout clears those itself first).
+function accountSlotRetireCommand(slot) {
+  var s = accountSlot(slot)
+  var script = nestedScript(keyringClearAllCommand(s)) + "; "
+    + nestedScript(associationsClearCommand(s)) + "; "
+    + nestedScript(accountSlotRemoveCommand(s))
+  return ["bash", "-c", script]
+}
+
+function accountRegistryReadCommand() {
+  var script = "d=\"" + ACCOUNTS_DIR + "\"; f=\"$d/registry.json\"; "
+    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
+    + "head -c " + MAX_ACCOUNTS_BYTES + " \"$f\" 2>/dev/null || printf '{}'; else printf '{}'; fi"
+  return ["bash", "-c", script]
+}
+
+// Payload in the environment; written to a private temp file and renamed,
+// like the learned associations.
+function accountRegistryWriteCommand() {
+  var script = "set -e; __parent=\"$(dirname -- \"" + ACCOUNTS_DIR + "\")\"; "
+    + "[ ! -L \"$__parent\" ]; (umask 077 && mkdir -p -- \"$__parent\"); "
+    + "d=\"" + ACCOUNTS_DIR + "\"; " + privateDirScript("d")
+    + "umask 077; tmp=$(mktemp -- \"$d/.registry.XXXXXXXX\"); "
+    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
+    + "printf '%s' \"$" + ACCOUNTS_ENV + "\" > \"$tmp\"; chmod 600 \"$tmp\"; "
+    + "mv -fT -- \"$tmp\" \"$d/registry.json\"; trap - EXIT HUP INT TERM"
+  return ["bash", "-c", script]
+}
+
+// Signs a slot out of bw and deletes its data directory. The default slot's
+// directory is bw's own and is never deleted, only signed out of.
+function accountSlotRemoveCommand(slot) {
+  var s = accountSlot(slot)
+  var script = accountAppDataExport(s) + "bw logout >/dev/null 2>&1; "
+  if (s !== DEFAULT_ACCOUNT_SLOT) {
+    script += "d=\"" + ACCOUNTS_DIR + "\"; "
+      + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -e \"$d/" + s + "\" ]; then rm -rf -- \"$d/" + s + "\"; fi; "
+  }
+  script += "exit 0"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
 // Secrets never go in argv. The session token travels in BW_SESSION.
 const SESSION_ENV = "BW_SESSION"
 
@@ -332,8 +612,9 @@ function authFifoPrelude(channel) {
   return script
 }
 
-function supervisedProcessCommand(command) {
-  var script = supervisedProcessPrelude("")
+// `prelude` runs first, outside the supervised job (appDataDirPrelude()).
+function supervisedProcessCommand(command, prelude) {
+  var script = (prelude || "") + supervisedProcessPrelude("")
   script += supervisedProcessRun(command)
   return ["bash", "-c", script]
 }
@@ -347,8 +628,8 @@ function supervisedProcessRun(command) {
   return script
 }
 
-function supervisedAuthCommand(channel, command) {
-  var script = authFifoPrelude(channel)
+function supervisedAuthCommand(channel, command, prelude) {
+  var script = (prelude || "") + authFifoPrelude(channel)
   // `set -m` gives bw its own process group; the interruptible `wait` lets the
   // signal traps run while bw blocks on the FIFO.
   script += supervisedProcessRun(command)
@@ -466,7 +747,7 @@ function emailLoginPrewarmCommand(email, hasCode, serverUrl, method) {
   if (isTwoFactorMethod(method)) command += " --method " + String(method)
   if (hasCode) command += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
   command += " --raw | head -c " + MAX_TOKEN_BYTES
-  return supervisedAuthCommand("login", command)
+  return supervisedAuthCommand("login", command, appDataDirPrelude())
 }
 
 // Bounds the one interactive login so one that never prompts cannot hold the
@@ -485,7 +766,7 @@ function deviceVerificationLoginCommand(email, serverUrl, method) {
     + " --passwordfile \"$__auth_fifo\""
   if (isTwoFactorMethod(method)) command += " --method " + String(method)
   command += " --raw | head -c " + MAX_TOKEN_BYTES
-  return supervisedAuthCommand("login", command)
+  return supervisedAuthCommand("login", command, appDataDirPrelude())
 }
 
 // stderr then stdout, lower-cased, for matching bw's messages.
@@ -630,7 +911,7 @@ function apiKeyLoginCommand(serverUrl) {
   var script = serverConfigPrefix(serverUrl)
   script += "bw login --apikey >/dev/null 2>&1 && "
   script += "bw unlock --passwordenv " + PASSWORD_ENV + " --raw | head -c " + MAX_TOKEN_BYTES
-  return supervisedProcessCommand(script)
+  return supervisedProcessCommand(script, appDataDirPrelude())
 }
 
 // -------------------------------------------------------------------------
@@ -646,11 +927,12 @@ function apiKeyLoginCommand(serverUrl) {
 var HANDOFF_BASENAME = "session-handoff"
 
 // `mode` is "login" or "unlock"; the panel already knows which, so no slow
-// `bw status` probe first.
-function terminalLoginCommand(mode, serverUrl) {
+// `bw status` probe first. `slot` is the account's (a detached terminal gets
+// none of the vault's environment).
+function terminalLoginCommand(mode, serverUrl, slot) {
   var verb = (mode === "unlock") ? "unlock" : "login"
   var configureServer = verb === "login" ? serverConfigPrefix(serverUrl) : ""
-  var inner = "set -u; "
+  var inner = "set -u; " + accountAppDataExport(slot) + appDataDirPrelude()
     + "d=\"${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR -- refusing to write a session key}/"
     + RUNTIME_SUBDIR + "\"; f=\"$d/" + HANDOFF_BASENAME + "\"; "
     // umask before mkdir so the dir is created 0700; a failed chmod means the
@@ -1160,8 +1442,8 @@ function deleteItemCommand(itemId, typeCode) {
 const KEYRING_SESSION_COLLECTION = "session"
 const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
 
-function keyringStoreCommand() {
-  var attrs = keyringAttributes(KEYRING_ACCOUNT)
+function keyringStoreCommand(slot) {
+  var attrs = keyringAttributes(keyringEntryName(KEYRING_ACCOUNT, slot))
   // Only the boot id is read in the script; the token comes from the env.
   var script = "store() { printf '%s %s' \"$(cat " + shellQuote(BOOT_ID_PATH) + ")\" \"$"
     + KEYRING_SECRET_ENV + "\" | secret-tool store \"$@\" --label="
@@ -1170,8 +1452,8 @@ function keyringStoreCommand() {
   return ["bash", "-c", script]
 }
 
-function keyringLookupCommand() {
-  var attrs = keyringAttributes(KEYRING_ACCOUNT)
+function keyringLookupCommand(slot) {
+  var attrs = keyringAttributes(keyringEntryName(KEYRING_ACCOUNT, slot))
   var script = "boot=$(cat " + shellQuote(BOOT_ID_PATH) + " 2>/dev/null | head -c 128) || exit 0; "
     + "[ -n \"$boot\" ] || exit 0; "
     + "stored=$(secret-tool lookup" + attrs + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES + ") || exit 0; "
@@ -1183,8 +1465,8 @@ function keyringLookupCommand() {
   return ["bash", "-c", cappedScript(script)]
 }
 
-function keyringClearCommand() {
-  return keyringClearEntryCommand(KEYRING_ACCOUNT)
+function keyringClearCommand(slot) {
+  return keyringClearEntryCommand(keyringEntryName(KEYRING_ACCOUNT, slot))
 }
 
 // -------------------------------------------------------------------------
@@ -1195,26 +1477,26 @@ function keyringClearCommand() {
 // in plaintext keyring entries and PIN unlock kept an AES-CBC blob. They are
 // now only read, migrated into the envelope and deleted.
 
-function keyringLookupMasterPasswordCommand() {
-  return keyringLookupEntryCommand(KEYRING_MASTER)
+function keyringLookupMasterPasswordCommand(slot) {
+  return keyringLookupEntryCommand(keyringEntryName(KEYRING_MASTER, slot))
 }
 
-function keyringClearMasterPasswordCommand() {
-  return keyringClearEntryCommand(KEYRING_MASTER)
+function keyringClearMasterPasswordCommand(slot) {
+  return keyringClearEntryCommand(keyringEntryName(KEYRING_MASTER, slot))
 }
 
 // Presence check that never prints the secret.
-function keyringHasMasterPasswordCommand() {
-  return keyringHasEntryCommand(KEYRING_MASTER)
+function keyringHasMasterPasswordCommand(slot) {
+  return keyringHasEntryCommand(keyringEntryName(KEYRING_MASTER, slot))
 }
 
-function keyringClearFidoPasswordCommand() {
-  return keyringClearEntryCommand(KEYRING_FIDO)
+function keyringClearFidoPasswordCommand(slot) {
+  return keyringClearEntryCommand(keyringEntryName(KEYRING_FIDO, slot))
 }
 
 // Presence check that never puts the secret on stdout.
-function keyringHasFidoPasswordCommand() {
-  return keyringHasEntryCommand(KEYRING_FIDO)
+function keyringHasFidoPasswordCommand(slot) {
+  return keyringHasEntryCommand(keyringEntryName(KEYRING_FIDO, slot))
 }
 
 // -------------------------------------------------------------------------
@@ -1259,19 +1541,19 @@ function isPinWeak(pin) {
 }
 
 // Decrypts the legacy PIN blob. Non-zero exit: wrong PIN or no blob.
-function pinUnlockCommand() {
-  var script = "secret-tool lookup" + keyringAttributes(KEYRING_PIN) + " 2>/dev/null | head -c 8192"
+function pinUnlockCommand(slot) {
+  var script = "secret-tool lookup" + keyringAttributes(keyringEntryName(KEYRING_PIN, slot)) + " 2>/dev/null | head -c 8192"
     + " | openssl enc -d -aes-256-cbc -pbkdf2 -iter " + PIN_ITERATIONS
     + " -md sha256 -pass env:" + PIN_ENV + " -base64 -A | head -c " + MAX_TOKEN_BYTES
   return ["bash", "-c", cappedScript(script)]
 }
 
-function keyringClearPinCommand() {
-  return keyringClearEntryCommand(KEYRING_PIN)
+function keyringClearPinCommand(slot) {
+  return keyringClearEntryCommand(keyringEntryName(KEYRING_PIN, slot))
 }
 
-function keyringHasPinCommand() {
-  return keyringHasEntryCommand(KEYRING_PIN)
+function keyringHasPinCommand(slot) {
+  return keyringHasEntryCommand(keyringEntryName(KEYRING_PIN, slot))
 }
 
 // -------------------------------------------------------------------------
@@ -1328,6 +1610,7 @@ function envelopeArgsOk(tool, account) {
   return typeof tool === "string" && tool.charAt(0) === "/"
     && account && typeof account.id === "string" && account.id !== ""
     && typeof account.server === "string"
+    && (account.slot === undefined || isAccountSlot(account.slot))
     && !/[\x00-\x1f\x7f]/.test(account.id + account.server)
 }
 
@@ -1336,10 +1619,11 @@ function envelopeAccountArgs(account) {
 }
 
 // Functions every envelope script starts with.
-function envelopePrelude(tool) {
+// `slot` picks the account's envelope entry; see keyringEntryName().
+function envelopePrelude(tool, slot) {
   return "__tool=" + shellQuote(tool) + "; "
     + "__name=" + shellQuote(ENVELOPE_CREDENTIAL_NAME) + "; "
-    + "__lookup() { secret-tool lookup" + keyringAttributes(KEYRING_ENVELOPE)
+    + "__lookup() { secret-tool lookup" + keyringAttributes(keyringEntryName(KEYRING_ENVELOPE, slot))
     + " 2>/dev/null | head -c " + MAX_ENVELOPE_SEALED_BYTES + "; }; "
     + "__unseal() { printf '%s' \"$1\" | systemd-creds --user decrypt --name=\"$__name\" - - 2>/dev/null; }; "
     + "__seal() { systemd-creds --user encrypt --name=\"$__name\" - - 2>/dev/null; }; "
@@ -1367,7 +1651,7 @@ function envelopePrelude(tool) {
     + "<(__unseal \"$__new\" | QSBW_UNLOCK_KEY=\"$__vk\" \"$__tool\" open \"${@:2}\") "
     + "|| exit " + ENVELOPE_EXIT.verify + "; }; "
     + "__store() { printf '%s' \"$__new\" | secret-tool store --label=" + shellQuote(ENVELOPE_LABEL)
-    + keyringAttributes(KEYRING_ENVELOPE) + " || exit " + ENVELOPE_EXIT.store + "; }; "
+    + keyringAttributes(keyringEntryName(KEYRING_ENVELOPE, slot)) + " || exit " + ENVELOPE_EXIT.store + "; }; "
 }
 
 function envelopeArgon2Args(saltVar) {
@@ -1382,9 +1666,9 @@ function envelopeNewKey(secretExpr, saltVar) {
 
 // Secret-free summary: enabled methods, staleness, FIDO2 credentials and
 // salts. Exit 10: no envelope.
-function unlockEnvelopeInspectCommand(tool) {
+function unlockEnvelopeInspectCommand(tool, slot) {
   if (typeof tool !== "string" || tool.charAt(0) !== "/") return envelopeRefused()
-  var script = envelopePrelude(tool) + "__load; printf '%s' \"$__summary\""
+  var script = envelopePrelude(tool, slot) + "__load; printf '%s' \"$__summary\""
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
@@ -1396,7 +1680,7 @@ function unlockEnvelopeInspectCommand(tool) {
 function unlockEnvelopeOpenCommand(tool, account, via) {
   if (!envelopeArgsOk(tool, account) || !via) return envelopeRefused()
   var open = "\"$__tool\" open" + envelopeAccountArgs(account)
-  var script = envelopePrelude(tool) + "__load; "
+  var script = envelopePrelude(tool, account.slot) + "__load; "
   if (via.kind === "master" || via.kind === "pin") {
     var secret = via.kind === "master" ? KEYRING_SECRET_ENV : PIN_ENV
     script += "__k=\"$(__wrap_key '." + via.kind + "' \"$" + secret + "\")\" || exit $?; "
@@ -1417,7 +1701,7 @@ function unlockEnvelopeOpenCommand(tool, account, via) {
 // replacing any existing one. The only writer of the stored password.
 function unlockEnvelopeCreateCommand(tool, account) {
   if (!envelopeArgsOk(tool, account)) return envelopeRefused()
-  var script = envelopePrelude(tool)
+  var script = envelopePrelude(tool, account.slot)
     + "__s=\"$(__salt)\"; "
     + "__k=\"$(" + envelopeNewKey("\"$" + KEYRING_SECRET_ENV + "\"", "__s") + ")\" || exit "
     + ENVELOPE_EXIT.kdf + "; "
@@ -1506,7 +1790,7 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
     return envelopeRefused()
   }
 
-  var script = envelopePrelude(tool) + "__load; " + pre
+  var script = envelopePrelude(tool, account.slot) + "__load; " + pre
     + "__new=\"$(__unseal \"$__sealed\" | " + transform + " | __seal)\" || exit $?; "
     + "__verify_account " + shellQuote(account.id) + " " + shellQuote(account.server) + "; "
     + verifyOpen
@@ -1561,7 +1845,7 @@ function legacyMigrationCommand(tool, account, legacyAccount, addOp, passwordFro
   if (!envelopeArgsOk(tool, account)) return envelopeRefused()
   var script = ""
   if (passwordFromKeyring) {
-    script += "__pw=\"$(" + keyringReadScript(legacyAccount) + ")\"; "
+    script += "__pw=\"$(" + keyringReadScript(keyringEntryName(legacyAccount, account.slot)) + ")\"; "
       + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
       + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; unset __pw; "
   } else {
@@ -1578,7 +1862,8 @@ function legacyMigrationCommand(tool, account, legacyAccount, addOp, passwordFro
     + "*) exit \"$__rc\" ;; esac; "
     + nestedScript(unlockEnvelopeUpdateCommand(tool, account, addOp)) + " || exit $?; "
     // The update verified the new wrap before storing, so this is safe.
-    + "secret-tool clear" + keyringAttributes(legacyAccount) + " >/dev/null 2>&1; exit 0"
+    + "secret-tool clear" + keyringAttributes(keyringEntryName(legacyAccount, account.slot))
+    + " >/dev/null 2>&1; exit 0"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
@@ -1657,7 +1942,7 @@ function fidoLegacyUnlockCommand(tool, account, target) {
   if (!envelopeArgsOk(tool, account) || !fidoTargetOk(target)) return envelopeRefused()
   var migrate = legacyMigrationCommand(tool, account, KEYRING_FIDO,
     { kind: "add-fido", cred: target.cred, rp: target.rp, saltFromEnv: true }, false)
-  var script = "__pw=\"$(" + keyringReadScript(KEYRING_FIDO) + ")\"; "
+  var script = "__pw=\"$(" + keyringReadScript(keyringEntryName(KEYRING_FIDO, account.slot)) + ")\"; "
     + "[ -n \"$__pw\" ] || exit " + LEGACY_MIGRATION_EXIT.none + "; "
     + fidoNewSaltScript() + fidoAssertScript(target, "\"$" + FIDO_SALT_ENV + "\"")
     + "export " + KEYRING_SECRET_ENV + "=\"$__pw\"; "
@@ -1672,8 +1957,9 @@ function fidoLegacyUnlockCommand(tool, account, target) {
 // Clear everything on logout
 // -------------------------------------------------------------------------
 //
-// Every entry the plugin has ever written, legacy ones included, is cleared
-// regardless of the panel's flags (which reflect settings, not the keyring).
+// Every entry the plugin has ever written for the account's slot, legacy ones
+// included, is cleared regardless of the panel's flags (which reflect
+// settings, not the keyring). Other accounts' entries are left alone.
 // `secret-tool clear` skips locked matches and exits 1 on absence, so each
 // account is searched, unlocked, cleared and searched again; logout succeeds
 // only if nothing remains.
@@ -1688,18 +1974,19 @@ function keyringSearchStateScript(account, resultVar) {
     + "printf ':%s' \"${__keyring_pipe[0]}\"); "
 }
 
-function keyringClearAllCommand() {
+function keyringClearAllCommand(slot) {
   var script = "rc=0; "
   for (var i = 0; i < KEYRING_ALL_ACCOUNTS.length; i++) {
-    var attrs = keyringAttributes(KEYRING_ALL_ACCOUNTS[i])
-    script += keyringSearchStateScript(KEYRING_ALL_ACCOUNTS[i], "__keyring_before")
+    var entry = keyringEntryName(KEYRING_ALL_ACCOUNTS[i], slot)
+    var attrs = keyringAttributes(entry)
+    script += keyringSearchStateScript(entry, "__keyring_before")
     script += "__keyring_count=${__keyring_before%%:*}; "
       + "__keyring_search_rc=${__keyring_before##*:}; "
       + "if [ \"$__keyring_search_rc\" -ne 0 ]; then rc=1; "
       + "elif [ \"$__keyring_count\" -gt 0 ]; then "
       + "secret-tool search --all --unlock" + attrs + " >/dev/null 2>&1 || true; "
       + "secret-tool clear" + attrs + " >/dev/null 2>&1 || true; "
-    script += keyringSearchStateScript(KEYRING_ALL_ACCOUNTS[i], "__keyring_after")
+    script += keyringSearchStateScript(entry, "__keyring_after")
     script += "__keyring_count=${__keyring_after%%:*}; "
       + "__keyring_search_rc=${__keyring_after##*:}; "
       + "if [ \"$__keyring_search_rc\" -ne 0 ] || [ \"$__keyring_count\" -ne 0 ]; then rc=1; fi; fi; "
@@ -3118,15 +3405,21 @@ function associationsEnvVar() {
   return ASSOC_ENV
 }
 
-function associationsReadCommand() {
-  var script = "d=\"" + ASSOC_DIR + "\"; f=\"$d/associations.json\"; "
+// One file per account slot: item ids mean nothing in another vault.
+function associationsFileName(slot) {
+  var s = accountSlot(slot)
+  return s === DEFAULT_ACCOUNT_SLOT ? "associations.json" : "associations@" + s + ".json"
+}
+
+function associationsReadCommand(slot) {
+  var script = "d=\"" + ASSOC_DIR + "\"; f=\"$d/" + associationsFileName(slot) + "\"; "
     + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
     + "head -c " + MAX_ASSOC_BYTES + " \"$f\" 2>/dev/null || printf '{}'; else printf '{}'; fi"
   return ["bash", "-c", script]
 }
 
 // Payload in the environment (Process.write() cannot send EOF).
-function associationsWriteCommand() {
+function associationsWriteCommand(slot) {
   // Write a private temp file and rename it, so a symlink is replaced, not
   // followed, and the file is always 0600.
   var script = "set -e; d=\"" + ASSOC_DIR + "\"; "
@@ -3134,15 +3427,15 @@ function associationsWriteCommand() {
     + "umask 077; tmp=$(mktemp -- \"$d/.associations.XXXXXXXX\"); "
     + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
     + "printf '%s' \"$" + ASSOC_ENV + "\" > \"$tmp\"; chmod 600 \"$tmp\"; "
-    + "mv -fT -- \"$tmp\" \"$d/associations.json\"; trap - EXIT HUP INT TERM"
+    + "mv -fT -- \"$tmp\" \"$d/" + associationsFileName(slot) + "\"; trap - EXIT HUP INT TERM"
   return ["bash", "-c", script]
 }
 
 // Cleared on logout: it records the sites the account has credentials for.
 // The panel waits for any in-flight write first so it cannot recreate the file.
-function associationsClearCommand() {
+function associationsClearCommand(slot) {
   var script = "d=\"" + ASSOC_DIR + "\"; "
-    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ]; then rm -f -- \"$d/associations.json\" 2>/dev/null; fi; exit 0"
+    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ]; then rm -f -- \"$d/" + associationsFileName(slot) + "\" 2>/dev/null; fi; exit 0"
   return ["bash", "-c", script]
 }
 
@@ -3862,8 +4155,9 @@ function uwsmWriteCommand() {
 }
 
 // Removes everything the plugin stores outside its folder (keyring, state,
-// data), since `omarchy plugin remove` has no uninstall hook. Leaves the vault
-// session and shell.json alone.
+// data), since `omarchy plugin remove` has no uninstall hook. Leaves bw's own
+// sign-in (the default account) and shell.json alone; the other accounts'
+// sign-ins live in the plugin's data and go with it.
 function pluginDataRemoveCommand() {
   var script = "test -n \"${HOME:-}\" || exit " + PLUGIN_DATA_EXIT_NO_HOME + "; "
     + "__state=\"${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli\"; "
@@ -3872,6 +4166,9 @@ function pluginDataRemoveCommand() {
     + "__done=''; "
     + "if secret-tool clear service qs-bitwarden-cli 2>/dev/null; then __done=\"$__done keyring\"; fi; "
     + "if [ -e \"$__state\" ]; then rm -rf -- \"$__state\" && __done=\"$__done state\"; fi; "
+    + "if [ -d \"$__data/accounts\" ] && [ ! -L \"$__data/accounts\" ] "
+    + "&& find \"$__data/accounts\" -mindepth 1 -maxdepth 1 -type d -name '????????????????' | grep -q .; "
+    + "then __done=\"$__done accounts\"; fi; "
     + "if [ -e \"$__data\" ]; then rm -rf -- \"$__data\" && __done=\"$__done data\"; fi; "
     + "printf 'removed%s\\n' \"$__done\""
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
@@ -3892,6 +4189,7 @@ function parsePluginDataRemoval(exitCode, stdout) {
   if (line.indexOf("keyring") >= 0) cleared.push("keyring entries")
   if (line.indexOf("state") >= 0) cleared.push("learned suggestions")
   if (line.indexOf("data") >= 0) cleared.push("exported public keys")
+  if (line.indexOf("accounts") >= 0) cleared.push("the sign-ins of accounts added in the panel")
   if (cleared.length === 0) {
     return { ok: true, message: "Nothing was left to remove." }
   }

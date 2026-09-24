@@ -245,8 +245,7 @@ Panel {
     return self ? self.y + self.height : 0
   }
 
-  // "Forget FIDO2 key" on the locked screen: inline beside Switch / Log Out
-  // when there is a fingerprint button there, else centred below.
+  // "Forget FIDO2 key" on the locked screen, beside Forget Fingerprint.
   component ForgetFidoButton: Button {
     text: "Forget FIDO2 Key"
     iconText: "󰟵"
@@ -464,7 +463,7 @@ Panel {
     open: root.opened
     // The key catcher drives every unlocked screen but the two text-entry
     // ones, and setup (all buttons) outright.
-    focusTarget: root.vault.currentScreen === "setup"
+    focusTarget: (root.vault.currentScreen === "setup" || root.vault.currentScreen === "accounts")
       ? keyCatcher
       : ((root.vault.status === "unlocked"
           && root.vault.currentScreen !== "edit"
@@ -545,6 +544,10 @@ Panel {
           else if (dx !== 0) root.vault.adjustSetting(dx)
           return
         }
+        if (root.vault.currentScreen === "accounts") {
+          if (dy !== 0) root.vault.moveAccountCursor(dy)
+          return
+        }
         // While a filter drawer is open the arrows drive it, not the item list.
         if (root.vault.openFilterGroup !== "" && root.vault.currentScreen === "main") {
           if (dy !== 0) root.vault.moveFilterCursor(dy)
@@ -570,6 +573,10 @@ Panel {
         }
         if (root.vault.currentScreen === "settings") {
           root.vault.activateSettingRow()
+          return
+        }
+        if (root.vault.currentScreen === "accounts") {
+          root.vault.activateAccountRow()
           return
         }
         if (root.vault.openFilterGroup !== "" && root.vault.currentScreen === "main") {
@@ -721,6 +728,16 @@ Panel {
               tooltipText: "Password generator (g)"
               fontFamily: root.fontFamily
               onClicked: root.vault.openGenerator()
+            }
+
+            // Accounts Button
+            PanelActionButton {
+              visible: root.vault.activeScreen !== "accounts" && root.vault.activeScreen !== "setup"
+                && root.vault.accountsLoaded && (root.vault.accountCount > 1 || root.vault.status !== "unauthenticated")
+              iconText: "󰀉"
+              tooltipText: "Accounts"
+              fontFamily: root.fontFamily
+              onClicked: root.vault.openAccounts()
             }
 
             // Settings Button
@@ -1182,6 +1199,91 @@ Panel {
                 enabled: !root.vault.sendBusy
                 onClicked: root.vault.submitCreateSend()
               }
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 0h: ACCOUNTS
+        // -------------------------------------------------------------------
+        Column {
+          visible: root.vault.activeScreen === "accounts"
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSeparator { width: parent.width }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Accounts"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: "Each account keeps its own sign-in and its own PIN, fingerprint and FIDO2 unlock. "
+                + "Only one is unlocked at a time: switching locks the current one."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          Repeater {
+            model: root.vault.accountRows
+            delegate: Button {
+              required property var modelData
+              required property int index
+              width: parent ? parent.width : 0
+              text: modelData.label + (modelData.active ? "  (current)" : "")
+              iconText: modelData.active ? "󰄬" : "󰀄"
+              selected: root.vault.accountIndex === index
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              enabled: root.vault.canChangeAccount()
+              onClicked: root.vault.switchAccount(modelData.slot)
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: root.vault.accountRows.length === 0
+            width: parent.width
+            text: "No accounts yet. Log in to add the first one."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Add Account"
+              iconText: "󰐕"
+              selected: root.vault.accountIndex === root.vault.accountRows.length
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              enabled: root.vault.canChangeAccount() && !root.vault.accountsFull
+              onClicked: root.vault.beginAddAccount()
+            }
+
+            Button {
+              text: "Back"
+              iconText: "󰁍"
+              fontFamily: root.fontFamily
+              onClicked: root.vault.closeAccounts()
             }
           }
         }
@@ -2488,10 +2590,40 @@ Panel {
         // -------------------------------------------------------------------
         Column {
           visible: root.vault.status === "unauthenticated" && root.vault.activeScreen !== "settings" && root.vault.activeScreen !== "setup" && root.vault.activeScreen !== "pin" && root.vault.activeScreen !== "fido" && root.vault.activeScreen !== "fingerprint"
+            && root.vault.activeScreen !== "accounts"
           width: parent.width
           spacing: Style.space(12)
 
           PanelSeparator { width: parent.width }
+
+          // Adding an account: say so, and offer the way back.
+          Row {
+            visible: root.vault.addingAccount || root.vault.accountCount > 0
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - accountBackBtn.width - Style.space(8)
+              text: root.vault.addingAccount ? "Sign in to add another account." : "This account is signed out."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
+
+            Button {
+              id: accountBackBtn
+              text: root.vault.addingAccount && root.vault.slotBeforeAdd !== "" ? "Cancel" : "Accounts"
+              iconText: root.vault.addingAccount && root.vault.slotBeforeAdd !== "" ? "󰅖" : "󰀉"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              enabled: root.vault.canChangeAccount()
+              onClicked: root.vault.addingAccount && root.vault.slotBeforeAdd !== ""
+                ? root.vault.cancelAddAccount() : root.vault.openAccounts()
+            }
+          }
 
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
@@ -2945,6 +3077,7 @@ Panel {
         Column {
           visible: (root.vault.status === "locked" || root.vault.status === "checking")
             && root.vault.currentScreen !== "settings" && root.vault.currentScreen !== "setup" && root.vault.currentScreen !== "pin" && root.vault.currentScreen !== "fido" && root.vault.currentScreen !== "fingerprint"
+            && root.vault.currentScreen !== "accounts"
           width: parent.width
           spacing: Style.space(14)
 
@@ -2961,36 +3094,45 @@ Panel {
             spacing: Style.space(8)
 
             Button {
-              text: "Switch / Log Out"
+              text: root.vault.accountCount > 1 ? "Switch Account" : "Add Account"
+              iconText: "󰀉"
+              tooltipText: root.vault.accountCount > 1
+                ? "Unlock another account; each keeps its own unlock methods"
+                : "Sign in to another account beside this one"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              enabled: root.vault.canChangeAccount()
+              onClicked: root.vault.accountCount > 1 ? root.vault.openAccounts() : root.vault.beginAddAccount()
+            }
+
+            Button {
+              text: "Log Out"
               iconText: "󰍃"
+              tooltipText: "Sign this account out and forget its unlock methods"
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.logoutAccount()
             }
+          }
+
+          // This account's presence methods, on their own row.
+          Row {
+            visible: root.vault.fingerprintStored || root.vault.fidoStored
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(8)
 
             Button {
               visible: root.vault.fingerprintStored
               text: "Forget Fingerprint"
               iconText: "󰈷"
-              tooltipText: "Stop unlocking with fingerprint"
+              tooltipText: "Stop unlocking this account with fingerprint"
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.forgetFingerprintUnlock()
             }
 
-            // In Forget Fingerprint's slot when there is none.
             ForgetFidoButton {
-              visible: root.vault.fidoStored && !root.vault.fingerprintStored
-            }
-          }
-
-          // Only beside Forget Fingerprint: centred under the pair.
-          Row {
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: Style.space(8)
-
-            ForgetFidoButton {
-              visible: root.vault.fidoStored && root.vault.fingerprintStored
+              visible: root.vault.fidoStored
             }
           }
         }

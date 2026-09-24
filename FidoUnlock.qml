@@ -439,7 +439,7 @@ Item {
 
   Process {
     id: hasProc
-    command: Model.keyringHasFidoPasswordCommand()
+    command: Model.keyringHasFidoPasswordCommand(fido.vault ? fido.vault.activeSlot : "")
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: fido.onHasChecked(text)
@@ -458,7 +458,7 @@ Item {
 
   Process {
     id: clearProc
-    command: Model.keyringClearFidoPasswordCommand()
+    command: Model.keyringClearFidoPasswordCommand(fido.vault ? fido.vault.activeSlot : "")
     onExited: function(exitCode) {
       if (fido.clearPending) {
         fido.clearPending = false
