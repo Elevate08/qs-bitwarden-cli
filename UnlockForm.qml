@@ -399,45 +399,18 @@ Column {
     Repeater {
       model: form.availableMethods
 
-      delegate: Button {
-        id: methodTile
+      delegate: ChoiceTile {
         required property string modelData
+        panel: form.panel
         width: (methodRow.width - methodRow.spacing * (form.availableMethods.length - 1))
           / Math.max(1, form.availableMethods.length)
-        height: tileColumn.implicitHeight + Style.space(12)
-        bordered: true
+        glyph: form.methodIcon(modelData)
+        label: form.methodLabel(modelData)
         selected: form.method === modelData
-        accent: Color.accent
-        fontFamily: form.panel.fontFamily
         tooltipText: "Unlock with " + (modelData === "password" ? "your master password"
           : (modelData === "fido" ? "your FIDO2 key" : form.methodLabel(modelData).toLowerCase()))
         focusable: form.buttonsFocusable
         onClicked: form.useMethod(modelData)
-
-        Column {
-          id: tileColumn
-          anchors.centerIn: parent
-          spacing: Style.space(2)
-
-          Text {
-            textFormat: Text.PlainText
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: form.methodIcon(methodTile.modelData)
-            color: methodTile.selected ? Style.selectedStateColor(methodTile.foreground, methodTile.accent) : methodTile.foreground
-            font.family: form.panel.fontFamily
-            font.pixelSize: Style.font.title
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: form.methodLabel(methodTile.modelData)
-            color: methodTile.selected ? Style.selectedStateColor(methodTile.foreground, methodTile.accent) : methodTile.foreground
-            font.family: form.panel.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: methodTile.selected
-          }
-        }
       }
     }
   }
