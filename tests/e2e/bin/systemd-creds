@@ -1,0 +1,7 @@
+#!/bin/bash
+# Stand-in systemd-creds: reversible and bound to --name, like the real seal.
+mode=""; name=""
+for a in "$@"; do case "$a" in encrypt|decrypt) mode="$a";; --name=*) name="${a#--name=}";; esac; done
+if [ "$mode" = encrypt ]; then { printf 'SEALED:%s:' "$name"; base64 -w0; } | base64 -w0
+else input="$(cat | base64 -d 2>/dev/null)" || exit 1
+  case "$input" in "SEALED:$name:"*) printf '%s' "${input#SEALED:$name:}" | base64 -d ;; *) exit 1 ;; esac; fi
