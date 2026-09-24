@@ -315,6 +315,11 @@ check("a probe that finds the lock's scrub in its way runs once the scrub is don
     new RegExp(`finishScrubRun\\(${id}\\)\\) \\{\\s*root\\.onStatusProbeProcessFreed\\(\\)`).test(src))
     && /isScrubCommand\(sessionHandoffProc\.command\)/.test(body("refreshStatus"))
     && /isScrubCommand\(statusProc\.command\)/.test(body("runStatusCheck")), "")
+// Found by tests/e2e: a logout right after a sign-in deferred its sweep behind
+// the envelope write, and the writer's exit handler still saw it running.
+check("a logout sweep deferred behind a writer is retried until it runs",
+  /credentialClearRetry\.restart\(\)/.test(body("requestAllCredentialClear"))
+    && /id: credentialClearRetry[\s\S]{0,200}root\.requestAllCredentialClear\(\)/.test(src), body("requestAllCredentialClear"))
 check("the probes of the account being left are stopped before the lock borrows them",
   leave.indexOf("statusRefreshPending = true") !== -1 && leave.indexOf("statusRefreshPending = true") < leave.indexOf("dropVaultState()"), leave)
 

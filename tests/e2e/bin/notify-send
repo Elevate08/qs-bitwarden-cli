@@ -1,0 +1,4 @@
+#!/bin/bash
+# Stand-in for Omarchy and desktop tools the vault calls; records the call.
+printf "%s\n" "$(basename "$0") $*" >> "$FAKE_BW_LOG.other"
+exit 0

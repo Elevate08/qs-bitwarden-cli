@@ -94,3 +94,26 @@ with no test output at all. If a run prints nothing whatsoever, that is why.
 
 `QT_ASSUME_STDERR_HAS_CONSOLE=1` is worth adding while debugging a QML test --
 without it `console.log()` from inside QML is silently dropped.
+
+### End to end
+
+`tests/e2e/accounts.e2e.js` runs the real `Service.qml` in a headless
+Quickshell and drives it over a test-only IPC target (`tests/e2e/config/`,
+never loaded by a real shell): signing two accounts in, a PIN each, switching,
+a shell restart, logging out. `bw`, `secret-tool` and `systemd-creds` are
+stand-ins from `tests/e2e/bin/`; the committed unlock tool, `argon2`, `jq`
+and `node` run for real. It builds its own HOME, XDG and runtime directories
+under `/tmp` and passes nothing of your environment on, so it cannot touch
+your vault, keyring or shell. It is named `*.e2e.js` so the loop above skips
+it, and needs `quickshell`:
+
+```bash
+node tests/e2e/accounts.e2e.js
+```
+
+`KEEP_E2E=1` keeps the temporary directory (the shell log, the stand-in
+`bw`'s call log and keyring) for a failed run. CI runs it in the **panel
+end-to-end** job: a digest-pinned Arch image with packages from a dated,
+signature-checked Arch Linux Archive snapshot, as an unprivileged user, with
+a read-only token and no secrets. Moving the snapshot date means moving the
+image digest with it, so the keyring and the packages stay from the same day.

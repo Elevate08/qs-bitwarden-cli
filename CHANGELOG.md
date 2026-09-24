@@ -22,6 +22,13 @@
   nothing for it and a terminal `bw` still sees it. The IPC target gains
   `accounts` and `switchAccount <email>`.
 
+### Fixed
+
+- **A logout right after a sign-in no longer hangs on "Finishing logout".**
+  The keyring sweep waits for any write still running, and the write's own
+  exit asked for the sweep while it still read as running, so the sweep was
+  deferred with nothing left to ask again. It is now retried until it runs.
+
 ### Changed
 
 - **Log Out signs out of the account on screen only.** It used to clear every

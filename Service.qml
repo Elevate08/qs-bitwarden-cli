@@ -3193,9 +3193,12 @@ Item {
       return
     }
     // A store still running could recreate the credential after this clear;
-    // logout waits for every writer, then sweeps.
+    // logout waits for every writer, then sweeps. A writer's exit handler
+    // asks again, but the Process can still read as running then, so a
+    // timer keeps asking until it does not.
     if (credentialStoresRunning()) {
       allCredentialsClearPending = true
+      credentialClearRetry.restart()
       return
     }
     allCredentialsClearPending = false
@@ -6884,6 +6887,15 @@ Item {
     onExited: function(exitCode) {
       if (root.masterClearPending) Qt.callLater(root.requestMasterCredentialClear)
     }
+  }
+
+  // Asks again for a sweep deferred behind a writer; see
+  // requestAllCredentialClear().
+  Timer {
+    id: credentialClearRetry
+    interval: 100
+    repeat: false
+    onTriggered: if (root.logoutPending && root.allCredentialsClearPending) root.requestAllCredentialClear()
   }
 
   // Logout's clean sweep; see forgetStoredCredentials().
