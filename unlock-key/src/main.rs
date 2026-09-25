@@ -21,6 +21,7 @@
 use qs_bitwarden_unlock_key::{
     harden_process, key_from_base64, key_from_hex, Account, Argon2Params, Envelope, Error, Method,
     Via, ARGON2_MIN_ITERATIONS, ARGON2_MIN_MEMORY_KIB, KEY_LEN, MAX_ENVELOPE_BYTES,
+    PIN_ARGON2_MIN_ITERATIONS, PIN_ARGON2_MIN_MEMORY_KIB,
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -422,15 +423,19 @@ fn test_envelope() -> Option<Envelope> {
     let account = Account::new("self-test", "https://example.invalid").ok()?;
     let params =
         Argon2Params::new(TEST_SALT, ARGON2_MIN_MEMORY_KIB, ARGON2_MIN_ITERATIONS, 1).ok()?;
-    let mut envelope = Envelope::create(
-        account,
-        b"self-test password",
-        params.clone(),
-        &[1; KEY_LEN],
+    // Parameters are only recorded here (the panel runs argon2), but a PIN
+    // wrap must still meet its own, higher floor.
+    let pin_params = Argon2Params::new(
+        TEST_SALT,
+        PIN_ARGON2_MIN_MEMORY_KIB,
+        PIN_ARGON2_MIN_ITERATIONS,
+        1,
     )
     .ok()?;
+    let mut envelope =
+        Envelope::create(account, b"self-test password", params, &[1; KEY_LEN]).ok()?;
     envelope
-        .add_pin(&Via::Master(&[1; KEY_LEN]), params, &[2; KEY_LEN])
+        .add_pin(&Via::Master(&[1; KEY_LEN]), pin_params, &[2; KEY_LEN])
         .ok()?;
     envelope.add_fingerprint(&Via::Master(&[1; KEY_LEN])).ok()?;
     envelope

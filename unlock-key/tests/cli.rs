@@ -23,13 +23,14 @@ const MASTER_KDF: [&str; 8] = [
     "--p",
     "1",
 ];
+/// The panel's PIN cost, which is also the floor for a new PIN wrap.
 const PIN_KDF: [&str; 8] = [
     "--salt",
     "cGluLXNhbHQtMDAwMDAwMDA=",
     "--m",
-    "65536",
+    "262144",
     "--t",
-    "3",
+    "4",
     "--p",
     "1",
 ];
@@ -189,7 +190,7 @@ fn inspect_shows_what_the_panel_needs_and_no_secret() {
         serde_json::from_slice(&ok(&["inspect"], &[], &envelope)).unwrap();
     assert_eq!(summary["account"]["id"], "user-1");
     assert_eq!(summary["master"]["salt"], "bWFzdGVyLXNhbHQtMDAwMDA=");
-    assert_eq!(summary["pin"]["m"], 65536);
+    assert_eq!(summary["pin"]["m"], 262144);
     assert_eq!(summary["fingerprint"], true);
     assert_eq!(summary["fido"][0]["cred"], CRED);
     assert_eq!(summary["fido"][0]["rp"], "pam://host");
@@ -391,5 +392,31 @@ fn version_and_self_test_answer_without_input() {
         Some(0),
         "{}",
         String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// A PIN has far less entropy than the master password, so its wrap may not
+/// be cheaper than the panel's own cost; the master wrap's floor is lower.
+#[test]
+fn a_pin_wrap_cheaper_than_the_panels_cost_is_refused() {
+    let envelope = created();
+    // Bitwarden's default: enough for the master wrap, too little for a PIN.
+    let args = with(&[
+        &["add"],
+        &ACCOUNT,
+        &["--auth", "master", "--method", "pin"],
+        &MASTER_KDF,
+    ]);
+    assert_eq!(
+        code(
+            &refs(&args),
+            &[
+                ("QSBW_UNLOCK_KEY", &hex(1)),
+                ("QSBW_UNLOCK_NEW_KEY", &hex(2)),
+            ],
+            &envelope,
+        ),
+        5,
+        "outside limits"
     );
 }
