@@ -129,13 +129,11 @@ check("clearing associations succeeds when there is nothing to remove",
 const assocTmp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-assoc-"))
 const assocDir = path.join(assocTmp, "qs-bitwarden-cli")
 const assocFile = path.join(assocDir, "associations.json")
-const assocEnv = value => Object.assign({}, process.env, {
-  XDG_STATE_HOME: assocTmp,
-  [Model.associationsEnvVar()]: value,
-})
+const assocEnv = () => Object.assign({}, process.env, { XDG_STATE_HOME: assocTmp })
+// The store arrives on stdin, as the panel writes it.
 const writeAssociations = value => execFileSync(
   Model.associationsWriteCommand()[0], Model.associationsWriteCommand().slice(1),
-  { env: assocEnv(value), encoding: "utf8" })
+  { env: assocEnv(), encoding: "utf8", input: value })
 
 try {
   fs.mkdirSync(assocDir, { recursive: true })
@@ -164,9 +162,33 @@ try {
   fs.symlinkSync(redirect, assocFile)
   const readThroughLink = execFileSync(
     Model.associationsReadCommand()[0], Model.associationsReadCommand().slice(1),
-    { env: assocEnv(""), encoding: "utf8" })
+    { env: assocEnv(), encoding: "utf8" })
   check("association reads refuse a symlinked store",
     readThroughLink.trim() === "{}", JSON.stringify(readThroughLink))
+  fs.unlinkSync(assocFile)
+
+  // Linux caps one environment string at 128 KiB (MAX_ARG_STRLEN), and the
+  // store used to travel in one, so past that size learning silently stopped
+  // being saved. Grow a real store past it and write it the panel's way.
+  let big = Model.emptyAssociations()
+  for (let n = 0; Model.serializeAssociations(big).length <= 200 * 1024; n++) {
+    const ctx = { detectedDomain: { baseDomain: `site${n}.example`, isIp: false }, isBrowser: true,
+      isTerminal: false, clsSquashed: "firefox", titleTokens: [] }
+    big = Model.recordAssociation(big, ctx, "0e6f1c9a-1d2b-4c3d-9e8f-" + String(100000000000 + n), "2026-09-24T00:00:00Z")
+  }
+  const bigJson = Model.serializeAssociations(big)
+  writeAssociations(bigJson)
+  check("a store past the 128 KiB environment limit is saved in full",
+    bigJson.length > 128 * 1024 && fs.readFileSync(assocFile, "utf8") === bigJson,
+    `${bigJson.length} bytes written, ${fs.statSync(assocFile).size} on disk`)
+  check("the writer's argv and environment never carry the store",
+    !Model.associationsWriteCommand().join(" ").includes("QSBW_ASSOC"), Model.associationsWriteCommand()[2])
+  let refused = false
+  try { writeAssociations("x".repeat(Model.MAX_ASSOC_BYTES + 1)) } catch (e) { refused = true }
+  check("a store over the read cap is refused rather than written truncated",
+    refused && fs.readFileSync(assocFile, "utf8") === bigJson
+      && fs.readdirSync(assocDir).join(",") === "associations.json",
+    fs.readdirSync(assocDir).join(","))
 } finally {
   fs.rmSync(assocTmp, { recursive: true, force: true })
 }
@@ -187,8 +209,12 @@ check("the association writer exit services a queued logout clear",
   /associationsClearPending[\s\S]*associationsClearProc\.running\s*=\s*true/.test(assocWriter), assocWriter)
 check("association updates made during a write are persisted by a follow-up write",
   /associationsWriteProc\.running[\s\S]*associationsWritePending\s*=\s*true/.test(bodyOf("saveAssociations"))
-    && /associationsWritePending[\s\S]*associationsWriteProc\.running\s*=\s*true/.test(assocWriter),
+    && /associationsWritePending[\s\S]*Qt\.callLater\(root\.startAssociationsWrite\)/.test(assocWriter),
   bodyOf("saveAssociations") + "\n" + assocWriter)
+check("the store is written to the writer's stdin, which is then closed",
+  /stdinEnabled\s*=\s*true[\s\S]*running\s*=\s*true[\s\S]*\.write\(pendingAssociationsJson\)[\s\S]*stdinEnabled\s*=\s*false/
+    .test(bodyOf("startAssociationsWrite")) && !/environment:/.test(assocWriter),
+  bodyOf("startAssociationsWrite") + "\n" + assocWriter)
 check("logout discards a queued association write before clearing account metadata",
   /associationsWritePending\s*=\s*false/.test(forget), forget)
 

@@ -3688,12 +3688,7 @@ function findContextualMatches(items, windowData, associations) {
 // records the window's keys against it and the next visit suggests it first.
 
 var ASSOC_VERSION = 1
-var ASSOC_ENV = "QSBW_ASSOC"
 var ASSOC_DIR = "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
-
-function associationsEnvVar() {
-  return ASSOC_ENV
-}
 
 // One file per account slot: item ids mean nothing in another vault.
 function associationsFileName(slot) {
@@ -3708,7 +3703,12 @@ function associationsReadCommand(slot) {
   return ["bash", "-c", script]
 }
 
-// Payload in the environment (Process.write() cannot send EOF).
+// The payload arrives on stdin, which the panel closes after writing
+// (stdinEnabled = false). It used to travel in an environment variable, and
+// Linux caps one at 128 KiB (MAX_ARG_STRLEN), so a store past that failed to
+// start and learning silently stopped being saved. A payload over the read
+// cap is refused rather than written truncated (which would read back as
+// no store at all).
 function associationsWriteCommand(slot) {
   // Write a private temp file and rename it, so a symlink is replaced, not
   // followed, and the file is always 0600.
@@ -3716,7 +3716,8 @@ function associationsWriteCommand(slot) {
     + privateDirScript("d")
     + "umask 077; tmp=$(mktemp -- \"$d/.associations.XXXXXXXX\"); "
     + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
-    + "printf '%s' \"$" + ASSOC_ENV + "\" > \"$tmp\"; chmod 600 \"$tmp\"; "
+    + "head -c " + (MAX_ASSOC_BYTES + 1) + " > \"$tmp\"; "
+    + "[ \"$(wc -c < \"$tmp\")\" -le " + MAX_ASSOC_BYTES + " ]; chmod 600 \"$tmp\"; "
     + "mv -fT -- \"$tmp\" \"$d/" + associationsFileName(slot) + "\"; trap - EXIT HUP INT TERM"
   return ["bash", "-c", script]
 }
@@ -3757,7 +3758,10 @@ function cleanAssociationEntry(key, entry) {
   var updated = typeof entry.updated === "string" ? entry.updated : ""
   if (updated.length > 64 || /[\x00-\x1f\x7f]/.test(updated)) updated = ""
 
-  return { itemId: entry.itemId, weight: weight, count: count, updated: updated }
+  var clean = { itemId: entry.itemId, weight: weight, count: count, updated: updated }
+  // Set by "Suggest here"; see recordAssociation().
+  if (entry.pinned === true) clean.pinned = true
+  return clean
 }
 
 function parseAssociations(raw) {
@@ -3788,8 +3792,9 @@ function serializeAssociations(assoc) {
 }
 
 // A window's keys, strongest first: domain, app class, then title words (the
-// weak fallback for sites with no domain in the title).
-function contextKeys(ctx) {
+// weak fallback for sites with no domain in the title). `withWords` false
+// leaves the words out.
+function contextKeys(ctx, withWords) {
   if (!ctx) return []
   var keys = []
 
@@ -3799,10 +3804,25 @@ function contextKeys(ctx) {
   if (!ctx.isBrowser && !ctx.isTerminal && ctx.clsSquashed && ctx.clsSquashed.length >= 3) {
     keys.push({ key: "app:" + ctx.clsSquashed, weight: 2 })
   }
+  if (withWords === false) return keys
   for (var i = 0; i < ctx.titleTokens.length; i++) {
     keys.push({ key: "word:" + ctx.titleTokens[i], weight: 1 })
   }
   return keys
+}
+
+function isWordKey(key) {
+  return String(key).indexOf("word:") === 0
+}
+
+// Whether a stored entry counts for suggestions: a word key only when the
+// user pinned it with "Suggest here". A learned match skips scoring, and a
+// page chooses its own title, so a word learned from any pick let a page that
+// merely shares a word with a real site's title (a lookalike) have that
+// site's login suggested first. Stores written before this rule hold
+// unpinned word keys; they stay on disk but no longer match.
+function associationEntryCounts(key, entry) {
+  return !!entry && (!isWordKey(key) || entry.pinned === true)
 }
 
 // Write budget, half the read cap: a store truncated by the read cap fails to
@@ -3811,23 +3831,30 @@ function contextKeys(ctx) {
 var MAX_ASSOC_WRITE_BYTES = MAX_ASSOC_BYTES / 2
 
 // Last pick wins, so a key learned from the wrong page corrects itself.
-function recordAssociation(assoc, ctx, itemId, timestamp) {
+// `pinned` is the user's explicit "Suggest here": only then are the title's
+// words recorded (see associationEntryCounts()); an ordinary pick learns the
+// domain and app keys only.
+function recordAssociation(assoc, ctx, itemId, timestamp, pinned) {
   var next = { version: ASSOC_VERSION, keys: {} }
   var k
   for (k in assoc.keys) next.keys[k] = assoc.keys[k]
 
-  var keys = contextKeys(ctx)
+  var keys = contextKeys(ctx, pinned === true)
   if (keys.length === 0 || !itemId) return next
 
   for (var i = 0; i < keys.length; i++) {
     var existing = next.keys[keys[i].key]
-    var count = (existing && existing.itemId === itemId) ? Number(existing.count || 0) + 1 : 1
-    next.keys[keys[i].key] = {
+    var same = existing && existing.itemId === itemId
+    var count = same ? Number(existing.count || 0) + 1 : 1
+    var entry = {
       itemId: String(itemId),
       weight: keys[i].weight,
       count: count,
       updated: String(timestamp || "")
     }
+    // A pin outlives later ordinary picks of the same item.
+    if (pinned === true || (same && existing.pinned === true)) entry.pinned = true
+    next.keys[keys[i].key] = entry
   }
 
   return trimAssociations(next)
@@ -3880,7 +3907,7 @@ function isAssociated(assoc, ctx, itemId) {
   var keys = contextKeys(ctx)
   for (var i = 0; i < keys.length; i++) {
     var entry = assoc.keys[keys[i].key]
-    if (entry && entry.itemId === itemId) return true
+    if (associationEntryCounts(keys[i].key, entry) && entry.itemId === itemId) return true
   }
   return false
 }
@@ -3892,7 +3919,7 @@ function learnedMatchIds(assoc, ctx) {
 
   for (var i = 0; i < keys.length; i++) {
     var entry = assoc.keys[keys[i].key]
-    if (!entry || !entry.itemId) continue
+    if (!associationEntryCounts(keys[i].key, entry) || !entry.itemId) continue
     var rank = keys[i].weight * 1000 + Number(entry.count || 1)
     if (!best[entry.itemId] || best[entry.itemId] < rank) best[entry.itemId] = rank
   }

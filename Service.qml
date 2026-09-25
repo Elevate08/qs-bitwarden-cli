@@ -2261,10 +2261,26 @@ Item {
       return
     }
     associationsWritePending = false
-    associationsWriteProc.running = true
+    startAssociationsWrite()
   }
 
-  // Learn silently from any pick made while a window context is active.
+  // The store goes to the writer on stdin, closed after writing so it sees
+  // EOF: an environment variable is capped at 128 KiB, which a store can
+  // outgrow (see associationsWriteCommand() in BitwardenModel.js).
+  function startAssociationsWrite() {
+    if (associationsWriteProc.running) {
+      associationsWritePending = true
+      return
+    }
+    associationsWriteProc.stdinEnabled = true
+    associationsWriteProc.running = true
+    associationsWriteProc.write(pendingAssociationsJson)
+    associationsWriteProc.stdinEnabled = false
+  }
+
+  // Learn silently from any pick made while a window context is active: the
+  // site's domain or the app, never the title's words (only "Suggest here"
+  // records those; see Model.associationEntryCounts()).
   function learnFromPick(item) {
     if (!suggestOnOpen || !item || !item.id || !detectedContext || !Model.isLoginItem(item)) return
     if (Model.isAssociated(associations, detectedContext, item.id)) return
@@ -2278,7 +2294,8 @@ Item {
       saveAssociations(Model.forgetAssociation(associations, detectedContext, item.id))
       flashNotification("No longer suggested for " + detectedContext.displayName)
     } else {
-      saveAssociations(Model.recordAssociation(associations, detectedContext, item.id, new Date().toISOString()))
+      // Pinned: the one way a title's words are learned (Model.recordAssociation()).
+      saveAssociations(Model.recordAssociation(associations, detectedContext, item.id, new Date().toISOString(), true))
       flashNotification("Always suggested for " + detectedContext.displayName)
     }
     if (activeWindowData) handleActiveWindowDetected(activeWindowData)
@@ -3369,13 +3386,8 @@ Item {
   // Process environments
   // -------------------------------------------------------------------------
 
-  // Secrets reach processes in the environment, never argv
+  // Secrets reach processes in the environment or on stdin, never argv
   // (keyringStoreScript()).
-  function associationsEnv() {
-    var env = {}
-    env[Model.associationsEnvVar()] = String(pendingAssociationsJson || "")
-    return env
-  }
 
   // BW_SESSION rather than --session keeps the token out of argv. Every `bw`
   // runs in the active account's data directory (accountAppDataEnv()).
@@ -7290,7 +7302,7 @@ Item {
   Process {
     id: associationsWriteProc
     command: Model.associationsWriteCommand(root.activeSlot)
-    environment: root.associationsEnv()
+    stdinEnabled: true
     onExited: function(exitCode) {
       if (root.associationsClearPending) {
         root.associationsClearPending = false
@@ -7306,7 +7318,8 @@ Item {
       // an empty write would replace the file with nothing.
       if (root.associationsWritePending && root.pendingAssociationsJson !== "") {
         root.associationsWritePending = false
-        associationsWriteProc.running = true
+        // After this handler: the Process can still read as running in it.
+        Qt.callLater(root.startAssociationsWrite)
         return
       }
       root.associationsWritePending = false

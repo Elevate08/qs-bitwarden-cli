@@ -133,7 +133,8 @@ check("clients list picks most recent non-shell window",
 // ---------------------------------------------------------------------------
 
 // No heuristic can match this: an authentik portal titled "Home - authentik"
-// whose name and URL share no word with the title. Learning must.
+// whose name and URL share no word with the title. Pinning it with "Suggest
+// here" must.
 const authentikItem = { id: "auth-1", name: "Personal SSO", uris: ["https://auth.example.xyz"] }
 const withAuthentik = items.concat([authentikItem])
 const authentikWindow = { class: "chromium", title: "Home - authentik - Chromium", mapped: true }
@@ -144,11 +145,44 @@ check("authentik: unmatched before learning",
   Model.findContextualMatches(withAuthentik, authentikWindow, assoc).matches.length === 0,
   `got [${Model.findContextualMatches(withAuthentik, authentikWindow, assoc).matches.map(m => m.name)}]`)
 
-// Pick the credential once while that window is active.
 const ctx = Model.cleanWindowContext(authentikWindow)
-assoc = Model.recordAssociation(assoc, ctx, authentikItem.id, "2026-08-20T00:00:00Z")
 
-check("authentik: suggested after one pick",
+// An ordinary pick learns the domain or app only, never the title's words: a
+// learned match skips scoring and a page picks its own title, so a word
+// learned from a pick let any page sharing it (a lookalike) have the real
+// site's login suggested first.
+const picked = Model.recordAssociation(assoc, ctx, authentikItem.id, "2026-08-20T00:00:00Z")
+check("an ordinary pick records no title words",
+  Object.keys(picked.keys).every(k => !k.startsWith("word:")), Object.keys(picked.keys).join(","))
+check("so a title-only site is not suggested from a pick",
+  Model.findContextualMatches(withAuthentik, authentikWindow, picked).matches.length === 0,
+  `got [${Model.findContextualMatches(withAuthentik, authentikWindow, picked).matches.map(m => m.name)}]`)
+const domainWindow = { class: "chromium", title: "Dashboard - status.example.org - Chromium", mapped: true }
+const domainPicked = Model.recordAssociation(assoc, Model.cleanWindowContext(domainWindow), authentikItem.id, "2026-08-20T00:00:00Z")
+check("a pick still learns the site's domain",
+  Object.keys(domainPicked.keys).join() === "domain:example.org"
+    && Model.findContextualMatches(withAuthentik, domainWindow, domainPicked).matches[0].id === "auth-1",
+  Object.keys(domainPicked.keys).join(","))
+// Stores written before this rule hold word keys learned from picks.
+const legacyWords = Model.parseAssociations(JSON.stringify({ version: 1, keys: {
+  "word:authentik": { itemId: "auth-1", weight: 1, count: 3, updated: "2026-08-01T00:00:00Z" } } }))
+check("an unpinned word key from an older store no longer suggests",
+  Model.findContextualMatches(withAuthentik, authentikWindow, legacyWords).matches.length === 0
+    && !Model.isAssociated(legacyWords, ctx, "auth-1"),
+  `got [${Model.findContextualMatches(withAuthentik, authentikWindow, legacyWords).matches.map(m => m.name)}]`)
+
+// Pin the credential with "Suggest here" while that window is active.
+assoc = Model.recordAssociation(assoc, ctx, authentikItem.id, "2026-08-20T00:00:00Z", true)
+check("a pin records the title's words, marked pinned",
+  Object.keys(assoc.keys).some(k => k.startsWith("word:"))
+    && Object.keys(assoc.keys).every(k => assoc.keys[k].pinned === true),
+  JSON.stringify(assoc.keys))
+const pickedAfterPin = Model.recordAssociation(assoc, ctx, authentikItem.id, "2026-08-21T00:00:00Z")
+check("a later ordinary pick keeps the pin",
+  Object.keys(assoc.keys).every(k => pickedAfterPin.keys[k] && pickedAfterPin.keys[k].pinned === true),
+  JSON.stringify(pickedAfterPin.keys))
+
+check("authentik: suggested after one pin",
   Model.findContextualMatches(withAuthentik, authentikWindow, assoc).matches.map(m => m.id).join() === "auth-1",
   `got [${Model.findContextualMatches(withAuthentik, authentikWindow, assoc).matches.map(m => m.name)}]`)
 
@@ -167,8 +201,8 @@ check("authentik: does not leak to unrelated sites",
 
 check("isAssociated reports the learned pair", Model.isAssociated(assoc, ctx, "auth-1"), "expected true")
 
-// Last pick wins, so a key learned from the wrong page corrects itself.
-const retargeted = Model.recordAssociation(assoc, ctx, "9", "2026-08-21T00:00:00Z")
+// Last pin wins, so a key learned from the wrong page corrects itself.
+const retargeted = Model.recordAssociation(assoc, ctx, "9", "2026-08-21T00:00:00Z", true)
 check("re-picking retargets the key",
   Model.findContextualMatches(withAuthentik, authentikWindow, retargeted).matches.map(m => m.id).join() === "9",
   "expected the newly picked item to win")
@@ -181,7 +215,7 @@ check("forgetting removes the suggestion",
 
 // A learned item outranks a heuristic match on the same window.
 let netflixAssoc = Model.recordAssociation(Model.emptyAssociations(),
-  Model.cleanWindowContext({ class: "chromium", title: "Netflix - Chromium", mapped: true }), "11")
+  Model.cleanWindowContext({ class: "chromium", title: "Netflix - Chromium", mapped: true }), "11", undefined, true)
 check("learned item is ranked ahead of a heuristic match",
   Model.findContextualMatches(items, { class: "chromium", title: "Netflix - Chromium", mapped: true }, netflixAssoc)
     .matches[0].id === "11",
@@ -280,7 +314,7 @@ for (let p = 0; p < 300; p++) {
   for (let w = 0; w < 80; w++) words.push(`tok${p}x${w}zz`)
   grown = Model.recordAssociation(grown,
     Model.cleanWindowContext({ class: "chromium", title: words.join(" "), mapped: true }),
-    "auth-1", `2026-08-${String((p % 28) + 1).padStart(2, "0")}T00:00:00Z`)
+    "auth-1", `2026-08-${String((p % 28) + 1).padStart(2, "0")}T00:00:00Z`, true)
 }
 const grownBytes = Model.serializeAssociations(grown).length
 check("the association store stays inside the cap it is read back through",
@@ -289,7 +323,7 @@ check("the association store stays inside the cap it is read back through",
 
 // Trimming must not cost the most recent lesson.
 const recentCtx = Model.cleanWindowContext(authentikWindow)
-const stillLearned = Model.recordAssociation(grown, recentCtx, "auth-1", "2026-12-31T00:00:00Z")
+const stillLearned = Model.recordAssociation(grown, recentCtx, "auth-1", "2026-12-31T00:00:00Z", true)
 check("the newest lesson survives trimming",
   Model.findContextualMatches(withAuthentik, authentikWindow, stillLearned).matches.map(m => m.id).join() === "auth-1",
   "expected the just-learned item to still be suggested")
