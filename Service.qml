@@ -200,6 +200,12 @@ Item {
   property var dependencies: ({ items: [], hasOmarchy: true })
   property bool depsChecked: false
   property bool setupDismissed: false
+  // The last dependency probe's output, and `bw -v` cached by the binary's
+  // identity (dependencyBwId()) so opening the panel does not start Node.
+  property string depsRaw: ""
+  property bool bwVersionKnown: false
+  property string bwVersionId: ""
+  property string bwVersionValue: ""
   property string listReadMode: "sanitized"
   property var sshCapability: Model.defaultSshCapability()
   // Show setup instead of probing `bw`; see setupGateActive().
@@ -3962,7 +3968,12 @@ Item {
   }
 
   function onDependenciesChecked(raw) {
-    dependencies = Model.parseDependencies(raw)
+    depsRaw = String(raw || "")
+    var bwId = Model.dependencyBwId(depsRaw)
+    var cached = bwVersionKnown && bwId !== "" && bwId === bwVersionId
+    dependencies = Model.parseDependencies(depsRaw, cached ? bwVersionValue : null)
+    // Off the status probe's path: only SSH support waits for the version.
+    if (!cached && Model.dependencyInstalled(dependencies, "bw")) probeBwVersion(bwId)
     depsChecked = true
     // The legacy entries checked here are the active account's.
     if (pinUnlock && accountsLoaded) refreshPinConfigured()
@@ -3990,6 +4001,25 @@ Item {
       setupWasGated = false
       refreshStatus()
     }
+  }
+
+  function probeBwVersion(bwId) {
+    if (bwVersionProc.running) return
+    bwVersionProc.probeId = bwId
+    bwVersionProc.running = true
+  }
+
+  function onBwVersionProbed(raw, probedId) {
+    bwVersionId = probedId
+    bwVersionValue = Model.parseBwVersionProbe(raw)
+    bwVersionKnown = true
+    // bw changed while `bw -v` ran: that answer is for the old binary.
+    var latestId = Model.dependencyBwId(depsRaw)
+    if (latestId !== probedId) {
+      if (Model.dependencyInstalled(dependencies, "bw")) probeBwVersion(latestId)
+      return
+    }
+    dependencies = Model.parseDependencies(depsRaw, bwVersionValue)
   }
 
   readonly property var missingRequired: Model.missingRequired(dependencies)
@@ -6907,6 +6937,17 @@ Item {
       waitForEnd: true
       onStreamFinished: root.onDependenciesChecked(text)
     }
+  }
+
+  Process {
+    id: bwVersionProc
+    property string probeId: ""
+    command: Model.bwVersionCommand()
+    stdout: StdioCollector {
+      id: bwVersionStdout
+      waitForEnd: true
+    }
+    onExited: function(exitCode) { root.onBwVersionProbed(bwVersionStdout.text, bwVersionProc.probeId) }
   }
 
   // An install runs in a terminal we do not own, so re-probe while the setup
