@@ -152,7 +152,13 @@ Panel {
     apiMasterField.text = Qt.binding(function() { return root.vault.loginPassword })
     apiClientIdField.text = Qt.binding(function() { return root.vault.loginClientId })
     apiClientSecretField.text = Qt.binding(function() { return root.vault.loginClientSecret })
+    // A cleared password takes its "Show password" with it, so the next one
+    // typed is not shown in the clear.
+    if (!root.vault.loginPassword) eyeBtnLogin.revealed = false
   }
+
+  // Nor does a revealed password outlive the panel.
+  onOpenedChanged: if (!root.opened) eyeBtnLogin.revealed = false
 
   // Leave a second-factor stage for the credentials form.
   function backToCredentials() {
