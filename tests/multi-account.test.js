@@ -289,7 +289,7 @@ check("an envelope answer for an account no longer active is dropped",
 const leave = body("leaveActiveAccount")
 check("leaving an account tells the SSH agent it changed", /applySshAgentLifecycle\("account-change"\)/.test(leave), leave)
 check("locks it in bw and drops its session from the keyring",
-  /lockProc\.running = true/.test(leave) && /requestSessionCredentialClear\(\)/.test(leave), leave)
+  /requestBwLock\(\)/.test(leave) && /requestSessionCredentialClear\(\)/.test(leave), leave)
 check("drops the open vault and the envelope state", /dropVaultState\(\)/.test(leave) && /dropEnvelopeState\(\)/.test(leave), leave)
 check("but never clears the keyring or signs out",
   !/requestAllCredentialClear|logoutProc|forgetStoredCredentials|removeQuickUnlockMethod/.test(leave), leave)

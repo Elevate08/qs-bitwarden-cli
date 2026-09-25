@@ -1023,16 +1023,25 @@ function screenLockPollMs() {
 }
 
 // Suspend is an event: logind's PrepareForSleep(true), for every path into
-// sleep. A delay inhibitor, held until a second after the announcement, gives
-// the panel time to drop the key before memory is frozen. Inhibitors release
+// sleep. A delay inhibitor, held until the panel says the vault is locked,
+// gives it time to drop the key before memory is frozen. Inhibitors release
 // only on exit, so each loop iteration takes a fresh one. The monitor is
 // killed by pid once sed matches; waiting for a broken pipe would hold the
 // inhibitor until the next signal, which is the resume.
 var SLEEP_SIGNAL_TOKEN = "sleep"
 var WAKE_SIGNAL_TOKEN = "wake"
+// What the panel writes to the monitor's stdin once `bw lock` (and the
+// keyring clear) has finished.
+var SLEEP_ACK_TOKEN = "ack"
+// The inhibitor is held until the ack or this many seconds, whichever comes
+// first: `bw lock` is a 1-3 s cold start, and logind's InhibitDelayMaxSec
+// (5 s by default) ends the wait anyway.
+var SLEEP_ACK_TIMEOUT_S = 4
 
 function sleepSignalToken() { return SLEEP_SIGNAL_TOKEN }
 function wakeSignalToken() { return WAKE_SIGNAL_TOKEN }
+function sleepAckLine() { return SLEEP_ACK_TOKEN + "\n" }
+function sleepAckTimeoutS() { return SLEEP_ACK_TIMEOUT_S }
 
 function sleepMonitorCommand() {
   var monitor = "gdbus monitor --system --dest org.freedesktop.login1"
@@ -1040,25 +1049,36 @@ function sleepMonitorCommand() {
 
   // -u so the match leaves sed the moment it is read, rather than sitting in a
   // block buffer until after the machine has already suspended.
-  var match = "sed -une '/PrepareForSleep (true,/{s/.*/" + SLEEP_SIGNAL_TOKEN + "/p;q}'"
+  var match = "sed -une '/PrepareForSleep (true,/{s/.*/x/p;q}'"
 
+  // stdin is the ack pipe (fd 4 below). Acks left from an earlier cycle are
+  // drained before the token goes out, so only this cycle's ack can end the
+  // wait; the panel acks only after reading the token.
   var inner = "exec 3< <(" + monitor + "); g=$!; "
-    + match + " <&3; "
+    + "m=\"$(" + match + " <&3)\"; "
     + "kill \"$g\" 2>/dev/null; exec 3<&-; "
-    // Time for the panel to act before the inhibitor is released.
-    + "sleep 1"
+    // gdbus ended without a sleep: not a resume, so no wake token.
+    + "[ -n \"$m\" ] || exit 1; "
+    + "while read -r -t 0.05 _; do :; done; "
+    + "echo " + shellQuote(SLEEP_SIGNAL_TOKEN) + "; "
+    + "read -r -t " + SLEEP_ACK_TIMEOUT_S + " _; exit 0"
 
   // Never exits on its own; failures wait before retrying so it cannot spin.
   // Quickshell kills only its direct child on reload, so a watcher on stdin
   // kills this process group (setsid makes $$ its id) when the owner dies.
-  // The panel must keep stdinEnabled true.
-  var script = "(while IFS= read -r _; do :; done; kill -KILL -- -$$) <&0 & "
+  // The panel must keep stdinEnabled true. The watcher also relays the
+  // panel's ack into an anonymous pipe (opened read-write, so it never
+  // blocks and never reaches EOF) that each inhibited wait reads as stdin;
+  // systemd-inhibit passes stdin through but closes other descriptors.
+  var script = "exec 4<> <(:); "
+    + "(while IFS= read -r l; do [ \"$l\" = " + shellQuote(SLEEP_ACK_TOKEN) + " ] && printf '%s\\n' "
+    + shellQuote(SLEEP_ACK_TOKEN) + " >&4; done; kill -KILL -- -$$) <&0 & "
     + "while :; do "
     + "command -v gdbus >/dev/null 2>&1 || { sleep 300; continue; }; "
     + "if systemd-inhibit --what=sleep --mode=delay"
     + " --who=" + shellQuote("Bitwarden")
     + " --why=" + shellQuote("Locking the vault before sleep")
-    + " bash -c " + shellQuote(inner) + "; then "
+    + " bash -c " + shellQuote(inner) + " <&4; then "
     // Resume. Reported once the inhibitor is gone, since nothing waits on it.
     + "echo " + shellQuote(WAKE_SIGNAL_TOKEN) + "; "
     + "else sleep 5; fi; "
@@ -1504,8 +1524,17 @@ function keyringLookupCommand(slot) {
   return ["bash", "-c", cappedScript(script)]
 }
 
+// Exits 0 only once no session entry is left: `secret-tool clear` exits 1
+// when nothing matched and skips locked matches, so its own status says
+// nothing either way. The check searches without unlocking (no keyring
+// prompt) and counts the output rather than capturing it, since it contains
+// the secret.
 function keyringClearCommand(slot) {
-  return keyringClearEntryCommand(keyringEntryName(KEYRING_ACCOUNT, slot))
+  var attrs = keyringAttributes(keyringEntryName(KEYRING_ACCOUNT, slot))
+  var script = "secret-tool clear" + attrs + " >/dev/null 2>&1; "
+    + "__left=$(secret-tool search" + attrs + " 2>/dev/null | wc -c | tr -d '[:space:]'); "
+    + "[ \"${__left:-0}\" = 0 ]"
+  return ["bash", "-c", script]
 }
 
 // -------------------------------------------------------------------------

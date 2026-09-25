@@ -1202,10 +1202,7 @@ Item {
     // The companion drops this account's keys and public projection.
     applySshAgentLifecycle("account-change")
     clearClipboard()
-    if (session) {
-      lockProc.command = Model.lockCommand()
-      lockProc.running = true
-    }
+    requestBwLock()
     requestSessionCredentialClear()
     // The status chain may still be answering for the account being left.
     // Checked before the lock's scrub borrows the same processes.
@@ -1245,6 +1242,9 @@ Item {
   // The per-account checks a start runs, for the account now active.
   function refreshAccountCredentials() {
     if (!accountsLoaded) return
+    // Turned off while the shell was not running: a stored session would
+    // otherwise sit in the keyring unread and uncleared.
+    if (!rememberSession) requestSessionCredentialClear()
     if (pinUnlock) refreshPinConfigured()
     if (fingerprintAvailable && fingerprintUnlock) refreshLegacyFingerprint()
     envelopeReadinessChanged()
@@ -1455,6 +1455,13 @@ Item {
   // A helper killed with the shell objects (plugin disabled or removed)
   // leaves its socket, FIFO and lock behind; remove them once it is gone.
   Component.onDestruction: {
+    // With the session not remembered, nothing will reopen it, so an unload
+    // while unlocked (a shell restart, the plugin removed) must not leave it
+    // valid in bw's data: lock it. Detached, since this shell is going away.
+    // With it remembered, keeping it is the point of the setting.
+    if (root.session && !root.rememberSession) {
+      Quickshell.execDetached({ command: Model.lockCommand(), environment: root.bwEnv() })
+    }
     if (root.sshAgentPhase === "disabled" && !sshAgentProc.running) return
     var cleanup = Model.sshAgentRuntimeCleanupCommand(root.sshAgentRuntimeDir)
     if (cleanup) Quickshell.execDetached(cleanup)
@@ -3186,6 +3193,13 @@ Item {
     requestAllCredentialClear()
   }
 
+  // Turning it off removes the one already stored; only a lock did before.
+  onRememberSessionChanged: {
+    if (!started || !accountsLoaded || rememberSession) return
+    sessionStorePending = false
+    requestSessionCredentialClear()
+  }
+
   function storeCurrentSession() {
     if (logoutPending) {
       sessionStorePending = false
@@ -3232,8 +3246,9 @@ Item {
     if (sessionStorePending) storeCurrentSession()
   }
 
-  // `slot` defaults to the active account's.
-  function requestSessionCredentialClear(slot) {
+  // `slot` defaults to the active account's. `attempt` is internal (the
+  // retry in onSessionClearExited()).
+  function requestSessionCredentialClear(slot, attempt) {
     var target = Model.isAccountSlot(slot) ? slot : activeSlot
     if (keyringClearProc.running) {
       if (sessionClearSlots.indexOf(target) === -1) sessionClearSlots = sessionClearSlots.concat([target])
@@ -3241,8 +3256,31 @@ Item {
       return
     }
     sessionClearPending = false
+    sessionClearRun = { slot: target, attempt: attempt || 1 }
     keyringClearProc.command = Model.keyringClearCommand(target)
     keyringClearProc.running = true
+  }
+
+  // The clear exits non-zero only if the entry is still there (see
+  // keyringClearCommand() in BitwardenModel.js). It used to be ignored,
+  // leaving a live session key behind a lock without a word: retry once,
+  // then say so.
+  property var sessionClearRun: null
+
+  function onSessionClearExited(exitCode) {
+    var run = sessionClearRun
+    if (run && exitCode !== 0 && run.attempt < 2) {
+      Qt.callLater(function() { root.requestSessionCredentialClear(run.slot, run.attempt + 1) })
+      return
+    }
+    sessionClearRun = null
+    if (run && exitCode !== 0) {
+      console.warn("qs-bitwarden-cli: the remembered session is still in the keyring after two clears (exit "
+        + exitCode + ")")
+      errorMessage = "Could not remove the remembered session from the OS keyring. "
+        + "Lock again to retry; after a reboot it is refused either way."
+    }
+    maybeAckSleep()
   }
 
   function requestPinCredentialClear() {
@@ -4637,10 +4675,7 @@ Item {
     clearClipboard()
     // Before `bw lock`, so the companion denies first; never waited on.
     applySshAgentLifecycle("lock")
-    if (session) {
-      lockProc.command = Model.lockCommand()
-      lockProc.running = true
-    }
+    requestBwLock()
     // Unconditional: the setting may have been turned off after a session
     // was stored. Clearing nothing is harmless.
     requestSessionCredentialClear()
@@ -4654,6 +4689,78 @@ Item {
     focusAppropriateField()
     // Arm whichever method the lock screen offers.
     if (sshAuthSurfaceActive) armPresenceUnlock()
+  }
+
+  // -------------------------------------------------------------------------
+  // `bw lock`
+  // -------------------------------------------------------------------------
+  //
+  // Each lock runs with the environment of the moment it was asked for (the
+  // session being locked and its account's data directory), one at a time.
+  // Its exit status used to be ignored: a failed lock is retried once, then
+  // `bw status` (with that session) says whether it is really still unlocked,
+  // and if so the user is told. The environment, which holds the session, is
+  // dropped as soon as the lock settles.
+  property var lockRun: null
+  property var lockQueue: []
+
+  function requestBwLock() {
+    if (!session) return
+    lockQueue = lockQueue.concat([{ env: bwEnv(), attempts: 0, checking: false }])
+    pumpBwLock()
+  }
+
+  function pumpBwLock() {
+    if (lockRun !== null || lockProc.running || lockQueue.length === 0) return
+    var queue = lockQueue.slice()
+    lockRun = queue.shift()
+    lockQueue = queue
+    runBwLockStep()
+  }
+
+  function runBwLockStep() {
+    var run = lockRun
+    if (!run) return
+    // A Process can still read as running inside its own exit handler.
+    if (lockProc.running) {
+      Qt.callLater(runBwLockStep)
+      return
+    }
+    if (!run.checking) run.attempts += 1
+    lockProc.environment = run.env
+    lockProc.command = run.checking ? Model.statusCommand() : Model.lockCommand()
+    lockProc.running = true
+  }
+
+  function onBwLockExited(exitCode, stdout) {
+    var run = lockRun
+    if (!run) return
+    if (run.checking) {
+      var st = exitCode === 0 ? Model.parseStatus(stdout) : null
+      if (st && st.unlocked) {
+        console.warn("qs-bitwarden-cli: bw lock failed twice and bw status still reports the vault unlocked")
+        errorMessage = "Bitwarden did not lock: its session key still works. Run `bw lock` in a terminal."
+      } else if (!st) {
+        console.warn("qs-bitwarden-cli: bw lock failed twice and bw status could not confirm the lock")
+      }
+      finishBwLock()
+      return
+    }
+    if (exitCode === 0) {
+      finishBwLock()
+      return
+    }
+    console.warn("qs-bitwarden-cli: bw lock failed (exit " + exitCode + ")"
+      + (run.attempts < 2 ? "; retrying" : "; checking bw status"))
+    if (run.attempts >= 2) run.checking = true
+    Qt.callLater(runBwLockStep)
+  }
+
+  function finishBwLock() {
+    lockRun = null
+    lockProc.environment = {}
+    Qt.callLater(pumpBwLock)
+    maybeAckSleep()
   }
 
   function vaultStatePresent() {
@@ -6472,14 +6579,39 @@ Item {
   function onSleepSignal(line) {
     var token = String(line || "").trim()
     if (token === Model.wakeSignalToken()) {
+      // Whatever the lock was doing, the suspend is over.
+      suspendLockPending = false
       // The watchdog handles an expired countdown; just refresh stale state.
       if (opened) refreshStatus()
       return
     }
     if (token !== Model.sleepSignalToken()) return
-    if (!lockOnSuspend || status !== "unlocked") return
-    // The keyring clear it spawns is what the inhibitor's held second is for.
+    if (!lockOnSuspend || status !== "unlocked") {
+      ackSleep()
+      return
+    }
+    // The monitor holds the suspend until the ack (capped; see
+    // Model.sleepMonitorCommand()), which waits for `bw lock` and the keyring
+    // clear: a fixed second used to let the machine sleep before `bw lock`
+    // (a 1-3 s cold start) had finished.
+    suspendLockPending = true
     lockVault()
+    maybeAckSleep()
+  }
+
+  // A suspend is waiting for the lock to finish.
+  property bool suspendLockPending: false
+
+  function maybeAckSleep() {
+    if (!suspendLockPending) return
+    if (lockRun !== null || lockQueue.length > 0) return
+    if (sessionClearRun !== null || sessionClearSlots.length > 0) return
+    suspendLockPending = false
+    ackSleep()
+  }
+
+  function ackSleep() {
+    if (sleepMonitorProc.running) sleepMonitorProc.write(Model.sleepAckLine())
   }
 
   Timer {
@@ -6792,7 +6924,7 @@ Item {
     id: keyringClearProc
     command: Model.keyringClearCommand(root.activeSlot)
     // What waits behind this clear is run by busyRetryTimer.
-    onExited: function(exitCode) {}
+    onExited: function(exitCode) { root.onSessionClearExited(exitCode) }
   }
 
   // ---- Fingerprint unlock ----
@@ -7442,9 +7574,13 @@ Item {
     }
   }
 
+  // `bw lock`, and the `bw status` that checks a lock that failed twice; see
+  // requestBwLock(). Its environment is set per run (no binding), so a retry
+  // after an account switch still locks the account that was left.
   Process {
     id: lockProc
-    environment: root.bwEnv()
+    stdout: StdioCollector { id: lockStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onBwLockExited(exitCode, lockStdout.text) }
   }
 
   // -------------------------------------------------------------------------

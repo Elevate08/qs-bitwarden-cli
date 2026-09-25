@@ -78,85 +78,132 @@ check("the loop never exits, so a failure cannot become a hot restart",
 check("sed is unbuffered, so the token is not held back past the suspend",
   /sed -une/.test(sleepScript), sleepScript)
 
-// End to end against stub gdbus and systemd-inhibit: one token per
-// announcement, the inhibitor released ~1 s later, and the loop ready for the
-// next suspend.
+// End to end against stub gdbus and systemd-inhibit (nothing here inhibits or
+// suspends Linux). The panel acks once `bw lock` has finished; the
+// inhibitor is held until that ack, or the cap if none comes, and the loop is
+// ready for the next suspend either way. The monitor runs as it does in the
+// shell: its own process group, stdin a pipe the owner holds.
 const os = require("os")
+const { spawn } = require("child_process")
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-lock-"))
-try {
-  const log = path.join(work, "inhibit.log")
-  fs.writeFileSync(log, "")
-
-  // Real gdbus is a single process, so the stub execs its wait rather than
-  // backgrounding it -- otherwise the stub would leak a child that the real
-  // thing does not have.
-  fs.writeFileSync(path.join(work, "gdbus"), `#!/bin/bash
+const log = path.join(work, "inhibit.log")
+// Real gdbus is a single process, so the stub execs its wait rather than
+// backgrounding it -- otherwise the stub would leak a child that the real
+// thing does not have.
+fs.writeFileSync(path.join(work, "gdbus"), `#!/bin/bash
 echo "Monitoring signals on object /org/freedesktop/login1 owned by org.freedesktop.login1"
 echo "/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep (false,)"
 echo "/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep (true,)"
 exec sleep 600
 `)
-  fs.writeFileSync(path.join(work, "systemd-inhibit"), `#!/bin/bash
+fs.writeFileSync(path.join(work, "systemd-inhibit"), `#!/bin/bash
 while [[ "$1" == --* ]]; do shift; done
 echo "ACQUIRED $(date +%s%3N)" >> "${log}"
 "$@"; rc=$?
 echo "RELEASED $(date +%s%3N)" >> "${log}"
 exit $rc
 `)
-  for (const f of ["gdbus", "systemd-inhibit"]) fs.chmodSync(path.join(work, f), 0o755)
+for (const f of ["gdbus", "systemd-inhibit"]) fs.chmodSync(path.join(work, f), 0o755)
 
-  const script = path.join(work, "cmd.sh")
-  fs.writeFileSync(script, sleepScript)
-
-  let out = ""
-  try {
-    out = execFileSync("bash", ["-c",
-      `PATH=${work}:$PATH timeout 8 bash -c 'sleep 4 | setsid bash "$1"' _ ${script}`], { encoding: "utf8" })
-  } catch (e) {
-    // stdin is held open for four seconds, then EOF tears down the group.
-    out = String(e.stdout || "")
-  }
-
-  const tokens = out.split("\n").map(s => s.trim()).filter(Boolean)
-
-  check("an announcement produces the sleep token",
-    tokens[0] === Model.sleepSignalToken(), JSON.stringify(tokens))
-
-  check("resuming produces the wake token",
-    tokens[1] === Model.wakeSignalToken(), JSON.stringify(tokens))
-
-  // A `false` announcement is a resume, not a sleep. Two tokens per cycle, so
-  // an odd count would mean the resume line matched as well.
-  check("only a true announcement counts as a sleep",
-    tokens.filter(t => t === Model.sleepSignalToken()).length
-      === tokens.filter(t => t === Model.wakeSignalToken()).length
-      || tokens[tokens.length - 1] === Model.sleepSignalToken(),
-    JSON.stringify(tokens))
-
-  // The bug this shape exists to avoid: the loop coming round only once.
-  check("the loop detects more than one suspend per session",
-    tokens.filter(t => t === Model.sleepSignalToken()).length >= 2,
-    JSON.stringify(tokens))
-
-  const entries = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean)
-  const acquired = entries.filter(l => l.startsWith("ACQUIRED")).length
-  const released = entries.filter(l => l.startsWith("RELEASED")).length
-
-  check("an inhibitor is taken for every cycle",
-    acquired >= 2 && released >= 1 && acquired - released <= 1,
-    entries.join(" | "))
-
-  // Held about a second past the announcement, which is well inside logind's
-  // InhibitDelayMaxSec (5s by default) and long enough for the panel to drop
-  // the key and for the keyring clear it spawns to finish.
-  const firstAcquire = Number(entries[0].split(" ")[1])
-  const firstRelease = Number(entries.find(l => l.startsWith("RELEASED")).split(" ")[1])
-  const held = firstRelease - firstAcquire
-  check("the inhibitor is released promptly, not held across the suspend",
-    held >= 900 && held < 4000, `${held}ms`)
-} finally {
-  fs.rmSync(work, { recursive: true, force: true })
+// Runs the monitor for `ms`, acking each sleep token after `ackAfterMs`
+// (never, if null); `acksFor(n)` says how many acks the nth token gets (one by
+// default). Returns the tokens and the inhibitor log.
+function runMonitor(ms, ackAfterMs, acksFor) {
+  fs.writeFileSync(log, "")
+  const cmd = Model.sleepMonitorCommand()
+  return new Promise(resolve => {
+    const child = spawn(cmd[0], cmd.slice(1), {
+      env: { ...process.env, PATH: `${work}:${process.env.PATH}` },
+      stdio: ["pipe", "pipe", "ignore"]
+    })
+    let out = ""
+    let seen = 0
+    child.stdout.on("data", chunk => {
+      out += chunk
+      const tokens = String(chunk).split("\n").map(t => t.trim())
+      for (const t of tokens) {
+        if (t !== Model.sleepSignalToken()) continue
+        const count = acksFor ? acksFor(seen) : 1
+        seen++
+        if (ackAfterMs === null) continue
+        for (let i = 0; i < count; i++) {
+          setTimeout(() => { try { child.stdin.write(Model.sleepAckLine()) } catch (e) {} }, ackAfterMs)
+        }
+      }
+    })
+    setTimeout(() => child.stdin.end(), ms)
+    child.on("exit", () => {
+      const entries = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean)
+      resolve({ tokens: out.split("\n").map(t => t.trim()).filter(Boolean), entries })
+    })
+  })
 }
+
+const held = entries => {
+  const out = []
+  let acquired = null
+  for (const line of entries) {
+    const [what, at] = line.split(" ")
+    if (what === "ACQUIRED") acquired = Number(at)
+    else if (what === "RELEASED" && acquired !== null) { out.push(Number(at) - acquired); acquired = null }
+  }
+  return out
+}
+
+const suspendChecks = (async () => {
+  try {
+    // Acked 300 ms after each announcement, as a quick `bw lock` would be.
+    const acked = await runMonitor(3500, 300)
+    const tokens = acked.tokens
+    check("an announcement produces the sleep token",
+      tokens[0] === Model.sleepSignalToken(), JSON.stringify(tokens))
+    check("resuming produces the wake token",
+      tokens[1] === Model.wakeSignalToken(), JSON.stringify(tokens))
+    // A `false` announcement is a resume, not a sleep. Two tokens per cycle,
+    // so an odd count would mean the resume line matched as well.
+    check("only a true announcement counts as a sleep",
+      tokens.filter(t => t === Model.sleepSignalToken()).length
+        === tokens.filter(t => t === Model.wakeSignalToken()).length
+        || tokens[tokens.length - 1] === Model.sleepSignalToken(),
+      JSON.stringify(tokens))
+    // The bug this shape exists to avoid: the loop coming round only once.
+    check("the loop detects more than one suspend per session",
+      tokens.filter(t => t === Model.sleepSignalToken()).length >= 2, JSON.stringify(tokens))
+    const acquired = acked.entries.filter(l => l.startsWith("ACQUIRED")).length
+    const released = acked.entries.filter(l => l.startsWith("RELEASED")).length
+    check("an inhibitor is taken for every cycle",
+      acquired >= 2 && released >= 1 && acquired - released <= 1, acked.entries.join(" | "))
+    // Held until the panel's ack, not a fixed second: `bw lock` is a 1-3 s
+    // cold start, and the suspend used to go ahead before it had finished.
+    const ackedHolds = held(acked.entries)
+    check("the inhibitor is released once the lock is acknowledged",
+      ackedHolds.length >= 1 && ackedHolds.every(ms => ms >= 250 && ms < 2500), `${ackedHolds.join(", ")}ms`)
+
+    // No ack at all: the cap releases it, well inside logind's
+    // InhibitDelayMaxSec (5 s by default), so a stuck lock cannot hold up the
+    // suspend, and the loop still comes round.
+    const unacked = await runMonitor(Model.sleepAckTimeoutS() * 1000 + 1500, null)
+    const capHolds = held(unacked.entries)
+    check("without an ack the inhibitor is released at the cap",
+      capHolds.length >= 1 && capHolds[0] >= Model.sleepAckTimeoutS() * 1000 - 200
+        && capHolds[0] < Model.sleepAckTimeoutS() * 1000 + 1500,
+      `${capHolds.join(", ")}ms`)
+    check("the cap stays inside logind's default delay limit",
+      Model.sleepAckTimeoutS() < 5, String(Model.sleepAckTimeoutS()))
+
+    // An ack left over from an earlier cycle cannot release the next one
+    // early: it is drained before the token goes out. The first cycle gets
+    // two acks, the second none, so the second must run to the cap.
+    const stale = await runMonitor(Model.sleepAckTimeoutS() * 1000 + 2500, 100, n => n === 0 ? 2 : 0)
+    const staleHolds = held(stale.entries)
+    check("a spare ack from one cycle does not release the next",
+      staleHolds.length >= 2 && staleHolds[0] < 2000
+        && staleHolds[1] >= Model.sleepAckTimeoutS() * 1000 - 200,
+      `${staleHolds.join(", ")}ms`)
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true })
+  }
+})()
 
 // -------------------------------------------------------------------------
 // Session handoff window
@@ -254,4 +301,4 @@ for (const k of ["lockOnScreenLock", "lockOnSuspend"]) {
 
 // -------------------------------------------------------------------------
 
-done()
+suspendChecks.then(done, error => { console.error(error); process.exit(1) })
