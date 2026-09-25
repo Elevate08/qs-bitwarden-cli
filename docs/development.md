@@ -73,6 +73,14 @@ to result; after a three-second prewarm while the password screen was already
 open, it took 1,026 ms -- a 1,615 ms / 61.1% reduction. These figures are a
 same-machine comparison, not a universal latency promise.
 
+On the same machine and CLI (2026-09-25), `bw status` printed its answer at
+about 1.3 s and exited at about 3.2 s: after `processResponse()` records the
+exit code, rxjs timers keep Node alive. With `bw-fast-exit.js` preloaded, on a
+real vault, `status` and the `list` commands took about 0.8 s (items 1.6 s)
+instead of 2.7-3.0 s, and `get item`/`password`/`totp` 1.25 s instead of
+3.1 s, each with identical output and exit code. `tests/bw-fast-exit.test.js`
+covers the guard that keeps the preload to `bw` itself.
+
 Some suites need Qt rather than Node -- which any machine running the plugin
 already has. They cover the things only a real Qt can answer: that Escape
 reaches the panel from inside a text field, how Qt itself decides to draw a

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// The item list is the first bw process after authentication; organizations
-// and folders start only after items have painted.
+// The item list, organizations and folders start together after
+// authentication (bw spends most of each start idle); on a remembered session
+// the list also starts alongside `bw status`, but nothing from it shows, and
+// no metadata or agent load starts, until the status confirms.
 //
 //   node tests/initial-load.test.js
 
@@ -12,11 +14,34 @@ const { check, done } = createSuite("initial-load")
 const bodyOf = name => functionBody(panelSrc, name)
 
 const initial = bodyOf("beginInitialVaultLoad")
-check("initial loading starts the item list", /loadItems\(/.test(initial), initial)
-check("initial loading does not start organizations concurrently",
-  !/loadOrganizations\(/.test(initial), initial)
-check("initial loading does not start folders concurrently",
-  !/loadFolders\(/.test(initial), initial)
+check("initial loading starts the item list, then the metadata",
+  /loadItems\(/.test(initial) && /loadPendingMetadata\(\)/.test(initial)
+    && initial.indexOf("loadItems(") < initial.indexOf("loadPendingMetadata()"),
+  initial)
+const pendingMeta = bodyOf("loadPendingMetadata")
+check("metadata starts only for a confirmed session",
+  /if\s*\(status\s*!==\s*"unlocked"\s*\|\|\s*!metadataLoadPending\)\s*return/.test(pendingMeta)
+    && /loadOrganizations\(force\)/.test(pendingMeta) && /loadFolders\(force\)/.test(pendingMeta),
+  pendingMeta)
+
+const keyring = bodyOf("onKeyringLookupFinished")
+check("a remembered session reads the list alongside bw status",
+  /runStatusCheck\(\)/.test(keyring) && /if\s*\(token\)\s*beginInitialVaultLoad\(false,\s*false\)/.test(keyring)
+    && keyring.indexOf("runStatusCheck()") < keyring.indexOf("beginInitialVaultLoad("),
+  keyring)
+const startRead = bodyOf("startVaultListRead")
+check("an early read never feeds the SSH agent",
+  /listReadEarly\s*=\s*status\s*!==\s*"unlocked"/.test(startRead)
+    && /useAgent\s*=\s*!retrying\s*&&\s*!listReadEarly/.test(startRead),
+  startRead)
+const loadItemsBody = bodyOf("loadItems")
+check("a confirmed load waits on the early read instead of starting another",
+  /listProc\.running\s*&&\s*listReadEarly\s*&&\s*!vaultReadIsStale\("items"\)\)\s*return/.test(loadItemsBody),
+  loadItemsBody)
+const statusDone = bodyOf("onStatusFinished")
+check("a confirmed unlock starts the metadata the early read held back",
+  /ensureItemsFresh\(\)\s*\n\s*\/\/[^\n]*\n\s*loadPendingMetadata\(\)/.test(statusDone),
+  statusDone)
 
 for (const source of ["onUnlockSuccess", "onSessionHandoff"]) {
   const body = bodyOf(source)
@@ -26,10 +51,10 @@ for (const source of ["onUnlockSuccess", "onSessionHandoff"]) {
 }
 
 const listFinished = bodyOf("onListFinished")
-check("metadata deferral begins only after the item result is accepted",
+check("deferred work begins only after the item result is accepted",
   /items\s*=\s*Model\.parseSanitizedItems/.test(listFinished)
     && !/items\s*=\s*Model\.parseItems/.test(listFinished)
-    && /deferredMetadataTimer\.restart\(\)/.test(listFinished)
+    && /if\s*\(metadataLoadPending\s*\|\|\s*statusRefreshAfterItems\)\s*deferredMetadataTimer\.restart\(\)/.test(listFinished)
     && listFinished.indexOf("items = Model.parseSanitizedItems") < listFinished.indexOf("deferredMetadataTimer.restart()"),
   listFinished)
 
@@ -45,10 +70,15 @@ check("a failed item refresh clears all loading and deferred-work state",
 check("a failed item refresh does not run the post-load status refresh",
   !/statusRefreshAfterItems[\s\S]{0,140}runStatusCheck\(/.test(listExited),
   listExited)
+check("an early read's failure shows no error; after confirmation it is read again",
+  /var wasEarly = listReadEarly/.test(listExited)
+    && /if\s*\(wasEarly\s*&&\s*status\s*===\s*"unlocked"\s*&&\s*!vaultReadIsStale\("items"\)\)\s*\{\s*beginVaultRead\("items"\)\s*startVaultListRead\(false\)\s*return/.test(listExited)
+    && /!vaultReadIsStale\("items"\)\s*&&\s*!wasEarly\)\s*\{\s*errorMessage/.test(listExited),
+  listExited)
 
 const timerStart = panelSrc.indexOf("id: deferredMetadataTimer")
 const timer = timerStart === -1 ? "" : panelSrc.slice(timerStart, timerStart + 700)
-check("deferred metadata loads both organizations and folders", /loadOrganizations\(/.test(timer) && /loadFolders\(/.test(timer), timer)
+check("deferred metadata goes through the confirmed-session gate", /root\.loadPendingMetadata\(\)/.test(timer), timer)
 check("metadata waits long enough for an item-list frame",
   /interval:\s*(?:[2-9][0-9]|[1-9][0-9]{2,})/.test(timer), timer)
 check("post-load status refresh is metadata-only",

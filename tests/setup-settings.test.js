@@ -4,7 +4,7 @@
 //
 //   node tests/setup-settings.test.js
 
-const { createSuite, loadModule, read, readPluginSource } = require("./harness")
+const { createSuite, functionBody, loadModule, read, readPluginSource } = require("./harness")
 const { legacyKeyring } = require("./legacy-keyring")
 const path = require("path")
 const panelSrc = readPluginSource("Panel.qml")
@@ -35,9 +35,49 @@ check("jq is a required dependency alongside bw",
 check("the dependency probe checks for jq before vault reads",
   dependencyProbe.includes("command -v jq"),
   dependencyProbe)
-check("the dependency probe captures the bw CLI version for SSH gating",
-  /bw\s+--version|bw\s+-v/.test(dependencyProbe),
+check("the per-open dependency probe never starts bw itself",
+  !/bw\s+--version|bw\s+-v\b/.test(dependencyProbe) && dependencyProbe.includes("bw_id="),
   dependencyProbe)
+check("the bw CLI version for SSH gating comes from its own probe",
+  /bw\s+-v\b/.test(Model.bwVersionCommand()[2]),
+  Model.bwVersionCommand()[2])
+{
+  const probeOut = "bw=1\nbw_id=66311:4194817:3303444:1773600000\njq=1\nfprintd=0\nfingerprint_ready=0\nomarchy=1"
+  const pending = Model.parseDependencies(probeOut, null)
+  const answered = Model.parseDependencies(probeOut, Model.parseBwVersionProbe("bw_version=2026.2.0\n"))
+  const unreadable = Model.parseDependencies(probeOut, Model.parseBwVersionProbe("bw_version=\n"))
+  check("SSH support is 'checking' until the version probe answers, and stays hidden",
+    pending.sshCliStatus === "checking" && Model.sshUiAvailable(pending, true) === false
+      && byKey(pending, "bw").note === "",
+    JSON.stringify({ status: pending.sshCliStatus, bw: byKey(pending, "bw") }))
+  check("the version probe's answer gates SSH like an inline version",
+    answered.sshCliStatus === "supported" && answered.bwVersion === "2026.2.0"
+      && unreadable.sshCliStatus === "unknown",
+    JSON.stringify({ answered: answered.sshCliStatus, unreadable: unreadable.sshCliStatus }))
+  check("the bw identity is read strictly, so a stray value cannot match a cache",
+    Model.dependencyBwId(probeOut) === "66311:4194817:3303444:1773600000"
+      && pending.bwId === "66311:4194817:3303444:1773600000"
+      && Model.dependencyBwId("bw_id=1:2:3") === ""
+      && Model.dependencyBwId("bw_id=1:2:3:4; rm") === ""
+      && Model.dependencyBwId("bw_id=") === "",
+    Model.dependencyBwId("bw_id=1:2:3"))
+}
+
+// Service wiring: a cached version skips `bw -v`; only a new binary re-asks.
+{
+  const svc = read("Service.qml")
+  const checked = functionBody(svc, "onDependenciesChecked")
+  check("the dependency answer reuses the cached version for the same bw binary",
+    /bwId\s*===\s*bwVersionId/.test(checked)
+      && /parseDependencies\(depsRaw,\s*cached\s*\?\s*bwVersionValue\s*:\s*null\)/.test(checked)
+      && /if\s*\(!cached\b[^\n]{0,80}\)\s*probeBwVersion\(bwId\)/.test(checked),
+    checked)
+  const probed = functionBody(svc, "onBwVersionProbed")
+  check("a version answer for a replaced binary is not applied",
+    /latestId\s*!==\s*probedId/.test(probed)
+      && probed.indexOf("latestId !== probedId") < probed.indexOf("dependencies = Model.parseDependencies"),
+    probed)
+}
 check("SSH_CLI_MIN_VERSION is the verified floor",
   Model.SSH_CLI_MIN_VERSION === "2025.1.2",
   String(Model.SSH_CLI_MIN_VERSION))

@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.11.2] - 2026-09-25
+
+### Changed
+
+- **The vault opens faster.** `bw` prints its answer and then idles about two
+  seconds before it exits, and the panel waited on every one of those exits.
+  A small preload (`bw-fast-exit.js`, given to `bw` alone through
+  `NODE_OPTIONS`, after any options of your own) lets it exit once it has
+  answered, so each vault read, copy and sync is 1.4-2 s sooner, with the same
+  output. On top of that, the first reads no longer wait on each other: with a
+  session remembered in the keyring, the item list loads alongside the status
+  check, and folders and organizations load with the list rather than after
+  it. Nothing shows, and the SSH agent gets no keys, until the status has
+  confirmed the vault is unlocked. On the machine it was measured on, the list
+  was ready about 4 s after a shell restart instead of about 7.5 s, and about
+  3 s after a fingerprint unlock.
+- **TOTP codes appear instantly.** They are computed in the panel from the key
+  the item list already holds, the same way the Bitwarden SDK does, instead of
+  starting `bw get totp` (about 3 s) for each one. A key the panel does not
+  read exactly like the SDK (SHA-512, 0 or 10 digits, an unusual `otpauth://`
+  link) is still read by `bw`.
+- **Opening the panel no longer starts `bw -v`.** The setup check ran it on
+  every open, costing about a second of Node start-up before the status check
+  on the first open, and competing with the unlock prewarm on a locked one.
+  The version is now read once, alongside the status check, and again only
+  when the `bw` binary changes, as after an upgrade.
+
 ## [1.11.1] - 2026-09-25
 
 ### Fixed
