@@ -31,6 +31,7 @@ TestCase {
     property bool repromptPending: false
     property string repromptItemName: ""
     property string repromptError: ""
+    property bool repromptBusy: false
     function submitReprompt(password) { tc.calls.push("submit(" + password + ")") }
     function cancelReprompt() { tc.calls.push("cancel"); repromptPending = false }
     function restoreScreenFocus() { tc.calls.push("restoreFocus") }
@@ -55,6 +56,7 @@ TestCase {
 
   function init() {
     tc.calls = []
+    fakeVault.repromptBusy = false
     fakeVault.repromptError = ""
     fakeVault.repromptItemName = "Bank"
     fakeVault.repromptPending = true
@@ -112,6 +114,16 @@ TestCase {
       for (var i = 0; i < item.children.length; i++) rows.push(item.children[i])
     }
     verify(shown, "the vault's error is not shown")
+  }
+
+  function test_nothing_is_submitted_while_the_vault_checks() {
+    fakeVault.repromptBusy = true
+    keyClick(Qt.Key_A)
+    keyClick(Qt.Key_Return)
+    fakeVault.repromptBusy = false
+    compare(tc.calls.join(","), "", "a second password went out while the first was being checked")
+    tryVerify(function() { return field() !== null && field().echoMode === TextInput.Password },
+      1000, "after a wrong password the field did not get the keyboard back")
   }
 
   function test_closing_hands_focus_back_to_the_screen() {

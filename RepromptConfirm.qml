@@ -17,12 +17,16 @@ Item {
   required property var vault
 
   readonly property bool shown: vault.repromptPending === true
+  // The vault is checking the password it was handed. The field is disabled
+  // meanwhile, which takes its focus; a wrong password gives it back.
+  readonly property bool busy: vault.repromptBusy === true
+  onBusyChanged: if (!busy && shown) Qt.callLater(function() { if (confirm.shown) passwordField.forceActiveFocus() })
 
   visible: shown
   z: 30
 
   function submit() {
-    if (passwordField.text === "") return
+    if (confirm.busy || passwordField.text === "") return
     var typed = passwordField.text
     // Not kept in the field once handed over, right or wrong.
     passwordField.text = ""
@@ -98,6 +102,7 @@ Item {
         placeholderText: "Master password..."
         password: true
         inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+        enabled: !confirm.busy
         onAccepted: confirm.submit()
         // Taken here: the panel's own Escape would leave the screen.
         Keys.onEscapePressed: function(event) {
@@ -121,13 +126,14 @@ Item {
         spacing: Style.space(8)
 
         Button {
-          text: "Confirm"
-          iconText: "\u{F012C}"
+          text: confirm.busy ? "Checking..." : "Confirm"
+          iconText: confirm.busy ? "\u{F0450}" : "\u{F012C}"
+          iconSpinning: confirm.busy
           selected: true
           accent: Color.accent
           fontFamily: confirm.panel.fontFamily
           fontSize: Style.font.bodySmall
-          enabled: passwordField.text !== ""
+          enabled: !confirm.busy && passwordField.text !== ""
           onClicked: confirm.submit()
         }
 
