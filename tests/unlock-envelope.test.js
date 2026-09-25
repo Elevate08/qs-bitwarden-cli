@@ -104,6 +104,7 @@ fi`)
 mode=""; name=""
 for a in "$@"; do case "$a" in encrypt|decrypt) mode="$a";; --name=*) name="\${a#--name=}";; esac; done
 if [ "$mode" = encrypt ]; then
+  [ -z "\${FAIL_SEAL:-}" ] || { printf 'partial'; exit 1; }
   { printf 'SEALED:%s:' "$name"; base64 -w0; } | base64 -w0
   [ -z "\${CORRUPT_SEAL:-}" ] || printf 'garbage'
 else
@@ -161,6 +162,10 @@ function suite(realCreds) {
     check(tag + "the keyring holds no readable password",
       stored() !== null && !stored().includes("horse") && !stored().includes("staple"),
       String(stored()).slice(0, 80))
+    // gnome-keyring writes a secret verbatim into a passwordless keyring's
+    // text file, and a line break there makes the whole file unreadable.
+    check(tag + "the keyring holds the sealed envelope on one line",
+      stored() !== null && !/[\r\n]/.test(stored()), "the stored secret has a line break")
     let s = summary()
     eq(tag + "the summary names the account", s.account && s.account.id, ACCOUNT.id)
     check(tag + "only the master wrap exists", s.master && !s.pin && s.fingerprint === false
@@ -187,6 +192,8 @@ function suite(realCreds) {
       run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "add-pin" }), { [SECRET]: PASSWORD, [PIN]: PIN_VALUE }).code, 0)
     eq(tag + "the PIN opens it", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).out, PASSWORD)
     eq(tag + "a wrong PIN is a wrong key", open({ kind: "pin" }, { [PIN]: "000000" }).code, 3)
+    check(tag + "adding a method rewrites it on one line",
+      !/[\r\n]/.test(stored()), "the stored secret has a line break")
 
     eq(tag + "fingerprint is added",
       run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "add-fingerprint" }), { [SECRET]: PASSWORD }).code, 0)
@@ -212,6 +219,9 @@ function suite(realCreds) {
       eq(tag + "a new envelope that does not re-open is never stored",
         run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "mark-stale" }), {}, { CORRUPT_SEAL: "1" }).code, E.verify)
       eq(tag + "and the old envelope is still there", stored(), before)
+      eq(tag + "a seal that fails is reported as its own exit, not the join's",
+        run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "mark-stale" }), {}, { FAIL_SEAL: "1" }).code, 1)
+      eq(tag + "and the old envelope is still there", stored(), before)
     }
 
     // --- a password changed elsewhere ---
@@ -226,6 +236,8 @@ function suite(realCreds) {
     eq(tag + "the PIN still works, now for the new password", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).out, NEW_PASSWORD)
     eq(tag + "so does the key", open({ kind: "fido", cred: CRED }, { [HMAC]: HMAC_VALUE }).out, NEW_PASSWORD)
     eq(tag + "and the stale mark is gone", summary().stale, false)
+    check(tag + "rotating rewrites it on one line",
+      !/[\r\n]/.test(stored()), "the stored secret has a line break")
     eq(tag + "rotating through fingerprint needs no secret",
       run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "rotate", auth: { kind: "fingerprint" } }),
         { [NEW_SECRET]: PASSWORD }).code, 0)
@@ -333,6 +345,37 @@ function suite(realCreds) {
     const handedOut = fs.existsSync(hmacLog) ? fs.readFileSync(hmacLog, "utf8").trim().split("\n") : []
     check(tag + "the stand-in key handed out secrets", handedOut.length >= 5, String(handedOut.length))
 
+    // --- an envelope stored across several lines, before __seal() joined them ---
+    {
+      const SLOT = "0123456789abcdef"
+      const slotFile = path.join(store, Model.keyringEntryName(Model.KEYRING_ENVELOPE, SLOT))
+      const good = stored()
+      const before = open({ kind: "fingerprint" }).out
+      const wrapped = good.match(/.{1,79}/g).join("\n")
+      fs.writeFileSync(path.join(store, Model.KEYRING_ENVELOPE), wrapped)
+      // Split, but not an envelope: it must be left as it is.
+      const junk = Buffer.alloc(200, 5).toString("base64").match(/.{1,79}/g).join("\n")
+      fs.writeFileSync(slotFile, junk)
+      // No keyring file here: the file step skips, and never reaches the real one.
+      const noFiles = { XDG_DATA_HOME: path.join(dir, "data") }
+      const repair = () => run(Model.keyringRepairCommand(repoRoot, [SLOT]), {}, noFiles)
+      let r = repair()
+      const parsed = Model.parseKeyringRepair(r.out)
+      eq(tag + "the startup repair runs", r.code, 0)
+      eq(tag + "it stores a split envelope again", parsed.rejoined, 1)
+      eq(tag + "on one line, the same sealed bytes", stored(), good)
+      check(tag + "and it opens to the same password", before !== "" && open({ kind: "fingerprint" }).out === before, "")
+      check(tag + "a split secret that does not decrypt is reported",
+        parsed.rejoinFailed.length === 1 && parsed.rejoinFailed[0] === "unlock_envelope@" + SLOT, JSON.stringify(parsed))
+      eq(tag + "and left as it was", fs.readFileSync(slotFile, "utf8"), junk)
+      eq(tag + "a missing keyring file is skipped", parsed.file, "skipped")
+      check(tag + "and nothing secret is printed", !r.out.includes(good.slice(0, 40)), "")
+      fs.rmSync(slotFile)
+      r = repair()
+      check(tag + "a second start has nothing to do",
+        r.code === 0 && Model.parseKeyringRepair(r.out).rejoined === 0 && stored() === good, r.out)
+    }
+
     // --- presence, and clearing ---
     eq(tag + "presence is reported without the secret", run(Model.keyringHasEntryCommand(Model.KEYRING_ENVELOPE)).out.trim(), "yes")
     run(Model.keyringClearEntryCommand(Model.KEYRING_ENVELOPE))
@@ -402,6 +445,18 @@ check("a FIDO2 credential that is not base64 is refused",
 check("an unknown method is refused", refused(Model.unlockEnvelopeOpenCommand("/t", ACCOUNT, { kind: "face" })), "")
 check("removing the master wrap is not an operation",
   refused(Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "remove", method: "master" })), "")
+check("the startup repair refuses a relative plugin directory",
+  refused(Model.keyringRepairCommand("plugin", [])), "")
+check("and looks only at well-formed slots, once each",
+  (() => { const c = Model.keyringRepairCommand("/p", ["default", "0123456789abcdef", "0123456789abcdef", "../x"])[2]
+    return c.includes("'unlock_envelope' 'unlock_envelope@0123456789abcdef';") && !c.includes("../x") })(), "")
+{
+  const p = Model.parseKeyringRepair("rejoined=2\nrejoin_failed=unlock_envelope\nfile=repaired\n")
+  check("the repair's report is read", p.rejoined === 2 && p.rejoinFailed[0] === "unlock_envelope" && p.file === "repaired",
+    JSON.stringify(p))
+  eq("a script that died counts as failed", Model.parseKeyringRepair("rejoined=0\n").file, "failed")
+  eq("an unknown status too", Model.parseKeyringRepair("file=maybe\n").file, "failed")
+}
 check("logout clears the envelope with everything else",
   Model.keyringClearAllCommand()[2].includes("'unlock_envelope'"), "keyringClearAllCommand does not name it")
 
