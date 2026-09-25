@@ -1626,7 +1626,17 @@ function envelopePrelude(tool, slot) {
     + "__lookup() { secret-tool lookup" + keyringAttributes(keyringEntryName(KEYRING_ENVELOPE, slot))
     + " 2>/dev/null | head -c " + MAX_ENVELOPE_SEALED_BYTES + "; }; "
     + "__unseal() { printf '%s' \"$1\" | systemd-creds --user decrypt --name=\"$__name\" - - 2>/dev/null; }; "
-    + "__seal() { systemd-creds --user encrypt --name=\"$__name\" - - 2>/dev/null; }; "
+    // The sealed bytes must hold no CR or LF. systemd-creds wraps its base64 at
+    // 79 columns, and a passwordless gnome-keyring (Omarchy's default, from
+    // /usr/share/omarchy/install/user/default-keyring.sh) writes the secret
+    // verbatim into the text file behind the default collection. A multi-line
+    // secret makes that file unreadable at the next login ("keyring was in an
+    // invalid or unrecognized format") and the whole collection disappears.
+    // decrypt takes the joined form, so envelopes stored wrapped still open.
+    // A failed seal must fail, not report tr's 0: cappedScript() sets pipefail
+    // already, and the subshell keeps that true of __seal on its own.
+    + "__seal() { (set -o pipefail; "
+    + "systemd-creds --user encrypt --name=\"$__name\" - - 2>/dev/null | tr -d '\\n\\r'); }; "
     // secret salt t m(KiB) p -> 64 hex digits; the secret reaches argon2 on stdin.
     + "__kdf() { printf '%s' \"$1\" | argon2 \"$2\" -id -t \"$3\" -k \"$4\" -p \"$5\" -l 32 -r 2>/dev/null; }; "
     + "__salt() { head -c 16 /dev/urandom | base64 -w0; }; "
@@ -1796,6 +1806,64 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
     + verifyOpen
     + "__store"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// Run at every start, ahead of other envelope work: undoes what __seal()
+// stored before it joined its lines (see there).
+//  1. An envelope the keyring still serves with a line break in it is stored
+//     again on one line, once the joined form is shown to decrypt. The keyring
+//     rewrites its file cleanly, before the next login can refuse it.
+//  2. scripts/repair-keyring.sh --auto repairs a default keyring file that
+//     already holds one, which gnome-keyring has refused to load.
+// `slots` are the accounts whose entries to look at. Prints rejoined=<n>, a
+// rejoin_failed=<account> line for each one that would not decrypt or store,
+// then the script's file=<status>. No secret leaves the pipes.
+function keyringRepairCommand(pluginDir, slots) {
+  if (typeof pluginDir !== "string" || pluginDir.charAt(0) !== "/") return envelopeRefused()
+  var names = []
+  var list = [DEFAULT_ACCOUNT_SLOT].concat(Array.isArray(slots) ? slots : [])
+  for (var i = 0; i < list.length; i++) {
+    if (!isAccountSlot(list[i])) continue
+    var name = keyringEntryName(KEYRING_ENVELOPE, list[i])
+    if (names.indexOf(name) < 0) names.push(name)
+  }
+  var script = "__n=0; "
+    + "for __a in " + names.map(shellQuote).join(" ") + "; do "
+    + "__v=\"$(secret-tool lookup service " + shellQuote(KEYRING_SERVICE) + " account \"$__a\" 2>/dev/null "
+    + "| head -c " + MAX_ENVELOPE_SEALED_BYTES + ")\" || continue; "
+    + "case \"$__v\" in *$'\\n'*|*$'\\r'*) ;; *) continue ;; esac; "
+    + "__j=\"$(printf '%s' \"$__v\" | tr -d '\\n\\r')\"; __v=''; "
+    + "if printf '%s' \"$__j\" | systemd-creds --user decrypt --name=" + shellQuote(ENVELOPE_CREDENTIAL_NAME)
+    + " - - >/dev/null 2>&1 && printf '%s' \"$__j\" | secret-tool store --label=" + shellQuote(ENVELOPE_LABEL)
+    + " service " + shellQuote(KEYRING_SERVICE) + " account \"$__a\"; "
+    + "then __n=$((__n + 1)); else echo \"rejoin_failed=$__a\"; fi; __j=''; "
+    + "done; "
+    + "echo \"rejoined=$__n\"; "
+    + "bash " + shellQuote(pluginDir.replace(/\/+$/, "") + "/scripts/repair-keyring.sh") + " --auto"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// keyringRepairCommand()'s output -> { rejoined, rejoinFailed: [account],
+// file: "skipped" | "clean" | "repaired" | "failed" }. No status line means
+// the script died, which counts as failed.
+function parseKeyringRepair(raw) {
+  var out = { rejoined: 0, rejoinFailed: [], file: "failed" }
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var m = /^(rejoined|rejoin_failed|file)=(.*)$/.exec(lines[i].replace(/\r$/, ""))
+    if (!m) continue
+    if (m[1] === "rejoined") out.rejoined = Math.max(0, parseInt(m[2], 10) || 0)
+    else if (m[1] === "rejoin_failed") out.rejoinFailed.push(m[2])
+    else if (/^(skipped|clean|repaired|failed)$/.test(m[2])) out.file = m[2]
+  }
+  return out
+}
+
+// Desktop notification after a keyring file repair: gnome-keyring loads a
+// refused file cleanly only after a restart (Omarchy has no logout).
+function repairedKeyringNoticeCommand() {
+  return ["notify-send", "-a", "Bitwarden", "Keyring repaired",
+    "Restart the computer to get your saved passwords and keys back."]
 }
 
 // Quick unlock also needs `argon2` (ships with bitwarden-cli) and a working

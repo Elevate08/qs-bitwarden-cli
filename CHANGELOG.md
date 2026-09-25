@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.11.1] - 2026-09-25
+
+### Fixed
+
+- **The sealed quick-unlock secret is stored on one line.** `systemd-creds`
+  wraps what it seals at 79 columns, and Omarchy's passwordless default
+  keyring is a text file that gnome-keyring writes a secret into verbatim.
+  The line breaks made gnome-keyring refuse the whole default collection
+  after the next login ("keyring was in an invalid or unrecognized format"),
+  so every app's saved secrets vanished and apps asked for a new keyring. The
+  envelope is now written without them, and the first start after updating
+  repairs what an earlier build stored. An envelope the keyring still serves
+  is stored again on one line, before the next login can trip on it. A
+  default keyring file gnome-keyring has already refused has the envelope
+  joined back onto one line in place, with the original kept beside it, and a
+  notification asks for a restart to get the collection back. Quick
+  unlock carries on with nothing to set up again. `scripts/repair-keyring.sh`
+  does the file repair by hand, and `--check` reports without changing
+  anything.
+
 ## [1.11.0] - 2026-09-24
 
 ### Added
