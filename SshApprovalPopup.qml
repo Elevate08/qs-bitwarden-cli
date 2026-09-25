@@ -31,12 +31,20 @@ PanelWindow {
     if (open && backingWindowVisible) focusPrimeTimer.restart()
   }
 
+  // The screen on the card: the approval, or the unlock that precedes it.
+  readonly property var shownScreen: vault.sshPrompt ? approvalScreen : unlockScreen
+  // Until the screen on the card has armed, keys typed at the card are
+  // dropped (see SshApprovalScreen.qml).
+  readonly property bool armed: shownScreen.armed
+
+  // Every refocus (the card opening, the focus prime landing, the request or
+  // the vault's status changing) starts the screen's arming delay over.
   function refocus() {
     if (!open) return
     Qt.callLater(function() {
       if (!popup.open) return
-      if (popup.vault.sshPrompt) approvalScreen.focusDefault()
-      else unlockScreen.focusDefault()
+      popup.shownScreen.rearm()
+      popup.shownScreen.focusDefault()
     })
   }
 
@@ -132,7 +140,11 @@ PanelWindow {
             popup.vault.denyAllSshRequests()
             event.accepted = true
           }
+          return
         }
+        // Not armed yet: this scope may hold focus itself (before the first
+        // refocus), and Tab from here would walk to a tile.
+        if (!popup.armed) event.accepted = true
       }
 
       Flickable {

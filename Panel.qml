@@ -57,8 +57,66 @@ Panel {
   }
 
   function focusField(name) {
+    // Not armed for an SSH request yet: the field is focused when it is.
+    if (!root.sshKeysArmed) {
+      root.sshDeferredField = name
+      sshKeyGuard.forceActiveFocus()
+      return
+    }
     var field = fieldFor(name)
     if (field) field.forceActiveFocus()
+  }
+
+  // SSH requests drawn in the panel itself (the centred card turned off) arm
+  // like the card does (SshApprovalScreen.qml). The panel opens for a request
+  // while the user may be typing elsewhere, and on a locked vault its focus
+  // target is the unlock field, so stray keys and an Enter used to submit a
+  // wrong PIN or part of another password. Until armed, a guard holds the
+  // keyboard and drops every key but Escape; a field the vault asks to focus
+  // meanwhile gets focus once armed.
+  readonly property int sshArmDelayMs: 800
+  readonly property bool sshRequestInPanel: root.opened && !root.vault.sshAgentApprovalPopup
+    && (root.vault.sshPrompt !== null || root.vault.sshUnlockRequest !== null)
+  property bool sshKeysArmed: true
+  property string sshDeferredField: ""
+
+  function rearmSshKeys() {
+    if (root.sshRequestInPanel) {
+      root.sshKeysArmed = false
+      sshArmTimer.restart()
+      sshKeyGuard.forceActiveFocus()
+      return
+    }
+    // Nothing on screen to guard any more.
+    sshArmTimer.stop()
+    var wasArmed = root.sshKeysArmed
+    var name = root.sshDeferredField
+    root.sshKeysArmed = true
+    root.sshDeferredField = ""
+    if (!wasArmed && name !== "") root.focusField(name)
+  }
+
+  onSshRequestInPanelChanged: rearmSshKeys()
+
+  Connections {
+    target: root.vault
+    function onSshPromptChanged() { root.rearmSshKeys() }
+    function onSshUnlockRequestChanged() { root.rearmSshKeys() }
+    function onStatusChanged() { if (root.sshRequestInPanel) root.rearmSshKeys() }
+  }
+
+  Timer {
+    id: sshArmTimer
+    interval: root.sshArmDelayMs
+    onTriggered: {
+      root.sshKeysArmed = true
+      var name = root.sshDeferredField
+      root.sshDeferredField = ""
+      // Only if nothing else took the keyboard meanwhile.
+      if (!sshKeyGuard.activeFocus) return
+      if (name !== "") root.focusField(name)
+      else if (panel.focusTarget) panel.focusTarget.forceActiveFocus()
+    }
   }
 
   function fieldHasFocus(name) {
@@ -452,8 +510,9 @@ Panel {
     bar: root.bar
     open: root.opened
     // The key catcher drives every unlocked screen but the two text-entry
-    // ones, and setup (all buttons) outright.
-    focusTarget: (root.vault.currentScreen === "setup" || root.vault.currentScreen === "accounts")
+    // ones, and setup (all buttons) outright. The SSH guard first, until an
+    // SSH request shown here is armed.
+    focusTarget: !root.sshKeysArmed ? sshKeyGuard : (root.vault.currentScreen === "setup" || root.vault.currentScreen === "accounts")
       ? keyCatcher
       : ((root.vault.status === "unlocked"
           && root.vault.currentScreen !== "edit"
@@ -514,6 +573,17 @@ Panel {
         || (root.vault.currentScreen === "fido")
         || (root.vault.currentScreen === "fingerprint")
         || (root.vault.currentScreen === "sends" && root.vault.sendMode === "create")
+
+      // Holds the keyboard until an SSH request shown in the panel is armed
+      // (see rearmSshKeys()). Escape is left to the dispatch, which denies.
+      Item {
+        id: sshKeyGuard
+        width: 0
+        height: 0
+        Keys.onPressed: function(event) {
+          if (!root.sshKeysArmed && event.key !== Qt.Key_Escape) event.accepted = true
+        }
+      }
 
       // Only where the catcher is not blocked; same dispatch as the interceptor.
       onCloseRequested: root.vault.handleEscape()

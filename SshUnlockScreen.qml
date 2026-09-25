@@ -18,14 +18,74 @@ Column {
   width: parent ? parent.width : 0
   spacing: Style.space(12)
 
+  // Like the approval card (see SshApprovalScreen.qml): the request can
+  // arrive mid-typing, and focus used to land straight in the PIN or
+  // password field, so stray keys and an Enter submitted them (five wrong
+  // PINs remove PIN unlock; part of a sudo password could reach `bw unlock`).
+  // For armDelayMs after the card appears, its request or the vault's status
+  // changes, or the popup takes focus, the guard holds the keyboard and drops
+  // everything but Escape; then the field gets focus.
+  readonly property int armDelayMs: 800
+  property bool armed: false
+  readonly property bool shown: active && visible
+
+  function rearm() {
+    screen.armed = false
+    if (!screen.shown) {
+      armTimer.stop()
+      return
+    }
+    armTimer.restart()
+    keyGuard.forceActiveFocus()
+  }
+
   function focusDefault() {
     if (!screen.active || !screen.visible) return
     screen.vault.prepareUnlock()
     screen.vault.armPresenceUnlock()
+    screen.focusField()
+  }
+
+  // The unlock field once armed; the guard until then (the timer comes back).
+  function focusField() {
+    if (!screen.armed) {
+      keyGuard.forceActiveFocus()
+      return
+    }
     Qt.callLater(function() {
-      if (!screen.active || !unlockForm.fieldsOffered) return
+      if (!screen.active || !screen.armed || !unlockForm.fieldsOffered) return
       if (unlockForm.focusField) unlockForm.focusField.forceActiveFocus()
     })
+  }
+
+  onShownChanged: rearm()
+  // A Loader may build the card already shown, when no change is signalled.
+  Component.onCompleted: rearm()
+
+  Connections {
+    target: screen.vault
+    function onSshUnlockRequestChanged() { screen.rearm() }
+    function onStatusChanged() { screen.rearm() }
+  }
+
+  Timer {
+    id: armTimer
+    interval: screen.armDelayMs
+    onTriggered: {
+      screen.armed = true
+      if (keyGuard.activeFocus) screen.focusField()
+    }
+  }
+
+  // Zero-sized, so the Column does not lay it out.
+  Item {
+    id: keyGuard
+    width: 0
+    height: 0
+    Keys.onPressed: function(event) {
+      if (event.key === Qt.Key_Escape) return
+      if (!screen.armed) event.accepted = true
+    }
   }
 
   function syncFromVault() {
