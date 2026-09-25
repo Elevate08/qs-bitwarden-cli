@@ -25,9 +25,17 @@ function loadModule(file = "BitwardenModel.js") {
 // service-host.test.js keeps that fold exact.
 function readPluginSource(file) {
   if (file === "Panel.qml") {
-    return read("Service.qml") + "\n" + read("Panel.qml").replace(/\broot\.vault\./g, "root.")
+    return read("Service.qml") + "\n" + readView().replace(/\broot\.vault\./g, "root.")
   }
   return read(file).replace(/\bvault\./g, "panel.")
+}
+
+// The files that make up the per-monitor view that Panel.qml is, as one text
+// in drawing order: Panel.qml itself, then what it builds.
+const viewFiles = ["Panel.qml"]
+
+function readView() {
+  return viewFiles.map(read).join("\n")
 }
 
 // The text of `function name(...) { ... }` in src, or "" if absent.
@@ -58,4 +66,4 @@ function createSuite(name) {
   return { check, eq, done, failures, get pass() { return pass } }
 }
 
-module.exports = { repoRoot, read, loadModule, readPluginSource, functionBody, createSuite }
+module.exports = { repoRoot, read, loadModule, readPluginSource, readView, viewFiles, functionBody, createSuite }

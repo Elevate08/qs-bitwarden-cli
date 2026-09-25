@@ -162,6 +162,61 @@ Panel {
     Qt.callLater(function() { loginPassField.forceActiveFocus() })
   }
 
+  // Master password re-prompt: Bitwarden's per-item flag that asks for the
+  // master password before a secret of that item is shown, copied or edited.
+  // Every such action here goes through the vault's withReprompt(), which
+  // runs it at once for an ordinary item and only after the password is
+  // confirmed (RepromptConfirm.qml) for a flagged one. Protected: password,
+  // TOTP, card number and code, SSN, passport and licence numbers, hidden
+  // custom fields, notes, attachments, and editing.
+  function protect(item, action) {
+    root.vault.withReprompt(item, action)
+  }
+
+  // Revealing asks; hiding never does.
+  function toggleProtectedReveal(key) {
+    if (root.vault.isFieldRevealed(key)) root.vault.toggleFieldReveal(key)
+    else root.protect(root.vault.detailItem, function() { root.vault.toggleFieldReveal(key) })
+  }
+
+  // Copies a protected value of the item on the detail screen.
+  function copyDetailSecret(value, label) {
+    if (!value) return
+    root.protect(root.vault.detailItem, function() { root.vault.copyToClipboard(value, label) })
+  }
+
+  // Enter, `y` and `p` on the detail screen: a card's number, else a login's
+  // password.
+  function copyPrimarySecret() {
+    if (root.vault.detailIsCard) {
+      if (root.vault.detailCard && root.vault.detailCard.number) root.copyDetailSecret(root.vault.detailCard.number, "Card number")
+    } else if (root.vault.detailIsLoginLike && root.vault.detailPassword) {
+      root.copyDetailSecret(root.vault.detailPassword, "Password")
+    }
+  }
+
+  function editDetailItem() {
+    var item = root.vault.detailItem
+    if (item) root.protect(item, function() { root.vault.startEditItem(item) })
+  }
+
+  // Whether an item carries the flag, for the lock glyph and masking.
+  function asksMasterPassword(item) {
+    return !!item && Number(item.reprompt) === 1
+  }
+
+  // Enter and the row's key button: a login's password (and its TOTP after),
+  // which is protected; anything else opens the item, which is not. Mirrors
+  // the vault's handleSmartEnter().
+  function smartEnter(item) {
+    if (!item) return
+    if (Model.isLoginItem(item) && (item.hasPassword !== undefined ? item.hasPassword : Boolean(item.password))) {
+      root.protect(item, function() { root.vault.handleSmartEnter(item) })
+    } else {
+      root.vault.handleSmartEnter(item)
+    }
+  }
+
   // The same guarantee for the unlock, item-form and Send secrets.
   function syncSensitiveFields() {
     syncLoginFields()
@@ -531,6 +586,15 @@ Panel {
     Item {
       id: shortcutInterceptor
       Keys.onPressed: function(event) {
+        // The re-prompt question takes the keyboard; Escape cancels it.
+        if (repromptConfirm.shown) {
+          if (event.key === Qt.Key_Escape) {
+            repromptConfirm.cancel()
+            event.accepted = true
+          }
+          return
+        }
+
         // Escape here, since the catcher is blocked on text-entry screens and
         // would swallow it.
         if (event.key === Qt.Key_Escape && !(event.modifiers & ~Qt.KeypadModifier)) {
@@ -562,7 +626,8 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       Keys.forwardTo: [shortcutInterceptor]
-      blocked: searchField.activeFocus
+      blocked: repromptConfirm.shown
+        || searchField.activeFocus
         || emailField.activeFocus
         || loginPassField.activeFocus
         || code2faField.activeFocus
@@ -644,23 +709,12 @@ Panel {
           return
         }
         if (root.vault.currentScreen === "main") {
-          var item = root.vault.getSelectedItem()
-          if (item) {
-            root.vault.handleSmartEnter(item)
-          }
+          root.smartEnter(root.vault.getSelectedItem())
           return
         }
         // Enter copies the item's primary secret, like `y`: a login's password,
         // a card's number. Nothing on notes and identities.
-        if (root.vault.currentScreen === "detail") {
-          if (root.vault.detailIsCard) {
-            if (root.vault.detailCard && root.vault.detailCard.number) {
-              root.vault.copyToClipboard(root.vault.detailCard.number, "Card number")
-            }
-          } else if (root.vault.detailIsLoginLike && root.vault.detailPassword) {
-            root.vault.copyToClipboard(root.vault.detailPassword, "Password")
-          }
-        }
+        if (root.vault.currentScreen === "detail") root.copyPrimarySecret()
       }
       onTextKey: function(key) {
         var lower = String(key).toLowerCase()
@@ -676,18 +730,14 @@ Panel {
         } else if (root.vault.currentScreen === "detail") {
           // `y` copies the item's primary secret (password or card number).
           if (lower === "y" || lower === "p") {
-            if (root.vault.detailIsCard) {
-              if (root.vault.detailCard && root.vault.detailCard.number) root.vault.copyToClipboard(root.vault.detailCard.number, "Card number")
-            } else if (root.vault.detailPassword) {
-              root.vault.copyToClipboard(root.vault.detailPassword, "Password")
-            }
+            root.copyPrimarySecret()
           } else if (lower === "n") {
             if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.number) {
-              root.vault.copyToClipboard(root.vault.detailCard.number, "Card number")
+              root.copyDetailSecret(root.vault.detailCard.number, "Card number")
             }
           } else if (lower === "k") {
             if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.code) {
-              root.vault.copyToClipboard(root.vault.detailCard.code, "Security code")
+              root.copyDetailSecret(root.vault.detailCard.code, "Security code")
             }
           } else if (lower === "u" || lower === "c") {
             // `u` copies the identifier, `c` the contact address (both the
@@ -702,15 +752,15 @@ Panel {
               root.vault.copyToClipboard(root.vault.detailItem.username, "Username")
             }
           } else if (lower === "m") {
-            if (root.vault.liveTotp) root.vault.copyToClipboard(root.vault.liveTotp, "TOTP")
+            if (root.vault.liveTotp) root.copyDetailSecret(root.vault.liveTotp, "TOTP")
           } else if (lower === "e") {
-            if (root.vault.detailItem) root.vault.startEditItem(root.vault.detailItem)
+            root.editDetailItem()
           } else if (lower === "x") {
             if (root.vault.detailItem && root.vault.detailItem.typeCode !== 5) root.vault.showDeleteConfirm = true
           } else if (lower === "v") {
-            if (root.vault.primaryRevealKey !== "") root.vault.toggleFieldReveal(root.vault.primaryRevealKey)
+            if (root.vault.primaryRevealKey !== "") root.toggleProtectedReveal(root.vault.primaryRevealKey)
           } else if (lower === "a") {
-            root.vault.saveAllAttachments()
+            root.protect(root.vault.detailItem, function() { root.vault.saveAllAttachments() })
           } else if (lower === "b" || lower === "q") {
             root.vault.currentScreen = "main"
           }
@@ -886,7 +936,8 @@ Panel {
               fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: {
-                if (root.vault.totpFollowupItem) root.vault.copyTotpCode(root.vault.totpFollowupItem)
+                var item = root.vault.totpFollowupItem
+                if (item) root.protect(item, function() { root.vault.copyTotpCode(item) })
                 root.vault.totpFollowupActive = false
               }
             }
@@ -3187,10 +3238,7 @@ Panel {
                 keyCatcher.forceActiveFocus()
                 root.vault.moveCursor(1)
               }
-              Keys.onReturnPressed: {
-                var itm = root.vault.getSelectedItem()
-                if (itm) root.vault.handleSmartEnter(itm)
-              }
+              Keys.onReturnPressed: root.smartEnter(root.vault.getSelectedItem())
               // Only while the list is showing: Qt keeps focus on hidden
               // items, so Escape from the item form would close the panel.
               Keys.onEscapePressed: function(event) {
@@ -3357,6 +3405,7 @@ Panel {
                         elide: Text.ElideRight
                         width: Math.min(implicitWidth, parent.width
                           - (itemData.favorite ? Style.space(16) : 0)
+                          - (root.asksMasterPassword(itemData) ? Style.space(18) : 0)
                           - (itemData.hasAttachments ? Style.space(18) : 0))
                       }
 
@@ -3365,6 +3414,17 @@ Panel {
                         visible: itemData.favorite
                         text: "★"
                         color: Color.accent
+                        font.pixelSize: Style.font.bodySmall
+                        anchors.verticalCenter: parent.verticalCenter
+                      }
+
+                      // Asks for the master password before its secrets.
+                      Text {
+                        textFormat: Text.PlainText
+                        visible: root.asksMasterPassword(itemData)
+                        text: "\u{F033E}"
+                        color: root.dim
+                        font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                         anchors.verticalCenter: parent.verticalCenter
                       }
@@ -3448,7 +3508,7 @@ Panel {
                       iconText: "󰌆"
                       tooltipText: "Copy password (Enter / y)"
                       fontFamily: root.fontFamily
-                      onClicked: root.vault.handleSmartEnter(itemData)
+                      onClicked: root.smartEnter(itemData)
                     }
 
                     PanelActionButton {
@@ -3464,7 +3524,7 @@ Panel {
                       iconText: "󰥔"
                       tooltipText: "Copy TOTP code (m)"
                       fontFamily: root.fontFamily
-                      onClicked: root.vault.copyTotpCode(itemData)
+                      onClicked: root.protect(itemData, function() { root.vault.copyTotpCode(itemData) })
                     }
 
                     PanelActionButton {
@@ -3789,7 +3849,7 @@ Panel {
               iconText: "󰏫"
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
-              onClicked: if (root.vault.detailItem) root.vault.startEditItem(root.vault.detailItem)
+              onClicked: root.editDetailItem()
             }
 
             Button {
@@ -3896,7 +3956,8 @@ Panel {
                       font.pixelSize: Style.font.title
                       font.bold: true
                       elide: Text.ElideRight
-                      width: Math.min(implicitWidth, parent.width - Style.space(20))
+                      width: Math.min(implicitWidth, parent.width - Style.space(20)
+                        - (root.asksMasterPassword(root.vault.detailItem) ? Style.space(20) : 0))
                     }
 
                     Text {
@@ -3904,6 +3965,15 @@ Panel {
                       visible: Boolean(root.vault.detailItem && root.vault.detailItem.favorite)
                       text: "★"
                       color: Color.accent
+                      font.pixelSize: Style.font.body
+                    }
+
+                    Text {
+                      textFormat: Text.PlainText
+                      visible: root.asksMasterPassword(root.vault.detailItem)
+                      text: "\u{F033E}"
+                      color: root.dim
+                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                     }
                   }
@@ -4028,14 +4098,14 @@ Panel {
                         iconText: root.vault.isFieldRevealed("password") ? "󰈉" : "󰈈"
                         tooltipText: root.vault.isFieldRevealed("password") ? "Hide password (v)" : "Reveal password (v)"
                         fontFamily: root.fontFamily
-                        onClicked: root.vault.toggleFieldReveal("password")
+                        onClicked: root.toggleProtectedReveal("password")
                       }
 
                       PanelActionButton {
                         iconText: "󰌆"
                         tooltipText: "Copy password (y / Enter)"
                         fontFamily: root.fontFamily
-                        onClicked: root.vault.copyToClipboard(root.vault.detailPassword, "Password")
+                        onClicked: root.copyDetailSecret(root.vault.detailPassword, "Password")
                       }
                     }
                   }
@@ -4087,23 +4157,39 @@ Panel {
                     Text {
                       textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
-                      text: root.vault.liveTotp ? (root.vault.liveTotp.length === 6 ? root.vault.liveTotp.slice(0, 3) + " " + root.vault.liveTotp.slice(3) : root.vault.liveTotp) : "Loading..."
+                      // A flagged item's code stays hidden until revealed.
+                      text: root.asksMasterPassword(root.vault.detailItem) && !root.vault.isFieldRevealed("totp")
+                        ? "\u2022\u2022\u2022 \u2022\u2022\u2022"
+                        : (root.vault.liveTotp ? (root.vault.liveTotp.length === 6 ? root.vault.liveTotp.slice(0, 3) + " " + root.vault.liveTotp.slice(3) : root.vault.liveTotp) : "Loading...")
                       color: Color.accent
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.title
                       font.bold: true
                       font.letterSpacing: 2.0
-                      width: parent.width - copyTotpBtn.width - Style.space(10)
+                      width: parent.width - totpActions.width - Style.space(10)
                     }
 
-                    PanelActionButton {
-                      id: copyTotpBtn
+                    Row {
+                      id: totpActions
                       anchors.verticalCenter: parent.verticalCenter
-                      iconText: "󰥔"
-                      tooltipText: "Copy TOTP code (m)"
-                      fontFamily: root.fontFamily
-                      enabled: root.vault.liveTotp !== ""
-                      onClicked: root.vault.copyToClipboard(root.vault.liveTotp, "TOTP code")
+                      spacing: Style.space(4)
+
+                      PanelActionButton {
+                        visible: root.asksMasterPassword(root.vault.detailItem)
+                        iconText: root.vault.isFieldRevealed("totp") ? "󰈉" : "󰈈"
+                        tooltipText: root.vault.isFieldRevealed("totp") ? "Hide code" : "Reveal code"
+                        fontFamily: root.fontFamily
+                        onClicked: root.toggleProtectedReveal("totp")
+                      }
+
+                      PanelActionButton {
+                        id: copyTotpBtn
+                        iconText: "󰥔"
+                        tooltipText: "Copy TOTP code (m)"
+                        fontFamily: root.fontFamily
+                        enabled: root.vault.liveTotp !== ""
+                        onClicked: root.copyDetailSecret(root.vault.liveTotp, "TOTP code")
+                      }
                     }
                   }
                 }
@@ -4175,7 +4261,7 @@ Panel {
                     tooltipText: "Save all attachments (a)"
                     size: Style.space(20)
                     fontFamily: root.fontFamily
-                    onClicked: root.vault.saveAllAttachments()
+                    onClicked: root.protect(root.vault.detailItem, function() { root.vault.saveAllAttachments() })
                   }
                 }
 
@@ -4242,7 +4328,10 @@ Panel {
                           iconText: "󰇚"
                           tooltipText: "Save to your download folder"
                           fontFamily: root.fontFamily
-                          onClicked: root.vault.queueAttachment(modelData)
+                          onClicked: {
+                            var attachment = modelData
+                            root.protect(root.vault.detailItem, function() { root.vault.queueAttachment(attachment) })
+                          }
                         }
 
                         PanelActionButton {
@@ -4278,11 +4367,19 @@ Panel {
                   PanelSectionHeader { text: "NOTES" }
                   Item { Layout.fillWidth: true }
                   PanelActionButton {
+                    visible: root.asksMasterPassword(root.vault.detailItem)
+                    iconText: root.vault.isFieldRevealed("notes") ? "󰈉" : "󰈈"
+                    tooltipText: root.vault.isFieldRevealed("notes") ? "Hide notes" : "Reveal notes"
+                    size: Style.space(20)
+                    fontFamily: root.fontFamily
+                    onClicked: root.toggleProtectedReveal("notes")
+                  }
+                  PanelActionButton {
                     iconText: "󰈙"
                     tooltipText: "Copy notes"
                     size: Style.space(20)
                     fontFamily: root.fontFamily
-                    onClicked: if (root.vault.detailItem) root.vault.copyToClipboard(root.vault.detailItem.notes, "Notes")
+                    onClicked: if (root.vault.detailItem) root.copyDetailSecret(root.vault.detailItem.notes, "Notes")
                   }
                 }
 
@@ -4298,7 +4395,12 @@ Panel {
                     textFormat: Text.PlainText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
-                    text: root.vault.detailItem ? root.vault.detailItem.notes : ""
+                    // A flagged item's notes (a Secure Note's whole content)
+                    // stay hidden until revealed.
+                    text: !root.vault.detailItem ? ""
+                      : (root.asksMasterPassword(root.vault.detailItem) && !root.vault.isFieldRevealed("notes")
+                        ? "Hidden: this item asks for your master password first."
+                        : root.vault.detailItem.notes)
                     color: root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -4340,8 +4442,8 @@ Panel {
                 value: root.vault.detailCard ? root.vault.detailCard.number : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.vault.toggleFieldReveal("cardNumber")
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.number : "", "Card number")
+                onRevealToggled: root.toggleProtectedReveal("cardNumber")
+                onCopyRequested: root.copyDetailSecret(root.vault.detailCard ? root.vault.detailCard.number : "", "Card number")
               }
 
               DetailField {
@@ -4363,8 +4465,8 @@ Panel {
                 value: root.vault.detailCard ? root.vault.detailCard.code : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.vault.toggleFieldReveal("cardCode")
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.code : "", "Security code")
+                onRevealToggled: root.toggleProtectedReveal("cardCode")
+                onCopyRequested: root.copyDetailSecret(root.vault.detailCard ? root.vault.detailCard.code : "", "Security code")
               }
 
               // -----------------------------------------------------------
@@ -4428,8 +4530,8 @@ Panel {
                 value: root.vault.detailIdentity ? root.vault.detailIdentity.ssn : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.vault.toggleFieldReveal("ssn")
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "", "SSN")
+                onRevealToggled: root.toggleProtectedReveal("ssn")
+                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "", "SSN")
               }
 
               DetailField {
@@ -4441,8 +4543,8 @@ Panel {
                 value: root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.vault.toggleFieldReveal("passport")
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "", "Passport number")
+                onRevealToggled: root.toggleProtectedReveal("passport")
+                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "", "Passport number")
               }
 
               DetailField {
@@ -4454,8 +4556,8 @@ Panel {
                 value: root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : ""
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.vault.toggleFieldReveal("licence")
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "", "Licence number")
+                onRevealToggled: root.toggleProtectedReveal("licence")
+                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "", "Licence number")
               }
 
               PanelSectionHeader {
@@ -4530,8 +4632,14 @@ Panel {
                     revealed: root.vault.isFieldRevealed(revealKey)
                     foreground: root.fg
                     fontFamily: root.fontFamily
-                    onRevealToggled: root.vault.toggleFieldReveal(revealKey)
-                    onCopyRequested: root.vault.copyToClipboard(modelData.value, modelData.name)
+                    onRevealToggled: root.toggleProtectedReveal(revealKey)
+                    // Hidden fields are protected; plain ones are not.
+                    onCopyRequested: {
+                      var value = modelData.value
+                      var name = modelData.name
+                      if (sensitive) root.copyDetailSecret(value, name)
+                      else root.vault.copyToClipboard(value, name)
+                    }
                   }
                 }
               }
@@ -5321,6 +5429,14 @@ Panel {
             }
           }
         }
+      }
+
+      // Asks for the master password of a flagged item (see protect()).
+      RepromptConfirm {
+        id: repromptConfirm
+        anchors.fill: parent
+        panel: root
+        vault: root.vault
       }
 
       // Overlaid beside mainColumn, outside the layout, so messages never
