@@ -582,6 +582,14 @@ check("an unrecognised type is drawn as a login, not as the unreachable shield",
       && /buildEditPayload\([^\n]*formCustomFields, uriEntries\)/.test(save), save)
 }
 
+// --- a masked value does not give away its length ------------------------------
+// The mask used to repeat one dot per character (up to 16), which showed how
+// long a hidden password, card code or PIN was.
+check("every hidden value is masked to the same length",
+  ["a", "1234", "hunter2", "x".repeat(40)].every(v => Model.maskString(v) === "••••••••"),
+  ["a", "1234", "hunter2"].map(v => Model.maskString(v)).join(" | "))
+check("nothing to hide masks to nothing", Model.maskString("") === "" && Model.maskString(null) === "", "")
+
 // A key icon on the password controls, pinned per button (a bulk glyph
 // replacement once changed them all).
 const panelSrc = readPluginSource("Panel.qml")

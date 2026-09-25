@@ -3048,9 +3048,13 @@ function validateItemForm(name, organizationId, collectionIds, customFields) {
   return ""
 }
 
+// A fixed-length mask: repeating a dot per character showed a hidden
+// value's length (up to 16), which narrows a short password or a PIN.
+var MASK = "••••••••"
+
 function maskString(str) {
   if (!str) return ""
-  return "•".repeat(Math.min(str.length, 16))
+  return MASK
 }
 
 // No local password generator: Math.random() is not a CSPRNG. Passwords come
@@ -6368,21 +6372,18 @@ function sendAccessLabel(send) {
 // Rendering vault text safely
 // ---------------------------------------------------------------------------
 
-// Qt Text defaults to AutoText, which renders anything that looks like markup
-// as HTML, and kit controls (Ui.Button) give no way to change that. So vault
-// text containing "<" or "&" is HTML-escaped and wrapped in a pre-wrap <span>,
-// which renders back to the literal characters; anything else passes as is.
+// The text a kit control (Ui.Button, its tooltip) is handed for vault data.
+// Omarchy 4.0.4's kit draws those labels with Text.PlainText, so the value is
+// passed unchanged: the HTML-escaped <span> this used to return for text
+// with "<" or "&" was drawn literally ("<span ...>Bills &amp; Banking</span>").
+// The plugin's own Text elements pin PlainText too; rich-text.test.js checks
+// both.
 function plainLabel(value) {
-  var text = (value === undefined || value === null) ? "" : String(value)
-  if (text.indexOf("<") < 0 && text.indexOf("&") < 0) return text
-  return "<span style=\"white-space:pre-wrap\">"
-    + text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    + "</span>"
+  return (value === undefined || value === null) ? "" : String(value)
 }
 
 // Ui.Button sizes to its label without eliding, so vault text is clipped to
-// `max` characters (the font is monospace; the "..." counts). Call before
-// plainLabel(), which may add markup that must not be cut.
+// `max` characters (the font is monospace; the "..." counts).
 function clipLabel(value, max) {
   var text = (value === undefined || value === null) ? "" : String(value)
   var limit = Math.max(1, Math.floor(Number(max) || 0))
