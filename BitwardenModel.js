@@ -5906,40 +5906,71 @@ function normalizeGeneratorOptions(opts) {
 // -------------------------------------------------------------------------
 //
 // `bw generate` costs ~2.9 s of CLI startup per call; `bw serve` pays it once
-// and answers in ~2 ms. It runs with no session, so it can only generate: the
-// loopback port is unauthenticated and open to every local user.
-var GENERATE_HOST = "127.0.0.1"
-var GENERATE_PORT = 8087
+// and answers in ~2 ms. It runs with no session, so it holds a locked vault.
+//
+// It listens on a Unix socket in the private runtime directory (0700), not on
+// a loopback port: a port is open to every local user, who could POST
+// /unlock to guess the master password (no second factor, no lockout) and
+// read /status (the account email and user id). A logged-out `bw serve` on
+// an empty data directory would avoid holding the account at all, but bw
+// 2026.2.0 refuses to start one ("You are not logged in."), so it runs in the
+// account's own data directory and the socket's directory is what keeps
+// other users out. `unix://` hostnames are handled by bw's serve command
+// (2026.2.0); a bw that cannot bind one exits, and the panel falls back to
+// `bw generate` (generatorServeExitAction()).
+var GENERATE_SOCKET_NAME = "generator.sock"
+// The request line's host; the socket is what is connected to.
+var GENERATE_HOST = "localhost"
+
+// The socket's directory and path, in shell variables __gen_dir/__gen_sock.
+function generatorSocketPrelude(missingExit) {
+  return "test -n \"${XDG_RUNTIME_DIR:-}\" || exit " + missingExit + "; "
+    + "__gen_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
+    + "__gen_sock=\"$__gen_dir/" + GENERATE_SOCKET_NAME + "\"; "
+}
 
 // A managed child, so it dies with the shell. The caller clears BW_SESSION
-// (generatorServeEnv() in Service.qml).
+// (generatorServeEnv() in Service.qml). The port probe has already found no
+// server on the socket, so a file still there is a dead server's and is
+// removed (a stale socket file makes the bind fail). `exec` so stopping the
+// Process stops bw itself.
 function generateServeCommand() {
-  return ["bw", "serve", "--hostname", GENERATE_HOST, "--port", String(GENERATE_PORT)]
+  var script = generatorSocketPrelude(1) + privateDirScript("__gen_dir")
+    + "rm -f -- \"$__gen_sock\" || exit 1; "
+    + "exec bw serve --hostname \"unix://$__gen_sock\""
+  return ["bash", "-c", script]
 }
 
 // -------------------------------------------------------------------------
 // Generator request bounds
 // -------------------------------------------------------------------------
 //
-// The port is first-come, so whoever holds it could stall or stream forever.
-// Requests go through curl with a timeout and a `head -c` cap, keeping the
-// response out of the shell's memory until it is bounded.
+// Whatever answers on the socket could stall or stream forever. Requests go
+// through curl with a timeout and a `head -c` cap, keeping the response out
+// of the shell's memory until it is bounded.
 var GENERATE_RESPONSE_CAP = 64 * 1024
 var GENERATE_REQUEST_TIMEOUT_MS = 2000
 
+// No socket (or no runtime directory yet) is reported as curl's own "could
+// not connect" (7), which the probe reads as free. A directory that is not a
+// real one is not free: the server will refuse to start there too.
 function generateServeRequestCommand(opts) {
   var url = generateServeUrl(opts)
   var timeoutSecs = Math.max(1, Math.round(GENERATE_REQUEST_TIMEOUT_MS / 1000))
-  // -q (first) ignores ~/.curlrc; --noproxy keeps it on loopback.
-  var script = "curl -q -s -S --noproxy '*' --max-time " + timeoutSecs + " --connect-timeout " + timeoutSecs
+  var script = generatorSocketPrelude(7)
+    + "if [ -L \"$__gen_dir\" ]; then exit 2; fi; "
+    + "[ -d \"$__gen_dir\" ] && [ -S \"$__gen_sock\" ] || exit 7; "
+    // -q (first) ignores ~/.curlrc; --noproxy so no proxy variable reroutes it.
+    + "curl -q -s -S --noproxy '*' --unix-socket \"$__gen_sock\" --max-time " + timeoutSecs
+    + " --connect-timeout " + timeoutSecs
     + " " + shellQuote(url) + " | head -c " + Number(GENERATE_RESPONSE_CAP)
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// Whether a curl probe of the port found another server. Only a refused
-// connection (exit 7, no output) leaves it free for ours: an answer, a timeout
-// or a truncated stream all mean someone else is bound, and a password from a
-// stranger's server is one they know.
+// Whether a curl probe of the socket found a server already there. Only a
+// refused connection (exit 7, no output) leaves it free for ours: an answer, a
+// timeout or a truncated stream all mean something else is serving, and a
+// password from a server that is not ours is not one to use.
 function generatorProbeIsForeign(exitCode, stdout) {
   return !(Number(exitCode) === 7 && String(stdout || "").trim() === "")
 }
@@ -5985,7 +6016,7 @@ function generateServeUrl(opts) {
   var q = generatorParams(opts).map(function(p) {
     return p[0] + "=" + (p[1] === true ? "true" : encodeURIComponent(String(p[1])))
   })
-  return "http://" + GENERATE_HOST + ":" + GENERATE_PORT + "/generate?" + q.join("&")
+  return "http://" + GENERATE_HOST + "/generate?" + q.join("&")
 }
 
 // { success: true, data: { data: "<password>" } } on the way out.

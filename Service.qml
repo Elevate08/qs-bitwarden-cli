@@ -476,8 +476,8 @@ Item {
   property bool genRegeneratePending: false
   property string genRequestSignature: ""
   // `bw serve`: ready once it answers; failed means the CLI is used instead,
-  // usually because someone else holds the port (whose answers must not be
-  // trusted).
+  // because the server could not start or something else already answers on
+  // its socket (whose answers must not be trusted).
   property bool generateServeReady: false
   property bool generateServeStarting: false
   property bool generateServeFailed: false
@@ -3589,7 +3589,10 @@ Item {
     generateProc.running = true
   }
 
-  // No session in its environment, so it can only generate.
+  // No session in its environment, so it holds a locked vault. The account's
+  // own data directory stays: bw refuses to serve while logged out (checked
+  // with bw 2026.2.0), so an empty private one cannot be used; the private
+  // socket (Model.generateServeCommand()) is what keeps other users out.
   function generatorServeEnv() {
     var env = accountAppDataEnv()
     env[Model.sessionEnvVar()] = null
@@ -3597,9 +3600,9 @@ Item {
     return env
   }
 
-  // A 200 does not prove the answer is ours: another account could bind the
-  // port first and serve known passwords. So the port must be silent before
-  // our server takes it; otherwise the CLI is used.
+  // A 200 does not prove the answer is ours, so the socket must be silent
+  // before our server takes it; otherwise the CLI is used. The socket lives in
+  // the private runtime directory, so only this user could be answering there.
   function startGeneratorServe() {
     if (generateServeReady || generateServeStarting || generateServeFailed) return
     generateServeStarting = true
@@ -5122,8 +5125,9 @@ Item {
   // Qt keeps focus on hidden items, so a field on the screen just left would
   // keep the keyboard. Re-home focus on every screen change.
   onCurrentScreenChanged: {
-    // Only while its screen is up: the port is open to every local account,
-    // and `bw serve` reports the account email even when locked.
+    // Only while its screen is up: `bw serve` answers anything that reaches
+    // its socket (the account email even when locked, and /unlock), so it
+    // does not idle for the whole session.
     if (currentScreen !== "generator") stopGeneratorServe()
     // Leaving a setup form drops its typed master password.
     if (currentScreen !== "pin") abandonPinSetup()
