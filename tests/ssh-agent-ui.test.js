@@ -140,8 +140,15 @@ const hostile = Model.sshAgentPromptView(Object.assign({}, request, {
   keyName: "<img src=x onerror=alert(1)>",
   processPath: "/usr/bin/<b>ssh</b>"
 }), 120)
-check("a markup key name cannot reach a rich-text control",
-  Model.plainLabel(hostile.keyName).indexOf("<img") < 0, Model.plainLabel(hostile.keyName))
+// The kit and the plugin's own Text elements draw plain text (plainLabel
+// passes values through; rich-text.test.js holds every Text to PlainText),
+// so the markup is shown as the characters it is, never rendered.
+const approvalScreenSrc = read("SshApprovalScreen.qml")
+const keyNameText = approvalScreenSrc.slice(approvalScreenSrc.lastIndexOf("Text {", approvalScreenSrc.indexOf("sshPrompt.keyName")),
+  approvalScreenSrc.indexOf("sshPrompt.keyName"))
+check("a markup key name is drawn as plain text, never rendered",
+  Model.plainLabel(hostile.keyName) === hostile.keyName && /textFormat:\s*Text\.PlainText/.test(keyNameText),
+  keyNameText)
 check("a hostile name is not silently dropped",
   hostile.keyName.length > 0, hostile.keyName)
 

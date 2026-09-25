@@ -120,9 +120,11 @@ check("turning remember session off removes the stored session",
 check("and a start with it off removes one left from before",
   /if\s*\(!rememberSession\)\s*requestSessionCredentialClear\(\)/.test(body("refreshAccountCredentials")),
   body("refreshAccountCredentials"))
-const destruction = src.slice(src.indexOf("Component.onDestruction:"), src.indexOf("Component.onDestruction:") + 800)
+const destruction = src.slice(src.indexOf("Component.onDestruction:"), src.indexOf("Component.onDestruction:") + 300)
 check("an unload while unlocked with the session not remembered locks bw",
-  /root\.session\s*&&\s*!root\.rememberSession[\s\S]{0,120}execDetached\(\{\s*command:\s*Model\.lockCommand\(\),\s*environment:\s*root\.bwEnv\(\)/.test(destruction),
-  destruction)
+  /root\.lockSessionOnUnload\(\)/.test(destruction)
+    && /if \(!session \|\| rememberSession\) return\s*Quickshell\.execDetached\(\{ command: Model\.lockCommand\(\), environment: bwEnv\(\) \}\)/
+      .test(body("lockSessionOnUnload")),
+  destruction + "\n" + body("lockSessionOnUnload"))
 
 done()

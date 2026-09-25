@@ -1622,16 +1622,19 @@ Item {
   // A helper killed with the shell objects (plugin disabled or removed)
   // leaves its socket, FIFO and lock behind; remove them once it is gone.
   Component.onDestruction: {
-    // With the session not remembered, nothing will reopen it, so an unload
-    // while unlocked (a shell restart, the plugin removed) must not leave it
-    // valid in bw's data: lock it. Detached, since this shell is going away.
-    // With it remembered, keeping it is the point of the setting.
-    if (root.session && !root.rememberSession) {
-      Quickshell.execDetached({ command: Model.lockCommand(), environment: root.bwEnv() })
-    }
+    root.lockSessionOnUnload()
     if (root.sshAgentPhase === "disabled" && !sshAgentProc.running) return
     var cleanup = Model.sshAgentRuntimeCleanupCommand(root.sshAgentRuntimeDir)
     if (cleanup) Quickshell.execDetached(cleanup)
+  }
+
+  // With the session not remembered, nothing will reopen it, so an unload
+  // while unlocked (a shell restart, the plugin removed) must not leave it
+  // valid in bw's data: lock it. Detached, since this shell is going away.
+  // With it remembered, keeping it is the point of the setting.
+  function lockSessionOnUnload() {
+    if (!session || rememberSession) return
+    Quickshell.execDetached({ command: Model.lockCommand(), environment: bwEnv() })
   }
 
   function stopSshAgentHelper() {
