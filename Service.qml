@@ -705,6 +705,117 @@ Item {
     if (!quickUnlockAvailable || !accountsLoaded) return
     if (!envelopeChecked) refreshEnvelope()
     maybeMigrateLegacyFingerprint()
+    runPendingPurges()
+  }
+
+  // -------------------------------------------------------------------------
+  // Quick-unlock methods turned off
+  // -------------------------------------------------------------------------
+  //
+  // The settings are shared by every account, but each account's envelope
+  // holds its own ways in. Turning one off removes it from every account
+  // (purgeQuickUnlockMethod()), and every envelope read removes a way in whose
+  // setting is off (reconcileDisabledMethods()), which catches a setting
+  // turned off in shell.json while the shell was not running. Before, only the
+  // account on screen lost it, and the others kept a way in that the settings
+  // screen showed as "off".
+
+  // Methods to purge once the unlock tool is ready.
+  property var pendingPurges: []
+
+  function accountSlotsForPurge() {
+    var slots = [activeSlot, Model.defaultAccountSlot()]
+    for (var i = 0; i < accountRegistry.accounts.length; i++) slots.push(accountRegistry.accounts[i].slot)
+    return slots
+  }
+
+  // `method`: "pin" | "fingerprint" | "fido".
+  function purgeQuickUnlockMethod(method) {
+    if (!quickUnlockAvailable || !accountsLoaded) {
+      if (pendingPurges.indexOf(method) === -1) pendingPurges = pendingPurges.concat([method])
+      return
+    }
+    queueEnvelopeJob({
+      command: Model.quickUnlockPurgeCommand(envelopeTool(), accountSlotsForPurge(), method),
+      writes: true,
+      onDone: function(code) {
+        if (code !== 0) console.log("qs-bitwarden envelope: removing " + method + " unlock left a way in (" + code + ")")
+        root.refreshEnvelope()
+      }
+    })
+  }
+
+  function runPendingPurges() {
+    if (!quickUnlockAvailable || !accountsLoaded || pendingPurges.length === 0) return
+    var methods = pendingPurges.slice()
+    pendingPurges = []
+    for (var i = 0; i < methods.length; i++) purgeQuickUnlockMethod(methods[i])
+  }
+
+  // When each method was last enabled here. Its setting reaches shell.json
+  // and comes back through the shell a moment after the way in is written,
+  // and the envelope read in between must not take that for "turned off".
+  property var quickUnlockEnabledAt: ({})
+  readonly property int quickUnlockEnableGraceMs: 60000
+  // Removals already tried this session, per account and method, so one that
+  // fails is not retried on every read.
+  property var reconciledMethods: ({})
+
+  function noteQuickUnlockEnabled(method) {
+    var next = {}
+    for (var k in quickUnlockEnabledAt) next[k] = quickUnlockEnabledAt[k]
+    next[method] = Date.now()
+    quickUnlockEnabledAt = next
+  }
+
+  // Off in shell.json itself: an absent key (settings not pushed yet) is
+  // never read as off.
+  function quickUnlockSettingOff(name) {
+    return !!settings && settings[name] === false
+  }
+
+  function reconcileDisabledMethods() {
+    var summary = envelopeSummary
+    if (!summary || !quickUnlockAvailable || !accountId) return
+    var checks = [
+      { method: "pin", setting: "pinUnlock", present: !!summary.pin },
+      { method: "fingerprint", setting: "fingerprintUnlock", present: summary.fingerprint === true },
+      { method: "fido", setting: "fidoUnlock", present: Array.isArray(summary.fido) && summary.fido.length > 0 }
+    ]
+    for (var i = 0; i < checks.length; i++) {
+      var c = checks[i]
+      if (!c.present || !quickUnlockSettingOff(c.setting)) continue
+      if (Date.now() - Number(quickUnlockEnabledAt[c.method] || 0) < quickUnlockEnableGraceMs) continue
+      var key = activeSlot + ":" + c.method
+      if (reconciledMethods[key]) continue
+      var marked = {}
+      for (var k in reconciledMethods) marked[k] = reconciledMethods[k]
+      marked[key] = true
+      reconciledMethods = marked
+      queueEnvelopeJob({
+        command: Model.quickUnlockPurgeCommand(envelopeTool(), [activeSlot], c.method),
+        writes: true,
+        onDone: function(code) { root.refreshEnvelope() }
+      })
+    }
+  }
+
+  // Upgrade leftovers (Model.legacyLeftoversClearCommand()), once per account
+  // per session, as soon as its envelope is known to exist.
+  property var legacySwept: ({})
+
+  function sweepLegacyLeftovers() {
+    if (!envelopeSummary || legacySwept[activeSlot] || legacyCleanupProc.running) return
+    var swept = {}
+    for (var k in legacySwept) swept[k] = legacySwept[k]
+    swept[activeSlot] = true
+    legacySwept = swept
+    var includeMaster = !fingerprintUnlock || envelopeSummary.fingerprint === true
+    legacyCleanupProc.command = Model.legacyLeftoversClearCommand(activeSlot, includeMaster)
+    legacyCleanupProc.running = true
+    legacyPinStored = false
+    fidoUnlocker.legacyStored = false
+    if (includeMaster) legacyFingerprintStored = false
   }
 
   // Queue one envelope process: { command, env, secretOutput, writes,
@@ -807,6 +918,10 @@ Item {
           root.envelopeSummary = null
         }
         root.envelopeChecked = true
+        if (code === 0 && root.envelopeSummary) {
+          root.sweepLegacyLeftovers()
+          root.reconcileDisabledMethods()
+        }
         root.recomputeFingerprintStored()
         root.recomputePinConfigured()
         // A switched-to account's methods are known only now.
@@ -900,6 +1015,10 @@ Item {
         }
       })
     }, function() { finish(false) })
+  }
+
+  function quickUnlockWanted() {
+    return pinUnlock || fingerprintUnlock || fidoUnlock
   }
 
   // Whether any method has a way in. Unknown (no summary yet) counts as yes:
@@ -3891,6 +4010,7 @@ Item {
         root.pinError = root.quickUnlockErrorText(why, "Could not save the PIN. Is the OS keyring available?")
         return
       }
+      root.noteQuickUnlockEnabled("pin")
       // The older PIN blob, if any, is superseded.
       root.legacyPinStored = false
       root.requestPinCredentialClear()
@@ -4011,8 +4131,21 @@ Item {
   }
 
   onPinUnlockChanged: {
-    if (pinUnlock) refreshPinConfigured()
-    else if (pinConfigured) clearPin()
+    if (pinUnlock) {
+      refreshPinConfigured()
+      return
+    }
+    if (!started || !accountsLoaded) {
+      // Before start the first envelope read reconciles it.
+      if (pinConfigured) clearPin()
+      return
+    }
+    // Off: every account's PIN goes, not only this one's.
+    legacyPinStored = false
+    pinConfigured = false
+    pinEntry = ""
+    pinAttempts = 0
+    purgeQuickUnlockMethod("pin")
   }
 
   // -------------------------------------------------------------------------
@@ -4440,6 +4573,7 @@ Item {
         root.fpError = root.quickUnlockErrorText(why, "Could not enable fingerprint unlock. Is the OS keyring available?")
         return
       }
+      root.noteQuickUnlockEnabled("fingerprint")
       // The plaintext entry, if an older version left one, is superseded.
       root.legacyFingerprintStored = false
       root.requestMasterCredentialClear()
@@ -4470,7 +4604,15 @@ Item {
       fingerprintError = ""
       // Unconditional: fingerprintStored also goes false when the reader or
       // fprintd is missing, and a way in may still be stored.
-      forgetFingerprintUnlock()
+      if (!started || !accountsLoaded) {
+        forgetFingerprintUnlock()
+        return
+      }
+      // Every account's way in, and its legacy copy, not only this one's.
+      legacyFingerprintStored = false
+      fingerprintStored = false
+      purgeQuickUnlockMethod("fingerprint")
+      flashNotification("Fingerprint unlock forgotten")
     } else {
       refreshFingerprintAvailability()
     }
@@ -4657,8 +4799,11 @@ Item {
     storeCurrentSession()
 
     // A typed password `bw` accepted is the only source of the stored one;
-    // this also re-seals after a change made elsewhere.
-    if (pendingUnlockPassword && pendingUnlockFrom === "") {
+    // this also re-seals after a change made elsewhere. Only while a quick
+    // unlock method is on: with none, it would be a copy of the master
+    // password kept for nothing (enabling one stores it then, after `bw` has
+    // checked it; addQuickUnlockMethodWith()).
+    if (pendingUnlockPassword && pendingUnlockFrom === "" && quickUnlockWanted()) {
       storeAcceptedMasterPassword(pendingUnlockPassword)
     } else {
       rotationOldPassword = ""
@@ -7220,6 +7365,11 @@ Item {
     onExited: function(exitCode) {
       if (root.masterClearPending) Qt.callLater(root.requestMasterCredentialClear)
     }
+  }
+
+  // Deletes upgrade leftovers; see sweepLegacyLeftovers().
+  Process {
+    id: legacyCleanupProc
   }
 
   // Asks again for a sweep deferred behind a writer; see

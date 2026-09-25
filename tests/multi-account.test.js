@@ -210,6 +210,44 @@ exit 0`)
     inspect(SLOT_A).account.id === "user-a" && inspect(SLOT_B).account.id === "user-b"
       && inspect(SLOT_A).fingerprint === false && inspect(SLOT_B).fingerprint === true, "")
 
+  // Turning a quick-unlock method off removes it from every account, with
+  // each one's legacy copy; it used to leave the other accounts' ways in.
+  fs.writeFileSync(path.join(store, "pin_blob"), "legacy blob of A")
+  fs.writeFileSync(path.join(store, "pin_blob@" + SLOT_B), "legacy blob of B")
+  const purge = method => run(Model.quickUnlockPurgeCommand(tool, [SLOT_A, SLOT_B, SLOT_C, "not a slot"], method))
+  eq("turning PIN off purges it from every account", purge("pin").code, 0)
+  check("neither account keeps a PIN",
+    inspect(SLOT_A).pin === undefined && inspect(SLOT_B).pin === undefined, JSON.stringify([inspect(SLOT_A), inspect(SLOT_B)]))
+  check("the other methods are kept", inspect(SLOT_B).fingerprint === true, JSON.stringify(inspect(SLOT_B)))
+  check("each account's legacy PIN blob goes too",
+    !fs.existsSync(path.join(store, "pin_blob")) && !fs.existsSync(path.join(store, "pin_blob@" + SLOT_B)), entries().join(","))
+  eq("the stored password still opens through what is left", open(B, { kind: "fingerprint" }).out, PW_B)
+  eq("a purge with nothing left to remove succeeds", purge("pin").code, 0)
+  eq("fingerprint goes the same way", purge("fingerprint").code, 0)
+  check("and is gone from B", inspect(SLOT_B).fingerprint === false, JSON.stringify(inspect(SLOT_B)))
+  eq("a FIDO2 purge with no key wraps succeeds", purge("fido").code, 0)
+  check("an unknown method is refused", Model.quickUnlockPurgeCommand(tool, [SLOT_A], "password")[2] === "exit 2", "")
+  // Put A's PIN back for the checks below.
+  eq("A's PIN is set again", run(Model.unlockEnvelopeUpdateCommand(tool, A, { kind: "add-pin" }), { [SECRET]: PW_A, [PIN]: "111111" }).code, 0)
+
+  // Upgrade leftovers go once the envelope exists; the fingerprint copy only
+  // when asked (its migration needs it while there is no fingerprint way in).
+  for (const name of ["fido_password", "pin_blob", "master_password"]) fs.writeFileSync(path.join(store, name), "left over")
+  run(Model.legacyLeftoversClearCommand(SLOT_A, false))
+  check("the FIDO2 and PIN leftovers are deleted, the fingerprint copy kept",
+    !fs.existsSync(path.join(store, "fido_password")) && !fs.existsSync(path.join(store, "pin_blob"))
+      && fs.existsSync(path.join(store, "master_password")), entries().join(","))
+  run(Model.legacyLeftoversClearCommand(SLOT_A, true))
+  check("and the fingerprint copy when asked", !fs.existsSync(path.join(store, "master_password")), entries().join(","))
+
+  // The re-prompt check prints nothing and answers by exit status.
+  const checkPw = (acct, pw) => run(Model.unlockEnvelopeCheckCommand(tool, acct), { [SECRET]: pw })
+  const right = checkPw(A, PW_A)
+  eq("the right master password checks out", right.code, 0)
+  eq("and nothing is printed", right.out, "")
+  eq("a wrong one is refused as wrong", checkPw(A, "not it").code, 3)
+  check("the check refuses bad arguments", Model.unlockEnvelopeCheckCommand("relative/tool", A)[2] === "exit 2", "")
+
   // Sessions: the boot-stamped entry, per slot.
   eq("A's session is stored", run(Model.keyringStoreCommand(SLOT_A), { [SECRET]: "session-a" }).code, 0)
   eq("B's session is stored", run(Model.keyringStoreCommand(SLOT_B), { [SECRET]: "session-b" }).code, 0)

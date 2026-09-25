@@ -9,7 +9,8 @@
 //
 //   node tests/unlock-envelope-service.test.js
 
-const { createSuite, functionBody, read } = require("./harness")
+const { createSuite, functionBody, loadModule, read } = require("./harness")
+const Model = loadModule()
 const path = require("path")
 
 const service = read("Service.qml")
@@ -29,8 +30,13 @@ const callers = service.split("\n").filter(l => !/^\s*\/\//.test(l))
   .join("\n").match(/storeAcceptedMasterPassword\(/g).length
 const unlockSuccess = bodyOf("onUnlockSuccess")
 check("a typed, accepted password reaches the writer from the unlock path",
-  /if \(pendingUnlockPassword && pendingUnlockFrom === ""\) \{\s*storeAcceptedMasterPassword\(pendingUnlockPassword\)/
+  /if \(pendingUnlockPassword && pendingUnlockFrom === "" && quickUnlockWanted\(\)\) \{\s*storeAcceptedMasterPassword\(pendingUnlockPassword\)/
     .test(unlockSuccess), unlockSuccess)
+// With every quick-unlock method off it would be a copy of the master
+// password kept for nothing; enabling a method stores it then.
+check("the password is stored only while a quick-unlock method is on",
+  /return pinUnlock \|\| fingerprintUnlock \|\| fidoUnlock/.test(bodyOf("quickUnlockWanted")),
+  bodyOf("quickUnlockWanted"))
 check("a quick unlock's password never does",
   !/pendingUnlockFrom === "(pin|fingerprint|fido)"[\s\S]{0,120}storeAcceptedMasterPassword/.test(service),
   "a method-produced password is stored")
@@ -177,7 +183,7 @@ const pinSetup = bodyOf("submitPinSetup")
 check("PIN setup adds a wrap through the master-password check, with the PIN in the environment",
   /addQuickUnlockMethod\(typed, \{ kind: "add-pin" \}, pin,/.test(pinSetup)
     && /pin\[Model\.pinEnvVar\(\)\] = pinSetupPin/.test(pinSetup), pinSetup)
-check("PIN rules are unchanged: validated first, numeric, 4 minimum",
+check("PIN rules: validated first, numeric, the setup floor",
   /Model\.validatePin\(pinSetupPin, pinSetupConfirm\)/.test(pinSetup), pinSetup)
 check("a wrong master password is named as such",
   /root\.pinError = root\.quickUnlockErrorText\(why,/.test(pinSetup), pinSetup)
@@ -255,5 +261,58 @@ check("the fingerprint option no longer says the password is stored as-is",
     /r\.file === "repaired"[\s\S]{0,200}execDetached\(Model\.repairedKeyringNoticeCommand\(\)\)/
       .test(bodyOf("onKeyringRepaired")), "")
 }
+
+// -------------------------------------------------------------------------
+// A method turned off is removed from every account
+// -------------------------------------------------------------------------
+//
+// The settings are shared switches; each account's envelope has its own
+// ways in. Turning one off used to remove only the account on screen's.
+
+const pinChanged = service.slice(service.indexOf("onPinUnlockChanged:"), service.indexOf("onPinUnlockChanged:") + 700)
+const fpChanged = service.slice(service.indexOf("onFingerprintUnlockChanged:"), service.indexOf("onFingerprintUnlockChanged:") + 900)
+const fidoSrc = read("FidoUnlock.qml")
+const fidoArmed = fidoSrc.slice(fidoSrc.indexOf("onArmedChanged:"), fidoSrc.indexOf("onArmedChanged:") + 900)
+check("turning PIN off purges it from every account", /purgeQuickUnlockMethod\("pin"\)/.test(pinChanged), pinChanged)
+check("turning fingerprint off purges it from every account",
+  /purgeQuickUnlockMethod\("fingerprint"\)/.test(fpChanged), fpChanged)
+check("turning FIDO2 off purges it from every account",
+  /vault\.purgeQuickUnlockMethod\("fido"\)/.test(fidoArmed), fidoArmed)
+check("the purge names every account slot the panel holds",
+  /accountRegistry\.accounts\[i\]\.slot/.test(bodyOf("accountSlotsForPurge"))
+    && /Model\.quickUnlockPurgeCommand\(envelopeTool\(\), accountSlotsForPurge\(\), method\)/.test(bodyOf("purgeQuickUnlockMethod"))
+    && /writes:\s*true/.test(bodyOf("purgeQuickUnlockMethod")),
+  bodyOf("purgeQuickUnlockMethod"))
+check("a purge asked for before the unlock tool is ready runs once it is",
+  /pendingPurges/.test(bodyOf("purgeQuickUnlockMethod")) && /runPendingPurges\(\)/.test(bodyOf("envelopeReadinessChanged")),
+  bodyOf("envelopeReadinessChanged"))
+
+// A setting turned off in shell.json while the shell was stopped.
+const refresh = bodyOf("refreshEnvelope")
+const reconcile = bodyOf("reconcileDisabledMethods")
+check("every envelope read reconciles methods whose setting is off",
+  /reconcileDisabledMethods\(\)/.test(refresh), refresh)
+check("only a setting explicitly false counts as off, never one not loaded yet",
+  /settings\[name\] === false/.test(bodyOf("quickUnlockSettingOff")), bodyOf("quickUnlockSettingOff"))
+check("a method just enabled is not taken for off while its setting write lands",
+  /quickUnlockEnabledAt\[c\.method\]/.test(reconcile) && /quickUnlockEnableGraceMs/.test(reconcile)
+    && /noteQuickUnlockEnabled\("pin"\)/.test(bodyOf("submitPinSetup"))
+    && /noteQuickUnlockEnabled\("fingerprint"\)/.test(bodyOf("submitFingerprintSetup"))
+    && /noteQuickUnlockEnabled\("fido"\)/.test(fidoSrc),
+  reconcile)
+check("a removal is tried once per account and method, so a failure cannot loop",
+  /reconciledMethods\[key\]\) continue/.test(reconcile), reconcile)
+
+// Upgrade leftovers.
+const sweep = bodyOf("sweepLegacyLeftovers")
+check("upgrade leftovers are deleted once the envelope exists",
+  /code === 0 && root\.envelopeSummary\)[\s\S]{0,80}sweepLegacyLeftovers\(\)/.test(refresh)
+    && /Model\.legacyLeftoversClearCommand\(activeSlot, includeMaster\)/.test(sweep), sweep)
+check("the fingerprint copy waits for its migration while fingerprint is on without a wrap",
+  /includeMaster = !fingerprintUnlock \|\| envelopeSummary\.fingerprint === true/.test(sweep), sweep)
+const leftovers = Model.legacyLeftoversClearCommand("default", false)[2]
+check("the sweep clears the plaintext FIDO2 copy and the PIN blob",
+  leftovers.includes("'fido_password'") && leftovers.includes("'pin_blob'") && !leftovers.includes("'master_password'"),
+  leftovers)
 
 done()

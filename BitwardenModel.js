@@ -1949,6 +1949,98 @@ function repairedKeyringNoticeCommand() {
     "Restart the computer to get your saved passwords and keys back."]
 }
 
+// -------------------------------------------------------------------------
+// Removing a method from every account
+// -------------------------------------------------------------------------
+//
+// The quick-unlock settings are shared switches, but each account's envelope
+// holds its own ways in. Turning a method off used to remove it from the
+// account on screen only, leaving every other account's way in stored (and
+// invisible, since the settings row then reads "off"). This removes one
+// method from each listed slot's envelope, and that slot's legacy entry for
+// the method, in one process queued like any envelope write.
+
+// The legacy keyring entry each method used before the envelope.
+var LEGACY_ENTRY_FOR_METHOD = { pin: KEYRING_PIN, fingerprint: KEYRING_MASTER, fido: KEYRING_FIDO }
+// One wrap per method, except FIDO2 (one per key, at most 16 in the tool).
+var MAX_PURGE_ROUNDS = 17
+
+// One slot: remove `method` until none is left. Exits 0 when there is no
+// envelope or nothing to remove; the account the envelope names is checked
+// against itself after each write (remove needs no account arguments).
+function envelopeMethodPurgeScript(tool, slot, method) {
+  var present = method === "pin" ? ".pin != null"
+    : (method === "fingerprint" ? ".fingerprint == true" : "(.fido | length) > 0")
+  var script = envelopePrelude(tool, slot)
+    + "for __round in $(seq 1 " + MAX_PURGE_ROUNDS + "); do "
+    + "__sealed=\"$(__lookup)\"; [ -n \"$__sealed\" ] || exit 0; "
+    + "__summary=\"$(__unseal \"$__sealed\" | \"$__tool\" inspect)\" || exit " + ENVELOPE_EXIT.unseal + "; "
+    + "printf '%s' \"$__summary\" | jq -e " + shellQuote(present) + " >/dev/null || exit 0; "
+    + "__id=\"$(printf '%s' \"$__summary\" | jq -r '.account.id')\"; "
+    + "__server=\"$(printf '%s' \"$__summary\" | jq -r '.account.server')\"; "
+  if (method === "fido") {
+    script += "__c=\"$(printf '%s' \"$__summary\" | jq -r '.fido[0].cred // empty')\"; "
+      + "case \"$__c\" in ''|*[!A-Za-z0-9+/=]*) exit 4 ;; esac; "
+      + "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method fido --cred \"$__c\" | __seal)\" || exit $?; "
+  } else {
+    script += "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method " + method + " | __seal)\" || exit $?; "
+  }
+  script += "__verify_account \"$__id\" \"$__server\"; __store; "
+    + "done; exit 8"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// Every listed slot, each in its own shell (an envelope step exits on
+// failure); exits 1 if any slot could not be cleared.
+function quickUnlockPurgeCommand(tool, slots, method) {
+  if (typeof tool !== "string" || tool.charAt(0) !== "/" || !LEGACY_ENTRY_FOR_METHOD[method]) {
+    return envelopeRefused()
+  }
+  var seen = {}
+  var list = []
+  for (var i = 0; slots && i < slots.length; i++) {
+    var slot = slots[i]
+    if (typeof slot !== "string" || !isAccountSlot(slot) || seen[slot]) continue
+    seen[slot] = true
+    list.push(slot)
+  }
+  var script = "rc=0; "
+  for (var j = 0; j < list.length; j++) {
+    script += nestedScript(envelopeMethodPurgeScript(tool, list[j], method)) + " || rc=1; "
+      + "secret-tool clear" + keyringAttributes(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j]))
+      + " >/dev/null 2>&1; "
+  }
+  script += "exit \"$rc\""
+  return ["bash", "-c", script]
+}
+
+// Upgrade leftovers from 1.10 and earlier, once the envelope exists: the
+// plaintext FIDO2 copy of the master password and the AES-CBC PIN blob
+// (no MAC, PBKDF2 only, readable by any program running as the user). They
+// were migrated only as each method was next used, so a method never used
+// again kept them forever. The plaintext fingerprint copy (`includeMaster`)
+// is left to its own automatic migration while fingerprint unlock is on and
+// the envelope has no fingerprint way in yet, since that migration needs it.
+function legacyLeftoversClearCommand(slot, includeMaster) {
+  var entries = [KEYRING_FIDO, KEYRING_PIN]
+  if (includeMaster) entries.push(KEYRING_MASTER)
+  var script = ""
+  for (var i = 0; i < entries.length; i++) {
+    script += "secret-tool clear" + keyringAttributes(keyringEntryName(entries[i], slot)) + " >/dev/null 2>&1; "
+  }
+  script += "exit 0"
+  return ["bash", "-c", script]
+}
+
+// Checks a typed master password against the stored one, printing nothing:
+// exit 0 when it matches, 3 when it does not, else the envelope step's code
+// (10: no envelope). The password is in KEYRING_SECRET_ENV, never argv.
+function unlockEnvelopeCheckCommand(tool, account) {
+  var open = unlockEnvelopeOpenCommand(tool, account, { kind: "master" })
+  if (open[2] === envelopeRefused()[2]) return envelopeRefused()
+  return ["bash", "-c", nestedScript(open) + " >/dev/null"]
+}
+
 // Quick unlock also needs `argon2` (ships with bitwarden-cli) and a working
 // `systemd-creds --user` (systemd 256+), probed with a real throwaway seal.
 function quickUnlockPrereqCommand() {
