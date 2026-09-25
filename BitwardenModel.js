@@ -376,6 +376,21 @@ function sessionEnvVar() {
   return SESSION_ENV
 }
 
+// NODE_OPTIONS for every `bw`: the user's own, plus bw-fast-exit.js from the
+// plugin directory, which saves the ~2 s bw idles after answering. Node reads
+// NODE_OPTIONS with double quotes and backslash escapes. No plugin directory
+// (not a file URL) leaves the options as they were.
+var BW_FAST_EXIT_FILE = "bw-fast-exit.js"
+
+function bwNodeOptions(pluginDir, existing) {
+  var base = String(existing || "").trim()
+  var dir = String(pluginDir || "").replace(/\/+$/, "")
+  if (dir === "") return base
+  var file = dir + "/" + BW_FAST_EXIT_FILE
+  var option = "--require \"" + file.replace(/(["\\])/g, "\\$1") + "\""
+  return base ? base + " " + option : option
+}
+
 function passwordEnvVar() {
   return PASSWORD_ENV
 }

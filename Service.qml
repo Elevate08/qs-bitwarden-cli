@@ -3351,9 +3351,13 @@ Item {
 
   // BW_SESSION rather than --session keeps the token out of argv. Every `bw`
   // runs in the active account's data directory (accountAppDataEnv()).
+  // Read once: the shell's own NODE_OPTIONS plus the early-exit preload.
+  readonly property string bwNodeOptions: Model.bwNodeOptions(sshAgentPluginDir, Quickshell.env("NODE_OPTIONS"))
+
   function bwEnv(extra) {
     var env = accountAppDataEnv()
     if (session) env[Model.sessionEnvVar()] = String(session)
+    if (bwNodeOptions) env.NODE_OPTIONS = bwNodeOptions
     if (extra) for (var k in extra) env[k] = extra[k]
     return env
   }
