@@ -655,6 +655,8 @@ Item {
 
   property var envelopeJobs: []
   property var envelopeJob: null
+  // The keyring repair runs once per start; see repairKeyring().
+  property bool keyringRepairQueued: false
 
   // A quick-unlock password `bw` refused (changed elsewhere). Kept until the
   // next typed unlock re-seals the envelope with it, keeping every method.
@@ -754,6 +756,37 @@ Item {
     pinFromEnvelope = false
     pendingPinForMigration = ""
     fidoFromEnvelope = false
+  }
+
+  // First in the envelope queue at every start, so the first start after an
+  // update repairs what an earlier build stored across several lines, before
+  // anything reads or writes an envelope. The command is keyringRepairCommand().
+  function repairKeyring() {
+    if (keyringRepairQueued) return
+    keyringRepairQueued = true
+    var slots = (accountRegistry.accounts || []).map(function(a) { return a.slot })
+    queueEnvelopeJob({
+      command: Model.keyringRepairCommand(sshAgentPluginDir, slots),
+      onDone: function(exitCode, out) { root.onKeyringRepaired(exitCode, out) }
+    })
+  }
+
+  function onKeyringRepaired(exitCode, out) {
+    var r = Model.parseKeyringRepair(out)
+    if (r.rejoined > 0) {
+      console.log("qs-bitwarden keyring: stored " + r.rejoined + " quick-unlock envelope(s) again on one line")
+    }
+    for (var i = 0; i < r.rejoinFailed.length; i++) {
+      console.warn("qs-bitwarden keyring: " + r.rejoinFailed[i] + " is stored across several lines and did not"
+        + " decrypt joined; turn quick unlock off and on again for that account")
+    }
+    if (r.file === "repaired") {
+      console.log("qs-bitwarden keyring: repaired the default keyring file; the original is kept beside it")
+      Quickshell.execDetached(Model.repairedKeyringNoticeCommand())
+    } else if (r.file === "failed") {
+      console.warn("qs-bitwarden keyring: the default keyring file needs repair and it failed (exit " + exitCode
+        + "); run scripts/repair-keyring.sh in the plugin's directory")
+    }
   }
 
   function refreshEnvelope() {
@@ -1077,6 +1110,7 @@ Item {
     accountRegistry = registry
     activeSlot = slot
     accountsLoaded = true
+    repairKeyring()
     loadAssociations()
     refreshAccountCredentials()
     // The status probe waited for this (refreshStatus()).

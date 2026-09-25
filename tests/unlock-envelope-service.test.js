@@ -239,4 +239,21 @@ check("the fingerprint option no longer says the password is stored as-is",
     && !/Stores your master password in the OS login keyring/.test(fpEntry.description),
   fpEntry && fpEntry.description)
 
+// -------------------------------------------------------------------------
+// The keyring repair at start
+// -------------------------------------------------------------------------
+
+{
+  const loaded = bodyOf("onAccountRegistryLoaded")
+  check("the keyring repair is queued as soon as the accounts are known",
+    /accountsLoaded = true\s*repairKeyring\(\)/.test(loaded), loaded)
+  const repair = bodyOf("repairKeyring")
+  check("once per start, through the envelope queue, for every account",
+    /if \(keyringRepairQueued\) return/.test(repair) && /queueEnvelopeJob\(/.test(repair)
+      && /Model\.keyringRepairCommand\(sshAgentPluginDir, slots\)/.test(repair), repair)
+  check("a repaired file is announced on the desktop",
+    /r\.file === "repaired"[\s\S]{0,200}execDetached\(Model\.repairedKeyringNoticeCommand\(\)\)/
+      .test(bodyOf("onKeyringRepaired")), "")
+}
+
 done()

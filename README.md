@@ -4,7 +4,7 @@ Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
 every item type without opening a browser.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.11.0-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.11.1-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -390,6 +390,8 @@ PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unl
 - Logging out of an account deletes its copy; other accounts keep theirs.
 
 The small helper that does the encryption (`bin/x86_64-linux/qs-bitwarden-unlock-key`) ships and is verified exactly like the SSH helper; if it is missing or fails its check, quick unlock is unavailable and your master password still works. Everything else is the operating system: `argon2`, `systemd-creds`, `fido2-assert` and `secret-tool`.
+
+An earlier build could store this item across several lines, which makes gnome-keyring refuse Omarchy's passwordless default keyring at the next login (apps ask you to create a new keyring, and the journal says `keyring was in an invalid or unrecognized format`). The plugin repairs this on its own each time it starts: an item the keyring still serves is stored again on one line, and a keyring file already refused has the item joined back onto one line in place, with the original kept beside it as `Default_keyring.keyring.before-repair-<time>`. A notification then asks you to restart the computer (Omarchy has no logout), which loads the collection cleanly. To do it by hand, run `scripts/repair-keyring.sh` from the plugin's directory (`--check` only reports). Nothing else in the keyring is changed, and no secret is printed.
 
 Upgrading from 1.10.0 or earlier needs nothing from you. The old entries -- a plaintext copy for fingerprint and for FIDO2, an encrypted one for the PIN -- are moved in as each method is next used, and deleted once the new copy opens.
 
