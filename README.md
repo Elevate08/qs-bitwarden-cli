@@ -675,6 +675,7 @@ is why dependency rebuilds stay a human step.
 - **[SSH agent](docs/ssh-agent.md)** -- setup, verification, threat model.
 - **[Uninstall](docs/uninstall.md)** -- including what to clear before removing the plugin.
 - **[Development](docs/development.md)** -- linting and the test suite.
+- **[Security policy](SECURITY.md)** -- how to report a vulnerability privately.
 
 ---
 
