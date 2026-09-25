@@ -101,6 +101,17 @@ check("both of them ask for the ack when they finish",
 check("the ack is written to the monitor's stdin",
   /sleepMonitorProc\.write\(Model\.sleepAckLine\(\)\)/.test(body("ackSleep")), body("ackSleep"))
 
+// --- what a lock drops -----------------------------------------------------------------
+
+check("a lock drops the old master password held for a re-seal",
+  /rotationOldPassword = ""/.test(body("dropVaultSecrets")), body("dropVaultSecrets"))
+check("and so does closing the panel",
+  /rotationOldPassword = ""/.test(body("abandonAuthSecrets")), body("abandonAuthSecrets"))
+check("a lock, logout or switch drops a refused save's form",
+  /failedSave = null/.test(body("dropVaultState")), body("dropVaultState"))
+check("a refused save's form reopens only in an unlocked vault",
+  /if \(status !== "unlocked"\) return/.test(body("reopenFailedSave")), body("reopenFailedSave"))
+
 // --- remember session ---------------------------------------------------------------
 
 const rememberChanged = src.slice(src.indexOf("onRememberSessionChanged:"), src.indexOf("onRememberSessionChanged:") + 300)

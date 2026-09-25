@@ -3013,6 +3013,8 @@ Item {
 
   function abandonAuthSecrets() {
     masterPassword = ""
+    // Also dropped when the panel closes; see dropVaultSecrets().
+    rotationOldPassword = ""
     clearLoginAttempt()
     pendingUnlockPassword = ""
     pendingUnlockFrom = ""
@@ -5014,6 +5016,9 @@ Item {
     detailItem = null
     revealedFields = ({})
     attachmentSaved = ({})
+    // A refused save's form holds what was typed (a password included) and
+    // must not be reopenable after a lock, logout or account switch.
+    failedSave = null
     resetItemForm()
     totpFollowupActive = false
     isLoading = false
@@ -5056,6 +5061,11 @@ Item {
     sendPayloadJson = ""
     sendFormText = ""
     sendFormPassword = ""
+    // The old master password a refused quick unlock left for a re-seal
+    // (storeAcceptedMasterPassword()). It used to outlive the lock; without
+    // it the next re-seal falls back to the fingerprint wrap or marks the
+    // envelope stale, losing nothing.
+    rotationOldPassword = ""
     clearLoginAttempt()
     syncLoginFieldsToState()
     pinEntry = ""
@@ -6189,6 +6199,7 @@ Item {
 
   // Reopens the form a refused save was made from.
   function reopenFailedSave() {
+    if (status !== "unlocked") return
     if (!failedSave) return
     var f = failedSave.form
     failedSave = null
