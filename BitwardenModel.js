@@ -1104,6 +1104,44 @@ function logoutCommand() {
   return ["bw", "logout"]
 }
 
+// -------------------------------------------------------------------------
+// Clipboard
+// -------------------------------------------------------------------------
+//
+// The copied value reaches wl-copy on stdin, from this env var, and never in
+// argv (/proc/<pid>/cmdline is world-readable). `env -u` drops the variable
+// before wl-copy starts, and `exec` means no shell stays behind holding it in
+// its environment for as long as the copy is served.
+//
+// The timed clear is the copy's own lifetime, not a timer in the shell: wl-copy
+// stays in the foreground under `timeout`, and when it ends the compositor
+// drops the selection it was serving. That clear survives a shell restart
+// (the shell restarts after every bar edit, which used to strand a copied
+// password on the clipboard for good), and it never touches a later copy:
+// wl-copy exits as soon as anything else takes the clipboard, so there is
+// nothing left for `timeout` to end. --sensitive marks the copy for clipboard
+// history to skip (x-kde-passwordManagerHint).
+var CLIPBOARD_ENV = "QSBW_CLIP"
+var CLIPBOARD_SENSITIVE_TYPE = "x-kde-passwordManagerHint"
+
+function clipboardEnvVar() { return CLIPBOARD_ENV }
+
+function clipboardCopyCommand(clearSec) {
+  var sec = Math.floor(Number(clearSec))
+  var copy = isFinite(sec) && sec > 0
+    ? "timeout " + sec + "s wl-copy --foreground --sensitive"
+    : "wl-copy --sensitive"
+  return ["bash", "-c", "exec env -u " + CLIPBOARD_ENV + " " + copy
+    + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
+}
+
+// Clears the clipboard only while it holds a copy marked sensitive (ours, or
+// another password manager's), so a lock or account switch never wipes what
+// the user copied themselves since.
+function clipboardClearSensitiveCommand() {
+  return ["bash", "-c", "if wl-paste --list-types 2>/dev/null | grep -qx "
+    + shellQuote(CLIPBOARD_SENSITIVE_TYPE) + "; then wl-copy --clear; fi; exit 0"]
+}
 
 // `bw list items` returns decrypted ciphers, SSH private keys included. A jq
 // filter keeps only supported types: 1-4 whole (edit and detail need

@@ -193,10 +193,89 @@ check("logout discards a queued association write before clearing account metada
   /associationsWritePending\s*=\s*false/.test(forget), forget)
 
 const copyToClipboard = bodyOf("copyToClipboard")
-check("the long-lived clipboard owner does not inherit the copied secret variable",
-  /env -u QSBW_CLIP wl-copy --sensitive/.test(copyToClipboard), copyToClipboard)
-check("locking clears any credential already on the clipboard",
+check("copies go through the model's copy command, detached, with the value in the environment",
+  /Quickshell\.execDetached\(\{[\s\S]*command:\s*Model\.clipboardCopyCommand\(clearClipboardSec\)[\s\S]*environment:\s*env/.test(copyToClipboard)
+    && /env\[Model\.clipboardEnvVar\(\)\]\s*=\s*String\(text\)/.test(copyToClipboard),
+  copyToClipboard)
+// The clear used to be a timer in the shell, lost on every shell restart,
+// and a lock ran `wl-copy --clear` whatever was on the clipboard by then.
+check("no shell-side timer owns the clipboard clear",
+  !/clipboardClearTimer/.test(panelSrc), "clipboardClearTimer is back")
+check("locking clears a credential still on the clipboard",
   /clearClipboard\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
+check("clearing asks for the sensitive-only clear, never a bare wl-copy --clear",
+  /Model\.clipboardClearSensitiveCommand\(\)/.test(bodyOf("clearClipboard"))
+    && !/"--clear"/.test(bodyOf("clearClipboard")),
+  bodyOf("clearClipboard"))
+
+// The copy and the clear, run against stand-in wl-copy and wl-paste: nothing
+// here touches the real clipboard. The stand-ins record their argv and
+// environment and what they were given.
+{
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-clip-"))
+  try {
+    const log = path.join(work, "log")
+    fs.writeFileSync(path.join(work, "wl-copy"), `#!/bin/bash
+{ printf 'argv:'; printf ' %s' "$@"; printf '\\n'
+  printf 'env-has-clip:%s\\n' "\${QSBW_CLIP+yes}"
+  for p in $$ $PPID; do printf 'cmdline %s:' "$p"; tr '\\0' ' ' < /proc/$p/cmdline; printf '\\n'; done
+  case " $* " in *" --clear "*) : ;; *) printf 'stdin:'; cat; printf '\\n' ;; esac
+} >> "${log}"
+case " $* " in *" --foreground "*) exec sleep 30 ;; esac
+`, { mode: 0o755 })
+    fs.writeFileSync(path.join(work, "wl-paste"), `#!/bin/bash
+printf '%s\\n' "\${QSBW_TEST_TYPES:-text/plain}" | tr ',' '\\n'
+`, { mode: 0o755 })
+    const SECRET = "  pa ss\\nword$(x)  "
+    const run = (cmd, env, timeoutMs) => {
+      try {
+        execFileSync(cmd[0], cmd.slice(1), {
+          env: Object.assign({}, process.env, { PATH: `${work}:${process.env.PATH}` }, env),
+          encoding: "utf8", timeout: timeoutMs || 10000
+        })
+        return 0
+      } catch (e) { return e.status === null ? "killed" : e.status }
+    }
+
+    // A timed copy: the stand-in stays in the foreground until `timeout`
+    // ends it after one second.
+    const started = Date.now()
+    const rc = run(Model.clipboardCopyCommand(1), { [Model.clipboardEnvVar()]: SECRET })
+    const took = Date.now() - started
+    const record = fs.readFileSync(log, "utf8")
+    check("a timed copy keeps wl-copy in the foreground under timeout",
+      /argv: --foreground --sensitive/.test(record) && Model.clipboardCopyCommand(30)[2].includes("timeout 30s wl-copy --foreground --sensitive"),
+      record)
+    check("the timed copy ends itself, which is what clears it",
+      rc === 124 && took >= 900 && took < 8000, `rc=${rc} after ${took}ms`)
+    check("wl-copy receives the value exactly, edge spaces and all",
+      record.includes("stdin:" + SECRET + "\n"), record)
+    check("wl-copy does not inherit the value's variable",
+      /env-has-clip:\n/.test(record), record)
+    check("the value is in no argv along the way",
+      !record.split("\n").filter(l => l.startsWith("cmdline")).some(l => l.includes("pa ss")),
+      record)
+
+    // With the clear off, the plain background copy.
+    fs.writeFileSync(log, "")
+    check("clearing disabled copies without a deadline",
+      run(Model.clipboardCopyCommand(0), { [Model.clipboardEnvVar()]: "x" }) === 0
+        && /argv: --sensitive\n/.test(fs.readFileSync(log, "utf8"))
+        && !Model.clipboardCopyCommand(0)[2].includes("timeout"),
+      fs.readFileSync(log, "utf8"))
+
+    // The lock-time clear takes only a copy marked sensitive.
+    fs.writeFileSync(log, "")
+    run(Model.clipboardClearSensitiveCommand(), { QSBW_TEST_TYPES: "text/plain,UTF8_STRING" })
+    check("a lock leaves the user's own later copy alone",
+      !fs.readFileSync(log, "utf8").includes("--clear"), fs.readFileSync(log, "utf8"))
+    run(Model.clipboardClearSensitiveCommand(), { QSBW_TEST_TYPES: "text/plain,x-kde-passwordManagerHint" })
+    check("a lock clears a sensitive copy still on the clipboard",
+      fs.readFileSync(log, "utf8").includes("argv: --clear"), fs.readFileSync(log, "utf8"))
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true })
+  }
+}
 check("a password missing from the in-memory item uses a managed generation-stamped fetch",
   /requestPasswordCopy\(item\.id,\s*item\.typeCode\)/.test(bodyOf("copyPassword"))
     && /beginVaultRead\("passwordCopy"\)/.test(bodyOf("requestPasswordCopy"))

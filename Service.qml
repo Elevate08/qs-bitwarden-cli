@@ -6204,25 +6204,26 @@ Item {
   // Clipboard, and the password -> TOTP follow-up
   // -------------------------------------------------------------------------
 
+  // Detached, so the copy (and its timed clear) outlives a shell restart; see
+  // "Clipboard" in BitwardenModel.js. The value travels in the environment,
+  // never argv.
   function copyToClipboard(text, label) {
     if (!text) return
     resetAutoLockTimer()
-    // Via the environment, not argv; unset before starting wl-copy, whose
-    // clipboard owner outlives this shell.
+    var env = {}
+    env[Model.clipboardEnvVar()] = String(text)
     Quickshell.execDetached({
-      command: ["bash", "-c", "printf '%s' \"$QSBW_CLIP\" | env -u QSBW_CLIP wl-copy --sensitive"],
-      environment: { "QSBW_CLIP": String(text) }
+      command: Model.clipboardCopyCommand(clearClipboardSec),
+      environment: env
     })
+    env = null
     flashNotification(label + " copied!")
-
-    if (clearClipboardSec > 0) {
-      clipboardClearTimer.restart()
-    }
   }
 
+  // Only a copy marked sensitive is cleared: something the user copied
+  // after our copy is theirs to keep.
   function clearClipboard() {
-    clipboardClearTimer.stop()
-    Quickshell.execDetached(["wl-copy", "--clear"])
+    Quickshell.execDetached(Model.clipboardClearSensitiveCommand())
   }
 
   function requestPasswordCopy(itemId, typeCode) {
@@ -6412,12 +6413,6 @@ Item {
         root.totpFollowupActive = false
       }
     }
-  }
-
-  Timer {
-    id: clipboardClearTimer
-    interval: root.clearClipboardSec * 1000
-    onTriggered: root.clearClipboard()
   }
 
   Timer {
