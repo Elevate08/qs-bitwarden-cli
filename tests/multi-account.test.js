@@ -230,16 +230,6 @@ exit 0`)
   // Put A's PIN back for the checks below.
   eq("A's PIN is set again", run(Model.unlockEnvelopeUpdateCommand(tool, A, { kind: "add-pin" }), { [SECRET]: PW_A, [PIN]: "111111" }).code, 0)
 
-  // Upgrade leftovers go once the envelope exists; the fingerprint copy only
-  // when asked (its migration needs it while there is no fingerprint way in).
-  for (const name of ["fido_password", "pin_blob", "master_password"]) fs.writeFileSync(path.join(store, name), "left over")
-  run(Model.legacyLeftoversClearCommand(SLOT_A, false))
-  check("the FIDO2 and PIN leftovers are deleted, the fingerprint copy kept",
-    !fs.existsSync(path.join(store, "fido_password")) && !fs.existsSync(path.join(store, "pin_blob"))
-      && fs.existsSync(path.join(store, "master_password")), entries().join(","))
-  run(Model.legacyLeftoversClearCommand(SLOT_A, true))
-  check("and the fingerprint copy when asked", !fs.existsSync(path.join(store, "master_password")), entries().join(","))
-
   // The re-prompt check prints nothing and answers by exit status.
   const checkPw = (acct, pw) => run(Model.unlockEnvelopeCheckCommand(tool, acct), { [SECRET]: pw })
   const right = checkPw(A, PW_A)

@@ -28,9 +28,8 @@ Every feature the plugin has, and why each one works the way it does. The
   - The master password is kept once, in one keyring item: encrypted under a random key (XChaCha20-Poly1305) and sealed to this machine and user with `systemd-creds --user`. It is written the first time `bw` accepts a password you typed, and each quick-unlock method only adds a way into it. See [How quick unlock stores your password](../README.md#how-quick-unlock-stores-your-password).
   - Turning a method on asks for your master password as a check against the stored one -- a wrong one is refused, and nothing typed there is stored.
   - A master password changed elsewhere is picked up at the next unlock with the new one; every method keeps working.
-  - With every quick-unlock method off, nothing is stored; turning one on stores it then, after `bw` has checked it.
   - Turning a method off removes it from every account (the setting is shared), and a method turned off in `shell.json` while the shell was not running is removed at the next start.
-  - Upgrading deletes the old per-method entries (plaintext copies for fingerprint and FIDO2, an AES-CBC blob for the PIN) as soon as the account's new stored copy exists. The fingerprint copy is moved in automatically first; a PIN or FIDO2 key not yet moved is set up again.
+  - Upgrading moves the old per-method entries in as each method is next used, and deletes them once the new copy opens.
 
 - **PIN Unlock** (opt-in, `pinUnlock`):
   - Unlock with a numeric PIN instead of typing the master password. **6 digits is the floor and 8 or more the recommendation**, and there is no upper limit. A 6- or 7-digit PIN is accepted, with the real cost of guessing it spelled out. A PIN set before the floor was raised (from 4) still unlocks.

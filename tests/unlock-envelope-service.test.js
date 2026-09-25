@@ -30,13 +30,8 @@ const callers = service.split("\n").filter(l => !/^\s*\/\//.test(l))
   .join("\n").match(/storeAcceptedMasterPassword\(/g).length
 const unlockSuccess = bodyOf("onUnlockSuccess")
 check("a typed, accepted password reaches the writer from the unlock path",
-  /if \(pendingUnlockPassword && pendingUnlockFrom === "" && quickUnlockWanted\(\)\) \{\s*storeAcceptedMasterPassword\(pendingUnlockPassword\)/
+  /if \(pendingUnlockPassword && pendingUnlockFrom === ""\) \{\s*storeAcceptedMasterPassword\(pendingUnlockPassword\)/
     .test(unlockSuccess), unlockSuccess)
-// With every quick-unlock method off it would be a copy of the master
-// password kept for nothing; enabling a method stores it then.
-check("the password is stored only while a quick-unlock method is on",
-  /return pinUnlock \|\| fingerprintUnlock \|\| fidoUnlock/.test(bodyOf("quickUnlockWanted")),
-  bodyOf("quickUnlockWanted"))
 check("a quick unlock's password never does",
   !/pendingUnlockFrom === "(pin|fingerprint|fido)"[\s\S]{0,120}storeAcceptedMasterPassword/.test(service),
   "a method-produced password is stored")
@@ -302,17 +297,5 @@ check("a method just enabled is not taken for off while its setting write lands"
   reconcile)
 check("a removal is tried once per account and method, so a failure cannot loop",
   /reconciledMethods\[key\]\) continue/.test(reconcile), reconcile)
-
-// Upgrade leftovers.
-const sweep = bodyOf("sweepLegacyLeftovers")
-check("upgrade leftovers are deleted once the envelope exists",
-  /code === 0 && root\.envelopeSummary\)[\s\S]{0,80}sweepLegacyLeftovers\(\)/.test(refresh)
-    && /Model\.legacyLeftoversClearCommand\(activeSlot, includeMaster\)/.test(sweep), sweep)
-check("the fingerprint copy waits for its migration while fingerprint is on without a wrap",
-  /includeMaster = !fingerprintUnlock \|\| envelopeSummary\.fingerprint === true/.test(sweep), sweep)
-const leftovers = Model.legacyLeftoversClearCommand("default", false)[2]
-check("the sweep clears the plaintext FIDO2 copy and the PIN blob",
-  leftovers.includes("'fido_password'") && leftovers.includes("'pin_blob'") && !leftovers.includes("'master_password'"),
-  leftovers)
 
 done()

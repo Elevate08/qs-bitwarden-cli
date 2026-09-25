@@ -2033,24 +2033,6 @@ function quickUnlockPurgeCommand(tool, slots, method) {
   return ["bash", "-c", script]
 }
 
-// Upgrade leftovers from 1.10 and earlier, once the envelope exists: the
-// plaintext FIDO2 copy of the master password and the AES-CBC PIN blob
-// (no MAC, PBKDF2 only, readable by any program running as the user). They
-// were migrated only as each method was next used, so a method never used
-// again kept them forever. The plaintext fingerprint copy (`includeMaster`)
-// is left to its own automatic migration while fingerprint unlock is on and
-// the envelope has no fingerprint way in yet, since that migration needs it.
-function legacyLeftoversClearCommand(slot, includeMaster) {
-  var entries = [KEYRING_FIDO, KEYRING_PIN]
-  if (includeMaster) entries.push(KEYRING_MASTER)
-  var script = ""
-  for (var i = 0; i < entries.length; i++) {
-    script += "secret-tool clear" + keyringAttributes(keyringEntryName(entries[i], slot)) + " >/dev/null 2>&1; "
-  }
-  script += "exit 0"
-  return ["bash", "-c", script]
-}
-
 // Checks a typed master password against the stored one, printing nothing:
 // exit 0 when it matches, 3 when it does not, else the envelope step's code
 // (10: no envelope). The password is in KEYRING_SECRET_ENV, never argv.
@@ -2551,21 +2533,6 @@ function loginUris(login) {
   return uris
 }
 
-// Bitwarden's UriMatchType; null is "use the account default".
-var URI_MATCH_TYPES = [
-  { match: null, label: "Default" },
-  { match: 0, label: "Base domain" },
-  { match: 1, label: "Host" },
-  { match: 2, label: "Starts with" },
-  { match: 3, label: "Exact" },
-  { match: 4, label: "Regular expression" },
-  { match: 5, label: "Never" }
-]
-
-function uriMatchTypes() {
-  return URI_MATCH_TYPES.map(function(t) { return { match: t.match, label: t.label } })
-}
-
 // A stored match rule as Bitwarden reads it: an integer 0-5, else null.
 function uriMatchValue(match) {
   if (match === null || match === undefined || match === "") return null
@@ -2573,17 +2540,9 @@ function uriMatchValue(match) {
   return n === Math.floor(n) && n >= 0 && n <= 5 ? n : null
 }
 
-function uriMatchLabel(match) {
-  var value = uriMatchValue(match)
-  for (var i = 0; i < URI_MATCH_TYPES.length; i++) {
-    if (URI_MATCH_TYPES[i].match === value) return URI_MATCH_TYPES[i].label
-  }
-  return "Default"
-}
-
-// Every website of a login with its match rule, in stored order, so nothing
-// past the first is invisible to the panel. `sourceIndex` ties a form row back
-// to the stored entry it came from (editedUriList()).
+// Every website of a login with its match rule, in stored order. The edit
+// form loads the first one's address exactly as stored, so an unchanged save
+// matches it (editedUris()).
 function loginUriEntries(login) {
   var out = []
   var rawUris = toList(login && login.uris)
@@ -2763,7 +2722,6 @@ function parseItems(raw) {
       hasTotp: Boolean(login.totp),
       totpKey: String(login.totp || ""),
       uris: uris,
-      uriEntries: loginUriEntries(login),
       // Master password re-prompt: 1 asks for the master password before
       // anything secret of this item is shown, copied or edited
       // (withReprompt() in Service.qml).
@@ -2804,7 +2762,7 @@ function parseSshKeys(keys) {
     out.push({ id: String(it.id), organizationId: raw.organizationId, folderId: raw.folderId,
       name: raw.name, type: "sshKey", typeCode: 5, favorite: raw.favorite,
       username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "",
-      uris: [], uriEntries: [], reprompt: raw.reprompt, attachments: [], hasAttachments: false,
+      uris: [], reprompt: raw.reprompt, attachments: [], hasAttachments: false,
       subtitle: fingerprint || publicKey || "SSH Key", notes: "",
       publicKey: publicKey, fingerprint: fingerprint, rawObject: raw })
   }
@@ -2929,7 +2887,7 @@ function itemDetailFromObject(it) {
     return { id: String(it.id || ""), organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null, name: String(it.name || "Untitled"),
       type: "sshKey", typeCode: 5, favorite: Boolean(it.favorite), notes: "",
-      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [], uriEntries: [],
+      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [],
       reprompt: repromptValue(it.reprompt), attachments: [],
       hasAttachments: false, card: null, identity: null, fields: [],
       publicKey: String(sshKey.publicKey || it.publicKey || ""),
@@ -2956,7 +2914,6 @@ function itemDetailFromObject(it) {
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
-    uriEntries: loginUriEntries(login),
     reprompt: repromptValue(it.reprompt),
     attachments: attachments,
     hasAttachments: attachments.length > 0,
@@ -3131,33 +3088,6 @@ function editedUris(stored, typed) {
   return [replaced].concat(kept.slice(1))
 }
 
-// The websites from a form that edits the whole list (`entries`: { uri,
-// match, sourceIndex }). A row that came from a stored entry keeps that
-// entry's other fields; an empty row is dropped.
-function editedUriList(stored, entries) {
-  var from = toList(stored)
-  var rows = toList(entries)
-  var out = []
-  for (var i = 0; i < rows.length; i++) {
-    var row = rows[i]
-    if (!row) continue
-    var uri = String(row.uri === undefined || row.uri === null ? "" : row.uri)
-    if (!uri.trim()) continue
-    var source = row.sourceIndex !== undefined && row.sourceIndex !== null ? from[Number(row.sourceIndex)] : null
-    var entry = {}
-    if (source && typeof source === "object") for (var k in source) entry[k] = source[k]
-    // An untouched rule keeps its stored form (even an absent key).
-    if (!(source && typeof source === "object" && uriMatchValue(source.match) === uriMatchValue(row.match))) {
-      entry.match = uriMatchValue(row.match)
-    }
-    var had = source && typeof source === "object" && source.uri !== undefined && source.uri !== null
-      ? String(source.uri) : null
-    entry.uri = had !== null && had === uri ? source.uri : uri.trim()
-    out.push(entry)
-  }
-  return out
-}
-
 // Shared by create and edit. Absent fields are written as "" (not left
 // undefined) so a cleared box clears the value.
 function updateCardFields(card, fields) {
@@ -3208,9 +3138,7 @@ function customFieldsPayload(fields) {
 
 // `typeFields` holds the card or identity fields as one object rather than
 // two dozen positional arguments.
-// `uriEntries`, when given, is the whole website list from a form that edits
-// every entry (editedUriList()); otherwise `uri` is the one website.
-function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields, uriEntries) {
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (Number(typeCode) === 5) return null
   var payload = {
     type: Number(typeCode || 1),
@@ -3229,9 +3157,7 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
   if (Number(typeCode) === 1) { // Login
     var login = {}
     updateLoginFields(login, username, password, totp)
-    login.uris = uriEntries !== undefined && uriEntries !== null
-      ? editedUriList([], uriEntries)
-      : editedUris(undefined, uri)
+    login.uris = editedUris(undefined, uri)
     payload.login = login
   } else if (Number(typeCode) === 2) { // Secure Note
     payload.secureNote = { type: 0 }
@@ -3250,7 +3176,7 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
 
 // The payload is the stored item with the form written over it; anything the
 // form did not change is written back exactly as stored (formValue()).
-function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields, uriEntries) {
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (existingItem && (Number(existingItem.typeCode || existingItem.type) === 5
       || (existingItem.rawObject && Number(existingItem.rawObject.type) === 5))) return null
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
@@ -3274,9 +3200,7 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}
     updateLoginFields(payload.login, username, password, totp)
-    payload.login.uris = uriEntries !== undefined && uriEntries !== null
-      ? editedUriList(payload.login.uris, uriEntries)
-      : editedUris(payload.login.uris, uri)
+    payload.login.uris = editedUris(payload.login.uris, uri)
   } else if (payload.type === 3 && typeFields) {
     if (!payload.card) payload.card = {}
     updateCardFields(payload.card, typeFields)
@@ -4796,10 +4720,7 @@ function sshAuthSockDiagnostic(sock, runtimeDir) {
 // Shipped helpers are checked before use: present, executable, right
 // architecture, matching checksum, passing self-test, matching protocol.
 // SHA256SUMS sits beside the binary, so it catches stale or incomplete files,
-// not tampering. In this fork the helpers under bin/ are built locally from
-// the fork's own source, not taken from an upstream release, so no release
-// attestation covers them: their provenance is this repository's history
-// and the build that produced them.
+// not tampering; provenance is covered by the release attestation.
 var SSH_AGENT_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-ssh-agent"
 var SSH_AGENT_SUMS_RELATIVE = "bin/SHA256SUMS"
 // Cargo's debug build, used when the shipped binary is absent or unusable;

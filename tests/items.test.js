@@ -548,38 +548,11 @@ check("an unrecognised type is drawn as a login, not as the unreachable shield",
       && bareSaved.login.totp === null && bareSaved.login.uris === null,
     JSON.stringify(bareSaved))
 
-  // Every website is exposed with its rule, for a form that edits them all.
-  check("items and details carry every website with its match rule",
-    JSON.stringify(row.uriEntries.map(e => [e.uri, e.match]))
-      === JSON.stringify(stored.login.uris.map(u => [u.uri, u.match]))
-      && JSON.stringify(detail.uriEntries) === JSON.stringify(row.uriEntries),
-    JSON.stringify(row.uriEntries))
-  const listEdited = Model.buildEditPayload(detail, row.name, row.username, formPassword, row.totpKey,
-    formUri, row.notes, row.favorite, "", "", [], null, undefined,
-    [row.uriEntries[1], { uri: " https://new.bank.example ", match: 2, sourceIndex: null },
-     Object.assign({}, row.uriEntries[0], { match: 0 })])
-  check("a whole-list edit writes the list as shown, rules included",
-    JSON.stringify(listEdited.login.uris) === JSON.stringify([
-      { match: 1, uri: "https://bank-app.example" },
-      { match: 2, uri: "https://new.bank.example" },
-      { match: 0, uri: "https://secure.bank.example/login" }]),
-    JSON.stringify(listEdited.login.uris))
-  const listUnchanged = Model.buildEditPayload(detail, row.name, row.username, formPassword, row.totpKey,
-    formUri, row.notes, row.favorite, "", "", [], null, undefined, row.uriEntries)
-  check("a whole-list edit that changed nothing writes the stored list back",
-    JSON.stringify(listUnchanged.login.uris) === JSON.stringify(stored.login.uris),
-    JSON.stringify(listUnchanged.login.uris))
-
-  // The panel wires it: every website loaded at edit, the list passed only
-  // when a view edited it as a list.
+  // The panel wires it: the form loads the first website exactly as stored.
   const service = readPluginSource("Panel.qml")
   const start = functionBody(service, "startEditItemNow")
-  const save = functionBody(service, "saveItemForm")
-  check("the edit form loads every website of the item",
-    /formUriEntries\s*=\s*Model\.loginUriEntries\(/.test(start), start)
-  check("the save passes the website list only when a view edited it",
-    /formUriEntriesEdited\s*\?\s*formUriEntries\s*:\s*undefined/.test(save)
-      && /buildEditPayload\([^\n]*formCustomFields, uriEntries\)/.test(save), save)
+  check("the edit form loads the first website exactly as stored",
+    /Model\.loginUriEntries\(/.test(start), start)
 }
 
 // --- a masked value does not give away its length ------------------------------

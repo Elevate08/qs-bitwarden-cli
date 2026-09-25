@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Smaller view fixes from the fork's UI audit, pinned in the view's source:
+// Smaller view fixes, pinned in the view's source:
 // what a field shows once the state behind it is gone, which screen keys act
 // on, and confirmations before destructive keys.
 //
