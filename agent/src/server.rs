@@ -21,8 +21,9 @@ pub const MAX_SESSION_BINDS: usize = 16;
 
 pub struct ClientEvent {
     pub peer: PeerContext,
-    /// Set once bound for forwarding and never cleared, so the remote end
-    /// cannot send a "not forwarded" bind to undo it.
+    /// Set once bound for forwarding, or once a bind is refused (it may have
+    /// said forwarding), and never cleared, so the remote end cannot send a
+    /// "not forwarded" bind to undo it.
     pub forwarded: bool,
     /// The connection's session binds so far, oldest first: which server a
     /// login on each bound session goes to.
@@ -72,6 +73,13 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
             return;
         };
         let Some(request) = protocol::decode_request(&frame) else {
+            // Fail closed: a bind that does not parse may have been the one
+            // saying this connection relays a remote host, so treat it as
+            // forwarded. Leaving the flag alone let a server with an oversized
+            // host key have its relayed logins answered by a local grant.
+            if protocol::may_be_session_bind(&frame) {
+                forwarded = true;
+            }
             if write_response(&mut stream, protocol::failure_response())
                 .await
                 .is_err()
@@ -91,6 +99,11 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
                 forwarded |= forwarding;
                 protocol::success_response()
             } else {
+                // A bind that cannot be recorded is refused like an
+                // unparseable one, and for the same reason marks the
+                // connection forwarded whatever its flag said: later logins
+                // on its session could not be matched to their server.
+                forwarded = true;
                 protocol::failure_response()
             };
             if write_response(&mut stream, response).await.is_err() {

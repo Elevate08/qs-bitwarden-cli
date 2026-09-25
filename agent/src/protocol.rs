@@ -215,6 +215,23 @@ pub fn decode_request(frame: &[u8]) -> Option<AgentRequest> {
     }
 }
 
+/// Whether a frame `decode_request` refused could have been a
+/// `session-bind@openssh.com`: an extension request that names it, or whose
+/// name cannot be read at all. The caller must then assume the refused bind
+/// said "forwarding". OpenSSH's client carries on after a refused bind, so a
+/// server that makes its own bind unparseable (a host key over
+/// `MAX_HOST_KEY`, say) would otherwise leave the relayed connection looking
+/// local and able to ride the local `ssh`'s grants.
+pub fn may_be_session_bind(frame: &[u8]) -> bool {
+    let Some((&EXTENSION, mut fields)) = frame.get(4..).and_then(<[u8]>::split_first) else {
+        return false;
+    };
+    match Vec::<u8>::decode(&mut fields) {
+        Ok(name) => name == SESSION_BIND,
+        Err(_) => true,
+    }
+}
+
 fn decode_session_bind(mut fields: &[u8]) -> Option<AgentRequest> {
     if Vec::<u8>::decode(&mut fields).ok()? != SESSION_BIND {
         return None;
@@ -647,6 +664,51 @@ mod tests {
         ] {
             assert_eq!(decode_request(&malformed), None);
             assert_eq!(response_payload(&handle_frame(&malformed, &[])), &[FAILURE]);
+        }
+    }
+
+    #[test]
+    fn a_refused_bind_is_recognised_so_the_server_can_fail_closed() {
+        // A host key past MAX_HOST_KEY: what a padded host certificate from a
+        // hostile server looks like. Refused, but still known to be a bind.
+        let mut oversized = vec![27];
+        string(b"session-bind@openssh.com", &mut oversized);
+        string(&vec![0; super::MAX_HOST_KEY + 1], &mut oversized);
+        string(b"session identifier", &mut oversized);
+        string(b"host signature", &mut oversized);
+        oversized.push(1);
+        let oversized = frame(&oversized);
+
+        for refused in [
+            oversized,
+            session_bind(b"session-bind@openssh.com", 2, b""),
+            session_bind(b"session-bind@openssh.com", 1, b"x"),
+            // Nothing after the name: a truncated bind.
+            frame(
+                &[
+                    &[27_u8][..],
+                    &24_u32.to_be_bytes(),
+                    b"session-bind@openssh.com",
+                ]
+                .concat(),
+            ),
+            // A name whose length runs past the frame cannot be ruled out.
+            frame(&[27, 0xff, 0xff, 0xff, 0xff, b's']),
+        ] {
+            assert_eq!(decode_request(&refused), None);
+            assert!(super::may_be_session_bind(&refused));
+        }
+
+        // Only extension frames, and not ones naming something else.
+        for other in [
+            session_bind(b"restrict-destination-v00@openssh.com", 1, b""),
+            frame(&[REQUEST_IDENTITIES, 0]),
+            frame(&[SIGN_REQUEST]),
+            frame(&[27, 0, 0, 0, 1, 0xff]),
+            vec![0, 0, 0, 1],
+            Vec::new(),
+        ] {
+            assert!(!super::may_be_session_bind(&other));
         }
     }
 

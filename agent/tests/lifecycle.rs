@@ -1011,6 +1011,158 @@ fn a_forwarded_request_is_labelled_and_never_granted() {
     agent.shutdown();
 }
 
+/// A bind the helper refuses must not leave the connection looking local.
+/// Here the forwarding bind carries a host key over the 16 KiB limit, as a
+/// hostile server's padded certificate would, and OpenSSH carries on after the
+/// refusal. The relayed logins must prompt, labelled forwarded, instead of
+/// riding the local `ssh`'s grant for the same server.
+#[test]
+fn a_refused_bind_fails_closed_and_never_rides_a_local_grant() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    const GITHUB: &[u8] = b"github host key";
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let (proceed, go) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        // The local `ssh` logs in to the server; approved with a window.
+        let mut local = UnixStream::connect(&socket).unwrap();
+        local
+            .write_all(&session_bind_to(GITHUB, &[0x41; 32], false))
+            .unwrap();
+        assert_eq!(read_agent_frame(&mut local)[4], 6);
+        local
+            .write_all(&sign_request_for(
+                &blob,
+                &hostbound_login_in(&[0x41; 32], b"git", &blob, GITHUB),
+            ))
+            .unwrap();
+        let local_signed = read_agent_frame(&mut local);
+        go.recv().unwrap();
+
+        let oversized = vec![0_u8; 17 * 1024];
+        // Relayed, as modern OpenSSH does it: the refused forwarding bind,
+        // then the remote host's host-bound login to the same server.
+        let mut relayed = UnixStream::connect(&socket).unwrap();
+        relayed
+            .write_all(&session_bind_to(&oversized, &[0x42; 32], true))
+            .unwrap();
+        let refused = read_agent_frame(&mut relayed);
+        relayed
+            .write_all(&sign_request_for(
+                &blob,
+                &hostbound_login_in(&[0xaa; 32], b"git", &blob, GITHUB),
+            ))
+            .unwrap();
+        let hostbound = read_agent_frame(&mut relayed);
+        go.recv().unwrap();
+
+        // Relayed, then a well-formed "not forwarded" bind to the server and
+        // a plain login on it: the refused bind still counts.
+        let mut rebound = UnixStream::connect(&socket).unwrap();
+        rebound
+            .write_all(&session_bind_to(&oversized, &[0x43; 32], true))
+            .unwrap();
+        let _ = read_agent_frame(&mut rebound);
+        rebound
+            .write_all(&session_bind_to(GITHUB, &[0x44; 32], false))
+            .unwrap();
+        assert_eq!(read_agent_frame(&mut rebound)[4], 6);
+        rebound
+            .write_all(&sign_request_for(
+                &blob,
+                &login_data_in(&[0x44; 32], b"git", &blob),
+            ))
+            .unwrap();
+        let plain = read_agent_frame(&mut rebound);
+        (local_signed, refused, hostbound, plain)
+    });
+
+    let local = agent.read();
+    assert_eq!(local["type"], "approval_required");
+    assert_eq!(local["forwarded"], false);
+    assert_eq!(local["grantOffered"], true);
+    let github = local["hostKey"].as_str().unwrap().to_owned();
+    let local_id = local["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"approve\",\"requestId\":{local_id},\"grantSeconds\":120}}"
+    ));
+    assert_eq!(agent.read()["type"], "grants_changed");
+
+    for case in ["host-bound login", "login after a later bind"] {
+        proceed.send(()).unwrap();
+        let relayed = agent.read();
+        assert_eq!(
+            relayed["type"], "approval_required",
+            "{case}: a relayed login after a refused bind must prompt, not ride the grant"
+        );
+        assert_eq!(relayed["forwarded"], true, "{case}");
+        assert_eq!(relayed["grantOffered"], false, "{case}");
+        assert_eq!(
+            relayed["hostKey"],
+            github.as_str(),
+            "{case}: the same server"
+        );
+        let id = relayed["requestId"].as_u64().unwrap();
+        agent.send(&format!("{{\"v\":1,\"type\":\"deny\",\"requestId\":{id}}}"));
+    }
+
+    let (local_signed, refused, hostbound, plain) = client.join().unwrap();
+    assert_eq!(local_signed[4], 14);
+    assert_eq!(refused, [0, 0, 0, 1, 5], "the oversized bind is refused");
+    assert_eq!(hostbound, [0, 0, 0, 1, 5], "denied, never signed silently");
+    assert_eq!(plain, [0, 0, 0, 1, 5], "denied, never signed silently");
+    agent.shutdown();
+}
+
+/// A bind past the per-connection limit cannot be recorded, so it is refused
+/// and marks the connection forwarded whatever its flag said.
+#[test]
+fn a_bind_past_the_per_connection_limit_marks_the_connection_forwarded() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let client = std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        for session in 0..16_u8 {
+            stream
+                .write_all(&session_bind_to(b"host key", &[session; 32], false))
+                .unwrap();
+            assert_eq!(read_agent_frame(&mut stream)[4], 6);
+        }
+        stream
+            .write_all(&session_bind_to(b"host key", &[0x77; 32], false))
+            .unwrap();
+        let refused = read_agent_frame(&mut stream);
+        stream
+            .write_all(&sign_request_for(&blob, &git_signature_data()))
+            .unwrap();
+        (refused, read_agent_frame(&mut stream))
+    });
+
+    let approval = agent.read();
+    assert_eq!(approval["type"], "approval_required");
+    assert_eq!(approval["forwarded"], true);
+    assert_eq!(approval["grantOffered"], false);
+    let id = approval["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"approve\",\"requestId\":{id},\"grantSeconds\":120}}"
+    ));
+    let (refused, signed) = client.join().unwrap();
+    assert_eq!(refused, [0, 0, 0, 1, 5]);
+    assert_eq!(signed[4], 14, "approved once");
+    // No grant was opened, so the next message is the barrier's lock ack.
+    agent.drain_control();
+    agent.shutdown();
+}
+
 /// `--version` and `--self-test` answer without filesystem, socket or runtime
 /// directory: the panel runs them before any of that exists.
 #[test]
@@ -1290,6 +1442,30 @@ fn login_data_in(session_id: &[u8], user: &[u8], public_blob: &[u8]) -> Vec<u8> 
     1_u8.encode(&mut data).unwrap();
     b"ssh-ed25519".as_slice().encode(&mut data).unwrap();
     public_blob.encode(&mut data).unwrap();
+    data
+}
+
+/// OpenSSH's host-bound login data: `login_data_in` with the server's host
+/// key inside, which names the server even with no bind for the session.
+fn hostbound_login_in(
+    session_id: &[u8],
+    user: &[u8],
+    public_blob: &[u8],
+    host_key: &[u8],
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    session_id.encode(&mut data).unwrap();
+    50_u8.encode(&mut data).unwrap();
+    user.encode(&mut data).unwrap();
+    b"ssh-connection".as_slice().encode(&mut data).unwrap();
+    b"publickey-hostbound-v00@openssh.com"
+        .as_slice()
+        .encode(&mut data)
+        .unwrap();
+    1_u8.encode(&mut data).unwrap();
+    b"ssh-ed25519".as_slice().encode(&mut data).unwrap();
+    public_blob.encode(&mut data).unwrap();
+    host_key.encode(&mut data).unwrap();
     data
 }
 
