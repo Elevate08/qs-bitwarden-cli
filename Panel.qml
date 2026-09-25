@@ -5451,7 +5451,10 @@ Panel {
         accentColor: root.accent
         urgentColor: root.urgent
         fontFamily: root.fontFamily
-        actionLabel: root.vault.failedSave
+        // Only while unlocked: a failed save outlives a lock or an account
+        // switch, and reopening it then would put its form over another
+        // vault (or none).
+        actionLabel: root.vault.status === "unlocked" && root.vault.failedSave
           ? Model.plainLabel("Reopen " + Model.clipLabel(root.vault.failedSave.name, 24))
           : ""
         onActionRequested: root.vault.reopenFailedSave()

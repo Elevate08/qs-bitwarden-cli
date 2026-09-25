@@ -50,8 +50,8 @@ check("an error can offer a recovery alongside the dismiss",
     && /signal actionRequested\(\)/.test(noticeSrc)
     && /visible: root\.showsError && root\.actionLabel !== ""/.test(noticeSrc),
   noticeSrc)
-check("the recovery is offered only when there is one",
-  /actionLabel: root\.failedSave/.test(noticeUse)
+check("the recovery is offered only when there is one, and only while unlocked",
+  /actionLabel: root\.status === "unlocked" && root\.failedSave/.test(noticeUse)
     && /Model\.plainLabel\("Reopen " \+ Model\.clipLabel\(root\.failedSave\.name, 24\)\)/.test(noticeUse),
   noticeUse)
 check("the message column subtracts both trailing buttons",
