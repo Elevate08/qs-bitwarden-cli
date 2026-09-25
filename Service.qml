@@ -1866,6 +1866,9 @@ Item {
   // it (so the agent can never cost the user the item list).
   property bool listAgentBranchActive: false
   property bool listRetriedWithoutAgent: false
+  // The running item read started before `bw status` confirmed the session
+  // (onKeyringLookupFinished()); its failure means nothing yet.
+  property bool listReadEarly: false
 
   // The nonce is primed ahead of time so the item list never waits on it; a
   // load without one runs without the branch and primes one for next time.
@@ -2481,6 +2484,11 @@ Item {
       vaultEpoch += 1
     }
     runStatusCheck()
+    // A remembered session is usually still good, so read the list alongside
+    // `bw status` rather than after it: two bw starts overlap instead of
+    // queueing (~3 s each). Nothing shows, and the SSH agent does not load,
+    // until the status confirms; a locked answer drops the read's epoch.
+    if (token) beginInitialVaultLoad(false, false)
   }
 
   function runStatusCheck(authoritative) {
@@ -2555,6 +2563,8 @@ Item {
       status = "unlocked"
       currentScreen = "main"
       ensureItemsFresh()
+      // Held back while an early list read ran on an unconfirmed session.
+      loadPendingMetadata()
       resetAutoLockTimer()
       focusAppropriateField()
       // No lastSync means an empty local vault: `bw login` swallows a failed
@@ -4845,12 +4855,23 @@ Item {
     return epochOperationIsStale(name) || !session
   }
 
-  // Items first; organizations and folders (each another bw start) only after
-  // the list has painted.
+  // Items, organizations and folders together: each is its own bw start, and
+  // bw spends most of one waiting, so queueing them only added ~3 s. On a
+  // session `bw status` has not confirmed yet, the metadata waits for it.
   function beginInitialVaultLoad(showSpinner, forceMetadata) {
     metadataLoadPending = true
     metadataForceRefresh = forceMetadata === true
     loadItems(showSpinner)
+    loadPendingMetadata()
+  }
+
+  function loadPendingMetadata() {
+    if (status !== "unlocked" || !metadataLoadPending) return
+    var force = metadataForceRefresh
+    metadataLoadPending = false
+    metadataForceRefresh = false
+    loadOrganizations(force)
+    loadFolders(force)
   }
 
   // Stale-while-revalidate: show what is in memory at once and refresh behind
@@ -4872,6 +4893,8 @@ Item {
   function loadItems(showSpinner) {
     if (!session) return
     if (showSpinner !== false) isLoading = true
+    // The early read for this vault is still running: it serves this request.
+    if (listProc.running && listReadEarly && !vaultReadIsStale("items")) return
     beginVaultRead("items")
     listReadMode = Model.vaultListMode(dependencies)
     if (listReadMode === "blocked") {
@@ -4885,7 +4908,10 @@ Item {
   // The only launcher of the item read, with or without the agent branch.
   // `retrying` (after a failed fan-out) never carries the branch.
   function startVaultListRead(retrying) {
-    var useAgent = !retrying && sshAgentGateOpen && Model.isValidLoadId(sshAgentNextLoadId)
+    // Keys go to the agent only from a read of a confirmed session;
+    // maybeStartupLoad() loads them once the status has confirmed it.
+    listReadEarly = status !== "unlocked"
+    var useAgent = !retrying && !listReadEarly && sshAgentGateOpen && Model.isValidLoadId(sshAgentNextLoadId)
     if (useAgent) {
       sshAgentEpoch += 1
       sshAgentLoadId = sshAgentNextLoadId
@@ -4921,7 +4947,7 @@ Item {
       isSyncing = false
       flashNotification("Vault synced with Bitwarden")
     }
-    if (metadataLoadPending) deferredMetadataTimer.restart()
+    if (metadataLoadPending || statusRefreshAfterItems) deferredMetadataTimer.restart()
     // The first read usually beat the handshake; see whether a load is owed.
     maybeStartupLoad()
   }
@@ -4929,7 +4955,9 @@ Item {
   function onListProcessExited(exitCode, rawJson, stderrText) {
     if (finishScrubRun(listProc)) return
     var hadAgentBranch = listAgentBranchActive
+    var wasEarly = listReadEarly
     listAgentBranchActive = false
+    listReadEarly = false
     endSshAgentLoad(exitCode === 0)
 
     if (exitCode === 0) {
@@ -4947,6 +4975,14 @@ Item {
     }
     listRetriedWithoutAgent = false
 
+    // An early read that failed after the status confirmed the session is
+    // asked again, now as an ordinary read that reports its own failure.
+    if (wasEarly && status === "unlocked" && !vaultReadIsStale("items")) {
+      beginVaultRead("items")
+      startVaultListRead(false)
+      return
+    }
+
     isLoading = false
     isSyncing = false
     syncReloadPending = false
@@ -4955,7 +4991,9 @@ Item {
     if (statusRefreshAfterItems) {
       statusRefreshAfterItems = false
     }
-    if (!vaultReadIsStale("items")) {
+    // Before the status answers, a failure is most likely a stale session,
+    // which the status will report as locked.
+    if (!vaultReadIsStale("items") && !wasEarly) {
       errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
     }
   }
@@ -6345,16 +6383,13 @@ Item {
 
   Timer {
     id: deferredMetadataTimer
-    // Lets the parsed list render before two more bw processes start.
+    // Metadata not already started with the list, and the account-naming
+    // `bw status`, wait for the parsed list to render.
     interval: 50
     repeat: false
     onTriggered: {
-      if (root.status !== "unlocked" || !root.metadataLoadPending) return
-      var force = root.metadataForceRefresh
-      root.metadataLoadPending = false
-      root.metadataForceRefresh = false
-      root.loadOrganizations(force)
-      root.loadFolders(force)
+      if (root.status !== "unlocked") return
+      root.loadPendingMetadata()
       if (root.statusRefreshAfterItems) {
         root.statusRefreshAfterItems = false
         root.runStatusCheck(false)
