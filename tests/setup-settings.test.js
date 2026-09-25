@@ -4,7 +4,7 @@
 //
 //   node tests/setup-settings.test.js
 
-const { createSuite, loadModule, read, readPluginSource } = require("./harness")
+const { createSuite, functionBody, loadModule, read, readPluginSource } = require("./harness")
 const { legacyKeyring } = require("./legacy-keyring")
 const path = require("path")
 const panelSrc = readPluginSource("Panel.qml")
@@ -271,44 +271,68 @@ check("grouping does not mutate the schema",
   Model.SETTINGS_SCHEMA.every(e => e.groupLabel === undefined), "schema was mutated")
 
 // --- PIN validation ---------------------------------------------------------
-check("minimum PIN length is 4", Model.pinMinLength() === 4, String(Model.pinMinLength()))
-check("recommended PIN length is 6", Model.pinRecommendedLength() === 6, String(Model.pinRecommendedLength()))
+// The stored item is sealed to this machine, but a program running as the
+// user can decrypt it and guess offline on every core (about 17 guesses a
+// second on a 16-thread laptop): 4 digits fell in minutes. Six is the floor.
+check("minimum PIN length is 6", Model.pinMinLength() === 6, String(Model.pinMinLength()))
+check("recommended PIN length is 8", Model.pinRecommendedLength() === 8, String(Model.pinRecommendedLength()))
+check("a PIN set before the floor was raised still unlocks",
+  Model.pinUnlockMinLength() === 4 && /Model\.pinUnlockMinLength\(\)/.test(functionBody(readPluginSource("Panel.qml"), "submitPinUnlock")),
+  String(Model.pinUnlockMinLength()))
 
-// A short PIN is allowed -- the point is that it is flagged, not blocked.
-check("a 4-digit PIN still validates", Model.validatePin("1234", "1234") === "", Model.validatePin("1234", "1234"))
-check("a 5-digit PIN still validates", Model.validatePin("12345", "12345") === "", Model.validatePin("12345", "12345"))
-check("but 4 digits is flagged weak", Model.isPinWeak("1234"), "expected weak")
-check("and 5 digits is flagged weak", Model.isPinWeak("12345"), "expected weak")
-check("6 digits is not flagged", !Model.isPinWeak("123456"), Model.pinWeakWarning("123456"))
-check("longer than 6 is not flagged", !Model.isPinWeak("1234567890"), Model.pinWeakWarning("1234567890"))
+check("a 4-digit PIN is refused", Model.validatePin("1234", "1234") !== "", Model.validatePin("1234", "1234"))
+check("a 5-digit PIN is refused", Model.validatePin("12345", "12345") !== "", Model.validatePin("12345", "12345"))
+check("the refusal names the floor", Model.validatePin("12345", "12345").includes("6 digits"), Model.validatePin("12345", "12345"))
+// Between the floor and the recommendation: allowed, and flagged.
+check("a 6-digit PIN validates", Model.validatePin("123456", "123456") === "", Model.validatePin("123456", "123456"))
+check("but 6 digits is flagged weak", Model.isPinWeak("123456"), "expected weak")
+check("and 7 digits is flagged weak", Model.isPinWeak("1234567"), "expected weak")
+check("8 digits is not flagged", !Model.isPinWeak("12345678"), Model.pinWeakWarning("12345678"))
+check("longer than 8 is not flagged", !Model.isPinWeak("1234567890"), Model.pinWeakWarning("1234567890"))
 
 // No warning while still typing towards a good PIN, or it would flash on
 // every keystroke from the first digit onwards.
 check("nothing is flagged before the floor is even reached",
-  !Model.isPinWeak("") && !Model.isPinWeak("1") && !Model.isPinWeak("123"),
+  !Model.isPinWeak("") && !Model.isPinWeak("1") && !Model.isPinWeak("12345"),
   "expected no warning below the minimum")
 
-// The warning has to carry the actual number, not a vague 'weak'.
-check("the warning names the search space for 4 digits",
-  Model.pinWeakWarning("1234").includes("10,000") && Model.pinWeakWarning("1234").includes("4-digit"),
-  Model.pinWeakWarning("1234"))
-check("the warning names the search space for 5 digits",
-  Model.pinWeakWarning("12345").includes("100,000"), Model.pinWeakWarning("12345"))
+// The warning has to carry the actual number and the offline attack it is
+// about, not a vague 'weak' or a one-core figure.
+check("the warning names the search space for 6 digits",
+  Model.pinWeakWarning("123456").includes("1,000,000") && Model.pinWeakWarning("123456").includes("6-digit"),
+  Model.pinWeakWarning("123456"))
+check("the warning says the stored item can be copied and guessed offline",
+  Model.pinWeakWarning("123456").includes("copy the stored item"), Model.pinWeakWarning("123456"))
+check("the warning's time is the measured offline rate",
+  Model.pinWeakWarning("123456").includes("about 16 hours") && Model.pinWeakWarning("1234567").includes("about 7 days"),
+  Model.pinWeakWarning("123456") + " / " + Model.pinWeakWarning("1234567"))
 check("the warning points at the recommendation",
-  Model.pinWeakWarning("1234").includes("6 or more"), Model.pinWeakWarning("1234"))
+  Model.pinWeakWarning("123456").includes("8 or more") && Model.pinWeakWarning("123456").includes("about 2 months"),
+  Model.pinWeakWarning("123456"))
+check("the guess times scale by ten per digit",
+  Model.pinGuessTime(4) === "about 10 minutes" && Model.pinGuessTime(5) === "about 2 hours",
+  Model.pinGuessTime(4) + " / " + Model.pinGuessTime(5))
+// The same figures wherever the cost is described.
+const manifestPin = JSON.parse(read("manifest.json")).barWidget.schema.find(e => e.key === "pinUnlock").description
+const schemaPin = Model.SETTINGS_SCHEMA.find(e => e.key === "pinUnlock").description
+for (const [where, text] of [["manifest", manifestPin], ["settings screen", schemaPin],
+                             ["README", read("README.md")], ["features doc", read("docs/features.md")]]) {
+  check(`the ${where} gives the offline guess time, not the old one-core figure`,
+    text.includes("16 hours") && !/9 days for 6|2 hours of one CPU core|4 is the floor/.test(text), where)
+}
 for (const [pin, confirm, wantErr] of [
-  ["123",    "123",    true],   // too short
-  ["1234",   "1234",   false],  // the minimum is accepted
+  ["12345",  "12345",  true],   // too short
+  ["123456", "123456", false],  // the minimum is accepted
   ["12345678901234", "12345678901234", false], // longer is allowed, no upper bound
-  ["12a4",   "12a4",   true],   // non-digits refused
+  ["12a456", "12a456", true],   // non-digits refused
   ["",       "",       true],
-  ["1234",   "4321",   true],   // mismatch
+  ["123456", "654321", true],   // mismatch
 ]) {
   const err = Model.validatePin(pin, confirm)
   check(`validatePin(${JSON.stringify(pin)}, ${JSON.stringify(confirm)})`,
     (err !== "") === wantErr, `err=${JSON.stringify(err)}`)
 }
-check("confirm is optional when omitted", Model.validatePin("1234") === "", Model.validatePin("1234"))
+check("confirm is optional when omitted", Model.validatePin("123456") === "", Model.validatePin("123456"))
 
 // --- legacy PIN blob -------------------------------------------------------
 // Read only, to migrate it; must match what older versions wrote.

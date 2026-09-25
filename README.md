@@ -395,15 +395,15 @@ An earlier build could store this item across several lines, which makes gnome-k
 
 Upgrading from 1.10.0 or earlier needs nothing from you. The old entries -- a plaintext copy for fingerprint and for FIDO2, an encrypted one for the PIN -- are moved in as each method is next used, and deleted once the new copy opens.
 
-**The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. A fingerprint releases no secret to encrypt with, so with fingerprint unlock on, a program running as you while you are logged in can open it. A PIN or a FIDO2 key cannot be bypassed that way; root, as always, can read anything.
+**The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. The seal ties the stored item to this machine and this user, so a copy taken elsewhere is useless -- but a program running as you can unseal it here (`systemd-creds --user decrypt`). With fingerprint unlock on, that is all it needs: a fingerprint releases no secret to encrypt with. With a PIN, it can then guess the PIN offline, at its own pace and on every core (see [PIN unlock](#pin-unlock)). A FIDO2 key cannot be bypassed that way, because the key itself produces the secret; root, as always, can read anything.
 
 ### PIN unlock
 
-Turn on **Unlock with PIN** in the settings screen. Confirm your master password and choose a PIN. Six digits or more is what the screen asks for; four and five are accepted but shown with the real cost of guessing them, so a weak PIN is a decision rather than an accident.
+Turn on **Unlock with PIN** in the settings screen. Confirm your master password and choose a PIN of **at least 6 digits; 8 or more is the recommendation**. Six and seven are accepted but shown with the real cost of guessing them, so a weak PIN is a decision rather than an accident. (A PIN set with an older version, when 4 was the floor, still unlocks; set a new one to get the longer PIN.)
 
-The PIN reaches the stored password through **Argon2id** (256 MiB of memory, 4 passes, about 0.75 s of one CPU core per guess), from the OS `argon2` tool. Because the stored item is sealed to this machine, guessing has to happen here, as you: roughly 2 hours of one core for 4 digits, 21 hours for 5, and 9 days for 6. A wrong PIN always fails -- the encryption is authenticated, so there is no "decrypts to garbage" case.
+The PIN reaches the stored password through **Argon2id** (256 MiB of memory, 4 passes), from the OS `argon2` tool. That cost is the whole defence against guessing: a program running as you can copy the stored item, unseal it and try PINs offline on every core. Measured on a 16-thread laptop, one guess takes about 0.46 s and 16 in parallel make about 17 a second, so every PIN of **6 digits falls in about 16 hours, 7 digits in about 7 days, and 8 digits in about 2 months** (4 digits took about 10 minutes, which is why it is no longer allowed). A wrong PIN always fails -- the encryption is authenticated, so there is no "decrypts to garbage" case.
 
-Five wrong attempts at the panel removes the PIN's way in, and turning it back on needs your master password. That is a limit on the screen, not on a copy of the keyring; the Argon2 cost is what stands behind it.
+Five wrong attempts at the panel removes the PIN's way in, and turning it back on needs your master password. That limit applies only to guesses typed into the panel's own screen, not to a copy of the stored item; the Argon2 cost is what stands behind it.
 
 ### Fingerprint unlock
 

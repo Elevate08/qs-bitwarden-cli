@@ -19,11 +19,17 @@ const PIN_ENV = "QSBW_PIN"
 // migrate it into the envelope on the next PIN unlock.
 const PIN_ITERATIONS = 600000
 
-// Each PIN guess costs Argon2id at 256 MiB x 4 passes (~0.75 s) on this
-// machine, as this user. Six digits is recommended; four is allowed with a
-// warning that names the cost.
-const PIN_MIN_LENGTH = 4
-const PIN_RECOMMENDED_LENGTH = 6
+// Each PIN guess costs Argon2id at 256 MiB x 4 passes, but the stored item
+// is not a lock on guessing: a program running as the user can decrypt it
+// with `systemd-creds --user` and try PINs offline on every core (see
+// PIN_GUESSES_PER_SECOND). So six digits is the floor and eight the
+// recommendation; six and seven are allowed with a warning that names the
+// cost.
+const PIN_MIN_LENGTH = 6
+const PIN_RECOMMENDED_LENGTH = 8
+// PINs set before the floor was raised (at 4) still unlock; only new ones
+// must meet it.
+const PIN_UNLOCK_MIN_LENGTH = 4
 
 function keyringSecretEnvVar() {
   return KEYRING_SECRET_ENV
@@ -1574,6 +1580,7 @@ function keyringHasFidoPasswordCommand(slot) {
 function pinEnvVar() { return PIN_ENV }
 function pinMinLength() { return PIN_MIN_LENGTH }
 function pinRecommendedLength() { return PIN_RECOMMENDED_LENGTH }
+function pinUnlockMinLength() { return PIN_UNLOCK_MIN_LENGTH }
 
 function validatePin(pin, confirm) {
   var p = String(pin || "")
@@ -1583,15 +1590,23 @@ function validatePin(pin, confirm) {
   return ""
 }
 
-// Argon2id cost of one PIN guess at the envelope's parameters, measured on a
-// current laptop; used only in the warning text.
-var PIN_GUESS_SECONDS = 0.75
+// Offline PIN guesses per second against a copied envelope, at the
+// envelope's Argon2id parameters, measured on a 16-thread laptop running 16
+// guesses in parallel (one guess alone takes about 0.46 s). Used only in the
+// warning text; a faster machine is faster still.
+var PIN_GUESSES_PER_SECOND = 17
 
+// The time to try every PIN of `length` digits, in words.
 function pinGuessTime(length) {
-  var seconds = Math.pow(10, length) * PIN_GUESS_SECONDS
+  var seconds = Math.pow(10, length) / PIN_GUESSES_PER_SECOND
+  var minutes = seconds / 60
   var hours = seconds / 3600
-  if (hours < 48) return "about " + Math.max(1, Math.round(hours)) + " hours"
-  return "about " + Math.round(hours / 24) + " days"
+  var days = hours / 24
+  if (minutes < 90) return "about " + Math.max(1, Math.round(minutes)) + " minutes"
+  if (hours < 48) return "about " + Math.round(hours) + " hours"
+  if (days < 60) return "about " + Math.round(days) + " days"
+  if (days < 730) return "about " + Math.round(days / 30.44) + " months"
+  return "about " + Math.round(days / 365.25) + " years"
 }
 
 function pinWeakWarning(pin) {
@@ -1599,9 +1614,9 @@ function pinWeakWarning(pin) {
   if (p.length < PIN_MIN_LENGTH || p.length >= PIN_RECOMMENDED_LENGTH) return ""
   var combinations = Math.pow(10, p.length).toLocaleString("en-US")
   return "A " + p.length + "-digit PIN is only " + combinations + " combinations: a program running "
-    + "as you could try them all in " + pinGuessTime(p.length) + " on one CPU core. "
-    + "Use " + PIN_RECOMMENDED_LENGTH + " or more: " + PIN_RECOMMENDED_LENGTH + " digits is "
-    + pinGuessTime(PIN_RECOMMENDED_LENGTH) + "."
+    + "as you can copy the stored item and try every PIN in " + pinGuessTime(p.length)
+    + " on a 16-thread laptop. Use " + PIN_RECOMMENDED_LENGTH + " or more: "
+    + PIN_RECOMMENDED_LENGTH + " digits is " + pinGuessTime(PIN_RECOMMENDED_LENGTH) + "."
 }
 
 function isPinWeak(pin) {
@@ -4666,7 +4681,10 @@ function sshAuthSockDiagnostic(sock, runtimeDir) {
 // Shipped helpers are checked before use: present, executable, right
 // architecture, matching checksum, passing self-test, matching protocol.
 // SHA256SUMS sits beside the binary, so it catches stale or incomplete files,
-// not tampering; provenance is covered by the release attestation.
+// not tampering. In this fork the helpers under bin/ are built locally from
+// the fork's own source, not taken from an upstream release, so no release
+// attestation covers them: their provenance is this repository's history
+// and the build that produced them.
 var SSH_AGENT_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-ssh-agent"
 var SSH_AGENT_SUMS_RELATIVE = "bin/SHA256SUMS"
 // Cargo's debug build, used when the shipped binary is absent or unusable;
@@ -5743,7 +5761,7 @@ var SETTINGS_SCHEMA = [
     description: "A FIDO2 key touch opens your master password, stored once, encrypted and sealed to this machine. Requires 'omarchy setup security fido2'; the same registration also serves the system's own authentication prompts." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
-    description: "A PIN opens your master password, stored once, encrypted and sealed to this machine. Use 6 digits or more; 4 is the floor and is flagged as weak." },
+    description: "A PIN of 6 digits or more opens your master password, stored once, encrypted and sealed to this machine. A program running as you can copy it and try every 6-digit PIN in about 16 hours, so use 8 or more (about 2 months)." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },

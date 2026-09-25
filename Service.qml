@@ -3911,8 +3911,10 @@ Item {
       pinUnlockError = "Still checking the vault. Try again in a moment."
       return
     }
-    if (String(pinEntry || "").length < Model.pinMinLength()) {
-      pinUnlockError = "PIN must be at least " + Model.pinMinLength() + " digits"
+    // The unlock floor, not the setup one: a PIN set before the floor was
+    // raised still has to work.
+    if (String(pinEntry || "").length < Model.pinUnlockMinLength()) {
+      pinUnlockError = "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
       return
     }
     pinUnlockError = ""

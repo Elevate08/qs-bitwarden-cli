@@ -31,10 +31,10 @@ Every feature the plugin has, and why each one works the way it does. The
   - Upgrading moves the old per-method entries in as each method is next used, and deletes them once the new copy opens.
 
 - **PIN Unlock** (opt-in, `pinUnlock`):
-  - Unlock with a numeric PIN instead of typing the master password. **6 digits or more is the recommendation**, 4 is the hard floor, and there is no upper limit. A PIN under 6 digits is accepted, with the real cost of guessing it spelled out.
-  - The PIN reaches the stored password through Argon2id (256 MiB, 4 passes, about 0.75 s per guess), and the stored item is sealed to this machine -- so guessing has to happen here: about 2 hours of one CPU core for 4 digits, 9 days for 6.
+  - Unlock with a numeric PIN instead of typing the master password. **6 digits is the floor and 8 or more the recommendation**, and there is no upper limit. A 6- or 7-digit PIN is accepted, with the real cost of guessing it spelled out. A PIN set before the floor was raised (from 4) still unlocks.
+  - The PIN reaches the stored password through Argon2id (256 MiB, 4 passes). The stored item is sealed to this machine, but a program running as you can unseal it and guess PINs offline on every core: about 17 guesses a second on a 16-thread laptop, so every 6-digit PIN in about 16 hours, 7 digits in about 7 days, 8 digits in about 2 months.
   - A wrong PIN always fails; there is no stored PIN hash.
-  - Five wrong attempts removes the PIN's way in; re-enabling needs the master password again.
+  - Five wrong attempts at the panel's own screen removes the PIN's way in; re-enabling needs the master password again. The limit does not apply to a copy of the stored item.
 
 - **Fingerprint Unlock** (opt-in, `fingerprintUnlock`):
   - Unlock the vault with an enrolled fingerprint instead of retyping your master password.
