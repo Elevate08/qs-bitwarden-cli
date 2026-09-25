@@ -60,7 +60,9 @@ folder, organization and type without leaving the keyboard.
 
 **Suggestions** read the focused window or browser tab and pin the matching
 credential to the top, so <kbd>Enter</kbd> is usually the only key you need.
-Pick an item once for a site a title cannot match, and it is remembered.
+Picking an item remembers it for the site's domain or the app; for a site
+whose title names neither, pin it with **Suggest here** (only a pin learns a
+title's words, so a look-alike title cannot borrow a real site's login).
 
 Suggestions come from the window **title**, because that is all Hyprland
 exposes -- not the tab's real address. A page chooses its own title, so a
@@ -85,6 +87,8 @@ never changes anything by accident.
 
 Username, password and the live TOTP with its countdown, the websites attached
 to the item, its notes and any custom fields. Copy any of them with one key.
+An item marked **Master password re-prompt** asks for your master password
+before anything secret of it is shown, copied or edited.
 
 **Suggest here** pins this item for the app or site in front of you, so it is
 offered outright next time rather than inferred.
@@ -478,6 +482,7 @@ not in a separate block:
           "lockOnSuspend": true,
           "clearClipboardSec": 30,
           "rememberSession": true,
+          "crashDumpsAfterUnlock": false,
           "fingerprintUnlock": false,
           "fidoUnlock": false,
           "sshAgentEnabled": false,
@@ -515,16 +520,17 @@ The following settings are read from the plugin's own entry in the
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
-| `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
+| `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). The clear is the copy's own lifetime (`wl-copy` under `timeout`), so it survives a shell restart and never touches something copied later. Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
-| `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor for about a second so the lock finishes first. Needs `gdbus` (glib2), `systemd-inhibit` and `setsid` (util-linux). The monitor and its children stop when the plugin unloads; without these tools the setting is inert. |
-| `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. |
+| `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor until `bw lock` and the keyring clear have finished, at most 4 seconds. Needs `gdbus` (glib2), `systemd-inhibit` and `setsid` (util-linux). The monitor and its children stop when the plugin unloads; without these tools the setting is inert. |
+| `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. Turning it off removes a stored session at once, and with it off an unload while unlocked runs `bw lock`. |
+| `crashDumpsAfterUnlock` | `boolean` | `false` | Off: once a secret has entered the shell (a typed password, a session key, an unlocked vault), the shell writes no core dumps for the rest of its session, so a crash cannot put the decrypted vault on disk. The trade-off: a later shell crash leaves no core dump to diagnose it with. On keeps them (and they may hold vault data); turned on after they were stopped, it applies from the next shell start. |
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. |
 | `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |
-| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN, through Argon2id -- see [PIN unlock](#pin-unlock). |
+| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN of at least 6 digits, through Argon2id -- see [PIN unlock](#pin-unlock). |
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](docs/ssh-agent.md). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
 | `sshAgentApprovalPopup` | `boolean` | `true` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show prompts in the panel. Multiple concurrent requests are queued sequentially with a "1 of N" counter and "Deny all" option. Escape and outside click deny. |

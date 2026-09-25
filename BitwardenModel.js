@@ -1678,8 +1678,11 @@ var ENVELOPE_CREDENTIAL_NAME = "qs-bitwarden-unlock"
 var NEW_SECRET_ENV = "QSBW_NEW_SECRET"
 var FIDO_HMAC_ENV = "QSBW_FIDO_HMAC"
 var FIDO_SALT_ENV = "QSBW_FIDO_SALT"
-// Argon2id for new wraps (~0.75 s). Existing wraps use their recorded
-// parameters; the tool refuses any below Bitwarden's defaults.
+// Argon2id for new wraps (256 MiB, 4 passes: about 0.46 s per derivation on
+// a 16-thread laptop; see PIN_GUESSES_PER_SECOND for what that means for a
+// PIN). Existing wraps use their recorded parameters; the tool refuses any
+// below Bitwarden's defaults, and a new PIN wrap below these, so they must
+// not be lowered.
 var ENVELOPE_ARGON2 = { m: 262144, t: 4, p: 1 }
 var MAX_ENVELOPE_SEALED_BYTES = 256 * 1024
 
