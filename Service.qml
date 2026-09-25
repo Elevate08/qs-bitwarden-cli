@@ -5,6 +5,7 @@ import Quickshell.Io
 import Quickshell.Services.Pam
 import qs.Commons
 import "BitwardenModel.js" as Model
+import "TotpModel.js" as Totp
 
 // The vault, once per shell. The bar (and Panel.qml) exists once per monitor;
 // the shell loads this `service` entry point once and hands it to every bar
@@ -5431,6 +5432,14 @@ Item {
 
   function fetchTotp(itemId, copyWhenReady) {
     if (!session || !itemId) return
+    // The list already holds the key: compute the code here rather than start
+    // bw for it. Keys TotpModel.js does not mirror exactly still ask bw.
+    var local = localTotp(String(itemId))
+    if (local) {
+      if (copyWhenReady) totpCopyItemId = String(itemId)
+      applyTotpCode(String(itemId), local)
+      return
+    }
     if (copyWhenReady) totpCopyItemId = String(itemId)
     if (getTotpProc.running || totpRestartPending) {
       if (totpRequestItemId !== String(itemId)) {
@@ -5484,8 +5493,29 @@ Item {
     else if (!collectorIsClean) clearProcessCollectorSoon(getTotpProc)
   }
 
+  // The code for `itemId` from its key in the list, or "" if bw must answer.
+  function localTotp(itemId) {
+    var key = ""
+    if (detailItem && detailItem.id === itemId) key = detailItem.totpKey || ""
+    if (!key) {
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].id === itemId) {
+          key = items[i].totpKey || ""
+          break
+        }
+      }
+    }
+    if (!key) return ""
+    var result = Totp.generate(key, Date.now())
+    return result ? result.code : ""
+  }
+
   function onTotpFinished(itemId, code) {
     if (vaultReadIsStale("totp")) return
+    applyTotpCode(itemId, code)
+  }
+
+  function applyTotpCode(itemId, code) {
     var c = String(code || "").trim()
     if (detailItem && detailItem.id === itemId) liveTotp = c
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
