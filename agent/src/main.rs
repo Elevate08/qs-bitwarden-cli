@@ -8,7 +8,7 @@ use qs_bitwarden_ssh_agent::keystore::{KeyStore, MAX_KEYS};
 use qs_bitwarden_ssh_agent::lifecycle::harden_process;
 use qs_bitwarden_ssh_agent::load::LoadWindow;
 use qs_bitwarden_ssh_agent::protocol::{self, AgentRequest};
-use qs_bitwarden_ssh_agent::runtime::{read_payload_async, RuntimeError, ServiceRuntime};
+use qs_bitwarden_ssh_agent::runtime::{read_payload_async, Runtime, RuntimeError, ServiceRuntime};
 use qs_bitwarden_ssh_agent::server::{self, ClientEvent};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -185,8 +185,19 @@ struct ActiveLoad {
     window: LoadWindow,
     payload: Option<Result<Zeroizing<Vec<u8>>, RuntimeError>>,
     end_received: bool,
+    /// Set by `key_load_end`: when a payload still missing counts as never
+    /// coming. See `LOAD_END_GRACE_MS`.
+    payload_deadline_ms: Option<u64>,
     task: tokio::task::JoinHandle<()>,
 }
+
+/// How long after `key_load_end` the load's payload may still arrive. The
+/// reader skips lines that are not this load's, so a wrong or malformed line
+/// no longer ends the load by itself; without this, a load whose payload never
+/// came would wait out the reader's 30 s. The panel sends `key_load_end` only
+/// once its vault read has exited, and the FIFO writer holds that read's
+/// output open until it is done, so the payload is normally already buffered.
+const LOAD_END_GRACE_MS: u64 = 5_000;
 
 struct ControlReader {
     stdin: Stdin,
@@ -341,7 +352,7 @@ async fn run() -> Result<(), ()> {
                     ControlMessage::Hello { .. } => return Err(()),
                     ControlMessage::VaultLocked { epoch, .. } => {
                         gate_open = false;
-                        cancel_load(&mut active_load);
+                        cancel_load(&mut active_load, runtime.runtime());
                         store.lock(epoch);
                         approvals.invalidate_all();
                         fail_pending(&mut pending);
@@ -351,7 +362,7 @@ async fn run() -> Result<(), ()> {
                     }
                     ControlMessage::VaultLoggedOut { .. } => {
                         gate_open = false;
-                        cancel_load(&mut active_load);
+                        cancel_load(&mut active_load, runtime.runtime());
                         store.logout(store.epoch().saturating_add(1));
                         approvals.invalidate_all();
                         fail_pending(&mut pending);
@@ -396,27 +407,32 @@ async fn run() -> Result<(), ()> {
                         approvals.invalidate_all();
                         fail_pending(&mut pending);
                         let window = LoadWindow::new(epoch, &load_id).map_err(|_| ())?;
+                        // No drain here: the panel starts the vault read right
+                        // after sending this line, so a drain could race this
+                        // load's own payload. The filter drops stale ones.
+                        let filter = window.filter().map_err(|_| ())?;
                         let fifo = runtime.runtime().fifo_reader().map_err(|_| ())?;
                         let sender = load_tx.clone();
                         let task = tokio::spawn(async move {
-                            let result = read_payload_async(fifo, std::time::Duration::from_secs(30)).await;
+                            let result = read_payload_async(fifo, std::time::Duration::from_secs(30), filter).await;
                             let _ = sender.send((epoch, result)).await;
                         });
-                        active_load = Some(ActiveLoad { epoch, window, payload: None, end_received: false, task });
+                        active_load = Some(ActiveLoad { epoch, window, payload: None, end_received: false, payload_deadline_ms: None, task });
                     }
                     ControlMessage::KeyLoadEnd { epoch, status, .. } => {
                         let Some(load) = active_load.as_mut() else { return Err(()) };
                         if load.epoch != epoch { return Err(()); }
                         if status != LoadStatus::Ok {
-                            cancel_load(&mut active_load);
+                            cancel_load(&mut active_load, runtime.runtime());
                             store.lock(epoch);
                             gate_open = false;
                             cancel_held(&mut held, "load-failed", &output_tx)?;
                             release_held_identities(&mut held_identities, &store, &output_tx, "load-failed")?;
                         } else {
                             load.end_received = true;
+                            load.payload_deadline_ms = Some(elapsed_ms(started).saturating_add(LOAD_END_GRACE_MS));
                             settle_load(
-                                finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, &output_tx)?,
+                                finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
                                 &mut held,
                                 &mut held_identities,
                                 &store,
@@ -435,7 +451,7 @@ async fn run() -> Result<(), ()> {
                 if load.epoch != epoch { continue; }
                 load.payload = Some(result);
                 settle_load(
-                    finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, &output_tx)?,
+                    finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
                     &mut held,
                     &mut held_identities,
                     &store,
@@ -448,6 +464,23 @@ async fn run() -> Result<(), ()> {
             _ = tick.tick() => {
                 let now = elapsed_ms(started);
                 approvals.expire(now);
+                // A payload that has not arrived within the grace after
+                // key_load_end is not coming: fail the load now.
+                if let Some(load) = active_load.as_mut() {
+                    if load.payload.is_none() && load.payload_deadline_ms.is_some_and(|deadline| now >= deadline) {
+                        load.payload = Some(Err(RuntimeError::ReadTimeout));
+                        settle_load(
+                            finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
+                            &mut held,
+                            &mut held_identities,
+                            &store,
+                            &mut approvals,
+                            &mut pending,
+                            started,
+                            &output_tx,
+                        )?;
+                    }
+                }
                 let expired: Vec<_> = pending.iter().filter_map(|(id, sign)| (sign.reply.is_closed() || !approvals.is_pending(*id)).then_some(*id)).collect();
                 for id in expired {
                     approvals.disconnect(id);
@@ -472,7 +505,7 @@ async fn run() -> Result<(), ()> {
     }
 
     approvals.invalidate_all();
-    cancel_load(&mut active_load);
+    cancel_load(&mut active_load, runtime.runtime());
     fail_pending(&mut pending);
     let _ = cancel_held(&mut held, "shutdown", &output_tx);
     let _ = release_held_identities(&mut held_identities, &store, &output_tx, "shutdown");
@@ -897,10 +930,14 @@ fn fail_pending(pending: &mut HashMap<RequestId, PendingSign>) {
     }
 }
 
-fn cancel_load(active: &mut Option<ActiveLoad>) {
+/// Stop any load and wipe what the FIFO holds. With no reader left, a
+/// payload in the pipe belongs to no load, and it carries private keys; one
+/// that arrives later is dropped by the next load's filter.
+fn cancel_load(active: &mut Option<ActiveLoad>, runtime: &Runtime) {
     if let Some(load) = active.take() {
         load.task.abort();
     }
+    runtime.discard_buffered();
 }
 
 enum LoadOutcome {
@@ -937,6 +974,7 @@ fn finish_load_if_ready(
     active: &mut Option<ActiveLoad>,
     store: &mut KeyStore,
     gate_open: &mut bool,
+    runtime: &Runtime,
     output: &mpsc::Sender<Output>,
 ) -> Result<LoadOutcome, ()> {
     let ready = active
@@ -985,6 +1023,10 @@ fn finish_load_if_ready(
             // A bad FIFO payload is a failed load (retryable), not a lock ack.
             store.lock(load.epoch);
             *gate_open = false;
+            // Its payload may have landed after the reader gave up (a vault
+            // read past the 30 s deadline). The next load's filter would skip
+            // it anyway; wiping it now keeps keys from sitting in the pipe.
+            runtime.discard_buffered();
             eprintln!("qs-bitwarden-ssh-agent: key load failed");
             emit(
                 output,

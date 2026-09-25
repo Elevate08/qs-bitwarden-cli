@@ -7,9 +7,10 @@ use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::keystore::MAX_FILTERED_BYTES;
+use crate::load::PayloadFilter;
 
 const RUNTIME_NAME: &str = "qs-bitwarden-cli";
 const FIFO_NAME: &str = "ssh-keys.fifo";
@@ -25,8 +26,6 @@ pub enum RuntimeError {
     UnsafeLock,
     UnsafeSocket,
     AlreadyRunning,
-    PayloadTooLarge,
-    MultiplePayloads,
     ReadTimeout,
 }
 
@@ -44,35 +43,86 @@ impl fmt::Debug for Runtime {
     }
 }
 
-/// Accumulator for newline-delimited, byte-bounded FIFO payload framing.
+/// Bytes read from the FIFO at a time.
+const CHUNK_BYTES: usize = 8192;
+
+/// Splits the FIFO stream into newline-terminated lines and keeps the first
+/// one the load's filter accepts. Every other line is wiped and dropped, so a
+/// payload left over from an earlier load can never be taken for this one.
+/// A line past the payload cap is dropped up to its newline rather than
+/// failing the load: it cannot be this load's (`decode` would refuse it), and
+/// the load's own payload may still follow it.
 struct PayloadAccumulator {
-    payload: Zeroizing<Vec<u8>>,
+    filter: PayloadFilter,
+    line: Zeroizing<Vec<u8>>,
+    /// Inside a line already past the cap: skip to its newline.
+    oversized: bool,
 }
 
 impl PayloadAccumulator {
-    fn new() -> Self {
+    fn new(filter: PayloadFilter) -> Self {
         Self {
-            payload: Zeroizing::new(Vec::new()),
+            filter,
+            line: Zeroizing::new(Vec::new()),
+            oversized: false,
         }
     }
 
-    fn push(&mut self, chunk: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>, RuntimeError> {
-        self.payload.extend_from_slice(chunk);
-        if self.payload.len() > MAX_FILTERED_BYTES + 1 {
-            return Err(RuntimeError::PayloadTooLarge);
-        }
-        if let Some(newline) = self.payload.iter().position(|byte| *byte == b'\n') {
-            if self.payload[newline + 1..]
-                .iter()
-                .any(|byte| !byte.is_ascii_whitespace())
-            {
-                return Err(RuntimeError::MultiplePayloads);
+    fn push(&mut self, chunk: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+        // Only the new bytes are searched for a newline. Rescanning the whole
+        // line on every chunk made an 8 MiB stream quadratic, slow enough in a
+        // debug build to miss a 30 s deadline.
+        let mut rest = chunk;
+        while !rest.is_empty() {
+            let (part, ends_line) = match rest.iter().position(|byte| *byte == b'\n') {
+                Some(newline) => (&rest[..newline], true),
+                None => (rest, false),
+            };
+            rest = if ends_line {
+                &rest[part.len() + 1..]
+            } else {
+                &[]
+            };
+            if !self.oversized {
+                if self.line.len() + part.len() > MAX_FILTERED_BYTES {
+                    self.line.zeroize();
+                    self.oversized = true;
+                } else {
+                    extend_wiping(&mut self.line, part);
+                }
             }
-            self.payload.truncate(newline);
-            return Ok(Some(std::mem::take(&mut self.payload)));
+            if ends_line {
+                let start = if self.oversized {
+                    None
+                } else {
+                    self.filter.locate(&self.line)
+                };
+                if let Some(start) = start {
+                    // An exact-size copy, so no spare capacity holds a key.
+                    let payload = Zeroizing::new(self.line[start..].to_vec());
+                    self.line.zeroize();
+                    return Some(payload);
+                }
+                self.line.zeroize();
+                self.oversized = false;
+            }
         }
-        Ok(None)
+        None
     }
+}
+
+/// Append without letting `Vec` grow in place: a reallocation frees the old
+/// buffer unwiped, which would leave copies of private keys in freed memory.
+/// The old buffer is a `Zeroizing` and is wiped as it is replaced.
+fn extend_wiping(buffer: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) {
+    let needed = buffer.len() + bytes.len();
+    if needed > buffer.capacity() {
+        let capacity = needed.max(buffer.capacity().saturating_mul(2).min(MAX_FILTERED_BYTES));
+        let mut grown = Zeroizing::new(Vec::with_capacity(capacity));
+        grown.extend_from_slice(buffer);
+        *buffer = grown;
+    }
+    buffer.extend_from_slice(bytes);
 }
 
 impl Runtime {
@@ -126,15 +176,21 @@ impl Runtime {
         self.fifo.try_clone().map_err(|_| RuntimeError::Io)
     }
 
-    /// Drain one newline-delimited `jq -c` payload under hard byte/time bounds.
-    pub fn read_payload(&mut self, timeout: Duration) -> Result<Zeroizing<Vec<u8>>, RuntimeError> {
+    /// Read until this load's newline-delimited `jq -c` payload arrives,
+    /// under hard byte/time bounds; other lines are dropped (see
+    /// `PayloadAccumulator`).
+    pub fn read_payload(
+        &mut self,
+        timeout: Duration,
+        filter: &PayloadFilter,
+    ) -> Result<Zeroizing<Vec<u8>>, RuntimeError> {
         let deadline = Instant::now() + timeout;
-        let mut accumulator = PayloadAccumulator::new();
-        let mut chunk = [0_u8; 8192];
+        let mut accumulator = PayloadAccumulator::new(filter.clone());
+        let mut chunk = Zeroizing::new([0_u8; CHUNK_BYTES]);
         loop {
-            let idle = match self.fifo.read(&mut chunk) {
+            let idle = match self.fifo.read(&mut chunk[..]) {
                 Ok(0) => true,
-                Ok(count) => match accumulator.push(&chunk[..count])? {
+                Ok(count) => match accumulator.push(&chunk[..count]) {
                     Some(payload) => return Ok(payload),
                     None => false,
                 },
@@ -149,30 +205,51 @@ impl Runtime {
             }
         }
     }
+
+    /// Wipe whatever sits in the FIFO right now, without waiting. Run when no
+    /// load is reading (a lock cancelled it, or it failed): anything buffered
+    /// then belongs to no load, and it holds private keys. Bounded, so a
+    /// writer that keeps writing cannot hold the control loop; what it writes
+    /// later is dropped by the next load's filter instead.
+    pub fn discard_buffered(&self) {
+        let mut chunk = Zeroizing::new([0_u8; CHUNK_BYTES]);
+        let mut discarded = 0_usize;
+        while discarded <= MAX_FILTERED_BYTES {
+            match (&self.fifo).read(&mut chunk[..]) {
+                Ok(0) => break,
+                Ok(count) => discarded += count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                // WouldBlock: empty. The descriptor is non-blocking.
+                Err(_) => break,
+            }
+        }
+    }
 }
 
-/// Async FIFO drain: `AsyncFd` waits without a blocking thread, so control
-/// messages stay serviceable while a producer is slow.
+/// Async FIFO read: `AsyncFd` waits without a blocking thread, so control
+/// messages stay serviceable while a producer is slow. Returns the first line
+/// `filter` accepts, as `Runtime::read_payload` does.
 pub async fn read_payload_async(
     fifo: File,
     timeout: Duration,
+    filter: PayloadFilter,
 ) -> Result<Zeroizing<Vec<u8>>, RuntimeError> {
     let fifo = tokio::io::unix::AsyncFd::new(fifo).map_err(|_| RuntimeError::Io)?;
     tokio::time::timeout(timeout, async {
-        let mut accumulator = PayloadAccumulator::new();
-        let mut chunk = [0_u8; 8192];
+        let mut accumulator = PayloadAccumulator::new(filter);
+        let mut chunk = Zeroizing::new([0_u8; CHUNK_BYTES]);
         loop {
             let mut ready = fifo.readable().await.map_err(|_| RuntimeError::Io)?;
             match ready.try_io(|inner| {
                 let mut file = inner.get_ref();
-                file.read(&mut chunk)
+                file.read(&mut chunk[..])
             }) {
                 // EOF: `try_io` only clears readiness on `WouldBlock`, so it
                 // stays readable; pace the retry (as the blocking reader does)
                 // instead of spinning until the timeout.
                 Ok(Ok(0)) => tokio::time::sleep(Duration::from_millis(1)).await,
                 Ok(Ok(count)) => {
-                    if let Some(payload) = accumulator.push(&chunk[..count])? {
+                    if let Some(payload) = accumulator.push(&chunk[..count]) {
                         return Ok(payload);
                     }
                 }

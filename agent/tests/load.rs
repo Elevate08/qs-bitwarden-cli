@@ -1,7 +1,7 @@
 use qs_bitwarden_ssh_agent::keystore::{
     KeyStore, LoadError, MAX_FILTERED_BYTES, MAX_METADATA_BYTES,
 };
-use qs_bitwarden_ssh_agent::load::{LoadWindow, PayloadError};
+use qs_bitwarden_ssh_agent::load::{LoadWindow, PayloadError, PayloadFilter};
 use qs_bitwarden_ssh_agent::runtime::{read_payload_async, Runtime, RuntimeError};
 use rand_core::OsRng;
 use ssh_key::{Algorithm, HashAlg, PrivateKey};
@@ -12,6 +12,8 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 const NONCE: &str = "0123456789abcdef0123456789abcdef";
+/// Another load's nonce: what a payload left over from an earlier load names.
+const STALE: &str = "ffffffffffffffffffffffffffffffff";
 
 struct TempDir(PathBuf);
 
@@ -46,6 +48,26 @@ fn item_json(id: &str, key: &PrivateKey) -> serde_json::Value {
 
 fn payload(nonce: &str, items: Vec<serde_json::Value>) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"loadId": nonce, "items": items})).unwrap()
+}
+
+/// A payload laid out as the panel's `jq -c` filter writes it: `loadId`
+/// first. (`serde_json::json!` sorts keys, so `payload` puts it last.)
+fn jq_payload(nonce: &str, items: Vec<serde_json::Value>) -> Vec<u8> {
+    format!(
+        "{{\"loadId\":\"{nonce}\",\"items\":{}}}",
+        serde_json::to_string(&items).unwrap()
+    )
+    .into_bytes()
+}
+
+fn filter(nonce: &str) -> PayloadFilter {
+    LoadWindow::new(1, nonce).unwrap().filter().unwrap()
+}
+
+fn line(bytes: &[u8]) -> Vec<u8> {
+    let mut line = bytes.to_vec();
+    line.push(b'\n');
+    line
 }
 
 #[test]
@@ -183,7 +205,7 @@ fn nonce_schema_truncation_and_size_fail_the_whole_load() {
 }
 
 #[test]
-fn fifo_drain_is_newline_framed_and_deadline_limited() {
+fn fifo_reader_keeps_only_this_loads_line_and_is_deadline_limited() {
     use std::io::Write;
 
     let temp = TempDir::new("drain");
@@ -192,44 +214,177 @@ fn fifo_drain_is_newline_framed_and_deadline_limited() {
         .write(true)
         .open(runtime.fifo_path())
         .unwrap();
-    writer.write_all(b"{\"loadId\":\"ok\"}\n").unwrap();
+    let own = payload(NONCE, vec![]);
+    // Another load's payload, a line that is not JSON and a blank line all
+    // come ahead of this load's own in one write, and are all passed over.
+    let mut stream = line(&payload(STALE, vec![]));
+    stream.extend(line(b"{not json}"));
+    stream.extend(line(b""));
+    stream.extend(line(&own));
+    writer.write_all(&stream).unwrap();
     assert_eq!(
         runtime
-            .read_payload(Duration::from_secs(1))
+            .read_payload(Duration::from_secs(5), &filter(NONCE))
             .unwrap()
             .as_slice(),
-        b"{\"loadId\":\"ok\"}"
+        own.as_slice()
     );
 
-    writer.write_all(b"{}\n{}\n").unwrap();
+    // Nothing for this load is left, so the read ends at its deadline.
+    writer.write_all(&line(&payload(STALE, vec![]))).unwrap();
     assert_eq!(
-        runtime.read_payload(Duration::from_secs(1)).unwrap_err(),
-        RuntimeError::MultiplePayloads
-    );
-    assert_eq!(
-        runtime.read_payload(Duration::from_millis(10)).unwrap_err(),
+        runtime
+            .read_payload(Duration::from_millis(10), &filter(NONCE))
+            .unwrap_err(),
         RuntimeError::ReadTimeout
     );
 }
 
+/// A line past the eight mebibyte cap is dropped up to its newline, never
+/// buffered whole, and this load's payload behind it still arrives.
 #[test]
-fn fifo_drain_rejects_a_stream_beyond_the_full_eight_mibibyte_cap() {
+fn a_line_past_the_full_eight_mibibyte_cap_is_dropped_and_the_payload_behind_it_read() {
     use std::io::Write;
 
     let temp = TempDir::new("full-cap");
     let mut runtime = Runtime::create(&temp.0).unwrap();
     let fifo_path = runtime.fifo_path().to_owned();
+    let own = payload(NONCE, vec![]);
+    let written = own.clone();
     let writer = std::thread::spawn(move || {
         let mut fifo = fs::OpenOptions::new().write(true).open(fifo_path).unwrap();
-        let oversized = vec![b'x'; MAX_FILTERED_BYTES + 2];
-        let _ = fifo.write_all(&oversized);
+        let mut oversized = vec![b'x'; MAX_FILTERED_BYTES + 2];
+        oversized.push(b'\n');
+        fifo.write_all(&oversized).unwrap();
+        fifo.write_all(&line(&written)).unwrap();
     });
 
     assert_eq!(
-        runtime.read_payload(Duration::from_secs(30)).unwrap_err(),
-        RuntimeError::PayloadTooLarge
+        runtime
+            .read_payload(Duration::from_secs(30), &filter(NONCE))
+            .unwrap()
+            .as_slice(),
+        own.as_slice()
     );
     writer.join().unwrap();
+}
+
+/// A payload written for an earlier load (one a lock cancelled) sits in the
+/// long-lived FIFO ahead of the next load's own. It must not be taken for it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_stale_payload_ahead_of_this_loads_own_is_skipped() {
+    use std::io::Write;
+
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let temp = TempDir::new("stale-payload");
+    let runtime = Runtime::create(&temp.0).unwrap();
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .open(runtime.fifo_path())
+        .unwrap();
+    writer
+        .write_all(&line(&jq_payload(STALE, vec![item_json("old", &key)])))
+        .unwrap();
+    let own = jq_payload(NONCE, vec![item_json("one", &key)]);
+    writer.write_all(&line(&own)).unwrap();
+
+    let mut window = LoadWindow::new(7, NONCE).unwrap();
+    let read = read_payload_async(
+        runtime.fifo_reader().unwrap(),
+        Duration::from_secs(5),
+        window.filter().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read.as_slice(), own.as_slice());
+    let mut store = KeyStore::new();
+    let candidate = window.decode(read, &mut store).unwrap();
+    assert_eq!(store.publish(candidate).unwrap().loaded, 1);
+}
+
+/// A writer stopped mid-payload (a lock reaps the panel's vault read) leaves
+/// a fragment with no newline, and the next payload lands on the same line.
+/// The payload is found where it names its nonce, as the panel's jq writes it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_fragment_left_by_a_stopped_writer_does_not_cost_the_next_load() {
+    use std::io::Write;
+
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let temp = TempDir::new("fragment");
+    let runtime = Runtime::create(&temp.0).unwrap();
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .open(runtime.fifo_path())
+        .unwrap();
+    let stale = jq_payload(STALE, vec![item_json("old", &key)]);
+    writer.write_all(&stale[..stale.len() / 2]).unwrap();
+    let own = jq_payload(NONCE, vec![item_json("one", &key)]);
+    writer.write_all(&line(&own)).unwrap();
+
+    let mut window = LoadWindow::new(7, NONCE).unwrap();
+    let read = read_payload_async(
+        runtime.fifo_reader().unwrap(),
+        Duration::from_secs(5),
+        window.filter().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read.as_slice(), own.as_slice(), "only this load's payload");
+    let mut store = KeyStore::new();
+    let candidate = window.decode(read, &mut store).unwrap();
+    assert_eq!(store.publish(candidate).unwrap().loaded, 1);
+}
+
+#[test]
+fn the_filter_matches_only_its_own_nonce() {
+    let own = jq_payload(NONCE, vec![]);
+    let mine = filter(NONCE);
+    assert_eq!(mine.locate(&own), Some(0));
+    assert_eq!(
+        mine.locate(&payload(NONCE, vec![])),
+        Some(0),
+        "any key order"
+    );
+    assert_eq!(mine.locate(&jq_payload(STALE, vec![])), None);
+    assert_eq!(mine.locate(b"{not json}"), None);
+    assert_eq!(mine.locate(b""), None);
+    // A nonce named inside a string is escaped, so it does not count.
+    let quoted = serde_json::to_vec(&serde_json::json!({
+        "loadId": STALE,
+        "items": [format!("{{\"loadId\":\"{NONCE}\"}}")]
+    }))
+    .unwrap();
+    assert_eq!(mine.locate(&quoted), None);
+    // A load whose window was consumed has no filter to hand out.
+    let mut window = LoadWindow::new(1, NONCE).unwrap();
+    let mut store = KeyStore::new();
+    window
+        .decode(Zeroizing::new(own.clone()), &mut store)
+        .unwrap();
+    assert_eq!(window.filter().unwrap_err(), PayloadError::Closed);
+}
+
+#[test]
+fn discarding_empties_the_fifo_without_waiting() {
+    use std::io::Write;
+
+    let temp = TempDir::new("discard");
+    let mut runtime = Runtime::create(&temp.0).unwrap();
+    // Empty: returns at once rather than blocking.
+    runtime.discard_buffered();
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .open(runtime.fifo_path())
+        .unwrap();
+    writer.write_all(&line(&payload(NONCE, vec![]))).unwrap();
+    runtime.discard_buffered();
+    assert_eq!(
+        runtime
+            .read_payload(Duration::from_millis(20), &filter(NONCE))
+            .unwrap_err(),
+        RuntimeError::ReadTimeout,
+        "a discarded payload must not be read by a later load"
+    );
 }
 
 #[test]
@@ -302,9 +457,13 @@ async fn a_producer_that_closes_without_a_newline_times_out() {
     // up rather than a true end-of-stream -- but the read still has to end at
     // its deadline rather than spinning on a descriptor that stays readable.
     assert_eq!(
-        read_payload_async(runtime.fifo_reader().unwrap(), Duration::from_millis(150))
-            .await
-            .unwrap_err(),
+        read_payload_async(
+            runtime.fifo_reader().unwrap(),
+            Duration::from_millis(150),
+            filter(NONCE)
+        )
+        .await
+        .unwrap_err(),
         RuntimeError::ReadTimeout
     );
 }
