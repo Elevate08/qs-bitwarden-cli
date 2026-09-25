@@ -338,6 +338,13 @@ Item {
   property string formPassword: ""
   property string formTotp: ""
   property string formUri: ""
+  // Every website of the item being edited, with its match rule: [{ uri,
+  // match, sourceIndex }] (Model.loginUriEntries()). The form edits the first
+  // through formUri; the rest are kept as stored. A view that edits the whole
+  // list goes through the formUriEntry functions, which set
+  // formUriEntriesEdited so the save writes the list as shown.
+  property var formUriEntries: []
+  property bool formUriEntriesEdited: false
   property string formNotes: ""
   property bool formFavorite: false
   property string formOrgId: ""
@@ -5670,6 +5677,8 @@ Item {
     formPassword = ""
     formTotp = ""
     formUri = ""
+    formUriEntries = []
+    formUriEntriesEdited = false
     formNotes = ""
     formCustomFields = []
     formNewCustomFieldType = 0
@@ -5685,6 +5694,70 @@ Item {
     newFolderName = ""
     creatingFolder = false
     formPasswordRevealed = false
+  }
+
+  function copyUriEntries(entries) {
+    var list = entries || []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i]
+      if (!e) continue
+      out.push({ uri: String(e.uri === undefined || e.uri === null ? "" : e.uri),
+        match: Model.uriMatchValue(e.match),
+        sourceIndex: e.sourceIndex === undefined ? null : e.sourceIndex })
+    }
+    return out
+  }
+
+  // For a view that edits every website. The first entry stays in step with
+  // formUri, which the single-field form edits.
+  function setFormUriEntries(next) {
+    formUriEntries = next
+    formUriEntriesEdited = true
+    formUri = next.length > 0 ? next[0].uri : ""
+  }
+
+  function setFormUriEntry(index, uri) {
+    var next = copyUriEntries(formUriEntries)
+    if (index < 0 || index >= next.length) return
+    next[index].uri = String(uri === undefined || uri === null ? "" : uri)
+    setFormUriEntries(next)
+  }
+
+  function setFormUriMatch(index, match) {
+    var next = copyUriEntries(formUriEntries)
+    if (index < 0 || index >= next.length) return
+    next[index].match = Model.uriMatchValue(match)
+    setFormUriEntries(next)
+  }
+
+  function addFormUriEntry() {
+    var next = copyUriEntries(formUriEntries)
+    next.push({ uri: "", match: null, sourceIndex: null })
+    setFormUriEntries(next)
+  }
+
+  function removeFormUriEntry(index) {
+    var next = copyUriEntries(formUriEntries)
+    if (index < 0 || index >= next.length) return
+    next.splice(index, 1)
+    setFormUriEntries(next)
+  }
+
+  // The single website field: while no view edits the list, formUri is saved
+  // over the stored list (Model.editedUris()); once one has, keep the list's
+  // first entry in step.
+  onFormUriChanged: {
+    if (!formUriEntriesEdited) return
+    var next = copyUriEntries(formUriEntries)
+    if (next.length === 0) {
+      if (!formUri) return
+      next.push({ uri: formUri, match: null, sourceIndex: null })
+    } else {
+      if (next[0].uri === formUri) return
+      next[0].uri = formUri
+    }
+    formUriEntries = next
   }
 
   // Empty every card and identity field on form reset.
@@ -5750,6 +5823,7 @@ Item {
       isEditing: formIsEditing, itemId: formItemId, typeCode: formTypeCode,
       name: formName, username: formUsername, password: formPassword,
       totp: formTotp, uri: formUri, notes: formNotes, favorite: formFavorite,
+      uriEntries: copyUriEntries(formUriEntries), uriEntriesEdited: formUriEntriesEdited,
       orgId: formOrgId, folderId: formFolderId,
       collectionIds: (formCollectionIds || []).slice(),
       typeFields: formTypeFields(),
@@ -5767,6 +5841,8 @@ Item {
     formPassword = f.password
     formTotp = f.totp
     formUri = f.uri
+    formUriEntries = copyUriEntries(f.uriEntries)
+    formUriEntriesEdited = f.uriEntriesEdited === true
     formNotes = f.notes
     formFavorite = f.favorite
     formOrgId = f.orgId
@@ -5810,7 +5886,11 @@ Item {
     formUsername = item.username || ""
     formPassword = detailPassword || (item.rawObject && item.rawObject.login ? item.rawObject.login.password : "") || ""
     formTotp = item.totpKey || (item.rawObject && item.rawObject.login ? item.rawObject.login.totp : "") || ""
-    formUri = item.uris && item.uris.length > 0 ? item.uris[0] : ""
+    // All websites, so saving keeps the ones this form does not show.
+    formUriEntries = Model.loginUriEntries(item.rawObject ? item.rawObject.login : null)
+    formUriEntriesEdited = false
+    formUri = formUriEntries.length > 0 ? formUriEntries[0].uri
+      : (item.uris && item.uris.length > 0 ? item.uris[0] : "")
     formNotes = item.notes || ""
     formFavorite = Boolean(item.favorite)
     formOrgId = item.organizationId || ""
@@ -5851,9 +5931,12 @@ Item {
     }
 
     var editing = formIsEditing
+    // The whole website list only when a view edited it as a list; otherwise
+    // formUri over the stored list (Model.editedUris()).
+    var uriEntries = formUriEntriesEdited ? formUriEntries : undefined
     var payload = editing
-      ? Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields(), formCustomFields)
-      : Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields(), formCustomFields)
+      ? Model.buildEditPayload(detailItem, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields(), formCustomFields, uriEntries)
+      : Model.buildCreatePayload(formTypeCode, formName, formUsername, formPassword, formTotp, formUri, formNotes, formFavorite, formOrgId, formFolderId, formCollectionIds, formTypeFields(), formCustomFields, uriEntries)
     if (!payload) {
       errorMessage = editing ? "This item is read-only" : "This item type is read-only"
       return

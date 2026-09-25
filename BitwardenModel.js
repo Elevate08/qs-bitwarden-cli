@@ -1104,6 +1104,7 @@ function logoutCommand() {
   return ["bw", "logout"]
 }
 
+
 // `bw list items` returns decrypted ciphers, SSH private keys included. A jq
 // filter keeps only supported types: 1-4 whole (edit and detail need
 // rawObject; an sshKey subtree on one fails the read), type 5 as public
@@ -2357,6 +2358,54 @@ function loginUris(login) {
   return uris
 }
 
+// Bitwarden's UriMatchType; null is "use the account default".
+var URI_MATCH_TYPES = [
+  { match: null, label: "Default" },
+  { match: 0, label: "Base domain" },
+  { match: 1, label: "Host" },
+  { match: 2, label: "Starts with" },
+  { match: 3, label: "Exact" },
+  { match: 4, label: "Regular expression" },
+  { match: 5, label: "Never" }
+]
+
+function uriMatchTypes() {
+  return URI_MATCH_TYPES.map(function(t) { return { match: t.match, label: t.label } })
+}
+
+// A stored match rule as Bitwarden reads it: an integer 0-5, else null.
+function uriMatchValue(match) {
+  if (match === null || match === undefined || match === "") return null
+  var n = Number(match)
+  return n === Math.floor(n) && n >= 0 && n <= 5 ? n : null
+}
+
+function uriMatchLabel(match) {
+  var value = uriMatchValue(match)
+  for (var i = 0; i < URI_MATCH_TYPES.length; i++) {
+    if (URI_MATCH_TYPES[i].match === value) return URI_MATCH_TYPES[i].label
+  }
+  return "Default"
+}
+
+// Every website of a login with its match rule, in stored order, so nothing
+// past the first is invisible to the panel. `sourceIndex` ties a form row back
+// to the stored entry it came from (editedUriList()).
+function loginUriEntries(login) {
+  var out = []
+  var rawUris = toList(login && login.uris)
+  for (var i = 0; i < rawUris.length; i++) {
+    var entry = rawUris[i]
+    if (!entry || typeof entry !== "object") continue
+    out.push({
+      uri: entry.uri === undefined || entry.uri === null ? "" : String(entry.uri),
+      match: uriMatchValue(entry.match),
+      sourceIndex: i
+    })
+  }
+  return out
+}
+
 function cardDetail(card) {
   if (!card) return null
   return {
@@ -2459,6 +2508,12 @@ function itemCustomFields(fields, item) {
   return customFields
 }
 
+// Bitwarden's CipherRepromptType: 1 is "master password re-prompt", anything
+// else none. A number, so views can compare it without coercion.
+function repromptValue(value) {
+  return Number(value) === 1 ? 1 : 0
+}
+
 // `raw` is the JSON text of an item array, or an array already parsed. The
 // vault list is parsed once (readSanitizedVault()) and its items handed here
 // as an array: re-serializing them just to parse them again cost 4 parses
@@ -2515,6 +2570,11 @@ function parseItems(raw) {
       hasTotp: Boolean(login.totp),
       totpKey: String(login.totp || ""),
       uris: uris,
+      uriEntries: loginUriEntries(login),
+      // Master password re-prompt: 1 asks for the master password before
+      // anything secret of this item is shown, copied or edited
+      // (withReprompt() in Service.qml).
+      reprompt: repromptValue(it.reprompt),
       attachments: attachments,
       hasAttachments: attachments.length > 0,
       subtitle: subtitle,
@@ -2545,13 +2605,13 @@ function parseSshKeys(keys) {
       id: String(it.id), name: String(it.name || "Untitled"), type: 5,
       organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null,
-      favorite: Boolean(it.favorite), reprompt: Number(it.reprompt || 0),
+      favorite: Boolean(it.favorite), reprompt: repromptValue(it.reprompt),
       sshKey: { publicKey: publicKey, fingerprint: fingerprint }
     }
     out.push({ id: String(it.id), organizationId: raw.organizationId, folderId: raw.folderId,
       name: raw.name, type: "sshKey", typeCode: 5, favorite: raw.favorite,
       username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "",
-      uris: [], attachments: [], hasAttachments: false,
+      uris: [], uriEntries: [], reprompt: raw.reprompt, attachments: [], hasAttachments: false,
       subtitle: fingerprint || publicKey || "SSH Key", notes: "",
       publicKey: publicKey, fingerprint: fingerprint, rawObject: raw })
   }
@@ -2676,7 +2736,8 @@ function itemDetailFromObject(it) {
     return { id: String(it.id || ""), organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null, name: String(it.name || "Untitled"),
       type: "sshKey", typeCode: 5, favorite: Boolean(it.favorite), notes: "",
-      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [], attachments: [],
+      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [], uriEntries: [],
+      reprompt: repromptValue(it.reprompt), attachments: [],
       hasAttachments: false, card: null, identity: null, fields: [],
       publicKey: String(sshKey.publicKey || it.publicKey || ""),
       fingerprint: String(sshKey.fingerprint || sshKey.keyFingerprint || it.fingerprint || it.keyFingerprint || ""), rawObject: it }
@@ -2702,6 +2763,8 @@ function itemDetailFromObject(it) {
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
+    uriEntries: loginUriEntries(login),
+    reprompt: repromptValue(it.reprompt),
     attachments: attachments,
     hasAttachments: attachments.length > 0,
     card: cardDetail(it.card),
@@ -2822,22 +2885,90 @@ function selectedCollectionIds(collectionIds) {
   return collectionIds.slice()
 }
 
+// A form value written over a stored one. A value the form did not change is
+// written back exactly as stored (an unchanged edit or a rename must not
+// alter anything), including a stored null behind an empty box. A changed one
+// is normalized by `clean`.
+function formValue(stored, typed, clean) {
+  var value = typed === undefined || typed === null ? "" : String(typed)
+  var had = stored === undefined || stored === null ? "" : String(stored)
+  if (value === had) return stored === undefined ? value : stored
+  return clean ? clean(value) : value
+}
+
+function trimmedText(value) { return value.trim() }
+
+function trimmedOrNull(value) {
+  var t = value.trim()
+  return t ? t : null
+}
+
+// The password is never trimmed: edge spaces can be part of it, and trimming
+// them on save silently broke the login.
 function updateLoginFields(login, username, password, totp) {
-  login.username = String(username || "").trim()
-  login.password = String(password || "").trim()
-  login.totp = totp && totp.trim() ? totp.trim() : null
+  login.username = formValue(login.username, username, trimmedText)
+  login.password = formValue(login.password, password, null)
+  login.totp = formValue(login.totp, totp, trimmedOrNull)
+}
+
+// The websites an edit writes. The form edits the first one as a single
+// field (`typed`); every other website, and every match rule, is kept. Only
+// clearing the field drops the first website, and a changed address keeps the
+// match rule it had: saving used to replace the whole list with one entry and
+// reset its rule to the default, which widened browser-extension autofill.
+function editedUris(stored, typed) {
+  var text = typed === undefined || typed === null ? "" : String(typed)
+  var kept = toList(stored).filter(function(u) { return u && typeof u === "object" })
+  if (kept.length === 0) {
+    var t = text.trim()
+    if (!t) return stored === undefined ? [] : stored
+    return [{ match: null, uri: t }]
+  }
+  var first = kept[0]
+  if (text === String(first.uri === undefined || first.uri === null ? "" : first.uri)) return kept
+  if (!text.trim()) return kept.slice(1)
+  var replaced = {}
+  for (var k in first) replaced[k] = first[k]
+  replaced.match = first.match === undefined ? null : first.match
+  replaced.uri = text.trim()
+  return [replaced].concat(kept.slice(1))
+}
+
+// The websites from a form that edits the whole list (`entries`: { uri,
+// match, sourceIndex }). A row that came from a stored entry keeps that
+// entry's other fields; an empty row is dropped.
+function editedUriList(stored, entries) {
+  var from = toList(stored)
+  var rows = toList(entries)
+  var out = []
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i]
+    if (!row) continue
+    var uri = String(row.uri === undefined || row.uri === null ? "" : row.uri)
+    if (!uri.trim()) continue
+    var source = row.sourceIndex !== undefined && row.sourceIndex !== null ? from[Number(row.sourceIndex)] : null
+    var entry = {}
+    if (source && typeof source === "object") for (var k in source) entry[k] = source[k]
+    // An untouched rule keeps its stored form (even an absent key).
+    if (!(source && typeof source === "object" && uriMatchValue(source.match) === uriMatchValue(row.match))) {
+      entry.match = uriMatchValue(row.match)
+    }
+    var had = source && typeof source === "object" && source.uri !== undefined && source.uri !== null
+      ? String(source.uri) : null
+    entry.uri = had !== null && had === uri ? source.uri : uri.trim()
+    out.push(entry)
+  }
+  return out
 }
 
 // Shared by create and edit. Absent fields are written as "" (not left
 // undefined) so a cleared box clears the value.
 function updateCardFields(card, fields) {
   var f = fields || {}
-  card.cardholderName = String(f.cardholderName || "").trim()
-  card.brand = String(f.brand || "").trim()
-  card.number = String(f.number || "").trim()
-  card.expMonth = String(f.expMonth || "").trim()
-  card.expYear = String(f.expYear || "").trim()
-  card.code = String(f.code || "").trim()
+  var keys = ["cardholderName", "brand", "number", "expMonth", "expYear", "code"]
+  for (var i = 0; i < keys.length; i++) {
+    card[keys[i]] = formValue(card[keys[i]], f[keys[i]], trimmedText)
+  }
 }
 
 function updateIdentityFields(identity, fields) {
@@ -2847,7 +2978,7 @@ function updateIdentityFields(identity, fields) {
               "licenseNumber", "address1", "address2", "address3",
               "city", "state", "postalCode", "country"]
   for (var i = 0; i < keys.length; i++) {
-    identity[keys[i]] = String(f[keys[i]] || "").trim()
+    identity[keys[i]] = formValue(identity[keys[i]], f[keys[i]], trimmedText)
   }
 }
 
@@ -2880,12 +3011,15 @@ function customFieldsPayload(fields) {
 
 // `typeFields` holds the card or identity fields as one object rather than
 // two dozen positional arguments.
-function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
+// `uriEntries`, when given, is the whole website list from a form that edits
+// every entry (editedUriList()); otherwise `uri` is the one website.
+function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields, uriEntries) {
   if (Number(typeCode) === 5) return null
   var payload = {
     type: Number(typeCode || 1),
     name: String(name || "Untitled").trim(),
-    notes: String(notes || "").trim(),
+    // Notes are kept as typed: trailing newlines are content.
+    notes: String(notes === undefined || notes === null ? "" : notes),
     favorite: Boolean(favorite),
     organizationId: selectedOrganizationId(organizationId),
     folderId: selectedFolderId(folderId)
@@ -2898,7 +3032,9 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
   if (Number(typeCode) === 1) { // Login
     var login = {}
     updateLoginFields(login, username, password, totp)
-    login.uris = uri && uri.trim() ? [{ match: null, uri: uri.trim() }] : []
+    login.uris = uriEntries !== undefined && uriEntries !== null
+      ? editedUriList([], uriEntries)
+      : editedUris(undefined, uri)
     payload.login = login
   } else if (Number(typeCode) === 2) { // Secure Note
     payload.secureNote = { type: 0 }
@@ -2915,12 +3051,15 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
   return payload
 }
 
-function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
+// The payload is the stored item with the form written over it; anything the
+// form did not change is written back exactly as stored (formValue()).
+function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields, uriEntries) {
   if (existingItem && (Number(existingItem.typeCode || existingItem.type) === 5
       || (existingItem.rawObject && Number(existingItem.rawObject.type) === 5))) return null
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
-  payload.name = String(name || "Untitled").trim()
-  payload.notes = String(notes || "").trim()
+  payload.name = formValue(payload.name, String(name || "Untitled"), trimmedText)
+  // Never trimmed: a note's trailing newlines are content.
+  payload.notes = formValue(payload.notes, notes, null)
   payload.favorite = Boolean(favorite)
   // Assign and clear: personal/none must move the item out.
   payload.organizationId = selectedOrganizationId(organizationId)
@@ -2938,9 +3077,9 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}
     updateLoginFields(payload.login, username, password, totp)
-    if (uri && uri.trim()) {
-      payload.login.uris = [{ match: null, uri: uri.trim() }]
-    }
+    payload.login.uris = uriEntries !== undefined && uriEntries !== null
+      ? editedUriList(payload.login.uris, uriEntries)
+      : editedUris(payload.login.uris, uri)
   } else if (payload.type === 3 && typeFields) {
     if (!payload.card) payload.card = {}
     updateCardFields(payload.card, typeFields)
