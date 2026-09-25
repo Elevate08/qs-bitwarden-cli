@@ -141,6 +141,9 @@ Column {
         width: parent.width
         placeholderText: Number(fieldRow.modelData.type) === 1 ? "Hidden value" : "Value"
         password: Number(fieldRow.modelData.type) === 1 && !fieldRow.hiddenRevealed
+        // A hidden field is a secret: kept from input methods while shown too.
+        inputMethodHints: Number(fieldRow.modelData.type) === 1
+          ? Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase : Qt.ImhNone
         text: fieldRow.modelData.value === undefined || fieldRow.modelData.value === null
           ? "" : String(fieldRow.modelData.value)
         rightPadding: Number(fieldRow.modelData.type) === 1

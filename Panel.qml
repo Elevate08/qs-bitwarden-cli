@@ -2858,6 +2858,8 @@ Panel {
                     if (activeFocus) root.vault.prepareEmailLogin()
                   }
                   onAccepted: root.vault.show2faField ? code2faField.forceActiveFocus() : root.vault.submitLogin()
+                  // Kept from input methods while shown, too.
+                  inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 }
                 Button {
                   id: eyeBtnLogin
@@ -5038,6 +5040,7 @@ Panel {
                     width: parent.width - eyeBtnForm.width - Style.space(6)
                     placeholderText: "Password..."
                     password: !root.vault.formPasswordRevealed
+                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                     text: root.vault.formPassword
                     onTextChanged: root.vault.formPassword = text
                   }
@@ -5057,11 +5060,12 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "AUTHENTICATOR KEY (TOTP SECRET)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                SecretField {
                   width: parent.width
                   placeholderText: "e.g. JBSWY3DPEHPK3PXP (optional)..."
                   text: root.vault.formTotp
                   onTextChanged: root.vault.formTotp = text
+                  iconFontFamily: root.fontFamily
                 }
               }
 
@@ -5112,11 +5116,12 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "CARD NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                SecretField {
                   width: parent.width
                   placeholderText: "1234 5678 9012 3456"
                   text: root.vault.formCardNumber
                   onTextChanged: root.vault.formCardNumber = text
+                  iconFontFamily: root.fontFamily
                 }
               }
               Column {
@@ -5148,11 +5153,12 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "SECURITY CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                SecretField {
                   width: parent.width
                   placeholderText: "CVV / CVC"
                   text: root.vault.formCardCode
                   onTextChanged: root.vault.formCardCode = text
+                  iconFontFamily: root.fontFamily
                 }
               }
 
@@ -5260,11 +5266,12 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "SOCIAL SECURITY NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                SecretField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdSsn
                   onTextChanged: root.vault.formIdSsn = text
+                  iconFontFamily: root.fontFamily
                 }
               }
               Column {
@@ -5272,11 +5279,12 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "PASSPORT NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                SecretField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdPassport
                   onTextChanged: root.vault.formIdPassport = text
+                  iconFontFamily: root.fontFamily
                 }
               }
               Column {
@@ -5284,11 +5292,12 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "LICENCE NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                SecretField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdLicense
                   onTextChanged: root.vault.formIdLicense = text
+                  iconFontFamily: root.fontFamily
                 }
               }
               Column {
