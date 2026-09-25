@@ -303,14 +303,14 @@ printf '%s\\n' "\${QSBW_TEST_TYPES:-text/plain}" | tr ',' '\\n'
   }
 }
 check("a password missing from the in-memory item uses a managed generation-stamped fetch",
-  /requestPasswordCopy\(item\.id,\s*item\.typeCode\)/.test(bodyOf("copyPassword"))
+  /requestPasswordCopy\(item\.id,\s*item\.typeCode\)/.test(bodyOf("copyPasswordNow"))
     && /beginVaultRead\("passwordCopy"\)/.test(bodyOf("requestPasswordCopy"))
     && /Model\.getPasswordCommand\(itemId,\s*typeCode\)/.test(bodyOf("requestPasswordCopy"))
     && /vaultReadIsStale\("passwordCopy"\)/.test(bodyOf("onPasswordCopyFinished")),
-  bodyOf("copyPassword") + "\n" + bodyOf("requestPasswordCopy") + "\n" + bodyOf("onPasswordCopyFinished"))
+  bodyOf("copyPasswordNow") + "\n" + bodyOf("requestPasswordCopy") + "\n" + bodyOf("onPasswordCopyFinished"))
 check("TOTP copy reuses the managed TOTP reader instead of a detached bw process",
-  /fetchTotp\(item\.id,\s*true\)/.test(bodyOf("copyTotpCode"))
-    && !/execDetached/.test(bodyOf("copyTotpCode")), bodyOf("copyTotpCode"))
+  /fetchTotp\(item\.id,\s*true\)/.test(bodyOf("copyTotpCodeNow"))
+    && !/execDetached/.test(bodyOf("copyTotpCode") + bodyOf("copyTotpCodeNow")), bodyOf("copyTotpCodeNow"))
 
 // -------------------------------------------------------------------------
 

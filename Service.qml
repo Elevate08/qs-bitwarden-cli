@@ -262,12 +262,157 @@ Item {
 
   function isFieldRevealed(key) { return Boolean(revealedFields[key]) }
 
+  // Revealing a field of a re-prompt item asks for the master password
+  // first; hiding one never does.
   function toggleFieldReveal(key) {
+    if (!revealedFields[key] && detailItem) {
+      withReprompt(detailItem, function() { root.setFieldRevealed(key, true) })
+      return
+    }
+    setFieldRevealed(key, !revealedFields[key])
+  }
+
+  function setFieldRevealed(key, on) {
     var next = {}
     for (var k in revealedFields) next[k] = revealedFields[k]
-    if (next[key]) delete next[key]
-    else next[key] = true
+    if (on) next[key] = true
+    else delete next[key]
     revealedFields = next
+  }
+
+  // -------------------------------------------------------------------------
+  // Master password re-prompt
+  // -------------------------------------------------------------------------
+  //
+  // An item with `reprompt` 1 asks for the master password before anything
+  // secret of it is revealed, copied or edited, as Bitwarden's own clients
+  // do; upstream never read the flag. withReprompt(item, callback) runs the
+  // callback at once for any other item, or once the password is confirmed:
+  // the Panel draws the prompt from repromptPending, repromptItemName,
+  // repromptError and repromptBusy, and answers with submitReprompt(password)
+  // or cancelReprompt(). The password is checked against the stored copy
+  // when quick unlock has one, else by `bw` itself (verifyMasterPassword());
+  // it travels in the environment, never argv, and is not kept. A success
+  // lasts only while that item's detail stays open: closing it, opening
+  // another item, closing the panel or locking asks again.
+  property bool repromptPending: false
+  property string repromptItemId: ""
+  property string repromptItemName: ""
+  property string repromptError: ""
+  property bool repromptBusy: false
+  property var repromptCallback: null
+  property int repromptEpoch: -1
+  // The item whose open detail passed the re-prompt.
+  property string repromptVerifiedId: ""
+  // Set only while a just-confirmed action runs, so the gated functions it
+  // calls do not ask again.
+  property string repromptActionId: ""
+
+  function itemNeedsReprompt(item) {
+    return !!item && Number(item.reprompt) === 1
+  }
+
+  function repromptSatisfied(item) {
+    if (!itemNeedsReprompt(item)) return true
+    var id = String(item.id || "")
+    if (id === "") return false
+    if (id === repromptActionId) return true
+    return id === repromptVerifiedId && detailItem !== null && String(detailItem.id) === id
+  }
+
+  function withReprompt(item, callback) {
+    if (!item || typeof callback !== "function") return
+    if (repromptSatisfied(item)) {
+      callback()
+      return
+    }
+    if (status !== "unlocked") return
+    // A newer request replaces one still waiting.
+    repromptCallback = callback
+    repromptItemId = String(item.id || "")
+    repromptItemName = String(item.name || "this item")
+    repromptError = ""
+    repromptBusy = false
+    repromptEpoch = vaultEpoch
+    repromptPending = true
+  }
+
+  function submitReprompt(password) {
+    if (!repromptPending || repromptBusy) return
+    var pw = String(password === undefined || password === null ? "" : password)
+    if (!pw) {
+      repromptError = "Enter your master password."
+      return
+    }
+    protectFromCoreDumps()
+    repromptBusy = true
+    repromptError = ""
+    var id = repromptItemId
+    var epoch = repromptEpoch
+    verifyMasterPassword(pw, function(ok) {
+      // Cancelled, replaced or locked meanwhile: nothing to run.
+      if (!root.repromptPending || root.repromptItemId !== id || root.repromptEpoch !== epoch
+          || root.vaultEpoch !== epoch || root.status !== "unlocked") {
+        if (root.repromptItemId === id) root.repromptBusy = false
+        return
+      }
+      root.repromptBusy = false
+      if (!ok) {
+        root.repromptError = "That is not your master password."
+        return
+      }
+      var callback = root.repromptCallback
+      root.repromptCallback = null
+      root.repromptPending = false
+      root.repromptError = ""
+      if (root.detailItem && String(root.detailItem.id) === id) root.repromptVerifiedId = id
+      root.repromptActionId = id
+      try {
+        if (callback) callback()
+      } finally {
+        root.repromptActionId = ""
+      }
+    })
+    pw = ""
+  }
+
+  function cancelReprompt() {
+    repromptPending = false
+    repromptCallback = null
+    repromptItemId = ""
+    repromptItemName = ""
+    repromptError = ""
+    repromptBusy = false
+  }
+
+  // Forgets a confirmed re-prompt and any prompt still waiting.
+  function clearRepromptGrant() {
+    repromptVerifiedId = ""
+    if (repromptPending) cancelReprompt()
+  }
+
+  // Whether `password` is the master password: `done(ok)`. The stored copy
+  // answers first when quick unlock has one that is current (a stale one
+  // holds an old password); anything but a match there, including a
+  // mismatch (the password may have changed elsewhere), is decided by `bw`,
+  // which mints and adopts a new session (verifyWithBw()).
+  function verifyMasterPassword(password, done) {
+    var pw = String(password || "")
+    if (!pw) { done(false); return }
+    if (!(quickUnlockAvailable && accountId && envelopeSummary && !envelopeSummary.stale)) {
+      verifyWithBw(pw, function(ok) { done(ok) })
+      return
+    }
+    var env = {}
+    env[Model.keyringSecretEnvVar()] = pw
+    queueEnvelopeJob({
+      command: Model.unlockEnvelopeCheckCommand(envelopeTool(), envelopeAccount()),
+      env: env,
+      onDone: function(code) {
+        if (code === 0) { done(true); return }
+        root.verifyWithBw(pw, function(ok) { done(ok) })
+      }
+    })
   }
 
   // The field `v` reveals: card number or password. None for identities.
@@ -2517,6 +2662,7 @@ Item {
   onOpenedChanged: {
     if (opened) onPanelOpened()
     else {
+      clearRepromptGrant()
       cancelFingerprintUnlock()
       // Not a cancel; see releaseSurface() in FidoUnlock.qml.
       fidoUnlocker.releaseSurface()
@@ -5044,6 +5190,7 @@ Item {
   // shell lives all session, so anything surviving a lock survives everything.
   function dropVaultSecrets() {
     detailPassword = ""
+    clearRepromptGrant()
     liveTotp = ""
     totpRequestItemId = ""
     totpQueuedItemId = ""
@@ -5412,6 +5559,11 @@ Item {
       denySshRequest()
       return
     }
+    // A waiting re-prompt is the innermost thing on screen.
+    if (repromptPending) {
+      cancelReprompt()
+      return
+    }
     if (openFilterGroup !== "") {
       closeFilterGroup()
       return
@@ -5469,6 +5621,13 @@ Item {
     if (currentScreen !== "pin") abandonPinSetup()
     if (currentScreen !== "fingerprint") abandonFingerprintSetup()
     if (currentScreen !== "fido") fidoUnlocker.abandonSetup()
+    // A confirmed re-prompt lasts while its item's detail is open, and the
+    // edit form (and a generator trip from it) is part of that.
+    // A prompt still waiting was for the screen being left.
+    var inItem = currentScreen === "detail" || currentScreen === "edit"
+      || (currentScreen === "generator" && generatorReturnScreen === "edit")
+    if (repromptPending) cancelReprompt()
+    if (!inItem) repromptVerifiedId = ""
     restoreScreenFocus()
   }
 
@@ -5600,6 +5759,8 @@ Item {
   function openDetail(item) {
     closeFilterGroup()
     if (!item || !item.id) return
+    // Another item's confirmation does not carry over.
+    if (String(item.id) !== repromptVerifiedId) clearRepromptGrant()
     learnFromPick(item)
     isLoading = true
     errorMessage = ""
@@ -6220,6 +6381,11 @@ Item {
       errorMessage = "Still saving this item -- one moment"
       return
     }
+    // The form shows the password and TOTP secret.
+    withReprompt(item, function() { root.startEditItemNow(item) })
+  }
+
+  function startEditItemNow(item) {
     formIsEditing = true
     formItemId = item.id
     formTypeCode = item.typeCode || 1
@@ -6358,8 +6524,17 @@ Item {
     refreshDerivedFromItems()
   }
 
-  // The row disappears at once; if the vault refuses, it comes back.
+  // The row disappears at once; if the vault refuses, it comes back. A
+  // re-prompt item asks for the master password first.
   function deleteCurrentItem() {
+    if (!detailItem || !detailItem.id || detailItem.typeCode === 5) return
+    var target = detailItem
+    withReprompt(target, function() {
+      if (root.detailItem && root.detailItem.id === target.id) root.deleteCurrentItemNow()
+    })
+  }
+
+  function deleteCurrentItemNow() {
     if (!detailItem || !detailItem.id || detailItem.typeCode === 5) return
     if (detailItem.pending || Model.isPendingItemId(detailItem.id)) {
       errorMessage = "Still saving this item -- one moment"
@@ -6607,15 +6782,21 @@ Item {
     }
 
     // If already in active TOTP follow-up mode for this item, copy TOTP now!
+    // Part of the copy that armed it, which already passed any re-prompt.
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id) {
-      copyTotpCode(item)
+      copyTotpCodeNow(item)
       totpFollowupActive = false
       if (closeOnCopy) close()
       return
     }
 
+    withReprompt(item, function() { root.smartCopy(item) })
+  }
+
+  // Enter's copy, once any re-prompt has passed.
+  function smartCopy(item) {
     // Step 1: Copy password
-    copyPassword(item)
+    copyPasswordNow(item)
 
     // Step 2: If item has TOTP, arm follow-up and schedule auto-copy!
     if (item.hasTotp) {
@@ -6638,6 +6819,12 @@ Item {
   function copyPassword(item) {
     closeFilterGroup()
     if (!item || !Model.isLoginItem(item)) return
+    withReprompt(item, function() { root.copyPasswordNow(item) })
+  }
+
+  function copyPasswordNow(item) {
+    closeFilterGroup()
+    if (!item || !Model.isLoginItem(item)) return
     learnFromPick(item)
     var pass = (detailItem && detailItem.id === item.id && detailPassword) ? detailPassword : (item.password || "")
     if (pass) {
@@ -6658,6 +6845,17 @@ Item {
   }
 
   function copyTotpCode(item) {
+    closeFilterGroup()
+    if (!item || !Model.isLoginItem(item)) return
+    // The follow-up to Enter's copy already passed any re-prompt.
+    if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === item.id) {
+      copyTotpCodeNow(item)
+      return
+    }
+    withReprompt(item, function() { root.copyTotpCodeNow(item) })
+  }
+
+  function copyTotpCodeNow(item) {
     closeFilterGroup()
     if (!item || !Model.isLoginItem(item)) return
     if (liveTotp && item.id === (detailItem ? detailItem.id : "")) {
@@ -6748,7 +6946,8 @@ Item {
     repeat: false
     onTriggered: {
       if (root.totpFollowupItem && root.totpFollowupItem.hasTotp) {
-        root.copyTotpCode(root.totpFollowupItem)
+        // Armed only by a copy that passed any re-prompt.
+        root.copyTotpCodeNow(root.totpFollowupItem)
         // The code stays out of the notification (history, lock screen).
         Quickshell.execDetached(["omarchy-notification-send", "-g", "󰥔", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", "2FA verification code ready to paste"])
         root.totpFollowupActive = false

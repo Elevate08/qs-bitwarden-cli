@@ -178,7 +178,8 @@ check("no single shared reveal flag is left",
   "one flag for every masked field is what caused them to move together")
 
 check("toggling one key leaves the others alone",
-  /if \(next\[key\]\) delete next\[key\]\s*\n\s*else next\[key\] = true/.test(panelSrc),
+  /for \(var k in revealedFields\) next\[k\] = revealedFields\[k\]\s*\n\s*if \(on\) next\[key\] = true\s*\n\s*else delete next\[key\]/.test(panelSrc)
+    && /setFieldRevealed\(key, !revealedFields\[key\]\)/.test(panelSrc),
   "expected a per-key toggle over a copy of the map")
 
 // `v` cannot mean five things at once, so it reaches the one secret the item is

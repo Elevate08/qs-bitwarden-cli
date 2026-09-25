@@ -573,7 +573,7 @@ check("an unrecognised type is drawn as a login, not as the unreachable shield",
   // The panel wires it: every website loaded at edit, the list passed only
   // when a view edited it as a list.
   const service = readPluginSource("Panel.qml")
-  const start = functionBody(service, "startEditItem")
+  const start = functionBody(service, "startEditItemNow")
   const save = functionBody(service, "saveItemForm")
   check("the edit form loads every website of the item",
     /formUriEntries\s*=\s*Model\.loginUriEntries\(/.test(start), start)
