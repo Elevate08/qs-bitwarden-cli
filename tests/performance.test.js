@@ -140,6 +140,38 @@ for (const tier of tiers) {
     `${row.context.toFixed(2)}ms > ${tier.contextP95Ms}ms`)
 }
 
+// --- the whole vault is parsed once per load ------------------------------
+// The panel's list read used to parse the sanitized document four times and
+// serialize it twice (capability, items, and a re-serialize inside each), on
+// the GUI thread. Count the calls rather than time them: the count is what
+// regressed, and it does not depend on the machine.
+{
+  const items = JSON.parse(buildFixture(tiers[1]))
+  const envelope = JSON.stringify({ sshCapability: "unconfirmed", items, sshKeys: [] })
+  const realParse = JSON.parse
+  const realStringify = JSON.stringify
+  let parses = 0
+  let stringifies = 0
+  JSON.parse = function () { parses++; return realParse.apply(JSON, arguments) }
+  JSON.stringify = function () { stringifies++; return realStringify.apply(JSON, arguments) }
+  let vault
+  try {
+    vault = Model.readSanitizedVault(envelope)
+  } finally {
+    JSON.parse = realParse
+    JSON.stringify = realStringify
+  }
+  check("one vault read parses the document once", parses === 1, `${parses} JSON.parse calls`)
+  check("one vault read never re-serializes the vault", stringifies === 0, `${stringifies} JSON.stringify calls`)
+  check("the single parse still yields every item and the capability",
+    vault.items.length === items.length && vault.sshCapability.state === "unconfirmed",
+    `${vault.items.length} items, ${JSON.stringify(vault.sshCapability)}`)
+  check("an unreadable document yields no items and the unknown capability",
+    Model.readSanitizedVault("{not json").items.length === 0
+      && Model.readSanitizedVault("{not json").sshCapability.state === "unknown",
+    JSON.stringify(Model.readSanitizedVault("{not json")))
+}
+
 console.log("tier     items    MiB  parse p95  filter p95  context p95")
 for (const row of results) {
   console.log(`${row.tier.padEnd(8)} ${String(row.items).padStart(5)}  ${row.mib.toFixed(2).padStart(5)}`

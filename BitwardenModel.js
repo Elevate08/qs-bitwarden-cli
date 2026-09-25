@@ -2459,8 +2459,12 @@ function itemCustomFields(fields, item) {
   return customFields
 }
 
+// `raw` is the JSON text of an item array, or an array already parsed. The
+// vault list is parsed once (readSanitizedVault()) and its items handed here
+// as an array: re-serializing them just to parse them again cost 4 parses
+// and 2 stringifies of the whole vault on the GUI thread per load.
 function parseItems(raw) {
-  var arr = parseJsonArray(raw)
+  var arr = Array.isArray(raw) ? raw : parseJsonArray(raw)
   var out = []
   for (var i = 0; i < arr.length; i++) {
     var it = arr[i]
@@ -2565,7 +2569,7 @@ function parseSanitizedEnvelope(raw) {
   var expectedCapability = envelope.sshKeys.length > 0 ? "confirmed" : "unconfirmed"
   if (envelope.sshCapability !== undefined && envelope.sshCapability !== expectedCapability) return null
   var sshKeys = parseSshKeys(envelope.sshKeys)
-  var items = parseItems(JSON.stringify(envelope.items)).concat(sshKeys)
+  var items = parseItems(envelope.items).concat(sshKeys)
   items.sort(compareItems)
   return {
     items: items,
@@ -2595,7 +2599,7 @@ function optimisticItem(payload, itemId) {
   var draft = JSON.parse(JSON.stringify(payload))
   draft.id = String(itemId || "")
   draft.object = "item"
-  var parsed = parseItems(JSON.stringify([draft]))
+  var parsed = parseItems([draft])
   if (parsed.length !== 1) return null
   parsed[0].pending = true
   return parsed[0]
@@ -2638,6 +2642,18 @@ function spliceSavedItem(items, raw, replacingId) {
 function parseSanitizedItems(raw) {
   var envelope = parseSanitizedEnvelope(raw)
   return envelope ? envelope.items : []
+}
+
+// The item list and the SSH capability from one parse of the sanitized vault
+// read. The panel calls this once per load; inspectSanitizedVault() and
+// parseSanitizedItems() each parse on their own and are kept for callers that
+// need only one of the two.
+function readSanitizedVault(raw) {
+  var envelope = parseSanitizedEnvelope(raw)
+  return {
+    items: envelope ? envelope.items : [],
+    sshCapability: sshCapabilityOf(envelope)
+  }
 }
 
 function parseItemDetail(raw) {
@@ -3869,7 +3885,11 @@ function defaultSshCapability() {
 }
 
 function inspectSanitizedVault(raw) {
-  var parsed = parseSanitizedEnvelope(raw)
+  return sshCapabilityOf(parseSanitizedEnvelope(raw))
+}
+
+// The SSH capability of an already-parsed sanitized envelope (null: unread).
+function sshCapabilityOf(parsed) {
   if (!parsed) return defaultSshCapability()
   if (parsed.sshCapability === "confirmed") {
     return {

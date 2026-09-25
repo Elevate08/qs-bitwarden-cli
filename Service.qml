@@ -4881,8 +4881,12 @@ Item {
   function onListFinished(rawJson) {
     isLoading = false
     if (vaultReadIsStale("items")) return
-    sshCapability = Model.inspectSanitizedVault(rawJson)
-    items = Model.parseSanitizedItems(rawJson)
+    // One parse for both: parsing the list once per consumer cost several
+    // whole-vault parses on the GUI thread per load.
+    var vault = Model.readSanitizedVault(rawJson)
+    sshCapability = vault.sshCapability
+    items = vault.items
+    vault = null
     itemsLoadedAt = Date.now()
     refreshDerivedFromItems()
     if (syncReloadPending) {

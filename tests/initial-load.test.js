@@ -27,10 +27,18 @@ for (const source of ["onUnlockSuccess", "onSessionHandoff"]) {
 
 const listFinished = bodyOf("onListFinished")
 check("metadata deferral begins only after the item result is accepted",
-  /items\s*=\s*Model\.parseSanitizedItems/.test(listFinished)
+  /Model\.readSanitizedVault\(rawJson\)/.test(listFinished)
+    && /items\s*=\s*vault\.items/.test(listFinished)
     && !/items\s*=\s*Model\.parseItems/.test(listFinished)
     && /deferredMetadataTimer\.restart\(\)/.test(listFinished)
-    && listFinished.indexOf("items = Model.parseSanitizedItems") < listFinished.indexOf("deferredMetadataTimer.restart()"),
+    && listFinished.indexOf("items = vault.items") < listFinished.indexOf("deferredMetadataTimer.restart()"),
+  listFinished)
+// The list is parsed once: a second parser on the same text (the SSH
+// capability used to be read by its own full parse) doubles the GUI-thread
+// cost on every load.
+check("the vault list is parsed once per load",
+  (listFinished.match(/Model\.\w+\(rawJson\)/g) || []).length === 1
+    && !/inspectSanitizedVault|parseSanitizedItems/.test(listFinished),
   listFinished)
 
 const listExited = bodyOf("onListProcessExited")
