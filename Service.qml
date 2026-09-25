@@ -5,6 +5,7 @@ import Quickshell.Io
 import Quickshell.Services.Pam
 import qs.Commons
 import "BitwardenModel.js" as Model
+import "TotpModel.js" as Totp
 
 // The vault, once per shell. The bar (and Panel.qml) exists once per monitor;
 // the shell loads this `service` entry point once and hands it to every bar
@@ -200,6 +201,12 @@ Item {
   property var dependencies: ({ items: [], hasOmarchy: true })
   property bool depsChecked: false
   property bool setupDismissed: false
+  // The last dependency probe's output, and `bw -v` cached by the binary's
+  // identity (dependencyBwId()) so opening the panel does not start Node.
+  property string depsRaw: ""
+  property bool bwVersionKnown: false
+  property string bwVersionId: ""
+  property string bwVersionValue: ""
   property string listReadMode: "sanitized"
   property var sshCapability: Model.defaultSshCapability()
   // Show setup instead of probing `bw`; see setupGateActive().
@@ -1859,6 +1866,9 @@ Item {
   // it (so the agent can never cost the user the item list).
   property bool listAgentBranchActive: false
   property bool listRetriedWithoutAgent: false
+  // The running item read started before `bw status` confirmed the session
+  // (onKeyringLookupFinished()); its failure means nothing yet.
+  property bool listReadEarly: false
 
   // The nonce is primed ahead of time so the item list never waits on it; a
   // load without one runs without the branch and primes one for next time.
@@ -2474,6 +2484,11 @@ Item {
       vaultEpoch += 1
     }
     runStatusCheck()
+    // A remembered session is usually still good, so read the list alongside
+    // `bw status` rather than after it: two bw starts overlap instead of
+    // queueing (~3 s each). Nothing shows, and the SSH agent does not load,
+    // until the status confirms; a locked answer drops the read's epoch.
+    if (token) beginInitialVaultLoad(false, false)
   }
 
   function runStatusCheck(authoritative) {
@@ -2548,6 +2563,8 @@ Item {
       status = "unlocked"
       currentScreen = "main"
       ensureItemsFresh()
+      // Held back while an early list read ran on an unconfirmed session.
+      loadPendingMetadata()
       resetAutoLockTimer()
       focusAppropriateField()
       // No lastSync means an empty local vault: `bw login` swallows a failed
@@ -3334,9 +3351,13 @@ Item {
 
   // BW_SESSION rather than --session keeps the token out of argv. Every `bw`
   // runs in the active account's data directory (accountAppDataEnv()).
+  // Read once: the shell's own NODE_OPTIONS plus the early-exit preload.
+  readonly property string bwNodeOptions: Model.bwNodeOptions(sshAgentPluginDir, Quickshell.env("NODE_OPTIONS"))
+
   function bwEnv(extra) {
     var env = accountAppDataEnv()
     if (session) env[Model.sessionEnvVar()] = String(session)
+    if (bwNodeOptions) env.NODE_OPTIONS = bwNodeOptions
     if (extra) for (var k in extra) env[k] = extra[k]
     return env
   }
@@ -3962,7 +3983,12 @@ Item {
   }
 
   function onDependenciesChecked(raw) {
-    dependencies = Model.parseDependencies(raw)
+    depsRaw = String(raw || "")
+    var bwId = Model.dependencyBwId(depsRaw)
+    var cached = bwVersionKnown && bwId !== "" && bwId === bwVersionId
+    dependencies = Model.parseDependencies(depsRaw, cached ? bwVersionValue : null)
+    // Off the status probe's path: only SSH support waits for the version.
+    if (!cached && Model.dependencyInstalled(dependencies, "bw")) probeBwVersion(bwId)
     depsChecked = true
     // The legacy entries checked here are the active account's.
     if (pinUnlock && accountsLoaded) refreshPinConfigured()
@@ -3990,6 +4016,25 @@ Item {
       setupWasGated = false
       refreshStatus()
     }
+  }
+
+  function probeBwVersion(bwId) {
+    if (bwVersionProc.running) return
+    bwVersionProc.probeId = bwId
+    bwVersionProc.running = true
+  }
+
+  function onBwVersionProbed(raw, probedId) {
+    bwVersionId = probedId
+    bwVersionValue = Model.parseBwVersionProbe(raw)
+    bwVersionKnown = true
+    // bw changed while `bw -v` ran: that answer is for the old binary.
+    var latestId = Model.dependencyBwId(depsRaw)
+    if (latestId !== probedId) {
+      if (Model.dependencyInstalled(dependencies, "bw")) probeBwVersion(latestId)
+      return
+    }
+    dependencies = Model.parseDependencies(depsRaw, bwVersionValue)
   }
 
   readonly property var missingRequired: Model.missingRequired(dependencies)
@@ -4814,12 +4859,23 @@ Item {
     return epochOperationIsStale(name) || !session
   }
 
-  // Items first; organizations and folders (each another bw start) only after
-  // the list has painted.
+  // Items, organizations and folders together: each is its own bw start, and
+  // bw spends most of one waiting, so queueing them only added ~3 s. On a
+  // session `bw status` has not confirmed yet, the metadata waits for it.
   function beginInitialVaultLoad(showSpinner, forceMetadata) {
     metadataLoadPending = true
     metadataForceRefresh = forceMetadata === true
     loadItems(showSpinner)
+    loadPendingMetadata()
+  }
+
+  function loadPendingMetadata() {
+    if (status !== "unlocked" || !metadataLoadPending) return
+    var force = metadataForceRefresh
+    metadataLoadPending = false
+    metadataForceRefresh = false
+    loadOrganizations(force)
+    loadFolders(force)
   }
 
   // Stale-while-revalidate: show what is in memory at once and refresh behind
@@ -4841,6 +4897,8 @@ Item {
   function loadItems(showSpinner) {
     if (!session) return
     if (showSpinner !== false) isLoading = true
+    // The early read for this vault is still running: it serves this request.
+    if (listProc.running && listReadEarly && !vaultReadIsStale("items")) return
     beginVaultRead("items")
     listReadMode = Model.vaultListMode(dependencies)
     if (listReadMode === "blocked") {
@@ -4854,7 +4912,10 @@ Item {
   // The only launcher of the item read, with or without the agent branch.
   // `retrying` (after a failed fan-out) never carries the branch.
   function startVaultListRead(retrying) {
-    var useAgent = !retrying && sshAgentGateOpen && Model.isValidLoadId(sshAgentNextLoadId)
+    // Keys go to the agent only from a read of a confirmed session;
+    // maybeStartupLoad() loads them once the status has confirmed it.
+    listReadEarly = status !== "unlocked"
+    var useAgent = !retrying && !listReadEarly && sshAgentGateOpen && Model.isValidLoadId(sshAgentNextLoadId)
     if (useAgent) {
       sshAgentEpoch += 1
       sshAgentLoadId = sshAgentNextLoadId
@@ -4890,7 +4951,7 @@ Item {
       isSyncing = false
       flashNotification("Vault synced with Bitwarden")
     }
-    if (metadataLoadPending) deferredMetadataTimer.restart()
+    if (metadataLoadPending || statusRefreshAfterItems) deferredMetadataTimer.restart()
     // The first read usually beat the handshake; see whether a load is owed.
     maybeStartupLoad()
   }
@@ -4898,7 +4959,9 @@ Item {
   function onListProcessExited(exitCode, rawJson, stderrText) {
     if (finishScrubRun(listProc)) return
     var hadAgentBranch = listAgentBranchActive
+    var wasEarly = listReadEarly
     listAgentBranchActive = false
+    listReadEarly = false
     endSshAgentLoad(exitCode === 0)
 
     if (exitCode === 0) {
@@ -4916,6 +4979,14 @@ Item {
     }
     listRetriedWithoutAgent = false
 
+    // An early read that failed after the status confirmed the session is
+    // asked again, now as an ordinary read that reports its own failure.
+    if (wasEarly && status === "unlocked" && !vaultReadIsStale("items")) {
+      beginVaultRead("items")
+      startVaultListRead(false)
+      return
+    }
+
     isLoading = false
     isSyncing = false
     syncReloadPending = false
@@ -4924,7 +4995,9 @@ Item {
     if (statusRefreshAfterItems) {
       statusRefreshAfterItems = false
     }
-    if (!vaultReadIsStale("items")) {
+    // Before the status answers, a failure is most likely a stale session,
+    // which the status will report as locked.
+    if (!vaultReadIsStale("items") && !wasEarly) {
       errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
     }
   }
@@ -5401,6 +5474,14 @@ Item {
 
   function fetchTotp(itemId, copyWhenReady) {
     if (!session || !itemId) return
+    // The list already holds the key: compute the code here rather than start
+    // bw for it. Keys TotpModel.js does not mirror exactly still ask bw.
+    var local = localTotp(String(itemId))
+    if (local) {
+      if (copyWhenReady) totpCopyItemId = String(itemId)
+      applyTotpCode(String(itemId), local)
+      return
+    }
     if (copyWhenReady) totpCopyItemId = String(itemId)
     if (getTotpProc.running || totpRestartPending) {
       if (totpRequestItemId !== String(itemId)) {
@@ -5454,8 +5535,29 @@ Item {
     else if (!collectorIsClean) clearProcessCollectorSoon(getTotpProc)
   }
 
+  // The code for `itemId` from its key in the list, or "" if bw must answer.
+  function localTotp(itemId) {
+    var key = ""
+    if (detailItem && detailItem.id === itemId) key = detailItem.totpKey || ""
+    if (!key) {
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].id === itemId) {
+          key = items[i].totpKey || ""
+          break
+        }
+      }
+    }
+    if (!key) return ""
+    var result = Totp.generate(key, Date.now())
+    return result ? result.code : ""
+  }
+
   function onTotpFinished(itemId, code) {
     if (vaultReadIsStale("totp")) return
+    applyTotpCode(itemId, code)
+  }
+
+  function applyTotpCode(itemId, code) {
     var c = String(code || "").trim()
     if (detailItem && detailItem.id === itemId) liveTotp = c
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
@@ -6285,16 +6387,13 @@ Item {
 
   Timer {
     id: deferredMetadataTimer
-    // Lets the parsed list render before two more bw processes start.
+    // Metadata not already started with the list, and the account-naming
+    // `bw status`, wait for the parsed list to render.
     interval: 50
     repeat: false
     onTriggered: {
-      if (root.status !== "unlocked" || !root.metadataLoadPending) return
-      var force = root.metadataForceRefresh
-      root.metadataLoadPending = false
-      root.metadataForceRefresh = false
-      root.loadOrganizations(force)
-      root.loadFolders(force)
+      if (root.status !== "unlocked") return
+      root.loadPendingMetadata()
       if (root.statusRefreshAfterItems) {
         root.statusRefreshAfterItems = false
         root.runStatusCheck(false)
@@ -6907,6 +7006,17 @@ Item {
       waitForEnd: true
       onStreamFinished: root.onDependenciesChecked(text)
     }
+  }
+
+  Process {
+    id: bwVersionProc
+    property string probeId: ""
+    command: Model.bwVersionCommand()
+    stdout: StdioCollector {
+      id: bwVersionStdout
+      waitForEnd: true
+    }
+    onExited: function(exitCode) { root.onBwVersionProbed(bwVersionStdout.text, bwVersionProc.probeId) }
   }
 
   // An install runs in a terminal we do not own, so re-probe while the setup

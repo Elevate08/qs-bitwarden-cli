@@ -376,6 +376,21 @@ function sessionEnvVar() {
   return SESSION_ENV
 }
 
+// NODE_OPTIONS for every `bw`: the user's own, plus bw-fast-exit.js from the
+// plugin directory, which saves the ~2 s bw idles after answering. Node reads
+// NODE_OPTIONS with double quotes and backslash escapes. No plugin directory
+// (not a file URL) leaves the options as they were.
+var BW_FAST_EXIT_FILE = "bw-fast-exit.js"
+
+function bwNodeOptions(pluginDir, existing) {
+  var base = String(existing || "").trim()
+  var dir = String(pluginDir || "").replace(/\/+$/, "")
+  if (dir === "") return base
+  var file = dir + "/" + BW_FAST_EXIT_FILE
+  var option = "--require \"" + file.replace(/(["\\])/g, "\\$1") + "\""
+  return base ? base + " " + option : option
+}
+
 function passwordEnvVar() {
   return PASSWORD_ENV
 }
@@ -3708,7 +3723,10 @@ var DEPENDENCIES = [
   }
 ]
 
-// One round trip: `key=1|0` per tool, the bw version and fingerprint state.
+// One round trip: `key=1|0` per tool, the bw binary's identity and
+// fingerprint state. It runs on every panel open, so it must stay cheap: the
+// version (a ~1.2 s Node start) is bwVersionCommand(), asked again only when
+// `bw_id` changes.
 function dependencyCheckCommand() {
   var parts = []
   for (var i = 0; i < DEPENDENCIES.length; i++) {
@@ -3716,12 +3734,11 @@ function dependencyCheckCommand() {
     parts.push("if command -v " + d.binary + " >/dev/null 2>&1; then echo "
       + shellQuote(d.key + "=1") + "; else echo " + shellQuote(d.key + "=0") + "; fi")
   }
-  // Only a strict calendar-version token reaches QML.
-  parts.push("if command -v bw >/dev/null 2>&1; then "
-    + "__qsbw_bw_version=$(bw -v 2>/dev/null | head -c 64); "
-    + "if [[ \"$__qsbw_bw_version\" =~ ^v?[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,6}$ ]]; then "
-    + "printf 'bw_version=%s\\n' \"$__qsbw_bw_version\"; else echo bw_version=; fi; "
-    + "else echo bw_version=; fi")
+  // Device, inode, size and mtime of the resolved file: an upgrade or a
+  // different bw on PATH changes it.
+  parts.push("if __qsbw_bw=$(command -v bw 2>/dev/null); then "
+    + "printf 'bw_id=%s\\n' \"$(stat -L -c '%d:%i:%s:%Y' -- \"$__qsbw_bw\" 2>/dev/null | head -c 128)\"; "
+    + "else echo bw_id=; fi")
   parts.push("if [ -f /etc/pam.d/omarchy-lock-fingerprint ] && command -v fprintd-list >/dev/null 2>&1 "
     + "&& fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo fingerprint_ready=1; else echo fingerprint_ready=0; fi")
   // Reader detection via sysfs, which works before anything is installed, so
@@ -3732,7 +3749,15 @@ function dependencyCheckCommand() {
   return ["bash", "-c", cappedScript("{ " + parts.join("; ") + "; } | head -c 4096")]
 }
 
-function parseDependencies(raw) {
+// Only a strict calendar-version token reaches QML.
+function bwVersionCommand() {
+  var script = "__qsbw_bw_version=$(bw -v 2>/dev/null | head -c 64); "
+    + "if [[ \"$__qsbw_bw_version\" =~ ^v?[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,6}$ ]]; then "
+    + "printf 'bw_version=%s\\n' \"$__qsbw_bw_version\"; else echo bw_version=; fi"
+  return ["bash", "-c", cappedScript("{ " + script + "; } | head -c 4096")]
+}
+
+function probeFields(raw) {
   var found = {}
   var lines = String(raw || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
@@ -3741,11 +3766,31 @@ function parseDependencies(raw) {
     if (cut <= 0) continue
     found[line.slice(0, cut)] = line.slice(cut + 1)
   }
+  return found
+}
 
-  var bwVersionRaw = String(found["bw_version"] || "").trim()
+// The bw binary's identity from dependencyCheckCommand(), or "" if unknown.
+function dependencyBwId(raw) {
+  var id = String(probeFields(raw)["bw_id"] || "").trim()
+  return /^[0-9]{1,20}(:[0-9]{1,20}){3}$/.test(id) ? id : ""
+}
+
+function parseBwVersionProbe(raw) {
+  return normalizeReleaseVersion(probeFields(raw)["bw_version"])
+}
+
+// `probedVersion` is the result of bwVersionCommand(); null while it has not
+// answered for this binary, which leaves SSH support "checking". A
+// `bw_version` line in `raw` itself takes precedence.
+function parseDependencies(raw, probedVersion) {
+  var found = probeFields(raw)
+
+  var inline = found["bw_version"] !== undefined
+  var pending = !inline && (probedVersion === null || probedVersion === undefined)
+  var bwVersionRaw = String(inline ? found["bw_version"] : (probedVersion || "")).trim()
   var bwVersion = normalizeReleaseVersion(bwVersionRaw)
   var sshCliStatus = "missing"
-  if (found["bw"] === "1") sshCliStatus = sshCliSupport(bwVersion)
+  if (found["bw"] === "1") sshCliStatus = pending ? "checking" : sshCliSupport(bwVersion)
 
   var out = []
   for (var d = 0; d < DEPENDENCIES.length; d++) {
@@ -3784,6 +3829,7 @@ function parseDependencies(raw) {
     hasOmarchy: found["omarchy"] === "1",
     hasFingerprintReader: found["fingerprint_hw"] === "1",
     bwVersion: bwVersion,
+    bwId: dependencyBwId(raw),
     sshCliMinVersion: SSH_CLI_MIN_VERSION,
     sshCliStatus: sshCliStatus
   }
