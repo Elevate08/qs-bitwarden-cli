@@ -190,6 +190,8 @@ Item {
     }
     assertMode = target.mode
     startedAtMs = Date.now()
+    // Its output is the master password.
+    vault.protectFromCoreDumps()
     var tool = vault.envelopeTool()
     var account = vault.envelopeAccount()
     assertProc.command = target.mode === "envelope"

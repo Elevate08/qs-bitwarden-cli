@@ -119,6 +119,8 @@ Item {
   readonly property bool lockOnScreenLock: Model.boolSetting("lockOnScreenLock", setting("lockOnScreenLock", true))
   readonly property bool lockOnSuspend: Model.boolSetting("lockOnSuspend", setting("lockOnSuspend", true))
   readonly property bool rememberSession: Model.boolSetting("rememberSession", setting("rememberSession", true))
+  // Off by default: see protectFromCoreDumps().
+  readonly property bool crashDumpsAfterUnlock: Model.boolSetting("crashDumpsAfterUnlock", setting("crashDumpsAfterUnlock", false))
   readonly property int autoCopyTotpSec: Model.intSetting("autoCopyTotpSec", setting("autoCopyTotpSec"))
   readonly property bool closeOnCopy: Model.boolSetting("closeOnCopy", setting("closeOnCopy", true))
   readonly property bool colorizeIcon: Model.boolSetting("colorizeIcon", setting("colorizeIcon", false))
@@ -549,6 +551,50 @@ Item {
   readonly property bool logoutCleanupFailed: logoutPending && logoutCredentialsDone
     && logoutCredentialsExitCode !== 0
 
+  // -------------------------------------------------------------------------
+  // Core dumps
+  // -------------------------------------------------------------------------
+  //
+  // A shell crash writes a core that systemd-coredump keeps, readable by the
+  // user, for days; with the vault open it holds the session key and every
+  // decrypted item, and any program running as the user can crash the shell
+  // on purpose. So once a secret enters the shell (a typed password or PIN, a
+  // session key, an unlocked vault), the shell's soft core limit goes to 0
+  // for the rest of its life (Model.coreDumpsOffCommand()). The cost is no
+  // core to diagnose a later crash with, so crashDumpsAfterUnlock opts out;
+  // turning it on afterwards applies from the next shell start.
+  property bool coreDumpsOffRequested: false
+
+  function protectFromCoreDumps() {
+    if (coreDumpsOffRequested || crashDumpsAfterUnlock || !live) return
+    coreDumpsOffRequested = true
+    coreLimitProc.running = true
+  }
+
+  function onCoreLimitSet(exitCode) {
+    if (exitCode === 0) {
+      console.log("qs-bitwarden: core dumps are off for the rest of this shell session, "
+        + "since vault secrets are now in memory (crashDumpsAfterUnlock keeps them)")
+    } else {
+      console.warn("qs-bitwarden: could not turn core dumps off (exit " + exitCode + ")")
+    }
+  }
+
+  Process {
+    id: coreLimitProc
+    command: Model.coreDumpsOffCommand()
+    onExited: function(exitCode) { root.onCoreLimitSet(exitCode) }
+  }
+
+  // Typed secrets count from the first character.
+  onMasterPasswordChanged: if (masterPassword) protectFromCoreDumps()
+  onLoginPasswordChanged: if (loginPassword) protectFromCoreDumps()
+  onLoginClientSecretChanged: if (loginClientSecret) protectFromCoreDumps()
+  onPinEntryChanged: if (pinEntry) protectFromCoreDumps()
+  onPinSetupMasterChanged: if (pinSetupMaster) protectFromCoreDumps()
+  onFpSetupMasterChanged: if (fpSetupMaster) protectFromCoreDumps()
+  onFidoSetupMasterChanged: if (fidoSetupMaster) protectFromCoreDumps()
+
   // Start with the first view. Until then the vault is inert: no `bw`, SSH
   // agent or IPC target.
   onLiveChanged: {
@@ -821,6 +867,8 @@ Item {
   // Queue one envelope process: { command, env, secretOutput, writes,
   // onDone(exitCode, stdout) }. `env` holds secrets and is dropped on start.
   function queueEnvelopeJob(job) {
+    // A secret in, or the master password out.
+    if (job.secretOutput || (job.env && Object.keys(job.env).length > 0)) protectFromCoreDumps()
     // Answers for an account no longer active are dropped (onEnvelopeJobExited()).
     job.slot = activeSlot
     var jobs = envelopeJobs.slice()
@@ -2132,6 +2180,7 @@ Item {
   }
 
   onStatusChanged: {
+    if (status === "unlocked") protectFromCoreDumps()
     promoteUnlockToApproval()
     maybeStartupLoad()
   }
@@ -2575,6 +2624,7 @@ Item {
     }
     var handed = Model.extractSessionToken(String(raw || "").trim())
     if (handed) {
+      protectFromCoreDumps()
       cancelAuthPrewarm()
       abandonAuthSecrets()
       // Consumed: close the window.
@@ -2620,6 +2670,7 @@ Item {
     }
     var token = String(rawToken || "").trim()
     if (token) {
+      protectFromCoreDumps()
       session = token
       vaultEpoch += 1
     }
@@ -2791,6 +2842,7 @@ Item {
   // the password down the FIFO, and bw runs with prompts on for this call.
   function submitDeviceVerification() {
     if (loginSubmitted) return
+    protectFromCoreDumps()
     var code = String(loginDeviceCode || "").trim()
     if (!code) {
       errorMessage = "Enter the code Bitwarden emailed you."
@@ -2972,6 +3024,7 @@ Item {
   }
 
   function writeAuthPassword(channel, password) {
+    protectFromCoreDumps()
     authPasswordWriteTarget = channel
     authPasswordWriteValue = String(password === undefined || password === null ? "" : password)
     authPasswordWriterProc.command = Model.authPasswordWriteCommand(channel)
@@ -3014,6 +3067,7 @@ Item {
 
   function submitLogin() {
     if (loginSubmitted) return
+    protectFromCoreDumps()
     errorMessage = ""
     if (logoutPending) {
       errorMessage = "Finishing logout. Please wait a moment."
@@ -4038,6 +4092,7 @@ Item {
       return
     }
     pinUnlockError = ""
+    protectFromCoreDumps()
     pinBusy = true
     pinUnlockSubmitted = true
     if (quickUnlockAvailable && accountId && envelopeSummary && envelopeSummary.pin) {
@@ -4395,6 +4450,7 @@ Item {
       case "closeOnCopy": return closeOnCopy
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
+      case "crashDumpsAfterUnlock": return crashDumpsAfterUnlock
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
       // The toggle reflects a PIN actually being set, not just the flag.
@@ -4667,6 +4723,7 @@ Item {
   }
 
   function unlockVaultWithPassword(pass) {
+    protectFromCoreDumps()
     var p = String(pass === undefined || pass === null ? "" : pass)
     if (!p) {
       errorMessage = "Master password required"

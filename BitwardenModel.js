@@ -1131,6 +1131,22 @@ function logoutCommand() {
 }
 
 // -------------------------------------------------------------------------
+// Core dumps
+// -------------------------------------------------------------------------
+//
+// Once vault secrets are in the shell (the session key, the item list with
+// every password and TOTP secret, a typed master password), a crash would
+// write them to disk: systemd-coredump keeps the shell's core, readable by
+// the user, for days, and any program running as the user can crash the
+// shell on purpose and collect it. Lowering the shell's soft RLIMIT_CORE to
+// 0 stops that for the rest of the shell's life (systemd-coredump honours
+// it); the hard limit is left alone. Quickshell starts a Process's command
+// as its own child, so bash's parent is the shell itself.
+function coreDumpsOffCommand() {
+  return ["bash", "-c", "[ \"$PPID\" -gt 1 ] || exit 3; exec prlimit --pid \"$PPID\" --core=0:"]
+}
+
+// -------------------------------------------------------------------------
 // Clipboard
 // -------------------------------------------------------------------------
 //
@@ -5845,6 +5861,8 @@ var SETTINGS_SCHEMA = [
     description: "Lock before sleep, so no session key is left in the suspended machine's memory." },
   { key: "rememberSession", group: "security", type: "bool", label: "Remember session in keyring", defaultValue: true,
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
+  { key: "crashDumpsAfterUnlock", group: "security", type: "bool", label: "Keep crash dumps after unlock", defaultValue: false,
+    description: "Off: once the vault has been unlocked, a shell crash writes no core dump, so your vault never lands on disk -- but that shell session leaves nothing to diagnose a crash with. On: crash dumps stay, and may hold vault data. Turned on after they were stopped, it applies from the next shell start." },
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint", defaultValue: false,
     requires: "fprintd", action: "fingerprint",
     description: "A verified fingerprint opens your master password, stored once, encrypted and sealed to this machine." },
