@@ -987,6 +987,43 @@ Panel {
         }
 
         // -------------------------------------------------------------------
+        // Crash protection banner
+        // -------------------------------------------------------------------
+        // Shown while the vault helper is unavailable and the vault is held in
+        // the shell instead (Service.qml "The vault helper").
+        BorderSurface {
+          visible: root.vault.vaultHelperWarning !== "" && root.vault.activeScreen !== "settings"
+          width: parent.width
+          implicitHeight: vaultHelperText.implicitHeight + Style.space(12)
+          color: Util.alpha(Color.urgent, 0.15)
+          radius: Style.cornerRadius
+          borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+          Row {
+            anchors.centerIn: parent
+            width: parent.width - Style.space(16)
+            spacing: Style.space(8)
+            Text {
+              textFormat: Text.PlainText
+              text: "󰀪"
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              id: vaultHelperText
+              textFormat: Text.PlainText
+              text: root.vault.vaultHelperWarning
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.Wrap
+              width: parent.width - Style.space(24)
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
         // SSH signing cooldown banner
         // -------------------------------------------------------------------
         // On every screen, since refused requests arrive while the panel
@@ -3227,8 +3264,12 @@ Panel {
               id: searchField
               width: parent.width - (root.vault.searchQuery ? clearSearchBtn.width + Style.space(6) : 0)
               placeholderText: "Search items, usernames, URLs, public keys, fingerprints..."
+              // Bound, and never assigned here: an assignment (the old Escape
+              // and clear button) broke the binding, so a later clear (panel
+              // closed, lock) left the old text in the box.
               text: root.vault.searchQuery
               onTextChanged: {
+                if (root.vault.searchQuery === text) return
                 root.vault.searchQuery = text
                 root.vault.selectedIndex = 0
                 root.vault.closeFilterGroup()
@@ -3254,7 +3295,7 @@ Panel {
                   event.accepted = false   // let it reach the panel's dispatch
                   return
                 }
-                if (text) text = ""
+                if (text) root.vault.clearSearch()
                 else root.vault.handleEscape()
               }
             }
@@ -3265,7 +3306,7 @@ Panel {
               iconText: "󰅖"
               tooltipText: "Clear search"
               fontFamily: root.fontFamily
-              onClicked: searchField.text = ""
+              onClicked: root.vault.clearSearch()
             }
           }
 

@@ -1,0 +1,31 @@
+[package]
+name = "qs-bitwarden-vault"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+description = "Holds the unlocked vault's secrets for the qs-bitwarden-cli Quickshell panel, outside the shell"
+
+# Each dependency was reviewed deliberately: this process holds the session
+# key and every decrypted item while the vault is unlocked.
+[dependencies]
+# The NDJSON channel the panel speaks on stdin/stdout, and the vault JSON
+# `bw` prints.
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# Every buffer holding the session key or item JSON wipes itself when dropped.
+zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
+# RLIMIT_CORE=0 and PR_SET_DUMPABLE=0 before the first secret is read, and
+# killing a run's whole process group.
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
+# TOTP codes: HMAC over SHA-1 or SHA-256, as the Bitwarden SDK computes them.
+hmac = { version = "0.12", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+
+[profile.release]
+# As for the other helpers: no unwinding through secret-holding frames, and
+# no symbols in the committed binary.
+panic = "abort"
+strip = "symbols"

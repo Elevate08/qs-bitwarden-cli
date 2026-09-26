@@ -63,10 +63,7 @@ const accountsDir = path.join(env.XDG_DATA_HOME, "qs-bitwarden-cli", "accounts")
 let shell = null
 function startShell() {
   const out = fs.openSync(shellLog, "a")
-  // The soft core limit starts at the hard one, so the check below sees the
-  // vault lower it rather than a limit that was 0 all along.
-  shell = spawn("bash", ["-c", 'ulimit -S -c "$(ulimit -H -c)" 2>/dev/null; exec quickshell -p "$1"', "_", config],
-    { env, stdio: ["ignore", out, out], detached: true })
+  shell = spawn("quickshell", ["-p", config], { env, stdio: ["ignore", out, out], detached: true })
   fs.closeSync(out)
   for (let i = 0; i < 120; i++) {
     if (ipc("qsbwtest", "state").ok) return
@@ -115,20 +112,20 @@ try {
   // --- two accounts, each with its own PIN ---
   q("open")
   expect("starts signed out on the default slot", s => s.status === "unauthenticated" && s.slot === "default")
-  // Core dumps: on until a secret enters the shell, then off for its life.
-  const coreLimit = () => {
-    try {
-      const line = fs.readFileSync(`/proc/${shell.pid}/limits`, "utf8").split("\n").find(l => l.startsWith("Max core file size"))
-      return line.split(/\s{2,}/)[1]
-    } catch (e) { return "unreadable" }
-  }
-  check("core dumps are left alone before any secret", coreLimit() !== "0", coreLimit())
   expect("the committed unlock tool passes its check", s => s.quick === true)
   q("login", "a@x", "pw-a@x")
   expect("account A logs in", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
-  expect("and the shell's core dumps are off from then on", () => coreLimit() === "0")
   expect("and is recorded", s => emails(s) === "a@x" && s.email === "a@x")
   expect("its password is stored for quick unlock", s => s.envelope !== null)
+  // The vault helper holds the session key and the items' secrets.
+  expect("the vault helper is up", s => s.helper === "active")
+  expect("and holds the session key, not the shell", s => s.sessionHeld === true)
+  expect("the list here has no password, only that there is one",
+    s => s.passwords.join() === "" && s.hasPasswords.join() === "true")
+  q("copyFirst")
+  expect("a copy reaches wl-copy from the helper", () => {
+    try { return fs.readFileSync(bwLog + ".clipboard", "utf8") === "x" } catch (e) { return false }
+  })
   q("setPin", "111111", "pw-a@x")
   expect("A gets a PIN", s => s.pinConfigured && s.pinReady)
   q("lock")

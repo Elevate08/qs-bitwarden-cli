@@ -80,6 +80,7 @@ jobs:
           path: |
             bin/x86_64-linux/qs-bitwarden-ssh-agent
             bin/x86_64-linux/qs-bitwarden-unlock-key
+            bin/x86_64-linux/qs-bitwarden-vault
             bin/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -120,13 +121,15 @@ jobs:
         run: |
           ( cd candidate && sha256sum -c SHA256SUMS )
           cp candidate/x86_64-linux/qs-bitwarden-ssh-agent \
-             candidate/x86_64-linux/qs-bitwarden-unlock-key bin/x86_64-linux/
+             candidate/x86_64-linux/qs-bitwarden-unlock-key \
+             candidate/x86_64-linux/qs-bitwarden-vault bin/x86_64-linux/
           cp candidate/SHA256SUMS bin/SHA256SUMS
           rm -rf candidate
-          chmod 755 bin/x86_64-linux/qs-bitwarden-ssh-agent bin/x86_64-linux/qs-bitwarden-unlock-key
+          chmod 755 bin/x86_64-linux/qs-bitwarden-ssh-agent bin/x86_64-linux/qs-bitwarden-unlock-key \
+                    bin/x86_64-linux/qs-bitwarden-vault
           ( cd bin && sha256sum -c SHA256SUMS )
           git add bin/SHA256SUMS bin/x86_64-linux/qs-bitwarden-ssh-agent \
-                  bin/x86_64-linux/qs-bitwarden-unlock-key
+                  bin/x86_64-linux/qs-bitwarden-unlock-key bin/x86_64-linux/qs-bitwarden-vault
           other="$(git status --porcelain | grep -v '^M  bin/' || true)"
           [ -z "$other" ] || { echo "::error::refusing to commit anything outside bin/:"; echo "$other"; exit 1; }
 

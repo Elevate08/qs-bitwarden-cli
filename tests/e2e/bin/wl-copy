@@ -1,4 +1,6 @@
 #!/bin/bash
 # Stand-in for Omarchy and desktop tools the vault calls; records the call.
 printf "%s\n" "$(basename "$0") $*" >> "$FAKE_BW_LOG.other"
+# wl-copy: what reached the clipboard.
+[ "$(basename "$0")" = wl-copy ] && cat > "$FAKE_BW_LOG.clipboard"
 exit 0

@@ -26,7 +26,6 @@
       "lockOnSuspend": true,
       "clearClipboardSec": 30,
       "rememberSession": true,
-      "crashDumpsAfterUnlock": false,
       "autoCopyTotpSec": 3,
       "closeOnCopy": true,
       "colorizeIcon": false,
@@ -80,13 +79,6 @@
         "label": "Remember session in OS keyring",
         "description": "Keep the session key in the OS keyring while unlocked, so restarting the shell does not ask for your password again. The key is held in the keyring's memory-only session collection and stamped with the current boot, so a reboot always comes back locked.",
         "defaultValue": true
-      },
-      {
-        "key": "crashDumpsAfterUnlock",
-        "type": "boolean",
-        "label": "Keep crash dumps after unlock",
-        "description": "Off (the default): once the vault has been unlocked or your master password typed, the shell stops writing core dumps for the rest of its session, so a crash cannot put your decrypted vault on disk, where any program running as you could collect it. The trade-off is that a shell crash after that leaves no core dump to diagnose it with. On: crash dumps are kept, and may contain vault data. Turning it on after the shell has already stopped writing them takes effect at the next shell start.",
-        "defaultValue": false
       },
       {
         "key": "autoCopyTotpSec",

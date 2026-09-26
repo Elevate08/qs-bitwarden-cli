@@ -31,4 +31,20 @@ check("a revealed password field is still kept from input methods",
   (view.match(/inputMethodHints: Qt\.ImhSensitiveData \| Qt\.ImhNoPredictiveText/g) || []).length >= 2,
   "the login and item-form password fields lose the hint when shown")
 
+// --- the search box ------------------------------------------------------------
+// Bound to searchQuery. The first Escape or clear button used to assign the
+// text directly, which broke the binding: from then on nothing (closing the
+// panel, a lock) could clear what the box showed.
+
+const { readPluginSource } = require("./harness")
+const service = readPluginSource("Service.qml")
+check("the search box stays bound to the query",
+  /text: root\.vault\.searchQuery/.test(view), "the field must follow searchQuery")
+check("Escape and the clear button clear through the service",
+  /if \(text\) root\.vault\.clearSearch\(\)/.test(view) && /onClicked: root\.vault\.clearSearch\(\)/.test(view)
+    && !/searchField\.text = ""/.test(view) && !/if \(text\) text = ""/.test(view),
+  "a direct text assignment is back")
+check("closing the panel clears the search",
+  /clearSearch\(\)/.test(functionBody(service, "close")), functionBody(service, "close"))
+
 done()

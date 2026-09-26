@@ -39,6 +39,7 @@ The helpers have their own Rust tests:
 ```bash
 cargo test --manifest-path agent/Cargo.toml
 cargo test --manifest-path unlock-key/Cargo.toml
+cargo test --manifest-path vault/Cargo.toml
 ```
 
 Shared helpers live in `tests/harness.js`: `loadModule()` evaluates a

@@ -1146,22 +1146,6 @@ function logoutCommand() {
 }
 
 // -------------------------------------------------------------------------
-// Core dumps
-// -------------------------------------------------------------------------
-//
-// Once vault secrets are in the shell (the session key, the item list with
-// every password and TOTP secret, a typed master password), a crash would
-// write them to disk: systemd-coredump keeps the shell's core, readable by
-// the user, for days, and any program running as the user can crash the
-// shell on purpose and collect it. Lowering the shell's soft RLIMIT_CORE to
-// 0 stops that for the rest of the shell's life (systemd-coredump honours
-// it); the hard limit is left alone. Quickshell starts a Process's command
-// as its own child, so bash's parent is the shell itself.
-function coreDumpsOffCommand() {
-  return ["bash", "-c", "[ \"$PPID\" -gt 1 ] || exit 3; exec prlimit --pid \"$PPID\" --core=0:"]
-}
-
-// -------------------------------------------------------------------------
 // Clipboard
 // -------------------------------------------------------------------------
 //
@@ -2695,6 +2679,8 @@ function parseItems(raw) {
     var login = it.login || {}
     var uris = loginUris(login)
     var attachments = parseAttachments(it.attachments)
+    // From the vault helper: secrets removed, and which ones there were.
+    var held = it.qsbwHeld && typeof it.qsbwHeld === "object" ? it.qsbwHeld : null
 
     var card = it.card || null
     var cardSubtitle = ""
@@ -2733,8 +2719,8 @@ function parseItems(raw) {
       favorite: Boolean(it.favorite),
       username: String(login.username || ""),
       password: String(login.password || ""),
-      hasPassword: Boolean(login.password),
-      hasTotp: Boolean(login.totp),
+      hasPassword: Boolean(login.password) || Boolean(held && held.password),
+      hasTotp: Boolean(login.totp) || Boolean(held && held.totp),
       totpKey: String(login.totp || ""),
       uris: uris,
       // Master password re-prompt: 1 asks for the master password before
@@ -2749,7 +2735,11 @@ function parseItems(raw) {
       card: cardDetail(it.card),
       identity: identityDetail(it.identity),
       notes: String(it.notes || ""),
-      rawObject: it
+      hasNotes: Boolean(it.notes) || Boolean(held && held.notes),
+      // A stripped item is no base for the detail or edit views: they ask the
+      // helper for the whole item.
+      rawObject: held ? null : it,
+      secretsHeld: Boolean(held)
     })
   }
 
@@ -4965,6 +4955,105 @@ function parseUnlockKeyInspection(raw) {
   return parseHelperInspection(raw, UNLOCK_KEY_ENVELOPE_VERSION, UNLOCK_KEY_MESSAGES)
 }
 
+// -------------------------------------------------------------------------
+// The vault helper
+// -------------------------------------------------------------------------
+//
+// `qs-bitwarden-vault` holds the unlocked vault outside the shell, so a shell
+// crash cannot put the session key or the decrypted items in a core dump
+// (docs/vault-helper.md). The panel talks to it only on its stdin/stdout, one
+// JSON object per line. It runs the panel's `bw` commands with the session
+// added to their environment, and keeps every item's secrets: the list the
+// panel gets has none, and a password copy never passes through here.
+//
+// Shipped and inspected like the other helpers. If it is missing or fails,
+// the panel works as before (the session and secrets in the shell) and says
+// crash protection is off.
+var VAULT_HELPER_PROTOCOL = 1
+// What `session` holds while the helper has the key: the helper prints this
+// in the key's place, shaped like a key so the panel's parsing is unchanged.
+var VAULT_HELD_SESSION = "HELD-BY-QS-BITWARDEN-VAULT-HELPER-SESSION"
+
+function vaultHeldSession() { return VAULT_HELD_SESSION }
+
+// A password the helper holds, as the panel passes it around: a reference by
+// name, never the value. Put one in a VaultProcess's environment and the
+// helper (or, falling back, the panel) fills in the value for that run only.
+// The NUL cannot occur in a real environment value.
+var HELD_SECRET_PREFIX = "\u0000qsbw-held:"
+
+function heldSecretRef(name) { return HELD_SECRET_PREFIX + String(name) }
+
+function heldSecretName(value) {
+  var text = typeof value === "string" ? value : ""
+  return text.indexOf(HELD_SECRET_PREFIX) === 0 ? text.slice(HELD_SECRET_PREFIX.length) : ""
+}
+var VAULT_HELPER_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-vault"
+var VAULT_HELPER_DEVELOPMENT_RELATIVE = "vault/target/debug/qs-bitwarden-vault"
+
+var VAULT_HELPER_SPEC = {
+  name: "qs-bitwarden-vault",
+  bundled: VAULT_HELPER_BUNDLED_RELATIVE,
+  development: VAULT_HELPER_DEVELOPMENT_RELATIVE,
+  protocolSed: "s/.*protocol \\([0-9]*\\).*/\\1/p"
+}
+
+function vaultHelperInspectCommand(pluginDir) {
+  return helperInspectCommand(pluginDir, VAULT_HELPER_SPEC)
+}
+
+var VAULT_HELPER_MESSAGES = helperMessages("vault helper", "vault/Cargo.toml",
+  "speaks a different protocol")
+
+function parseVaultHelperInspection(raw) {
+  return parseHelperInspection(raw, VAULT_HELPER_PROTOCOL, VAULT_HELPER_MESSAGES)
+}
+
+function vaultHelperPath(pluginDir, source) {
+  return helperPath(pluginDir, VAULT_HELPER_SPEC, source)
+}
+
+// The banner while the vault is held in the shell instead.
+function vaultHelperWarning(reason) {
+  return "Crash protection is off: " + (String(reason || "").trim() || "the vault helper is unavailable.")
+    + " The vault is held in the shell, so a shell crash could write it to a core dump."
+}
+
+// One request line. `fields` must not carry `type` or `v`.
+function vaultHelperLine(type, fields) {
+  var message = { type: type, v: VAULT_HELPER_PROTOCOL }
+  for (var k in fields) message[k] = fields[k]
+  return JSON.stringify(message) + "\n"
+}
+
+// A run's request: `env` values are strings, or null to unset; `inject`
+// names a held value per variable ("session" or "secret:<name>").
+function vaultExecLine(id, argv, env, inject, capture, stdin) {
+  var fields = { id: id, argv: argv, env: vaultEnv(env || {}), inject: inject || {}, capture: capture || "plain" }
+  if (stdin !== undefined && stdin !== null && stdin !== "") fields.stdin = String(stdin)
+  return vaultHelperLine("exec", fields)
+}
+
+// A reply line, or null if it is not one.
+function parseVaultHelperLine(line) {
+  try {
+    var message = JSON.parse(String(line || ""))
+    return message && typeof message === "object" && typeof message.type === "string" ? message : null
+  } catch (e) {
+    return null
+  }
+}
+
+// Only strings (or null) reach the helper's environment map.
+function vaultEnv(env) {
+  var out = {}
+  for (var k in env) {
+    var value = env[k]
+    out[k] = value === null || value === undefined ? null : String(value)
+  }
+  return out
+}
+
 // The settings that go through the quick-unlock tool.
 var QUICK_UNLOCK_SETTINGS = ["fingerprintUnlock", "pinUnlock", "fidoUnlock"]
 
@@ -5835,8 +5924,6 @@ var SETTINGS_SCHEMA = [
     description: "Lock before sleep, so no session key is left in the suspended machine's memory." },
   { key: "rememberSession", group: "security", type: "bool", label: "Remember session in keyring", defaultValue: true,
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
-  { key: "crashDumpsAfterUnlock", group: "security", type: "bool", label: "Keep crash dumps after unlock", defaultValue: false,
-    description: "Off: once the vault has been unlocked, a shell crash writes no core dump, so your vault never lands on disk -- but that shell session leaves nothing to diagnose a crash with. On: crash dumps stay, and may hold vault data. Turned on after they were stopped, it applies from the next shell start." },
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint", defaultValue: false,
     requires: "fprintd", action: "fingerprint",
     description: "A verified fingerprint opens your master password, stored once, encrypted and sealed to this machine." },

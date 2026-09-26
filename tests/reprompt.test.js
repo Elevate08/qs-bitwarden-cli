@@ -41,9 +41,8 @@ function makeVault() {
   const v = {
     repromptPending: false, repromptItemId: "", repromptItemName: "", repromptError: "", repromptBusy: false,
     repromptCallback: null, repromptEpoch: -1, repromptVerifiedId: "", repromptActionId: "",
-    detailItem: null, status: "unlocked", vaultEpoch: 7, coreOff: 0,
+    detailItem: null, status: "unlocked", vaultEpoch: 7,
     checks: [], answer: null,
-    protectFromCoreDumps() { v.coreOff++ },
     // The password check answers when the test says so.
     verifyMasterPassword(pw, done) { v.checks.push(pw); v.answer = done }
   }
@@ -69,7 +68,6 @@ const mail = { id: "p0", name: "Mail", reprompt: 0 }
   check("an empty answer is refused without a check", v.checks.length === 0 && v.repromptError !== "", v.repromptError)
   v.submitReprompt("wrong")
   check("the answer is checked", v.checks.join() === "wrong" && v.repromptBusy, "")
-  check("and turns core dumps off (a typed master password)", v.coreOff === 1, String(v.coreOff))
   v.submitReprompt("again")
   check("a second answer while one is being checked is ignored", v.checks.length === 1, v.checks.join())
   v.answer(false)

@@ -120,8 +120,6 @@ Item {
   readonly property bool lockOnScreenLock: Model.boolSetting("lockOnScreenLock", setting("lockOnScreenLock", true))
   readonly property bool lockOnSuspend: Model.boolSetting("lockOnSuspend", setting("lockOnSuspend", true))
   readonly property bool rememberSession: Model.boolSetting("rememberSession", setting("rememberSession", true))
-  // Off by default: see protectFromCoreDumps().
-  readonly property bool crashDumpsAfterUnlock: Model.boolSetting("crashDumpsAfterUnlock", setting("crashDumpsAfterUnlock", false))
   readonly property int autoCopyTotpSec: Model.intSetting("autoCopyTotpSec", setting("autoCopyTotpSec"))
   readonly property bool closeOnCopy: Model.boolSetting("closeOnCopy", setting("closeOnCopy", true))
   readonly property bool colorizeIcon: Model.boolSetting("colorizeIcon", setting("colorizeIcon", false))
@@ -351,7 +349,6 @@ Item {
       repromptError = "Enter your master password."
       return
     }
-    protectFromCoreDumps()
     repromptBusy = true
     repromptError = ""
     var id = repromptItemId
@@ -696,50 +693,6 @@ Item {
   readonly property bool logoutCleanupFailed: logoutPending && logoutCredentialsDone
     && logoutCredentialsExitCode !== 0
 
-  // -------------------------------------------------------------------------
-  // Core dumps
-  // -------------------------------------------------------------------------
-  //
-  // A shell crash writes a core that systemd-coredump keeps, readable by the
-  // user, for days; with the vault open it holds the session key and every
-  // decrypted item, and any program running as the user can crash the shell
-  // on purpose. So once a secret enters the shell (a typed password or PIN, a
-  // session key, an unlocked vault), the shell's soft core limit goes to 0
-  // for the rest of its life (Model.coreDumpsOffCommand()). The cost is no
-  // core to diagnose a later crash with, so crashDumpsAfterUnlock opts out;
-  // turning it on afterwards applies from the next shell start.
-  property bool coreDumpsOffRequested: false
-
-  function protectFromCoreDumps() {
-    if (coreDumpsOffRequested || crashDumpsAfterUnlock || !live) return
-    coreDumpsOffRequested = true
-    coreLimitProc.running = true
-  }
-
-  function onCoreLimitSet(exitCode) {
-    if (exitCode === 0) {
-      console.log("qs-bitwarden: core dumps are off for the rest of this shell session, "
-        + "since vault secrets are now in memory (crashDumpsAfterUnlock keeps them)")
-    } else {
-      console.warn("qs-bitwarden: could not turn core dumps off (exit " + exitCode + ")")
-    }
-  }
-
-  Process {
-    id: coreLimitProc
-    command: Model.coreDumpsOffCommand()
-    onExited: function(exitCode) { root.onCoreLimitSet(exitCode) }
-  }
-
-  // Typed secrets count from the first character.
-  onMasterPasswordChanged: if (masterPassword) protectFromCoreDumps()
-  onLoginPasswordChanged: if (loginPassword) protectFromCoreDumps()
-  onLoginClientSecretChanged: if (loginClientSecret) protectFromCoreDumps()
-  onPinEntryChanged: if (pinEntry) protectFromCoreDumps()
-  onPinSetupMasterChanged: if (pinSetupMaster) protectFromCoreDumps()
-  onFpSetupMasterChanged: if (fpSetupMaster) protectFromCoreDumps()
-  onFidoSetupMasterChanged: if (fidoSetupMaster) protectFromCoreDumps()
-
   // Start with the first view. Until then the vault is inert: no `bw`, SSH
   // agent or IPC target.
   onLiveChanged: {
@@ -757,6 +710,7 @@ Item {
     // Only changes after this are user transitions.
     root.sshAgentSettingsReady = true
     if (root.sshAgentEnabled) root.inspectSshAgentHelper()
+    root.inspectVaultHelper()
     root.inspectUnlockKey()
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
@@ -827,6 +781,256 @@ Item {
     root.unlockKeyHelper = Model.parseUnlockKeyInspection(raw)
     root.envelopeReadinessChanged()
   }
+
+  // -------------------------------------------------------------------------
+  // The vault helper
+  // -------------------------------------------------------------------------
+  //
+  // Holds the session key and the decrypted items outside this process, so
+  // a shell crash cannot put them in a core dump (docs/vault-helper.md). Every
+  // `bw` run is a VaultProcess: while the helper is up it runs there with the
+  // session added by the helper; otherwise (helper missing, failed or
+  // crashing) it runs here as before, and the panel says crash protection is
+  // off. Runs started before that is decided wait for it.
+  property var vaultHelper: Model.uninspectedHelper()
+  // Set as the shell unloads: a helper exit then is expected.
+  property bool shuttingDown: false
+  // "pending" | "starting" | "active" | "fallback"
+  property string vaultHelperState: "pending"
+  readonly property bool vaultHelperActive: vaultHelperState === "active"
+  property string vaultHelperWarning: ""
+  property int vaultRunSeq: 0
+  property var vaultRuns: ({})
+  property var vaultWaiting: []
+  property int vaultQuerySeq: 0
+  property var vaultQueries: ({})
+  // Restarts after an unexpected exit; past the limit, fall back.
+  property int vaultHelperRestarts: 0
+  readonly property int vaultHelperMaxRestarts: 3
+  // What `session` holds while the helper has the key (not a secret).
+  readonly property string heldSessionMarker: Model.vaultHeldSession()
+  // Held values by name while falling back (the helper holds them otherwise).
+  property var vaultLocalSecrets: ({})
+
+  function inspectVaultHelper() {
+    if (vaultHelperInspectProc.running || sshAgentPluginDir === "") return
+    vaultHelperInspectProc.command = Model.vaultHelperInspectCommand(root.sshAgentPluginDir)
+    vaultHelperInspectProc.running = true
+  }
+
+  function onVaultHelperInspected(raw) {
+    vaultHelper = Model.parseVaultHelperInspection(raw)
+    if (Model.helperReady(vaultHelper)) startVaultHelper()
+    else useVaultFallback(vaultHelper.message)
+  }
+
+  function startVaultHelper() {
+    var path = Model.vaultHelperPath(sshAgentPluginDir, vaultHelper.source)
+    if (!path) {
+      useVaultFallback("")
+      return
+    }
+    vaultHelperState = "starting"
+    vaultHelperProc.command = [path]
+    vaultHelperProc.running = true
+  }
+
+  function useVaultFallback(reason) {
+    vaultHelperState = "fallback"
+    vaultHelperWarning = Model.vaultHelperWarning(reason)
+    console.warn("qs-bitwarden: " + vaultHelperWarning)
+    flushVaultWaiting()
+  }
+
+  function onVaultHelperStarted() {
+    vaultHelperProc.write(Model.vaultHelperLine("hello", {}))
+  }
+
+  function onVaultHelperLine(line) {
+    var message = Model.parseVaultHelperLine(line)
+    if (!message) return
+    if (message.type === "ready") {
+      vaultHelperState = "active"
+      vaultHelperWarning = ""
+      flushVaultWaiting()
+    } else if (message.type === "exit") {
+      var proc = vaultRuns[message.id]
+      if (!proc) return
+      var runs = Object.assign({}, vaultRuns)
+      delete runs[message.id]
+      vaultRuns = runs
+      proc.finish(Number(message.code), message.out, message.err, message.session === true, message.held === true)
+    } else if (message.type === "result") {
+      var done = vaultQueries[message.q]
+      if (!done) return
+      var queries = Object.assign({}, vaultQueries)
+      delete queries[message.q]
+      vaultQueries = queries
+      done(message.ok === true, message.value)
+    } else if (message.type === "error") {
+      console.warn("qs-bitwarden: the vault helper refused a request (" + message.reason + ")")
+    }
+  }
+
+  // The helper went away: its runs fail, and the session key went with it,
+  // so an unlocked vault is locked here too. Restarted, within a limit.
+  function onVaultHelperExited(exitCode) {
+    var wasActive = vaultHelperState === "active" || vaultHelperState === "starting"
+    var runs = vaultRuns
+    vaultRuns = ({})
+    for (var id in runs) runs[id].finish(1, "", "the vault helper stopped", false, false)
+    var queries = vaultQueries
+    vaultQueries = ({})
+    for (var q in queries) queries[q](false, null)
+    if (!wasActive || shuttingDown) return
+    console.warn("qs-bitwarden: the vault helper exited (" + exitCode + ")")
+    if (session === heldSessionMarker) {
+      session = ""
+      dropVaultSecrets()
+      vaultEpoch += 1
+      if (status === "unlocked") {
+        status = "locked"
+        errorMessage = "The vault helper stopped, so the vault was locked. Unlock again."
+      }
+    }
+    if (vaultHelperRestarts < vaultHelperMaxRestarts) {
+      vaultHelperRestarts += 1
+      Qt.callLater(startVaultHelper)
+    } else {
+      useVaultFallback("the vault helper kept stopping.")
+    }
+  }
+
+  function flushVaultWaiting() {
+    var waiting = vaultWaiting
+    vaultWaiting = []
+    for (var i = 0; i < waiting.length; i++) {
+      if (waiting[i].running) vaultStart(waiting[i])
+    }
+  }
+
+  // Called by VaultProcess.start().
+  function vaultStart(proc) {
+    if (vaultHelperState === "pending" || vaultHelperState === "starting") {
+      if (vaultWaiting.indexOf(proc) === -1) vaultWaiting = vaultWaiting.concat([proc])
+      return
+    }
+    var inject = Object.assign({}, proc.inject || {})
+    if (proc.session && inject[Model.sessionEnvVar()] === undefined) inject[Model.sessionEnvVar()] = "session"
+    // Held passwords travel by name (Model.heldSecretRef()).
+    var environment = {}
+    for (var key in proc.environment) {
+      var held = Model.heldSecretName(proc.environment[key])
+      if (held) inject[key] = "secret:" + held
+      else environment[key] = proc.environment[key]
+    }
+    if (!vaultHelperActive) {
+      proc.runLocally(vaultLocalEnv(environment, inject))
+      return
+    }
+    vaultRunSeq += 1
+    var id = vaultRunSeq
+    var runs = Object.assign({}, vaultRuns)
+    runs[id] = proc
+    vaultRuns = runs
+    proc.runId = id
+    vaultHelperProc.write(Model.vaultExecLine(id, proc.command, environment, inject, proc.capture, proc.stdinText))
+    proc.started()
+  }
+
+  // The environment a fallback run gets: held values resolved here.
+  function vaultLocalEnv(environment, inject) {
+    var env = Object.assign({}, environment || {})
+    for (var name in inject) {
+      var source = String(inject[name])
+      var value = source === "session" ? session
+        : (source.indexOf("secret:") === 0 ? vaultLocalSecrets[source.slice(7)] : "")
+      if (value) env[name] = String(value)
+    }
+    return env
+  }
+
+  // A fresh name for a held password: references never change meaning.
+  property int heldSecretSeq: 0
+
+  function newHeldName() {
+    heldSecretSeq += 1
+    return "pw" + heldSecretSeq
+  }
+
+  // What a `secret:<name>` run produced: a reference to the held output.
+  function heldOutput(proc, text) {
+    if (proc.capture.indexOf("secret:") !== 0) return String(text || "")
+    return proc.outputHeld ? Model.heldSecretRef(proc.capture.slice(7)) : ""
+  }
+
+  // A fallback run's `secret:<name>` output, kept here instead.
+  function holdLocalSecret(name, value) {
+    var held = Object.assign({}, vaultLocalSecrets)
+    held[name] = String(value || "")
+    vaultLocalSecrets = held
+  }
+
+  function forgetVaultSecret(name) {
+    if (vaultHelperActive) vaultHelperProc.write(Model.vaultHelperLine("forgetSecret", { name: name }))
+    var held = Object.assign({}, vaultLocalSecrets)
+    delete held[name]
+    vaultLocalSecrets = held
+  }
+
+  // Called by VaultProcess when its caller stops it.
+  function vaultKill(proc) {
+    if (proc.runId > 0) {
+      vaultHelperProc.write(Model.vaultHelperLine("kill", { id: proc.runId }))
+    } else if (proc.runId === -1) {
+      proc.killLocal()
+    } else {
+      vaultWaiting = vaultWaiting.filter(function(p) { return p !== proc })
+    }
+  }
+
+  // One question for the helper; `done(ok, value)`. Not asked (done(false))
+  // when the helper is not up.
+  function vaultQuery(type, fields, done) {
+    if (!vaultHelperActive) {
+      done(false, null)
+      return
+    }
+    vaultQuerySeq += 1
+    var q = vaultQuerySeq
+    var queries = Object.assign({}, vaultQueries)
+    queries[q] = done
+    vaultQueries = queries
+    var request = Object.assign({ q: q }, fields || {})
+    vaultHelperProc.write(Model.vaultHelperLine(type, request))
+  }
+
+  // Lock, logout, account switch: the helper drops the key, every item and
+  // every held secret but the queued locks' copies of the key.
+  function forgetVault() {
+    var keep = lockSecretNames()
+    var held = {}
+    for (var i = 0; i < keep.length; i++) {
+      if (vaultLocalSecrets[keep[i]] !== undefined) held[keep[i]] = vaultLocalSecrets[keep[i]]
+    }
+    vaultLocalSecrets = held
+    if (vaultHelperActive) vaultHelperProc.write(Model.vaultHelperLine("forget", { keep: keep }))
+  }
+
+  // A copy of the current session key under `name`, for a run queued now.
+  function holdSession(name) {
+    if (vaultHelperActive) vaultHelperProc.write(Model.vaultHelperLine("holdSession", { name: name }))
+    else if (session) holdLocalSecret(name, session)
+  }
+
+  // { name: "session" }: a VaultProcess `inject` putting the session in `name`.
+  function injectSession(name) {
+    var inject = {}
+    inject[name] = "session"
+    return inject
+  }
+
+
 
   // -------------------------------------------------------------------------
   // The quick-unlock envelope
@@ -994,8 +1198,6 @@ Item {
   // Queue one envelope process: { command, env, secretOutput, writes,
   // onDone(exitCode, stdout) }. `env` holds secrets and is dropped on start.
   function queueEnvelopeJob(job) {
-    // A secret in, or the master password out.
-    if (job.secretOutput || (job.env && Object.keys(job.env).length > 0)) protectFromCoreDumps()
     // Answers for an account no longer active are dropped (onEnvelopeJobExited()).
     job.slot = activeSlot
     var jobs = envelopeJobs.slice()
@@ -1011,6 +1213,13 @@ Item {
     envelopeJobs = jobs
     envelopeJob = job
     envelopeProc.command = job.command
+    // Most jobs are the unlock tool's and need no session; `bw` jobs ask.
+    envelopeProc.session = job.session === true
+    // A job whose output is the master password keeps it in the helper;
+    // onDone gets a reference to it (Model.heldSecretRef()).
+    if (job.holdOutput) job.heldName = newHeldName()
+    envelopeProc.capture = job.holdOutput ? "secret:" + job.heldName : (job.capture || "plain")
+    envelopeProc.inject = job.inject || ({})
     envelopeProc.environment = job.env || {}
     job.env = null
     envelopeProc.running = true
@@ -1023,6 +1232,7 @@ Item {
     }
     var job = envelopeJob
     var out = String(envelopeStdout.text || "")
+    if (job && job.holdOutput) out = envelopeProc.outputHeld ? Model.heldSecretRef(job.heldName) : ""
     envelopeJob = null
     envelopeProc.environment = {}
     // The output was the master password: scrub the collector.
@@ -1120,7 +1330,7 @@ Item {
     if (accountId) { then(); return }
     queueEnvelopeJob({
       command: Model.statusCommand(),
-      env: bwEnv(),
+      env: bwEnv(), session: true,
       onDone: function(code, out) {
         var st = code === 0 ? Model.parseStatus(out) : null
         if (st && st.userId) {
@@ -1152,8 +1362,10 @@ Item {
       env[Model.keyringSecretEnvVar()] = pw
       root.queueEnvelopeJob({
         command: Model.unlockEnvelopeOpenCommand(tool, account, { kind: "master" }),
-        env: env, secretOutput: true,
-        onDone: function(code) {
+        env: env, secretOutput: true, holdOutput: true,
+        onDone: function(code, out) {
+          // Only whether it opens matters; the copy it printed is not kept.
+          if (Model.heldSecretName(out)) root.forgetVaultSecret(Model.heldSecretName(out))
           if (code === 0) { finish(true); return }
           if (code === E.absent || code === 6 || code === E.unseal) {
             root.writeEnvelope(Model.unlockEnvelopeCreateCommand(tool, account), env, finish)
@@ -1266,7 +1478,7 @@ Item {
     beginEpochOperation("bwVerify")
     queueEnvelopeJob({
       command: Model.bwVerifyPasswordCommand(),
-      env: bwEnv(env), secretOutput: true,
+      env: bwEnv(env), secretOutput: true, capture: "session",
       onDone: function(code, out) {
         var s = code === 0 ? Model.extractSessionToken(out) : ""
         // Locked or logged out meanwhile: adopting the new session would
@@ -1274,6 +1486,8 @@ Item {
         if (root.epochOperationIsStale("bwVerify") || root.logoutPending || root.status !== "unlocked") {
           s = ""
           done(false)
+          // The helper kept the key this run minted; nothing may hold it now.
+          if (root.status !== "unlocked") root.forgetVault()
           return
         }
         if (!s) { done(false); return }
@@ -1743,6 +1957,7 @@ Item {
   // leaves its socket, FIFO and lock behind; remove them once it is gone.
   Component.onDestruction: {
     root.lockSessionOnUnload()
+    root.releaseVaultHelper()
     if (root.sshAgentPhase === "disabled" && !sshAgentProc.running) return
     var cleanup = Model.sshAgentRuntimeCleanupCommand(root.sshAgentRuntimeDir)
     if (cleanup) Quickshell.execDetached(cleanup)
@@ -1752,9 +1967,26 @@ Item {
   // while unlocked (a shell restart, the plugin removed) must not leave it
   // valid in bw's data: lock it. Detached, since this shell is going away.
   // With it remembered, keeping it is the point of the setting.
+  // The shell is unloading: the helper's exit is expected, and it stops (its
+  // runs killed, its memory wiped) rather than waiting for its stdin to close.
+  function releaseVaultHelper() {
+    shuttingDown = true
+    if (vaultHelperProc.running) vaultHelperProc.write(Model.vaultHelperLine("shutdown", {}))
+  }
+
   function lockSessionOnUnload() {
     if (!session || rememberSession) return
-    Quickshell.execDetached({ command: Model.lockCommand(), environment: bwEnv() })
+    if (vaultHelperActive) {
+      // The helper holds the key: it starts the lock, detached, before it goes.
+      var inject = {}
+      inject[Model.sessionEnvVar()] = "session"
+      vaultHelperProc.write(Model.vaultHelperLine("exec", { id: 0, argv: Model.lockCommand(),
+        env: Model.vaultEnv(bwEnv()), inject: inject, detach: true }))
+      return
+    }
+    var env = bwEnv()
+    env[Model.sessionEnvVar()] = String(session)
+    Quickshell.execDetached({ command: Model.lockCommand(), environment: env })
   }
 
   function stopSshAgentHelper() {
@@ -2306,7 +2538,6 @@ Item {
   }
 
   onStatusChanged: {
-    if (status === "unlocked") protectFromCoreDumps()
     promoteUnlockToApproval()
     maybeStartupLoad()
   }
@@ -2512,6 +2743,9 @@ Item {
     releaseFidoUnlock()
     cancelAttachmentDownloads()
     stopGeneratorServe()
+    // A search is for this visit: the next open starts on the full list and
+    // the suggestions, not on a query typed minutes ago.
+    clearSearch()
     eachView(function(view) { view.hidePopout() })
   }
 
@@ -2751,7 +2985,6 @@ Item {
     }
     var handed = Model.extractSessionToken(String(raw || "").trim())
     if (handed) {
-      protectFromCoreDumps()
       cancelAuthPrewarm()
       abandonAuthSecrets()
       // Consumed: close the window.
@@ -2797,7 +3030,6 @@ Item {
     }
     var token = String(rawToken || "").trim()
     if (token) {
-      protectFromCoreDumps()
       session = token
       vaultEpoch += 1
     }
@@ -2976,7 +3208,6 @@ Item {
   // the password down the FIFO, and bw runs with prompts on for this call.
   function submitDeviceVerification() {
     if (loginSubmitted) return
-    protectFromCoreDumps()
     var code = String(loginDeviceCode || "").trim()
     if (!code) {
       errorMessage = "Enter the code Bitwarden emailed you."
@@ -3160,7 +3391,6 @@ Item {
   }
 
   function writeAuthPassword(channel, password) {
-    protectFromCoreDumps()
     authPasswordWriteTarget = channel
     authPasswordWriteValue = String(password === undefined || password === null ? "" : password)
     authPasswordWriterProc.command = Model.authPasswordWriteCommand(channel)
@@ -3203,7 +3433,6 @@ Item {
 
   function submitLogin() {
     if (loginSubmitted) return
-    protectFromCoreDumps()
     errorMessage = ""
     if (logoutPending) {
       errorMessage = "Finishing logout. Please wait a moment."
@@ -3703,9 +3932,9 @@ Item {
   // Read once: the shell's own NODE_OPTIONS plus the early-exit preload.
   readonly property string bwNodeOptions: Model.bwNodeOptions(sshAgentPluginDir, Quickshell.env("NODE_OPTIONS"))
 
+  // No session here: a VaultProcess adds it (vaultStart()).
   function bwEnv(extra) {
     var env = accountAppDataEnv()
-    if (session) env[Model.sessionEnvVar()] = String(session)
     if (bwNodeOptions) env.NODE_OPTIONS = bwNodeOptions
     if (extra) for (var k in extra) env[k] = extra[k]
     return env
@@ -4232,7 +4461,6 @@ Item {
       return
     }
     pinUnlockError = ""
-    protectFromCoreDumps()
     pinBusy = true
     pinUnlockSubmitted = true
     if (quickUnlockAvailable && accountId && envelopeSummary && envelopeSummary.pin) {
@@ -4240,12 +4468,13 @@ Item {
       env[Model.pinEnvVar()] = String(pinEntry || "")
       queueEnvelopeJob({
         command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
-        env: env, secretOutput: true,
+        env: env, secretOutput: true, holdOutput: true,
         onDone: function(code, out) { root.onEnvelopePinResult(code, out) }
       })
       return
     }
     pinUnlockProc.command = Model.pinUnlockCommand(activeSlot)
+    pinUnlockProc.capture = "secret:" + newHeldName()
     pinUnlockProc.running = true
   }
 
@@ -4614,7 +4843,6 @@ Item {
       case "closeOnCopy": return closeOnCopy
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
-      case "crashDumpsAfterUnlock": return crashDumpsAfterUnlock
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
       // The toggle reflects a PIN actually being set, not just the flag.
@@ -4687,6 +4915,7 @@ Item {
       }
       if (!keyringLookupMasterProc.running) {
         keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand(activeSlot)
+        keyringLookupMasterProc.capture = "secret:" + newHeldName()
         keyringLookupMasterProc.running = true
       }
     } else if (result === PamResult.MaxTries) {
@@ -4703,7 +4932,7 @@ Item {
   function openEnvelopeForFingerprint() {
     queueEnvelopeJob({
       command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "fingerprint" }),
-      secretOutput: true,
+      secretOutput: true, holdOutput: true,
       onDone: function(code, out) {
         if (code === 0 && out) {
           root.fingerprintFromEnvelope = true
@@ -4714,6 +4943,7 @@ Item {
         if ((code === 7 || code === E.absent) && root.legacyFingerprintStored
             && !keyringLookupMasterProc.running) {
           keyringLookupMasterProc.command = Model.keyringLookupMasterPasswordCommand(root.activeSlot)
+          keyringLookupMasterProc.capture = "secret:" + root.newHeldName()
           keyringLookupMasterProc.running = true
           return
         }
@@ -4887,7 +5117,6 @@ Item {
   }
 
   function unlockVaultWithPassword(pass) {
-    protectFromCoreDumps()
     var p = String(pass === undefined || pass === null ? "" : pass)
     if (!p) {
       errorMessage = "Master password required"
@@ -5081,10 +5310,24 @@ Item {
   property var lockRun: null
   property var lockQueue: []
 
+  // Each lock keeps its own copy of the key (holdSession()): the vault state
+  // is dropped right after this, and the lock and its `bw status` check need
+  // the key of the account being left.
+  property int lockSeq: 0
+
   function requestBwLock() {
     if (!session) return
-    lockQueue = lockQueue.concat([{ env: bwEnv(), attempts: 0, checking: false }])
+    lockSeq += 1
+    var name = "lock" + lockSeq
+    holdSession(name)
+    lockQueue = lockQueue.concat([{ env: bwEnv(), key: name, attempts: 0, checking: false }])
     pumpBwLock()
+  }
+
+  function lockSecretNames() {
+    var names = lockQueue.map(function(run) { return run.key })
+    if (lockRun) names.push(lockRun.key)
+    return names
   }
 
   function pumpBwLock() {
@@ -5105,6 +5348,9 @@ Item {
     }
     if (!run.checking) run.attempts += 1
     lockProc.environment = run.env
+    var inject = {}
+    inject[Model.sessionEnvVar()] = "secret:" + run.key
+    lockProc.inject = inject
     lockProc.command = run.checking ? Model.statusCommand() : Model.lockCommand()
     lockProc.running = true
   }
@@ -5134,6 +5380,7 @@ Item {
   }
 
   function finishBwLock() {
+    if (lockRun) forgetVaultSecret(lockRun.key)
     lockRun = null
     lockProc.environment = {}
     Qt.callLater(pumpBwLock)
@@ -5155,6 +5402,7 @@ Item {
     cancelFidoUnlock()
     cancelAttachmentDownloads()
     session = ""
+    forgetVault()
     vaultEpoch += 1
     sshAgentLoadFailStreak = 0
     readEpochs = ({})
@@ -5794,6 +6042,9 @@ Item {
     }
   }
 
+  // The item whose detail the helper was asked for (openDetail()).
+  property string detailRequestedId: ""
+
   function openDetail(item) {
     closeFilterGroup()
     if (!item || !item.id) return
@@ -5826,8 +6077,20 @@ Item {
         currentScreen = "main"
         return
       }
-      getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
-      getItemProc.running = true
+      if (item.secretsHeld && vaultHelperActive) {
+        // The helper has the whole item; only this one comes here. An answer
+        // for an item no longer being opened is dropped.
+        var id = String(item.id)
+        detailRequestedId = id
+        vaultQuery("item", { id: id }, function(ok, full) {
+          if (root.detailRequestedId !== id || root.currentScreen !== "detail") return
+          root.detailRequestedId = ""
+          root.onDetailFinished(ok ? String(full) : "")
+        })
+      } else {
+        getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
+        getItemProc.running = true
+      }
     }
 
     // The TOTP is time-based, so it is fetched alongside.
@@ -5949,7 +6212,7 @@ Item {
     Quickshell.execDetached(["xdg-open", dir])
   }
 
-  function fetchTotp(itemId, copyWhenReady) {
+  function fetchTotp(itemId, copyWhenReady, bwOnly) {
     if (!session || !itemId) return
     // The list already holds the key: compute the code here rather than start
     // bw for it. Keys TotpModel.js does not mirror exactly still ask bw.
@@ -5960,6 +6223,19 @@ Item {
       return
     }
     if (copyWhenReady) totpCopyItemId = String(itemId)
+    var listed = Model.findItemById(items, String(itemId))
+    if (!bwOnly && vaultHelperActive && listed && listed.secretsHeld) {
+      // The helper holds the key and computes the code; `bw` only for a key
+      // it does not mirror either (SHA-512 and friends).
+      var requested = String(itemId)
+      var epoch = vaultEpoch
+      vaultQuery("totp", { id: requested }, function(ok, value) {
+        if (epoch !== root.vaultEpoch) return
+        if (ok && value && value.code) root.applyTotpCode(requested, String(value.code))
+        else root.fetchTotp(requested, false, true)
+      })
+      return
+    }
     if (getTotpProc.running || totpRestartPending) {
       if (totpRequestItemId !== String(itemId)) {
         totpQueuedItemId = String(itemId)
@@ -6591,6 +6867,7 @@ Item {
   // Everything derived from `items` (filter and suggestions); every change to
   // the list comes through here.
   function refreshDerivedFromItems() {
+    invalidateHelperSearch()
     if (activeWindowData) {
       handleActiveWindowDetected(activeWindowData)
     } else {
@@ -6603,8 +6880,57 @@ Item {
     searchDebounceTimer.restart()
   }
 
+  // The one way a search is cleared. The field follows searchQuery (see the
+  // search field in Panel.qml), so clearing it here clears what is shown.
+  function clearSearch() {
+    if (searchQuery === "") return
+    searchQuery = ""
+    selectedIndex = 0
+    scheduleFilterRebuild()
+  }
+
+  // While the helper is up it answers the text search: it has the notes the
+  // list here no longer carries, and it is faster on a large vault. The list
+  // keeps its previous result until the answer for the current text arrives.
+  property string searchAnsweredQuery: ""
+  property var searchAnsweredIds: null
+  property string searchAskedQuery: ""
+
+  function invalidateHelperSearch() {
+    searchAnsweredQuery = ""
+    searchAnsweredIds = null
+    searchAskedQuery = ""
+  }
+
+  function askHelperSearch(query) {
+    if (searchAskedQuery === query) return
+    searchAskedQuery = query
+    vaultQuery("search", { query: query }, function(ok, ids) {
+      if (root.searchAskedQuery !== query) return
+      var found = {}
+      var list = ok && Array.isArray(ids) ? ids
+        : Model.filterItems(root.items, query, "all", "all", "all").map(function(it) { return it.id })
+      for (var i = 0; i < list.length; i++) found[list[i]] = true
+      root.searchAnsweredQuery = query
+      root.searchAnsweredIds = found
+      root.rebuildFilter()
+    })
+  }
+
   function rebuildFilter() {
-    var baseList = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg, selectedFolder)
+    var query = searchQuery.trim()
+    var baseList
+    if (query !== "" && vaultHelperActive) {
+      if (searchAnsweredIds === null || searchAnsweredQuery !== query) {
+        askHelperSearch(query)
+        return
+      }
+      var found = searchAnsweredIds
+      baseList = Model.filterItems(items, "", selectedCategory, selectedOrg, selectedFolder)
+        .filter(function(it) { return found[it.id] === true })
+    } else {
+      baseList = Model.filterItems(items, searchQuery, selectedCategory, selectedOrg, selectedFolder)
+    }
     if (searchQuery.trim() === "" && selectedCategory === "all" && selectedOrg === "all" && selectedFolder === "all" && !suggestionsDismissed && suggestedItems.length > 0) {
       var suggestedIds = {}
       var topMatches = []
@@ -6821,6 +7147,21 @@ Item {
     closeFilterGroup()
     if (!item || !Model.isLoginItem(item)) return
     learnFromPick(item)
+    if (item.secretsHeld && vaultHelperActive) {
+      // The helper hands the password to wl-copy; it never comes here.
+      var epoch = vaultEpoch
+      vaultQuery("copyPassword", { id: String(item.id), clearSec: Math.max(0, Math.floor(Number(clearClipboardSec) || 0)) },
+        function(ok) {
+          if (epoch !== root.vaultEpoch) return
+          if (ok) {
+            root.resetAutoLockTimer()
+            root.flashNotification("Password copied!")
+          } else {
+            root.errorMessage = "Could not read this password"
+          }
+        })
+      return
+    }
     var pass = (detailItem && detailItem.id === item.id && detailPassword) ? detailPassword : (item.password || "")
     if (pass) {
       copyToClipboard(pass, "Password")
@@ -7086,6 +7427,25 @@ Item {
   }
 
   Process {
+    id: vaultHelperInspectProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onVaultHelperInspected(text)
+    }
+  }
+
+  // The vault helper itself: requests on stdin, replies one per line.
+  Process {
+    id: vaultHelperProc
+    stdinEnabled: true
+    stdout: SplitParser {
+      onRead: function(line) { root.onVaultHelperLine(line) }
+    }
+    onStarted: root.onVaultHelperStarted()
+    onExited: function(exitCode) { root.onVaultHelperExited(exitCode) }
+  }
+
+  Process {
     id: quickUnlockPrereqProc
     command: Model.quickUnlockPrereqCommand()
     stdout: StdioCollector {
@@ -7095,9 +7455,10 @@ Item {
   }
 
   // Every envelope operation, one at a time; see queueEnvelopeJob().
-  Process {
+  VaultProcess {
     id: envelopeProc
-    stdout: StdioCollector {
+    vault: root
+    stdout: VaultCollector {
       id: envelopeStdout
       waitForEnd: true
     }
@@ -7276,10 +7637,11 @@ Item {
   // Processes
   // -------------------------------------------------------------------------
 
-  Process {
+  VaultProcess {
     id: statusProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: statusStdout
       waitForEnd: true
     }
@@ -7296,12 +7658,15 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: sessionHandoffProc
+    vault: root
+    capture: "session"
+    session: false
     // Set by refreshStatus(). Defaults to the discard form, so a run not
     // started there can never adopt a key.
     command: Model.sessionHandoffReadCommand(false)
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: sessionHandoffStdout
       waitForEnd: true
     }
@@ -7314,10 +7679,13 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: keyringLookupProc
+    vault: root
+    capture: "session"
+    session: false
     command: Model.keyringLookupCommand(root.activeSlot)
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: keyringLookupStdout
       waitForEnd: true
     }
@@ -7330,10 +7698,13 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: keyringStoreProc
+    vault: root
+    session: false
+    // The session reaches `secret-tool` from the helper, not from here.
+    inject: root.injectSession(Model.keyringSecretEnvVar())
     command: Model.keyringStoreCommand(root.activeSlot)
-    environment: root.secretEnv(root.session)
     onExited: function(exitCode) {
       root.onSessionStored(exitCode)
       if (root.logoutPending && root.allCredentialsClearPending)
@@ -7350,10 +7721,11 @@ Item {
 
   // ---- Fingerprint unlock ----
 
-  Process {
+  VaultProcess {
     id: listFoldersProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: listFoldersStdout
       waitForEnd: true
     }
@@ -7363,10 +7735,11 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: orgCollectionsProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: orgCollectionsStdout
       waitForEnd: true
     }
@@ -7377,31 +7750,34 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: createFolderProc
+    vault: root
     environment: root.folderEnv()
-    stdout: StdioCollector { id: createFolderStdout; waitForEnd: true }
+    stdout: VaultCollector { id: createFolderStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(createFolderProc)) return
       root.onFolderCreated(exitCode, createFolderStdout.text)
     }
   }
 
-  Process {
+  VaultProcess {
     id: attachmentProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector { id: attachmentStdout; waitForEnd: true }
-    stderr: StdioCollector { id: attachmentStderr; waitForEnd: true }
+    stdout: VaultCollector { id: attachmentStdout; waitForEnd: true }
+    stderr: VaultCollector { id: attachmentStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(attachmentProc)) return
       root.onAttachmentDownloaded(exitCode, attachmentStdout.text, attachmentStderr.text)
     }
   }
 
-  Process {
+  VaultProcess {
     id: listSendsProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: listSendsStdout
       waitForEnd: true
     }
@@ -7412,27 +7788,30 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: createSendProc
+    vault: root
     environment: root.sendEnv(root.sendPayloadJson)
-    stdout: StdioCollector { id: createSendStdout; waitForEnd: true }
-    stderr: StdioCollector { id: createSendStderr; waitForEnd: true }
+    stdout: VaultCollector { id: createSendStdout; waitForEnd: true }
+    stderr: VaultCollector { id: createSendStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(createSendProc)) return
       root.onSendCreated(exitCode, createSendStdout.text, createSendStderr.text)
     }
   }
 
-  Process {
+  VaultProcess {
     id: deleteSendProc
+    vault: root
     environment: root.bwEnv()
     onExited: function(exitCode) { root.onSendDeleted(exitCode) }
   }
 
-  Process {
+  VaultProcess {
     id: generateProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector { id: generateStdout; waitForEnd: true }
+    stdout: VaultCollector { id: generateStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(generateProc)) return
       if (root.generateCliStopping) {
@@ -7511,14 +7890,16 @@ Item {
   // Decrypted in one process with the PIN from the environment, so only the
   // result reaches QML.
 
-  Process {
+  VaultProcess {
     id: pinUnlockProc
+    vault: root
+    session: false
     command: Model.pinUnlockCommand(root.activeSlot)
     environment: root.pinEnv(root.pinEntry)
-    stdout: StdioCollector { id: pinUnlockStdout; waitForEnd: true }
+    stdout: VaultCollector { id: pinUnlockStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(pinUnlockProc)) return
-      root.onPinUnlockResult(exitCode, pinUnlockStdout.text)
+      root.onPinUnlockResult(exitCode, root.heldOutput(pinUnlockProc, pinUnlockStdout.text))
     }
   }
 
@@ -7613,17 +7994,19 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: keyringLookupMasterProc
+    vault: root
+    session: false
     command: Model.keyringLookupMasterPasswordCommand(root.activeSlot)
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: keyringLookupMasterStdout
       waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupMasterProc)) return
       if (exitCode === 0) {
-        root.onFingerprintPasswordRetrieved(keyringLookupMasterStdout.text)
+        root.onFingerprintPasswordRetrieved(root.heldOutput(keyringLookupMasterProc, keyringLookupMasterStdout.text))
       } else {
         root.fingerprintAuthorized = false
         root.fingerprintStored = false
@@ -7801,14 +8184,16 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: loginProc
+    vault: root
+    capture: "session"
     environment: root.loginProcessEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: loginStdout
       waitForEnd: true
     }
-    stderr: StdioCollector {
+    stderr: VaultCollector {
       id: loginStderr
       waitForEnd: true
     }
@@ -7828,21 +8213,25 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: authPasswordWriterProc
+    vault: root
+    session: false
     environment: root.authEnv(root.authPasswordWriteValue, "", "", "")
     onExited: function(exitCode) { root.onAuthPasswordWriterExited(exitCode) }
   }
 
-  Process {
+  VaultProcess {
     id: unlockProc
+    vault: root
+    capture: "session"
     command: Model.unlockPrewarmCommand()
     environment: root.authEnv("", "", "", "")
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: unlockStdout
       waitForEnd: true
     }
-    stderr: StdioCollector {
+    stderr: VaultCollector {
       id: unlockStderr
       waitForEnd: true
     }
@@ -7860,20 +8249,23 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: logoutProc
+    vault: root
     environment: root.bwEnv()
     onExited: function(exitCode) { root.onLogoutCliFinished(exitCode) }
   }
 
-  Process {
+  VaultProcess {
     id: listProc
+    vault: root
+    capture: "vault"
     environment: root.bwEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: listStdout
       waitForEnd: true
     }
-    stderr: StdioCollector {
+    stderr: VaultCollector {
       id: listStderr
       waitForEnd: true
     }
@@ -7882,10 +8274,11 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: listOrgsProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: listOrgsStdout
       waitForEnd: true
     }
@@ -7895,14 +8288,15 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: getItemProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: getItemStdout
       waitForEnd: true
     }
-    stderr: StdioCollector {
+    stderr: VaultCollector {
       id: getItemStderr
       waitForEnd: true
     }
@@ -7919,10 +8313,11 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: getTotpProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector {
+    stdout: VaultCollector {
       id: getTotpStdout
       waitForEnd: true
     }
@@ -7935,10 +8330,11 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: copyPasswordProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector { id: copyPasswordStdout; waitForEnd: true }
+    stdout: VaultCollector { id: copyPasswordStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(copyPasswordProc)) return
       root.onPasswordCopyFinished(exitCode, copyPasswordStdout.text)
@@ -7964,11 +8360,13 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: createItemProc
+    vault: root
+    capture: "vaultMerge"
     environment: root.itemEnv()
-    stdout: StdioCollector { id: createItemStdout; waitForEnd: true }
-    stderr: StdioCollector { id: createItemStderr; waitForEnd: true }
+    stdout: VaultCollector { id: createItemStdout; waitForEnd: true }
+    stderr: VaultCollector { id: createItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(createItemProc)) return
       root.itemPayloadJson = ""
@@ -7976,11 +8374,13 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: editItemProc
+    vault: root
+    capture: "vaultMerge"
     environment: root.itemEnv()
-    stdout: StdioCollector { id: editItemStdout; waitForEnd: true }
-    stderr: StdioCollector { id: editItemStderr; waitForEnd: true }
+    stdout: VaultCollector { id: editItemStdout; waitForEnd: true }
+    stderr: VaultCollector { id: editItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(editItemProc)) return
       root.itemPayloadJson = ""
@@ -7988,19 +8388,21 @@ Item {
     }
   }
 
-  Process {
+  VaultProcess {
     id: deleteItemProc
+    vault: root
     environment: root.bwEnv()
-    stdout: StdioCollector { id: deleteItemStdout; waitForEnd: true }
-    stderr: StdioCollector { id: deleteItemStderr; waitForEnd: true }
+    stdout: VaultCollector { id: deleteItemStdout; waitForEnd: true }
+    stderr: VaultCollector { id: deleteItemStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(deleteItemProc)) return
       root.onDeleteItemFinished(exitCode, deleteItemStdout.text, deleteItemStderr.text)
     }
   }
 
-  Process {
+  VaultProcess {
     id: syncProc
+    vault: root
     environment: root.bwEnv()
     onExited: function(exitCode) {
       root.onSyncFinished(exitCode)
@@ -8010,9 +8412,12 @@ Item {
   // `bw lock`, and the `bw status` that checks a lock that failed twice; see
   // requestBwLock(). Its environment is set per run (no binding), so a retry
   // after an account switch still locks the account that was left.
-  Process {
+  VaultProcess {
     id: lockProc
-    stdout: StdioCollector { id: lockStdout; waitForEnd: true }
+    vault: root
+    // Its key comes from `inject`: the copy held when the lock was asked for.
+    session: false
+    stdout: VaultCollector { id: lockStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onBwLockExited(exitCode, lockStdout.text) }
   }
 

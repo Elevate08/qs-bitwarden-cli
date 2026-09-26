@@ -190,13 +190,13 @@ Item {
     }
     assertMode = target.mode
     startedAtMs = Date.now()
-    // Its output is the master password.
-    vault.protectFromCoreDumps()
     var tool = vault.envelopeTool()
     var account = vault.envelopeAccount()
     assertProc.command = target.mode === "envelope"
       ? Model.fidoUnlockCommand(tool, account, target)
       : Model.fidoLegacyUnlockCommand(tool, account, target)
+    // The password it prints stays in the vault helper (vault.heldOutput()).
+    assertProc.capture = "secret:" + vault.newHeldName()
     assertProc.running = true
   }
 
@@ -246,7 +246,7 @@ Item {
   function onAssertExited(exitCode) {
     if (vault && vault.finishScrubRun(assertProc)) return
     // Read, then scrubbed: on success this holds the password.
-    var out = String(assertStdout.text || "")
+    var out = vault ? vault.heldOutput(assertProc, assertStdout.text) : ""
     if (vault) vault.clearProcessCollectorSoon(assertProc)
     var mode = assertMode
     assertMode = ""
@@ -475,9 +475,11 @@ Item {
   }
 
   // One touch; the password is the only output. See Model.fidoUnlockCommand().
-  Process {
+  VaultProcess {
     id: assertProc
-    stdout: StdioCollector {
+    vault: fido.vault
+    session: false
+    stdout: VaultCollector {
       id: assertStdout
       waitForEnd: true
     }

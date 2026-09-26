@@ -193,8 +193,8 @@ check("the checksum file is written relative to bin/ so sha256sum -c works there
 // tool changed the SSH helper's bytes with no SSH source change -- which is
 // exactly the unexplained bin/ change the trust path exists to flag.
 check("every shipped helper is built, from its own package",
-  /ARTIFACTS=\([\s\S]*?"agent:qs-bitwarden-ssh-agent"[\s\S]*?"unlock-key:qs-bitwarden-unlock-key"[\s\S]*?\)/.test(script),
-  "the build script does not list both helpers")
+  /ARTIFACTS=\([\s\S]*?"agent:qs-bitwarden-ssh-agent"[\s\S]*?"unlock-key:qs-bitwarden-unlock-key"[\s\S]*?"vault:qs-bitwarden-vault"[\s\S]*?\)/.test(script),
+  "the build script does not list every helper")
 check("every package is built with the same procedure",
   /for spec in "\$\{ARTIFACTS\[@\]\}"[\s\S]{0,200}?cd "\$src\/\$package"[\s\S]{0,200}?cargo build --locked --release/.test(script),
   "a helper is built some other way than the loop every mode shares")
@@ -214,20 +214,23 @@ check("the unlock tool's cargo config sets no rustflags either",
 check("a helper not yet tracked counts as drift, not as nothing to compare",
   /\(not tracked\)/.test(script),
   "a new helper could ship uncommitted with the comparison reporting success")
-for (const step of [/cargo fmt --check/, /cargo clippy --locked --all-targets/]) {
-  check(`CI runs ${step.source.replace(/\\/g, "")} for every package`,
-    new RegExp(`for package in agent unlock-key;[\\s\\S]{0,120}?${step.source}`).test(workflow),
-    "one package's gates do not cover the other")
+function functionBodyOf(source, name) {
+  const at = source.indexOf(name + "() {")
+  if (at < 0) return ""
+  return source.slice(at, source.indexOf("\n}\n", at))
 }
-check("CI tests the unlock tool",
-  /working-directory: unlock-key\s*\n\s*run: cargo test --locked --all-targets/.test(workflow),
-  "the unlock tool's tests never run in CI")
-check("CI applies the dependency policy to both packages",
-  /cargo deny --manifest-path agent\/Cargo\.toml --config deny\.toml check/.test(workflow)
-    && /cargo deny --manifest-path unlock-key\/Cargo\.toml --config deny\.toml check/.test(workflow),
+check("the gates name every helper package",
+  /HELPERS: agent unlock-key vault/.test(workflow), "a helper's package is left out of the gates")
+for (const step of [/cargo fmt --check/, /cargo clippy --locked --all-targets/, /cargo test --locked --all-targets/]) {
+  check(`CI runs ${step.source.replace(/\\/g, "")} for every package`,
+    new RegExp(`for package in \\$HELPERS; do[\\s\\S]{0,120}?${step.source}`).test(workflow),
+    "one package's gates do not cover another")
+}
+check("CI applies the dependency policy to every package",
+  /for package in \$HELPERS; do\s*\n\s*cargo deny --manifest-path "\$package\/Cargo\.toml" --config deny\.toml check/.test(workflow),
   "a package's dependencies are not checked against deny.toml")
-check("the uploaded candidate carries both helpers and the checksum file",
-  /bin\/x86_64-linux\/qs-bitwarden-ssh-agent\s*\n\s*bin\/x86_64-linux\/qs-bitwarden-unlock-key\s*\n\s*bin\/SHA256SUMS/.test(workflow),
+check("the uploaded candidate carries every helper and the checksum file",
+  /bin\/x86_64-linux\/qs-bitwarden-ssh-agent\s*\n\s*bin\/x86_64-linux\/qs-bitwarden-unlock-key\s*\n\s*bin\/x86_64-linux\/qs-bitwarden-vault\s*\n\s*bin\/SHA256SUMS/.test(workflow),
   "a maintainer committing the candidate would commit a SHA256SUMS naming a binary not in it")
 check("Dependabot watches the unlock tool's lockfile too",
   /directory: \/unlock-key/.test(read(".github/dependabot.yml")),
@@ -240,19 +243,22 @@ check("the usage text lists the flags that exist",
 // CI shape
 // -------------------------------------------------------------------------
 
-check("CI compares the tracked binary against a clean rebuild",
-  /--compare-tracked/.test(workflow),
+// One pass: two builds that must match, the first compared with the tracked
+// bytes, then written as the candidate (four builds before).
+check("CI builds twice, compares with the tracked helpers and writes the candidate in one pass",
+  /\.\/scripts\/build-agent\.sh --ci/.test(workflow)
+    && !/build-agent\.sh --verify-reproducible/.test(workflow) && !/build-agent\.sh --compare-tracked/.test(workflow),
   "nothing verifies that the committed bytes are what this source builds")
-check("the comparison is skipped only when no binary is tracked",
-  /if \[ ! -f bin\/x86_64-linux\/qs-bitwarden-ssh-agent \]/.test(workflow),
-  "the comparison could pass by absence rather than by matching")
-// The comparison must run before the no-flag build writes bin/, or it
-// compares a build with itself.
-const compareAt = workflow.indexOf("name: Compare the tracked binary")
-const candidateAt = workflow.indexOf("name: Build the candidate artifact")
+check("drift (exit 3) is recorded, and any other failure stops the job",
+  /\[ "\$rc" -eq 3 \] \|\| exit "\$rc"/.test(workflow), "a failed build could read as drift")
+// The comparison must read bin/ before the candidate is written there, or
+// it compares a build with itself.
+const ci = functionBodyOf(script, "ci_build")
 check("the comparison runs before anything overwrites bin/",
-  compareAt > 0 && candidateAt > 0 && compareAt < candidateAt,
-  `compare step at ${compareAt}, candidate build at ${candidateAt}`)
+  ci.indexOf("have=") > 0 && ci.indexOf("install -m 0755") > ci.indexOf("have="),
+  ci)
+check("the one pass still requires both builds to match before writing anything",
+  ci.indexOf("the two builds differ") < ci.indexOf("install -m 0755"), ci)
 // A drifted binary is when the candidate matters most, so the upload has to
 // happen before the job gives up on the run.
 check("a drifted binary still uploads the candidate that fixes it",

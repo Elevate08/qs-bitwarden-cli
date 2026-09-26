@@ -44,7 +44,11 @@ ShellRoot {
         quick: vault.quickUnlockAvailable, error: vault.errorMessage, pinError: vault.pinError,
         pinUnlockError: vault.pinUnlockError, logoutPending: vault.logoutPending, opened: vault.opened,
         logoutCliDone: vault.logoutCliDone, logoutCredentialsDone: vault.logoutCredentialsDone,
-        clearPending: vault.allCredentialsClearPending
+        clearPending: vault.allCredentialsClearPending,
+        // What the shell itself holds: the vault helper keeps the rest.
+        helper: vault.vaultHelperState, sessionHeld: vault.session === vault.heldSessionMarker,
+        passwords: vault.items.map(function(i) { return i.password }),
+        hasPasswords: vault.items.map(function(i) { return i.hasPassword })
       })
     }
     function open(): void { vault.open() }
@@ -65,5 +69,6 @@ ShellRoot {
       return "unknown"
     }
     function logout(): void { vault.logoutAccount() }
+    function copyFirst(): void { vault.copyPassword(vault.items[0]) }
   }
 }

@@ -94,6 +94,22 @@ updates:
     commit-message:
       prefix: "deps"
 
+  - package-ecosystem: cargo
+    directory: /vault
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    versioning-strategy: lockfile-only
+    groups:
+      crypto:
+        patterns: ["hmac", "sha1", "sha2", "digest", "zeroize"]
+      rust-dependencies:
+        patterns: ["*"]
+        exclude-patterns: ["hmac", "sha1", "sha2", "digest", "zeroize"]
+    labels: ["dependencies", "needs-binary-rebuild"]
+    commit-message:
+      prefix: "deps"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -73,36 +73,31 @@ jobs:
             exit 1
           }
 
-      - name: Build twice from different paths and compare
+      - name: Build twice, compare with the tracked helpers, write the candidate
+        id: compare
         env:
           # This job is the pinned environment; the script verifies the claim.
           QSBW_PINNED_BUILD: '1'
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+        # One pass (`--ci`): two builds from different paths must match; the
+        # first is compared with the tracked bytes BEFORE it is written to bin/
+        # as the candidate. Two builds for every helper instead of four. Exit 3
+        # is drift: recorded here, fatal at the end, so a drifted build's
+        # candidate is still uploaded. On a PR that helper-rebuild.yml commits
+        # for (see scripts/helper-autocommit-eligible.sh), drift is reported,
+        # not fatal; its commit re-runs this workflow.
+        shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          ./scripts/build-agent.sh --verify-reproducible
-
-      - name: Compare the tracked binary with a clean rebuild
-        id: compare
-        env:
-          QSBW_PINNED_BUILD: '1'
-          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
-          ACTOR: ${{ github.actor }}
-        # The bytes must be what this source builds here. Runs FIRST, before
-        # anything writes bin/ (it once compared a fresh build with itself).
-        # The verdict is recorded and the job fails at the end, so a drifted
-        # build's candidate is still uploaded. On a PR that helper-rebuild.yml
-        # commits for (see scripts/helper-autocommit-eligible.sh), drift is
-        # reported, not fatal; its commit re-runs this workflow.
-        run: |
-          if [ ! -f bin/x86_64-linux/qs-bitwarden-ssh-agent ]; then
-            echo "::notice::no tracked binary yet; nothing to compare"
-            echo "drift=none" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if ./scripts/build-agent.sh --compare-tracked; then
+          set +e
+          ./scripts/build-agent.sh --ci
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
             echo "drift=no" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          [ "$rc" -eq 3 ] || exit "$rc"
           echo "drift=yes" >> "$GITHUB_OUTPUT"
           # The base branch's copy, as helper-rebuild.yml runs it, so the two
           # agree and a PR cannot edit its own verdict. Not a PR: "no".
@@ -120,18 +115,12 @@ jobs:
             echo "::warning::A maintainer must commit the uploaded candidate before merge."
           fi
 
-      - name: Build the candidate artifact
-        env:
-          QSBW_PINNED_BUILD: '1'
-        # Read-only: this job builds and uploads; helper-rebuild.yml or a
-        # maintainer commits, and a later run compares.
-        run: ./scripts/build-agent.sh
-
       - name: Report what was produced
         run: |
           cat bin/SHA256SUMS
           for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
-                        bin/x86_64-linux/qs-bitwarden-unlock-key; do
+                        bin/x86_64-linux/qs-bitwarden-unlock-key \
+                        bin/x86_64-linux/qs-bitwarden-vault; do
             echo "--- $binary"
             file "$binary"
             ldd "$binary" || true
@@ -142,11 +131,12 @@ jobs:
       - name: Upload the candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          # Both helpers and SHA256SUMS; commit all three together.
+          # Every helper and SHA256SUMS; commit them together.
           name: qs-bitwarden-helpers-x86_64-linux
           path: |
             bin/x86_64-linux/qs-bitwarden-ssh-agent
             bin/x86_64-linux/qs-bitwarden-unlock-key
+            bin/x86_64-linux/qs-bitwarden-vault
             bin/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -169,21 +159,26 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+    env:
+      # One target dir for every package: a dependency two helpers share at
+      # the same version and features (serde, zeroize, rustix, sha2) is
+      # compiled once, for lint and tests alike.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cargo-target
+      HELPERS: agent unlock-key vault
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Each gate runs per Cargo package; neither package's checks cover the
-      # other.
+      # Each gate runs per Cargo package; no package's checks cover another.
       - name: Formatting
         run: |
-          for package in agent unlock-key; do
+          for package in $HELPERS; do
             ( cd "$package" && cargo fmt --check ) || exit 1
           done
 
       - name: Lint
         run: |
-          for package in agent unlock-key; do
+          for package in $HELPERS; do
             ( cd "$package" && cargo clippy --locked --all-targets -- -D warnings ) || exit 1
           done
 
@@ -219,18 +214,17 @@ jobs:
           # Say which build actually did the checking, the way the QML step
           # records its Qt packages.
           cargo-deny --version
-          cargo deny --manifest-path agent/Cargo.toml --config deny.toml check
-          cargo deny --manifest-path unlock-key/Cargo.toml --config deny.toml check
+          for package in $HELPERS; do
+            cargo deny --manifest-path "$package/Cargo.toml" --config deny.toml check
+          done
 
       - name: Tests
-        working-directory: agent
-        # Real socket, FIFO and disposable keys; no network or vault. Slow
-        # lifecycle cases take a couple of minutes.
-        run: cargo test --locked --all-targets
-
-      - name: Tests (unlock-key)
-        working-directory: unlock-key
-        run: cargo test --locked --all-targets
+        # Real sockets, FIFOs, child processes and disposable keys; no network
+        # or vault. The agent's slow lifecycle cases take a couple of minutes.
+        run: |
+          for package in $HELPERS; do
+            ( cd "$package" && cargo test --locked --all-targets ) || exit 1
+          done
 
   e2e:
     name: panel end-to-end
@@ -293,25 +287,27 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Build the helper the pipeline tests drive
-        working-directory: agent
-        # Debug build in agent/target/debug/, where the panel's development
-        # fallback and the tests look for it.
-        run: cargo build --locked
-
-      - name: Build the unlock tool the envelope tests drive
-        working-directory: unlock-key
-        # The unlock tool's development path, likewise.
-        run: cargo build --locked
+      - name: Build the helpers the tests drive
+        # Debug builds in <package>/target/debug/, where the panel's
+        # development fallback and the tests look for them. Each package's
+        # target/ is a link to one shared directory, so shared dependencies
+        # are compiled once.
+        run: |
+          mkdir -p .cargo-target
+          for package in agent unlock-key vault; do
+            ln -sfn ../.cargo-target "$package/target"
+            ( cd "$package" && cargo build --locked ) || exit 1
+          done
 
       - name: Confirm the helpers landed where the tests expect them
         run: |
           # A default target in .cargo/config.toml would move these and make
           # the tests skip rather than fail.
-          test -x agent/target/debug/qs-bitwarden-ssh-agent \
-            || { echo "::error::helper not at agent/target/debug/"; exit 1; }
-          test -x unlock-key/target/debug/qs-bitwarden-unlock-key \
-            || { echo "::error::unlock tool not at unlock-key/target/debug/"; exit 1; }
+          for binary in agent/target/debug/qs-bitwarden-ssh-agent \
+                        unlock-key/target/debug/qs-bitwarden-unlock-key \
+                        vault/target/debug/qs-bitwarden-vault; do
+            test -x "$binary" || { echo "::error::$binary is missing"; exit 1; }
+          done
 
       - name: Run the QML tests
         # The panel's JavaScript runs in QML's engine, which differs from Node.

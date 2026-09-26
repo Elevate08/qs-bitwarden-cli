@@ -123,7 +123,11 @@ check("and a start with it off removes one left from before",
 const destruction = src.slice(src.indexOf("Component.onDestruction:"), src.indexOf("Component.onDestruction:") + 300)
 check("an unload while unlocked with the session not remembered locks bw",
   /root\.lockSessionOnUnload\(\)/.test(destruction)
-    && /if \(!session \|\| rememberSession\) return\s*Quickshell\.execDetached\(\{ command: Model\.lockCommand\(\), environment: bwEnv\(\) \}\)/
+    && /if \(!session \|\| rememberSession\) return/.test(body("lockSessionOnUnload"))
+    // With the helper holding the key, it starts the lock itself, detached.
+    && /vaultHelperLine\("exec", \{ id: 0, argv: Model\.lockCommand\(\),[\s\S]*?detach: true/.test(body("lockSessionOnUnload"))
+    // Falling back, the session is added here for that one command.
+    && /env\[Model\.sessionEnvVar\(\)\] = String\(session\)\s*Quickshell\.execDetached\(\{ command: Model\.lockCommand\(\), environment: env \}\)/
       .test(body("lockSessionOnUnload")),
   destruction + "\n" + body("lockSessionOnUnload"))
 

@@ -383,6 +383,12 @@ The panel can hold up to ten Bitwarden accounts at once -- a personal and a work
 
 The first account lives where a terminal `bw` finds it (`~/.config/Bitwarden CLI`), exactly as before. Each account added beside it gets a private directory of its own under `~/.local/share/qs-bitwarden-cli/accounts/`, which `bw` is pointed at with `BITWARDENCLI_APPDATA_DIR`; the list of accounts (emails and servers, nothing secret) is `registry.json` in the same place. Upgrading needs nothing: your current account becomes the first one, with everything it had.
 
+### How your vault is held
+
+While your vault is open, its session key and every item's secrets are held by a small helper process (`bin/x86_64-linux/qs-bitwarden-vault`), not by the shell. If the shell crashes, the core dump systemd keeps has no session key and no passwords in it, and the shell's own crash dumps still work for diagnosing it. A password you copy goes from the helper straight to the clipboard; TOTP codes and search are answered by the helper too. It talks only to the shell that started it, on its stdin and stdout.
+
+It ships and is verified like the other helpers. If it is missing or fails its check, the panel works as before, with the vault held in the shell, and a banner says crash protection is off. **[How it works and what it does not cover →](docs/vault-helper.md)**
+
 ### How quick unlock stores your password
 
 PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unlock` accepts nothing else. The plugin keeps it **once** per account, in a single keyring item (`service=qs-bitwarden-cli, account=unlock_envelope`, or `unlock_envelope@<slot>` for an account added beside the first):
@@ -482,7 +488,6 @@ not in a separate block:
           "lockOnSuspend": true,
           "clearClipboardSec": 30,
           "rememberSession": true,
-          "crashDumpsAfterUnlock": false,
           "fingerprintUnlock": false,
           "fidoUnlock": false,
           "sshAgentEnabled": false,
@@ -524,7 +529,6 @@ The following settings are read from the plugin's own entry in the
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
 | `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor until `bw lock` and the keyring clear have finished, at most 4 seconds. Needs `gdbus` (glib2), `systemd-inhibit` and `setsid` (util-linux). The monitor and its children stop when the plugin unloads; without these tools the setting is inert. |
 | `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. Turning it off removes a stored session at once, and with it off an unload while unlocked runs `bw lock`. |
-| `crashDumpsAfterUnlock` | `boolean` | `false` | Off: once a secret has entered the shell (a typed password, a session key, an unlocked vault), the shell writes no core dumps for the rest of its session, so a crash cannot put the decrypted vault on disk. The trade-off: a later shell crash leaves no core dump to diagnose it with. On keeps them (and they may hold vault data); turned on after they were stopped, it applies from the next shell start. |
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
@@ -679,6 +683,7 @@ is why dependency rebuilds stay a human step.
 
 - **[Features in detail](docs/features.md)** -- every feature and why it works the way it does.
 - **[SSH agent](docs/ssh-agent.md)** -- setup, verification, threat model.
+- **[Vault helper](docs/vault-helper.md)** -- what holds your open vault, and what a crash can leave behind.
 - **[Uninstall](docs/uninstall.md)** -- including what to clear before removing the plugin.
 - **[Development](docs/development.md)** -- linting and the test suite.
 - **[Security policy](SECURITY.md)** -- how to report a vulnerability privately.

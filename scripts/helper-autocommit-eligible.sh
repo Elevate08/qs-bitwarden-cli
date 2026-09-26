@@ -26,7 +26,8 @@ base="origin/$GITHUB_BASE_REF"
 git rev-parse --verify --quiet "$base" >/dev/null || no "base branch $base is not fetched"
 changed="$(git diff --name-only "$base"...HEAD -- \
   agent/Cargo.lock agent/Cargo.toml agent/rust-toolchain.toml \
-  unlock-key/Cargo.lock unlock-key/Cargo.toml unlock-key/rust-toolchain.toml)" \
+  unlock-key/Cargo.lock unlock-key/Cargo.toml unlock-key/rust-toolchain.toml \
+  vault/Cargo.lock vault/Cargo.toml vault/rust-toolchain.toml)" \
   || no "could not diff against $base"
 [ -z "$changed" ] || no "dependencies or toolchain changed ($(echo $changed)); rebuild by hand"
 
