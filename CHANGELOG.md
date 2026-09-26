@@ -2,6 +2,60 @@
 
 ## [1.11.2] - 2026-09-25
 
+### Security
+
+Fixes for [GHSA-wrwr-vr5r-56hv](https://github.com/Elevate08/qs-bitwarden-cli/security/advisories/GHSA-wrwr-vr5r-56hv),
+reported by Nicolas Falesy (@nicolasfalesy), with fixes he contributed.
+
+- **A shell crash no longer writes your open vault to disk.** The session key
+  and every item's secrets are now held by a new helper,
+  `qs-bitwarden-vault`, which turns its own core dumps off and cannot be
+  attached to; the shell holds names, usernames and websites, and only the
+  item you open. Copies go from the helper to the clipboard, and TOTP codes
+  and search are answered there. The shell's own crash dumps are unchanged.
+  If the helper is unavailable the panel works as before and says crash
+  protection is off. See [docs/vault-helper.md](docs/vault-helper.md).
+- **The SSH agent treats a refused session bind as forwarded.** A server
+  could make its bind unreadable and have its relayed requests treated as
+  local, so a live grant answered them without asking. Any refused bind now
+  marks the connection as forwarded: it always asks, and can neither open
+  nor use a grant.
+- **SSH approval and unlock cards ignore keys for their first 800 ms.** A card
+  that appeared while you were typing could be approved by Tab and Enter.
+- **PIN guessing is described honestly, and new PINs need six digits.** A
+  program running as you can unseal the stored item and try PINs offline on
+  every core; the five-try limit only applies to the panel's own screen. The
+  README and settings now give measured offline times, new PIN wraps cannot
+  use a cheaper Argon2 cost, and a PIN set earlier still works.
+- **Bitwarden's master password re-prompt is honoured** for logins, cards and
+  identities, before a secret is shown, copied or edited.
+- **Turning a quick-unlock method off removes it from every account**, and one
+  turned off in `shell.json` while the shell was stopped is removed at the next
+  start.
+- **The clipboard clear survives a shell restart, and a lock clears only a
+  copy the panel made**, not something you copied since.
+- **The password generator's `bw serve` listens on a private socket** instead
+  of a loopback port other users on the machine could reach.
+- **Suspend waits for `bw lock` to finish**, and a failed lock or keyring clear
+  is retried and reported.
+- **Turning "remember session" off removes the stored session at once.**
+- **A lock also forgets the old master password held for a re-seal, and a
+  refused save's form**, which could be reopened into another account.
+- **Masked values no longer show their length.**
+- **Learned suggestions learn a window title's words only from "Suggest
+  here"**, so a look-alike title cannot borrow a real site's login, and they
+  keep saving past 128 KiB.
+- **The SSH agent recovers from a key load that arrived after its reader
+  had gone**, which had left signing dead until the helper restarted.
+
+### Fixed
+
+- **Saving an item changes only what you edited.** An unchanged save or a
+  rename used to trim a password's edge spaces, keep only the first website
+  and reset its match rule.
+- **The search box clears when the panel closes**, and after Escape or the
+  clear button a later clear (closing the panel, a lock) empties it too.
+
 ### Changed
 
 - **The vault opens faster.** `bw` prints its answer and then idles about two
@@ -16,9 +70,10 @@
   confirmed the vault is unlocked. On the machine it was measured on, the list
   was ready about 4 s after a shell restart instead of about 7.5 s, and about
   3 s after a fingerprint unlock.
-- **TOTP codes appear instantly.** They are computed in the panel from the key
-  the item list already holds, the same way the Bitwarden SDK does, instead of
-  starting `bw get totp` (about 3 s) for each one. A key the panel does not
+- **TOTP codes appear instantly.** They are computed from the item's key (by
+  the vault helper, or the panel if the helper is unavailable), the same way
+  the Bitwarden SDK does, instead of starting `bw get totp` (about 3 s) for
+  each one. A key the panel does not
   read exactly like the SDK (SHA-512, 0 or 10 digits, an unusual `otpauth://`
   link) is still read by `bw`.
 - **Opening the panel no longer starts `bw -v`.** The setup check ran it on
@@ -26,6 +81,10 @@
   on the first open, and competing with the unlock prewarm on a locked one.
   The version is now read once, alongside the status check, and again only
   when the `bw` binary changes, as after an upgrade.
+- **CI builds every helper twice instead of four times.** One pass
+  (`scripts/build-agent.sh --ci`) builds twice from different paths, compares
+  the first build with the committed binaries, and writes it as the candidate;
+  the lint and test gates share one build directory across the three helpers.
 
 ## [1.11.1] - 2026-09-25
 
