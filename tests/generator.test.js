@@ -9,6 +9,8 @@ const bodyOf = name => functionBody(panelSrc, name)
 const Model = loadModule()
 
 const { check, done } = createSuite("generator")
+// Checks that need a live server finish before the report.
+const asyncChecks = []
 const args = o => Model.generateCommand(o).join(" ")
 
 // `bw generate` errors if every character set is off; fall back rather than fail.
@@ -73,8 +75,8 @@ check("defaults are a fresh object each call",
 
 const url = (o) => Model.generateServeUrl(o)
 
-check("the server is addressed on loopback only",
-  url({}).startsWith("http://127.0.0.1:"), url({}))
+check("requests name the generate endpoint, with no port to reach from elsewhere",
+  url({}).startsWith("http://localhost/generate?"), url({}))
 check("a password request carries the character sets and length",
   url({ length: 20, uppercase: true, lowercase: true, numbers: true, special: true })
     .includes("length=20") && url({ length: 20, special: true }).includes("special=true"),
@@ -99,20 +101,79 @@ check("the serve options are clamped the same way the CLI ones are",
   url({ length: 9999 }).includes("length=128") && url({ length: 1 }).includes("length=5"),
   url({ length: 9999 }) + " / " + url({ length: 1 }))
 
-// The server is started without a session on purpose: a loopback port has no
-// authentication, so it must never hold an unlocked vault.
-check("the serve command binds loopback and names no session",
-  JSON.stringify(Model.generateServeCommand()) ===
-    JSON.stringify(["bw", "serve", "--hostname", "127.0.0.1", "--port", "8087"]),
-  JSON.stringify(Model.generateServeCommand()))
+// A loopback port let every local user POST /unlock (guessing the master
+// password with no second factor or lockout) and read /status (the email and
+// user id). The server now listens on a socket in the private runtime
+// directory, and still holds no session.
+const serveCmd = Model.generateServeCommand()
+check("the server listens on a socket in the private runtime directory, on no port",
+  serveCmd[0] === "bash" && /exec bw serve --hostname "unix:\/\/\$__gen_sock"$/.test(serveCmd[2])
+    && serveCmd[2].includes("$XDG_RUNTIME_DIR/qs-bitwarden-cli") && serveCmd[2].includes("generator.sock")
+    && serveCmd[2].includes("chmod 700") && !/--port|127\.0\.0\.1|8087/.test(serveCmd[2]),
+  serveCmd[2])
+const serveEnv = functionBody(panelSrc, "generatorServeEnv")
+check("the server's environment carries no session",
+  /env\[Model\.sessionEnvVar\(\)\]\s*=\s*null/.test(serveEnv), serveEnv)
 
 const serveReq = Model.generateServeRequestCommand({ length: 20, special: true })
-check("the serve request command targets the generated url with timeout and stream cap",
-  serveReq[2].includes("curl -q -s -S") && serveReq[2].includes("http://127.0.0.1:8087/generate")
+check("the serve request command targets the socket with timeout and stream cap",
+  serveReq[2].includes("curl -q -s -S") && serveReq[2].includes('--unix-socket "$__gen_sock"')
+    && serveReq[2].includes("http://localhost/generate")
     && serveReq[2].includes("--max-time 2") && serveReq[2].includes("head -c 65536"),
   serveReq[2])
-check("loopback generator requests ignore proxy variables and curl config",
+check("generator requests ignore proxy variables and curl config",
   serveReq[2].includes("curl -q ") && serveReq[2].includes("--noproxy '*'"), serveReq[2])
+
+// Run for real against a throwaway runtime directory and a stand-in server,
+// so the path, the probe and the private directory are what the code uses.
+{
+  const os = require("os")
+  const fs = require("fs")
+  const path = require("path")
+  const http = require("http")
+  const { execFile, execFileSync } = require("child_process")
+  const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-gen-"))
+  const env = Object.assign({}, process.env, { XDG_RUNTIME_DIR: runtime })
+  const request = () => new Promise(resolve => {
+    const cmd = Model.generateServeRequestCommand({ length: 12 })
+    execFile(cmd[0], cmd.slice(1), { env, encoding: "utf8" }, (err, stdout) =>
+      resolve({ code: err ? err.code : 0, stdout }))
+  })
+  const pending = (async () => {
+    const free = await request()
+    check("no runtime directory yet reads as a free socket (curl's 7)",
+      Model.generatorProbeIsForeign(free.code, free.stdout) === false, JSON.stringify(free))
+
+    // The serve command's own preparation, with bw swapped for a no-op, makes
+    // the directory private and clears a stale socket file.
+    const dir = path.join(runtime, "qs-bitwarden-cli")
+    fs.mkdirSync(dir, { mode: 0o755 })
+    fs.writeFileSync(path.join(dir, "generator.sock"), "stale")
+    const prep = serveCmd[2].replace(/exec bw serve .*$/, "exit 0")
+    execFileSync("bash", ["-c", prep], { env })
+    check("starting the server narrows the directory to 0700 and removes a stale socket",
+      (fs.statSync(dir).mode & 0o777) === 0o700 && !fs.existsSync(path.join(dir, "generator.sock")),
+      (fs.statSync(dir).mode & 0o777).toString(8))
+
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json")
+      res.end(JSON.stringify({ success: true, data: { object: "string", data: "from-the-socket " + req.url } }))
+    })
+    await new Promise(resolve => server.listen(path.join(dir, "generator.sock"), resolve))
+    try {
+      const answered = await request()
+      check("a request reaches the server on the socket",
+        answered.code === 0 && Model.parseServeGenerated(answered.stdout).startsWith("from-the-socket /generate?"),
+        JSON.stringify(answered))
+      check("a server already on the socket is not taken for a free one",
+        Model.generatorProbeIsForeign(answered.code, answered.stdout) === true, JSON.stringify(answered))
+    } finally {
+      await new Promise(resolve => server.close(resolve))
+    }
+  })()
+  pending.finally(() => fs.rmSync(runtime, { recursive: true, force: true }))
+  asyncChecks.push(pending)
+}
 
 check("a successful response yields the value",
   Model.parseServeGenerated('{"success":true,"data":{"object":"string","data":"abc123"}}') === "abc123",
@@ -204,4 +265,4 @@ check("a deferred generator request restarts only if the generator is still open
     resumeServeRequest),
   resumeServeRequest)
 
-done()
+Promise.all(asyncChecks).then(done, error => { console.error(error); process.exit(1) })

@@ -14,10 +14,70 @@ Column {
   required property var vault
   property bool active: vault.activeScreen === "sshApproval"
 
+  // The card appears while the user may still be typing or clicking in
+  // another window: Tab then Space (or Enter) used to approve once, and
+  // Shift+Tab then Enter opened a grant. So for armDelayMs after it appears,
+  // after its request or the vault's status changes, and after the popup
+  // takes keyboard focus, every key but Escape is dropped and the approve
+  // tiles are disabled; then Deny takes focus. The same idea as Firefox's
+  // security.dialog_enable_delay.
+  readonly property int armDelayMs: 800
+  property bool armed: false
+  readonly property bool shown: active && visible
+
+  // Starts the delay over and parks the keyboard on the guard.
+  function rearm() {
+    screen.armed = false
+    if (!screen.shown) {
+      armTimer.stop()
+      return
+    }
+    armTimer.restart()
+    keyGuard.forceActiveFocus()
+  }
+
   // Never open with an affirmative action focused. Called by both the panel
   // and the popup once their window has keyboard focus.
   function focusDefault() {
-    if (screen.active && screen.visible) denyButton.forceActiveFocus()
+    if (!screen.active || !screen.visible) return
+    if (screen.armed) denyButton.forceActiveFocus()
+    else keyGuard.forceActiveFocus()
+  }
+
+  onShownChanged: rearm()
+  // A Loader may build the card already shown, when no change is signalled.
+  Component.onCompleted: rearm()
+
+  Connections {
+    target: screen.vault
+    function onSshPromptChanged() { screen.rearm() }
+    function onStatusChanged() { screen.rearm() }
+  }
+
+  Timer {
+    id: armTimer
+    interval: screen.armDelayMs
+    onTriggered: {
+      screen.armed = true
+      // Only if nothing else took the keyboard meanwhile (the panel's own
+      // key dispatch, say): then Deny, never an approve tile.
+      if (keyGuard.activeFocus) screen.focusDefault()
+    }
+  }
+
+  // Holds the keyboard until the card is armed, and filters what the tiles
+  // get afterwards (they forward here first): nothing but Escape before
+  // arming, and no auto-repeated key after it, since a key held down from
+  // before the card appeared is not an answer. Escape is never taken, so it
+  // reaches the card's (or the panel's) deny.
+  Item {
+    id: keyGuard
+    width: 0
+    height: 0
+    Keys.onPressed: function(event) {
+      if (event.key === Qt.Key_Escape) return
+      if (!screen.armed || event.isAutoRepeat) event.accepted = true
+    }
   }
 
   visible: active && vault.sshPrompt !== null
@@ -190,6 +250,7 @@ Column {
       label: "Deny"
       tooltipText: "Refuse this request (Esc)"
       focusable: true
+      Keys.forwardTo: [keyGuard]
       onClicked: vault.denySshRequest()
     }
 
@@ -201,6 +262,7 @@ Column {
       label: "Deny all (" + vault.sshPendingCount + ")"
       tooltipText: "Refuse this request and every one waiting behind it"
       focusable: true
+      Keys.forwardTo: [keyGuard]
       onClicked: vault.denyAllSshRequests()
     }
 
@@ -210,7 +272,11 @@ Column {
       glyph: "󰄬"
       label: "Approve once"
       tooltipText: "Sign this one request"
-      focusable: true
+      // Unreachable by keyboard or pointer until armed.
+      enabled: screen.armed
+      focusable: screen.armed
+      opacity: screen.armed ? 1 : 0.45
+      Keys.forwardTo: [keyGuard]
       onClicked: vault.approveSshRequest(0)
     }
 
@@ -222,7 +288,10 @@ Column {
       label: vault.sshPrompt ? vault.sshPrompt.grantShortLabel : ""
       tooltipText: (vault.sshPrompt ? vault.sshPrompt.grantLabel + ": sign" : "Sign")
         + " further requests of this same kind from this same program with this key, without asking again, until the window expires"
-      focusable: true
+      enabled: screen.armed
+      focusable: screen.armed
+      opacity: screen.armed ? 1 : 0.45
+      Keys.forwardTo: [keyGuard]
       onClicked: vault.approveSshRequest(vault.sshPrompt ? vault.sshPrompt.grantSeconds : 0)
     }
   }

@@ -4,7 +4,7 @@
 //
 //   node tests/items.test.js
 
-const { createSuite, loadModule, readPluginSource } = require("./harness")
+const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
 const path = require("path")
 const Model = loadModule()
 
@@ -465,6 +465,103 @@ for (const [typeCode, cp, name, label] of glyphs) {
 check("an unrecognised type is drawn as a login, not as the unreachable shield",
   Model.itemTypeGlyph(99).codePointAt(0) === 0xF030B,
   Model.itemTypeGlyph(99).codePointAt(0).toString(16))
+
+// --- saving an item changes only what the form changed -----------------------
+// Saving used to trim the password (a login with edge spaces stopped working),
+// trim a note's trailing newlines, replace every website with the first one and
+// reset its match rule to the default (which widens browser-extension
+// autofill). An unchanged edit, done the way the panel does it
+// (Service.startEditItem() fills the form from the list row and the detail,
+// saveItemForm() builds the payload), must write back exactly what is stored.
+{
+  const assert = require("assert")
+  const stored = {
+    object: "item", id: "11111111-2222-3333-4444-555555555555", type: 1, name: "Bank",
+    notes: "line1\n\n  indented\n\n", favorite: false, organizationId: null, folderId: null,
+    reprompt: 0, collectionIds: [],
+    login: {
+      username: "me", password: "  hunter2 \t", totp: null,
+      uris: [
+        { match: 3, uri: "https://secure.bank.example/login" },
+        { match: 1, uri: "https://bank-app.example" },
+        { match: null, uri: "androidapp://example.bank" },
+        { match: 4, uri: "^https://(www\\.)?bank\\.example/.*$" }
+      ]
+    }
+  }
+  const row = Model.parseItems([JSON.parse(JSON.stringify(stored))])[0]
+  const detail = Model.itemDetailFromObject(JSON.parse(JSON.stringify(stored)))
+  // startEditItem(): the form fields as the panel fills them.
+  const formPassword = detail.password
+  const formUri = Model.loginUriEntries(row.rawObject.login)[0].uri
+  const payload = Model.buildEditPayload(detail, row.name, row.username, formPassword, row.totpKey,
+    formUri, row.notes, row.favorite, "", "", [], null, undefined)
+  const expected = JSON.parse(JSON.stringify(stored))
+  delete expected.collectionIds // a personal item carries none, as before
+  let same = true
+  try { assert.deepStrictEqual(payload, expected) } catch (e) { same = false }
+  check("an unchanged edit writes the item back byte for byte", same,
+    JSON.stringify(payload))
+  check("an unchanged edit keeps the password's edge spaces",
+    payload.login.password === "  hunter2 \t", JSON.stringify(payload.login.password))
+  check("an unchanged edit keeps a note's trailing newlines",
+    payload.notes === stored.notes, JSON.stringify(payload.notes))
+  check("an unchanged edit keeps every website with its match rule",
+    JSON.stringify(payload.login.uris) === JSON.stringify(stored.login.uris),
+    JSON.stringify(payload.login.uris))
+
+  // A rename is an unchanged edit apart from the name.
+  const renamed = Model.buildEditPayload(detail, "Bank (joint)", row.username, formPassword,
+    row.totpKey, formUri, row.notes, row.favorite, "", "", [], null, undefined)
+  check("a rename changes the name and nothing else",
+    renamed.name === "Bank (joint)" && renamed.login.password === stored.login.password
+      && renamed.notes === stored.notes
+      && JSON.stringify(renamed.login.uris) === JSON.stringify(stored.login.uris),
+    JSON.stringify(renamed))
+
+  // The one website field edits the first website only.
+  const moved = Model.buildEditPayload(detail, row.name, row.username, formPassword, row.totpKey,
+    "https://login.bank.example", row.notes, row.favorite, "", "", [], null, undefined)
+  check("changing the first website keeps its match rule and the other websites",
+    JSON.stringify(moved.login.uris) === JSON.stringify([{ match: 3, uri: "https://login.bank.example" }]
+      .concat(stored.login.uris.slice(1))),
+    JSON.stringify(moved.login.uris))
+  const cleared = Model.buildEditPayload(detail, row.name, row.username, formPassword, row.totpKey,
+    "", row.notes, row.favorite, "", "", [], null, undefined)
+  check("clearing the website field drops only the first website",
+    JSON.stringify(cleared.login.uris) === JSON.stringify(stored.login.uris.slice(1)),
+    JSON.stringify(cleared.login.uris))
+
+  // A changed password is written as typed, edge spaces included.
+  const repassed = Model.buildEditPayload(detail, row.name, row.username, "  new pass  ", row.totpKey,
+    formUri, row.notes, row.favorite, "", "", [], null, undefined)
+  check("a changed password is saved as typed, never trimmed",
+    repassed.login.password === "  new pass  ", JSON.stringify(repassed.login.password))
+
+  // A stored null behind an empty box stays null.
+  const bare = { id: "b", type: 1, name: "Bare", notes: null, login: { username: null, password: null, totp: null, uris: null } }
+  const bareRow = Model.parseItems([bare])[0]
+  const bareSaved = Model.buildEditPayload(Model.itemDetailFromObject(bare), bareRow.name, bareRow.username,
+    "", bareRow.totpKey, "", bareRow.notes, false, "", "", [], null, undefined)
+  check("empty boxes over stored nulls leave the nulls alone",
+    bareSaved.notes === null && bareSaved.login.username === null && bareSaved.login.password === null
+      && bareSaved.login.totp === null && bareSaved.login.uris === null,
+    JSON.stringify(bareSaved))
+
+  // The panel wires it: the form loads the first website exactly as stored.
+  const service = readPluginSource("Panel.qml")
+  const start = functionBody(service, "startEditItemNow")
+  check("the edit form loads the first website exactly as stored",
+    /Model\.loginUriEntries\(/.test(start), start)
+}
+
+// --- a masked value does not give away its length ------------------------------
+// The mask used to repeat one dot per character (up to 16), which showed how
+// long a hidden password, card code or PIN was.
+check("every hidden value is masked to the same length",
+  ["a", "1234", "hunter2", "x".repeat(40)].every(v => Model.maskString(v) === "••••••••"),
+  ["a", "1234", "hunter2"].map(v => Model.maskString(v)).join(" | "))
+check("nothing to hide masks to nothing", Model.maskString("") === "" && Model.maskString(null) === "", "")
 
 // A key icon on the password controls, pinned per button (a bulk glyph
 // replacement once changed them all).

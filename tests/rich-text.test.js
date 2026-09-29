@@ -12,35 +12,45 @@ const Model = loadModule()
 const { check, done } = createSuite("rich-text")
 
 // --- plainLabel ---
-// Ordinary names cannot trip Qt's sniffer, so they must survive byte for byte:
-// this runs on labels a user reads next to their credentials.
-for (const name of ["Work", "Personal Vault", "e-mail (old)", "日本語", "", "a > b"]) {
-  check(`plainLabel leaves ${JSON.stringify(name)} untouched`,
+// Omarchy 4.0.4's kit draws the labels it is handed with Text.PlainText, so
+// plainLabel passes vault text through unchanged. It used to HTML-escape
+// anything with "<" or "&" into a <span>, which that kit then drew literally
+// ("<span ...>Bills &amp; Banking</span>" in place of a folder name).
+for (const name of ["Work", "Personal Vault", "e-mail (old)", "日本語", "", "a > b",
+                    "Bills & Banking", "<b>Work</b>", "AT&T <holdings>", "&lt;script&gt;"]) {
+  check(`plainLabel passes ${JSON.stringify(name)} through unchanged`,
     Model.plainLabel(name) === name, JSON.stringify(Model.plainLabel(name)))
 }
 check("plainLabel maps null and undefined to an empty label",
   Model.plainLabel(null) === "" && Model.plainLabel(undefined) === "",
   JSON.stringify([Model.plainLabel(null), Model.plainLabel(undefined)]))
 
-// Nothing that reaches the control may still read as a tag.
-const markup = Model.plainLabel("<img src=x onerror=alert(1)>")
-check("plainLabel escapes a tag out of existence",
-  markup === '<span style="white-space:pre-wrap">&lt;img src=x onerror=alert(1)&gt;</span>', markup)
-check("plainLabel escapes bold markup",
-  Model.plainLabel("<b>Work</b>").indexOf("<b>") < 0, Model.plainLabel("<b>Work</b>"))
-
-// Escaping alone is not enough: without the wrapper Qt may decide the escaped
-// string is plain text and show the entities raw. The wrapper forces the
-// rich-text path so "&" survives as "&".
-const amp = Model.plainLabel("AT&T <holdings>")
-check("plainLabel escapes ampersands and forces the rich-text path",
-  amp === '<span style="white-space:pre-wrap">AT&amp;T &lt;holdings&gt;</span>', amp)
-check("plainLabel neutralizes a value that is already entity-encoded",
-  Model.plainLabel("&lt;script&gt;") === '<span style="white-space:pre-wrap">&amp;lt;script&amp;gt;</span>',
-  Model.plainLabel("&lt;script&gt;"))
-check("plainLabel is idempotent in the sense that re-running it cannot inject",
-  Model.plainLabel(Model.plainLabel("<b>x</b>")).indexOf("<b>") < 0,
-  Model.plainLabel(Model.plainLabel("<b>x</b>")))
+// That is only safe while the kit pins PlainText on every Text it draws a
+// label or tooltip with. Read the installed kit and hold it to that; a kit
+// that drops it would render vault markup again.
+const kitDir = process.env.QSBW_KIT_DIR || "/usr/share/omarchy/shell/Ui"
+const kitFiles = ["Button.qml"]
+if (fs.existsSync(kitDir)) {
+  for (const file of kitFiles) {
+    const kit = fs.readFileSync(path.join(kitDir, file), "utf8")
+    const texts = [...kit.matchAll(/(?<![A-Za-z0-9_.])Text\s*\{/g)]
+    const bare = []
+    for (const m of texts) {
+      let depth = 0
+      let own = ""
+      for (let i = kit.indexOf("{", m.index); i < kit.length; i++) {
+        if (kit[i] === "{") depth++
+        else if (kit[i] === "}" && --depth === 0) break
+        else if (depth === 1) own += kit[i]
+      }
+      if (!/textFormat:\s*Text\.PlainText/.test(own)) bare.push(`${file}:${kit.slice(0, m.index).split("\n").length}`)
+    }
+    check(`the kit's ${file} draws every label and tooltip as plain text`,
+      texts.length > 0 && bare.length === 0, bare.join(", ") || "no Text found")
+  }
+} else {
+  console.log(`rich-text: no Omarchy kit at ${kitDir}; the kit's PlainText is not checked here`)
+}
 
 // --- the QML side ---
 // Text defaults to AutoText, so every Text declares PlainText, even constant
@@ -77,9 +87,8 @@ for (const binding of ["formFolderLabel()", "formOrgLabel()", "Model.clipLabel(v
     Boolean(line) && line.includes("Model.plainLabel("), String(line))
 }
 
-// Order matters, and only one order is safe. plainLabel may return a <span>
-// wrapper, so clipping its output could cut a tag in half and hand the control
-// the markup the wrapper exists to prevent. Clip the raw value, then neutralize.
+// Clip the raw value, then hand it through plainLabel: the one place a label
+// is prepared for a kit control, whatever that has to do for a given kit.
 const clipLine = panel.split("\n").find(l => l.includes("Model.clipLabel("))
 check("the vault value is clipped before it is neutralized, never after",
   Boolean(clipLine)
@@ -116,9 +125,9 @@ check("a missing or unusable value clips to the empty string, never to \"null\""
 check("a nonsense budget still returns something drawable",
   Model.clipLabel("Work", 0).length > 0 && Model.clipLabel("Work", -5).length > 0,
   JSON.stringify([Model.clipLabel("Work", 0), Model.clipLabel("Work", -5)]))
-// The clip runs on raw vault text, so it must not be what introduces markup.
-check("clipping cannot manufacture markup that plainLabel then has to catch",
-  Model.plainLabel(Model.clipLabel("<img src=x onerror=alert(1)>", 20)).indexOf("<img") < 0,
-  Model.plainLabel(Model.clipLabel("<img src=x onerror=alert(1)>", 20)))
+// The clip only shortens: it never adds characters that could read as markup.
+check("clipping adds nothing but the ellipsis",
+  Model.clipLabel("<img src=x onerror=alert(1)>", 20) === "<img src=x onerro...",
+  Model.clipLabel("<img src=x onerror=alert(1)>", 20))
 
 done()

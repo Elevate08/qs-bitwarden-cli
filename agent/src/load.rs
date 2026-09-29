@@ -63,6 +63,13 @@ impl LoadWindow {
         })
     }
 
+    /// The filter the FIFO reader uses to find this load's payload.
+    pub fn filter(&self) -> Result<PayloadFilter, PayloadError> {
+        self.nonce
+            .map(|nonce| PayloadFilter { nonce })
+            .ok_or(PayloadError::Closed)
+    }
+
     /// Decode one bounded JSON payload into an unpublished candidate. Raw JSON
     /// and PEMs wipe on drop; the nonce is checked before `begin_load`, so a
     /// rejected payload cannot wipe a live set.
@@ -97,6 +104,64 @@ impl LoadWindow {
                 .map_err(PayloadError::Load)?;
         }
         Ok(candidate)
+    }
+}
+
+/// Picks one load's payload out of whatever else is in the FIFO.
+///
+/// The FIFO lives as long as the helper, so a payload written for an earlier
+/// load stays buffered in it: one a lock cancelled before it arrived, or one
+/// that outlived its reader's deadline. Taken first-come, that stale payload
+/// was read in place of the next load's own, failed its nonce check, and left
+/// the new payload behind for the load after it to fail on in turn -- every
+/// later load failed until the helper restarted. The reader now keeps only
+/// the line that names this load's nonce and drops everything else.
+#[derive(Clone)]
+pub struct PayloadFilter {
+    nonce: [u8; 32],
+}
+
+impl fmt::Debug for PayloadFilter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PayloadFilter { nonce redacted }")
+    }
+}
+
+impl PayloadFilter {
+    /// Where this load's payload starts in `line` (one FIFO line without its
+    /// newline), or `None` when the line is not this load's. The match is only
+    /// a selection: `LoadWindow::decode` still checks the whole payload.
+    pub fn locate(&self, line: &[u8]) -> Option<usize> {
+        if self.names_this_load(line) {
+            return Some(0);
+        }
+        // A writer stopped mid-payload (a lock reaps the panel's vault read)
+        // leaves a fragment with no newline, and the next payload lands on the
+        // same line behind it. The panel's jq filter writes `loadId` first, so
+        // this load's payload starts where its own nonce is named. Only the
+        // structural form can match: inside a JSON string the quotes would be
+        // escaped.
+        let mut marker = br#"{"loadId":""#.to_vec();
+        marker.extend_from_slice(&self.nonce);
+        marker.push(b'"');
+        let start = line
+            .windows(marker.len())
+            .position(|window| window == marker.as_slice())?;
+        (start > 0 && self.names_this_load(&line[start..])).then_some(start)
+    }
+
+    fn names_this_load(&self, bytes: &[u8]) -> bool {
+        // Only `loadId` is kept; serde_json skips the other fields in place
+        // without copying them, so no private key is duplicated here.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Named {
+            load_id: String,
+        }
+        serde_json::from_slice::<Named>(bytes)
+            .ok()
+            .and_then(|named| parse_nonce(&named.load_id).ok())
+            .is_some_and(|supplied| constant_time_eq(&supplied, &self.nonce))
     }
 }
 

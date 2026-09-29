@@ -9,7 +9,8 @@
 //
 //   node tests/unlock-envelope-service.test.js
 
-const { createSuite, functionBody, read } = require("./harness")
+const { createSuite, functionBody, loadModule, read } = require("./harness")
+const Model = loadModule()
 const path = require("path")
 
 const service = read("Service.qml")
@@ -177,7 +178,7 @@ const pinSetup = bodyOf("submitPinSetup")
 check("PIN setup adds a wrap through the master-password check, with the PIN in the environment",
   /addQuickUnlockMethod\(typed, \{ kind: "add-pin" \}, pin,/.test(pinSetup)
     && /pin\[Model\.pinEnvVar\(\)\] = pinSetupPin/.test(pinSetup), pinSetup)
-check("PIN rules are unchanged: validated first, numeric, 4 minimum",
+check("PIN rules: validated first, numeric, the setup floor",
   /Model\.validatePin\(pinSetupPin, pinSetupConfirm\)/.test(pinSetup), pinSetup)
 check("a wrong master password is named as such",
   /root\.pinError = root\.quickUnlockErrorText\(why,/.test(pinSetup), pinSetup)
@@ -255,5 +256,46 @@ check("the fingerprint option no longer says the password is stored as-is",
     /r\.file === "repaired"[\s\S]{0,200}execDetached\(Model\.repairedKeyringNoticeCommand\(\)\)/
       .test(bodyOf("onKeyringRepaired")), "")
 }
+
+// -------------------------------------------------------------------------
+// A method turned off is removed from every account
+// -------------------------------------------------------------------------
+//
+// The settings are shared switches; each account's envelope has its own
+// ways in. Turning one off used to remove only the account on screen's.
+
+const pinChanged = service.slice(service.indexOf("onPinUnlockChanged:"), service.indexOf("onPinUnlockChanged:") + 700)
+const fpChanged = service.slice(service.indexOf("onFingerprintUnlockChanged:"), service.indexOf("onFingerprintUnlockChanged:") + 900)
+const fidoSrc = read("FidoUnlock.qml")
+const fidoArmed = fidoSrc.slice(fidoSrc.indexOf("onArmedChanged:"), fidoSrc.indexOf("onArmedChanged:") + 900)
+check("turning PIN off purges it from every account", /purgeQuickUnlockMethod\("pin"\)/.test(pinChanged), pinChanged)
+check("turning fingerprint off purges it from every account",
+  /purgeQuickUnlockMethod\("fingerprint"\)/.test(fpChanged), fpChanged)
+check("turning FIDO2 off purges it from every account",
+  /vault\.purgeQuickUnlockMethod\("fido"\)/.test(fidoArmed), fidoArmed)
+check("the purge names every account slot the panel holds",
+  /accountRegistry\.accounts\[i\]\.slot/.test(bodyOf("accountSlotsForPurge"))
+    && /Model\.quickUnlockPurgeCommand\(envelopeTool\(\), accountSlotsForPurge\(\), method\)/.test(bodyOf("purgeQuickUnlockMethod"))
+    && /writes:\s*true/.test(bodyOf("purgeQuickUnlockMethod")),
+  bodyOf("purgeQuickUnlockMethod"))
+check("a purge asked for before the unlock tool is ready runs once it is",
+  /pendingPurges/.test(bodyOf("purgeQuickUnlockMethod")) && /runPendingPurges\(\)/.test(bodyOf("envelopeReadinessChanged")),
+  bodyOf("envelopeReadinessChanged"))
+
+// A setting turned off in shell.json while the shell was stopped.
+const refresh = bodyOf("refreshEnvelope")
+const reconcile = bodyOf("reconcileDisabledMethods")
+check("every envelope read reconciles methods whose setting is off",
+  /reconcileDisabledMethods\(\)/.test(refresh), refresh)
+check("only a setting explicitly false counts as off, never one not loaded yet",
+  /settings\[name\] === false/.test(bodyOf("quickUnlockSettingOff")), bodyOf("quickUnlockSettingOff"))
+check("a method just enabled is not taken for off while its setting write lands",
+  /quickUnlockEnabledAt\[c\.method\]/.test(reconcile) && /quickUnlockEnableGraceMs/.test(reconcile)
+    && /noteQuickUnlockEnabled\("pin"\)/.test(bodyOf("submitPinSetup"))
+    && /noteQuickUnlockEnabled\("fingerprint"\)/.test(bodyOf("submitFingerprintSetup"))
+    && /noteQuickUnlockEnabled\("fido"\)/.test(fidoSrc),
+  reconcile)
+check("a removal is tried once per account and method, so a failure cannot loop",
+  /reconciledMethods\[key\]\) continue/.test(reconcile), reconcile)
 
 done()

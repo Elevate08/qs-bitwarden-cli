@@ -22,6 +22,22 @@
 //!
 //! The `master` wrap always exists (written when `bw` first accepts a typed
 //! password); opening it authorizes every later change.
+//!
+//! What a PIN is worth once the seal is gone. `systemd-creds` binds the
+//! envelope to this machine and user, which stops a copy taken anywhere else,
+//! but any program running as the user can unseal it (`systemd-creds --user
+//! decrypt` runs as the user). From there the PIN wrap is only
+//! Argon2id(PIN) -> KEK -> AEAD, and nothing counts wrong guesses: this tool
+//! is a stateless one-shot, and the panel's five-attempt limit applies to its
+//! own screen, not to a copy of the envelope. So a PIN holds exactly as long
+//! as the Argon2 cost times the number of possible PINs. At the panel's
+//! 256 MiB and 4 passes that is roughly half a second per guess per core: a
+//! 4-digit PIN falls in minutes on a 16-core machine, and a 6-digit one in
+//! about a working day. Only a longer PIN, or one that is not all digits,
+//! raises that. This tool never sees the PIN, only the `argon2 -r` output the
+//! panel hands it, so the length and the character set are the panel's to
+//! enforce; nothing here limits which characters a PIN may use. What this
+//! tool does enforce is the cost: see `PIN_ARGON2_MIN_MEMORY_KIB`.
 
 use base64ct::{Base64, Encoding};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -70,6 +86,14 @@ pub const MAX_TEXT_CHARS: usize = 1024;
 /// wrap is never a cheaper target than the account.
 pub const ARGON2_MIN_MEMORY_KIB: u32 = 64 * 1024;
 pub const ARGON2_MIN_ITERATIONS: u32 = 3;
+/// A higher floor for a new PIN wrap: the panel's own cost (256 MiB, 4
+/// passes). A PIN has far less entropy than a master password, and after a
+/// same-user unseal this cost is all that stands between a program and the
+/// PIN (see the module notes), so no caller may quietly make it cheaper.
+/// Checked when a PIN wrap is written, not when an envelope is read, so an
+/// envelope written before this floor existed still opens.
+pub const PIN_ARGON2_MIN_MEMORY_KIB: u32 = 256 * 1024;
+pub const PIN_ARGON2_MIN_ITERATIONS: u32 = 4;
 /// Ceilings, so a hostile envelope cannot make `argon2` exhaust the machine.
 pub const ARGON2_MAX_MEMORY_KIB: u32 = 4 * 1024 * 1024;
 pub const ARGON2_MAX_ITERATIONS: u32 = 64;
@@ -451,6 +475,9 @@ impl Envelope {
         pin_key: &[u8; KEY_LEN],
     ) -> Result<()> {
         params.validate()?;
+        if params.m < PIN_ARGON2_MIN_MEMORY_KIB || params.t < PIN_ARGON2_MIN_ITERATIONS {
+            return Err(Error::Policy);
+        }
         let dek = self.dek(auth)?;
         self.wraps.pin = Some(password_wrap(&self.account, "pin", params, pin_key, &dek)?);
         Ok(())
@@ -766,6 +793,17 @@ mod tests {
         Argon2Params::new(salt, ARGON2_MIN_MEMORY_KIB, ARGON2_MIN_ITERATIONS, 1).unwrap()
     }
 
+    /// The cheapest parameters a new PIN wrap may use.
+    fn pin_params(salt: &str) -> Argon2Params {
+        Argon2Params::new(
+            salt,
+            PIN_ARGON2_MIN_MEMORY_KIB,
+            PIN_ARGON2_MIN_ITERATIONS,
+            1,
+        )
+        .unwrap()
+    }
+
     fn key(byte: u8) -> [u8; KEY_LEN] {
         [byte; KEY_LEN]
     }
@@ -784,9 +822,41 @@ mod tests {
     }
 
     #[test]
+    fn a_new_pin_wrap_costs_at_least_what_the_panel_uses() {
+        let mut env = envelope();
+        for (m, t) in [
+            (ARGON2_MIN_MEMORY_KIB, ARGON2_MIN_ITERATIONS),
+            (PIN_ARGON2_MIN_MEMORY_KIB, PIN_ARGON2_MIN_ITERATIONS - 1),
+            (PIN_ARGON2_MIN_MEMORY_KIB - 1, PIN_ARGON2_MIN_ITERATIONS),
+        ] {
+            let cheap = Argon2Params::new(SALT_B, m, t, 1).unwrap();
+            assert_eq!(
+                env.add_pin(&Via::Master(&key(1)), cheap, &key(2))
+                    .unwrap_err(),
+                Error::Policy
+            );
+        }
+        assert!(env.summary().pin.is_none());
+        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
+            .unwrap();
+
+        // A PIN wrap written at the general floor, before this one existed,
+        // still parses and opens: the floor is for new wraps only.
+        let mut older = envelope();
+        let dek = older.dek(&Via::Master(&key(1))).unwrap();
+        older.wraps.pin =
+            Some(password_wrap(&older.account, "pin", params(SALT_B), &key(2), &dek).unwrap());
+        let older = reparse(&older);
+        assert_eq!(
+            older.open(&Via::Pin(&key(2))).unwrap().as_slice(),
+            b"correct horse"
+        );
+    }
+
+    #[test]
     fn every_method_opens_the_one_stored_password() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), params(SALT_B), &key(2))
+        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
             .unwrap();
         env.add_fingerprint(&Via::Master(&key(1))).unwrap();
         env.add_fido(
@@ -814,7 +884,7 @@ mod tests {
     #[test]
     fn a_wrong_key_never_opens_anything() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), params(SALT_B), &key(2))
+        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
             .unwrap();
         env.add_fido(
             &Via::Master(&key(1)),
@@ -866,7 +936,7 @@ mod tests {
     fn adding_a_method_needs_a_key_that_opens_the_envelope() {
         let mut env = envelope();
         assert_eq!(
-            env.add_pin(&Via::Master(&key(9)), params(SALT_B), &key(2))
+            env.add_pin(&Via::Master(&key(9)), pin_params(SALT_B), &key(2))
                 .unwrap_err(),
             Error::WrongKey
         );
@@ -881,7 +951,7 @@ mod tests {
     #[test]
     fn a_flipped_byte_anywhere_fails() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), params(SALT_B), &key(2))
+        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
             .unwrap();
         env.add_fido(
             &Via::Master(&key(1)),
@@ -985,7 +1055,7 @@ mod tests {
     #[test]
     fn rotation_keeps_every_method() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), params(SALT_B), &key(2))
+        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
             .unwrap();
         env.add_fido(
             &Via::Master(&key(1)),
@@ -1030,7 +1100,7 @@ mod tests {
     #[test]
     fn removing_methods_leaves_the_master_wrap() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), params(SALT_B), &key(2))
+        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
             .unwrap();
         env.add_fingerprint(&Via::Master(&key(1))).unwrap();
         env.add_fido(

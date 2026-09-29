@@ -269,10 +269,13 @@ check("the assert process's collector is scrubbed on lock, like every other secr
   /function secretProcesses\(\)\s*\{\s*return \[assertProc\]/.test(controllerSrc),
   "assertProc must be scrubbed, or the master password would outlive the lock in its buffer")
 check("and after every answer",
-  /var out = String\(assertStdout\.text \|\| ""\)\s*\n\s*if \(vault\) vault\.clearProcessCollectorSoon\(assertProc\)/
+  /var out = vault \? vault\.heldOutput\(assertProc, assertStdout\.text\) : ""\s*\n\s*if \(vault\) vault\.clearProcessCollectorSoon\(assertProc\)/
     .test(controllerSrc), "")
+check("the password it prints stays in the vault helper",
+  /assertProc\.capture = "secret:" \+ vault\.newHeldName\(\)/.test(controllerSrc)
+    && /VaultProcess \{\s*id: assertProc/.test(controllerSrc), "")
 check("its command is set fresh before every run, never left to the scrub's leftover",
-  /assertProc\.command = target\.mode === "envelope"[\s\S]{0,200}?assertProc\.running = true/.test(controllerSrc)
+  /assertProc\.command = target\.mode === "envelope"[\s\S]{0,400}?assertProc\.running = true/.test(controllerSrc)
     && !/if \(!assertProc\.running\) assertProc\.running = true/.test(controllerSrc), "")
 check("which key holds the credential is asked again before each touch",
   /startAfterProbe = true\s*\n\s*if \(!probeProc\.running\) probeProc\.running = true/.test(controllerSrc)

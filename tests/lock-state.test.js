@@ -223,7 +223,8 @@ for (const [name, starter, handler] of [
   ["folderCreate", "submitNewFolder",    "onFolderCreated"],
   ["sync",        "syncVault",          "onSyncFinished"],
   ["itemSave",    "saveItemForm",       "onSaveItemFinished"],
-  ["itemDelete",  "deleteCurrentItem",  "onDeleteItemFinished"],
+  // The delete itself, once any master password re-prompt has passed.
+  ["itemDelete",  "deleteCurrentItemNow", "onDeleteItemFinished"],
   ["attachment",  "pumpAttachmentQueue", "onAttachmentDownloaded"],
 ]) {
   check(`${starter}() stamps the vault operation`,

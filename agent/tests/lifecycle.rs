@@ -699,8 +699,10 @@ fn a_full_load_releasing_every_held_request_keeps_the_helper_alive() {
     agent.shutdown();
 }
 
-/// A malformed FIFO payload locks and keeps serving (the panel retries);
-/// `load_failed`, not `locked`, so it is not taken as a lock ack.
+/// A malformed FIFO line locks and keeps serving (the panel retries);
+/// `load_failed`, not `locked`, so it is not taken as a lock ack. The reader
+/// passes over lines that are not this load's payload, so with none ever
+/// arriving the load fails a few seconds after `key_load_end`.
 #[test]
 fn a_malformed_load_leaves_the_helper_running_and_accepts_a_retry() {
     let mut agent = TestAgent::start();
@@ -1011,6 +1013,225 @@ fn a_forwarded_request_is_labelled_and_never_granted() {
     agent.shutdown();
 }
 
+/// A bind the helper refuses must not leave the connection looking local.
+/// Here the forwarding bind carries a host key over the 16 KiB limit, as a
+/// hostile server's padded certificate would, and OpenSSH carries on after the
+/// refusal. The relayed logins must prompt, labelled forwarded, instead of
+/// riding the local `ssh`'s grant for the same server.
+#[test]
+fn a_refused_bind_fails_closed_and_never_rides_a_local_grant() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    const GITHUB: &[u8] = b"github host key";
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let (proceed, go) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        // The local `ssh` logs in to the server; approved with a window.
+        let mut local = UnixStream::connect(&socket).unwrap();
+        local
+            .write_all(&session_bind_to(GITHUB, &[0x41; 32], false))
+            .unwrap();
+        assert_eq!(read_agent_frame(&mut local)[4], 6);
+        local
+            .write_all(&sign_request_for(
+                &blob,
+                &hostbound_login_in(&[0x41; 32], b"git", &blob, GITHUB),
+            ))
+            .unwrap();
+        let local_signed = read_agent_frame(&mut local);
+        go.recv().unwrap();
+
+        let oversized = vec![0_u8; 17 * 1024];
+        // Relayed, as modern OpenSSH does it: the refused forwarding bind,
+        // then the remote host's host-bound login to the same server.
+        let mut relayed = UnixStream::connect(&socket).unwrap();
+        relayed
+            .write_all(&session_bind_to(&oversized, &[0x42; 32], true))
+            .unwrap();
+        let refused = read_agent_frame(&mut relayed);
+        relayed
+            .write_all(&sign_request_for(
+                &blob,
+                &hostbound_login_in(&[0xaa; 32], b"git", &blob, GITHUB),
+            ))
+            .unwrap();
+        let hostbound = read_agent_frame(&mut relayed);
+        go.recv().unwrap();
+
+        // Relayed, then a well-formed "not forwarded" bind to the server and
+        // a plain login on it: the refused bind still counts.
+        let mut rebound = UnixStream::connect(&socket).unwrap();
+        rebound
+            .write_all(&session_bind_to(&oversized, &[0x43; 32], true))
+            .unwrap();
+        let _ = read_agent_frame(&mut rebound);
+        rebound
+            .write_all(&session_bind_to(GITHUB, &[0x44; 32], false))
+            .unwrap();
+        assert_eq!(read_agent_frame(&mut rebound)[4], 6);
+        rebound
+            .write_all(&sign_request_for(
+                &blob,
+                &login_data_in(&[0x44; 32], b"git", &blob),
+            ))
+            .unwrap();
+        let plain = read_agent_frame(&mut rebound);
+        (local_signed, refused, hostbound, plain)
+    });
+
+    let local = agent.read();
+    assert_eq!(local["type"], "approval_required");
+    assert_eq!(local["forwarded"], false);
+    assert_eq!(local["grantOffered"], true);
+    let github = local["hostKey"].as_str().unwrap().to_owned();
+    let local_id = local["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"approve\",\"requestId\":{local_id},\"grantSeconds\":120}}"
+    ));
+    assert_eq!(agent.read()["type"], "grants_changed");
+
+    for case in ["host-bound login", "login after a later bind"] {
+        proceed.send(()).unwrap();
+        let relayed = agent.read();
+        assert_eq!(
+            relayed["type"], "approval_required",
+            "{case}: a relayed login after a refused bind must prompt, not ride the grant"
+        );
+        assert_eq!(relayed["forwarded"], true, "{case}");
+        assert_eq!(relayed["grantOffered"], false, "{case}");
+        assert_eq!(
+            relayed["hostKey"],
+            github.as_str(),
+            "{case}: the same server"
+        );
+        let id = relayed["requestId"].as_u64().unwrap();
+        agent.send(&format!("{{\"v\":1,\"type\":\"deny\",\"requestId\":{id}}}"));
+    }
+
+    let (local_signed, refused, hostbound, plain) = client.join().unwrap();
+    assert_eq!(local_signed[4], 14);
+    assert_eq!(refused, [0, 0, 0, 1, 5], "the oversized bind is refused");
+    assert_eq!(hostbound, [0, 0, 0, 1, 5], "denied, never signed silently");
+    assert_eq!(plain, [0, 0, 0, 1, 5], "denied, never signed silently");
+    agent.shutdown();
+}
+
+/// A bind past the per-connection limit cannot be recorded, so it is refused
+/// and marks the connection forwarded whatever its flag said.
+#[test]
+fn a_bind_past_the_per_connection_limit_marks_the_connection_forwarded() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+
+    let socket = agent.socket.clone();
+    let blob = public_blob.clone();
+    let client = std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        for session in 0..16_u8 {
+            stream
+                .write_all(&session_bind_to(b"host key", &[session; 32], false))
+                .unwrap();
+            assert_eq!(read_agent_frame(&mut stream)[4], 6);
+        }
+        stream
+            .write_all(&session_bind_to(b"host key", &[0x77; 32], false))
+            .unwrap();
+        let refused = read_agent_frame(&mut stream);
+        stream
+            .write_all(&sign_request_for(&blob, &git_signature_data()))
+            .unwrap();
+        (refused, read_agent_frame(&mut stream))
+    });
+
+    let approval = agent.read();
+    assert_eq!(approval["type"], "approval_required");
+    assert_eq!(approval["forwarded"], true);
+    assert_eq!(approval["grantOffered"], false);
+    let id = approval["requestId"].as_u64().unwrap();
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"approve\",\"requestId\":{id},\"grantSeconds\":120}}"
+    ));
+    let (refused, signed) = client.join().unwrap();
+    assert_eq!(refused, [0, 0, 0, 1, 5]);
+    assert_eq!(signed[4], 14, "approved once");
+    // No grant was opened, so the next message is the barrier's lock ack.
+    agent.drain_control();
+    agent.shutdown();
+}
+
+/// A lock during a load, and the panel's writer finishing after it, leaves a
+/// payload in the FIFO that no reader wants. It used to be read by the next
+/// load in place of that load's own, whose payload was then read by the load
+/// after, and so on: every later load failed until the helper restarted.
+#[test]
+fn a_payload_orphaned_by_a_lock_never_poisons_later_loads() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let orphaned = "00000000000000000000000000000001";
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"key_load_begin\",\"epoch\":1,\"loadId\":\"{orphaned}\"}}"
+    ));
+    agent.send("{\"v\":1,\"type\":\"vault_locked\",\"epoch\":1}");
+    assert_eq!(agent.read()["type"], "locked");
+    // The cancelled load's writer lands its payload after the lock.
+    agent.write_fifo(&jq_payload(orphaned, &[disposable_item(&key)]));
+
+    for (epoch, nonce) in [
+        (2, "00000000000000000000000000000002"),
+        (3, "00000000000000000000000000000003"),
+        (4, "00000000000000000000000000000004"),
+    ] {
+        // load_keys fails the test on anything but keys_loaded.
+        assert_eq!(agent.load_keys(std::slice::from_ref(&key), epoch, nonce), 1);
+    }
+    assert_eq!(identity_count(&agent.socket), 1);
+
+    // The same when the leftover lands after the next load has begun, ahead
+    // of that load's own payload.
+    agent.send("{\"v\":1,\"type\":\"vault_locked\",\"epoch\":4}");
+    assert_eq!(agent.read()["type"], "locked");
+    let late = "00000000000000000000000000000005";
+    let own = "00000000000000000000000000000006";
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"key_load_begin\",\"epoch\":6,\"loadId\":\"{own}\"}}"
+    ));
+    agent.write_fifo(&jq_payload(late, &[disposable_item(&key)]));
+    agent.write_fifo(&jq_payload(own, &[disposable_item(&key)]));
+    agent.send("{\"v\":1,\"type\":\"key_load_end\",\"epoch\":6,\"status\":\"ok\"}");
+    assert_eq!(agent.read()["type"], "public_key");
+    let loaded = agent.read();
+    assert_eq!(loaded["type"], "keys_loaded");
+    assert_eq!(loaded["epoch"], 6);
+
+    // And when the lock stopped the writer mid-payload: an unterminated
+    // fragment, with the next payload appended to it on the same line.
+    agent.send("{\"v\":1,\"type\":\"vault_locked\",\"epoch\":6}");
+    assert_eq!(agent.read()["type"], "locked");
+    let cut = jq_payload("00000000000000000000000000000007", &[disposable_item(&key)]);
+    {
+        let mut writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&agent.fifo)
+            .unwrap();
+        writer.write_all(&cut[..cut.len() / 2]).unwrap();
+    }
+    assert_eq!(
+        agent.load_keys(
+            std::slice::from_ref(&key),
+            8,
+            "00000000000000000000000000000008"
+        ),
+        1
+    );
+    agent.shutdown();
+}
+
 /// `--version` and `--self-test` answer without filesystem, socket or runtime
 /// directory: the panel runs them before any of that exists.
 #[test]
@@ -1191,13 +1412,7 @@ impl TestAgent {
                 })
             })
             .collect();
-        let payload = serde_json::json!({"loadId": nonce, "items": items});
-        let mut writer = fs::OpenOptions::new().write(true).open(&self.fifo).unwrap();
-        writer
-            .write_all(&serde_json::to_vec(&payload).unwrap())
-            .unwrap();
-        writer.write_all(b"\n").unwrap();
-        drop(writer);
+        self.write_fifo(&jq_payload(nonce, &items));
         self.send(&format!(
             "{{\"v\":1,\"type\":\"key_load_end\",\"epoch\":{epoch},\"status\":\"ok\"}}"
         ));
@@ -1226,6 +1441,13 @@ impl TestAgent {
         }
     }
 
+    /// Write `bytes` and a newline to the FIFO, as the panel's writer does.
+    fn write_fifo(&self, bytes: &[u8]) {
+        let mut writer = fs::OpenOptions::new().write(true).open(&self.fifo).unwrap();
+        writer.write_all(bytes).unwrap();
+        writer.write_all(b"\n").unwrap();
+    }
+
     fn shutdown(&mut self) {
         self.send("{\"v\":1,\"type\":\"shutdown\"}");
         let status = self.child.wait().unwrap();
@@ -1241,6 +1463,27 @@ impl Drop for TestAgent {
             .store(false, std::sync::atomic::Ordering::Relaxed);
         let _ = self.child.kill();
     }
+}
+
+/// A key-load payload laid out as the panel's `jq -c` filter writes it,
+/// `loadId` first (`serde_json::json!` would sort it last).
+fn jq_payload(nonce: &str, items: &[serde_json::Value]) -> Vec<u8> {
+    format!(
+        "{{\"loadId\":\"{nonce}\",\"items\":{}}}",
+        serde_json::to_string(items).unwrap()
+    )
+    .into_bytes()
+}
+
+fn disposable_item(key: &PrivateKey) -> serde_json::Value {
+    serde_json::json!({
+        "itemId": "disposable-0",
+        "name": "Disposable test key 0",
+        "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
+        "publicKey": key.public_key().to_openssh().unwrap(),
+        "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
+        "requiresReprompt": false
+    })
 }
 
 /// A framed SSH_AGENTC_SIGN_REQUEST for one public blob, over data the agent
@@ -1290,6 +1533,30 @@ fn login_data_in(session_id: &[u8], user: &[u8], public_blob: &[u8]) -> Vec<u8> 
     1_u8.encode(&mut data).unwrap();
     b"ssh-ed25519".as_slice().encode(&mut data).unwrap();
     public_blob.encode(&mut data).unwrap();
+    data
+}
+
+/// OpenSSH's host-bound login data: `login_data_in` with the server's host
+/// key inside, which names the server even with no bind for the session.
+fn hostbound_login_in(
+    session_id: &[u8],
+    user: &[u8],
+    public_blob: &[u8],
+    host_key: &[u8],
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    session_id.encode(&mut data).unwrap();
+    50_u8.encode(&mut data).unwrap();
+    user.encode(&mut data).unwrap();
+    b"ssh-connection".as_slice().encode(&mut data).unwrap();
+    b"publickey-hostbound-v00@openssh.com"
+        .as_slice()
+        .encode(&mut data)
+        .unwrap();
+    1_u8.encode(&mut data).unwrap();
+    b"ssh-ed25519".as_slice().encode(&mut data).unwrap();
+    public_blob.encode(&mut data).unwrap();
+    host_key.encode(&mut data).unwrap();
     data
 }
 

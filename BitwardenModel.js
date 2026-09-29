@@ -19,11 +19,17 @@ const PIN_ENV = "QSBW_PIN"
 // migrate it into the envelope on the next PIN unlock.
 const PIN_ITERATIONS = 600000
 
-// Each PIN guess costs Argon2id at 256 MiB x 4 passes (~0.75 s) on this
-// machine, as this user. Six digits is recommended; four is allowed with a
-// warning that names the cost.
-const PIN_MIN_LENGTH = 4
-const PIN_RECOMMENDED_LENGTH = 6
+// Each PIN guess costs Argon2id at 256 MiB x 4 passes, but the stored item
+// is not a lock on guessing: a program running as the user can decrypt it
+// with `systemd-creds --user` and try PINs offline on every core (see
+// PIN_GUESSES_PER_SECOND). So six digits is the floor and eight the
+// recommendation; six and seven are allowed with a warning that names the
+// cost.
+const PIN_MIN_LENGTH = 6
+const PIN_RECOMMENDED_LENGTH = 8
+// PINs set before the floor was raised (at 4) still unlock; only new ones
+// must meet it.
+const PIN_UNLOCK_MIN_LENGTH = 4
 
 function keyringSecretEnvVar() {
   return KEYRING_SECRET_ENV
@@ -374,6 +380,21 @@ const DEVICE_CODE_ENV = "QSBW_DEVICE_CODE"
 
 function sessionEnvVar() {
   return SESSION_ENV
+}
+
+// NODE_OPTIONS for every `bw`: the user's own, plus bw-fast-exit.js from the
+// plugin directory, which saves the ~2 s bw idles after answering. Node reads
+// NODE_OPTIONS with double quotes and backslash escapes. No plugin directory
+// (not a file URL) leaves the options as they were.
+var BW_FAST_EXIT_FILE = "bw-fast-exit.js"
+
+function bwNodeOptions(pluginDir, existing) {
+  var base = String(existing || "").trim()
+  var dir = String(pluginDir || "").replace(/\/+$/, "")
+  if (dir === "") return base
+  var file = dir + "/" + BW_FAST_EXIT_FILE
+  var option = "--require \"" + file.replace(/(["\\])/g, "\\$1") + "\""
+  return base ? base + " " + option : option
 }
 
 function passwordEnvVar() {
@@ -1023,16 +1044,25 @@ function screenLockPollMs() {
 }
 
 // Suspend is an event: logind's PrepareForSleep(true), for every path into
-// sleep. A delay inhibitor, held until a second after the announcement, gives
-// the panel time to drop the key before memory is frozen. Inhibitors release
+// sleep. A delay inhibitor, held until the panel says the vault is locked,
+// gives it time to drop the key before memory is frozen. Inhibitors release
 // only on exit, so each loop iteration takes a fresh one. The monitor is
 // killed by pid once sed matches; waiting for a broken pipe would hold the
 // inhibitor until the next signal, which is the resume.
 var SLEEP_SIGNAL_TOKEN = "sleep"
 var WAKE_SIGNAL_TOKEN = "wake"
+// What the panel writes to the monitor's stdin once `bw lock` (and the
+// keyring clear) has finished.
+var SLEEP_ACK_TOKEN = "ack"
+// The inhibitor is held until the ack or this many seconds, whichever comes
+// first: `bw lock` is a 1-3 s cold start, and logind's InhibitDelayMaxSec
+// (5 s by default) ends the wait anyway.
+var SLEEP_ACK_TIMEOUT_S = 4
 
 function sleepSignalToken() { return SLEEP_SIGNAL_TOKEN }
 function wakeSignalToken() { return WAKE_SIGNAL_TOKEN }
+function sleepAckLine() { return SLEEP_ACK_TOKEN + "\n" }
+function sleepAckTimeoutS() { return SLEEP_ACK_TIMEOUT_S }
 
 function sleepMonitorCommand() {
   var monitor = "gdbus monitor --system --dest org.freedesktop.login1"
@@ -1040,25 +1070,36 @@ function sleepMonitorCommand() {
 
   // -u so the match leaves sed the moment it is read, rather than sitting in a
   // block buffer until after the machine has already suspended.
-  var match = "sed -une '/PrepareForSleep (true,/{s/.*/" + SLEEP_SIGNAL_TOKEN + "/p;q}'"
+  var match = "sed -une '/PrepareForSleep (true,/{s/.*/x/p;q}'"
 
+  // stdin is the ack pipe (fd 4 below). Acks left from an earlier cycle are
+  // drained before the token goes out, so only this cycle's ack can end the
+  // wait; the panel acks only after reading the token.
   var inner = "exec 3< <(" + monitor + "); g=$!; "
-    + match + " <&3; "
+    + "m=\"$(" + match + " <&3)\"; "
     + "kill \"$g\" 2>/dev/null; exec 3<&-; "
-    // Time for the panel to act before the inhibitor is released.
-    + "sleep 1"
+    // gdbus ended without a sleep: not a resume, so no wake token.
+    + "[ -n \"$m\" ] || exit 1; "
+    + "while read -r -t 0.05 _; do :; done; "
+    + "echo " + shellQuote(SLEEP_SIGNAL_TOKEN) + "; "
+    + "read -r -t " + SLEEP_ACK_TIMEOUT_S + " _; exit 0"
 
   // Never exits on its own; failures wait before retrying so it cannot spin.
   // Quickshell kills only its direct child on reload, so a watcher on stdin
   // kills this process group (setsid makes $$ its id) when the owner dies.
-  // The panel must keep stdinEnabled true.
-  var script = "(while IFS= read -r _; do :; done; kill -KILL -- -$$) <&0 & "
+  // The panel must keep stdinEnabled true. The watcher also relays the
+  // panel's ack into an anonymous pipe (opened read-write, so it never
+  // blocks and never reaches EOF) that each inhibited wait reads as stdin;
+  // systemd-inhibit passes stdin through but closes other descriptors.
+  var script = "exec 4<> <(:); "
+    + "(while IFS= read -r l; do [ \"$l\" = " + shellQuote(SLEEP_ACK_TOKEN) + " ] && printf '%s\\n' "
+    + shellQuote(SLEEP_ACK_TOKEN) + " >&4; done; kill -KILL -- -$$) <&0 & "
     + "while :; do "
     + "command -v gdbus >/dev/null 2>&1 || { sleep 300; continue; }; "
     + "if systemd-inhibit --what=sleep --mode=delay"
     + " --who=" + shellQuote("Bitwarden")
     + " --why=" + shellQuote("Locking the vault before sleep")
-    + " bash -c " + shellQuote(inner) + "; then "
+    + " bash -c " + shellQuote(inner) + " <&4; then "
     // Resume. Reported once the inhibitor is gone, since nothing waits on it.
     + "echo " + shellQuote(WAKE_SIGNAL_TOKEN) + "; "
     + "else sleep 5; fi; "
@@ -1102,6 +1143,45 @@ function normalizeOpenableUrl(raw) {
 
 function logoutCommand() {
   return ["bw", "logout"]
+}
+
+// -------------------------------------------------------------------------
+// Clipboard
+// -------------------------------------------------------------------------
+//
+// The copied value reaches wl-copy on stdin, from this env var, and never in
+// argv (/proc/<pid>/cmdline is world-readable). `env -u` drops the variable
+// before wl-copy starts, and `exec` means no shell stays behind holding it in
+// its environment for as long as the copy is served.
+//
+// The timed clear is the copy's own lifetime, not a timer in the shell: wl-copy
+// stays in the foreground under `timeout`, and when it ends the compositor
+// drops the selection it was serving. That clear survives a shell restart
+// (the shell restarts after every bar edit, which used to strand a copied
+// password on the clipboard for good), and it never touches a later copy:
+// wl-copy exits as soon as anything else takes the clipboard, so there is
+// nothing left for `timeout` to end. --sensitive marks the copy for clipboard
+// history to skip (x-kde-passwordManagerHint).
+var CLIPBOARD_ENV = "QSBW_CLIP"
+var CLIPBOARD_SENSITIVE_TYPE = "x-kde-passwordManagerHint"
+
+function clipboardEnvVar() { return CLIPBOARD_ENV }
+
+function clipboardCopyCommand(clearSec) {
+  var sec = Math.floor(Number(clearSec))
+  var copy = isFinite(sec) && sec > 0
+    ? "timeout " + sec + "s wl-copy --foreground --sensitive"
+    : "wl-copy --sensitive"
+  return ["bash", "-c", "exec env -u " + CLIPBOARD_ENV + " " + copy
+    + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
+}
+
+// Clears the clipboard only while it holds a copy marked sensitive (ours, or
+// another password manager's), so a lock or account switch never wipes what
+// the user copied themselves since.
+function clipboardClearSensitiveCommand() {
+  return ["bash", "-c", "if wl-paste --list-types 2>/dev/null | grep -qx "
+    + shellQuote(CLIPBOARD_SENSITIVE_TYPE) + "; then wl-copy --clear; fi; exit 0"]
 }
 
 // `bw list items` returns decrypted ciphers, SSH private keys included. A jq
@@ -1465,8 +1545,17 @@ function keyringLookupCommand(slot) {
   return ["bash", "-c", cappedScript(script)]
 }
 
+// Exits 0 only once no session entry is left: `secret-tool clear` exits 1
+// when nothing matched and skips locked matches, so its own status says
+// nothing either way. The check searches without unlocking (no keyring
+// prompt) and counts the output rather than capturing it, since it contains
+// the secret.
 function keyringClearCommand(slot) {
-  return keyringClearEntryCommand(keyringEntryName(KEYRING_ACCOUNT, slot))
+  var attrs = keyringAttributes(keyringEntryName(KEYRING_ACCOUNT, slot))
+  var script = "secret-tool clear" + attrs + " >/dev/null 2>&1; "
+    + "__left=$(secret-tool search" + attrs + " 2>/dev/null | wc -c | tr -d '[:space:]'); "
+    + "[ \"${__left:-0}\" = 0 ]"
+  return ["bash", "-c", script]
 }
 
 // -------------------------------------------------------------------------
@@ -1506,6 +1595,7 @@ function keyringHasFidoPasswordCommand(slot) {
 function pinEnvVar() { return PIN_ENV }
 function pinMinLength() { return PIN_MIN_LENGTH }
 function pinRecommendedLength() { return PIN_RECOMMENDED_LENGTH }
+function pinUnlockMinLength() { return PIN_UNLOCK_MIN_LENGTH }
 
 function validatePin(pin, confirm) {
   var p = String(pin || "")
@@ -1515,15 +1605,23 @@ function validatePin(pin, confirm) {
   return ""
 }
 
-// Argon2id cost of one PIN guess at the envelope's parameters, measured on a
-// current laptop; used only in the warning text.
-var PIN_GUESS_SECONDS = 0.75
+// Offline PIN guesses per second against a copied envelope, at the
+// envelope's Argon2id parameters, measured on a 16-thread laptop running 16
+// guesses in parallel (one guess alone takes about 0.46 s). Used only in the
+// warning text; a faster machine is faster still.
+var PIN_GUESSES_PER_SECOND = 17
 
+// The time to try every PIN of `length` digits, in words.
 function pinGuessTime(length) {
-  var seconds = Math.pow(10, length) * PIN_GUESS_SECONDS
+  var seconds = Math.pow(10, length) / PIN_GUESSES_PER_SECOND
+  var minutes = seconds / 60
   var hours = seconds / 3600
-  if (hours < 48) return "about " + Math.max(1, Math.round(hours)) + " hours"
-  return "about " + Math.round(hours / 24) + " days"
+  var days = hours / 24
+  if (minutes < 90) return "about " + Math.max(1, Math.round(minutes)) + " minutes"
+  if (hours < 48) return "about " + Math.round(hours) + " hours"
+  if (days < 60) return "about " + Math.round(days) + " days"
+  if (days < 730) return "about " + Math.round(days / 30.44) + " months"
+  return "about " + Math.round(days / 365.25) + " years"
 }
 
 function pinWeakWarning(pin) {
@@ -1531,9 +1629,9 @@ function pinWeakWarning(pin) {
   if (p.length < PIN_MIN_LENGTH || p.length >= PIN_RECOMMENDED_LENGTH) return ""
   var combinations = Math.pow(10, p.length).toLocaleString("en-US")
   return "A " + p.length + "-digit PIN is only " + combinations + " combinations: a program running "
-    + "as you could try them all in " + pinGuessTime(p.length) + " on one CPU core. "
-    + "Use " + PIN_RECOMMENDED_LENGTH + " or more: " + PIN_RECOMMENDED_LENGTH + " digits is "
-    + pinGuessTime(PIN_RECOMMENDED_LENGTH) + "."
+    + "as you can copy the stored item and try every PIN in " + pinGuessTime(p.length)
+    + " on a 16-thread laptop. Use " + PIN_RECOMMENDED_LENGTH + " or more: "
+    + PIN_RECOMMENDED_LENGTH + " digits is " + pinGuessTime(PIN_RECOMMENDED_LENGTH) + "."
 }
 
 function isPinWeak(pin) {
@@ -1579,8 +1677,11 @@ var ENVELOPE_CREDENTIAL_NAME = "qs-bitwarden-unlock"
 var NEW_SECRET_ENV = "QSBW_NEW_SECRET"
 var FIDO_HMAC_ENV = "QSBW_FIDO_HMAC"
 var FIDO_SALT_ENV = "QSBW_FIDO_SALT"
-// Argon2id for new wraps (~0.75 s). Existing wraps use their recorded
-// parameters; the tool refuses any below Bitwarden's defaults.
+// Argon2id for new wraps (256 MiB, 4 passes: about 0.46 s per derivation on
+// a 16-thread laptop; see PIN_GUESSES_PER_SECOND for what that means for a
+// PIN). Existing wraps use their recorded parameters; the tool refuses any
+// below Bitwarden's defaults, and a new PIN wrap below these, so they must
+// not be lowered.
 var ENVELOPE_ARGON2 = { m: 262144, t: 4, p: 1 }
 var MAX_ENVELOPE_SEALED_BYTES = 256 * 1024
 
@@ -1864,6 +1965,80 @@ function parseKeyringRepair(raw) {
 function repairedKeyringNoticeCommand() {
   return ["notify-send", "-a", "Bitwarden", "Keyring repaired",
     "Restart the computer to get your saved passwords and keys back."]
+}
+
+// -------------------------------------------------------------------------
+// Removing a method from every account
+// -------------------------------------------------------------------------
+//
+// The quick-unlock settings are shared switches, but each account's envelope
+// holds its own ways in. Turning a method off used to remove it from the
+// account on screen only, leaving every other account's way in stored (and
+// invisible, since the settings row then reads "off"). This removes one
+// method from each listed slot's envelope, and that slot's legacy entry for
+// the method, in one process queued like any envelope write.
+
+// The legacy keyring entry each method used before the envelope.
+var LEGACY_ENTRY_FOR_METHOD = { pin: KEYRING_PIN, fingerprint: KEYRING_MASTER, fido: KEYRING_FIDO }
+// One wrap per method, except FIDO2 (one per key, at most 16 in the tool).
+var MAX_PURGE_ROUNDS = 17
+
+// One slot: remove `method` until none is left. Exits 0 when there is no
+// envelope or nothing to remove; the account the envelope names is checked
+// against itself after each write (remove needs no account arguments).
+function envelopeMethodPurgeScript(tool, slot, method) {
+  var present = method === "pin" ? ".pin != null"
+    : (method === "fingerprint" ? ".fingerprint == true" : "(.fido | length) > 0")
+  var script = envelopePrelude(tool, slot)
+    + "for __round in $(seq 1 " + MAX_PURGE_ROUNDS + "); do "
+    + "__sealed=\"$(__lookup)\"; [ -n \"$__sealed\" ] || exit 0; "
+    + "__summary=\"$(__unseal \"$__sealed\" | \"$__tool\" inspect)\" || exit " + ENVELOPE_EXIT.unseal + "; "
+    + "printf '%s' \"$__summary\" | jq -e " + shellQuote(present) + " >/dev/null || exit 0; "
+    + "__id=\"$(printf '%s' \"$__summary\" | jq -r '.account.id')\"; "
+    + "__server=\"$(printf '%s' \"$__summary\" | jq -r '.account.server')\"; "
+  if (method === "fido") {
+    script += "__c=\"$(printf '%s' \"$__summary\" | jq -r '.fido[0].cred // empty')\"; "
+      + "case \"$__c\" in ''|*[!A-Za-z0-9+/=]*) exit 4 ;; esac; "
+      + "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method fido --cred \"$__c\" | __seal)\" || exit $?; "
+  } else {
+    script += "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method " + method + " | __seal)\" || exit $?; "
+  }
+  script += "__verify_account \"$__id\" \"$__server\"; __store; "
+    + "done; exit 8"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// Every listed slot, each in its own shell (an envelope step exits on
+// failure); exits 1 if any slot could not be cleared.
+function quickUnlockPurgeCommand(tool, slots, method) {
+  if (typeof tool !== "string" || tool.charAt(0) !== "/" || !LEGACY_ENTRY_FOR_METHOD[method]) {
+    return envelopeRefused()
+  }
+  var seen = {}
+  var list = []
+  for (var i = 0; slots && i < slots.length; i++) {
+    var slot = slots[i]
+    if (typeof slot !== "string" || !isAccountSlot(slot) || seen[slot]) continue
+    seen[slot] = true
+    list.push(slot)
+  }
+  var script = "rc=0; "
+  for (var j = 0; j < list.length; j++) {
+    script += nestedScript(envelopeMethodPurgeScript(tool, list[j], method)) + " || rc=1; "
+      + "secret-tool clear" + keyringAttributes(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j]))
+      + " >/dev/null 2>&1; "
+  }
+  script += "exit \"$rc\""
+  return ["bash", "-c", script]
+}
+
+// Checks a typed master password against the stored one, printing nothing:
+// exit 0 when it matches, 3 when it does not, else the envelope step's code
+// (10: no envelope). The password is in KEYRING_SECRET_ENV, never argv.
+function unlockEnvelopeCheckCommand(tool, account) {
+  var open = unlockEnvelopeOpenCommand(tool, account, { kind: "master" })
+  if (open[2] === envelopeRefused()[2]) return envelopeRefused()
+  return ["bash", "-c", nestedScript(open) + " >/dev/null"]
 }
 
 // Quick unlock also needs `argon2` (ships with bitwarden-cli) and a working
@@ -2357,6 +2532,31 @@ function loginUris(login) {
   return uris
 }
 
+// A stored match rule as Bitwarden reads it: an integer 0-5, else null.
+function uriMatchValue(match) {
+  if (match === null || match === undefined || match === "") return null
+  var n = Number(match)
+  return n === Math.floor(n) && n >= 0 && n <= 5 ? n : null
+}
+
+// Every website of a login with its match rule, in stored order. The edit
+// form loads the first one's address exactly as stored, so an unchanged save
+// matches it (editedUris()).
+function loginUriEntries(login) {
+  var out = []
+  var rawUris = toList(login && login.uris)
+  for (var i = 0; i < rawUris.length; i++) {
+    var entry = rawUris[i]
+    if (!entry || typeof entry !== "object") continue
+    out.push({
+      uri: entry.uri === undefined || entry.uri === null ? "" : String(entry.uri),
+      match: uriMatchValue(entry.match),
+      sourceIndex: i
+    })
+  }
+  return out
+}
+
 function cardDetail(card) {
   if (!card) return null
   return {
@@ -2459,8 +2659,18 @@ function itemCustomFields(fields, item) {
   return customFields
 }
 
+// Bitwarden's CipherRepromptType: 1 is "master password re-prompt", anything
+// else none. A number, so views can compare it without coercion.
+function repromptValue(value) {
+  return Number(value) === 1 ? 1 : 0
+}
+
+// `raw` is the JSON text of an item array, or an array already parsed. The
+// vault list is parsed once (readSanitizedVault()) and its items handed here
+// as an array: re-serializing them just to parse them again cost 4 parses
+// and 2 stringifies of the whole vault on the GUI thread per load.
 function parseItems(raw) {
-  var arr = parseJsonArray(raw)
+  var arr = Array.isArray(raw) ? raw : parseJsonArray(raw)
   var out = []
   for (var i = 0; i < arr.length; i++) {
     var it = arr[i]
@@ -2469,6 +2679,8 @@ function parseItems(raw) {
     var login = it.login || {}
     var uris = loginUris(login)
     var attachments = parseAttachments(it.attachments)
+    // From the vault helper: secrets removed, and which ones there were.
+    var held = it.qsbwHeld && typeof it.qsbwHeld === "object" ? it.qsbwHeld : null
 
     var card = it.card || null
     var cardSubtitle = ""
@@ -2507,10 +2719,14 @@ function parseItems(raw) {
       favorite: Boolean(it.favorite),
       username: String(login.username || ""),
       password: String(login.password || ""),
-      hasPassword: Boolean(login.password),
-      hasTotp: Boolean(login.totp),
+      hasPassword: Boolean(login.password) || Boolean(held && held.password),
+      hasTotp: Boolean(login.totp) || Boolean(held && held.totp),
       totpKey: String(login.totp || ""),
       uris: uris,
+      // Master password re-prompt: 1 asks for the master password before
+      // anything secret of this item is shown, copied or edited
+      // (withReprompt() in Service.qml).
+      reprompt: repromptValue(it.reprompt),
       attachments: attachments,
       hasAttachments: attachments.length > 0,
       subtitle: subtitle,
@@ -2519,7 +2735,11 @@ function parseItems(raw) {
       card: cardDetail(it.card),
       identity: identityDetail(it.identity),
       notes: String(it.notes || ""),
-      rawObject: it
+      hasNotes: Boolean(it.notes) || Boolean(held && held.notes),
+      // A stripped item is no base for the detail or edit views: they ask the
+      // helper for the whole item.
+      rawObject: held ? null : it,
+      secretsHeld: Boolean(held)
     })
   }
 
@@ -2541,13 +2761,13 @@ function parseSshKeys(keys) {
       id: String(it.id), name: String(it.name || "Untitled"), type: 5,
       organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null,
-      favorite: Boolean(it.favorite), reprompt: Number(it.reprompt || 0),
+      favorite: Boolean(it.favorite), reprompt: repromptValue(it.reprompt),
       sshKey: { publicKey: publicKey, fingerprint: fingerprint }
     }
     out.push({ id: String(it.id), organizationId: raw.organizationId, folderId: raw.folderId,
       name: raw.name, type: "sshKey", typeCode: 5, favorite: raw.favorite,
       username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "",
-      uris: [], attachments: [], hasAttachments: false,
+      uris: [], reprompt: raw.reprompt, attachments: [], hasAttachments: false,
       subtitle: fingerprint || publicKey || "SSH Key", notes: "",
       publicKey: publicKey, fingerprint: fingerprint, rawObject: raw })
   }
@@ -2565,7 +2785,7 @@ function parseSanitizedEnvelope(raw) {
   var expectedCapability = envelope.sshKeys.length > 0 ? "confirmed" : "unconfirmed"
   if (envelope.sshCapability !== undefined && envelope.sshCapability !== expectedCapability) return null
   var sshKeys = parseSshKeys(envelope.sshKeys)
-  var items = parseItems(JSON.stringify(envelope.items)).concat(sshKeys)
+  var items = parseItems(envelope.items).concat(sshKeys)
   items.sort(compareItems)
   return {
     items: items,
@@ -2595,7 +2815,7 @@ function optimisticItem(payload, itemId) {
   var draft = JSON.parse(JSON.stringify(payload))
   draft.id = String(itemId || "")
   draft.object = "item"
-  var parsed = parseItems(JSON.stringify([draft]))
+  var parsed = parseItems([draft])
   if (parsed.length !== 1) return null
   parsed[0].pending = true
   return parsed[0]
@@ -2640,6 +2860,18 @@ function parseSanitizedItems(raw) {
   return envelope ? envelope.items : []
 }
 
+// The item list and the SSH capability from one parse of the sanitized vault
+// read. The panel calls this once per load; inspectSanitizedVault() and
+// parseSanitizedItems() each parse on their own and are kept for callers that
+// need only one of the two.
+function readSanitizedVault(raw) {
+  var envelope = parseSanitizedEnvelope(raw)
+  return {
+    items: envelope ? envelope.items : [],
+    sshCapability: sshCapabilityOf(envelope)
+  }
+}
+
 function parseItemDetail(raw) {
   var it = null
   try {
@@ -2660,7 +2892,8 @@ function itemDetailFromObject(it) {
     return { id: String(it.id || ""), organizationId: it.organizationId ? String(it.organizationId) : null,
       folderId: it.folderId ? String(it.folderId) : null, name: String(it.name || "Untitled"),
       type: "sshKey", typeCode: 5, favorite: Boolean(it.favorite), notes: "",
-      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [], attachments: [],
+      username: "", password: "", hasPassword: false, hasTotp: false, totpKey: "", uris: [],
+      reprompt: repromptValue(it.reprompt), attachments: [],
       hasAttachments: false, card: null, identity: null, fields: [],
       publicKey: String(sshKey.publicKey || it.publicKey || ""),
       fingerprint: String(sshKey.fingerprint || sshKey.keyFingerprint || it.fingerprint || it.keyFingerprint || ""), rawObject: it }
@@ -2686,6 +2919,7 @@ function itemDetailFromObject(it) {
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
+    reprompt: repromptValue(it.reprompt),
     attachments: attachments,
     hasAttachments: attachments.length > 0,
     card: cardDetail(it.card),
@@ -2779,9 +3013,13 @@ function validateItemForm(name, organizationId, collectionIds, customFields) {
   return ""
 }
 
+// A fixed-length mask: repeating a dot per character showed a hidden
+// value's length (up to 16), which narrows a short password or a PIN.
+var MASK = "••••••••"
+
 function maskString(str) {
   if (!str) return ""
-  return "•".repeat(Math.min(str.length, 16))
+  return MASK
 }
 
 // No local password generator: Math.random() is not a CSPRNG. Passwords come
@@ -2806,22 +3044,63 @@ function selectedCollectionIds(collectionIds) {
   return collectionIds.slice()
 }
 
+// A form value written over a stored one. A value the form did not change is
+// written back exactly as stored (an unchanged edit or a rename must not
+// alter anything), including a stored null behind an empty box. A changed one
+// is normalized by `clean`.
+function formValue(stored, typed, clean) {
+  var value = typed === undefined || typed === null ? "" : String(typed)
+  var had = stored === undefined || stored === null ? "" : String(stored)
+  if (value === had) return stored === undefined ? value : stored
+  return clean ? clean(value) : value
+}
+
+function trimmedText(value) { return value.trim() }
+
+function trimmedOrNull(value) {
+  var t = value.trim()
+  return t ? t : null
+}
+
+// The password is never trimmed: edge spaces can be part of it, and trimming
+// them on save silently broke the login.
 function updateLoginFields(login, username, password, totp) {
-  login.username = String(username || "").trim()
-  login.password = String(password || "").trim()
-  login.totp = totp && totp.trim() ? totp.trim() : null
+  login.username = formValue(login.username, username, trimmedText)
+  login.password = formValue(login.password, password, null)
+  login.totp = formValue(login.totp, totp, trimmedOrNull)
+}
+
+// The websites an edit writes. The form edits the first one as a single
+// field (`typed`); every other website, and every match rule, is kept. Only
+// clearing the field drops the first website, and a changed address keeps the
+// match rule it had: saving used to replace the whole list with one entry and
+// reset its rule to the default, which widened browser-extension autofill.
+function editedUris(stored, typed) {
+  var text = typed === undefined || typed === null ? "" : String(typed)
+  var kept = toList(stored).filter(function(u) { return u && typeof u === "object" })
+  if (kept.length === 0) {
+    var t = text.trim()
+    if (!t) return stored === undefined ? [] : stored
+    return [{ match: null, uri: t }]
+  }
+  var first = kept[0]
+  if (text === String(first.uri === undefined || first.uri === null ? "" : first.uri)) return kept
+  if (!text.trim()) return kept.slice(1)
+  var replaced = {}
+  for (var k in first) replaced[k] = first[k]
+  replaced.match = first.match === undefined ? null : first.match
+  replaced.uri = text.trim()
+  return [replaced].concat(kept.slice(1))
 }
 
 // Shared by create and edit. Absent fields are written as "" (not left
 // undefined) so a cleared box clears the value.
 function updateCardFields(card, fields) {
   var f = fields || {}
-  card.cardholderName = String(f.cardholderName || "").trim()
-  card.brand = String(f.brand || "").trim()
-  card.number = String(f.number || "").trim()
-  card.expMonth = String(f.expMonth || "").trim()
-  card.expYear = String(f.expYear || "").trim()
-  card.code = String(f.code || "").trim()
+  var keys = ["cardholderName", "brand", "number", "expMonth", "expYear", "code"]
+  for (var i = 0; i < keys.length; i++) {
+    card[keys[i]] = formValue(card[keys[i]], f[keys[i]], trimmedText)
+  }
 }
 
 function updateIdentityFields(identity, fields) {
@@ -2831,7 +3110,7 @@ function updateIdentityFields(identity, fields) {
               "licenseNumber", "address1", "address2", "address3",
               "city", "state", "postalCode", "country"]
   for (var i = 0; i < keys.length; i++) {
-    identity[keys[i]] = String(f[keys[i]] || "").trim()
+    identity[keys[i]] = formValue(identity[keys[i]], f[keys[i]], trimmedText)
   }
 }
 
@@ -2869,7 +3148,8 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
   var payload = {
     type: Number(typeCode || 1),
     name: String(name || "Untitled").trim(),
-    notes: String(notes || "").trim(),
+    // Notes are kept as typed: trailing newlines are content.
+    notes: String(notes === undefined || notes === null ? "" : notes),
     favorite: Boolean(favorite),
     organizationId: selectedOrganizationId(organizationId),
     folderId: selectedFolderId(folderId)
@@ -2882,7 +3162,7 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
   if (Number(typeCode) === 1) { // Login
     var login = {}
     updateLoginFields(login, username, password, totp)
-    login.uris = uri && uri.trim() ? [{ match: null, uri: uri.trim() }] : []
+    login.uris = editedUris(undefined, uri)
     payload.login = login
   } else if (Number(typeCode) === 2) { // Secure Note
     payload.secureNote = { type: 0 }
@@ -2899,12 +3179,15 @@ function buildCreatePayload(typeCode, name, username, password, totp, uri, notes
   return payload
 }
 
+// The payload is the stored item with the form written over it; anything the
+// form did not change is written back exactly as stored (formValue()).
 function buildEditPayload(existingItem, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (existingItem && (Number(existingItem.typeCode || existingItem.type) === 5
       || (existingItem.rawObject && Number(existingItem.rawObject.type) === 5))) return null
   var payload = existingItem && existingItem.rawObject ? JSON.parse(JSON.stringify(existingItem.rawObject)) : {}
-  payload.name = String(name || "Untitled").trim()
-  payload.notes = String(notes || "").trim()
+  payload.name = formValue(payload.name, String(name || "Untitled"), trimmedText)
+  // Never trimmed: a note's trailing newlines are content.
+  payload.notes = formValue(payload.notes, notes, null)
   payload.favorite = Boolean(favorite)
   // Assign and clear: personal/none must move the item out.
   payload.organizationId = selectedOrganizationId(organizationId)
@@ -2922,9 +3205,7 @@ function buildEditPayload(existingItem, name, username, password, totp, uri, not
   if (payload.type === 1 || !payload.type) {
     if (!payload.login) payload.login = {}
     updateLoginFields(payload.login, username, password, totp)
-    if (uri && uri.trim()) {
-      payload.login.uris = [{ match: null, uri: uri.trim() }]
-    }
+    payload.login.uris = editedUris(payload.login.uris, uri)
   } else if (payload.type === 3 && typeFields) {
     if (!payload.card) payload.card = {}
     updateCardFields(payload.card, typeFields)
@@ -3466,12 +3747,7 @@ function findContextualMatches(items, windowData, associations) {
 // records the window's keys against it and the next visit suggests it first.
 
 var ASSOC_VERSION = 1
-var ASSOC_ENV = "QSBW_ASSOC"
 var ASSOC_DIR = "${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli"
-
-function associationsEnvVar() {
-  return ASSOC_ENV
-}
 
 // One file per account slot: item ids mean nothing in another vault.
 function associationsFileName(slot) {
@@ -3486,7 +3762,12 @@ function associationsReadCommand(slot) {
   return ["bash", "-c", script]
 }
 
-// Payload in the environment (Process.write() cannot send EOF).
+// The payload arrives on stdin, which the panel closes after writing
+// (stdinEnabled = false). It used to travel in an environment variable, and
+// Linux caps one at 128 KiB (MAX_ARG_STRLEN), so a store past that failed to
+// start and learning silently stopped being saved. A payload over the read
+// cap is refused rather than written truncated (which would read back as
+// no store at all).
 function associationsWriteCommand(slot) {
   // Write a private temp file and rename it, so a symlink is replaced, not
   // followed, and the file is always 0600.
@@ -3494,7 +3775,8 @@ function associationsWriteCommand(slot) {
     + privateDirScript("d")
     + "umask 077; tmp=$(mktemp -- \"$d/.associations.XXXXXXXX\"); "
     + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
-    + "printf '%s' \"$" + ASSOC_ENV + "\" > \"$tmp\"; chmod 600 \"$tmp\"; "
+    + "head -c " + (MAX_ASSOC_BYTES + 1) + " > \"$tmp\"; "
+    + "[ \"$(wc -c < \"$tmp\")\" -le " + MAX_ASSOC_BYTES + " ]; chmod 600 \"$tmp\"; "
     + "mv -fT -- \"$tmp\" \"$d/" + associationsFileName(slot) + "\"; trap - EXIT HUP INT TERM"
   return ["bash", "-c", script]
 }
@@ -3535,7 +3817,10 @@ function cleanAssociationEntry(key, entry) {
   var updated = typeof entry.updated === "string" ? entry.updated : ""
   if (updated.length > 64 || /[\x00-\x1f\x7f]/.test(updated)) updated = ""
 
-  return { itemId: entry.itemId, weight: weight, count: count, updated: updated }
+  var clean = { itemId: entry.itemId, weight: weight, count: count, updated: updated }
+  // Set by "Suggest here"; see recordAssociation().
+  if (entry.pinned === true) clean.pinned = true
+  return clean
 }
 
 function parseAssociations(raw) {
@@ -3566,8 +3851,9 @@ function serializeAssociations(assoc) {
 }
 
 // A window's keys, strongest first: domain, app class, then title words (the
-// weak fallback for sites with no domain in the title).
-function contextKeys(ctx) {
+// weak fallback for sites with no domain in the title). `withWords` false
+// leaves the words out.
+function contextKeys(ctx, withWords) {
   if (!ctx) return []
   var keys = []
 
@@ -3577,10 +3863,25 @@ function contextKeys(ctx) {
   if (!ctx.isBrowser && !ctx.isTerminal && ctx.clsSquashed && ctx.clsSquashed.length >= 3) {
     keys.push({ key: "app:" + ctx.clsSquashed, weight: 2 })
   }
+  if (withWords === false) return keys
   for (var i = 0; i < ctx.titleTokens.length; i++) {
     keys.push({ key: "word:" + ctx.titleTokens[i], weight: 1 })
   }
   return keys
+}
+
+function isWordKey(key) {
+  return String(key).indexOf("word:") === 0
+}
+
+// Whether a stored entry counts for suggestions: a word key only when the
+// user pinned it with "Suggest here". A learned match skips scoring, and a
+// page chooses its own title, so a word learned from any pick let a page that
+// merely shares a word with a real site's title (a lookalike) have that
+// site's login suggested first. Stores written before this rule hold
+// unpinned word keys; they stay on disk but no longer match.
+function associationEntryCounts(key, entry) {
+  return !!entry && (!isWordKey(key) || entry.pinned === true)
 }
 
 // Write budget, half the read cap: a store truncated by the read cap fails to
@@ -3589,23 +3890,30 @@ function contextKeys(ctx) {
 var MAX_ASSOC_WRITE_BYTES = MAX_ASSOC_BYTES / 2
 
 // Last pick wins, so a key learned from the wrong page corrects itself.
-function recordAssociation(assoc, ctx, itemId, timestamp) {
+// `pinned` is the user's explicit "Suggest here": only then are the title's
+// words recorded (see associationEntryCounts()); an ordinary pick learns the
+// domain and app keys only.
+function recordAssociation(assoc, ctx, itemId, timestamp, pinned) {
   var next = { version: ASSOC_VERSION, keys: {} }
   var k
   for (k in assoc.keys) next.keys[k] = assoc.keys[k]
 
-  var keys = contextKeys(ctx)
+  var keys = contextKeys(ctx, pinned === true)
   if (keys.length === 0 || !itemId) return next
 
   for (var i = 0; i < keys.length; i++) {
     var existing = next.keys[keys[i].key]
-    var count = (existing && existing.itemId === itemId) ? Number(existing.count || 0) + 1 : 1
-    next.keys[keys[i].key] = {
+    var same = existing && existing.itemId === itemId
+    var count = same ? Number(existing.count || 0) + 1 : 1
+    var entry = {
       itemId: String(itemId),
       weight: keys[i].weight,
       count: count,
       updated: String(timestamp || "")
     }
+    // A pin outlives later ordinary picks of the same item.
+    if (pinned === true || (same && existing.pinned === true)) entry.pinned = true
+    next.keys[keys[i].key] = entry
   }
 
   return trimAssociations(next)
@@ -3658,7 +3966,7 @@ function isAssociated(assoc, ctx, itemId) {
   var keys = contextKeys(ctx)
   for (var i = 0; i < keys.length; i++) {
     var entry = assoc.keys[keys[i].key]
-    if (entry && entry.itemId === itemId) return true
+    if (associationEntryCounts(keys[i].key, entry) && entry.itemId === itemId) return true
   }
   return false
 }
@@ -3670,7 +3978,7 @@ function learnedMatchIds(assoc, ctx) {
 
   for (var i = 0; i < keys.length; i++) {
     var entry = assoc.keys[keys[i].key]
-    if (!entry || !entry.itemId) continue
+    if (!associationEntryCounts(keys[i].key, entry) || !entry.itemId) continue
     var rank = keys[i].weight * 1000 + Number(entry.count || 1)
     if (!best[entry.itemId] || best[entry.itemId] < rank) best[entry.itemId] = rank
   }
@@ -3708,7 +4016,10 @@ var DEPENDENCIES = [
   }
 ]
 
-// One round trip: `key=1|0` per tool, the bw version and fingerprint state.
+// One round trip: `key=1|0` per tool, the bw binary's identity and
+// fingerprint state. It runs on every panel open, so it must stay cheap: the
+// version (a ~1.2 s Node start) is bwVersionCommand(), asked again only when
+// `bw_id` changes.
 function dependencyCheckCommand() {
   var parts = []
   for (var i = 0; i < DEPENDENCIES.length; i++) {
@@ -3716,12 +4027,11 @@ function dependencyCheckCommand() {
     parts.push("if command -v " + d.binary + " >/dev/null 2>&1; then echo "
       + shellQuote(d.key + "=1") + "; else echo " + shellQuote(d.key + "=0") + "; fi")
   }
-  // Only a strict calendar-version token reaches QML.
-  parts.push("if command -v bw >/dev/null 2>&1; then "
-    + "__qsbw_bw_version=$(bw -v 2>/dev/null | head -c 64); "
-    + "if [[ \"$__qsbw_bw_version\" =~ ^v?[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,6}$ ]]; then "
-    + "printf 'bw_version=%s\\n' \"$__qsbw_bw_version\"; else echo bw_version=; fi; "
-    + "else echo bw_version=; fi")
+  // Device, inode, size and mtime of the resolved file: an upgrade or a
+  // different bw on PATH changes it.
+  parts.push("if __qsbw_bw=$(command -v bw 2>/dev/null); then "
+    + "printf 'bw_id=%s\\n' \"$(stat -L -c '%d:%i:%s:%Y' -- \"$__qsbw_bw\" 2>/dev/null | head -c 128)\"; "
+    + "else echo bw_id=; fi")
   parts.push("if [ -f /etc/pam.d/omarchy-lock-fingerprint ] && command -v fprintd-list >/dev/null 2>&1 "
     + "&& fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo fingerprint_ready=1; else echo fingerprint_ready=0; fi")
   // Reader detection via sysfs, which works before anything is installed, so
@@ -3732,7 +4042,15 @@ function dependencyCheckCommand() {
   return ["bash", "-c", cappedScript("{ " + parts.join("; ") + "; } | head -c 4096")]
 }
 
-function parseDependencies(raw) {
+// Only a strict calendar-version token reaches QML.
+function bwVersionCommand() {
+  var script = "__qsbw_bw_version=$(bw -v 2>/dev/null | head -c 64); "
+    + "if [[ \"$__qsbw_bw_version\" =~ ^v?[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,6}$ ]]; then "
+    + "printf 'bw_version=%s\\n' \"$__qsbw_bw_version\"; else echo bw_version=; fi"
+  return ["bash", "-c", cappedScript("{ " + script + "; } | head -c 4096")]
+}
+
+function probeFields(raw) {
   var found = {}
   var lines = String(raw || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
@@ -3741,11 +4059,31 @@ function parseDependencies(raw) {
     if (cut <= 0) continue
     found[line.slice(0, cut)] = line.slice(cut + 1)
   }
+  return found
+}
 
-  var bwVersionRaw = String(found["bw_version"] || "").trim()
+// The bw binary's identity from dependencyCheckCommand(), or "" if unknown.
+function dependencyBwId(raw) {
+  var id = String(probeFields(raw)["bw_id"] || "").trim()
+  return /^[0-9]{1,20}(:[0-9]{1,20}){3}$/.test(id) ? id : ""
+}
+
+function parseBwVersionProbe(raw) {
+  return normalizeReleaseVersion(probeFields(raw)["bw_version"])
+}
+
+// `probedVersion` is the result of bwVersionCommand(); null while it has not
+// answered for this binary, which leaves SSH support "checking". A
+// `bw_version` line in `raw` itself takes precedence.
+function parseDependencies(raw, probedVersion) {
+  var found = probeFields(raw)
+
+  var inline = found["bw_version"] !== undefined
+  var pending = !inline && (probedVersion === null || probedVersion === undefined)
+  var bwVersionRaw = String(inline ? found["bw_version"] : (probedVersion || "")).trim()
   var bwVersion = normalizeReleaseVersion(bwVersionRaw)
   var sshCliStatus = "missing"
-  if (found["bw"] === "1") sshCliStatus = sshCliSupport(bwVersion)
+  if (found["bw"] === "1") sshCliStatus = pending ? "checking" : sshCliSupport(bwVersion)
 
   var out = []
   for (var d = 0; d < DEPENDENCIES.length; d++) {
@@ -3784,6 +4122,7 @@ function parseDependencies(raw) {
     hasOmarchy: found["omarchy"] === "1",
     hasFingerprintReader: found["fingerprint_hw"] === "1",
     bwVersion: bwVersion,
+    bwId: dependencyBwId(raw),
     sshCliMinVersion: SSH_CLI_MIN_VERSION,
     sshCliStatus: sshCliStatus
   }
@@ -3869,7 +4208,11 @@ function defaultSshCapability() {
 }
 
 function inspectSanitizedVault(raw) {
-  var parsed = parseSanitizedEnvelope(raw)
+  return sshCapabilityOf(parseSanitizedEnvelope(raw))
+}
+
+// The SSH capability of an already-parsed sanitized envelope (null: unread).
+function sshCapabilityOf(parsed) {
   if (!parsed) return defaultSshCapability()
   if (parsed.sshCapability === "confirmed") {
     return {
@@ -4610,6 +4953,105 @@ var UNLOCK_KEY_MESSAGES = helperMessages("quick-unlock tool", "unlock-key/Cargo.
 
 function parseUnlockKeyInspection(raw) {
   return parseHelperInspection(raw, UNLOCK_KEY_ENVELOPE_VERSION, UNLOCK_KEY_MESSAGES)
+}
+
+// -------------------------------------------------------------------------
+// The vault helper
+// -------------------------------------------------------------------------
+//
+// `qs-bitwarden-vault` holds the unlocked vault outside the shell, so a shell
+// crash cannot put the session key or the decrypted items in a core dump
+// (docs/vault-helper.md). The panel talks to it only on its stdin/stdout, one
+// JSON object per line. It runs the panel's `bw` commands with the session
+// added to their environment, and keeps every item's secrets: the list the
+// panel gets has none, and a password copy never passes through here.
+//
+// Shipped and inspected like the other helpers. If it is missing or fails,
+// the panel works as before (the session and secrets in the shell) and says
+// crash protection is off.
+var VAULT_HELPER_PROTOCOL = 1
+// What `session` holds while the helper has the key: the helper prints this
+// in the key's place, shaped like a key so the panel's parsing is unchanged.
+var VAULT_HELD_SESSION = "HELD-BY-QS-BITWARDEN-VAULT-HELPER-SESSION"
+
+function vaultHeldSession() { return VAULT_HELD_SESSION }
+
+// A password the helper holds, as the panel passes it around: a reference by
+// name, never the value. Put one in a VaultProcess's environment and the
+// helper (or, falling back, the panel) fills in the value for that run only.
+// The NUL cannot occur in a real environment value.
+var HELD_SECRET_PREFIX = "\u0000qsbw-held:"
+
+function heldSecretRef(name) { return HELD_SECRET_PREFIX + String(name) }
+
+function heldSecretName(value) {
+  var text = typeof value === "string" ? value : ""
+  return text.indexOf(HELD_SECRET_PREFIX) === 0 ? text.slice(HELD_SECRET_PREFIX.length) : ""
+}
+var VAULT_HELPER_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-vault"
+var VAULT_HELPER_DEVELOPMENT_RELATIVE = "vault/target/debug/qs-bitwarden-vault"
+
+var VAULT_HELPER_SPEC = {
+  name: "qs-bitwarden-vault",
+  bundled: VAULT_HELPER_BUNDLED_RELATIVE,
+  development: VAULT_HELPER_DEVELOPMENT_RELATIVE,
+  protocolSed: "s/.*protocol \\([0-9]*\\).*/\\1/p"
+}
+
+function vaultHelperInspectCommand(pluginDir) {
+  return helperInspectCommand(pluginDir, VAULT_HELPER_SPEC)
+}
+
+var VAULT_HELPER_MESSAGES = helperMessages("vault helper", "vault/Cargo.toml",
+  "speaks a different protocol")
+
+function parseVaultHelperInspection(raw) {
+  return parseHelperInspection(raw, VAULT_HELPER_PROTOCOL, VAULT_HELPER_MESSAGES)
+}
+
+function vaultHelperPath(pluginDir, source) {
+  return helperPath(pluginDir, VAULT_HELPER_SPEC, source)
+}
+
+// The banner while the vault is held in the shell instead.
+function vaultHelperWarning(reason) {
+  return "Crash protection is off: " + (String(reason || "").trim() || "the vault helper is unavailable.")
+    + " The vault is held in the shell, so a shell crash could write it to a core dump."
+}
+
+// One request line. `fields` must not carry `type` or `v`.
+function vaultHelperLine(type, fields) {
+  var message = { type: type, v: VAULT_HELPER_PROTOCOL }
+  for (var k in fields) message[k] = fields[k]
+  return JSON.stringify(message) + "\n"
+}
+
+// A run's request: `env` values are strings, or null to unset; `inject`
+// names a held value per variable ("session" or "secret:<name>").
+function vaultExecLine(id, argv, env, inject, capture, stdin) {
+  var fields = { id: id, argv: argv, env: vaultEnv(env || {}), inject: inject || {}, capture: capture || "plain" }
+  if (stdin !== undefined && stdin !== null && stdin !== "") fields.stdin = String(stdin)
+  return vaultHelperLine("exec", fields)
+}
+
+// A reply line, or null if it is not one.
+function parseVaultHelperLine(line) {
+  try {
+    var message = JSON.parse(String(line || ""))
+    return message && typeof message === "object" && typeof message.type === "string" ? message : null
+  } catch (e) {
+    return null
+  }
+}
+
+// Only strings (or null) reach the helper's environment map.
+function vaultEnv(env) {
+  var out = {}
+  for (var k in env) {
+    var value = env[k]
+    out[k] = value === null || value === undefined ? null : String(value)
+  }
+  return out
 }
 
 // The settings that go through the quick-unlock tool.
@@ -5490,7 +5932,7 @@ var SETTINGS_SCHEMA = [
     description: "A FIDO2 key touch opens your master password, stored once, encrypted and sealed to this machine. Requires 'omarchy setup security fido2'; the same registration also serves the system's own authentication prompts." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
-    description: "A PIN opens your master password, stored once, encrypted and sealed to this machine. Use 6 digits or more; 4 is the floor and is flagged as weak." },
+    description: "A PIN of 6 digits or more opens your master password, stored once, encrypted and sealed to this machine. A program running as you can copy it and try every 6-digit PIN in about 16 hours, so use 8 or more (about 2 months)." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },
@@ -5709,40 +6151,71 @@ function normalizeGeneratorOptions(opts) {
 // -------------------------------------------------------------------------
 //
 // `bw generate` costs ~2.9 s of CLI startup per call; `bw serve` pays it once
-// and answers in ~2 ms. It runs with no session, so it can only generate: the
-// loopback port is unauthenticated and open to every local user.
-var GENERATE_HOST = "127.0.0.1"
-var GENERATE_PORT = 8087
+// and answers in ~2 ms. It runs with no session, so it holds a locked vault.
+//
+// It listens on a Unix socket in the private runtime directory (0700), not on
+// a loopback port: a port is open to every local user, who could POST
+// /unlock to guess the master password (no second factor, no lockout) and
+// read /status (the account email and user id). A logged-out `bw serve` on
+// an empty data directory would avoid holding the account at all, but bw
+// 2026.2.0 refuses to start one ("You are not logged in."), so it runs in the
+// account's own data directory and the socket's directory is what keeps
+// other users out. `unix://` hostnames are handled by bw's serve command
+// (2026.2.0); a bw that cannot bind one exits, and the panel falls back to
+// `bw generate` (generatorServeExitAction()).
+var GENERATE_SOCKET_NAME = "generator.sock"
+// The request line's host; the socket is what is connected to.
+var GENERATE_HOST = "localhost"
+
+// The socket's directory and path, in shell variables __gen_dir/__gen_sock.
+function generatorSocketPrelude(missingExit) {
+  return "test -n \"${XDG_RUNTIME_DIR:-}\" || exit " + missingExit + "; "
+    + "__gen_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
+    + "__gen_sock=\"$__gen_dir/" + GENERATE_SOCKET_NAME + "\"; "
+}
 
 // A managed child, so it dies with the shell. The caller clears BW_SESSION
-// (generatorServeEnv() in Service.qml).
+// (generatorServeEnv() in Service.qml). The port probe has already found no
+// server on the socket, so a file still there is a dead server's and is
+// removed (a stale socket file makes the bind fail). `exec` so stopping the
+// Process stops bw itself.
 function generateServeCommand() {
-  return ["bw", "serve", "--hostname", GENERATE_HOST, "--port", String(GENERATE_PORT)]
+  var script = generatorSocketPrelude(1) + privateDirScript("__gen_dir")
+    + "rm -f -- \"$__gen_sock\" || exit 1; "
+    + "exec bw serve --hostname \"unix://$__gen_sock\""
+  return ["bash", "-c", script]
 }
 
 // -------------------------------------------------------------------------
 // Generator request bounds
 // -------------------------------------------------------------------------
 //
-// The port is first-come, so whoever holds it could stall or stream forever.
-// Requests go through curl with a timeout and a `head -c` cap, keeping the
-// response out of the shell's memory until it is bounded.
+// Whatever answers on the socket could stall or stream forever. Requests go
+// through curl with a timeout and a `head -c` cap, keeping the response out
+// of the shell's memory until it is bounded.
 var GENERATE_RESPONSE_CAP = 64 * 1024
 var GENERATE_REQUEST_TIMEOUT_MS = 2000
 
+// No socket (or no runtime directory yet) is reported as curl's own "could
+// not connect" (7), which the probe reads as free. A directory that is not a
+// real one is not free: the server will refuse to start there too.
 function generateServeRequestCommand(opts) {
   var url = generateServeUrl(opts)
   var timeoutSecs = Math.max(1, Math.round(GENERATE_REQUEST_TIMEOUT_MS / 1000))
-  // -q (first) ignores ~/.curlrc; --noproxy keeps it on loopback.
-  var script = "curl -q -s -S --noproxy '*' --max-time " + timeoutSecs + " --connect-timeout " + timeoutSecs
+  var script = generatorSocketPrelude(7)
+    + "if [ -L \"$__gen_dir\" ]; then exit 2; fi; "
+    + "[ -d \"$__gen_dir\" ] && [ -S \"$__gen_sock\" ] || exit 7; "
+    // -q (first) ignores ~/.curlrc; --noproxy so no proxy variable reroutes it.
+    + "curl -q -s -S --noproxy '*' --unix-socket \"$__gen_sock\" --max-time " + timeoutSecs
+    + " --connect-timeout " + timeoutSecs
     + " " + shellQuote(url) + " | head -c " + Number(GENERATE_RESPONSE_CAP)
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-// Whether a curl probe of the port found another server. Only a refused
-// connection (exit 7, no output) leaves it free for ours: an answer, a timeout
-// or a truncated stream all mean someone else is bound, and a password from a
-// stranger's server is one they know.
+// Whether a curl probe of the socket found a server already there. Only a
+// refused connection (exit 7, no output) leaves it free for ours: an answer, a
+// timeout or a truncated stream all mean something else is serving, and a
+// password from a server that is not ours is not one to use.
 function generatorProbeIsForeign(exitCode, stdout) {
   return !(Number(exitCode) === 7 && String(stdout || "").trim() === "")
 }
@@ -5788,7 +6261,7 @@ function generateServeUrl(opts) {
   var q = generatorParams(opts).map(function(p) {
     return p[0] + "=" + (p[1] === true ? "true" : encodeURIComponent(String(p[1])))
   })
-  return "http://" + GENERATE_HOST + ":" + GENERATE_PORT + "/generate?" + q.join("&")
+  return "http://" + GENERATE_HOST + "/generate?" + q.join("&")
 }
 
 // { success: true, data: { data: "<password>" } } on the way out.
@@ -5956,21 +6429,18 @@ function sendAccessLabel(send) {
 // Rendering vault text safely
 // ---------------------------------------------------------------------------
 
-// Qt Text defaults to AutoText, which renders anything that looks like markup
-// as HTML, and kit controls (Ui.Button) give no way to change that. So vault
-// text containing "<" or "&" is HTML-escaped and wrapped in a pre-wrap <span>,
-// which renders back to the literal characters; anything else passes as is.
+// The text a kit control (Ui.Button, its tooltip) is handed for vault data.
+// Omarchy 4.0.4's kit draws those labels with Text.PlainText, so the value is
+// passed unchanged: the HTML-escaped <span> this used to return for text
+// with "<" or "&" was drawn literally ("<span ...>Bills &amp; Banking</span>").
+// The plugin's own Text elements pin PlainText too; rich-text.test.js checks
+// both.
 function plainLabel(value) {
-  var text = (value === undefined || value === null) ? "" : String(value)
-  if (text.indexOf("<") < 0 && text.indexOf("&") < 0) return text
-  return "<span style=\"white-space:pre-wrap\">"
-    + text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    + "</span>"
+  return (value === undefined || value === null) ? "" : String(value)
 }
 
 // Ui.Button sizes to its label without eliding, so vault text is clipped to
-// `max` characters (the font is monospace; the "..." counts). Call before
-// plainLabel(), which may add markup that must not be cut.
+// `max` characters (the font is monospace; the "..." counts).
 function clipLabel(value, max) {
   var text = (value === undefined || value === null) ? "" : String(value)
   var limit = Math.max(1, Math.floor(Number(max) || 0))

@@ -52,9 +52,19 @@ const uses = panelSrc.match(/DetailField \{[\s\S]*?\n              \}/g) || []
 check("the detail screen draws its fields through the component",
   uses.length >= 14, `found ${uses.length} DetailField uses`)
 
+// A masked value is copied through copyDetailSecret(), which asks the vault's
+// master password re-prompt first and then uses the same clipboard path.
+const copiesThroughPanel = u => /onCopyRequested:\s*(?:\{[\s\S]{0,200}?)?root\.(?:copyToClipboard|copyDetailSecret)\(/.test(u)
 check("every use routes its copy through the panel's one clipboard path",
-  uses.every(u => /onCopyRequested:\s*root\.copyToClipboard\(/.test(u)),
-  uses.filter(u => !/onCopyRequested:\s*root\.copyToClipboard\(/.test(u)).join("\n---\n"))
+  uses.every(copiesThroughPanel),
+  uses.filter(u => !copiesThroughPanel(u)).join("\n---\n"))
+check("a masked value's copy asks the re-prompt first",
+  uses.filter(u => /sensitive:\s*true/.test(u)).every(u => /onCopyRequested:\s*root\.copyDetailSecret\(/.test(u)),
+  uses.filter(u => /sensitive:\s*true/.test(u) && !/onCopyRequested:\s*root\.copyDetailSecret\(/.test(u)).join("\n---\n"))
+check("which reaches the clipboard only through withReprompt",
+  /function copyDetailSecret\(value, label\)[\s\S]{0,160}?root\.protect\(root\.detailItem, function\(\) \{ root\.copyToClipboard\(value, label\) \}\)/.test(panelSrc)
+    && /function protect\(item, action\) \{\s*root\.withReprompt\(item, action\)/.test(panelSrc),
+  "copyDetailSecret must go through the vault's re-prompt")
 
 // A card number, a security code, an SSN, a passport and a licence. Nothing
 // here can be rotated after it leaks, which is the argument for masking them
@@ -95,12 +105,17 @@ check("every masked field has a reveal key", revealKeys.every(Boolean),
   JSON.stringify(revealKeys))
 check("no two masked fields share a reveal key",
   new Set(revealKeys).size === revealKeys.length, JSON.stringify(revealKeys))
+// Revealing goes through toggleProtectedReveal(), which asks the re-prompt
+// before showing and never before hiding.
 check("each toggles only its own key",
   uses.filter(u => /sensitive:\s*true/.test(u)).every(u => {
     const shown = (u.match(/revealed: root\.isFieldRevealed\("([^"]+)"\)/) || [])[1]
-    const toggled = (u.match(/onRevealToggled: root\.toggleFieldReveal\("([^"]+)"\)/) || [])[1]
+    const toggled = (u.match(/onRevealToggled: root\.toggleProtectedReveal\("([^"]+)"\)/) || [])[1]
     return shown && shown === toggled
   }), "a field must reveal and hide the same key")
+check("a reveal asks the re-prompt, a hide does not",
+  /function toggleProtectedReveal\(key\) \{\s*if \(root\.isFieldRevealed\(key\)\) root\.toggleFieldReveal\(key\)\s*else root\.protect\(root\.detailItem, function\(\) \{ root\.toggleFieldReveal\(key\) \}\)/.test(panelSrc),
+  "toggleProtectedReveal must hide at once and reveal through protect()")
 
 // --- custom fields ----------------------------------------------------------
 
@@ -119,7 +134,7 @@ check("hidden custom fields are masked and reveal independently",
   /sensitive:\s*Boolean\(modelData\.sensitive\)/.test(customUse)
     && /revealKey:\s*"customField:"\s*\+\s*index/.test(customUse)
     && /revealed:\s*root\.isFieldRevealed\(revealKey\)/.test(customUse)
-    && /onRevealToggled:\s*root\.toggleFieldReveal\(revealKey\)/.test(customUse),
+    && /onRevealToggled:\s*root\.toggleProtectedReveal\(revealKey\)/.test(customUse),
   customUse)
 
 check("the item form edits the custom-field collection",
@@ -155,7 +170,7 @@ check("custom fields can be added and removed from the form",
     && /onClicked:\s*editor\.panel\.addFormCustomField\(\)/.test(customEditorSrc),
   customEditorSrc)
 check("custom-field copies use the panel's guarded clipboard path",
-  /onCopyRequested:\s*root\.copyToClipboard\(modelData\.value,\s*modelData\.name\)/.test(customUse),
+  /onCopyRequested:[\s\S]{0,160}?if \(sensitive\) root\.copyDetailSecret\(value, name\)\s*else root\.copyToClipboard\(value, name\)/.test(customUse),
   customUse)
 
 check("no single shared reveal flag is left",
@@ -163,7 +178,8 @@ check("no single shared reveal flag is left",
   "one flag for every masked field is what caused them to move together")
 
 check("toggling one key leaves the others alone",
-  /if \(next\[key\]\) delete next\[key\]\s*\n\s*else next\[key\] = true/.test(panelSrc),
+  /for \(var k in revealedFields\) next\[k\] = revealedFields\[k\]\s*\n\s*if \(on\) next\[key\] = true\s*\n\s*else delete next\[key\]/.test(panelSrc)
+    && /setFieldRevealed\(key, !revealedFields\[key\]\)/.test(panelSrc),
   "expected a per-key toggle over a copy of the map")
 
 // `v` cannot mean five things at once, so it reaches the one secret the item is

@@ -36,6 +36,7 @@ OUTPUT_DIR="$REPO_ROOT/bin/$OUTPUT_ARCH"
 ARTIFACTS=(
   "agent:qs-bitwarden-ssh-agent"
   "unlock-key:qs-bitwarden-unlock-key"
+  "vault:qs-bitwarden-vault"
 )
 # One SHA256SUMS for every artifact, in `sha256sum -c` format.
 SUMS_FILE="$REPO_ROOT/bin/SHA256SUMS"
@@ -43,7 +44,7 @@ SUMS_FILE="$REPO_ROOT/bin/SHA256SUMS"
 usage() {
   cat <<'USAGE'
 Usage: scripts/build-agent.sh [--verify-reproducible] [--compare-tracked]
-                              [--allow-unpinned] [--explain]
+                              [--ci] [--allow-unpinned] [--explain]
 
   (no flags)            Build every release helper into bin/<arch>/ and write
                         bin/SHA256SUMS.
@@ -52,6 +53,12 @@ Usage: scripts/build-agent.sh [--verify-reproducible] [--compare-tracked]
   --compare-tracked     Report whether every tracked binary matches a fresh
                         build of this source, without modifying the repository.
                         Exit 1 on drift, including a binary not yet tracked.
+  --ci                  All three from two builds, as CI runs them: build twice
+                        and require identical output, report whether every
+                        tracked binary matches, then write the build to bin/
+                        and bin/SHA256SUMS as the candidate. Exit 1 if the
+                        builds differ or fail, 3 if they agree but the tracked
+                        binaries drifted (the candidate is written either way).
   --allow-unpinned      Permit a host-toolchain build when no container runtime
                         is available. The result is NOT reproducible and is
                         refused by --verify-reproducible.
@@ -289,6 +296,55 @@ build_release() {
   note "wrote ${listed[*]/#/bin/} and bin/SHA256SUMS"
 }
 
+# --verify-reproducible, --compare-tracked and the release build in one pass:
+# two builds instead of four. The comparison reads bin/ before the candidate
+# replaces it.
+ci_build() {
+  if ! in_pinned_environment; then
+    local runtime
+    if runtime="$(container_runtime)"; then
+      reexec_in_container "$runtime" --ci
+      return $?
+    fi
+    fail "not in the pinned build environment and no container runtime to enter one"
+  fi
+  note "building twice in the pinned environment"
+
+  local work one two spec name a b have differ=0 drifted="" listed=()
+  work="$(mktemp -d)" || fail "could not create a work directory"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$work'" EXIT
+  one="$(build_clean_copy "$work/path-one")" || fail "the first build failed"
+  two="$(build_clean_copy "$work/a-considerably-longer-second-path")" || fail "the second build failed"
+
+  for spec in "${ARTIFACTS[@]}"; do
+    name="$(binary_name "$spec")"
+    a="$(digest "$one/$name")"
+    b="$(digest "$two/$name")"
+    if [ -f "$OUTPUT_DIR/$name" ]; then have="$(digest "$OUTPUT_DIR/$name")"; else have="(not tracked)"; fi
+    printf '%s\n  path one: %s\n  path two: %s\n  tracked:  %s\n' "$name" "$a" "$b" "$have"
+    [ "$a" = "$b" ] || differ=1
+    [ "$have" = "$a" ] || drifted="$drifted bin/$OUTPUT_ARCH/$name"
+  done
+  [ "$differ" -eq 0 ] || fail "the two builds differ, so something in the build path reached a binary"
+  note "every helper is identical across both paths"
+
+  mkdir -p "$OUTPUT_DIR"
+  for spec in "${ARTIFACTS[@]}"; do
+    name="$(binary_name "$spec")"
+    install -m 0755 "$one/$name" "$OUTPUT_DIR/$name"
+    listed+=("$OUTPUT_ARCH/$name")
+  done
+  ( cd "$REPO_ROOT/bin" && sha256sum "${listed[@]}" > "$SUMS_FILE" )
+  note "wrote the candidate: ${listed[*]/#/bin/} and bin/SHA256SUMS"
+
+  if [ -n "$drifted" ]; then
+    note "does not match a build of this source:$drifted"
+    return 3
+  fi
+  note "every tracked binary matches this source"
+}
+
 # Report the decision without acting on it (for people, and for tests).
 explain() {
   if in_pinned_environment; then
@@ -315,6 +371,7 @@ main() {
       --verify-reproducible) mode="verify" ;;
       --explain) mode="explain" ;;
       --compare-tracked) mode="compare" ;;
+      --ci) mode="ci" ;;
       --allow-unpinned) allow_unpinned="yes" ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; fail "unknown argument '$1'" ;;
@@ -330,6 +387,7 @@ main() {
     explain) explain ;;
     verify) verify_reproducible ;;
     compare) compare_tracked ;;
+    ci) ci_build ;;
     build) build_release "$allow_unpinned" ;;
   esac
 }

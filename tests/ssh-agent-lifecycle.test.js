@@ -134,7 +134,10 @@ const lockVault = panelSrc.slice(panelSrc.indexOf("function lockVault()"),
   panelSrc.indexOf("function lockVault()") + 1400)
 
 check("locking runs bw lock without waiting on the companion",
-  /lockProc\.running = true/.test(lockVault) && !/await|\.wait\(/.test(lockVault), lockVault.slice(0, 300))
+  /requestBwLock\(\)/.test(lockVault) && !/await|\.wait\(/.test(lockVault)
+    && /lockProc\.running = true/.test(panelSrc.slice(panelSrc.indexOf("function runBwLockStep()"),
+      panelSrc.indexOf("function runBwLockStep()") + 600)),
+  lockVault.slice(0, 300))
 check("locking reports the vault locked on the panel's own schedule",
   /status = "locked"/.test(lockVault), "lockVault never sets the locked status")
 check("locking notifies the companion",

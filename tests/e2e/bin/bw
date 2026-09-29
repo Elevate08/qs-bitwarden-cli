@@ -40,7 +40,7 @@ case "$1" in
     case "$2" in
       items)
         [ -n "${BW_SESSION:-}" ] && [ -f "$sess" ] && [ "$BW_SESSION" = "$(cat "$sess")" ] || { echo "Vault is locked." >&2; exit 1; }
-        printf '[{"object":"item","id":"item-%s","organizationId":null,"folderId":null,"type":1,"name":"Login of %s","notes":null,"favorite":false,"login":{"username":"%s","password":"x","totp":null,"uris":[]},"collectionIds":[],"revisionDate":"2026-01-01T00:00:00.000Z"}]' "$(field id)" "$(field email)" "$(field email)" ;;
+        printf '[{"object":"item","id":"item-%s","organizationId":null,"folderId":null,"type":1,"name":"Login of %s","notes":%s,"favorite":false,"login":{"username":"%s","password":"%s","totp":null,"uris":[]},"collectionIds":[],"revisionDate":"2026-01-01T00:00:00.000Z"}]' "$(field id)" "$(field email)" "$(if [ -s "$d/fake-item-notes" ]; then printf '"%s"' "$(cat "$d/fake-item-notes")"; else printf null; fi)" "$(field email)" "$(cat "$d/fake-item-password" 2>/dev/null || printf x)" ;;
       *) echo '[]' ;;
     esac ;;
   *) exit 0 ;;

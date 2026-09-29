@@ -195,6 +195,8 @@ Item {
     assertProc.command = target.mode === "envelope"
       ? Model.fidoUnlockCommand(tool, account, target)
       : Model.fidoLegacyUnlockCommand(tool, account, target)
+    // The password it prints stays in the vault helper (vault.heldOutput()).
+    assertProc.capture = "secret:" + vault.newHeldName()
     assertProc.running = true
   }
 
@@ -244,7 +246,7 @@ Item {
   function onAssertExited(exitCode) {
     if (vault && vault.finishScrubRun(assertProc)) return
     // Read, then scrubbed: on success this holds the password.
-    var out = String(assertStdout.text || "")
+    var out = vault ? vault.heldOutput(assertProc, assertStdout.text) : ""
     if (vault) vault.clearProcessCollectorSoon(assertProc)
     var mode = assertMode
     assertMode = ""
@@ -353,7 +355,15 @@ Item {
       failure = ""
       // Unconditional, not `if (stored)`: that flag also goes false when the
       // key or packages are missing, and a way in may still be stored.
-      forget("")
+      if (!vault || !vault.started || !vault.accountsLoaded) {
+        forget("")
+        return
+      }
+      // Every account's keys and legacy copy, not only this account's: the
+      // setting is shared (purgeQuickUnlockMethod() in Service.qml).
+      legacyStored = false
+      vault.purgeQuickUnlockMethod("fido")
+      vault.flashNotification("FIDO2 unlock forgotten")
     } else {
       refresh()
     }
@@ -434,6 +444,7 @@ Item {
         setupActive = true
         return
       }
+      vault.noteQuickUnlockEnabled("fido")
       // Supersedes any legacy entry.
       legacyStored = false
       requestClear()
@@ -464,9 +475,11 @@ Item {
   }
 
   // One touch; the password is the only output. See Model.fidoUnlockCommand().
-  Process {
+  VaultProcess {
     id: assertProc
-    stdout: StdioCollector {
+    vault: fido.vault
+    session: false
+    stdout: VaultCollector {
       id: assertStdout
       waitForEnd: true
     }

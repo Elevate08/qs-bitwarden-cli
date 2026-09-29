@@ -4,7 +4,7 @@ Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
 every item type without opening a browser.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.11.1-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.11.2-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -60,7 +60,9 @@ folder, organization and type without leaving the keyboard.
 
 **Suggestions** read the focused window or browser tab and pin the matching
 credential to the top, so <kbd>Enter</kbd> is usually the only key you need.
-Pick an item once for a site a title cannot match, and it is remembered.
+Picking an item remembers it for the site's domain or the app; for a site
+whose title names neither, pin it with **Suggest here** (only a pin learns a
+title's words, so a look-alike title cannot borrow a real site's login).
 
 Suggestions come from the window **title**, because that is all Hyprland
 exposes -- not the tab's real address. A page chooses its own title, so a
@@ -85,6 +87,8 @@ never changes anything by accident.
 
 Username, password and the live TOTP with its countdown, the websites attached
 to the item, its notes and any custom fields. Copy any of them with one key.
+An item marked **Master password re-prompt** asks for your master password
+before anything secret of it is shown, copied or edited.
 
 **Suggest here** pins this item for the app or site in front of you, so it is
 offered outright next time rather than inferred.
@@ -375,16 +379,22 @@ The panel can hold up to ten Bitwarden accounts at once -- a personal and a work
 - **Each account keeps its own sign-in and its own quick unlock.** A PIN, fingerprint or FIDO2 key set up for one account is that account's; switching never asks you to log in again or set anything up again. The same fingerprint or key can unlock every account -- nothing is re-enrolled, each account's stored password just gets its own way in.
 - **Only one account is unlocked at a time.** Switching locks the one you leave, drops its items from memory and tells the SSH agent, then shows the lock screen of the one you picked, with its unlock methods ready.
 - **Log Out** signs out of the account on screen only, deletes its stored password and learned suggestions, and moves to the next account. The others are untouched.
-- The quick-unlock settings are shared switches: turning PIN, fingerprint or FIDO2 unlock off in settings removes it from the account on screen.
+- The quick-unlock settings are shared switches: turning PIN, fingerprint or FIDO2 unlock off in settings removes it from every account.
 
 The first account lives where a terminal `bw` finds it (`~/.config/Bitwarden CLI`), exactly as before. Each account added beside it gets a private directory of its own under `~/.local/share/qs-bitwarden-cli/accounts/`, which `bw` is pointed at with `BITWARDENCLI_APPDATA_DIR`; the list of accounts (emails and servers, nothing secret) is `registry.json` in the same place. Upgrading needs nothing: your current account becomes the first one, with everything it had.
+
+### How your vault is held
+
+While your vault is open, its session key and every item's secrets are held by a small helper process (`bin/x86_64-linux/qs-bitwarden-vault`), not by the shell. If the shell crashes, the core dump systemd keeps has no session key and no passwords in it, and the shell's own crash dumps still work for diagnosing it. A password you copy goes from the helper straight to the clipboard; TOTP codes and search are answered by the helper too. It talks only to the shell that started it, on its stdin and stdout.
+
+It ships and is verified like the other helpers. If it is missing or fails its check, the panel works as before, with the vault held in the shell, and a banner says crash protection is off. **[How it works and what it does not cover →](docs/vault-helper.md)**
 
 ### How quick unlock stores your password
 
 PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unlock` accepts nothing else. The plugin keeps it **once** per account, in a single keyring item (`service=qs-bitwarden-cli, account=unlock_envelope`, or `unlock_envelope@<slot>` for an account added beside the first):
 
 - The first time `bw` accepts a password you typed -- a login, or unlocking with your master password -- it is encrypted under a random key with XChaCha20-Poly1305, and the whole item is sealed to this machine and your user with `systemd-creds --user`. A copy taken off this machine is useless.
-- Each unlock method you turn on adds its own way to that one key, and none of them stores the password again. Turning a method off removes only its way in.
+- Each unlock method you turn on adds its own way to that one key, and none of them stores the password again. Turning a method off in settings removes only its way in -- from every account, since the switch is shared -- and one turned off in `shell.json` while the shell was not running is removed at the next start.
 - The master password you are asked for when turning a method on is a **check** against the stored one, not a new copy: a wrong one is refused, and nothing you type there is stored.
 - If you change your master password elsewhere, the next unlock with the new one re-seals the stored copy and keeps every method.
 - Logging out of an account deletes its copy; other accounts keep theirs.
@@ -395,15 +405,15 @@ An earlier build could store this item across several lines, which makes gnome-k
 
 Upgrading from 1.10.0 or earlier needs nothing from you. The old entries -- a plaintext copy for fingerprint and for FIDO2, an encrypted one for the PIN -- are moved in as each method is next used, and deleted once the new copy opens.
 
-**The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. A fingerprint releases no secret to encrypt with, so with fingerprint unlock on, a program running as you while you are logged in can open it. A PIN or a FIDO2 key cannot be bypassed that way; root, as always, can read anything.
+**The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. The seal ties the stored item to this machine and this user, so a copy taken elsewhere is useless -- but a program running as you can unseal it here (`systemd-creds --user decrypt`). With fingerprint unlock on, that is all it needs: a fingerprint releases no secret to encrypt with. With a PIN, it can then guess the PIN offline, at its own pace and on every core (see [PIN unlock](#pin-unlock)). A FIDO2 key cannot be bypassed that way, because the key itself produces the secret; root, as always, can read anything.
 
 ### PIN unlock
 
-Turn on **Unlock with PIN** in the settings screen. Confirm your master password and choose a PIN. Six digits or more is what the screen asks for; four and five are accepted but shown with the real cost of guessing them, so a weak PIN is a decision rather than an accident.
+Turn on **Unlock with PIN** in the settings screen. Confirm your master password and choose a PIN of **at least 6 digits; 8 or more is the recommendation**. Six and seven are accepted but shown with the real cost of guessing them, so a weak PIN is a decision rather than an accident. (A PIN set with an older version, when 4 was the floor, still unlocks; set a new one to get the longer PIN.)
 
-The PIN reaches the stored password through **Argon2id** (256 MiB of memory, 4 passes, about 0.75 s of one CPU core per guess), from the OS `argon2` tool. Because the stored item is sealed to this machine, guessing has to happen here, as you: roughly 2 hours of one core for 4 digits, 21 hours for 5, and 9 days for 6. A wrong PIN always fails -- the encryption is authenticated, so there is no "decrypts to garbage" case.
+The PIN reaches the stored password through **Argon2id** (256 MiB of memory, 4 passes), from the OS `argon2` tool. That cost is the whole defence against guessing: a program running as you can copy the stored item, unseal it and try PINs offline on every core. Measured on a 16-thread laptop, one guess takes about 0.46 s and 16 in parallel make about 17 a second, so every PIN of **6 digits falls in about 16 hours, 7 digits in about 7 days, and 8 digits in about 2 months** (4 digits took about 10 minutes, which is why it is no longer allowed). A wrong PIN always fails -- the encryption is authenticated, so there is no "decrypts to garbage" case.
 
-Five wrong attempts at the panel removes the PIN's way in, and turning it back on needs your master password. That is a limit on the screen, not on a copy of the keyring; the Argon2 cost is what stands behind it.
+Five wrong attempts at the panel removes the PIN's way in, and turning it back on needs your master password. That limit applies only to guesses typed into the panel's own screen, not to a copy of the stored item; the Argon2 cost is what stands behind it.
 
 ### Fingerprint unlock
 
@@ -515,16 +525,16 @@ The following settings are read from the plugin's own entry in the
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
-| `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
+| `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). The clear is the copy's own lifetime (`wl-copy` under `timeout`), so it survives a shell restart and never touches something copied later. Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
-| `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor for about a second so the lock finishes first. Needs `gdbus` (glib2), `systemd-inhibit` and `setsid` (util-linux). The monitor and its children stop when the plugin unloads; without these tools the setting is inert. |
-| `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. |
+| `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor until `bw lock` and the keyring clear have finished, at most 4 seconds. Needs `gdbus` (glib2), `systemd-inhibit` and `setsid` (util-linux). The monitor and its children stop when the plugin unloads; without these tools the setting is inert. |
+| `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. Turning it off removes a stored session at once, and with it off an unload while unlocked runs `bw lock`. |
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. |
 | `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |
-| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN, through Argon2id -- see [PIN unlock](#pin-unlock). |
+| `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN of at least 6 digits, through Argon2id -- see [PIN unlock](#pin-unlock). |
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](docs/ssh-agent.md). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
 | `sshAgentApprovalPopup` | `boolean` | `true` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show prompts in the panel. Multiple concurrent requests are queued sequentially with a "1 of N" counter and "Deny all" option. Escape and outside click deny. |
@@ -673,6 +683,7 @@ is why dependency rebuilds stay a human step.
 
 - **[Features in detail](docs/features.md)** -- every feature and why it works the way it does.
 - **[SSH agent](docs/ssh-agent.md)** -- setup, verification, threat model.
+- **[Vault helper](docs/vault-helper.md)** -- what holds your open vault, and what a crash can leave behind.
 - **[Uninstall](docs/uninstall.md)** -- including what to clear before removing the plugin.
 - **[Development](docs/development.md)** -- linting and the test suite.
 - **[Security policy](SECURITY.md)** -- how to report a vulnerability privately.

@@ -13,94 +13,19 @@
 //
 //   node tests/e2e/accounts.e2e.js
 
-const { createSuite, repoRoot } = require("../harness")
+const { createSuite } = require("../harness")
+const { createShell, sleep } = require("./shell")
 const fs = require("fs")
-const os = require("os")
 const path = require("path")
-const { spawn, spawnSync } = require("child_process")
 
 const { check, done, failures } = createSuite("e2e-accounts")
 
-const which = name => spawnSync("bash", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim()
-const missing = ["quickshell", "argon2", "jq", "node", "cmp"].filter(name => !which(name))
-if (missing.length) {
-  console.error(`e2e-accounts: cannot run without ${missing.join(", ")}`)
-  process.exit(1)
-}
-
-const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-
-// A short root: the IPC socket lives under the runtime dir, and a Unix socket
-// path is limited to 108 bytes.
-const root = fs.mkdtempSync(path.join(os.platform() === "linux" ? "/tmp" : os.tmpdir(), "qsbw-e2e-"))
-const config = path.join(root, "config")
-const home = path.join(root, "home")
-const runtime = path.join(root, "run")
-const keyring = path.join(root, "keyring")
-const bwLog = path.join(root, "bw.log")
-const shellLog = path.join(root, "shell.log")
-fs.cpSync(path.join(__dirname, "config"), config, { recursive: true })
-fs.symlinkSync(repoRoot, path.join(config, "plugin"))
-for (const d of [home, runtime, keyring]) fs.mkdirSync(d, { mode: 0o700 })
-
-const env = {
-  PATH: `${path.join(__dirname, "bin")}:/usr/local/bin:/usr/bin:/bin`,
-  HOME: home,
-  USER: os.userInfo().username,
-  LANG: "C.UTF-8",
-  XDG_RUNTIME_DIR: runtime,
-  XDG_CONFIG_HOME: path.join(home, ".config"),
-  XDG_DATA_HOME: path.join(home, ".local", "share"),
-  XDG_STATE_HOME: path.join(home, ".local", "state"),
-  XDG_CACHE_HOME: path.join(home, ".cache"),
-  QT_QPA_PLATFORM: "offscreen",
-  FAKE_BW_LOG: bwLog,
-  FAKE_KEYRING: keyring,
-  FAKE_SESSION_STORE_DELAY: "1"
-}
+const shell = createShell("e2e-accounts", check)
+const { keyring, bwLog, env, q, product, state, expect } = shell
 const accountsDir = path.join(env.XDG_DATA_HOME, "qs-bitwarden-cli", "accounts")
+const startShell = shell.start
+const stopShell = shell.stop
 
-let shell = null
-function startShell() {
-  const out = fs.openSync(shellLog, "a")
-  shell = spawn("quickshell", ["-p", config], { env, stdio: ["ignore", out, out], detached: true })
-  fs.closeSync(out)
-  for (let i = 0; i < 120; i++) {
-    if (ipc("qsbwtest", "state").ok) return
-    sleep(250)
-  }
-  throw new Error("the shell never answered on IPC")
-}
-function stopShell() {
-  if (!shell) return
-  try { process.kill(-shell.pid, "SIGTERM") } catch (e) {}
-  for (let i = 0; i < 40 && shell.exitCode === null && shell.signalCode === null; i++) {
-    if (spawnSync("kill", ["-0", String(shell.pid)]).status !== 0) break
-    sleep(100)
-  }
-  try { process.kill(-shell.pid, "SIGKILL") } catch (e) {}
-  shell = null
-}
-function ipc(target, ...args) {
-  const r = spawnSync("quickshell", ["ipc", "-p", config, "call", target, ...args],
-    { env, encoding: "utf8", timeout: 20000 })
-  return { ok: r.status === 0, out: String(r.stdout || "").trim() }
-}
-const q = (...args) => ipc("qsbwtest", ...args).out
-const product = (...args) => ipc("io.github.elevate08.qs-bitwarden-cli", ...args).out
-const state = () => { try { return JSON.parse(q("state")) } catch (e) { return null } }
-
-// Waits up to 30 s for the vault to reach a state.
-function expect(label, predicate) {
-  let s = null
-  for (let i = 0; i < 120; i++) {
-    s = state()
-    if (s && predicate(s)) { check(label, true, ""); return s }
-    sleep(250)
-  }
-  check(label, false, "last state: " + JSON.stringify(s))
-  return s
-}
 const addedDirs = () => fs.existsSync(accountsDir)
   ? fs.readdirSync(accountsDir).filter(n => /^[0-9a-f]{16}$/.test(n)) : []
 const emails = s => s.accounts.map(a => a.email).join(",")
@@ -117,6 +42,15 @@ try {
   expect("account A logs in", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
   expect("and is recorded", s => emails(s) === "a@x" && s.email === "a@x")
   expect("its password is stored for quick unlock", s => s.envelope !== null)
+  // The vault helper holds the session key and the items' secrets.
+  expect("the vault helper is up", s => s.helper === "active")
+  expect("and holds the session key, not the shell", s => s.sessionHeld === true)
+  expect("the list here has no password, only that there is one",
+    s => s.passwords.join() === "" && s.hasPasswords.join() === "true")
+  q("copyFirst")
+  expect("a copy reaches wl-copy from the helper", () => {
+    try { return fs.readFileSync(bwLog + ".clipboard", "utf8") === "x" } catch (e) { return false }
+  })
   q("setPin", "111111", "pw-a@x")
   expect("A gets a PIN", s => s.pinConfigured && s.pinReady)
   q("lock")
@@ -214,17 +148,13 @@ try {
     s => s.status === "unauthenticated" && s.accounts.length === 0 && s.slot === "default")
   check("and an empty keyring", fs.readdirSync(keyring).length === 0, fs.readdirSync(keyring).join())
 
-  const errors = fs.readFileSync(shellLog, "utf8").split("\n")
-    .filter(l => /ReferenceError|TypeError|is not a function|Cannot read property/.test(l))
+  const errors = shell.scriptErrors()
   check("the shell logged no script errors", errors.length === 0, errors.join("\n"))
 } catch (e) {
   failedToRun = e
 } finally {
-  stopShell()
-  if (failedToRun || failures.length) {
-    console.error("--- shell log (tail) ---\n" + fs.readFileSync(shellLog, "utf8").split("\n").slice(-40).join("\n"))
-  }
-  if (!process.env.KEEP_E2E) fs.rmSync(root, { recursive: true, force: true })
+  if (failedToRun || failures.length) console.error("--- shell log (tail) ---\n" + shell.logTail())
+  shell.cleanup()
 }
 if (failedToRun) {
   console.error("e2e-accounts: " + failedToRun.message)
