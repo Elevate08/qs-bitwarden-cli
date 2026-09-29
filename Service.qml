@@ -876,6 +876,9 @@ Item {
   // so an unlocked vault is locked here too. Restarted, within a limit.
   function onVaultHelperExited(exitCode) {
     var wasActive = vaultHelperState === "active" || vaultHelperState === "starting"
+    // Until it is back (or given up on), new runs wait rather than being
+    // written to a process that is gone.
+    if (wasActive && !shuttingDown) vaultHelperState = "starting"
     var runs = vaultRuns
     vaultRuns = ({})
     for (var id in runs) runs[id].finish(1, "", "the vault helper stopped", false, false)
@@ -911,7 +914,8 @@ Item {
 
   // Called by VaultProcess.start().
   function vaultStart(proc) {
-    if (vaultHelperState === "pending" || vaultHelperState === "starting") {
+    if (vaultHelperState === "pending" || vaultHelperState === "starting"
+        || (vaultHelperState === "active" && !vaultHelperProc.running)) {
       if (vaultWaiting.indexOf(proc) === -1) vaultWaiting = vaultWaiting.concat([proc])
       return
     }

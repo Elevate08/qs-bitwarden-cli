@@ -113,9 +113,23 @@ fn main() {
     }
 
     // The panel is gone or asked us to stop: nothing it started should
-    // outlive it with the session key in its environment.
-    for (_, group) in helper.runs.lock().unwrap().drain() {
-        signal_group(group, rustix::process::Signal::KILL);
+    // outlive it with the session key in its environment. SIGTERM first, so
+    // the scripts' traps stop the `bw` they started in their own groups.
+    let groups: Vec<u32> = helper
+        .runs
+        .lock()
+        .unwrap()
+        .drain()
+        .map(|(_, group)| group)
+        .collect();
+    for group in &groups {
+        signal_group(*group, rustix::process::Signal::TERM);
+    }
+    if !groups.is_empty() {
+        thread::sleep(std::time::Duration::from_millis(500));
+        for group in &groups {
+            signal_group(*group, rustix::process::Signal::KILL);
+        }
     }
     helper.store.lock().unwrap().forget(&[]);
     drop(helper);
@@ -334,6 +348,19 @@ impl Helper {
 
         if self.runs.lock().unwrap().len() >= MAX_RUNS {
             return refuse("too many runs");
+        }
+        // A run never outlives the helper: if it dies (a crash, a SIGKILL),
+        // the kernel sends each run SIGTERM, which the auth scripts' traps
+        // pass on to their `bw`. Otherwise a `bw unlock` left waiting on the
+        // password FIFO would read the next unlock's password.
+        // SAFETY: only async-signal-safe work between fork and exec (prctl).
+        unsafe {
+            command.pre_exec(|| {
+                rustix::process::set_parent_process_death_signal(Some(
+                    rustix::process::Signal::TERM,
+                ))
+                .map_err(std::io::Error::from)
+            });
         }
         command.stdin(if stdin.is_some() {
             Stdio::piped()

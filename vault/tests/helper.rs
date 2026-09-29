@@ -317,3 +317,22 @@ fn runs_can_be_killed_and_stdin_is_delivered() {
     let missing = helper.exec(9, "true", json!({ "capture": "bogus" }));
     assert_eq!(missing["code"], 126);
 }
+
+#[test]
+fn runs_do_not_outlive_a_crashed_helper() {
+    let mut helper = Helper::start();
+    let mark = helper.dir.join("stopped");
+    let script = format!(
+        "trap 'echo stopped > {}; exit 0' TERM; while :; do sleep 0.05; done",
+        mark.display()
+    );
+    helper.send(json!({ "type": "exec", "v": 1, "id": 1, "argv": ["sh", "-c", script] }));
+    std::thread::sleep(Duration::from_millis(300));
+    // SIGKILL: no cleanup code of the helper's runs.
+    helper.child.kill().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !mark.exists() {
+        assert!(Instant::now() < deadline, "the run outlived the helper");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
