@@ -15,8 +15,7 @@ const { check, eq, done } = createSuite("pinentry-service")
 
 const names = ["requestPinentry", "onPinentryExited", "beginPinentry", "endPinentry", "cancelPinentry",
   "resumeFromPinentry", "unlockWithPinentry", "unlockPinWithPinentry", "retryPinentryPin", "releaseHeldPin",
-  "submitRepromptWithPinentry", "submitReprompt", "forgetHeldReference", "forgetHeldAfter", "onUnlockOutput",
-  "dropPendingUnlockSecret"]
+  "submitRepromptWithPinentry", "submitReprompt", "forgetHeldPassword", "forgetHeldAfter", "onUnlockOutput"]
 
 function makeVault(extra) {
   const v = {
@@ -178,6 +177,27 @@ function finish(v, code, held, stderr) {
   check("the PIN is not in the shell's field", v.pinEntry === "", "")
   v.proc.starts = []
 
+  // A PIN under the minimum: the same message as the field, asked for again,
+  // and no attempt counted.
+  const s = makeVault({ pinAttempts: 0, wrong: 0, countWrongPin() { this.wrong += 1 } })
+  Object.defineProperty(s.proc, "running", { configurable: true, get() { return this._r === true }, set(x) {
+    if (x) s.proc.starts.push({ command: s.proc.command, capture: s.proc.capture }); this._r = x } })
+  s.unlockPinWithPinentry()
+  check("the PIN run carries the unlock minimum", s.proc.starts[0].command[9] === String(Model.pinUnlockMinLength()),
+    JSON.stringify(s.proc.starts[0].command.slice(5)))
+  finish(s, Model.pinentryExitCodes().short, false)
+  check("a short PIN is not submitted and not counted",
+    s.pinSubmits.length === 0 && s.wrong === 0 && s.pinAttempts === 0, "")
+  check("it asks again with the field's message",
+    s.proc.starts.length === 2 && s.pinUnlockError === "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
+      && s.proc.starts[1].command[8] === s.pinUnlockError, JSON.stringify(s.proc.starts[1]))
+  check("a master password run has no minimum", makeVault().proc && (() => {
+    const m = makeVault()
+    Object.defineProperty(m.proc, "running", { configurable: true, get() { return false }, set() {} })
+    m.unlockWithPinentry()
+    return m.proc.command[9] === "0"
+  })(), "")
+
   // The unlock was not taken up: nothing else would forget it.
   const w = makeVault({ submitTakesIt: false })
   Object.defineProperty(w.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
@@ -246,14 +266,14 @@ check("the PIN unlock takes a held PIN, in place of the field, for both its path
     && /if \(!held && String\(pinEntry \|\| ""\)\.length < Model\.pinUnlockMinLength\(\)\)/.test(body("submitPinUnlock"))
     && /heldPinName \? Model\.heldSecretRef\(root\.heldPinName\) : root\.pinEntry/.test(service), body("submitPinUnlock"))
 check("a held PIN is forgotten when the envelope answers, and a held PIN for a migration after it",
-  /releaseHeldPin\(\)/.test(body("onEnvelopePinResult")) && /forgetHeldReference\(pin\)/.test(body("migrateLegacyPin"))
-    && /forgetHeldReference\(pendingPinForMigration\)/.test(body("onUnlockOutput")), "")
+  /releaseHeldPin\(\)/.test(body("onEnvelopePinResult")) && /forgetHeldPassword\(pin\)/.test(body("migrateLegacyPin"))
+    && /forgetHeldPassword\(pendingPinForMigration\)/.test(body("onUnlockOutput")), "")
 check("an accepted master password is forgotten once its stored copy has been dealt with",
   /storeAcceptedMasterPassword\(pendingUnlockPassword, forgetHeldAfter\(pendingUnlockPassword\)\)/.test(body("onUnlockSuccess")), "")
 check("a failed delivery, an abandoned unlock and a dismissed SSH popup forget it too",
-  /forgetHeldReference\(pendingUnlockPassword\)/.test(body("onAuthPasswordWriterExited"))
-    && /forgetHeldReference\(pendingUnlockPassword\)/.test(body("abandonAuthSecrets"))
-    && /dropPendingUnlockSecret\(\)/.test(body("clearSshPopupUnlockState"))
+  /forgetHeldPassword\(pendingUnlockPassword\)/.test(body("onAuthPasswordWriterExited"))
+    && /forgetHeldPassword\(pendingUnlockPassword\)/.test(body("abandonAuthSecrets"))
+    && /forgetHeldPassword\(root\.pendingUnlockPassword\)/.test(body("clearSshPopupUnlockState"))
     && /cancelPinentry\(\)/.test(body("clearSshPopupUnlockState")), "")
 check("a lock, another method's unlock and the panel being asked for end a pinentry",
   /cancelPinentry\(\)/.test(body("dropVaultState")) && /cancelPinentry\(\)/.test(body("onUnlockSuccess"))

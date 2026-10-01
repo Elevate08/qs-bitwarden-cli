@@ -13,7 +13,7 @@ ShellRoot {
     id: view
     property bool opened: false
     property string screenName: "TEST-1"
-    property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: true,
+    property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: Quickshell.env("QSBW_E2E_REMEMBER_SESSION") !== "0",
                               autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false,
                               sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1" })
     function showPopout() { opened = true }
@@ -52,6 +52,10 @@ ShellRoot {
         typed: [vault.masterPassword, vault.pinEntry, vault.pendingUnlockPassword].join("|"),
         pinentry: { available: vault.pinentryAvailable, found: vault.pinentryFound, broken: vault.pinentryBroken,
                     active: vault.pinentryActive, notice: vault.pinentryNotice },
+        // The open item's detail: whether it is the secret-free view, and
+        // which fields are revealed.
+        detail: vault.detailItem ? { name: vault.detailItem.name, withheld: vault.detailItem.secretsWithheld === true } : null,
+        revealed: Object.keys(vault.revealedFields),
         passwords: vault.items.map(function(i) { return i.password }),
         hasPasswords: vault.items.map(function(i) { return i.hasPassword }),
         ssh: { phase: vault.sshAgentPhase, keys: vault.sshAgentKeyCount, prompt: vault.sshPrompt !== null, unlock: vault.sshUnlockRequest !== null,
@@ -80,6 +84,9 @@ ShellRoot {
     }
     function logout(): void { vault.logoutAccount() }
     function copyFirst(): void { vault.copyPassword(vault.items[0]) }
+    function openFirst(): void { vault.openDetail(vault.items[0]) }
+    function reveal(key: string): void { vault.toggleFieldReveal(key) }
+    function copyField(key: string): void { vault.copyDetailField(key, key) }
     function approveSsh(seconds: int): void { vault.approveSshRequest(seconds) }
     // A `bw status` check, as waking from sleep runs with the panel open.
     function refresh(): void { vault.refreshStatus() }

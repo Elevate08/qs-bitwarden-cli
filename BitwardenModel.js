@@ -1667,17 +1667,17 @@ var PINENTRY_DEFAULT_PROGRAM = "pinentry"
 var PINENTRY_TEXT_MAX = 400
 // Exit codes of the script (and 127, 126 and 128+ for a program that is
 // missing, a helper that does not know the capture, or a kill).
-var PINENTRY_EXIT = { cancelled: 1, empty: 3, failed: 4, missing: 127 }
+var PINENTRY_EXIT = { cancelled: 1, empty: 3, failed: 4, short: 5, missing: 127 }
 
 function pinentryExitCodes() {
   return { cancelled: PINENTRY_EXIT.cancelled, empty: PINENTRY_EXIT.empty,
-           failed: PINENTRY_EXIT.failed, missing: PINENTRY_EXIT.missing }
+           failed: PINENTRY_EXIT.failed, short: PINENTRY_EXIT.short, missing: PINENTRY_EXIT.missing }
 }
 
 // pinentry's own "operation cancelled" is GPG_ERR_CANCELED (99) from source
 // 5, 83886179; any code whose low 16 bits are 99 is read as a cancel.
 var PINENTRY_SCRIPT = [
-  "__prog=\"$1\"; __title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"",
+  "__prog=\"$1\"; __title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"; __min=\"${6:-0}\"",
   "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
   // Assuan data: only %, CR and LF need encoding.
   "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
@@ -1703,6 +1703,9 @@ var PINENTRY_SCRIPT = [
   "    OK|OK\\ *)",
   "      printf 'BYE\\n' >&\"${PE[1]}\"",
   "      [ -n \"$__d\" ] || exit " + PINENTRY_EXIT.empty,
+  // The length of what was typed: each %XX stands for one character.
+  "      __t=\"${__d//[^%]/}\"; __n=$(( ${#__d} - 2 * ${#__t} ))",
+  "      if [[ \"$__min\" =~ ^[0-9]+$ ]] && (( __n < __min )); then exit " + PINENTRY_EXIT.short + "; fi",
   "      printf '%s' \"$__d\"; exit 0 ;;",
   "    ERR|ERR\\ *)",
   "      __c=\"${__l#ERR }\"; __c=\"${__c%% *}\"",
@@ -1726,11 +1729,13 @@ function pinentryProgram(configured) {
   return name
 }
 
-// `opts`: { title, description, prompt, error } as plain text.
+// `opts`: { title, description, prompt, error } as plain text, and
+// `minLength`: an answer of fewer characters exits short (nothing is held).
 function pinentryCommand(program, opts) {
   var o = opts || {}
   return ["bash", "-c", PINENTRY_SCRIPT, "_", pinentryProgram(program),
-    pinentryText(o.title), pinentryText(o.description), pinentryText(o.prompt), pinentryText(o.error)]
+    pinentryText(o.title), pinentryText(o.description), pinentryText(o.prompt), pinentryText(o.error),
+    String(Math.max(0, Math.floor(Number(o.minLength) || 0)))]
 }
 
 // Exit 0 when `program` names something runnable.
@@ -2752,6 +2757,9 @@ function itemCustomFields(fields, item) {
       ? null : Number(field.linkedId)
     customFields.push({
       name: String(field.name || ""),
+      // Its position in the item's own `fields`, which the helper's
+      // `customField:<index>` names (nameless fields are skipped above).
+      index: i,
       // Keep an explicit boolean false.
       value: type === 3
         ? linkedCustomFieldValue(item, linkedId)
@@ -2841,10 +2849,12 @@ function parseItems(raw) {
       identity: identityDetail(it.identity),
       notes: String(it.notes || ""),
       hasNotes: Boolean(it.notes) || Boolean(held && held.notes),
-      // Custom fields of a re-prompt item, hidden values already gone: its
-      // detail is drawn from the row until the master password is given
-      // (publicItemDetail()).
-      fields: held && repromptValue(it.reprompt) === 1 ? itemCustomFields(it.fields, it) : [],
+      // Custom fields of an item the helper holds, hidden values already
+      // gone: its detail is drawn from the row (publicItemDetail()).
+      fields: held ? itemCustomFields(it.fields, it) : [],
+      // Which other secrets the helper holds for it (card code, identity
+      // numbers), so the detail draws a row for each without the value.
+      heldFlags: held,
       // A stripped item is no base for the detail or edit views: they ask the
       // helper for the whole item.
       rawObject: held ? null : it,
@@ -3044,33 +3054,37 @@ function itemDetailFromObject(it) {
 // the public view.
 var WITHHELD = "\u2022"
 
-// The detail of an item that asks for the master password, without its
-// secrets: from a list row the helper stripped (secretsHeld) or from a loaded
-// detail being closed again. Which secrets exist is kept (hasPassword,
-// hasTotp, hasNotes, a field per hidden custom field) so the view still
-// offers them. A stripped row does not say whether a card has a security code
-// or an identity a number, so those rows are drawn for it; the loaded detail
-// that replaces the view drops the ones that were not there.
+// The detail of an item without its secrets: from a list row the helper
+// stripped (secretsHeld) or from a loaded detail being closed again. Which
+// secrets exist is kept (hasPassword, hasTotp, hasNotes, a row per card code,
+// identity number and hidden custom field) so the view still offers them;
+// each value is fetched when it is revealed or copied. A row from a helper
+// that does not report the card code and identity numbers is drawn with all
+// of them, as it cannot say.
 function publicItemDetail(src) {
   if (!src || typeof src !== "object") return null
   var unknown = Boolean(src.secretsHeld)
+  var flags = src.heldFlags && typeof src.heldFlags === "object" ? src.heldFlags : {}
+  var has = function(flag, value) {
+    return flags[flag] !== undefined ? Boolean(flags[flag]) : (unknown || value !== "")
+  }
   var card = null
   if (src.card) {
     card = cardDetail(src.card)
     if (card.number !== "") card.number = WITHHELD
-    if (unknown || card.code !== "") card.code = WITHHELD
+    card.code = has("cardCode", card.code) ? WITHHELD : ""
   }
   var identity = null
   if (src.identity) {
     identity = identityDetail(src.identity)
     var numbers = ["ssn", "passportNumber", "licenseNumber"]
     for (var n = 0; n < numbers.length; n++) {
-      if (unknown || identity[numbers[n]] !== "") identity[numbers[n]] = WITHHELD
+      identity[numbers[n]] = has(numbers[n], identity[numbers[n]]) ? WITHHELD : ""
     }
   }
   var fields = toList(src.fields).map(function(f) {
     return { name: f.name, value: f.sensitive ? WITHHELD : f.value, type: f.type,
-      linkedId: f.linkedId, sensitive: f.sensitive }
+      linkedId: f.linkedId, sensitive: f.sensitive, index: f.index }
   })
   var attachments = toList(src.attachments)
   return {
@@ -3098,6 +3112,30 @@ function publicItemDetail(src) {
     rawObject: null,
     secretsWithheld: true
   }
+}
+
+// The value `key` names in a detail that holds its secrets (no helper, or an
+// item loaded for editing): a field key as the helper names them ("password",
+// "notes", "cardNumber", "cardCode", "ssn", "passportNumber", "licenseNumber",
+// "customField:<index>"). null if there is none.
+function detailSecretValue(detail, key) {
+  if (!detail || typeof detail !== "object") return null
+  var card = detail.card || {}
+  var identity = detail.identity || {}
+  var values = {
+    password: detail.password, notes: detail.notes,
+    cardNumber: card.number, cardCode: card.code,
+    ssn: identity.ssn, passportNumber: identity.passportNumber, licenseNumber: identity.licenseNumber
+  }
+  var value = Object.prototype.hasOwnProperty.call(values, key) ? values[key] : undefined
+  if (String(key).indexOf("customField:") === 0) {
+    var index = Number(String(key).slice("customField:".length))
+    var fields = toList(detail.fields)
+    for (var i = 0; i < fields.length; i++) {
+      if (fields[i].index === index) value = fields[i].value
+    }
+  }
+  return value === undefined || value === null ? null : String(value)
 }
 
 // -------------------------------------------------------------------------

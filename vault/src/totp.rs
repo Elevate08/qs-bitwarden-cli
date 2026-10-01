@@ -134,7 +134,12 @@ fn form_decode(input: &str) -> Option<String> {
         match bytes[i] {
             b'+' => out.push(b' '),
             b'%' => {
+                // Exactly two hex digits: from_str_radix would also take a
+                // leading `+`, so `%+f` would decode.
                 let hex = bytes.get(i + 1..i + 3)?;
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return None;
+                }
                 let text = std::str::from_utf8(hex).ok()?;
                 out.push(u8::from_str_radix(text, 16).ok()?);
                 i += 2;
@@ -212,6 +217,15 @@ mod tests {
     // RFC 6238 appendix B: the ASCII secret "12345678901234567890" (base32
     // GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ), 8 digits via otpauth.
     const RFC_SHA1: &str = "otpauth://totp/x?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8";
+
+    #[test]
+    fn form_decode_needs_two_hex_digits() {
+        assert_eq!(form_decode("%41").as_deref(), Some("A"));
+        assert_eq!(form_decode("a%2Fb+c").as_deref(), Some("a/b c"));
+        for bad in ["%+f", "%-1", "%2", "%zz", "%", "%4"] {
+            assert_eq!(form_decode(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn rfc_6238_vectors() {

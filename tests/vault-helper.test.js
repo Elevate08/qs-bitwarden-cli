@@ -59,6 +59,9 @@ check("saves update the helper's copy of the item",
 check("the keyring store gets the session from the helper",
   /id: keyringStoreProc[\s\S]{0,300}inject: root\.injectSession\(Model\.keyringSecretEnvVar\(\)\)/.test(service)
     && !/secretEnv\(root\.session\)/.test(service), "")
+check("an unknown plugin directory ends in the fallback, so queued runs are flushed rather than left waiting",
+  /sshAgentPluginDir === ""\) \{\s*useVaultFallback\(/.test(body("inspectVaultHelper"))
+    && /vaultHelperState = "fallback"[\s\S]*flushVaultWaiting\(\)/.test(body("useVaultFallback")), body("inspectVaultHelper"))
 check("a lock drops the helper's key and items",
   /forgetVault\(\)/.test(body("dropVaultState")), body("dropVaultState"))
 check("each queued lock keeps its own copy of the key until it has run",
@@ -74,8 +77,14 @@ check("a held reference in an environment travels by name",
   /Model\.heldSecretName\(proc\.environment\[key\]\)[\s\S]{0,80}inject\[key\] = "secret:" \+ held/.test(body("vaultStart")), body("vaultStart"))
 check("a password copy goes from the helper to wl-copy",
   /vaultQuery\("copyPassword"/.test(body("copyPasswordNow")), body("copyPasswordNow"))
-check("the detail view asks the helper for the one item",
-  /vaultQuery\("item", \{ id: id \}/.test(body("openDetail")), body("openDetail"))
+check("the detail view asks the helper for no item, only for the value that is revealed",
+  !/vaultQuery\("item"/.test(body("openDetail")) && /vaultQuery\("field", \{ id: id, field: key \}/.test(body("readDetailSecret")),
+  body("openDetail"))
+check("a detail copy of one secret goes from the helper to wl-copy",
+  /vaultQuery\("copyField"/.test(body("copyDetailFieldNow")), body("copyDetailFieldNow"))
+check("only the edit form asks for the whole item",
+  /vaultQuery\("item", \{ id: id \}/.test(body("loadFullDetail"))
+    && (service.match(/vaultQuery\("item"/g) || []).length === 1, "")
 check("TOTP comes from the helper, bw only for keys it does not mirror",
   /vaultQuery\("totp"/.test(body("fetchTotp")) && /root\.fetchTotp\(requested, false, true\)/.test(body("fetchTotp")), "")
 check("search asks the helper, and an answer for old text is dropped",
@@ -98,9 +107,8 @@ check("the SSH agent is locked even when the panel was not yet unlocked",
 }
 check("a run stopped after the helper died is not written to it",
   /if \(proc\.runId > 0\) \{[\s\S]{0,120}if \(vaultHelperActive\) vaultHelperProc\.write/.test(body("vaultKill")), body("vaultKill"))
-check("a failed or crashing helper falls back, and says so",
-  /useVaultFallback\(vaultHelper\.message\)/.test(body("onVaultHelperInspected"))
-    && /useVaultFallback\("the vault helper kept stopping\."\)/.test(body("onVaultHelperExited")), "")
+check("a helper that cannot be used at start falls back, and says so",
+  /useVaultFallback\(vaultHelper\.message\)/.test(body("onVaultHelperInspected")), "")
 check("the panel shows the fallback banner",
   /visible: root\.vaultHelperWarning !== ""/.test(readPluginSource("Panel.qml")), "")
 
@@ -109,6 +117,30 @@ const [held] = Model.parseItems([{ id: "a", type: 1, name: "n", login: { usernam
 check("an item from the helper says what it has without holding it",
   held.hasPassword && held.hasTotp && held.hasNotes && held.password === "" && held.totpKey === ""
     && held.rawObject === null && held.secretsHeld, JSON.stringify(held))
+
+// --- a helper that keeps stopping (GHSA-6qjw-gmvg-7hvw #2) -----------------------
+
+{
+  const exited = body("onVaultHelperExited")
+  check("a helper that keeps stopping leaves the vault locked rather than in the shell",
+    /stopVaultHelper\(\)/.test(exited) && !/useVaultFallback/.test(exited), exited)
+  const stop = body("stopVaultHelper")
+  check("stopped is its own state, with a banner and no fallback",
+    /vaultHelperState = "stopped"/.test(stop) && /vaultHelperWarning = /.test(stop)
+      && !/useVaultFallback|runLocally/.test(stop), stop)
+  const start = body("vaultStart")
+  check("runs wait while the helper is stopped instead of running in the shell",
+    /vaultHelperState === "stopped"/.test(start.split("runLocally")[0]), start)
+  const retry = body("retryVaultHelper")
+  check("trying again starts the helper with a fresh count",
+    /vaultHelperState !== "stopped"\) return/.test(retry) && /vaultHelperRestarts = 0/.test(retry)
+      && /startVaultHelper\(\)/.test(retry), retry)
+  check("the count clears once the helper has stayed up a minute",
+    /vaultHelperSettledMs: 60000/.test(service)
+      && /id: vaultHelperSettleTimer[\s\S]{0,200}vaultHelperRestarts = 0/.test(service)
+      && /vaultHelperSettleTimer\.restart\(\)/.test(body("onVaultHelperLine"))
+      && /vaultHelperSettleTimer\.stop\(\)/.test(exited), "")
+}
 
 // --- the real helper -------------------------------------------------------------
 
@@ -180,6 +212,32 @@ if (!fs.existsSync(binary)) {
     check("the list the panel gets has no notes", !/recovery/.test(read.out) && /"qsbwHeld"/.test(read.out), read.out)
     send(Model.vaultHelperLine("search", { q: 200, query: "Recovery" }))
     eq("the helper's search finds note text", JSON.stringify((await reply(m => m.q === 200)).value), '["n"]')
+
+    // One secret at a time: the shell asks for the field it shows, by name.
+    const guarded = JSON.stringify({ items: [
+      { id: "k", type: 3, name: "Card", card: { number: "4111111111111111", code: "987" },
+        fields: [{ name: "pin", value: "4242", type: 1 }, { name: "label", value: "plain", type: 0 }] }], sshKeys: [] })
+    send(Model.vaultExecLine(3, ["sh", "-c", "cat"], {}, {}, "vault", guarded))
+    const listed = await reply(m => m.type === "exit" && m.id === 3)
+    const [row] = Model.parseItems(JSON.parse(listed.out).items)
+    check("the row says which secrets there are and holds none of them",
+      row.heldFlags.cardCode === true && row.heldFlags.ssn === false && !/4111111111111111|987|4242/.test(listed.out), listed.out)
+    check("the row's hidden field has a place in the item, for the helper to name",
+      row.fields[0].index === 0 && row.fields[0].sensitive && row.fields[1].value === "plain", JSON.stringify(row.fields))
+    let n = 300
+    const field = async (type, id, name, extra) => {
+      n += 1
+      send(Model.vaultHelperLine(type, Object.assign({ q: n, id, field: name }, extra || {})))
+      return reply(m => m.q === n)
+    }
+    eq("the helper serves a card's number", (await field("field", "k", "cardNumber")).value, "4111111111111111")
+    eq("and a hidden field by its place", (await field("field", "k", "customField:0")).value, "4242")
+    check("but not a plain field, a key or a made-up name",
+      !(await field("field", "k", "customField:1")).ok && !(await field("field", "k", "totp")).ok
+        && !(await field("field", "k", "login.password")).ok && !(await field("field", "nope", "cardCode")).ok, "")
+    // A successful copy would reach the real clipboard; the Rust tests run it against a stand-in wl-copy.
+    check("a copy of a missing value or a non-field fails", !(await field("copyField", "k", "ssn", { clearSec: 5 })).ok
+      && !(await field("copyField", "k", "totp", { clearSec: 5 })).ok, "")
 
     send(Model.vaultHelperLine("forgetItem", { id: "n" }))
     send(Model.vaultHelperLine("item", { q: 201, id: "n" }))

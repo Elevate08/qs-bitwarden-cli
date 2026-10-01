@@ -158,6 +158,19 @@ function runPin(plugin) {
     q("lock")
     expect("pin: locks", s => s.status === "locked")
 
+    // Shorter than the floor: asked again with the field's message, not counted.
+    reset()
+    answer("pin:12", "pin:111111")
+    q("pinUnlockPinentry")
+    expect("pin: a short PIN, then the right one, unlocks", s => s.status === "unlocked")
+    const shortRequests = asked()
+    check("pin: the short one was asked again with the length, and counted as nothing",
+      shortRequests.filter(l => l === "GETPIN").length === 2
+        && shortRequests.some(l => /^SETERROR PIN must be at least \d+ digits$/.test(l))
+        && !shortRequests.some(l => /Incorrect PIN/.test(l)), shortRequests.join("|"))
+    q("lock")
+    expect("pin: locks", s => s.status === "locked")
+
     reset()
     answer("cancel")
     q("pinUnlockPinentry")

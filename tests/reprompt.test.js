@@ -139,7 +139,7 @@ for (const [fn, now] of [["copyPassword", "copyPasswordNow"], ["copyTotpCode", "
 check("editing goes through it, on the whole item",
   /withRevealedDetail\(item, function\(\) \{[^]*?startEditItemNow\(/.test(body("startEditItem")), body("startEditItem"))
 check("revealing a field goes through it; hiding one does not",
-  /if \(!revealedFields\[key\] && detailItem\) \{\s*withRevealedDetail\(detailItem/.test(body("toggleFieldReveal")),
+  /if \(isFieldRevealed\(key\)\) \{[^]*?return\s*\}\s*withReprompt\(item, function\(\) \{ root\.revealField\(item, key\)/.test(body("toggleFieldReveal")),
   body("toggleFieldReveal"))
 check("the TOTP that follows Enter's copy is not asked for again",
   /totpFollowupActive && totpFollowupItem && totpFollowupItem\.id === item\.id\) \{\s*copyTotpCodeNow\(item\)/.test(body("copyTotpCode"))
@@ -150,7 +150,7 @@ check("closing the panel forgets it",
   /clearRepromptGrant\(\)/.test(src.slice(src.indexOf("onOpenedChanged:"), src.indexOf("onOpenedChanged:") + 200)), "")
 const screen = src.slice(src.indexOf("onCurrentScreenChanged:"), src.indexOf("onCurrentScreenChanged:") + 1400)
 check("leaving the item (detail, its edit form, a generator trip from it) forgets it",
-  /if \(!inItem\) clearRepromptGrant\(\)/.test(screen) && /if \(repromptPending\) cancelReprompt\(\)/.test(screen), screen)
+  /if \(!inItem\) \{\s*clearRepromptGrant\(\)/.test(screen) && /if \(repromptPending\) cancelReprompt\(\)/.test(screen), screen)
 check("opening another item forgets it",
   /String\(item\.id\) !== repromptVerifiedId\) clearRepromptGrant\(\)/.test(body("openDetail")), body("openDetail"))
 check("Escape dismisses a waiting prompt first",

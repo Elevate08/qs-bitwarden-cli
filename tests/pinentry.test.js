@@ -58,6 +58,23 @@ r = run("pin:x", {}, path.join(dir, "no-such-pinentry"))
 eq("a missing program is reported", `${r.code}|${r.out}`, `${exits.missing}|`)
 check("nothing typed reaches stderr", !/hunter2/.test(run("pin:hunter2").err), "")
 
+// --- a PIN that is too short ---------------------------------------------------------
+
+r = run("pin:12", { minLength: 4 })
+eq("a PIN under the minimum exits short and prints nothing", `${r.code}|${r.out}`, `${exits.short}|`)
+r = run("pin:%25%25", { minLength: 4 })
+eq("an encoded % counts as one character, so two are short", `${r.code}|${r.out}`, `${exits.short}|`)
+r = run("pin:%25%25%0A%0D", { minLength: 4 })
+eq("four characters, encoded, are enough", `${r.code}|${r.out}`, "0|%25%25%0A%0D")
+r = run("pin:1234", { minLength: 4 })
+eq("the minimum itself passes", `${r.code}|${r.out}`, "0|1234")
+r = run("pin:1", {})
+eq("no minimum, no check", `${r.code}|${r.out}`, "0|1")
+r = run("empty", { minLength: 4 })
+eq("an empty answer is still empty, not short", r.code, exits.empty)
+check("short differs from the other codes",
+  new Set(Object.values(exits)).size === Object.values(exits).length, JSON.stringify(exits))
+
 // --- what the pinentry is told ------------------------------------------------
 
 r = run("cancel", { title: "Bitwarden", description: "Unlock Bitwarden for 100%@x.com", prompt: "Master password:" })

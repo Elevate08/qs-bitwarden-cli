@@ -267,27 +267,116 @@ Item {
   // Selected item detail
   property var detailItem: null
   property string detailPassword: ""
-  // Revealed sensitive fields of the open item, by key; each eye is separate.
+  // Revealed sensitive fields of the open item: field key (as the helper names
+  // them: "password", "notes", "cardNumber", "cardCode", "ssn",
+  // "passportNumber", "licenseNumber", "customField:<index>", plus "totp",
+  // which has no value here) -> its value. Each eye is separate. A value is
+  // fetched when its eye is clicked and dropped when it is hidden, the item is
+  // closed or another opened, the screen is left or the vault locks.
   property var revealedFields: ({})
 
-  function isFieldRevealed(key) { return Boolean(revealedFields[key]) }
+  function isFieldRevealed(key) { return revealedFields[key] !== undefined }
+
+  // What a revealed field shows; `listed` (the masked placeholder) otherwise.
+  function shownSecret(key, listed) {
+    var value = revealedFields[key]
+    return value !== undefined && value !== "" ? value : listed
+  }
+
+  // `value` undefined hides the field.
+  function setFieldRevealed(key, value) {
+    var next = {}
+    for (var k in revealedFields) next[k] = revealedFields[k]
+    if (value !== undefined) next[key] = String(value)
+    else delete next[key]
+    revealedFields = next
+  }
 
   // Revealing a field of a re-prompt item asks for the master password
   // first; hiding one never does.
   function toggleFieldReveal(key) {
-    if (!revealedFields[key] && detailItem) {
-      withRevealedDetail(detailItem, function() { root.setFieldRevealed(key, true) })
+    var item = detailItem
+    if (!item) return
+    if (isFieldRevealed(key)) {
+      setFieldRevealed(key, undefined)
+      // A re-prompt item's code is fetched when it is revealed only.
+      if (key === "totp" && itemNeedsReprompt(item)) liveTotp = ""
       return
     }
-    setFieldRevealed(key, !revealedFields[key])
+    withReprompt(item, function() { root.revealField(item, key) })
   }
 
-  function setFieldRevealed(key, on) {
-    var next = {}
-    for (var k in revealedFields) next[k] = revealedFields[k]
-    if (on) next[key] = true
-    else delete next[key]
-    revealedFields = next
+  function revealField(item, key) {
+    if (key === "totp") {
+      // The code is computed in the helper; there is no value to fetch.
+      setFieldRevealed("totp", "")
+      fetchTotp(String(item.id))
+      return
+    }
+    readDetailSecret(item, key, function(value) { root.setFieldRevealed(key, value) })
+  }
+
+  // Whether the detail shows (and keeps refreshing) its TOTP code: always,
+  // except that a re-prompt item's code waits for its eye.
+  function totpWanted(item) {
+    return !!item && (!itemNeedsReprompt(item) || isFieldRevealed("totp"))
+  }
+
+  // The list row of an item whose secrets the helper holds, else null.
+  function helperRow(id) {
+    if (!vaultHelperActive) return null
+    var row = Model.findItemById(items, String(id))
+    return row && row.secretsHeld ? row : null
+  }
+
+  // The open item's one secret `key`: from the helper when it holds the item,
+  // else from the detail, which then holds the value already.
+  // `callback(value)` runs only if that item's detail is still open.
+  function readDetailSecret(item, key, callback) {
+    var id = String(item.id)
+    if (!helperRow(id)) {
+      var local = Model.detailSecretValue(detailItem, key)
+      if (local !== null) callback(local)
+      return
+    }
+    var epoch = vaultEpoch
+    vaultQuery("field", { id: id, field: key }, function(ok, value) {
+      if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+      if (!ok) {
+        root.errorMessage = "Could not read this value"
+        return
+      }
+      callback(String(value))
+    })
+  }
+
+  // The detail screen's copy of one secret: the helper hands it to wl-copy
+  // and it does not come here. Re-prompt items ask first.
+  function copyDetailField(key, label) {
+    var item = detailItem
+    if (!item) return
+    withReprompt(item, function() { root.copyDetailFieldNow(item, key, label) })
+  }
+
+  function copyDetailFieldNow(item, key, label) {
+    var id = String(item.id)
+    if (helperRow(id)) {
+      var epoch = vaultEpoch
+      vaultQuery("copyField", { id: id, field: key, clearSec: Math.max(0, Math.floor(Number(clearClipboardSec) || 0)) },
+        function(ok) {
+          if (epoch !== root.vaultEpoch) return
+          if (ok) {
+            root.resetAutoLockTimer()
+            root.flashNotification(label + " copied!")
+          } else {
+            root.errorMessage = "Could not read this value"
+          }
+        })
+      return
+    }
+    var value = Model.detailSecretValue(detailItem, key)
+    if (value) copyToClipboard(value, label)
   }
 
   // -------------------------------------------------------------------------
@@ -306,10 +395,12 @@ Item {
   // lasts only while that item's detail stays open: closing it, opening
   // another item, closing the panel or locking asks again.
   //
-  // With the vault helper the shell does not hold such an item's secrets
-  // before that: its detail is drawn from the list row (Model.publicItemDetail())
-  // and withRevealedDetail() asks the helper for the whole item once the
-  // password is confirmed. Ending the confirmation drops them again.
+  // With the vault helper the shell holds no item's secrets until a value is
+  // revealed or the item is edited: the detail is drawn from the list row
+  // (Model.publicItemDetail()). Revealing and copying go through the helper
+  // (readDetailSecret(), copyDetailField()), after the prompt for a re-prompt
+  // item; editing asks for the whole item (withRevealedDetail()). Ending the
+  // confirmation drops what was fetched.
   property bool repromptPending: false
   property string repromptItemId: ""
   property string repromptItemName: ""
@@ -411,22 +502,23 @@ Item {
     withholdDetailSecrets()
   }
 
-  // The open detail of a re-prompt item the helper keeps goes back to its
-  // public view, with no password, code or revealed field. A detail built from
-  // the list's own raw item (no helper) is left as it is.
+  // Drops every revealed value. An item the helper keeps goes back to its
+  // public view, with no password, notes or other secret that an edit loaded,
+  // and a re-prompt item's code is dropped too. A detail built from the list's
+  // own raw item (no helper) is otherwise left as it is.
   function withholdDetailSecrets() {
-    if (!detailItem || detailItem.secretsWithheld || !vaultHelperActive) return
-    if (!itemNeedsReprompt(detailItem) || detailItem.typeCode === 5) return
+    revealedFields = ({})
+    if (!detailItem || !vaultHelperActive) return
+    if (itemNeedsReprompt(detailItem)) liveTotp = ""
+    if (detailItem.secretsWithheld || detailItem.typeCode === 5) return
     var listed = Model.findItemById(items, String(detailItem.id))
     if (listed && !listed.secretsHeld) return
     detailItem = Model.publicItemDetail(detailItem)
     detailPassword = ""
-    liveTotp = ""
-    revealedFields = ({})
   }
 
-  // withReprompt(), then the whole item in `detailItem`, then `callback`. For
-  // an item whose detail is already whole (no re-prompt, or no helper) it is
+  // withReprompt(), then the whole item in `detailItem`, then `callback`: the
+  // edit form's. For an item whose detail is already whole (no helper) it is
   // withReprompt() alone. An answer for an item no longer open, a grant that
   // ended, or a vault that locked meanwhile runs nothing.
   function withRevealedDetail(item, callback) {
@@ -457,7 +549,6 @@ Item {
         }
         root.detailItem = parsed
         root.detailPassword = parsed.password
-        if (parsed.hasTotp) root.fetchTotp(id)
       }
       callback()
     })
@@ -864,7 +955,7 @@ Item {
   property var vaultHelper: Model.uninspectedHelper()
   // Set as the shell unloads: a helper exit then is expected.
   property bool shuttingDown: false
-  // "pending" | "starting" | "active" | "fallback"
+  // "pending" | "starting" | "active" | "fallback" | "stopped"
   property string vaultHelperState: "pending"
   readonly property bool vaultHelperActive: vaultHelperState === "active"
   property string vaultHelperWarning: ""
@@ -873,16 +964,26 @@ Item {
   property var vaultWaiting: []
   property int vaultQuerySeq: 0
   property var vaultQueries: ({})
-  // Restarts after an unexpected exit; past the limit, fall back.
+  // Restarts after an unexpected exit; past the limit, the helper is left
+  // stopped and the vault locked (stopVaultHelper()). The count clears once
+  // the helper has stayed up for vaultHelperSettledMs, so exits spread over a
+  // long session do not add up.
   property int vaultHelperRestarts: 0
   readonly property int vaultHelperMaxRestarts: 3
+  readonly property int vaultHelperSettledMs: 60000
   // What `session` holds while the helper has the key (not a secret).
   readonly property string heldSessionMarker: Model.vaultHeldSession()
   // Held values by name while falling back (the helper holds them otherwise).
   property var vaultLocalSecrets: ({})
 
   function inspectVaultHelper() {
-    if (vaultHelperInspectProc.running || sshAgentPluginDir === "") return
+    if (vaultHelperInspectProc.running) return
+    // The directory comes from this file's own URL and does not change, so
+    // waiting for it would leave every queued run waiting for good.
+    if (sshAgentPluginDir === "") {
+      useVaultFallback("the plugin's directory is not known, so the vault helper cannot be found.")
+      return
+    }
     vaultHelperInspectProc.command = Model.vaultHelperInspectCommand(root.sshAgentPluginDir)
     vaultHelperInspectProc.running = true
   }
@@ -911,6 +1012,29 @@ Item {
     flushVaultWaiting()
   }
 
+  // A helper that keeps stopping (or is being killed) is not replaced by
+  // holding the vault in the shell: the vault stays locked, runs wait, and the
+  // banner offers to try again. Falling back is only for a helper that cannot
+  // be used at all when the shell starts (GHSA-6qjw-gmvg-7hvw).
+  function stopVaultHelper() {
+    vaultHelperState = "stopped"
+    vaultHelperWarning = "The vault helper keeps stopping, so the vault stays locked. Click here to try again."
+    console.warn("qs-bitwarden: the vault helper kept stopping; the vault stays locked")
+  }
+
+  function retryVaultHelper() {
+    if (vaultHelperState !== "stopped") return
+    vaultHelperRestarts = 0
+    vaultHelperWarning = ""
+    startVaultHelper()
+  }
+
+  Timer {
+    id: vaultHelperSettleTimer
+    interval: root.vaultHelperSettledMs
+    onTriggered: if (root.vaultHelperState === "active") root.vaultHelperRestarts = 0
+  }
+
   function onVaultHelperStarted() {
     vaultHelperProc.write(Model.vaultHelperLine("hello", {}))
   }
@@ -921,6 +1045,7 @@ Item {
     if (message.type === "ready") {
       vaultHelperState = "active"
       vaultHelperWarning = ""
+      vaultHelperSettleTimer.restart()
       flushVaultWaiting()
     } else if (message.type === "exit") {
       var proc = vaultRuns[message.id]
@@ -944,6 +1069,7 @@ Item {
   // The helper went away: its runs fail, and the session key went with it,
   // so an unlocked vault is locked here too. Restarted, within a limit.
   function onVaultHelperExited(exitCode) {
+    vaultHelperSettleTimer.stop()
     var wasActive = vaultHelperState === "active" || vaultHelperState === "starting"
     var unexpected = wasActive && !shuttingDown
     // Until it is back (or given up on), new runs wait rather than being
@@ -979,7 +1105,7 @@ Item {
       vaultHelperRestarts += 1
       Qt.callLater(startVaultHelper)
     } else {
-      useVaultFallback("the vault helper kept stopping.")
+      stopVaultHelper()
     }
   }
 
@@ -994,6 +1120,7 @@ Item {
   // Called by VaultProcess.start().
   function vaultStart(proc) {
     if (vaultHelperState === "pending" || vaultHelperState === "starting"
+        || vaultHelperState === "stopped"
         || (vaultHelperState === "active" && !vaultHelperProc.running)) {
       if (vaultWaiting.indexOf(proc) === -1) vaultWaiting = vaultWaiting.concat([proc])
       return
@@ -1066,18 +1193,19 @@ Item {
     vaultLocalSecrets = held
   }
 
-  // Forgets the secret a reference (Model.heldSecretRef()) names; a plain
-  // string names none.
-  function forgetHeldReference(value) {
+  // A password or PIN passed around by reference (Model.heldSecretRef(), from
+  // a quick unlock or typed into pinentry): drop the held copy. Anything that
+  // is not a reference is left alone.
+  function forgetHeldPassword(value) {
     var name = Model.heldSecretName(value)
     if (name) forgetVaultSecret(name)
   }
 
-  // A callback that forgets the secret `value` names, for a consumer that
+  // A callback that forgets the reference `value` names, for a consumer that
   // reports when it is done.
   function forgetHeldAfter(value) {
     var kept = value
-    return function() { root.forgetHeldReference(kept) }
+    return function() { root.forgetHeldPassword(kept) }
   }
 
   // An item the vault no longer has (deleted or trashed).
@@ -1277,17 +1405,21 @@ Item {
     return !!settings && settings[name] === false
   }
 
+  // A method whose setting is off loses its way in even when the envelope has
+  // none: the purge also clears the legacy keyring entry, which an account
+  // with no envelope yet (or one turned off before it migrated) still has. The
+  // purge succeeds when there is nothing to remove, and runs once per account
+  // and method per session.
   function reconcileDisabledMethods() {
-    var summary = envelopeSummary
-    if (!summary || !quickUnlockAvailable || !accountId) return
+    if (!quickUnlockAvailable || !accountId) return
     var checks = [
-      { method: "pin", setting: "pinUnlock", present: !!summary.pin },
-      { method: "fingerprint", setting: "fingerprintUnlock", present: summary.fingerprint === true },
-      { method: "fido", setting: "fidoUnlock", present: Array.isArray(summary.fido) && summary.fido.length > 0 }
+      { method: "pin", setting: "pinUnlock" },
+      { method: "fingerprint", setting: "fingerprintUnlock" },
+      { method: "fido", setting: "fidoUnlock" }
     ]
     for (var i = 0; i < checks.length; i++) {
       var c = checks[i]
-      if (!c.present || !quickUnlockSettingOff(c.setting)) continue
+      if (!quickUnlockSettingOff(c.setting)) continue
       if (Date.now() - Number(quickUnlockEnabledAt[c.method] || 0) < quickUnlockEnableGraceMs) continue
       var key = activeSlot + ":" + c.method
       if (reconciledMethods[key]) continue
@@ -1411,7 +1543,10 @@ Item {
           root.envelopeSummary = null
         }
         root.envelopeChecked = true
-        if (code === 0 && root.envelopeSummary) root.reconcileDisabledMethods()
+        // No envelope yet is read too: a legacy entry may be all there is.
+        if ((code === 0 && root.envelopeSummary) || code === Model.envelopeExitCodes().absent) {
+          root.reconcileDisabledMethods()
+        }
         root.recomputeFingerprintStored()
         root.recomputePinConfigured()
         // A switched-to account's methods are known only now.
@@ -1458,9 +1593,15 @@ Item {
   // a quick-unlock method produced. `done(ok)` is optional.
   function storeAcceptedMasterPassword(password, done) {
     var pw = String(password || "")
-    var finish = function(ok) { if (done) done(ok) }
+    var oldPassword = ""
+    // The old password of a refused quick unlock is held by reference; its
+    // last use is the re-seal below, so it goes with the end of this call.
+    var finish = function(ok) {
+      root.forgetHeldPassword(oldPassword)
+      if (done) done(ok)
+    }
     if (!pw || !quickUnlockAvailable) { finish(false); return }
-    var oldPassword = rotationOldPassword
+    oldPassword = rotationOldPassword
     rotationOldPassword = ""
     withEnvelopeAccount(function() {
       var E = Model.envelopeExitCodes()
@@ -1626,11 +1767,13 @@ Item {
 
   // Migrates the legacy PIN blob at the PIN unlock that decrypted it; the blob
   // is deleted only once the new PIN wrap yields the same password.
-  // `pin` may be a PIN typed into pinentry, held by the helper: it is
-  // forgotten once the migration has run (or will not).
+  // `password` may be held by reference, and `pin` may be a PIN typed into
+  // pinentry, held too; their last use is this migration, so both are
+  // forgotten when it ends, whichever way.
   function migrateLegacyPin(password, pin) {
     if (!quickUnlockAvailable) {
-      forgetHeldReference(pin)
+      forgetHeldPassword(password)
+      forgetHeldPassword(pin)
       return
     }
     withEnvelopeAccount(function() {
@@ -1642,13 +1785,17 @@ Item {
         command: Model.legacyPinMigrationCommand(root.envelopeTool(), root.envelopeAccount()),
         env: env, writes: true,
         onDone: function(code) {
-          root.forgetHeldReference(pin)
+          root.forgetHeldPassword(password)
+          root.forgetHeldPassword(pin)
           if (code === 0 || code === codes.none) root.legacyPinStored = false
           else console.log("qs-bitwarden envelope: PIN migration left the legacy blob (" + code + ")")
           root.refreshEnvelope()
         }
       })
-    }, function() { root.forgetHeldReference(pin) })
+    }, function() {
+      root.forgetHeldPassword(password)
+      root.forgetHeldPassword(pin)
+    })
   }
 
   // Migrates the legacy fingerprint entry, once per session.
@@ -2281,7 +2428,8 @@ Item {
     root.releaseHeldPin()
     root.masterPassword = ""
     root.pinentryMasterName = ""
-    root.dropPendingUnlockSecret()
+    root.forgetHeldPassword(root.pendingUnlockPassword)
+    root.pendingUnlockPassword = ""
     root.pendingUnlockFrom = ""
     root.pinEntry = ""
     root.pinError = ""
@@ -3524,7 +3672,7 @@ Item {
     rotationOldPassword = ""
     clearLoginAttempt()
     pinentryMasterName = ""
-    if (pendingUnlockFrom === "") forgetHeldReference(pendingUnlockPassword)
+    forgetHeldPassword(pendingUnlockPassword)
     pendingUnlockPassword = ""
     releaseHeldPin()
     pendingUnlockFrom = ""
@@ -3533,14 +3681,6 @@ Item {
     pinUnlockSubmitted = false
     fingerprintAuthorized = false
     syncLoginFieldsToState()
-  }
-
-  // Drops the password an unlock was started with. One typed into pinentry
-  // is held by the helper, which is told to forget it; one a quick-unlock
-  // method produced is not touched here (pendingUnlockFrom names it).
-  function dropPendingUnlockSecret() {
-    if (pendingUnlockFrom === "") forgetHeldReference(pendingUnlockPassword)
-    pendingUnlockPassword = ""
   }
 
   function writeAuthPassword(channel, password) {
@@ -3564,7 +3704,7 @@ Item {
       unlockSubmitted = false
       isUnlocking = false
       pinentryMasterName = ""
-      if (pendingUnlockFrom === "") forgetHeldReference(pendingUnlockPassword)
+      forgetHeldPassword(pendingUnlockPassword)
       pendingUnlockPassword = ""
       if (unlockProc.running) unlockProc.running = false
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
@@ -5338,7 +5478,10 @@ Item {
       title: "Bitwarden",
       description: Model.pinentryDescription(purpose, userEmail),
       prompt: Model.pinentryPrompt(purpose),
-      error: error
+      error: error,
+      // The unlock's own floor, as for the field: a shorter PIN is asked for
+      // again, not counted as a wrong attempt.
+      minLength: purpose === "pin" ? Model.pinUnlockMinLength() : 0
     })
     pinentryProc.capture = "pinentry:" + name
     pinentryProc.running = true
@@ -5355,6 +5498,7 @@ Item {
     // A cancel prints nothing; a helper that stopped says so on stderr.
     else if (exitCode === E.cancelled && String(stderrText || "").trim() === "") state = "cancelled"
     else if (exitCode === E.empty) state = "empty"
+    else if (exitCode === E.short) state = "short"
     if (state !== "ok") forgetVaultSecret(run.name)
     if (state === "failed") {
       pinentryBroken = true
@@ -5430,7 +5574,9 @@ Item {
 
   // The same for the PIN; submitPinUnlock() judges it.
   function unlockPinWithPinentry(error) {
-    if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy || pinentryActive) return
+    // requestPinentry() refuses a second run; this also asks again from
+    // inside an answer (a short PIN), while the panel is still hidden.
+    if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
     if (status !== "locked") {
       pinUnlockError = "Still checking the vault. Try again in a moment."
       return
@@ -5442,6 +5588,9 @@ Item {
         if (!root.pinUnlockSubmitted) root.forgetVaultSecret(r.name)
       } else if (r.state === "empty") {
         root.pinUnlockError = "Enter your PIN."
+      } else if (r.state === "short") {
+        root.pinUnlockError = "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
+        root.unlockPinWithPinentry(root.pinUnlockError)
       }
     })
   }
@@ -5537,8 +5686,13 @@ Item {
       var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
         || (pendingUnlockFrom === "pin" && pinFromEnvelope)
         || (pendingUnlockFrom === "fido" && fidoFromEnvelope)
-      if (!fromEnvelope) dropPendingUnlockSecret()
-      forgetHeldReference(pendingPinForMigration)
+      // A held password stays only where a re-seal needs it
+      // (rotationOldPassword, below); otherwise nothing uses it again.
+      if (!fromEnvelope) {
+        forgetHeldPassword(pendingUnlockPassword)
+        pendingUnlockPassword = ""
+      }
+      forgetHeldPassword(pendingPinForMigration)
       pendingPinForMigration = ""
       if (askAgain && pendingUnlockFrom === "") {
         Qt.callLater(prepareUnlock)
@@ -5634,7 +5788,8 @@ Item {
     // Another method unlocked the vault while pinentry was asking.
     cancelPinentry()
     if (!s) {
-      dropPendingUnlockSecret()
+      forgetHeldPassword(pendingUnlockPassword)
+      forgetHeldPassword(pendingPinForMigration)
       errorMessage = "Unlock did not return a session key"
       return
     }
@@ -5657,12 +5812,18 @@ Item {
       // once the stored copy has been dealt with.
       storeAcceptedMasterPassword(pendingUnlockPassword, forgetHeldAfter(pendingUnlockPassword))
     } else {
+      forgetHeldPassword(rotationOldPassword)
       rotationOldPassword = ""
     }
+    // The unlock is done with a password a quick-unlock method produced: drop
+    // it now, unless the legacy PIN migration still has to use it (it forgets
+    // it and the PIN when it ends). A typed password (from === "") is used by
+    // the re-seal above, which forgets it when it ends.
     if (pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword) {
       migrateLegacyPin(pendingUnlockPassword, pendingPinForMigration)
     } else {
-      forgetHeldReference(pendingPinForMigration)
+      if (pendingUnlockFrom !== "") forgetHeldPassword(pendingUnlockPassword)
+      forgetHeldPassword(pendingPinForMigration)
     }
     pendingPinForMigration = ""
     pinFromEnvelope = false
@@ -6318,10 +6479,24 @@ Item {
     // A confirmed re-prompt lasts while its item's detail is open, and the
     // edit form (and a generator trip from it) is part of that.
     // A prompt still waiting was for the screen being left.
-    var inItem = currentScreen === "detail" || currentScreen === "edit"
-      || (currentScreen === "generator" && generatorReturnScreen === "edit")
+    // An SSH approval shown in the panel covers the screen it came over and
+    // returns to it, so the item and its form are judged by that screen.
+    var screen = currentScreen === "sshApproval" ? screenBeforeSshApproval : currentScreen
+    var inItem = screen === "detail" || screen === "edit"
+      || (screen === "generator" && generatorReturnScreen === "edit")
     if (repromptPending) cancelReprompt()
-    if (!inItem) clearRepromptGrant()
+    if (!inItem) {
+      clearRepromptGrant()
+      liveTotp = ""
+    } else if (screen === "detail") {
+      // Back from the edit form: the whole item it loaded goes.
+      withholdDetailSecrets()
+    }
+    // The edit form's copy of the item, a typed or generated password
+    // included, goes with the form.
+    if (screen !== "edit" && !(screen === "generator" && generatorReturnScreen === "edit")) {
+      resetItemForm()
+    }
     restoreScreenFocus()
   }
 
@@ -6450,18 +6625,11 @@ Item {
     }
   }
 
-  // The item whose detail the helper was asked for (openDetail()).
-  property string detailRequestedId: ""
-
   function openDetail(item) {
     closeFilterGroup()
     if (!item || !item.id) return
     // Another item's confirmation does not carry over.
     if (String(item.id) !== repromptVerifiedId) clearRepromptGrant()
-    // Judged before the detail is reset: a confirmation for this very item
-    // still counts. Otherwise the helper is not asked for its secrets yet.
-    var withheld = vaultHelperActive && item.secretsHeld && !item.rawObject
-      && itemNeedsReprompt(item) && !repromptSatisfied(item)
     learnFromPick(item)
     isLoading = true
     errorMessage = ""
@@ -6489,29 +6657,21 @@ Item {
         currentScreen = "main"
         return
       }
-      if (withheld) {
-        // Nothing secret until the master password: the row's own fields,
-        // and the whole item (with its TOTP) after the prompt.
+      if (item.secretsHeld && vaultHelperActive) {
+        // Nothing secret: the row's own fields. Each secret is asked of the
+        // helper when it is revealed or copied.
         isLoading = false
         detailItem = Model.publicItemDetail(item)
-      } else if (item.secretsHeld && vaultHelperActive) {
-        // The helper has the whole item; only this one comes here. An answer
-        // for an item no longer being opened is dropped.
-        var id = String(item.id)
-        detailRequestedId = id
-        vaultQuery("item", { id: id }, function(ok, full) {
-          if (root.detailRequestedId !== id || root.currentScreen !== "detail") return
-          root.detailRequestedId = ""
-          root.onDetailFinished(ok ? String(full) : "")
-        })
       } else {
         getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
         getItemProc.running = true
       }
     }
 
-    // The TOTP is time-based, so it is fetched alongside.
-    if (item.hasTotp && !withheld) {
+    // The TOTP is time-based, so it is fetched alongside. The helper computes
+    // it; the key does not come here. A re-prompt item's code is fetched when
+    // it is revealed or copied.
+    if (item.hasTotp && !itemNeedsReprompt(item)) {
       fetchTotp(item.id)
     }
   }
@@ -6729,7 +6889,7 @@ Item {
 
   function applyTotpCode(itemId, code) {
     var c = String(code || "").trim()
-    if (detailItem && detailItem.id === itemId && !detailItem.secretsWithheld) liveTotp = c
+    if (detailItem && detailItem.id === itemId && totpWanted(detailItem)) liveTotp = c
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
       totpFollowupCode = c
     }
@@ -7624,7 +7784,7 @@ Item {
   function copyDetailTotp() {
     var item = detailItem
     if (!item || !item.hasTotp) return
-    withRevealedDetail(item, function() { root.copyTotpCodeNow(item) })
+    withReprompt(item, function() { root.copyTotpCodeNow(item) })
   }
 
   function copyTotpCodeNow(item) {
@@ -8061,7 +8221,7 @@ Item {
       root.totpSecRemaining = sec
       if (sec === 30) {
         if (root.currentScreen === "detail" && root.detailItem && root.detailItem.hasTotp
-            && !root.detailItem.secretsWithheld) {
+            && root.totpWanted(root.detailItem)) {
           root.fetchTotp(root.detailItem.id)
         } else if (root.totpFollowupActive && root.totpFollowupItem) {
           root.fetchTotp(root.totpFollowupItem.id)

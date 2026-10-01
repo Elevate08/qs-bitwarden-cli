@@ -15,20 +15,31 @@ The [README](../README.md#how-your-vault-is-held) has the short version.
 |---|---|---|
 | Session key | yes | a placeholder that says the helper has it |
 | The item list | every item in full | names, usernames, websites, folders, flags such as "has a password" |
-| Passwords, TOTP keys, passkeys, password history, notes, card numbers and codes, identity numbers, hidden custom fields | yes | only the one item you open, while it is open |
+| Passwords, TOTP keys, passkeys, password history, notes, card numbers and codes, identity numbers, hidden custom fields | yes | only a value you reveal, while it is revealed; the whole item while you edit it |
 | The master password a PIN, fingerprint or FIDO2 key opens | yes, for that unlock | a reference by name |
 | What you type: the master password and PIN for unlocking, and the master password for a re-prompt | yes: typed into pinentry, a separate process, and passed to the helper | a reference by name |
 | What else you type (the email login, a new item's fields) | | yes, until you submit |
 
-A password you copy goes from the helper straight to `wl-copy` (with the same
-timed clear and "sensitive" marking); it never passes through the shell. TOTP
-codes are computed in the helper, and only the code reaches the shell. Search
-runs in the helper too, so it still finds text in notes the shell no longer
-has, and it stays fast on a large vault. Notes of an item that asks for the
-master password are not searched.
+Opening an item shows its name, username, websites, card brand, holder and
+expiry, identity name, email, address and phone, plain custom fields and
+attachment names. Each secret is a masked row, and notes are hidden until you
+click their eye button. Revealing one asks the helper for that one value; the
+shell keeps it until you hide it, close the item or open another, leave the
+screen, close the panel or lock. Editing asks for the whole item and drops it
+when the form is left. These values are dropped, not wiped: a dropped value
+can stay in the shell's memory until that memory is reused, so a shell core
+dump taken after you revealed something can still contain it.
 
-For an item that asks for the master password, the shell gets those secrets
-only after you give it, and drops them again when you close the item.
+A password or other secret you copy goes from the helper straight to
+`wl-copy` (with the same timed clear and "sensitive" marking); it never passes
+through the shell. TOTP codes are computed in the helper, and only the code
+reaches the shell, not the key. Search runs in the helper too, so it still
+finds text in notes the shell does not have, and it stays fast on a large
+vault. Notes of an item that asks for the master password are not searched.
+
+An item that asks for the master password asks for it before a value is
+revealed, copied or edited, and its TOTP code is fetched only when you reveal
+or copy it.
 
 Locking, logging out and switching accounts tell the helper to forget
 everything. A lock that is still running `bw lock` keeps its own copy of the
@@ -47,7 +58,8 @@ output is handed back as it is, except:
 - a session key in it (`bw unlock`, `bw login`, a remembered session) is kept
   by the helper and replaced by a placeholder;
 - the item list and a saved item are kept, and handed back with their
-  secrets removed;
+  secrets removed (the shell then asks for one value at a time: `field` to
+  show it, `copyField` to copy it, `item` to edit);
 - the master password a quick-unlock method opens is kept, and the shell gets
   a reference to it;
 - a password or PIN typed into pinentry (below) is kept, and the shell gets
@@ -96,9 +108,15 @@ while holding your decrypted vault does not leave a core either.
   user read another's `/proc/<pid>/environ`, so the key is readable while a
   `bw` command runs. That was true before the helper and is true of `bw`
   everywhere; see [SECURITY.md](../SECURITY.md) for what is in scope.
-- What is on screen, and what you type into the panel's own fields (the
-  email login, an item's fields, and the master password or PIN when pinentry
-  is not used), is in the shell.
+- **What is on screen, and what you type, is in the shell.** That is what you
+  type into the panel's own fields (the email login, item fields, and the
+  master password or PIN when pinentry is not used). Clearing it does not wipe
+  it, so it can stay in the shell's memory and be in a shell core dump.
+- **The shell's core dumps are left on.** The plugin does not lower the
+  shell's core-file limit. The limit is per process and inherited, so it would
+  also turn off core dumps for every other plugin in the shell and for every
+  app started from the shell's launcher, until the shell restarts. The plugin
+  keeps secrets out of the shell instead.
 - **Code running in the shell.** The helper does not protect against it.
   Such code can ask the helper to run a command with the session key or a
   held password in its environment.
@@ -111,12 +129,17 @@ architecture, the checksum in `bin/SHA256SUMS`, its own self-test, and the
 protocol version. A locally built one (`vault/target/debug/`) is used if the
 shipped one is absent or unusable.
 
-If none can be used, or the helper keeps stopping, the panel works as it did
-before: the session and the items are held in the shell. A banner says crash
-protection is off and why. If the helper stops while the vault is open, the
-session key goes with it, so the vault locks as the lock button would: the
-SSH agent drops its private keys and grants, the remembered session is
-cleared, and the panel asks you to unlock again.
+If none can be used when the shell starts, the panel works as it did before:
+the session and the items are held in the shell, and a banner says crash
+protection is off and why.
+
+If the helper stops while the vault is open, the session key goes with it, so
+the vault locks as the lock button would: the SSH agent drops its private keys
+and grants, the remembered session is cleared, and the panel asks you to
+unlock again. The helper is restarted up to three times; the count clears
+once it has stayed up for a minute. If it keeps stopping, the vault stays
+locked and the banner offers to try again. The panel does not move the vault
+into the shell in that case.
 
 ## Verifying the shipped binary
 

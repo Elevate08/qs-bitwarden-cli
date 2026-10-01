@@ -385,7 +385,7 @@ The first account lives where a terminal `bw` finds it (`~/.config/Bitwarden CLI
 
 ### How your vault is held
 
-While your vault is open, its session key and every item's secrets are held by a small helper process (`bin/x86_64-linux/qs-bitwarden-vault`), not by the shell. If the shell crashes, the core dump systemd keeps has no session key and no passwords in it, and the shell's own crash dumps still work for diagnosing it. A password you copy goes from the helper straight to the clipboard; TOTP codes and search are answered by the helper too. It talks only to the shell that started it, on its stdin and stdout.
+While your vault is open, its session key and every item's secrets are held by a small helper process (`bin/x86_64-linux/qs-bitwarden-vault`), not by the shell. If the shell crashes, the core dump systemd keeps has no session key and no passwords in it, except a value you had revealed or an item you were editing, and the shell's own crash dumps still work for diagnosing it. Opening an item shows no secret until you reveal it. A value you copy goes from the helper straight to the clipboard; TOTP codes and search are answered by the helper too. It talks only to the shell that started it, on its stdin and stdout.
 
 It ships and is verified like the other helpers. If it is missing or fails its check, the panel works as before, with the vault held in the shell, and a banner says crash protection is off. **[How it works and what it does not cover →](docs/vault-helper.md)**
 
