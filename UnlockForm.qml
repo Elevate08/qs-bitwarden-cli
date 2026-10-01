@@ -123,6 +123,11 @@ Column {
       form.vault.startFidoUnlock()
       return
     }
+    // A typed method with pinentry: picking it is asking to type, so open it.
+    if (form.pinentryOffered) {
+      form.submitCurrentMethod()
+      return
+    }
     if (form.focusField) form.focusField.forceActiveFocus()
   }
 

@@ -299,6 +299,12 @@ check("the unlock form hides its fields when pinentry takes the typing, and offe
     && /form\.vault\.unlockPinWithPinentry\(\)/.test(form) && /form\.vault\.unlockWithPinentry\(\)/.test(form), "")
 check("the fields stay as the fallback, with the reason when pinentry failed",
   /id: passwordField/.test(form) && /id: pinField/.test(form) && /form\.vault\.pinentryNotice/.test(form), "")
+{
+  const use = (form.match(/function useMethod\(name\) \{[\s\S]*?\n  \}/) || [""])[0]
+  check("picking PIN or Password opens pinentry straight away",
+    /if \(form\.pinentryOffered\) \{\s*form\.submitCurrentMethod\(\)\s*return\s*\}/.test(use)
+      && use.indexOf("form.pinentryOffered") > use.indexOf("form.chosen = name"), use)
+}
 check("Enter on the locked screen opens pinentry",
   /status === "locked" && unlockForm\.pinentryOffered\) \{\s*unlockForm\.submitCurrentMethod\(\)/.test(read("Panel.qml")), "")
 const confirm = read("RepromptConfirm.qml")
