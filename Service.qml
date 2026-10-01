@@ -2132,6 +2132,7 @@ Item {
     root.sshPrompt = null
     root.sshPromptQueue = []
     root.sshPromotedOldId = null
+    root.sshPromotedRaw = null
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
     root.sshUnlockQueue = []
@@ -2281,11 +2282,17 @@ Item {
   }
 
   property var sshPromotedOldId: null
+  // The unlock_required message the shown prompt was promoted from. An unlock
+  // releases every held request in no fixed order, so the first approval_required
+  // to arrive is adopted only if it is this same request.
+  property var sshPromotedRaw: null
 
   function adoptSshPrompt(message) {
-    if (root.sshPromotedOldId !== null && root.sshPrompt) {
+    if (root.sshPromotedOldId !== null && root.sshPrompt
+        && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
       root.sshPrompt.requestId = message.requestId
       root.sshPromotedOldId = null
+      root.sshPromotedRaw = null
       return true
     }
     return false
@@ -2566,6 +2573,7 @@ Item {
     if (root.sshUnlockRaw.reason === "list-identities") return
     var raw = root.sshUnlockRaw
     root.sshPromotedOldId = raw.requestId
+    root.sshPromotedRaw = raw
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
     root.sshUnlockQueue = []

@@ -714,7 +714,11 @@ fn release_held(
     started: Instant,
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
-    for (old_id, request) in held.drain().collect::<Vec<_>>() {
+    // In the order they were raised, so the panel's prompt and the approval it
+    // is paired with agree on the request, not on a hash map's order.
+    let mut released = held.drain().collect::<Vec<_>>();
+    released.sort_by_key(|(old_id, _)| *old_id);
+    for (old_id, request) in released {
         // Withdraw the unlock prompt; an approval prompt with its own id follows.
         emit(
             output,
@@ -806,8 +810,8 @@ fn release_held(
             }
         }
     }
-    // Held requests come out in no particular order: one approved with a grant
-    // may follow another from the same program that has just been queued.
+    // One approved with a grant may follow another from the same program that
+    // has just been queued.
     settle_granted(approvals, pending, store, started, output)
 }
 

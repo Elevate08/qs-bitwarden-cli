@@ -5369,6 +5369,21 @@ function sshAgentPromptView(message, approvalWindowSec) {
   }
 }
 
+// Whether an approval_required is the release of the request an unlock_required
+// held: the same program, key and kind of signature. Request ids differ (the
+// release issues a new one), so they are not compared.
+function sshAgentSameRequest(unlockMessage, approvalMessage) {
+  var a = unlockMessage
+  var b = approvalMessage
+  if (!a || !b) return false
+  var fields = ["fingerprint", "pid", "processPath", "operation", "operationDetail",
+    "hostKey", "forwarded", "grantOffered"]
+  for (var i = 0; i < fields.length; i++) {
+    if (a[fields[i]] !== b[fields[i]]) return false
+  }
+  return typeof a.fingerprint === "string" && a.fingerprint !== ""
+}
+
 // FIFO queue of prompts, capped at the companion's MAX_PENDING.
 function sshAgentEnqueuePrompt(queue, message, maxQueue) {
   var cap = typeof maxQueue === "number" && maxQueue > 0 ? maxQueue : 4
