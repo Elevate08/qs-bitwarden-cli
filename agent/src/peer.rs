@@ -121,7 +121,18 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let before = PeerContext::capture(uid, pid).unwrap();
+        // Wait for the child to be the shell: a capture taken while it is
+        // still the forked test binary is a different program.
+        let shell = std::fs::canonicalize("/bin/sh").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let before = loop {
+            let now = PeerContext::capture(uid, pid).unwrap();
+            if now.executable == shell {
+                break now;
+            }
+            assert!(Instant::now() < deadline, "child never became the shell");
+            std::thread::sleep(Duration::from_millis(10));
+        };
         assert!(before.is_unchanged(PeerContext::capture(uid, pid)));
         child.stdin.as_mut().unwrap().write_all(b"go\n").unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
