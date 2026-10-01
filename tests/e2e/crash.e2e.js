@@ -7,6 +7,8 @@
 // - With the vault helper: the session key, the password and the note are
 //   not in the shell's core, while text the shell does hold (the item's
 //   name) is, so the core is real. A crashed helper leaves no core at all.
+// - Opening the item and not revealing anything leaves the password and the
+//   note out of the core too; revealing one field puts only that field in.
 // - Without it (the fallback): they are in the core, which shows this test
 //   can see a leak.
 //
@@ -93,7 +95,30 @@ function pluginWithoutHelper(into) {
   return into
 }
 
-function run(label, plugin, withHelper) {
+// `reveal`: what the person does with the item before the crash: nothing
+// (null), or opens it and reveals this field ("password" or "notes").
+// `openOnly`: opens it and reveals nothing.
+// The plugin with the helper built in vault/target/debug in place of the
+// shipped one, which is rebuilt by CI and so may lack a newer request.
+function pluginWithLocalHelper(into) {
+  const built = "vault/target/debug/qs-bitwarden-vault"
+  if (!fs.existsSync(path.join(repoRoot, built))) {
+    console.error("e2e-crash: build the helper first: cargo build --manifest-path vault/Cargo.toml --locked")
+    process.exit(1)
+  }
+  fs.cpSync(repoRoot, into, {
+    recursive: true,
+    filter: src => {
+      const rel = path.relative(repoRoot, src)
+      if (/^\.git(\/|$)/.test(rel) || rel === "bin/x86_64-linux/qs-bitwarden-vault") return false
+      if (/(^|\/)target(\/|$)/.test(rel)) return ["vault/target", "vault/target/debug", built].includes(rel)
+      return true
+    }
+  })
+  return into
+}
+
+function run(label, plugin, withHelper, reveal = null, openOnly = false) {
   const secrets = { password: marker("password"), note: marker("note") }
   const shell = createShell("e2e-crash", check, { plugin, coreDumps: true })
   // Given to the fake bw in its data directory, never through the shell's
@@ -131,6 +156,17 @@ function run(label, plugin, withHelper) {
       shell.expect(`${label}: and the vault unlocks again`, s => s.status === "unlocked" && s.items.length === 1)
     }
     const key = fs.readFileSync(path.join(data, "fake-session"), "utf8").trim()
+    if (openOnly || reveal) {
+      shell.q("openFirst")
+      shell.expect(`${label}: the item is open`, s => s.screen === "detail" && s.detail && s.detail.name === "Login of a@x")
+      if (reveal) {
+        shell.q("reveal", reveal)
+        shell.expect(`${label}: the ${reveal} is revealed`, s => s.revealed.includes(reveal))
+      }
+      const open = shell.state()
+      check(`${label}: ${withHelper ? "the detail is the secret-free view" : "the detail is built from the list"}`,
+        open.detail.withheld === withHelper, JSON.stringify(open.detail))
+    }
 
     process.kill(shell.pid(), "SIGSEGV")
     const pid = crashedPid(shell.shellLog)
@@ -140,8 +176,12 @@ function run(label, plugin, withHelper) {
       check(`${label}: the core holds what the shell does (the item's name)`, contains(core, "Login of a@x"), "")
       const expected = withHelper ? false : true
       check(`${label}: the session key is ${expected ? "" : "not "}in the core`, contains(core, key) === expected, "")
-      check(`${label}: the password is ${expected ? "" : "not "}in the core`, contains(core, secrets.password) === expected, "")
-      check(`${label}: the note is ${expected ? "" : "not "}in the core`, contains(core, secrets.note) === expected, "")
+      // With the helper only a revealed value may be there; without it, both.
+      const inCore = name => withHelper ? reveal === name : true
+      check(`${label}: the password is ${inCore("password") ? "" : "not "}in the core`,
+        contains(core, secrets.password) === inCore("password"), "")
+      check(`${label}: the note is ${inCore("notes") ? "" : "not "}in the core`,
+        contains(core, secrets.note) === inCore("notes"), "")
     }
   } catch (e) {
     failed = e
@@ -154,6 +194,15 @@ function run(label, plugin, withHelper) {
 }
 
 run("helper", repoRoot, true)
+const local = fs.mkdtempSync("/tmp/qsbw-crash-local-")
+try {
+  const plugin = pluginWithLocalHelper(path.join(local, "plugin"))
+  run("helper, item opened", plugin, true, null, true)
+  run("helper, password revealed", plugin, true, "password")
+  run("helper, notes revealed", plugin, true, "notes")
+} finally {
+  fs.rmSync(local, { recursive: true, force: true })
+}
 const copy = fs.mkdtempSync("/tmp/qsbw-crash-plugin-")
 try {
   run("fallback", pluginWithoutHelper(path.join(copy, "plugin")), false)
