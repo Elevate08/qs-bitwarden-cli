@@ -261,11 +261,23 @@ impl Helper {
                 q, id, clear_sec, ..
             } => {
                 let password = self.field(&id, &["login", "password"]);
-                let copied = password
-                    .filter(|p| !p.is_empty())
-                    .map(|p| copy_to_clipboard(p, clear_sec))
-                    .unwrap_or(false);
-                self.result(q, copied.then_some(Value::Bool(true)));
+                self.copy(q, password, clear_sec);
+            }
+            Request::Field { q, id, field, .. } => {
+                let value = store::SecretField::parse(&field)
+                    .and_then(|field| self.store.lock().unwrap().item_secret(&id, &field));
+                self.result(q, value.map(|value| Value::String(value.to_string())));
+            }
+            Request::CopyField {
+                q,
+                id,
+                field,
+                clear_sec,
+                ..
+            } => {
+                let value = store::SecretField::parse(&field)
+                    .and_then(|field| self.store.lock().unwrap().item_secret(&id, &field));
+                self.copy(q, value, clear_sec);
             }
             Request::Totp { q, id, .. } => {
                 let key = self.field(&id, &["login", "totp"]);
@@ -295,17 +307,17 @@ impl Helper {
 
     /// One string field of a held item, e.g. `login.password`.
     fn field(&self, id: &str, path: &[&str]) -> Option<Zeroizing<String>> {
-        let store = self.store.lock().unwrap();
-        let full = store.item(id)?;
-        let mut item: Value = serde_json::from_str(full).ok()?;
-        drop(store);
-        let mut node = &item;
-        for key in path {
-            node = node.get(*key)?;
-        }
-        let value = node.as_str().map(|s| Zeroizing::new(s.to_owned()));
-        wipe(&mut item);
-        value
+        self.store.lock().unwrap().value_at(id, path)
+    }
+
+    /// Answers a copy request: the value goes to the clipboard and not into
+    /// the reply. An absent or empty value is a failure.
+    fn copy(&self, q: u64, value: Option<Zeroizing<String>>, clear_sec: u32) {
+        let copied = value
+            .filter(|value| !value.is_empty())
+            .map(|value| copy_to_clipboard(value, clear_sec))
+            .unwrap_or(false);
+        self.result(q, copied.then_some(Value::Bool(true)));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -641,16 +653,6 @@ fn copy_to_clipboard(value: Zeroizing<String>, clear_sec: u32) -> bool {
         let _ = child.wait();
     });
     written
-}
-
-fn wipe(value: &mut Value) {
-    use zeroize::Zeroize;
-    match value {
-        Value::String(s) => s.zeroize(),
-        Value::Array(items) => items.iter_mut().for_each(wipe),
-        Value::Object(map) => map.values_mut().for_each(wipe),
-        _ => {}
-    }
 }
 
 #[cfg(test)]

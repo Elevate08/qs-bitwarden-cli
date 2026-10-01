@@ -62,7 +62,7 @@ pub enum Request {
         v: u8,
         id: String,
     },
-    /// One item in full, for the detail and edit views.
+    /// One item in full, for the edit view.
     Item {
         v: u8,
         q: u64,
@@ -73,6 +73,24 @@ pub enum Request {
         v: u8,
         q: u64,
         id: String,
+        #[serde(rename = "clearSec")]
+        clear_sec: u32,
+    },
+    /// One secret value of an item, for display while the user has it
+    /// revealed. `field` names it (`store::SecretField`); anything not on
+    /// that list is answered with a failure.
+    Field {
+        v: u8,
+        q: u64,
+        id: String,
+        field: String,
+    },
+    /// As `copyPassword`, for any value `field` can name.
+    CopyField {
+        v: u8,
+        q: u64,
+        id: String,
+        field: String,
         #[serde(rename = "clearSec")]
         clear_sec: u32,
     },
@@ -103,6 +121,8 @@ impl Request {
             | Self::ForgetItem { v, .. }
             | Self::Item { v, .. }
             | Self::CopyPassword { v, .. }
+            | Self::Field { v, .. }
+            | Self::CopyField { v, .. }
             | Self::Totp { v, .. }
             | Self::Search { v, .. }
             | Self::Shutdown { v } => *v,
@@ -204,6 +224,35 @@ mod tests {
             r#"{"type":"exec","v":1,"id":3,"argv":["bw","status"],"inject":{"BW_SESSION":"session"},"env":{"A":"b","C":null}}"#,
         );
         assert!(matches!(exec, Ok(Request::Exec { id: 3, .. })));
+    }
+
+    #[test]
+    fn field_requests_are_strict() {
+        let field = parse(r#"{"type":"field","v":1,"q":4,"id":"a","field":"notes"}"#);
+        assert!(matches!(&field, Ok(Request::Field { q: 4, field, .. }) if field == "notes"));
+        assert!(parse(r#"{"type":"field","v":1,"q":4,"id":"a"}"#).is_err());
+        assert!(parse(r#"{"type":"field","v":1,"q":4,"id":"a","field":"notes","x":1}"#).is_err());
+        assert!(parse(r#"{"type":"field","v":2,"q":4,"id":"a","field":"notes"}"#).is_err());
+        let copy =
+            parse(r#"{"type":"copyField","v":1,"q":5,"id":"a","field":"cardCode","clearSec":30}"#);
+        assert!(matches!(
+            copy,
+            Ok(Request::CopyField {
+                q: 5,
+                clear_sec: 30,
+                ..
+            })
+        ));
+        // A copy names its clear time, and it is not negative.
+        assert!(parse(r#"{"type":"copyField","v":1,"q":5,"id":"a","field":"cardCode"}"#).is_err());
+        assert!(parse(
+            r#"{"type":"copyField","v":1,"q":5,"id":"a","field":"cardCode","clearSec":-1}"#
+        )
+        .is_err());
+        assert!(parse(
+            r#"{"type":"copyField","v":3,"q":5,"id":"a","field":"cardCode","clearSec":30}"#
+        )
+        .is_err());
     }
 
     #[test]
