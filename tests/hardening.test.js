@@ -313,5 +313,29 @@ check("TOTP copy reuses the managed TOTP reader instead of a detached bw process
     && !/execDetached/.test(bodyOf("copyTotpCode") + bodyOf("copyTotpCodeNow")), bodyOf("copyTotpCodeNow"))
 
 // -------------------------------------------------------------------------
+// Every secret entry field keeps its text from input methods, even while the
+// eye button shows it: predictive text and IME would otherwise see (and learn)
+// a revealed password.
+
+const qmlFiles = fs.readdirSync(path.join(__dirname, "..")).filter(f => f.endsWith(".qml"))
+let secretFields = 0
+for (const file of qmlFiles) {
+  const lines = fs.readFileSync(path.join(__dirname, "..", file), "utf8").split("\n")
+  lines.forEach((line, i) => {
+    const m = line.match(/^(\s*)password:\s/)
+    if (!m) return
+    secretFields++
+    // The rest of the enclosing object: until a line closing it.
+    let end = i
+    while (end < lines.length && !new RegExp("^" + m[1].slice(0, -2) + "\\}").test(lines[end])) end++
+    const body = lines.slice(Math.max(0, i - 15), end).join("\n")
+    check(`${file}:${i + 1} secret field hides itself from input methods`,
+      /inputMethodHints:[^\n]*\n?[^\n]*Qt\.ImhSensitiveData/.test(body)
+        && /Qt\.ImhNoPredictiveText/.test(body), lines[i])
+  })
+}
+check("the secret-field scan found the fields", secretFields >= 10, String(secretFields))
+
+// -------------------------------------------------------------------------
 
 done()

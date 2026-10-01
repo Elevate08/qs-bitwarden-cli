@@ -189,14 +189,43 @@ fn userauth(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Opt
     })
 }
 
+/// Whether a character draws as nothing or changes how its neighbours are
+/// drawn: controls, line and paragraph separators, zero-width and
+/// direction marks, bidi embeddings and isolates, and the byte order mark.
+/// Text containing one can pass for something else on a prompt.
+fn is_invisible(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+        )
+}
+
+/// `text` with every invisible character written out as `\uXXXX`, for text
+/// the agent shows but does not compare (a process path, a key's name).
+pub fn visible_text(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_invisible(c) {
+            shown.push_str(&format!("\\u{:04x}", u32::from(c)));
+        } else {
+            shown.push(c);
+        }
+    }
+    shown
+}
+
 /// A namespace or login fit to display and compare exactly: non-empty,
-/// bounded UTF-8 without control characters.
+/// bounded UTF-8 without invisible characters.
 fn display_detail(bytes: Vec<u8>) -> Option<String> {
     if bytes.is_empty() || bytes.len() > MAX_SIGN_DETAIL {
         return None;
     }
     let text = String::from_utf8(bytes).ok()?;
-    (!text.chars().any(char::is_control)).then_some(text)
+    (!text.chars().any(is_invisible)).then_some(text)
 }
 
 pub fn decode_request(frame: &[u8]) -> Option<AgentRequest> {
@@ -334,7 +363,7 @@ fn response(payload: Vec<u8>) -> Vec<u8> {
 mod tests {
     use super::{
         classify_sign, decode_request, failure_payload, host_key_fingerprint, response,
-        signature_payload, AgentRequest, SessionBinding, SignKind, MAX_FRAME_LEN,
+        signature_payload, visible_text, AgentRequest, SessionBinding, SignKind, MAX_FRAME_LEN,
     };
     use crate::signing;
     use rand_core::OsRng;
@@ -795,6 +824,12 @@ mod tests {
             sshsig(b"", b"sha512"),
             sshsig(b"git", b"md5"),
             sshsig(b"git\n", b"sha512"),
+            // Characters that draw as nothing, or reorder what follows.
+            sshsig("git\u{202e}gis".as_bytes(), b"sha512"),
+            sshsig("g\u{200b}it".as_bytes(), b"sha512"),
+            sshsig("git\u{feff}".as_bytes(), b"sha512"),
+            sshsig("a\u{2066}b".as_bytes(), b"sha512"),
+            sshsig("a\u{2028}b".as_bytes(), b"sha512"),
             sshsig(&[b'n'; 257], b"sha512"),
             sshsig(&[0xff, 0xfe], b"sha512"),
             // A login for a different key than the one asked to sign it.
@@ -865,6 +900,22 @@ mod tests {
         assert_ne!(to("SHA256:a"), to(""));
         assert_eq!(to("SHA256:a").host(), "SHA256:a");
         assert_eq!(SignKind::Other.host(), "");
+    }
+
+    #[test]
+    fn visible_text_escapes_what_cannot_be_seen() {
+        assert_eq!(visible_text("/usr/bin/ssh"), "/usr/bin/ssh");
+        assert_eq!(visible_text("caf\u{e9} \u{1f511}"), "caf\u{e9} \u{1f511}");
+        assert_eq!(
+            visible_text("/home/u/x\n/usr/bin/ssh-keygen"),
+            "/home/u/x\\u000a/usr/bin/ssh-keygen"
+        );
+        assert_eq!(visible_text("a\u{202e}b\u{200b}c"), "a\\u202eb\\u200bc");
+        assert_eq!(
+            visible_text("\u{7f}\u{85}\u{feff}"),
+            "\\u007f\\u0085\\ufeff"
+        );
+        assert_eq!(visible_text("x\u{2066}y\u{2069}"), "x\\u2066y\\u2069");
     }
 
     #[test]

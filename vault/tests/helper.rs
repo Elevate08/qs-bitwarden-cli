@@ -319,6 +319,19 @@ fn runs_can_be_killed_and_stdin_is_delivered() {
 }
 
 #[test]
+fn a_reused_run_id_is_refused_and_the_first_run_stays_killable() {
+    let mut helper = Helper::start();
+    helper.send(json!({ "type": "exec", "v": 1, "id": 21, "argv": ["sh", "-c", "sleep 30"] }));
+    std::thread::sleep(Duration::from_millis(200));
+    let again = helper.exec(21, "echo second", json!({}));
+    assert_eq!(again["code"], 126);
+    assert_eq!(again["err"], "run id in use");
+    // The first run still has its kill handle and its entry.
+    helper.send(json!({ "type": "kill", "v": 1, "id": 21 }));
+    assert_eq!(helper.reply("id", 21)["code"], 143);
+}
+
+#[test]
 fn runs_do_not_outlive_a_crashed_helper() {
     let mut helper = Helper::start();
     let mark = helper.dir.join("stopped");
