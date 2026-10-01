@@ -4,6 +4,27 @@
 
 ### Security
 
+Fixes for [GHSA-6qjw-gmvg-7hvw](https://github.com/Elevate08/qs-bitwarden-cli/security/advisories/GHSA-6qjw-gmvg-7hvw),
+reported by Nicolas Falesy (@nicolasfalesy). Secrets the shell itself had held
+could be in its core dump, and four kills of the vault helper moved the vault
+into the shell.
+
+- **Opening an item no longer loads its secrets into the shell.** A value is
+  fetched from the vault helper when you reveal it and dropped when you hide
+  it; copies go from the helper to the clipboard. Notes are hidden until you
+  show them.
+- **The master password and PIN for unlocking, and the reprompt's password,
+  are typed into `pinentry`** when it is installed. It runs under the vault
+  helper, so what you type does not reach the shell. Turn it off with
+  `usePinentry`.
+- **A vault helper that keeps stopping leaves the vault locked.** It used to
+  fall back to holding the vault in the shell. The restart count also clears
+  once the helper has stayed up for a minute.
+- **The master password a PIN, fingerprint or FIDO2 unlock recovers is
+  forgotten once the unlock is done**, instead of at the next lock.
+- **A disabled quick-unlock method's legacy keyring entry is removed** even
+  when it has no envelope entry.
+
 - **Locking the vault outside the panel locks the SSH agent.** When the vault
   helper stopped, or `bw lock` or `bw logout` ran in a terminal, the panel
   showed the vault locked but the SSH agent kept its keys. It is now locked
@@ -16,9 +37,6 @@
   password or item list was kept by the vault helper.
 - **Search skips the notes of items that ask for the master password.**
   Matching on them showed whether a protected note contained a search term.
-- **Secrets of an item that asks for the master password load after the
-  prompt.** Opening such an item fetched its password, notes and TOTP code
-  into the shell before the master password was given.
 - **The SSH approval prompt escapes hidden characters** (control,
   right-to-left and zero-width characters) in program paths and key names,
   and long paths keep their end visible.
@@ -39,6 +57,9 @@
   instead of being passed on with parts missing.
 - **The vault helper refuses duplicate run ids** and limits background
   commands.
+- **otpauth parameters need two hex digits after `%`**, so `%+f` is refused.
+- **A vault helper that cannot be located falls back** instead of leaving
+  every command waiting.
 
 ### Documentation
 
@@ -46,6 +67,10 @@
   or zram avoids that.
 - The vault helper does not protect against code running in the shell, and
   the master-password reprompt is checked by the panel.
+- What the shell has shown or you typed into it can stay in its memory after
+  it is cleared, and so be in a shell core dump. The plugin leaves the shell's
+  core dumps on: lowering the limit would also turn them off for every other
+  shell plugin and every app started from the launcher.
 
 ## [1.11.2] - 2026-09-29
 
