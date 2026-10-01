@@ -69,6 +69,15 @@ while holding your decrypted vault does not leave a core either.
   `bw` command runs. That was true before the helper and is true of `bw`
   everywhere; see [SECURITY.md](../SECURITY.md) for what is in scope.
 - What is on screen, and what you type, is in the shell.
+- **Code running inside the shell is not defended against.** The helper
+  keeps secrets out of the shell's memory and core dumps; it does not stop
+  code that is already running in the shell from using it. Such code can ask
+  the helper to run any command with the session key or a held password
+  added to its environment, and read the output. A list of allowed commands
+  would not change that (it would have to allow a shell), so there is none.
+- **The master-password reprompt is the panel's.** The helper hands over an
+  item's password, TOTP key or details when asked, whether or not the item is
+  set to require the master password again; the panel enforces that.
 
 ## If the helper is missing or fails
 

@@ -1,3 +1,5 @@
+mod common;
+
 use qs_bitwarden_ssh_agent::keystore::{
     KeyStore, LoadError, MAX_FILTERED_BYTES, MAX_METADATA_BYTES,
 };
@@ -39,7 +41,7 @@ fn item_json(id: &str, key: &PrivateKey) -> serde_json::Value {
     serde_json::json!({
         "itemId": id,
         "name": format!("key {id}"),
-        "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
+        "privateKeyB64": common::base64(key.to_openssh(Default::default()).unwrap().as_bytes()),
         "publicKey": key.public_key().to_openssh().unwrap(),
         "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
         "requiresReprompt": false
@@ -157,6 +159,37 @@ fn valid_nonce_payload_publishes_disposable_keys_once() {
             .decode(Zeroizing::new(payload(NONCE, vec![])), &mut store)
             .unwrap_err(),
         PayloadError::Closed
+    );
+}
+
+#[test]
+fn a_payload_in_the_old_escaped_format_fails_the_whole_load() {
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let mut old = item_json("one", &key);
+    let pem = key.to_openssh(Default::default()).unwrap();
+    let object = old.as_object_mut().unwrap();
+    object.remove("privateKeyB64");
+    object.insert("privateKey".into(), pem.as_str().into());
+    let mut store = KeyStore::new();
+    let mut window = LoadWindow::new(7, NONCE).unwrap();
+    assert_eq!(
+        window
+            .decode(Zeroizing::new(payload(NONCE, vec![old])), &mut store)
+            .unwrap_err(),
+        PayloadError::Malformed
+    );
+
+    // The new field carrying the PEM itself (newlines escaped) is no better.
+    let mut raw = item_json("two", &key);
+    raw.as_object_mut()
+        .unwrap()
+        .insert("privateKeyB64".into(), pem.as_str().into());
+    let mut window = LoadWindow::new(8, NONCE).unwrap();
+    assert_eq!(
+        window
+            .decode(Zeroizing::new(payload(NONCE, vec![raw])), &mut store)
+            .unwrap_err(),
+        PayloadError::Malformed
     );
 }
 
