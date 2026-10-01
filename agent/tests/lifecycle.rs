@@ -699,6 +699,68 @@ fn a_full_load_releasing_every_held_request_keeps_the_helper_alive() {
     agent.shutdown();
 }
 
+/// Held requests come back in the order they were raised, not in the hash
+/// map's order: the panel pairs the shown prompt with the first approval it
+/// receives, so a stable order is part of the contract. Repeated, since a
+/// random order of four happens to be this one once in 24.
+#[test]
+fn held_requests_are_released_in_the_order_they_were_raised() {
+    for round in 0..8 {
+        let mut agent = TestAgent::start();
+        let keys: Vec<_> = (0..4)
+            .map(|_| PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap())
+            .collect();
+        agent.load_keys(&keys, 1, "0123456789abcdef0123456789abcdef");
+        agent.send("{\"v\":1,\"type\":\"vault_locked\",\"epoch\":1}");
+        assert_eq!(agent.read()["type"], "locked");
+
+        let mut clients = Vec::new();
+        let mut raised = Vec::new();
+        for key in &keys {
+            let socket = agent.socket.clone();
+            let blob = key.public_key().to_bytes().unwrap();
+            clients.push(std::thread::spawn(move || {
+                let mut stream = UnixStream::connect(&socket).unwrap();
+                stream.write_all(&sign_request(&blob)).unwrap();
+                read_agent_frame(&mut stream)
+            }));
+            let unlock = agent.read();
+            assert_eq!(unlock["type"], "unlock_required");
+            raised.push((
+                unlock["requestId"].as_u64().unwrap(),
+                unlock["fingerprint"].as_str().unwrap().to_owned(),
+            ));
+        }
+
+        agent.load_keys(&keys, 2, "fedcba9876543210fedcba9876543210");
+        let mut approval_ids = Vec::new();
+        for (old_id, fingerprint) in &raised {
+            let withdrawn = agent.read();
+            assert_eq!(withdrawn["type"], "request_cancelled", "round {round}");
+            assert_eq!(
+                withdrawn["requestId"].as_u64().unwrap(),
+                *old_id,
+                "round {round}"
+            );
+            let approval = agent.read();
+            assert_eq!(approval["type"], "approval_required", "round {round}");
+            assert_eq!(
+                approval["fingerprint"],
+                fingerprint.as_str(),
+                "round {round}"
+            );
+            approval_ids.push(approval["requestId"].as_u64().unwrap());
+        }
+        for id in approval_ids {
+            agent.send(&format!("{{\"v\":1,\"type\":\"deny\",\"requestId\":{id}}}"));
+        }
+        for client in clients {
+            client.join().unwrap();
+        }
+        agent.shutdown();
+    }
+}
+
 /// A malformed FIFO line locks and keeps serving (the panel retries);
 /// `load_failed`, not `locked`, so it is not taken as a lock ack. The reader
 /// passes over lines that are not this load's payload, so with none ever

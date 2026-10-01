@@ -358,4 +358,65 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
     "no cleanup on destruction")
 }
 
+// -------------------------------------------------------------------------
+// An unlock releases held requests in any order; the shown card is bound only
+// to its own request
+// -------------------------------------------------------------------------
+
+{
+  const service = readPluginSource("Service.qml")
+  const names = ["adoptSshPrompt", "onSshAgentMessage"]
+  const unlockMessage = (requestId, extra) => Object.assign({
+    type: "unlock_required", requestId: requestId, reason: "sign", keyName: "k",
+    fingerprint: "SHA256:A", pid: 10, processPath: "/usr/bin/ssh-keygen",
+    operation: "sshsig", operationDetail: "git", hostKey: "", forwarded: false,
+    grantOffered: true
+  }, extra || {})
+  const approvalOf = (requestId, unlock) =>
+    Object.assign({}, unlock, { type: "approval_required", requestId: requestId, keyId: "i" })
+
+  const makeVault = shown => {
+    const v = {
+      Model: Model, sshPromotedOldId: shown.requestId, sshPromotedRaw: shown.raw,
+      sshPrompt: { requestId: shown.requestId }, sshPromptQueue: [], writes: [], shownNew: [],
+      sshAgentMayPrompt() { return true },
+      sshAgentWrite(line) { v.writes.push(line) },
+      showSshApproval(message) { v.shownNew.push(message) }
+    }
+    v.root = v
+    const make = new Function("root", "with (root) {\n" + names.map(n => functionBody(service, n)).join("\n")
+      + "\nreturn {" + names.map(n => `${n}: ${n}`).join(", ") + "} }")
+    Object.assign(v, make(v))
+    return v
+  }
+
+  const a = unlockMessage(1, { fingerprint: "SHA256:A", pid: 10 })
+  const b = unlockMessage(2, { fingerprint: "SHA256:B", pid: 11, processPath: "/usr/bin/other" })
+
+  // A is shown (promoted from its unlock prompt); B's release arrives first.
+  const v = makeVault({ requestId: 1, raw: a })
+  v.onSshAgentMessage(approvalOf(20, b))
+  eq("another request's approval is not bound to the shown card", v.sshPrompt.requestId, 1)
+  check("it is queued instead", v.sshPromptQueue.length === 1 && v.sshPromptQueue[0].requestId === 20,
+    JSON.stringify(v.sshPromptQueue))
+  check("the card is still waiting for its own request", v.sshPromotedOldId === 1, String(v.sshPromotedOldId))
+  v.onSshAgentMessage(approvalOf(21, a))
+  eq("the matching approval is adopted", v.sshPrompt.requestId, 21)
+  eq("and the promotion is finished", v.sshPromotedOldId, null)
+  eq("the other request stays queued", v.sshPromptQueue.length, 1)
+
+  // Each field that tells two requests apart is compared.
+  const differing = [["fingerprint", "SHA256:Z"], ["pid", 99], ["processPath", "/tmp/x"],
+    ["operation", "ssh-auth"], ["operationDetail", "file"], ["hostKey", "SHA256:" + "h".repeat(43)],
+    ["forwarded", true], ["grantOffered", false]]
+  for (const [field, value] of differing) {
+    const w = makeVault({ requestId: 1, raw: a })
+    w.onSshAgentMessage(approvalOf(30, Object.assign({}, a, { [field]: value })))
+    check(`a different ${field} is not adopted`, w.sshPrompt.requestId === 1 && w.sshPromptQueue.length === 1,
+      JSON.stringify(w.sshPrompt))
+  }
+  eq("without the promoted message nothing is adopted",
+    makeVault({ requestId: 1, raw: null }).adoptSshPrompt(approvalOf(40, a)), false)
+}
+
 done()
