@@ -77,8 +77,14 @@ check("a held reference in an environment travels by name",
   /Model\.heldSecretName\(proc\.environment\[key\]\)[\s\S]{0,80}inject\[key\] = "secret:" \+ held/.test(body("vaultStart")), body("vaultStart"))
 check("a password copy goes from the helper to wl-copy",
   /vaultQuery\("copyPassword"/.test(body("copyPasswordNow")), body("copyPasswordNow"))
-check("the detail view asks the helper for the one item",
-  /vaultQuery\("item", \{ id: id \}/.test(body("openDetail")), body("openDetail"))
+check("the detail view asks the helper for no item, only for the value that is revealed",
+  !/vaultQuery\("item"/.test(body("openDetail")) && /vaultQuery\("field", \{ id: id, field: key \}/.test(body("readDetailSecret")),
+  body("openDetail"))
+check("a detail copy of one secret goes from the helper to wl-copy",
+  /vaultQuery\("copyField"/.test(body("copyDetailFieldNow")), body("copyDetailFieldNow"))
+check("only the edit form asks for the whole item",
+  /vaultQuery\("item", \{ id: id \}/.test(body("loadFullDetail"))
+    && (service.match(/vaultQuery\("item"/g) || []).length === 1, "")
 check("TOTP comes from the helper, bw only for keys it does not mirror",
   /vaultQuery\("totp"/.test(body("fetchTotp")) && /root\.fetchTotp\(requested, false, true\)/.test(body("fetchTotp")), "")
 check("search asks the helper, and an answer for old text is dropped",
@@ -206,6 +212,32 @@ if (!fs.existsSync(binary)) {
     check("the list the panel gets has no notes", !/recovery/.test(read.out) && /"qsbwHeld"/.test(read.out), read.out)
     send(Model.vaultHelperLine("search", { q: 200, query: "Recovery" }))
     eq("the helper's search finds note text", JSON.stringify((await reply(m => m.q === 200)).value), '["n"]')
+
+    // One secret at a time: the shell asks for the field it shows, by name.
+    const guarded = JSON.stringify({ items: [
+      { id: "k", type: 3, name: "Card", card: { number: "4111111111111111", code: "987" },
+        fields: [{ name: "pin", value: "4242", type: 1 }, { name: "label", value: "plain", type: 0 }] }], sshKeys: [] })
+    send(Model.vaultExecLine(3, ["sh", "-c", "cat"], {}, {}, "vault", guarded))
+    const listed = await reply(m => m.type === "exit" && m.id === 3)
+    const [row] = Model.parseItems(JSON.parse(listed.out).items)
+    check("the row says which secrets there are and holds none of them",
+      row.heldFlags.cardCode === true && row.heldFlags.ssn === false && !/4111111111111111|987|4242/.test(listed.out), listed.out)
+    check("the row's hidden field has a place in the item, for the helper to name",
+      row.fields[0].index === 0 && row.fields[0].sensitive && row.fields[1].value === "plain", JSON.stringify(row.fields))
+    let n = 300
+    const field = async (type, id, name, extra) => {
+      n += 1
+      send(Model.vaultHelperLine(type, Object.assign({ q: n, id, field: name }, extra || {})))
+      return reply(m => m.q === n)
+    }
+    eq("the helper serves a card's number", (await field("field", "k", "cardNumber")).value, "4111111111111111")
+    eq("and a hidden field by its place", (await field("field", "k", "customField:0")).value, "4242")
+    check("but not a plain field, a key or a made-up name",
+      !(await field("field", "k", "customField:1")).ok && !(await field("field", "k", "totp")).ok
+        && !(await field("field", "k", "login.password")).ok && !(await field("field", "nope", "cardCode")).ok, "")
+    // A successful copy would reach the real clipboard; the Rust tests run it against a stand-in wl-copy.
+    check("a copy of a missing value or a non-field fails", !(await field("copyField", "k", "ssn", { clearSec: 5 })).ok
+      && !(await field("copyField", "k", "totp", { clearSec: 5 })).ok, "")
 
     send(Model.vaultHelperLine("forgetItem", { id: "n" }))
     send(Model.vaultHelperLine("item", { q: 201, id: "n" }))
