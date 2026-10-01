@@ -127,6 +127,11 @@ Item {
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
+  // Type the master password and PIN into pinentry, a separate process,
+  // rather than the panel. `pinentryProgram` (not in the settings screen)
+  // names a different program than `pinentry` from PATH.
+  readonly property bool usePinentry: Model.boolSetting("usePinentry", setting("usePinentry", true))
+  readonly property string pinentryProgramName: Model.pinentryProgram(setting("pinentryProgram", ""))
   // Opt-in: nothing starts, binds or opens a FIFO while false.
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
@@ -347,7 +352,9 @@ Item {
     repromptPending = true
   }
 
-  function submitReprompt(password) {
+  // `after(outcome)`, when given, is told "stale", "wrong" or "ok" once the
+  // password has been judged (before an accepted one's action runs).
+  function submitReprompt(password, after) {
     if (!repromptPending || repromptBusy) return
     var pw = String(password === undefined || password === null ? "" : password)
     if (!pw) {
@@ -363,13 +370,16 @@ Item {
       if (!root.repromptPending || root.repromptItemId !== id || root.repromptEpoch !== epoch
           || root.vaultEpoch !== epoch || root.status !== "unlocked") {
         if (root.repromptItemId === id) root.repromptBusy = false
+        if (after) after("stale")
         return
       }
       root.repromptBusy = false
       if (!ok) {
         root.repromptError = "That is not your master password."
+        if (after) after("wrong")
         return
       }
+      if (after) after("ok")
       var callback = root.repromptCallback
       root.repromptCallback = null
       root.repromptPending = false
@@ -769,6 +779,7 @@ Item {
     root.sshAgentSettingsReady = true
     if (root.sshAgentEnabled) root.inspectSshAgentHelper()
     root.inspectVaultHelper()
+    root.probePinentry()
     root.inspectUnlockKey()
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
@@ -997,6 +1008,11 @@ Item {
       else environment[key] = proc.environment[key]
     }
     if (!vaultHelperActive) {
+      // What was typed into pinentry would come back to the shell: not run.
+      if (proc.capture.indexOf("pinentry:") === 0) {
+        Qt.callLater(function() { proc.finish(Model.pinentryExitCodes().missing, "", "no vault helper", false, false) })
+        return
+      }
       proc.runLocally(vaultLocalEnv(environment, inject))
       return
     }
@@ -1048,6 +1064,20 @@ Item {
     var held = Object.assign({}, vaultLocalSecrets)
     delete held[name]
     vaultLocalSecrets = held
+  }
+
+  // Forgets the secret a reference (Model.heldSecretRef()) names; a plain
+  // string names none.
+  function forgetHeldReference(value) {
+    var name = Model.heldSecretName(value)
+    if (name) forgetVaultSecret(name)
+  }
+
+  // A callback that forgets the secret `value` names, for a consumer that
+  // reports when it is done.
+  function forgetHeldAfter(value) {
+    var kept = value
+    return function() { root.forgetHeldReference(kept) }
   }
 
   // An item the vault no longer has (deleted or trashed).
@@ -1596,8 +1626,13 @@ Item {
 
   // Migrates the legacy PIN blob at the PIN unlock that decrypted it; the blob
   // is deleted only once the new PIN wrap yields the same password.
+  // `pin` may be a PIN typed into pinentry, held by the helper: it is
+  // forgotten once the migration has run (or will not).
   function migrateLegacyPin(password, pin) {
-    if (!quickUnlockAvailable) return
+    if (!quickUnlockAvailable) {
+      forgetHeldReference(pin)
+      return
+    }
     withEnvelopeAccount(function() {
       var env = {}
       env[Model.keyringSecretEnvVar()] = password
@@ -1607,12 +1642,13 @@ Item {
         command: Model.legacyPinMigrationCommand(root.envelopeTool(), root.envelopeAccount()),
         env: env, writes: true,
         onDone: function(code) {
+          root.forgetHeldReference(pin)
           if (code === 0 || code === codes.none) root.legacyPinStored = false
           else console.log("qs-bitwarden envelope: PIN migration left the legacy blob (" + code + ")")
           root.refreshEnvelope()
         }
       })
-    })
+    }, function() { root.forgetHeldReference(pin) })
   }
 
   // Migrates the legacy fingerprint entry, once per session.
@@ -2102,7 +2138,7 @@ Item {
     && (sshPrompt !== null || sshUnlockRequest !== null)
   // Completion handlers treat the SSH popup as an auth surface even with the
   // panel closed.
-  readonly property bool sshAuthSurfaceActive: opened || sshApprovalPopupOpen
+  readonly property bool sshAuthSurfaceActive: opened || sshApprovalPopupOpen || pinentryActive
   // The last announced grants, and a view re-derived each tick so countdowns
   // move and lapsed grants disappear.
   property var sshGrantsAnnounced: []
@@ -2238,11 +2274,14 @@ Item {
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAuthPrewarm()
+    cancelPinentry()
     if (pinUnlockProc.running) pinUnlockProc.running = false
     root.pinUnlockSubmitted = false
     root.pinBusy = false
+    root.releaseHeldPin()
     root.masterPassword = ""
-    root.pendingUnlockPassword = ""
+    root.pinentryMasterName = ""
+    root.dropPendingUnlockSecret()
     root.pendingUnlockFrom = ""
     root.pinEntry = ""
     root.pinError = ""
@@ -2794,6 +2833,9 @@ Item {
   // -------------------------------------------------------------------------
 
   function open(view) {
+    // The user asking for the panel while pinentry is up: the panel wins.
+    cancelPinentry()
+    pinentryReturning = false
     errorMessage = ""
     flashMessage = ""
     revealedFields = ({})
@@ -2958,9 +3000,11 @@ Item {
     })
   }
 
+  // The panel hidden so pinentry can take the keyboard is not a close.
   onOpenedChanged: {
-    if (opened) onPanelOpened()
-    else {
+    if (opened) {
+      if (!resumeFromPinentry()) onPanelOpened()
+    } else if (!pinentryActive) {
       clearRepromptGrant()
       cancelFingerprintUnlock()
       // Not a cancel; see releaseSurface() in FidoUnlock.qml.
@@ -3479,13 +3523,24 @@ Item {
     // Also dropped when the panel closes; see dropVaultSecrets().
     rotationOldPassword = ""
     clearLoginAttempt()
+    pinentryMasterName = ""
+    if (pendingUnlockFrom === "") forgetHeldReference(pendingUnlockPassword)
     pendingUnlockPassword = ""
+    releaseHeldPin()
     pendingUnlockFrom = ""
     authPasswordWriteValue = ""
     pinEntry = ""
     pinUnlockSubmitted = false
     fingerprintAuthorized = false
     syncLoginFieldsToState()
+  }
+
+  // Drops the password an unlock was started with. One typed into pinentry
+  // is held by the helper, which is told to forget it; one a quick-unlock
+  // method produced is not touched here (pendingUnlockFrom names it).
+  function dropPendingUnlockSecret() {
+    if (pendingUnlockFrom === "") forgetHeldReference(pendingUnlockPassword)
+    pendingUnlockPassword = ""
   }
 
   function writeAuthPassword(channel, password) {
@@ -3508,6 +3563,8 @@ Item {
     if (target === "unlock") {
       unlockSubmitted = false
       isUnlocking = false
+      pinentryMasterName = ""
+      if (pendingUnlockFrom === "") forgetHeldReference(pendingUnlockPassword)
       pendingUnlockPassword = ""
       if (unlockProc.running) unlockProc.running = false
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
@@ -4545,7 +4602,11 @@ Item {
     })
   }
 
-  function submitPinUnlock() {
+  // `heldPin`, when given, is a PIN typed into pinentry and held by the
+  // helper (a reference, Model.heldSecretRef()); it is used instead of the
+  // panel's field, and forgotten once its consumer has finished.
+  function submitPinUnlock(heldPin) {
+    var held = Model.heldSecretName(heldPin) ? String(heldPin) : ""
     if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
     // As for the password: the PIN's result is discarded unless locked.
     if (status !== "locked") {
@@ -4554,16 +4615,17 @@ Item {
     }
     // The unlock floor, not the setup one: a PIN set before the floor was
     // raised still has to work.
-    if (String(pinEntry || "").length < Model.pinUnlockMinLength()) {
+    if (!held && String(pinEntry || "").length < Model.pinUnlockMinLength()) {
       pinUnlockError = "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
       return
     }
     pinUnlockError = ""
     pinBusy = true
     pinUnlockSubmitted = true
+    heldPinName = Model.heldSecretName(held)
     if (quickUnlockAvailable && accountId && envelopeSummary && envelopeSummary.pin) {
       var env = {}
-      env[Model.pinEnvVar()] = String(pinEntry || "")
+      env[Model.pinEnvVar()] = held || String(pinEntry || "")
       queueEnvelopeJob({
         command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
         env: env, secretOutput: true, holdOutput: true,
@@ -4581,6 +4643,8 @@ Item {
     var accepting = pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"
     pinUnlockSubmitted = false
     pinBusy = false
+    // The PIN has done its work, right or wrong.
+    var viaPinentry = releaseHeldPin()
     if (!accepting) return
     if (code === 0 && out) {
       pinAttempts = 0
@@ -4591,6 +4655,7 @@ Item {
     }
     if (code === 3) {
       countWrongPin()
+      if (viaPinentry) retryPinentryPin()
       return
     }
     pinEntry = ""
@@ -4615,20 +4680,27 @@ Item {
     var accepting = pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"
     pinUnlockSubmitted = false
     pinBusy = false
+    var heldPin = heldPinName
     if (!accepting) {
+      releaseHeldPin()
       clearProcessCollectorSoon(pinUnlockProc)
       return
     }
     var pw = String(password || "")
 
     if (exitCode !== 0 || !pw) {
+      var viaPinentry = releaseHeldPin()
       countWrongPin()
+      if (viaPinentry) retryPinentryPin()
       return
     }
 
     // A legacy blob: keep the PIN until this unlock settles, to migrate it.
+    // A PIN held by the helper stays held until then (migrateLegacyPin()
+    // or onUnlockOutput() forget it).
     pinAttempts = 0
-    pendingPinForMigration = String(pinEntry || "")
+    pendingPinForMigration = heldPin ? Model.heldSecretRef(heldPin) : String(pinEntry || "")
+    heldPinName = ""
     pendingUnlockFrom = "pin"
     unlockVaultWithPassword(pw)
   }
@@ -5200,6 +5272,223 @@ Item {
   }
 
   // -------------------------------------------------------------------------
+  // Typed secrets in pinentry
+  // -------------------------------------------------------------------------
+  //
+  // The master password (unlock, re-prompt) and the PIN are typed into
+  // `pinentry`, a separate process, not into the panel: a string typed into
+  // the shell stays in its heap after it is cleared and lands in a shell core
+  // dump. The pinentry runs through the vault helper (Model.pinentryCommand()),
+  // which holds what was typed under a name; the shell sees only that name,
+  // and uses it like the password a quick-unlock method produced
+  // (Model.heldSecretRef()). Not available without the helper: held in the
+  // shell the answer would gain nothing, so the panel's own field is used.
+  // Email login and the item forms are not covered.
+  property bool pinentryFound: false
+  // A run that failed (no display, a pinentry that needs a terminal, a helper
+  // that predates the capture): the panel's field is used until the setting
+  // or the program changes.
+  property bool pinentryBroken: false
+  property string pinentryNotice: ""
+  readonly property bool pinentryAvailable: usePinentry && pinentryFound && !pinentryBroken
+    && vaultHelperActive
+  // Between the panel hiding for pinentry and pinentry's answer.
+  property bool pinentryActive: false
+  property var pinentryRun: null
+  property var pinentryView: null
+  property bool pinentryWasOpen: false
+  // The panel showing again after pinentry: a resume, not a fresh open.
+  property bool pinentryReturning: false
+  // The helper's names for what was typed, while it is in use.
+  property string pinentryMasterName: ""
+  property string heldPinName: ""
+
+  onPinentryProgramNameChanged: {
+    pinentryBroken = false
+    pinentryNotice = ""
+    probePinentry()
+  }
+
+  onUsePinentryChanged: {
+    pinentryBroken = false
+    pinentryNotice = ""
+  }
+
+  function probePinentry() {
+    if (pinentryProbeProc.running) pinentryProbeProc.running = false
+    pinentryProbeProc.command = Model.pinentryProbeCommand(pinentryProgramName)
+    pinentryProbeProc.running = true
+  }
+
+  // Runs pinentry for `purpose` ("unlock", "pin", "reprompt"), with `error`
+  // shown above the field on a retry. `done({ state, name })`: state is "ok"
+  // (the helper holds the answer as `name`), "cancelled", "empty", "failed" or
+  // "unavailable" (not run). The panel is hidden meanwhile so pinentry can
+  // take the keyboard, and shown again after `done` returns, unless `done`
+  // asked again.
+  function requestPinentry(purpose, error, done) {
+    if (!pinentryAvailable || pinentryRun !== null || pinentryProc.running || pinentryProc.runId !== 0) {
+      done({ state: "unavailable", name: "" })
+      return
+    }
+    var name = newHeldName()
+    pinentryRun = { purpose: purpose, name: name, done: done }
+    beginPinentry()
+    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, {
+      title: "Bitwarden",
+      description: Model.pinentryDescription(purpose, userEmail),
+      prompt: Model.pinentryPrompt(purpose),
+      error: error
+    })
+    pinentryProc.capture = "pinentry:" + name
+    pinentryProc.running = true
+  }
+
+  function onPinentryExited(exitCode, held, stderrText) {
+    var run = pinentryRun
+    pinentryRun = null
+    // Cancelled meanwhile (cancelPinentry() already forgot the answer).
+    if (!run) return
+    var E = Model.pinentryExitCodes()
+    var state = "failed"
+    if (exitCode === 0 && held) state = "ok"
+    // A cancel prints nothing; a helper that stopped says so on stderr.
+    else if (exitCode === E.cancelled && String(stderrText || "").trim() === "") state = "cancelled"
+    else if (exitCode === E.empty) state = "empty"
+    if (state !== "ok") forgetVaultSecret(run.name)
+    if (state === "failed") {
+      pinentryBroken = true
+      pinentryNotice = "Pinentry did not start. Type it here instead."
+    } else {
+      pinentryNotice = ""
+    }
+    run.done({ state: state, name: run.name })
+    // Unless done() asked again.
+    if (pinentryRun === null) endPinentry()
+  }
+
+  // Hides the panel, which holds the keyboard, until the answer is in. Not a
+  // close: nothing is abandoned (see onOpenedChanged).
+  function beginPinentry() {
+    if (pinentryActive) return
+    pinentryActive = true
+    pinentryWasOpen = opened
+    if (!opened) return
+    pinentryView = presenter
+    eachView(function(view) { view.hidePopout() })
+  }
+
+  function endPinentry() {
+    if (!pinentryActive) return
+    pinentryActive = false
+    var show = pinentryWasOpen && !opened && pinentryView !== null
+    pinentryWasOpen = false
+    var view = pinentryView
+    pinentryView = null
+    if (!show) return
+    pinentryReturning = true
+    view.showPopout()
+  }
+
+  // The panel showing again after pinentry resumes where it was; that is not
+  // a fresh open. Whether this was one.
+  function resumeFromPinentry() {
+    if (!pinentryReturning) return false
+    pinentryReturning = false
+    restoreScreenFocus()
+    return true
+  }
+
+  // Stops a pinentry in progress and forgets what it answered; the vault
+  // locked or was left, another method unlocked it, or the panel was asked
+  // for.
+  function cancelPinentry() {
+    var run = pinentryRun
+    pinentryRun = null
+    if (pinentryProc.running) pinentryProc.running = false
+    if (run) forgetVaultSecret(run.name)
+    endPinentry()
+  }
+
+  // The unlock screen's action: the master password, typed into pinentry.
+  function unlockWithPinentry(error) {
+    if (status !== "locked") {
+      errorMessage = "Still checking the vault. Try again in a moment."
+      return
+    }
+    if (isUnlocking || pinentryActive) return
+    requestPinentry("unlock", error || "", function(r) {
+      if (r.state === "ok") {
+        pendingUnlockFrom = ""
+        pinentryMasterName = r.name
+        root.unlockVaultWithPassword(Model.heldSecretRef(r.name))
+      } else if (r.state === "empty") {
+        root.errorMessage = "Master password required"
+      }
+    })
+  }
+
+  // The same for the PIN; submitPinUnlock() judges it.
+  function unlockPinWithPinentry(error) {
+    if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy || pinentryActive) return
+    if (status !== "locked") {
+      pinUnlockError = "Still checking the vault. Try again in a moment."
+      return
+    }
+    requestPinentry("pin", error || "", function(r) {
+      if (r.state === "ok") {
+        root.submitPinUnlock(Model.heldSecretRef(r.name))
+        // Not taken up (the vault stopped being locked meanwhile).
+        if (!root.pinUnlockSubmitted) root.forgetVaultSecret(r.name)
+      } else if (r.state === "empty") {
+        root.pinUnlockError = "Enter your PIN."
+      }
+    })
+  }
+
+  // A wrong PIN typed into pinentry: ask again with the count shown, while
+  // PIN unlock is still offered.
+  function retryPinentryPin() {
+    if (pinReady && status === "locked") Qt.callLater(function() { root.unlockPinWithPinentry(root.pinUnlockError) })
+  }
+
+  // The PIN the helper holds for the unlock in flight, forgotten; whether
+  // there was one.
+  function releaseHeldPin() {
+    var name = heldPinName
+    heldPinName = ""
+    if (!name) return false
+    forgetVaultSecret(name)
+    return true
+  }
+
+  // The re-prompt's confirmation: the master password, typed into pinentry,
+  // judged by submitReprompt(). A wrong one asks again.
+  function submitRepromptWithPinentry(error) {
+    if (!repromptPending || repromptBusy) return
+    var id = repromptItemId
+    var epoch = repromptEpoch
+    repromptBusy = true
+    requestPinentry("reprompt", error || "", function(r) {
+      var current = root.repromptPending && root.repromptItemId === id && root.repromptEpoch === epoch
+      if (current) root.repromptBusy = false
+      if (r.state !== "ok") {
+        if (current && r.state === "failed") root.repromptError = "Pinentry did not start. Type your master password here."
+        else if (current && r.state === "empty") root.repromptError = "Enter your master password."
+        return
+      }
+      if (!current) {
+        root.forgetVaultSecret(r.name)
+        return
+      }
+      root.submitReprompt(Model.heldSecretRef(r.name), function(outcome) {
+        root.forgetVaultSecret(r.name)
+        if (outcome === "wrong") root.submitRepromptWithPinentry("That is not your master password.")
+      })
+    })
+  }
+
+  // -------------------------------------------------------------------------
   // Unlock and lock
   // -------------------------------------------------------------------------
 
@@ -5241,11 +5530,21 @@ Item {
       fingerprintFromEnvelope = false
       onUnlockSuccess(out)
     } else {
+      // A master password typed into pinentry that `bw` refused: forgotten,
+      // and asked for again unless `bw` said the account is not logged in.
+      var askAgain = pinentryMasterName !== "" && err.indexOf("not logged in") === -1
+      pinentryMasterName = ""
       var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
         || (pendingUnlockFrom === "pin" && pinFromEnvelope)
         || (pendingUnlockFrom === "fido" && fidoFromEnvelope)
-      if (!fromEnvelope) pendingUnlockPassword = ""
+      if (!fromEnvelope) dropPendingUnlockSecret()
+      forgetHeldReference(pendingPinForMigration)
       pendingPinForMigration = ""
+      if (askAgain && pendingUnlockFrom === "") {
+        Qt.callLater(prepareUnlock)
+        unlockWithPinentry("That is not your master password.")
+        return
+      }
       // A stored secret the vault rejects: say which method went stale.
       if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
         // Changed elsewhere: keep the method and remember the old password so
@@ -5331,7 +5630,11 @@ Item {
     syncLoginFieldsToState()
     isUnlocking = false
     unlockSubmitted = false
+    pinentryMasterName = ""
+    // Another method unlocked the vault while pinentry was asking.
+    cancelPinentry()
     if (!s) {
+      dropPendingUnlockSecret()
       errorMessage = "Unlock did not return a session key"
       return
     }
@@ -5350,12 +5653,16 @@ Item {
     // A typed password `bw` accepted is the only source of the stored one;
     // this also re-seals after a change made elsewhere.
     if (pendingUnlockPassword && pendingUnlockFrom === "") {
-      storeAcceptedMasterPassword(pendingUnlockPassword)
+      // A password typed into pinentry is held by the helper: forgotten
+      // once the stored copy has been dealt with.
+      storeAcceptedMasterPassword(pendingUnlockPassword, forgetHeldAfter(pendingUnlockPassword))
     } else {
       rotationOldPassword = ""
     }
     if (pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword) {
       migrateLegacyPin(pendingUnlockPassword, pendingPinForMigration)
+    } else {
+      forgetHeldReference(pendingPinForMigration)
     }
     pendingPinForMigration = ""
     pinFromEnvelope = false
@@ -5497,6 +5804,8 @@ Item {
   function dropVaultState() {
     initialSyncAttempted = false
     pinUnlockSubmitted = false
+    // A question for the old vault's password is no longer wanted.
+    cancelPinentry()
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAttachmentDownloads()
@@ -8013,6 +8322,24 @@ Item {
     }
   }
 
+  // ---- pinentry ----
+  //
+  // The Assuan client script runs in the vault helper; what it prints (the
+  // answer) is decoded and held there, so nothing typed comes back here.
+
+  VaultProcess {
+    id: pinentryProc
+    vault: root
+    session: false
+    stderr: VaultCollector { id: pinentryStderr; waitForEnd: true }
+    onExited: function(exitCode) { root.onPinentryExited(exitCode, pinentryProc.outputHeld, pinentryStderr.text) }
+  }
+
+  Process {
+    id: pinentryProbeProc
+    onExited: function(exitCode) { root.pinentryFound = exitCode === 0 }
+  }
+
   // ---- Legacy PIN blob ----
   //
   // Decrypted in one process with the PIN from the environment, so only the
@@ -8023,7 +8350,7 @@ Item {
     vault: root
     session: false
     command: Model.pinUnlockCommand(root.activeSlot)
-    environment: root.pinEnv(root.pinEntry)
+    environment: root.pinEnv(root.heldPinName ? Model.heldSecretRef(root.heldPinName) : root.pinEntry)
     stdout: VaultCollector { id: pinUnlockStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(pinUnlockProc)) return

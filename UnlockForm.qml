@@ -34,10 +34,15 @@ Column {
   // offers each one, and a method turned off in settings is not in it.
   readonly property var availableMethods: ["fido", "fingerprint", "pin", "password"]
     .filter(function(name) { return methodAvailable(name) })
-  // The field this method types into (none for fingerprint or FIDO2).
-  readonly property var focusField: method === "pin"
+  // The master password and the PIN are typed into pinentry, a separate
+  // process, when it is available; the fields below are the fallback.
+  readonly property bool pinentryOffered: form.vault.pinentryAvailable === true
+    && (method === "pin" || method === "password")
+  // The field this method types into (none for fingerprint or FIDO2, nor
+  // when pinentry takes the typing).
+  readonly property var focusField: pinentryOffered ? null : (method === "pin"
     ? pinField
-    : (method === "password" ? passwordField : null)
+    : (method === "password" ? passwordField : null))
   // A FIDO2 attempt: scanning, authorized, then unlocking.
   readonly property bool fidoBusy: form.vault.fidoScanning
     || form.vault.fidoAuthorized
@@ -122,7 +127,10 @@ Column {
   }
 
   function submitCurrentMethod() {
-    if (form.method === "pin") form.vault.submitPinUnlock()
+    if (form.pinentryOffered) {
+      if (form.method === "pin") form.vault.unlockPinWithPinentry()
+      else form.vault.unlockWithPinentry()
+    } else if (form.method === "pin") form.vault.submitPinUnlock()
     else form.vault.unlockVault()
   }
 
@@ -308,7 +316,7 @@ Column {
   }
 
   Column {
-    visible: form.fieldsOffered && form.method === "pin"
+    visible: form.fieldsOffered && form.method === "pin" && !form.pinentryOffered
     width: parent.width
     spacing: Style.space(8)
 
@@ -346,7 +354,7 @@ Column {
   }
 
   Row {
-    visible: form.fieldsOffered && form.method === "password"
+    visible: form.fieldsOffered && form.method === "password" && !form.pinentryOffered
     width: parent.width
     spacing: Style.space(8)
 
@@ -372,6 +380,48 @@ Column {
       focusable: form.buttonsFocusable
       onClicked: revealed = !revealed
     }
+  }
+
+  // The PIN's own field shows this when pinentry takes the typing.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && form.method === "pin" && form.pinentryOffered
+      && form.vault.pinUnlockError !== ""
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: form.vault.pinUnlockError
+    color: form.panel.urgent
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
+  // Where the typing happens, on the two typed methods.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && form.pinentryOffered
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: "Your " + (form.method === "pin" ? "PIN" : "master password")
+      + " is typed in a separate window, not in this panel."
+    color: form.panel.dim
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
+  // Why the panel's own field is shown although pinentry is set to be used.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && !form.pinentryOffered && text !== ""
+      && (form.method === "pin" || form.method === "password")
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: String(form.vault.pinentryNotice || "")
+    color: form.panel.dim
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
   }
 
   // One Unlock button for both typed methods.

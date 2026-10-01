@@ -20,10 +20,27 @@ Item {
   // The vault is checking the password it was handed. The field is disabled
   // meanwhile, which takes its focus; a wrong password gives it back.
   readonly property bool busy: vault.repromptBusy === true
-  onBusyChanged: if (!busy && shown) Qt.callLater(function() { if (confirm.shown) passwordField.forceActiveFocus() })
+  onBusyChanged: if (!busy && shown) Qt.callLater(function() { if (confirm.shown) confirm.focusEntry() })
+
+  // The master password is typed into pinentry, a separate process, when it
+  // is available; the field below is the fallback.
+  readonly property bool usePinentry: vault.pinentryAvailable === true
+  onUsePinentryChanged: if (shown) Qt.callLater(function() { if (confirm.shown) confirm.focusEntry() })
 
   visible: shown
   z: 30
+
+  // The field, or the key handler that stands in for it.
+  function focusEntry() {
+    if (confirm.usePinentry) pinentryKeys.forceActiveFocus()
+    else passwordField.forceActiveFocus()
+  }
+
+  // Opens pinentry; the vault holds the answer, not this panel.
+  function ask() {
+    if (confirm.busy) return
+    confirm.vault.submitRepromptWithPinentry()
+  }
 
   function submit() {
     if (confirm.busy || passwordField.text === "") return
@@ -41,7 +58,7 @@ Item {
   onShownChanged: {
     passwordField.text = ""
     if (shown) {
-      Qt.callLater(function() { if (confirm.shown) passwordField.forceActiveFocus() })
+      Qt.callLater(function() { if (confirm.shown) confirm.focusEntry() })
     } else {
       // Back to whatever the screen underneath focuses.
       confirm.vault.restoreScreenFocus()
@@ -68,6 +85,19 @@ Item {
     radius: Style.cornerRadius
     color: Color.popups.background
     borderSpec: Border.surfaceSpec("popups", "border", Color.accent, 1)
+
+    // Holds the keyboard while pinentry takes the typing: Enter opens it.
+    Item {
+      id: pinentryKeys
+      width: 0
+      height: 0
+      Keys.onReturnPressed: function(event) { event.accepted = true; confirm.ask() }
+      Keys.onEnterPressed: function(event) { event.accepted = true; confirm.ask() }
+      Keys.onEscapePressed: function(event) {
+        event.accepted = true
+        confirm.cancel()
+      }
+    }
 
     Column {
       id: content
@@ -96,8 +126,20 @@ Item {
         wrapMode: Text.WordWrap
       }
 
+      Text {
+        textFormat: Text.PlainText
+        visible: confirm.usePinentry
+        width: parent.width
+        text: "Your master password is typed in a separate window, not in this panel."
+        color: confirm.panel.dim
+        font.family: confirm.panel.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
+
       TextField {
         id: passwordField
+        visible: !confirm.usePinentry
         width: parent.width
         placeholderText: "Master password..."
         password: true
@@ -133,8 +175,8 @@ Item {
           accent: Color.accent
           fontFamily: confirm.panel.fontFamily
           fontSize: Style.font.bodySmall
-          enabled: !confirm.busy && passwordField.text !== ""
-          onClicked: confirm.submit()
+          enabled: !confirm.busy && (confirm.usePinentry || passwordField.text !== "")
+          onClicked: confirm.usePinentry ? confirm.ask() : confirm.submit()
         }
 
         Button {

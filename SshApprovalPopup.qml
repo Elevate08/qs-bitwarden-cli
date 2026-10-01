@@ -18,8 +18,11 @@ PanelWindow {
   // Every monitor's bar has this popup; only the presenting view shows it (two
   // would fight over exclusive keyboard focus).
   readonly property bool presenting: vault.presenter === panel
+  // Not while pinentry asks for a password: an overlay with exclusive
+  // keyboard focus would cover it.
   readonly property bool open: presenting && vault.sshAgentApprovalPopup
     && (vault.sshPrompt !== null || vault.sshUnlockRequest !== null)
+    && !vault.pinentryActive
   property bool focusPrimed: false
   readonly property var anchorWindow: anchorItem ? anchorItem.QsWindow.window : null
   readonly property int cardWidth: Math.max(1, Math.min(Style.space(460), width - Style.gapsOut * 2))

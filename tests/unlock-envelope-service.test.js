@@ -30,7 +30,7 @@ const callers = service.split("\n").filter(l => !/^\s*\/\//.test(l))
   .join("\n").match(/storeAcceptedMasterPassword\(/g).length
 const unlockSuccess = bodyOf("onUnlockSuccess")
 check("a typed, accepted password reaches the writer from the unlock path",
-  /if \(pendingUnlockPassword && pendingUnlockFrom === ""\) \{\s*storeAcceptedMasterPassword\(pendingUnlockPassword\)/
+  /if \(pendingUnlockPassword && pendingUnlockFrom === ""\) \{[\s\S]{0,200}?storeAcceptedMasterPassword\(pendingUnlockPassword[,)]/
     .test(unlockSuccess), unlockSuccess)
 check("a quick unlock's password never does",
   !/pendingUnlockFrom === "(pin|fingerprint|fido)"[\s\S]{0,120}storeAcceptedMasterPassword/.test(service),
@@ -195,7 +195,7 @@ check("an envelope answer is only acted on for a live, submitted unlock",
   /pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"/.test(bodyOf("onEnvelopePinResult")),
   bodyOf("onEnvelopePinResult"))
 check("a legacy blob's PIN is held only until that unlock settles, then migrated",
-  /pendingPinForMigration = String\(pinEntry \|\| ""\)/.test(bodyOf("onPinUnlockResult"))
+  /pendingPinForMigration = heldPin \? [^\n]*: String\(pinEntry \|\| ""\)/.test(bodyOf("onPinUnlockResult"))
     && /pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword\) \{\s*migrateLegacyPin/
       .test(unlockSuccess)
     && /pendingPinForMigration = ""/.test(unlockSuccess)
