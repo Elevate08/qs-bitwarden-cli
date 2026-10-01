@@ -319,6 +319,13 @@ check("a method just enabled is not taken for off while its setting write lands"
     && /noteQuickUnlockEnabled\("fingerprint"\)/.test(bodyOf("submitFingerprintSetup"))
     && /noteQuickUnlockEnabled\("fido"\)/.test(fidoSrc),
   reconcile)
+check("a method that is off is purged even with no envelope entry for it, which clears its legacy entry",
+  !/present/.test(reconcile) && !/summary/.test(reconcile)
+    && /if \(!quickUnlockSettingOff\(c\.setting\)\) continue/.test(reconcile)
+    && /quickUnlockPurgeCommand\(envelopeTool\(\), \[activeSlot\], c\.method\)/.test(reconcile),
+  reconcile)
+check("an account with no envelope at all is reconciled too",
+  /code === Model\.envelopeExitCodes\(\)\.absent\) \{\s*root\.reconcileDisabledMethods\(\)/.test(refresh), refresh)
 check("a removal is tried once per account and method, so a failure cannot loop",
   /reconciledMethods\[key\]\) continue/.test(reconcile), reconcile)
 

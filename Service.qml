@@ -1254,17 +1254,21 @@ Item {
     return !!settings && settings[name] === false
   }
 
+  // A method whose setting is off loses its way in even when the envelope has
+  // none: the purge also clears the legacy keyring entry, which an account
+  // with no envelope yet (or one turned off before it migrated) still has. The
+  // purge succeeds when there is nothing to remove, and runs once per account
+  // and method per session.
   function reconcileDisabledMethods() {
-    var summary = envelopeSummary
-    if (!summary || !quickUnlockAvailable || !accountId) return
+    if (!quickUnlockAvailable) return
     var checks = [
-      { method: "pin", setting: "pinUnlock", present: !!summary.pin },
-      { method: "fingerprint", setting: "fingerprintUnlock", present: summary.fingerprint === true },
-      { method: "fido", setting: "fidoUnlock", present: Array.isArray(summary.fido) && summary.fido.length > 0 }
+      { method: "pin", setting: "pinUnlock" },
+      { method: "fingerprint", setting: "fingerprintUnlock" },
+      { method: "fido", setting: "fidoUnlock" }
     ]
     for (var i = 0; i < checks.length; i++) {
       var c = checks[i]
-      if (!c.present || !quickUnlockSettingOff(c.setting)) continue
+      if (!quickUnlockSettingOff(c.setting)) continue
       if (Date.now() - Number(quickUnlockEnabledAt[c.method] || 0) < quickUnlockEnableGraceMs) continue
       var key = activeSlot + ":" + c.method
       if (reconciledMethods[key]) continue
@@ -1388,7 +1392,10 @@ Item {
           root.envelopeSummary = null
         }
         root.envelopeChecked = true
-        if (code === 0 && root.envelopeSummary) root.reconcileDisabledMethods()
+        // No envelope yet is read too: a legacy entry may be all there is.
+        if ((code === 0 && root.envelopeSummary) || code === Model.envelopeExitCodes().absent) {
+          root.reconcileDisabledMethods()
+        }
         root.recomputeFingerprintStored()
         root.recomputePinConfigured()
         // A switched-to account's methods are known only now.
