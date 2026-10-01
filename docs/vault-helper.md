@@ -83,7 +83,14 @@ while holding your decrypted vault does not leave a core either.
   user read another's `/proc/<pid>/environ`, so the key is readable while a
   `bw` command runs. That was true before the helper and is true of `bw`
   everywhere; see [SECURITY.md](../SECURITY.md) for what is in scope.
-- What is on screen, and what you type, is in the shell.
+- **What is on screen, and what you type, is in the shell.** Clearing it does
+  not wipe it, so it can stay in the shell's memory and be in a shell core
+  dump.
+- **The shell's core dumps are left on.** The plugin does not lower the
+  shell's core-file limit. The limit is per process and inherited, so it would
+  also turn off core dumps for every other plugin in the shell and for every
+  app started from the shell's launcher, until the shell restarts. The plugin
+  keeps secrets out of the shell instead.
 - **Code running in the shell.** The helper does not protect against it.
   Such code can ask the helper to run a command with the session key or a
   held password in its environment.
@@ -96,12 +103,17 @@ architecture, the checksum in `bin/SHA256SUMS`, its own self-test, and the
 protocol version. A locally built one (`vault/target/debug/`) is used if the
 shipped one is absent or unusable.
 
-If none can be used, or the helper keeps stopping, the panel works as it did
-before: the session and the items are held in the shell. A banner says crash
-protection is off and why. If the helper stops while the vault is open, the
-session key goes with it, so the vault locks as the lock button would: the
-SSH agent drops its private keys and grants, the remembered session is
-cleared, and the panel asks you to unlock again.
+If none can be used when the shell starts, the panel works as it did before:
+the session and the items are held in the shell, and a banner says crash
+protection is off and why.
+
+If the helper stops while the vault is open, the session key goes with it, so
+the vault locks as the lock button would: the SSH agent drops its private keys
+and grants, the remembered session is cleared, and the panel asks you to
+unlock again. The helper is restarted up to three times; the count clears
+once it has stayed up for a minute. If it keeps stopping, the vault stays
+locked and the banner offers to try again. The panel does not move the vault
+into the shell in that case.
 
 ## Verifying the shipped binary
 

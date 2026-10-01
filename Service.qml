@@ -944,7 +944,7 @@ Item {
   property var vaultHelper: Model.uninspectedHelper()
   // Set as the shell unloads: a helper exit then is expected.
   property bool shuttingDown: false
-  // "pending" | "starting" | "active" | "fallback"
+  // "pending" | "starting" | "active" | "fallback" | "stopped"
   property string vaultHelperState: "pending"
   readonly property bool vaultHelperActive: vaultHelperState === "active"
   property string vaultHelperWarning: ""
@@ -953,16 +953,26 @@ Item {
   property var vaultWaiting: []
   property int vaultQuerySeq: 0
   property var vaultQueries: ({})
-  // Restarts after an unexpected exit; past the limit, fall back.
+  // Restarts after an unexpected exit; past the limit, the helper is left
+  // stopped and the vault locked (stopVaultHelper()). The count clears once
+  // the helper has stayed up for vaultHelperSettledMs, so exits spread over a
+  // long session do not add up.
   property int vaultHelperRestarts: 0
   readonly property int vaultHelperMaxRestarts: 3
+  readonly property int vaultHelperSettledMs: 60000
   // What `session` holds while the helper has the key (not a secret).
   readonly property string heldSessionMarker: Model.vaultHeldSession()
   // Held values by name while falling back (the helper holds them otherwise).
   property var vaultLocalSecrets: ({})
 
   function inspectVaultHelper() {
-    if (vaultHelperInspectProc.running || sshAgentPluginDir === "") return
+    if (vaultHelperInspectProc.running) return
+    // The directory comes from this file's own URL and does not change, so
+    // waiting for it would leave every queued run waiting for good.
+    if (sshAgentPluginDir === "") {
+      useVaultFallback("the plugin's directory is not known, so the vault helper cannot be found.")
+      return
+    }
     vaultHelperInspectProc.command = Model.vaultHelperInspectCommand(root.sshAgentPluginDir)
     vaultHelperInspectProc.running = true
   }
@@ -991,6 +1001,29 @@ Item {
     flushVaultWaiting()
   }
 
+  // A helper that keeps stopping (or is being killed) is not replaced by
+  // holding the vault in the shell: the vault stays locked, runs wait, and the
+  // banner offers to try again. Falling back is only for a helper that cannot
+  // be used at all when the shell starts (GHSA-6qjw-gmvg-7hvw).
+  function stopVaultHelper() {
+    vaultHelperState = "stopped"
+    vaultHelperWarning = "The vault helper keeps stopping, so the vault stays locked. Click here to try again."
+    console.warn("qs-bitwarden: the vault helper kept stopping; the vault stays locked")
+  }
+
+  function retryVaultHelper() {
+    if (vaultHelperState !== "stopped") return
+    vaultHelperRestarts = 0
+    vaultHelperWarning = ""
+    startVaultHelper()
+  }
+
+  Timer {
+    id: vaultHelperSettleTimer
+    interval: root.vaultHelperSettledMs
+    onTriggered: if (root.vaultHelperState === "active") root.vaultHelperRestarts = 0
+  }
+
   function onVaultHelperStarted() {
     vaultHelperProc.write(Model.vaultHelperLine("hello", {}))
   }
@@ -1001,6 +1034,7 @@ Item {
     if (message.type === "ready") {
       vaultHelperState = "active"
       vaultHelperWarning = ""
+      vaultHelperSettleTimer.restart()
       flushVaultWaiting()
     } else if (message.type === "exit") {
       var proc = vaultRuns[message.id]
@@ -1024,6 +1058,7 @@ Item {
   // The helper went away: its runs fail, and the session key went with it,
   // so an unlocked vault is locked here too. Restarted, within a limit.
   function onVaultHelperExited(exitCode) {
+    vaultHelperSettleTimer.stop()
     var wasActive = vaultHelperState === "active" || vaultHelperState === "starting"
     var unexpected = wasActive && !shuttingDown
     // Until it is back (or given up on), new runs wait rather than being
@@ -1059,7 +1094,7 @@ Item {
       vaultHelperRestarts += 1
       Qt.callLater(startVaultHelper)
     } else {
-      useVaultFallback("the vault helper kept stopping.")
+      stopVaultHelper()
     }
   }
 
@@ -1074,6 +1109,7 @@ Item {
   // Called by VaultProcess.start().
   function vaultStart(proc) {
     if (vaultHelperState === "pending" || vaultHelperState === "starting"
+        || vaultHelperState === "stopped"
         || (vaultHelperState === "active" && !vaultHelperProc.running)) {
       if (vaultWaiting.indexOf(proc) === -1) vaultWaiting = vaultWaiting.concat([proc])
       return
@@ -1139,6 +1175,13 @@ Item {
     var held = Object.assign({}, vaultLocalSecrets)
     delete held[name]
     vaultLocalSecrets = held
+  }
+
+  // A password passed around by reference (Model.heldSecretRef()): drop the
+  // held copy. Anything that is not a reference is left alone.
+  function forgetHeldPassword(value) {
+    var name = Model.heldSecretName(value)
+    if (name) forgetVaultSecret(name)
   }
 
   // An item the vault no longer has (deleted or trashed).
@@ -1338,17 +1381,21 @@ Item {
     return !!settings && settings[name] === false
   }
 
+  // A method whose setting is off loses its way in even when the envelope has
+  // none: the purge also clears the legacy keyring entry, which an account
+  // with no envelope yet (or one turned off before it migrated) still has. The
+  // purge succeeds when there is nothing to remove, and runs once per account
+  // and method per session.
   function reconcileDisabledMethods() {
-    var summary = envelopeSummary
-    if (!summary || !quickUnlockAvailable || !accountId) return
+    if (!quickUnlockAvailable || !accountId) return
     var checks = [
-      { method: "pin", setting: "pinUnlock", present: !!summary.pin },
-      { method: "fingerprint", setting: "fingerprintUnlock", present: summary.fingerprint === true },
-      { method: "fido", setting: "fidoUnlock", present: Array.isArray(summary.fido) && summary.fido.length > 0 }
+      { method: "pin", setting: "pinUnlock" },
+      { method: "fingerprint", setting: "fingerprintUnlock" },
+      { method: "fido", setting: "fidoUnlock" }
     ]
     for (var i = 0; i < checks.length; i++) {
       var c = checks[i]
-      if (!c.present || !quickUnlockSettingOff(c.setting)) continue
+      if (!quickUnlockSettingOff(c.setting)) continue
       if (Date.now() - Number(quickUnlockEnabledAt[c.method] || 0) < quickUnlockEnableGraceMs) continue
       var key = activeSlot + ":" + c.method
       if (reconciledMethods[key]) continue
@@ -1472,7 +1519,10 @@ Item {
           root.envelopeSummary = null
         }
         root.envelopeChecked = true
-        if (code === 0 && root.envelopeSummary) root.reconcileDisabledMethods()
+        // No envelope yet is read too: a legacy entry may be all there is.
+        if ((code === 0 && root.envelopeSummary) || code === Model.envelopeExitCodes().absent) {
+          root.reconcileDisabledMethods()
+        }
         root.recomputeFingerprintStored()
         root.recomputePinConfigured()
         // A switched-to account's methods are known only now.
@@ -1519,9 +1569,15 @@ Item {
   // a quick-unlock method produced. `done(ok)` is optional.
   function storeAcceptedMasterPassword(password, done) {
     var pw = String(password || "")
-    var finish = function(ok) { if (done) done(ok) }
+    var oldPassword = ""
+    // The old password of a refused quick unlock is held by reference; its
+    // last use is the re-seal below, so it goes with the end of this call.
+    var finish = function(ok) {
+      root.forgetHeldPassword(oldPassword)
+      if (done) done(ok)
+    }
     if (!pw || !quickUnlockAvailable) { finish(false); return }
-    var oldPassword = rotationOldPassword
+    oldPassword = rotationOldPassword
     rotationOldPassword = ""
     withEnvelopeAccount(function() {
       var E = Model.envelopeExitCodes()
@@ -1687,8 +1743,13 @@ Item {
 
   // Migrates the legacy PIN blob at the PIN unlock that decrypted it; the blob
   // is deleted only once the new PIN wrap yields the same password.
+  // `password` may be held by reference; its last use is this migration, so
+  // it is forgotten when the migration ends, whichever way.
   function migrateLegacyPin(password, pin) {
-    if (!quickUnlockAvailable) return
+    if (!quickUnlockAvailable) {
+      forgetHeldPassword(password)
+      return
+    }
     withEnvelopeAccount(function() {
       var env = {}
       env[Model.keyringSecretEnvVar()] = password
@@ -1698,12 +1759,13 @@ Item {
         command: Model.legacyPinMigrationCommand(root.envelopeTool(), root.envelopeAccount()),
         env: env, writes: true,
         onDone: function(code) {
+          root.forgetHeldPassword(password)
           if (code === 0 || code === codes.none) root.legacyPinStored = false
           else console.log("qs-bitwarden envelope: PIN migration left the legacy blob (" + code + ")")
           root.refreshEnvelope()
         }
       })
-    })
+    }, function() { root.forgetHeldPassword(password) })
   }
 
   // Migrates the legacy fingerprint entry, once per session.
@@ -3599,6 +3661,7 @@ Item {
     if (target === "unlock") {
       unlockSubmitted = false
       isUnlocking = false
+      forgetHeldPassword(pendingUnlockPassword)
       pendingUnlockPassword = ""
       if (unlockProc.running) unlockProc.running = false
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
@@ -5335,7 +5398,12 @@ Item {
       var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
         || (pendingUnlockFrom === "pin" && pinFromEnvelope)
         || (pendingUnlockFrom === "fido" && fidoFromEnvelope)
-      if (!fromEnvelope) pendingUnlockPassword = ""
+      // A held password stays only where a re-seal needs it
+      // (rotationOldPassword, below); otherwise nothing uses it again.
+      if (!fromEnvelope) {
+        forgetHeldPassword(pendingUnlockPassword)
+        pendingUnlockPassword = ""
+      }
       pendingPinForMigration = ""
       // A stored secret the vault rejects: say which method went stale.
       if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
@@ -5423,6 +5491,7 @@ Item {
     isUnlocking = false
     unlockSubmitted = false
     if (!s) {
+      forgetHeldPassword(pendingUnlockPassword)
       errorMessage = "Unlock did not return a session key"
       return
     }
@@ -5443,10 +5512,16 @@ Item {
     if (pendingUnlockPassword && pendingUnlockFrom === "") {
       storeAcceptedMasterPassword(pendingUnlockPassword)
     } else {
+      forgetHeldPassword(rotationOldPassword)
       rotationOldPassword = ""
     }
+    // The unlock is done with a password a quick-unlock method produced: drop
+    // it now, unless the legacy PIN migration still has to use it (it forgets
+    // it when it ends).
     if (pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword) {
       migrateLegacyPin(pendingUnlockPassword, pendingPinForMigration)
+    } else {
+      forgetHeldPassword(pendingUnlockPassword)
     }
     pendingPinForMigration = ""
     pinFromEnvelope = false

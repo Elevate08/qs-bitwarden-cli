@@ -411,6 +411,10 @@ impl Helper {
         // the kernel sends each run SIGTERM, which the auth scripts' traps
         // pass on to their `bw`. Otherwise a `bw unlock` left waiting on the
         // password FIFO would read the next unlock's password.
+        // The kernel ties the signal to the thread that forked, not the
+        // process, so this exec must stay on the long-lived main loop thread:
+        // spawning from a worker thread would send each run SIGTERM when that
+        // thread exits.
         // SAFETY: only async-signal-safe work between fork and exec (prctl).
         unsafe {
             command.pre_exec(|| {

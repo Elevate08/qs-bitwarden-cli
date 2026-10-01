@@ -267,6 +267,7 @@ jobs:
           # Read-only use of the checkout: the tests write only under /tmp.
           runuser -u e2e -- node tests/e2e/accounts.e2e.js
           runuser -u e2e -- node tests/e2e/ssh-lock.e2e.js
+          runuser -u e2e -- node tests/e2e/lock-on-unload.e2e.js
 
   javascript:
     name: panel tests

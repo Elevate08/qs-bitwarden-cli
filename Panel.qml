@@ -992,8 +992,9 @@ Panel {
         // -------------------------------------------------------------------
         // Crash protection banner
         // -------------------------------------------------------------------
-        // Shown while the vault helper is unavailable and the vault is held in
-        // the shell instead (Service.qml "The vault helper").
+        // Shown while the vault helper is unavailable: the vault is held in the
+        // shell instead, or, for a helper that kept stopping, stays locked
+        // (Service.qml "The vault helper").
         BorderSurface {
           visible: root.vault.vaultHelperWarning !== "" && root.vault.activeScreen !== "settings"
           width: parent.width
@@ -1001,6 +1002,14 @@ Panel {
           color: Util.alpha(Color.urgent, 0.15)
           radius: Style.cornerRadius
           borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+          // A helper left stopped (Service.qml stopVaultHelper()) can be tried again.
+          MouseArea {
+            anchors.fill: parent
+            enabled: root.vault.vaultHelperState === "stopped"
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: root.vault.retryVaultHelper()
+          }
 
           Row {
             anchors.centerIn: parent
