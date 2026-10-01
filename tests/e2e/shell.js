@@ -91,6 +91,17 @@ function createShell(name, check, options = {}) {
     shell = null
   }
 
+  // The shell's own way out (`quickshell kill`): it unloads the config, so
+  // the service's Component.onDestruction runs, which a SIGTERM does not.
+  // Unlike stop(), the process group is left alone: a command the shell
+  // started detached on its way out is in it and must be left to finish.
+  function quit() {
+    if (!shell) return
+    spawnSync("quickshell", ["kill", "-p", config], { env, encoding: "utf8", timeout: 20000 })
+    for (let i = 0; i < 100 && spawnSync("kill", ["-0", String(shell.pid)]).status === 0; i++) sleep(100)
+    shell = null
+  }
+
   // Waits up to 30 s for the vault to reach a state.
   function expect(label, predicate) {
     let s = null
@@ -119,7 +130,7 @@ function createShell(name, check, options = {}) {
 
   return {
     root, config, home, keyring, bwLog, shellLog, env,
-    start, stop, cleanup, q, product, state, expect, scriptErrors, logTail,
+    start, stop, quit, cleanup, q, product, state, expect, scriptErrors, logTail,
     pid: () => (shell ? shell.pid : 0)
   }
 }
