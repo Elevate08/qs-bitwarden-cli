@@ -185,19 +185,40 @@ Panel {
     else root.protect(root.vault.detailItem, function() { root.vault.toggleFieldReveal(key) })
   }
 
-  // Copies a protected value of the item on the detail screen.
-  function copyDetailSecret(value, label) {
-    if (!value) return
-    root.protect(root.vault.detailItem, function() { root.vault.copyToClipboard(value, label) })
+  // Copies a protected value of the item on the detail screen. `read` is a
+  // function returning it, called once the prompt is passed and the whole item
+  // is loaded: the value of a flagged item is not on screen before that.
+  function copyDetailSecret(read, label) {
+    var item = root.vault.detailItem
+    if (!item) return
+    root.vault.withRevealedDetail(item, function() {
+      var value = read()
+      if (value) root.vault.copyToClipboard(value, label)
+    })
+  }
+
+  function detailCardField(key) {
+    return root.vault.detailCard ? root.vault.detailCard[key] : ""
+  }
+
+  function detailIdentityField(key) {
+    return root.vault.detailIdentity ? root.vault.detailIdentity[key] : ""
+  }
+
+  function detailCustomFieldValue(index) {
+    var fields = root.vault.detailItem ? root.vault.detailItem.fields : null
+    return fields && fields[index] ? fields[index].value : ""
   }
 
   // Enter, `y` and `p` on the detail screen: a card's number, else a login's
   // password.
   function copyPrimarySecret() {
     if (root.vault.detailIsCard) {
-      if (root.vault.detailCard && root.vault.detailCard.number) root.copyDetailSecret(root.vault.detailCard.number, "Card number")
-    } else if (root.vault.detailIsLoginLike && root.vault.detailPassword) {
-      root.copyDetailSecret(root.vault.detailPassword, "Password")
+      if (root.vault.detailCard && root.vault.detailCard.number) {
+        root.copyDetailSecret(function() { return root.detailCardField("number") }, "Card number")
+      }
+    } else if (root.vault.detailIsLoginLike && root.vault.detailItem && root.vault.detailItem.hasPassword) {
+      root.copyDetailSecret(function() { return root.vault.detailPassword }, "Password")
     }
   }
 
@@ -739,11 +760,11 @@ Panel {
             root.copyPrimarySecret()
           } else if (lower === "n") {
             if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.number) {
-              root.copyDetailSecret(root.vault.detailCard.number, "Card number")
+              root.copyDetailSecret(function() { return root.detailCardField("number") }, "Card number")
             }
           } else if (lower === "k") {
             if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.code) {
-              root.copyDetailSecret(root.vault.detailCard.code, "Security code")
+              root.copyDetailSecret(function() { return root.detailCardField("code") }, "Security code")
             }
           } else if (lower === "u" || lower === "c") {
             // `u` copies the identifier, `c` the contact address (both the
@@ -758,7 +779,7 @@ Panel {
               root.vault.copyToClipboard(root.vault.detailItem.username, "Username")
             }
           } else if (lower === "m") {
-            if (root.vault.liveTotp) root.copyDetailSecret(root.vault.liveTotp, "TOTP")
+            root.vault.copyDetailTotp()
           } else if (lower === "e") {
             root.editDetailItem()
           } else if (lower === "x") {
@@ -4161,7 +4182,7 @@ Panel {
                         iconText: "󰌆"
                         tooltipText: "Copy password (y / Enter)"
                         fontFamily: root.fontFamily
-                        onClicked: root.copyDetailSecret(root.vault.detailPassword, "Password")
+                        onClicked: root.copyDetailSecret(function() { return root.vault.detailPassword }, "Password")
                       }
                     }
                   }
@@ -4243,8 +4264,9 @@ Panel {
                         iconText: "󰥔"
                         tooltipText: "Copy TOTP code (m)"
                         fontFamily: root.fontFamily
-                        enabled: root.vault.liveTotp !== ""
-                        onClicked: root.copyDetailSecret(root.vault.liveTotp, "TOTP code")
+                        // A flagged item's code comes after the prompt.
+                        enabled: root.vault.liveTotp !== "" || root.asksMasterPassword(root.vault.detailItem)
+                        onClicked: root.vault.copyDetailTotp()
                       }
                     }
                   }
@@ -4414,7 +4436,8 @@ Panel {
 
               // FIELD: Notes
               Column {
-                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5 && root.vault.detailItem.notes !== "")
+                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5
+                  && (root.vault.detailItem.notes !== "" || root.vault.detailItem.hasNotes))
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -4435,7 +4458,7 @@ Panel {
                     tooltipText: "Copy notes"
                     size: Style.space(20)
                     fontFamily: root.fontFamily
-                    onClicked: if (root.vault.detailItem) root.copyDetailSecret(root.vault.detailItem.notes, "Notes")
+                    onClicked: root.copyDetailSecret(function() { return root.vault.detailItem ? root.vault.detailItem.notes : "" }, "Notes")
                   }
                 }
 
@@ -4499,7 +4522,7 @@ Panel {
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 onRevealToggled: root.toggleProtectedReveal("cardNumber")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailCard ? root.vault.detailCard.number : "", "Card number")
+                onCopyRequested: root.copyDetailSecret(function() { return root.detailCardField("number") }, "Card number")
               }
 
               DetailField {
@@ -4522,7 +4545,7 @@ Panel {
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 onRevealToggled: root.toggleProtectedReveal("cardCode")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailCard ? root.vault.detailCard.code : "", "Security code")
+                onCopyRequested: root.copyDetailSecret(function() { return root.detailCardField("code") }, "Security code")
               }
 
               // -----------------------------------------------------------
@@ -4587,7 +4610,7 @@ Panel {
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 onRevealToggled: root.toggleProtectedReveal("ssn")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "", "SSN")
+                onCopyRequested: root.copyDetailSecret(function() { return root.detailIdentityField("ssn") }, "SSN")
               }
 
               DetailField {
@@ -4600,7 +4623,7 @@ Panel {
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 onRevealToggled: root.toggleProtectedReveal("passport")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "", "Passport number")
+                onCopyRequested: root.copyDetailSecret(function() { return root.detailIdentityField("passportNumber") }, "Passport number")
               }
 
               DetailField {
@@ -4613,7 +4636,7 @@ Panel {
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 onRevealToggled: root.toggleProtectedReveal("licence")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "", "Licence number")
+                onCopyRequested: root.copyDetailSecret(function() { return root.detailIdentityField("licenseNumber") }, "Licence number")
               }
 
               PanelSectionHeader {
@@ -4691,9 +4714,10 @@ Panel {
                     onRevealToggled: root.toggleProtectedReveal(revealKey)
                     // Hidden fields are protected; plain ones are not.
                     onCopyRequested: {
+                      var at = index
                       var value = modelData.value
                       var name = modelData.name
-                      if (sensitive) root.copyDetailSecret(value, name)
+                      if (sensitive) root.copyDetailSecret(function() { return root.detailCustomFieldValue(at) }, name)
                       else root.vault.copyToClipboard(value, name)
                     }
                   }

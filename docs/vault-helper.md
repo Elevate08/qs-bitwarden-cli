@@ -26,6 +26,9 @@ runs in the helper too, so it still finds text in notes the shell no longer
 has, and it stays fast on a large vault. Notes of an item that asks for the
 master password are left out of search, so guessing cannot read them.
 
+For an item that asks for the master password, the shell gets those secrets
+only after you give it, and drops them again when you close the item.
+
 Locking, logging out and switching accounts tell the helper to forget
 everything. A lock that is still running `bw lock` keeps its own copy of the
 key until it finishes.

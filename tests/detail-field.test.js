@@ -61,8 +61,8 @@ check("every use routes its copy through the panel's one clipboard path",
 check("a masked value's copy asks the re-prompt first",
   uses.filter(u => /sensitive:\s*true/.test(u)).every(u => /onCopyRequested:\s*root\.copyDetailSecret\(/.test(u)),
   uses.filter(u => /sensitive:\s*true/.test(u) && !/onCopyRequested:\s*root\.copyDetailSecret\(/.test(u)).join("\n---\n"))
-check("which reaches the clipboard only through withReprompt",
-  /function copyDetailSecret\(value, label\)[\s\S]{0,160}?root\.protect\(root\.detailItem, function\(\) \{ root\.copyToClipboard\(value, label\) \}\)/.test(panelSrc)
+check("which reaches the clipboard only through withReprompt, and reads the value after it",
+  /function copyDetailSecret\(read, label\)[\s\S]{0,200}?root\.withRevealedDetail\(item, function\(\) \{\s*var value = read\(\)\s*if \(value\) root\.copyToClipboard\(value, label\)/.test(panelSrc)
     && /function protect\(item, action\) \{\s*root\.withReprompt\(item, action\)/.test(panelSrc),
   "copyDetailSecret must go through the vault's re-prompt")
 
@@ -170,7 +170,7 @@ check("custom fields can be added and removed from the form",
     && /onClicked:\s*editor\.panel\.addFormCustomField\(\)/.test(customEditorSrc),
   customEditorSrc)
 check("custom-field copies use the panel's guarded clipboard path",
-  /onCopyRequested:[\s\S]{0,160}?if \(sensitive\) root\.copyDetailSecret\(value, name\)\s*else root\.copyToClipboard\(value, name\)/.test(customUse),
+  /onCopyRequested:[\s\S]{0,200}?if \(sensitive\) root\.copyDetailSecret\(function\(\) \{ return root\.detailCustomFieldValue\(at\) \}, name\)\s*else root\.copyToClipboard\(value, name\)/.test(customUse),
   customUse)
 
 check("no single shared reveal flag is left",
