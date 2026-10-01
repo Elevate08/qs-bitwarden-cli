@@ -63,9 +63,18 @@ pub struct Store {
     secrets: HashMap<String, Zeroizing<String>>,
     items: Vec<Held>,
     index: HashMap<String, usize>,
+    /// Counts `forget`s. A run remembers the count it started under, and
+    /// what it captured is dropped if the count has moved on: it belongs to
+    /// a vault the panel has since locked, logged out of or switched away
+    /// from.
+    generation: u64,
 }
 
 impl Store {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn session(&self) -> Option<&str> {
         self.session.as_deref().map(String::as_str)
     }
@@ -89,10 +98,22 @@ impl Store {
     /// Drops everything but the secrets named in `keep`: a lock, a logout
     /// or an account switch.
     pub fn forget(&mut self, keep: &[String]) {
+        self.generation = self.generation.wrapping_add(1);
         self.session = None;
         self.secrets.retain(|name, _| keep.contains(name));
         self.items.clear();
         self.index.clear();
+    }
+
+    /// Drops one item, from search as well as from `item`.
+    pub fn forget_item(&mut self, id: &str) {
+        let Some(at) = self.index.remove(id) else {
+            return;
+        };
+        self.items.remove(at);
+        for (position, held) in self.items.iter().enumerate().skip(at) {
+            self.index.insert(held.id.clone(), position);
+        }
     }
 
     /// Copies the session key into the secret `name`; false if there is none.
@@ -109,7 +130,8 @@ impl Store {
     }
 
     /// Ids whose search text contains `query`, in load order. Mirrors
-    /// matchesQuery() in BitwardenModel.js, notes included.
+    /// matchesQuery() in BitwardenModel.js, notes included unless the item
+    /// asks for the master password.
     pub fn search(&self, query: &str) -> Vec<&str> {
         let needle = Zeroizing::new(query.trim().to_lowercase());
         if needle.is_empty() {
@@ -211,14 +233,20 @@ fn present(item: &Map<String, Value>, path: &[&str]) -> bool {
     }
 }
 
-/// What matchesQuery() compares, lowercased: name, username, notes, the
-/// public key and fingerprint of an SSH record, card brand and holder, an
-/// identity's name, email, username and company, and every website.
+/// What matchesQuery() compares, lowercased: name, username, notes (not for an
+/// item that asks for the master password, whose notes the detail view hides
+/// behind that prompt), the public key and fingerprint of an SSH record, card
+/// brand and holder, an identity's name, email, username and company, and
+/// every website.
 fn haystack(item: &Map<String, Value>) -> Zeroizing<String> {
     let mut parts: Vec<&str> = vec![
         text(item, &["name"]),
         text(item, &["login", "username"]),
-        text(item, &["notes"]),
+        if item.get("reprompt").and_then(Value::as_u64) == Some(1) {
+            ""
+        } else {
+            text(item, &["notes"])
+        },
         text(item, &["publicKey"]),
         text(item, &["fingerprint"]),
         text(item, &["card", "brand"]),
@@ -338,7 +366,8 @@ mod tests {
                   "fields": [{ "name": "pin", "value": "4242", "type": 1 }, { "name": "note", "value": "plain", "type": 0 }] },
                 { "id": "c", "type": 3, "name": "Card",
                   "card": { "brand": "Visa", "number": "4111111111111111", "code": "123", "cardholderName": "Me" } },
-                { "id": "i", "type": 4, "name": "Me", "identity": { "firstName": "Ada", "lastName": "L", "ssn": "123-45-6789" } }
+                { "id": "i", "type": 4, "name": "Me", "identity": { "firstName": "Ada", "lastName": "L", "ssn": "123-45-6789" } },
+                { "id": "r", "type": 2, "name": "Guarded", "reprompt": 1, "notes": "BEGIN OPENSSH" }
             ],
             "sshKeys": [{ "id": "s", "name": "Laptop", "type": 5, "publicKey": "ssh-ed25519 AAAA", "fingerprint": "SHA256:x" }]
         })
@@ -393,7 +422,12 @@ mod tests {
             "passwords are never searched"
         );
         assert!(store.search("4242").is_empty(), "nor hidden fields");
-        assert_eq!(store.search("  ").len(), 4);
+        assert!(
+            store.search("openssh").is_empty(),
+            "a note behind the master-password prompt is not searchable"
+        );
+        assert_eq!(store.search("guarded"), ["r"], "though the item is");
+        assert_eq!(store.search("  ").len(), 5);
     }
 
     #[test]
@@ -407,6 +441,24 @@ mod tests {
         store.strip_vault(&saved.to_string(), true).unwrap();
         assert!(store.item("c").is_none());
         assert!(store.strip_vault("not json", true).is_none());
+    }
+
+    #[test]
+    fn a_forgotten_item_is_gone_from_item_and_search() {
+        let mut store = Store::default();
+        store.strip_vault(&vault(), true).unwrap();
+        let held = store.search("  ").len();
+        store.forget_item("a");
+        assert!(store.item("a").is_none());
+        assert!(store.search("recovery").is_empty());
+        assert_eq!(store.search("  ").len(), held - 1);
+        // The ones after it are still found under their own ids.
+        assert!(store.item("c").unwrap().contains("1111"));
+        assert!(store.item("s").is_some());
+        assert_eq!(store.search("ada l"), ["i"]);
+        store.forget_item("a");
+        store.forget_item("nope");
+        assert_eq!(store.search("  ").len(), held - 1);
     }
 
     #[test]

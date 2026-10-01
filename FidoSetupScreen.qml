@@ -111,6 +111,7 @@ Column {
       width: parent.width
       placeholderText: "Needed once, to store for FIDO2 unlock..."
       password: true
+      inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
       text: vault.fidoSetupMaster
       onTextChanged: vault.fidoSetupMaster = text
       onAccepted: vault.submitFidoSetup()

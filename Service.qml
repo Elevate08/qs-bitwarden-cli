@@ -992,6 +992,11 @@ Item {
     vaultLocalSecrets = held
   }
 
+  // An item the vault no longer has (deleted or trashed).
+  function forgetVaultItem(id) {
+    if (vaultHelperActive) vaultHelperProc.write(Model.vaultHelperLine("forgetItem", { id: id }))
+  }
+
   // Called by VaultProcess when its caller stops it.
   function vaultKill(proc) {
     if (proc.runId > 0) {
@@ -6877,6 +6882,9 @@ Item {
 
     var removal = pendingDelete
     pendingDelete = null
+    // Gone from the vault, whatever the panel has done since: no reload
+    // follows, so the helper would keep its secrets and go on serving them.
+    if (exitCode === 0 && removal) forgetVaultItem(removal.id)
     if (vaultReadIsStale("itemDelete")) return
 
     if (exitCode === 0) {
@@ -7247,7 +7255,7 @@ Item {
     var resolved = Model.normalizeOpenableUrl(url)
     if (!resolved.ok) {
       errorMessage = resolved.reason === "ambiguous"
-        ? "Refusing to open an ambiguous link containing a backslash"
+        ? "Refusing to open an ambiguous link (backslash, space or control character)"
         : resolved.scheme
         ? ("Refusing to open a " + resolved.scheme + ": link -- only http and https are opened")
         : "That item has no link to open"
