@@ -318,8 +318,12 @@ impl Helper {
                 None => command.env_remove(name),
             };
         }
+        // Read under the lock that resolves the injected values, so the run
+        // holds exactly the vault whose key it was given.
+        let generation;
         {
             let store = self.store.lock().unwrap();
+            generation = store.generation();
             for (name, source) in &inject {
                 let value = match control::parse_source(source) {
                     Some(Source::Session) => store.session(),
@@ -379,15 +383,17 @@ impl Helper {
         let store = Arc::clone(&self.store);
         let runs = Arc::clone(&self.runs);
         let out = self.out.clone();
-        thread::spawn(move || run(id, child, stdin, capture, store, runs, out));
+        thread::spawn(move || run(id, child, stdin, capture, generation, store, runs, out));
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     id: u64,
     mut child: Child,
     stdin: Option<Zeroizing<String>>,
     capture: Capture,
+    generation: u64,
     store: Shared<Store>,
     runs: Shared<HashMap<u64, u32>>,
     out: Sender<String>,
@@ -406,26 +412,63 @@ fn run(
         .take()
         .map(|pipe| drain(pipe, MAX_STDOUT))
         .unwrap_or_default();
-    let err = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
+    let truncated = stdout.truncated;
+    let stdout = stdout.bytes;
+    let err = stderr
+        .and_then(|t| t.join().ok())
+        .map(|drained| drained.bytes)
+        .unwrap_or_default();
     let status = child.wait();
     runs.lock().unwrap().remove(&id);
-    let code = match status {
+    let mut code = match status {
         Ok(status) => status
             .code()
             .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
         Err(_) => 1,
     };
 
-    let text = Zeroizing::new(String::from_utf8_lossy(&stdout).into_owned());
+    // Output cut at the cap is not the command's output: a failure, and
+    // nothing from it is kept.
+    let text = if truncated {
+        if code == 0 {
+            code = 1;
+        }
+        Zeroizing::new(String::new())
+    } else {
+        Zeroizing::new(String::from_utf8_lossy(&stdout).into_owned())
+    };
+    let (forwarded, session, held) = keep(&store, generation, &capture, code, &text);
+    let err = String::from_utf8_lossy(&err).into_owned();
+    let message = json!({ "type": "exit", "id": id, "code": code, "out": forwarded.as_str(), "err": err, "session": session, "held": held });
+    let _ = out.send(message.to_string());
+}
+
+/// What the panel is told of a finished run, and whether the helper kept a
+/// session key or a secret from it. Only a run that started under the
+/// store's current generation may change the store: one that outlived a
+/// lock, logout or account switch gets its output cleaned up the same way
+/// but keeps nothing, or it would put the old vault back after the panel
+/// has forgotten it.
+fn keep(
+    store: &Shared<Store>,
+    generation: u64,
+    capture: &Capture,
+    code: i32,
+    text: &Zeroizing<String>,
+) -> (Zeroizing<String>, bool, bool) {
     let mut session = false;
     let mut held = false;
-    let forwarded: Zeroizing<String> = match &capture {
+    let mut store = store.lock().unwrap();
+    let current = store.generation() == generation;
+    let forwarded: Zeroizing<String> = match capture {
         Capture::Plain => text.clone(),
-        Capture::Session => match (code == 0).then(|| store::extract_session(&text)).flatten() {
+        Capture::Session => match (code == 0).then(|| store::extract_session(text)).flatten() {
             Some(key) => {
                 let shown = Zeroizing::new(text.replace(key.as_str(), HELD_SESSION));
-                store.lock().unwrap().set_session(key);
-                session = true;
+                if current {
+                    store.set_session(key);
+                    session = true;
+                }
                 shown
             }
             // Prompts and errors still reach the panel's login detectors.
@@ -434,16 +477,16 @@ fn run(
         // Kept whatever the exit code: the FIDO2 legacy path prints the
         // password with a non-zero code. The panel judges the code.
         Capture::Secret(name) => {
-            if !text.is_empty() {
-                store.lock().unwrap().set_secret(name.clone(), text.clone());
+            if current && !text.is_empty() {
+                store.set_secret(name.clone(), text.clone());
                 held = true;
             }
             Zeroizing::new(String::new())
         }
         Capture::Vault | Capture::VaultMerge => {
-            let replace = capture == Capture::Vault;
-            let stripped = if code == 0 {
-                store.lock().unwrap().strip_vault(&text, replace)
+            let replace = *capture == Capture::Vault;
+            let stripped = if code == 0 && current {
+                store.strip_vault(text, replace)
             } else {
                 None
             };
@@ -458,23 +501,34 @@ fn run(
             })
         }
     };
-    let err = String::from_utf8_lossy(&err).into_owned();
-    let message = json!({ "type": "exit", "id": id, "code": code, "out": forwarded.as_str(), "err": err, "session": session, "held": held });
-    let _ = out.send(message.to_string());
+    (forwarded, session, held)
 }
 
-fn drain(mut pipe: impl Read, cap: usize) -> Zeroizing<Vec<u8>> {
+#[derive(Default)]
+struct Drained {
+    bytes: Zeroizing<Vec<u8>>,
+    /// Output past the cap was dropped.
+    truncated: bool,
+}
+
+fn drain(mut pipe: impl Read, cap: usize) -> Drained {
     let mut kept = Zeroizing::new(Vec::new());
+    let mut truncated = false;
     let mut chunk = Zeroizing::new([0_u8; 8192]);
     loop {
         match pipe.read(&mut chunk[..]) {
             Ok(0) | Err(_) => break,
-            // Past the cap, keep reading so the child is never blocked.
-            Ok(count) if kept.len() + count > cap => {}
+            // Past the cap, keep reading so the child is never blocked, but
+            // keep nothing more: a later small chunk would otherwise be
+            // spliced onto the output with the dropped one missing.
+            Ok(count) if truncated || kept.len() + count > cap => truncated = true,
             Ok(count) => grow(&mut kept, &chunk[..count]),
         }
     }
-    kept
+    Drained {
+        bytes: kept,
+        truncated,
+    }
 }
 
 /// As Quickshell stops a Process: SIGTERM first, so a script's trap can stop
@@ -540,5 +594,105 @@ fn wipe(value: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(wipe),
         Value::Object(map) => map.values_mut().for_each(wipe),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH";
+
+    fn shared() -> Shared<Store> {
+        Arc::default()
+    }
+
+    fn text(value: &str) -> Zeroizing<String> {
+        Zeroizing::new(value.to_owned())
+    }
+
+    #[test]
+    fn a_session_captured_after_a_forget_is_not_kept() {
+        let store = shared();
+        let started = store.lock().unwrap().generation();
+        store.lock().unwrap().forget(&[]);
+        let (shown, session, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
+        assert_eq!(shown.as_str(), HELD_SESSION);
+        assert!(!session);
+        assert!(store.lock().unwrap().session().is_none());
+
+        let now = store.lock().unwrap().generation();
+        let (_, session, _) = keep(&store, now, &Capture::Session, 0, &text(KEY));
+        assert!(session);
+        assert_eq!(store.lock().unwrap().session(), Some(KEY));
+    }
+
+    #[test]
+    fn a_secret_captured_after_a_forget_is_not_kept() {
+        let store = shared();
+        let started = store.lock().unwrap().generation();
+        store.lock().unwrap().forget(&[]);
+        let capture = Capture::Secret("pw".to_owned());
+        let (shown, _, held) = keep(&store, started, &capture, 0, &text("hunter2"));
+        assert!(shown.is_empty());
+        assert!(!held);
+        assert!(store.lock().unwrap().secret("pw").is_none());
+    }
+
+    #[test]
+    fn a_vault_read_after_a_forget_is_not_kept_or_forwarded() {
+        let store = shared();
+        let started = store.lock().unwrap().generation();
+        store.lock().unwrap().forget(&[]);
+        let vault = r#"{"items":[{"id":"a","name":"n","login":{"password":"p"}}]}"#;
+        let (shown, _, _) = keep(&store, started, &Capture::Vault, 0, &text(vault));
+        assert!(shown.is_empty());
+        assert!(store.lock().unwrap().item("a").is_none());
+
+        // The save pipeline's marker still passes.
+        let (shown, _, _) = keep(
+            &store,
+            started,
+            &Capture::VaultMerge,
+            0,
+            &text(SAVED_UNSANITIZED),
+        );
+        assert_eq!(shown.as_str(), SAVED_UNSANITIZED);
+    }
+
+    #[test]
+    fn a_forget_that_keeps_secrets_still_ends_the_runs_before_it() {
+        let store = shared();
+        let started = store.lock().unwrap().generation();
+        store.lock().unwrap().forget(&["pw".to_owned()]);
+        let (_, session, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
+        assert!(!session);
+    }
+
+    /// Yields its chunks one read at a time.
+    struct Chunks(std::vec::IntoIter<Vec<u8>>);
+
+    impl Read for Chunks {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.next() {
+                Some(chunk) => {
+                    buf[..chunk.len()].copy_from_slice(&chunk);
+                    Ok(chunk.len())
+                }
+                None => Ok(0),
+            }
+        }
+    }
+
+    #[test]
+    fn output_past_the_cap_is_not_spliced_back_together() {
+        let chunks = vec![vec![b'a'; 10], vec![b'b'; 100], vec![b'c'; 10]];
+        let drained = drain(Chunks(chunks.into_iter()), 50);
+        assert!(drained.truncated);
+        assert_eq!(drained.bytes.as_slice(), &[b'a'; 10]);
+
+        let fits = drain(Chunks(vec![vec![b'a'; 10]].into_iter()), 50);
+        assert!(!fits.truncated);
+        assert_eq!(fits.bytes.len(), 10);
     }
 }
