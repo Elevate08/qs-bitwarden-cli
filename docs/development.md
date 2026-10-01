@@ -120,8 +120,18 @@ it, and needs `quickshell`:
 node tests/e2e/accounts.e2e.js
 ```
 
+`tests/e2e/ssh-lock.e2e.js` (about 15 s) runs the same shell with the SSH
+agent on and an SSH key in the stand-in vault. A client signs under a grant,
+then the vault closes without the lock button: the vault helper is killed with
+a `bw status` in flight, and later `bw` reports the vault locked. Each time
+the same client must get no signature. It also needs `ssh-keygen`:
+
+```bash
+node tests/e2e/ssh-lock.e2e.js
+```
+
 `KEEP_E2E=1` keeps the temporary directory (the shell log, the stand-in
-`bw`'s call log and keyring) for a failed run. CI runs it in the **panel
+`bw`'s call log and keyring) for a failed run. CI runs both in the **panel
 end-to-end** job: a digest-pinned Arch image with packages from a dated,
 signature-checked Arch Linux Archive snapshot, as an unprivileged user, with
 a read-only token and no secrets. Moving the snapshot date means moving the

@@ -15,6 +15,8 @@ read_pw() {
 case "$1" in
   -v|--version) echo 2026.8.0 ;;
   status)
+    # A slow `bw status`, for a test that needs one in flight.
+    if [ -s "$d/fake-status-delay" ]; then sleep "$(cat "$d/fake-status-delay")"; fi
     if ! logged_in; then echo '{"serverUrl":null,"status":"unauthenticated"}'; exit 0; fi
     st=locked
     if [ -n "${BW_SESSION:-}" ] && [ -f "$sess" ] && [ "$BW_SESSION" = "$(cat "$sess")" ]; then st=unlocked; fi
@@ -40,7 +42,10 @@ case "$1" in
     case "$2" in
       items)
         [ -n "${BW_SESSION:-}" ] && [ -f "$sess" ] && [ "$BW_SESSION" = "$(cat "$sess")" ] || { echo "Vault is locked." >&2; exit 1; }
-        printf '[{"object":"item","id":"item-%s","organizationId":null,"folderId":null,"type":1,"name":"Login of %s","notes":%s,"favorite":false,"login":{"username":"%s","password":"%s","totp":null,"uris":[]},"collectionIds":[],"revisionDate":"2026-01-01T00:00:00.000Z"}]' "$(field id)" "$(field email)" "$(if [ -s "$d/fake-item-notes" ]; then printf '"%s"' "$(cat "$d/fake-item-notes")"; else printf null; fi)" "$(field email)" "$(cat "$d/fake-item-password" 2>/dev/null || printf x)" ;;
+        printf '[{"object":"item","id":"item-%s","organizationId":null,"folderId":null,"type":1,"name":"Login of %s","notes":%s,"favorite":false,"login":{"username":"%s","password":"%s","totp":null,"uris":[]},"collectionIds":[],"revisionDate":"2026-01-01T00:00:00.000Z"}' "$(field id)" "$(field email)" "$(if [ -s "$d/fake-item-notes" ]; then printf '"%s"' "$(cat "$d/fake-item-notes")"; else printf null; fi)" "$(field email)" "$(cat "$d/fake-item-password" 2>/dev/null || printf x)"
+        # An SSH key item, for the agent's tests: one bw item as JSON.
+        if [ -s "$d/fake-ssh-item" ]; then printf ','; cat "$d/fake-ssh-item"; fi
+        printf ']' ;;
       *) echo '[]' ;;
     esac ;;
   *) exit 0 ;;
