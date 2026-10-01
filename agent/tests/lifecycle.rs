@@ -1,3 +1,5 @@
+mod common;
+
 use qs_bitwarden_ssh_agent::control::{
     parse_control_line, ControlError, ControlMessage, LoadStatus, MAX_CONTROL_LINE,
 };
@@ -217,7 +219,7 @@ fn disposable_key_load_identity_and_approved_sign_cross_the_real_socket() {
     input.flush().unwrap();
     let payload = serde_json::json!({"loadId": nonce, "items": [{
         "itemId": "disposable", "name": "Disposable test key",
-        "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
+        "privateKeyB64": common::base64(key.to_openssh(Default::default()).unwrap().as_bytes()),
         "publicKey": key.public_key().to_openssh().unwrap(),
         "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
         "requiresReprompt": false
@@ -347,7 +349,7 @@ fn a_locked_vault_still_lists_identities_but_refuses_to_sign() {
     input.flush().unwrap();
     let payload = serde_json::json!({"loadId": nonce, "items": [{
         "itemId": "disposable", "name": "Disposable test key",
-        "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
+        "privateKeyB64": common::base64(key.to_openssh(Default::default()).unwrap().as_bytes()),
         "publicKey": key.public_key().to_openssh().unwrap(),
         "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
         "requiresReprompt": false
@@ -1405,7 +1407,7 @@ impl TestAgent {
                 serde_json::json!({
                     "itemId": format!("disposable-{index}"),
                     "name": format!("Disposable test key {index}"),
-                    "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
+                    "privateKeyB64": common::base64(key.to_openssh(Default::default()).unwrap().as_bytes()),
                     "publicKey": key.public_key().to_openssh().unwrap(),
                     "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
                     "requiresReprompt": false
@@ -1479,7 +1481,7 @@ fn disposable_item(key: &PrivateKey) -> serde_json::Value {
     serde_json::json!({
         "itemId": "disposable-0",
         "name": "Disposable test key 0",
-        "privateKey": key.to_openssh(Default::default()).unwrap().as_str(),
+        "privateKeyB64": common::base64(key.to_openssh(Default::default()).unwrap().as_bytes()),
         "publicKey": key.public_key().to_openssh().unwrap(),
         "fingerprint": key.public_key().fingerprint(HashAlg::Sha256).to_string(),
         "requiresReprompt": false
