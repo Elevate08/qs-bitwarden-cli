@@ -1266,7 +1266,7 @@ Item {
   // purge succeeds when there is nothing to remove, and runs once per account
   // and method per session.
   function reconcileDisabledMethods() {
-    if (!quickUnlockAvailable) return
+    if (!quickUnlockAvailable || !accountId) return
     var checks = [
       { method: "pin", setting: "pinUnlock" },
       { method: "fingerprint", setting: "fingerprintUnlock" },
