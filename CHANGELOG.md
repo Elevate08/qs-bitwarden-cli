@@ -4,77 +4,48 @@
 
 ### Security
 
-- **A vault locked without the lock button now locks the SSH agent too.** When
-  the vault helper stopped, or a status check found the vault locked or logged
-  out (a `bw lock` or `bw logout` in a terminal), the panel said it was locked
-  but never told the SSH agent. The agent kept its private keys, and a program
-  with a live grant could keep signing until the grant ran out. Both now lock
-  the agent (or log it out, dropping its public keys too), as the lock button
-  does. A helper that stops also clears the remembered session, the clipboard
-  copy and the item list, and puts up the unlock screen, where it used to leave
-  the list showing under a locked panel.
-- **An SSH approval always signs the request it shows.** When several
-  programs asked to sign while the vault was locked, unlocking released them
-  in no fixed order, and the prompt on screen could take the id of another
-  program's request: approving "git with key A" could sign for a different
-  program with key B. The prompt now takes over only the request it
-  describes, and the agent releases held requests in the order they arrived.
-- **A `bw` command still running at lock no longer refills the vault
-  helper.** One that finished after a lock, logout or account switch left the
-  helper holding its session key, password or decrypted item list while the
-  panel showed the vault locked. Its output is now dropped.
-- **Search no longer reads the notes of items that ask for the master
-  password.** Searching for a guess showed whether a protected note contained
-  it, without the prompt. Those notes are now left out of search; the item is
-  still found by its name, username and websites.
-- **The SSH approval prompt shows hidden characters.** A process path with a
-  newline, or a key name or signing namespace with right-to-left or
-  zero-width characters, could make the prompt show a different program or
-  key. These are now written out as `\uXXXX`, signing namespaces containing
-  them are refused, and a long path is cut from the left so the program's
-  name always shows.
-- **The SSH agent checks the program again before each signature.** A client
-  that started another program after connecting kept the first one's name on
-  its prompts and grants. A connection whose program changed is now closed.
-- **SSH private keys reach the agent without extra copies.** A key's line
-  breaks were JSON escapes, and undoing them left copies of the key in memory
-  the agent could not wipe. Keys now travel base64-encoded and are decoded
-  straight into wiped memory.
-- **A deleted item leaves the vault helper.** Its secrets stayed in the
-  helper, and in search, until the next full sync.
-- **Secret fields keep input methods and predictive text out.** The master
-  password on the unlock screen could be shown with the eye button, and then
-  an input method could read and learn it. The same applied to the PIN,
-  Send, setup and API-key fields.
-- **Links containing spaces or control characters are not opened.** A website
-  with a newline inside reached `xdg-open` as one argument and showed as
-  several lines in the "Opening" notice.
+- **Locking the vault outside the panel locks the SSH agent.** When the vault
+  helper stopped, or `bw lock` or `bw logout` ran in a terminal, the panel
+  showed the vault locked but the SSH agent kept its keys. It is now locked
+  (or logged out) as the lock button does. A stopped helper also clears the
+  remembered session, the clipboard copy and the item list.
+- **SSH approvals match the request shown.** With several requests held while
+  the vault was locked, an approval could apply to a different program's
+  request than the one on screen.
+- **A `bw` command that finishes after a lock is discarded.** Its session key,
+  password or item list was kept by the vault helper.
+- **Search skips the notes of items that ask for the master password.**
+  Matching on them showed whether a protected note contained a search term.
+- **Secrets of an item that asks for the master password load after the
+  prompt.** Opening such an item fetched its password, notes and TOTP code
+  into the shell before the master password was given.
+- **The SSH approval prompt escapes hidden characters** (control,
+  right-to-left and zero-width characters) in program paths and key names,
+  and long paths keep their end visible.
+- **The SSH agent rechecks the client program before each signature.** A
+  connection whose program has changed is closed.
+- **SSH keys are passed to the agent base64-encoded**, so decoding them leaves
+  fewer copies in memory.
+- **Deleted items are removed from the vault helper.**
+- **Secret entry fields opt out of predictive text and input methods.**
+- **Links containing spaces or control characters are not opened.**
 
 ### Fixed
 
-- **A vault helper that stops mid-check no longer signs you out.** A `bw
-  status` running when the helper stopped failed first and read as a sign-out,
-  so the panel showed the login screen instead of asking you to unlock.
-- **SSH keys load on the first try after logging out and back in.** The agent
-  moves its load counter on at logout and the panel did not, so the first load
-  was refused as stale and the keys arrived only on the retry, which a second
-  failure could not get.
-- **Command output past the vault helper's limit is a failure.** The helper
-  dropped only the part that crossed its 24 MiB limit and could pass on the
-  rest spliced together, with a successful exit. It now passes on nothing and
-  reports the command as failed.
-- **The vault helper refuses a second command under an id still in use**,
-  limits background commands, and stops tracking a finished command before
-  its process ID can be reused.
+- **A vault helper that stops during a status check no longer signs you
+  out.**
+- **SSH keys load on the first try after logging out and back in.**
+- **Output over the vault helper's 24 MiB limit is reported as a failure**
+  instead of being passed on with parts missing.
+- **The vault helper refuses duplicate run ids** and limits background
+  commands.
 
 ### Documentation
 
-- SECURITY.md, docs/ssh-agent.md and docs/vault-helper.md say that neither
-  helper locks its memory, so secrets can be written to swap. Encrypted swap,
-  or zram with no disk swap, avoids that.
-- docs/vault-helper.md says that the helper does not defend against code
-  already running in the shell, and that the master-password prompt is
-  enforced by the panel.
+- Neither helper locks its memory, so secrets can reach swap; encrypted swap
+  or zram avoids that.
+- The vault helper does not protect against code running in the shell, and
+  the master-password reprompt is checked by the panel.
 
 ## [1.11.2] - 2026-09-29
 
