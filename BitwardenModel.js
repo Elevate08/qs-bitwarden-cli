@@ -2941,7 +2941,10 @@ function matchesQuery(item, query) {
   if (!q) return true
 
   var has = function(value) { return String(value || "").toLowerCase().indexOf(q) !== -1 }
-  if (has(item.name) || has(item.username) || has(item.notes)
+  // Notes of an item that asks for the master password stay out of search;
+  // otherwise guessing at them would read what the detail view hides.
+  var notesSearchable = Number(item.reprompt) !== 1
+  if (has(item.name) || has(item.username) || (notesSearchable && has(item.notes))
       || has(item.publicKey) || has(item.fingerprint)) return true
 
   // Match what card and identity rows display; for a card number, only the

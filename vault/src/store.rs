@@ -109,7 +109,8 @@ impl Store {
     }
 
     /// Ids whose search text contains `query`, in load order. Mirrors
-    /// matchesQuery() in BitwardenModel.js, notes included.
+    /// matchesQuery() in BitwardenModel.js, notes included unless the item
+    /// asks for the master password.
     pub fn search(&self, query: &str) -> Vec<&str> {
         let needle = Zeroizing::new(query.trim().to_lowercase());
         if needle.is_empty() {
@@ -211,14 +212,20 @@ fn present(item: &Map<String, Value>, path: &[&str]) -> bool {
     }
 }
 
-/// What matchesQuery() compares, lowercased: name, username, notes, the
-/// public key and fingerprint of an SSH record, card brand and holder, an
-/// identity's name, email, username and company, and every website.
+/// What matchesQuery() compares, lowercased: name, username, notes (not for an
+/// item that asks for the master password, whose notes the detail view hides
+/// behind that prompt), the public key and fingerprint of an SSH record, card
+/// brand and holder, an identity's name, email, username and company, and
+/// every website.
 fn haystack(item: &Map<String, Value>) -> Zeroizing<String> {
     let mut parts: Vec<&str> = vec![
         text(item, &["name"]),
         text(item, &["login", "username"]),
-        text(item, &["notes"]),
+        if item.get("reprompt").and_then(Value::as_u64) == Some(1) {
+            ""
+        } else {
+            text(item, &["notes"])
+        },
         text(item, &["publicKey"]),
         text(item, &["fingerprint"]),
         text(item, &["card", "brand"]),
@@ -338,7 +345,8 @@ mod tests {
                   "fields": [{ "name": "pin", "value": "4242", "type": 1 }, { "name": "note", "value": "plain", "type": 0 }] },
                 { "id": "c", "type": 3, "name": "Card",
                   "card": { "brand": "Visa", "number": "4111111111111111", "code": "123", "cardholderName": "Me" } },
-                { "id": "i", "type": 4, "name": "Me", "identity": { "firstName": "Ada", "lastName": "L", "ssn": "123-45-6789" } }
+                { "id": "i", "type": 4, "name": "Me", "identity": { "firstName": "Ada", "lastName": "L", "ssn": "123-45-6789" } },
+                { "id": "r", "type": 2, "name": "Guarded", "reprompt": 1, "notes": "BEGIN OPENSSH" }
             ],
             "sshKeys": [{ "id": "s", "name": "Laptop", "type": 5, "publicKey": "ssh-ed25519 AAAA", "fingerprint": "SHA256:x" }]
         })
@@ -393,7 +401,12 @@ mod tests {
             "passwords are never searched"
         );
         assert!(store.search("4242").is_empty(), "nor hidden fields");
-        assert_eq!(store.search("  ").len(), 4);
+        assert!(
+            store.search("openssh").is_empty(),
+            "a note behind the master-password prompt is not searchable"
+        );
+        assert_eq!(store.search("guarded"), ["r"], "though the item is");
+        assert_eq!(store.search("  ").len(), 5);
     }
 
     #[test]
