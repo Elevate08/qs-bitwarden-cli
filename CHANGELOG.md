@@ -16,6 +16,9 @@
   password or item list was kept by the vault helper.
 - **Search skips the notes of items that ask for the master password.**
   Matching on them showed whether a protected note contained a search term.
+- **Secrets of an item that asks for the master password load after the
+  prompt.** Opening such an item fetched its password, notes and TOTP code
+  into the shell before the master password was given.
 - **The SSH approval prompt escapes hidden characters** (control,
   right-to-left and zero-width characters) in program paths and key names,
   and long paths keep their end visible.
