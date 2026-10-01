@@ -105,6 +105,17 @@ impl Store {
         self.index.clear();
     }
 
+    /// Drops one item, from search as well as from `item`.
+    pub fn forget_item(&mut self, id: &str) {
+        let Some(at) = self.index.remove(id) else {
+            return;
+        };
+        self.items.remove(at);
+        for (position, held) in self.items.iter().enumerate().skip(at) {
+            self.index.insert(held.id.clone(), position);
+        }
+    }
+
     /// Copies the session key into the secret `name`; false if there is none.
     pub fn hold_session(&mut self, name: String) -> bool {
         let Some(key) = self.session.clone() else {
@@ -430,6 +441,24 @@ mod tests {
         store.strip_vault(&saved.to_string(), true).unwrap();
         assert!(store.item("c").is_none());
         assert!(store.strip_vault("not json", true).is_none());
+    }
+
+    #[test]
+    fn a_forgotten_item_is_gone_from_item_and_search() {
+        let mut store = Store::default();
+        store.strip_vault(&vault(), true).unwrap();
+        let held = store.search("  ").len();
+        store.forget_item("a");
+        assert!(store.item("a").is_none());
+        assert!(store.search("recovery").is_empty());
+        assert_eq!(store.search("  ").len(), held - 1);
+        // The ones after it are still found under their own ids.
+        assert!(store.item("c").unwrap().contains("1111"));
+        assert!(store.item("s").is_some());
+        assert_eq!(store.search("ada l"), ["i"]);
+        store.forget_item("a");
+        store.forget_item("nope");
+        assert_eq!(store.search("  ").len(), held - 1);
     }
 
     #[test]

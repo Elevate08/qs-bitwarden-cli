@@ -250,6 +250,7 @@ impl Helper {
                 self.store.lock().unwrap().hold_session(name);
             }
             Request::ForgetSecret { name, .. } => self.store.lock().unwrap().forget_secret(&name),
+            Request::ForgetItem { id, .. } => self.store.lock().unwrap().forget_item(&id),
             Request::Item { q, id, .. } => {
                 let store = self.store.lock().unwrap();
                 let item = store.item(&id).map(|full| Value::String(full.to_owned()));
