@@ -56,6 +56,12 @@ pub enum Request {
         v: u8,
         name: String,
     },
+    /// Drop one item, once the vault no longer has it (deleted or trashed):
+    /// nothing else would, until the next full list.
+    ForgetItem {
+        v: u8,
+        id: String,
+    },
     /// One item in full, for the detail and edit views.
     Item {
         v: u8,
@@ -94,6 +100,7 @@ impl Request {
             | Self::Forget { v, .. }
             | Self::HoldSession { v, .. }
             | Self::ForgetSecret { v, .. }
+            | Self::ForgetItem { v, .. }
             | Self::Item { v, .. }
             | Self::CopyPassword { v, .. }
             | Self::Totp { v, .. }
@@ -187,6 +194,12 @@ mod tests {
         assert!(parse(r#"{"type":"hello","v":2}"#).is_err());
         assert!(parse(r#"{"type":"hello","v":1,"extra":true}"#).is_err());
         assert!(parse(r#"{"type":"unknown","v":1}"#).is_err());
+        assert!(matches!(
+            parse(r#"{"type":"forgetItem","v":1,"id":"a"}"#),
+            Ok(Request::ForgetItem { .. })
+        ));
+        assert!(parse(r#"{"type":"forgetItem","v":1,"id":"a","extra":1}"#).is_err());
+        assert!(parse(r#"{"type":"forgetItem","v":2,"id":"a"}"#).is_err());
         let exec = parse(
             r#"{"type":"exec","v":1,"id":3,"argv":["bw","status"],"inject":{"BW_SESSION":"session"},"env":{"A":"b","C":null}}"#,
         );
