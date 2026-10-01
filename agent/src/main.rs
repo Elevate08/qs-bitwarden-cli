@@ -558,7 +558,9 @@ fn handle_client(
                             key_name: String::new(),
                             fingerprint: String::new(),
                             pid: event.peer.pid,
-                            process_path: event.peer.executable.to_string_lossy().into_owned(),
+                            process_path: protocol::visible_text(
+                                &event.peer.executable.to_string_lossy(),
+                            ),
                             operation: "",
                             operation_detail: String::new(),
                             host_key: String::new(),
@@ -617,10 +619,12 @@ fn handle_client(
                         v: 1,
                         request_id: id,
                         reason: "sign",
-                        key_name: key.name.clone(),
+                        key_name: protocol::visible_text(&key.name),
                         fingerprint: key.fingerprint.clone(),
                         pid: event.peer.pid,
-                        process_path: event.peer.executable.to_string_lossy().into_owned(),
+                        process_path: protocol::visible_text(
+                            &event.peer.executable.to_string_lossy(),
+                        ),
                         operation: scope.kind.operation(),
                         operation_detail: scope.kind.detail().to_owned(),
                         host_key: scope.kind.host().to_owned(),
@@ -668,14 +672,15 @@ fn handle_client(
                         let _ = event.reply.send(protocol::failure_response());
                         return Ok(());
                     };
-                    let process_path = event.peer.executable.to_string_lossy().into_owned();
+                    let process_path =
+                        protocol::visible_text(&event.peer.executable.to_string_lossy());
                     emit(
                         output,
                         Output::ApprovalRequired {
                             v: 1,
                             request_id: id,
                             key_id: key.item_id.clone(),
-                            key_name: key.name.clone(),
+                            key_name: protocol::visible_text(&key.name),
                             fingerprint: key.fingerprint.clone(),
                             pid: event.peer.pid,
                             process_path,
@@ -714,7 +719,11 @@ fn release_held(
     started: Instant,
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
-    for (old_id, request) in held.drain().collect::<Vec<_>>() {
+    // In the order they were raised, so the panel's prompt and the approval it
+    // is paired with agree on the request, not on a hash map's order.
+    let mut released = held.drain().collect::<Vec<_>>();
+    released.sort_by_key(|(old_id, _)| *old_id);
+    for (old_id, request) in released {
         // Withdraw the unlock prompt; an approval prompt with its own id follows.
         emit(
             output,
@@ -781,10 +790,12 @@ fn release_held(
                         v: 1,
                         request_id: id,
                         key_id: key.item_id.clone(),
-                        key_name: key.name.clone(),
+                        key_name: protocol::visible_text(&key.name),
                         fingerprint: key.fingerprint.clone(),
                         pid: request.peer.pid,
-                        process_path: request.peer.executable.to_string_lossy().into_owned(),
+                        process_path: protocol::visible_text(
+                            &request.peer.executable.to_string_lossy(),
+                        ),
                         operation: request.scope.kind.operation(),
                         operation_detail: request.scope.kind.detail().to_owned(),
                         host_key: request.scope.kind.host().to_owned(),
@@ -806,8 +817,8 @@ fn release_held(
             }
         }
     }
-    // Held requests come out in no particular order: one approved with a grant
-    // may follow another from the same program that has just been queued.
+    // One approved with a grant may follow another from the same program that
+    // has just been queued.
     settle_granted(approvals, pending, store, started, output)
 }
 
@@ -910,10 +921,12 @@ fn emit_grants_if_changed(
                 .find(|key| key.public_blob() == grant.public_blob);
             GrantView {
                 grant_id: grant.id,
-                key_name: key.map(|key| key.name.clone()).unwrap_or_default(),
+                key_name: key
+                    .map(|key| protocol::visible_text(&key.name))
+                    .unwrap_or_default(),
                 fingerprint: key.map(|key| key.fingerprint.clone()).unwrap_or_default(),
                 pid: grant.peer.pid,
-                process_path: grant.peer.executable.to_string_lossy().into_owned(),
+                process_path: protocol::visible_text(&grant.peer.executable.to_string_lossy()),
                 operation: grant.kind.operation(),
                 operation_detail: grant.kind.detail().to_owned(),
                 host_key: grant.kind.host().to_owned(),

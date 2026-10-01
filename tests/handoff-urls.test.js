@@ -140,4 +140,18 @@ check("an ambiguous backslash web URL is refused instead of parsed differently b
     && opens("https://evil.example\\@trusted.example").reason === "ambiguous",
   JSON.stringify(opens("https://evil.example\\@trusted.example")))
 
+// xdg-open gets the target as one argument and the panel prints it in a
+// notification, so nothing that is not a single visible token goes through.
+for (const [label, input] of [
+  ["a space", "https://example.com/a b"],
+  ["a newline", "https://example.com/\n--help"],
+  ["a tab", "example.com\t/x"],
+  ["a NUL", "https://example.com/\u0000"],
+  ["an escape", "https://example.com/\u001b[2J"],
+  ["a DEL", "https://example.com/\u007f"]
+]) {
+  const r = opens(input)
+  check(`a URL with ${label} inside is refused`, !r.ok && r.reason === "ambiguous", JSON.stringify(r))
+}
+
 done()

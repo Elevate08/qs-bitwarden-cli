@@ -111,6 +111,15 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
             }
             continue;
         }
+        // The peer was captured once, at accept. A client may have exec'd
+        // another program since, so a signature is never attributed (or
+        // grant-scoped) to the original executable: re-read it, and drop the
+        // connection if it changed or cannot be read.
+        if matches!(request, AgentRequest::Sign { .. })
+            && !peer.is_unchanged(PeerContext::capture(peer.uid, peer.pid))
+        {
+            return;
+        }
         let (reply, response) = oneshot::channel();
         if events
             .try_send(ClientEvent {
