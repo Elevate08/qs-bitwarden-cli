@@ -65,7 +65,7 @@ check("smartEnter() asks only when Enter would copy a password",
   functionBody(view, "smartEnter"))
 check("the detail keys copy, reveal and edit through the protected helpers",
   /lower === "y" \|\| lower === "p"\) \{\s*root\.copyPrimarySecret\(\)/.test(view)
-    && /lower === "m"\) \{\s*if \(root\.vault\.liveTotp\) root\.copyDetailSecret\(/.test(view)
+    && /lower === "m"\) \{\s*root\.vault\.copyDetailTotp\(\)/.test(view)
     && /lower === "e"\) \{\s*root\.editDetailItem\(\)/.test(view)
     && /lower === "v"\) \{[^\n]*\n[^\n]*root\.toggleProtectedReveal\(root\.vault\.primaryRevealKey\)/.test(view),
   "a detail shortcut bypasses the re-prompt")

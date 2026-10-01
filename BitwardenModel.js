@@ -2741,6 +2741,10 @@ function parseItems(raw) {
       identity: identityDetail(it.identity),
       notes: String(it.notes || ""),
       hasNotes: Boolean(it.notes) || Boolean(held && held.notes),
+      // Custom fields of a re-prompt item, hidden values already gone: its
+      // detail is drawn from the row until the master password is given
+      // (publicItemDetail()).
+      fields: held && repromptValue(it.reprompt) === 1 ? itemCustomFields(it.fields, it) : [],
       // A stripped item is no base for the detail or edit views: they ask the
       // helper for the whole item.
       rawObject: held ? null : it,
@@ -2921,6 +2925,7 @@ function itemDetailFromObject(it) {
     password: String(login.password || ""),
     // The password row's `visible` binding reads this.
     hasPassword: Boolean(login.password),
+    hasNotes: Boolean(it.notes),
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
@@ -2931,6 +2936,67 @@ function itemDetailFromObject(it) {
     identity: identityDetail(it.identity),
     fields: itemCustomFields(it.fields, it),
     rawObject: it
+  }
+}
+
+// Stands in for a secret in a row of publicItemDetail(): the row is drawn
+// (masked) so its buttons can be used; it is never revealed or copied from
+// the public view.
+var WITHHELD = "\u2022"
+
+// The detail of an item that asks for the master password, without its
+// secrets: from a list row the helper stripped (secretsHeld) or from a loaded
+// detail being closed again. Which secrets exist is kept (hasPassword,
+// hasTotp, hasNotes, a field per hidden custom field) so the view still
+// offers them. A stripped row does not say whether a card has a security code
+// or an identity a number, so those rows are drawn for it; the loaded detail
+// that replaces the view drops the ones that were not there.
+function publicItemDetail(src) {
+  if (!src || typeof src !== "object") return null
+  var unknown = Boolean(src.secretsHeld)
+  var card = null
+  if (src.card) {
+    card = cardDetail(src.card)
+    if (card.number !== "") card.number = WITHHELD
+    if (unknown || card.code !== "") card.code = WITHHELD
+  }
+  var identity = null
+  if (src.identity) {
+    identity = identityDetail(src.identity)
+    var numbers = ["ssn", "passportNumber", "licenseNumber"]
+    for (var n = 0; n < numbers.length; n++) {
+      if (unknown || identity[numbers[n]] !== "") identity[numbers[n]] = WITHHELD
+    }
+  }
+  var fields = toList(src.fields).map(function(f) {
+    return { name: f.name, value: f.sensitive ? WITHHELD : f.value, type: f.type,
+      linkedId: f.linkedId, sensitive: f.sensitive }
+  })
+  var attachments = toList(src.attachments)
+  return {
+    id: String(src.id || ""),
+    organizationId: src.organizationId ? String(src.organizationId) : null,
+    folderId: src.folderId ? String(src.folderId) : null,
+    name: String(src.name || "Untitled"),
+    type: src.type,
+    typeCode: Number(src.typeCode || 1),
+    favorite: Boolean(src.favorite),
+    notes: "",
+    username: String(src.username || ""),
+    password: "",
+    hasPassword: Boolean(src.hasPassword),
+    hasNotes: Boolean(src.hasNotes) || Boolean(src.notes),
+    hasTotp: Boolean(src.hasTotp),
+    totpKey: "",
+    uris: toList(src.uris),
+    reprompt: repromptValue(src.reprompt),
+    attachments: attachments,
+    hasAttachments: attachments.length > 0,
+    card: card,
+    identity: identity,
+    fields: fields,
+    rawObject: null,
+    secretsWithheld: true
   }
 }
 

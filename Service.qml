@@ -271,7 +271,7 @@ Item {
   // first; hiding one never does.
   function toggleFieldReveal(key) {
     if (!revealedFields[key] && detailItem) {
-      withReprompt(detailItem, function() { root.setFieldRevealed(key, true) })
+      withRevealedDetail(detailItem, function() { root.setFieldRevealed(key, true) })
       return
     }
     setFieldRevealed(key, !revealedFields[key])
@@ -300,6 +300,11 @@ Item {
   // it travels in the environment, never argv, and is not kept. A success
   // lasts only while that item's detail stays open: closing it, opening
   // another item, closing the panel or locking asks again.
+  //
+  // With the vault helper the shell does not hold such an item's secrets
+  // before that: its detail is drawn from the list row (Model.publicItemDetail())
+  // and withRevealedDetail() asks the helper for the whole item once the
+  // password is confirmed. Ending the confirmation drops them again.
   property bool repromptPending: false
   property string repromptItemId: ""
   property string repromptItemName: ""
@@ -393,6 +398,59 @@ Item {
   function clearRepromptGrant() {
     repromptVerifiedId = ""
     if (repromptPending) cancelReprompt()
+    withholdDetailSecrets()
+  }
+
+  // The open detail of a re-prompt item the helper keeps goes back to its
+  // public view, with no password, code or revealed field. A detail built from
+  // the list's own raw item (no helper) is left as it is.
+  function withholdDetailSecrets() {
+    if (!detailItem || detailItem.secretsWithheld || !vaultHelperActive) return
+    if (!itemNeedsReprompt(detailItem) || detailItem.typeCode === 5) return
+    var listed = Model.findItemById(items, String(detailItem.id))
+    if (listed && !listed.secretsHeld) return
+    detailItem = Model.publicItemDetail(detailItem)
+    detailPassword = ""
+    liveTotp = ""
+    revealedFields = ({})
+  }
+
+  // withReprompt(), then the whole item in `detailItem`, then `callback`. For
+  // an item whose detail is already whole (no re-prompt, or no helper) it is
+  // withReprompt() alone. An answer for an item no longer open, a grant that
+  // ended, or a vault that locked meanwhile runs nothing.
+  function withRevealedDetail(item, callback) {
+    if (!item || typeof callback !== "function") return
+    withReprompt(item, function() { root.loadFullDetail(item, callback) })
+  }
+
+  function loadFullDetail(item, callback) {
+    var id = String(item.id || "")
+    if (!detailItem || String(detailItem.id) !== id) return
+    if (!detailItem.secretsWithheld) {
+      callback()
+      return
+    }
+    if (!vaultHelperActive) {
+      errorMessage = "Could not load item details"
+      return
+    }
+    var epoch = vaultEpoch
+    vaultQuery("item", { id: id }, function(ok, full) {
+      if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+      if (root.detailItem.secretsWithheld) {
+        var parsed = ok ? Model.parseItemDetail(String(full)) : null
+        if (!parsed) {
+          root.errorMessage = "Could not load item details"
+          return
+        }
+        root.detailItem = parsed
+        root.detailPassword = parsed.password
+        if (parsed.hasTotp) root.fetchTotp(id)
+      }
+      callback()
+    })
   }
 
   // Whether `password` is the master password: `done(ok)`. The stored copy
@@ -5954,7 +6012,7 @@ Item {
     var inItem = currentScreen === "detail" || currentScreen === "edit"
       || (currentScreen === "generator" && generatorReturnScreen === "edit")
     if (repromptPending) cancelReprompt()
-    if (!inItem) repromptVerifiedId = ""
+    if (!inItem) clearRepromptGrant()
     restoreScreenFocus()
   }
 
@@ -6091,6 +6149,10 @@ Item {
     if (!item || !item.id) return
     // Another item's confirmation does not carry over.
     if (String(item.id) !== repromptVerifiedId) clearRepromptGrant()
+    // Judged before the detail is reset: a confirmation for this very item
+    // still counts. Otherwise the helper is not asked for its secrets yet.
+    var withheld = vaultHelperActive && item.secretsHeld && !item.rawObject
+      && itemNeedsReprompt(item) && !repromptSatisfied(item)
     learnFromPick(item)
     isLoading = true
     errorMessage = ""
@@ -6118,7 +6180,12 @@ Item {
         currentScreen = "main"
         return
       }
-      if (item.secretsHeld && vaultHelperActive) {
+      if (withheld) {
+        // Nothing secret until the master password: the row's own fields,
+        // and the whole item (with its TOTP) after the prompt.
+        isLoading = false
+        detailItem = Model.publicItemDetail(item)
+      } else if (item.secretsHeld && vaultHelperActive) {
         // The helper has the whole item; only this one comes here. An answer
         // for an item no longer being opened is dropped.
         var id = String(item.id)
@@ -6135,7 +6202,7 @@ Item {
     }
 
     // The TOTP is time-based, so it is fetched alongside.
-    if (item.hasTotp) {
+    if (item.hasTotp && !withheld) {
       fetchTotp(item.id)
     }
   }
@@ -6353,7 +6420,7 @@ Item {
 
   function applyTotpCode(itemId, code) {
     var c = String(code || "").trim()
-    if (detailItem && detailItem.id === itemId) liveTotp = c
+    if (detailItem && detailItem.id === itemId && !detailItem.secretsWithheld) liveTotp = c
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
       totpFollowupCode = c
     }
@@ -6696,8 +6763,10 @@ Item {
       errorMessage = "Still saving this item -- one moment"
       return
     }
-    // The form shows the password and TOTP secret.
-    withReprompt(item, function() { root.startEditItemNow(item) })
+    // The form shows the password and TOTP secret, from the whole item.
+    withRevealedDetail(item, function() {
+      if (root.detailItem && String(root.detailItem.id) === String(item.id)) root.startEditItemNow(root.detailItem)
+    })
   }
 
   function startEditItemNow(item) {
@@ -6742,6 +6811,12 @@ Item {
   function saveItemForm() {
     if (pendingSave) {
       errorMessage = "Still saving " + pendingSave.name + " -- one moment"
+      return
+    }
+
+    // The public view of a re-prompt item has no raw item to write back.
+    if (formIsEditing && detailItem && detailItem.secretsWithheld) {
+      errorMessage = "Open the item again to save it"
       return
     }
 
@@ -7235,6 +7310,14 @@ Item {
     withReprompt(item, function() { root.copyTotpCodeNow(item) })
   }
 
+  // The detail screen's TOTP copy: the code of a re-prompt item is fetched
+  // after the prompt.
+  function copyDetailTotp() {
+    var item = detailItem
+    if (!item || !item.hasTotp) return
+    withRevealedDetail(item, function() { root.copyTotpCodeNow(item) })
+  }
+
   function copyTotpCodeNow(item) {
     closeFilterGroup()
     if (!item || !Model.isLoginItem(item)) return
@@ -7668,7 +7751,8 @@ Item {
       var sec = 30 - (Math.floor(Date.now() / 1000) % 30)
       root.totpSecRemaining = sec
       if (sec === 30) {
-        if (root.currentScreen === "detail" && root.detailItem && root.detailItem.hasTotp) {
+        if (root.currentScreen === "detail" && root.detailItem && root.detailItem.hasTotp
+            && !root.detailItem.secretsWithheld) {
           root.fetchTotp(root.detailItem.id)
         } else if (root.totpFollowupActive && root.totpFollowupItem) {
           root.fetchTotp(root.totpFollowupItem.id)
