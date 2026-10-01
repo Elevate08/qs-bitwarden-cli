@@ -49,6 +49,10 @@ you to it.
 
 - Limits the README already documents: with fingerprint unlock on, a program
   running as you can open the stored password; root can read anything.
+- Helper memory reaching swap. Neither helper locks its memory (`mlockall` would
+  hit the default 8 MiB `RLIMIT_MEMLOCK`), so the kernel may write a page
+  holding a decrypted key or the session key to swap. Use encrypted swap, or
+  zram with no disk swap, if that matters to you.
 - Bugs in the Bitwarden server, `bw`, gnome-keyring, systemd, Quickshell or
   Omarchy. Report those upstream, and tell us if the plugin makes them worse.
 - An attacker who already controls your unlocked session or your user

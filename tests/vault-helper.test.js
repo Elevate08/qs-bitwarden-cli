@@ -64,6 +64,9 @@ check("a lock drops the helper's key and items",
 check("each queued lock keeps its own copy of the key until it has run",
   /holdSession\(name\)/.test(body("requestBwLock")) && /"secret:" \+ run\.key/.test(body("runBwLockStep"))
     && /forgetVaultSecret\(lockRun\.key\)/.test(body("finishBwLock")), body("requestBwLock"))
+check("a deleted item is dropped from the helper once the delete succeeded, even if the panel moved on",
+  /exitCode === 0 && removal\) forgetVaultItem\(removal\.id\)[\s\S]*?vaultReadIsStale\("itemDelete"\)/.test(body("onDeleteItemFinished"))
+    && /vaultHelperLine\("forgetItem", \{ id: id \}\)/.test(body("forgetVaultItem")), body("onDeleteItemFinished"))
 check("quick unlock's master password stays in the helper",
   /holdOutput: true/.test(body("submitPinUnlock")) && /holdOutput: true/.test(body("openEnvelopeForFingerprint"))
     && /envelopeProc\.outputHeld \? Model\.heldSecretRef\(job\.heldName\)/.test(body("onEnvelopeJobExited")), "")
@@ -177,6 +180,12 @@ if (!fs.existsSync(binary)) {
     check("the list the panel gets has no notes", !/recovery/.test(read.out) && /"qsbwHeld"/.test(read.out), read.out)
     send(Model.vaultHelperLine("search", { q: 200, query: "Recovery" }))
     eq("the helper's search finds note text", JSON.stringify((await reply(m => m.q === 200)).value), '["n"]')
+
+    send(Model.vaultHelperLine("forgetItem", { id: "n" }))
+    send(Model.vaultHelperLine("item", { q: 201, id: "n" }))
+    check("a forgotten item is no longer served by the helper", (await reply(m => m.q === 201)).ok === false, "")
+    send(Model.vaultHelperLine("search", { q: 202, query: "Recovery" }))
+    eq("nor found by its search", JSON.stringify((await reply(m => m.q === 202)).value), "[]")
 
     child.stdin.end()
     child.on("exit", () => done())
