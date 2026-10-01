@@ -31,6 +31,12 @@ Every feature the plugin has, and why each one works the way it does. The
   - Turning a method off removes it from every account (the setting is shared), and a method turned off in `shell.json` while the shell was not running is removed at the next start.
   - Upgrading moves the old per-method entries in as each method is next used, and deletes them once the new copy opens.
 
+- **Pinentry for typed secrets** (`usePinentry`, on by default):
+  - The master password (unlock, and the re-prompt on a flagged item) and the PIN are typed into `pinentry`, a separate window and process, not into the panel, so they never enter the shell's memory. The panel hides while it is open. A wrong one opens it again with the reason; Cancel returns to the screen without an error.
+  - Uses `pinentry` from `PATH`; set `pinentryProgram` in the plugin's `shell.json` entry to use another (for example `/usr/bin/pinentry-gnome3`). Needs the vault helper to be running.
+  - Without pinentry, with the setting off, without the helper, or if pinentry fails to run (a short notice says so), the panel's own field is used. The email login and the item forms always use the panel.
+  - See [Vault helper](vault-helper.md#typing-into-pinentry).
+
 - **PIN Unlock** (opt-in, `pinUnlock`):
   - Unlock with a numeric PIN instead of typing the master password. **6 digits is the floor and 8 or more the recommendation**, and there is no upper limit. A 6- or 7-digit PIN is accepted, with the real cost of guessing it spelled out. A PIN set before the floor was raised (from 4) still unlocks.
   - The PIN reaches the stored password through Argon2id (256 MiB, 4 passes). The stored item is sealed to this machine, but a program running as you can unseal it and guess PINs offline on every core: about 17 guesses a second on a 16-thread laptop, so every 6-digit PIN in about 16 hours, 7 digits in about 7 days, 8 digits in about 2 months.

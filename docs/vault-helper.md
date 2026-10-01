@@ -17,7 +17,8 @@ The [README](../README.md#how-your-vault-is-held) has the short version.
 | The item list | every item in full | names, usernames, websites, folders, flags such as "has a password" |
 | Passwords, TOTP keys, passkeys, password history, notes, card numbers and codes, identity numbers, hidden custom fields | yes | only the one item you open, while it is open |
 | The master password a PIN, fingerprint or FIDO2 key opens | yes, for that unlock | a reference by name |
-| What you type (master password, PIN, a new item's fields) | | yes, until you submit |
+| What you type: the master password and PIN for unlocking, and the master password for a re-prompt | yes: typed into pinentry, a separate process, and passed to the helper | a reference by name |
+| What else you type (the email login, a new item's fields) | | yes, until you submit |
 
 A password you copy goes from the helper straight to `wl-copy` (with the same
 timed clear and "sensitive" marking); it never passes through the shell. TOTP
@@ -48,7 +49,31 @@ output is handed back as it is, except:
 - the item list and a saved item are kept, and handed back with their
   secrets removed;
 - the master password a quick-unlock method opens is kept, and the shell gets
-  a reference to it.
+  a reference to it;
+- a password or PIN typed into pinentry (below) is kept, and the shell gets
+  only whether there was an answer.
+
+## Typing into pinentry
+
+A string typed into the panel stays in the shell's memory after the field is
+cleared, so a shell core dump could hold it. The master password for
+unlocking and for a re-prompt, and the PIN, are therefore typed into
+`pinentry`, a separate process. The panel hides while it runs so it can take
+the keyboard, and shows again after.
+
+The helper runs a small script that speaks the pinentry protocol, and keeps
+what it prints, decoded, under a name; the shell only learns whether you
+answered or cancelled. The held password or PIN goes to `bw unlock`, the
+quick-unlock check or the re-prompt check by name, and is forgotten as soon as
+that has finished. A wrong password or PIN opens pinentry again with the
+reason.
+
+The pinentry used is `pinentry` from `PATH`; `pinentryProgram` in `shell.json`
+names another, and the setting "Type secrets in pinentry" turns this off. The
+panel's own field is used instead when pinentry is turned off or not installed,
+when the helper is not running (typed into the shell, pinentry would gain
+nothing), or when pinentry fails to run, which shows a short notice. The
+email login and the item forms are not covered.
 
 ## Hardening
 
@@ -71,7 +96,9 @@ while holding your decrypted vault does not leave a core either.
   user read another's `/proc/<pid>/environ`, so the key is readable while a
   `bw` command runs. That was true before the helper and is true of `bw`
   everywhere; see [SECURITY.md](../SECURITY.md) for what is in scope.
-- What is on screen, and what you type, is in the shell.
+- What is on screen, and what you type into the panel's own fields (the
+  email login, an item's fields, and the master password or PIN when pinentry
+  is not used), is in the shell.
 - **Code running in the shell.** The helper does not protect against it.
   Such code can ask the helper to run a command with the session key or a
   held password in its environment.
