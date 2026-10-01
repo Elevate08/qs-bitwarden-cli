@@ -871,7 +871,13 @@ Item {
   property var vaultLocalSecrets: ({})
 
   function inspectVaultHelper() {
-    if (vaultHelperInspectProc.running || sshAgentPluginDir === "") return
+    if (vaultHelperInspectProc.running) return
+    // The directory comes from this file's own URL and does not change, so
+    // waiting for it would leave every queued run waiting for good.
+    if (sshAgentPluginDir === "") {
+      useVaultFallback("the plugin's directory is not known, so the vault helper cannot be found.")
+      return
+    }
     vaultHelperInspectProc.command = Model.vaultHelperInspectCommand(root.sshAgentPluginDir)
     vaultHelperInspectProc.running = true
   }
@@ -1048,6 +1054,13 @@ Item {
     var held = Object.assign({}, vaultLocalSecrets)
     delete held[name]
     vaultLocalSecrets = held
+  }
+
+  // A password passed around by reference (Model.heldSecretRef()): drop the
+  // held copy. Anything that is not a reference is left alone.
+  function forgetHeldPassword(value) {
+    var name = Model.heldSecretName(value)
+    if (name) forgetVaultSecret(name)
   }
 
   // An item the vault no longer has (deleted or trashed).
@@ -1247,17 +1260,21 @@ Item {
     return !!settings && settings[name] === false
   }
 
+  // A method whose setting is off loses its way in even when the envelope has
+  // none: the purge also clears the legacy keyring entry, which an account
+  // with no envelope yet (or one turned off before it migrated) still has. The
+  // purge succeeds when there is nothing to remove, and runs once per account
+  // and method per session.
   function reconcileDisabledMethods() {
-    var summary = envelopeSummary
-    if (!summary || !quickUnlockAvailable || !accountId) return
+    if (!quickUnlockAvailable || !accountId) return
     var checks = [
-      { method: "pin", setting: "pinUnlock", present: !!summary.pin },
-      { method: "fingerprint", setting: "fingerprintUnlock", present: summary.fingerprint === true },
-      { method: "fido", setting: "fidoUnlock", present: Array.isArray(summary.fido) && summary.fido.length > 0 }
+      { method: "pin", setting: "pinUnlock" },
+      { method: "fingerprint", setting: "fingerprintUnlock" },
+      { method: "fido", setting: "fidoUnlock" }
     ]
     for (var i = 0; i < checks.length; i++) {
       var c = checks[i]
-      if (!c.present || !quickUnlockSettingOff(c.setting)) continue
+      if (!quickUnlockSettingOff(c.setting)) continue
       if (Date.now() - Number(quickUnlockEnabledAt[c.method] || 0) < quickUnlockEnableGraceMs) continue
       var key = activeSlot + ":" + c.method
       if (reconciledMethods[key]) continue
@@ -1381,7 +1398,10 @@ Item {
           root.envelopeSummary = null
         }
         root.envelopeChecked = true
-        if (code === 0 && root.envelopeSummary) root.reconcileDisabledMethods()
+        // No envelope yet is read too: a legacy entry may be all there is.
+        if ((code === 0 && root.envelopeSummary) || code === Model.envelopeExitCodes().absent) {
+          root.reconcileDisabledMethods()
+        }
         root.recomputeFingerprintStored()
         root.recomputePinConfigured()
         // A switched-to account's methods are known only now.
@@ -1428,9 +1448,15 @@ Item {
   // a quick-unlock method produced. `done(ok)` is optional.
   function storeAcceptedMasterPassword(password, done) {
     var pw = String(password || "")
-    var finish = function(ok) { if (done) done(ok) }
+    var oldPassword = ""
+    // The old password of a refused quick unlock is held by reference; its
+    // last use is the re-seal below, so it goes with the end of this call.
+    var finish = function(ok) {
+      root.forgetHeldPassword(oldPassword)
+      if (done) done(ok)
+    }
     if (!pw || !quickUnlockAvailable) { finish(false); return }
-    var oldPassword = rotationOldPassword
+    oldPassword = rotationOldPassword
     rotationOldPassword = ""
     withEnvelopeAccount(function() {
       var E = Model.envelopeExitCodes()
@@ -1596,8 +1622,13 @@ Item {
 
   // Migrates the legacy PIN blob at the PIN unlock that decrypted it; the blob
   // is deleted only once the new PIN wrap yields the same password.
+  // `password` may be held by reference; its last use is this migration, so
+  // it is forgotten when the migration ends, whichever way.
   function migrateLegacyPin(password, pin) {
-    if (!quickUnlockAvailable) return
+    if (!quickUnlockAvailable) {
+      forgetHeldPassword(password)
+      return
+    }
     withEnvelopeAccount(function() {
       var env = {}
       env[Model.keyringSecretEnvVar()] = password
@@ -1607,12 +1638,13 @@ Item {
         command: Model.legacyPinMigrationCommand(root.envelopeTool(), root.envelopeAccount()),
         env: env, writes: true,
         onDone: function(code) {
+          root.forgetHeldPassword(password)
           if (code === 0 || code === codes.none) root.legacyPinStored = false
           else console.log("qs-bitwarden envelope: PIN migration left the legacy blob (" + code + ")")
           root.refreshEnvelope()
         }
       })
-    })
+    }, function() { root.forgetHeldPassword(password) })
   }
 
   // Migrates the legacy fingerprint entry, once per session.
@@ -3508,6 +3540,7 @@ Item {
     if (target === "unlock") {
       unlockSubmitted = false
       isUnlocking = false
+      forgetHeldPassword(pendingUnlockPassword)
       pendingUnlockPassword = ""
       if (unlockProc.running) unlockProc.running = false
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
@@ -5244,7 +5277,12 @@ Item {
       var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
         || (pendingUnlockFrom === "pin" && pinFromEnvelope)
         || (pendingUnlockFrom === "fido" && fidoFromEnvelope)
-      if (!fromEnvelope) pendingUnlockPassword = ""
+      // A held password stays only where a re-seal needs it
+      // (rotationOldPassword, below); otherwise nothing uses it again.
+      if (!fromEnvelope) {
+        forgetHeldPassword(pendingUnlockPassword)
+        pendingUnlockPassword = ""
+      }
       pendingPinForMigration = ""
       // A stored secret the vault rejects: say which method went stale.
       if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
@@ -5332,6 +5370,7 @@ Item {
     isUnlocking = false
     unlockSubmitted = false
     if (!s) {
+      forgetHeldPassword(pendingUnlockPassword)
       errorMessage = "Unlock did not return a session key"
       return
     }
@@ -5352,10 +5391,16 @@ Item {
     if (pendingUnlockPassword && pendingUnlockFrom === "") {
       storeAcceptedMasterPassword(pendingUnlockPassword)
     } else {
+      forgetHeldPassword(rotationOldPassword)
       rotationOldPassword = ""
     }
+    // The unlock is done with a password a quick-unlock method produced: drop
+    // it now, unless the legacy PIN migration still has to use it (it forgets
+    // it when it ends).
     if (pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword) {
       migrateLegacyPin(pendingUnlockPassword, pendingPinForMigration)
+    } else {
+      forgetHeldPassword(pendingUnlockPassword)
     }
     pendingPinForMigration = ""
     pinFromEnvelope = false

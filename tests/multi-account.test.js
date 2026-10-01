@@ -215,6 +215,15 @@ exit 0`)
   fs.writeFileSync(path.join(store, "pin_blob"), "legacy blob of A")
   fs.writeFileSync(path.join(store, "pin_blob@" + SLOT_B), "legacy blob of B")
   const purge = method => run(Model.quickUnlockPurgeCommand(tool, [SLOT_A, SLOT_B, SLOT_C, "not a slot"], method))
+  // An account that never had an envelope still has its legacy entry removed.
+  fs.writeFileSync(path.join(store, "pin_blob@" + SLOT_C), "legacy blob of C")
+  fs.writeFileSync(path.join(store, "master_password@" + SLOT_C), "legacy fingerprint entry of C")
+  eq("a purge for an account with no envelope succeeds", run(Model.quickUnlockPurgeCommand(tool, [SLOT_C], "pin")).code, 0)
+  check("and removes that method's legacy entry only",
+    !fs.existsSync(path.join(store, "pin_blob@" + SLOT_C)) && fs.existsSync(path.join(store, "master_password@" + SLOT_C)),
+    entries().join(","))
+  eq("the fingerprint's legacy entry goes the same way", run(Model.quickUnlockPurgeCommand(tool, [SLOT_C], "fingerprint")).code, 0)
+  check("leaving none", !fs.existsSync(path.join(store, "master_password@" + SLOT_C)), entries().join(","))
   eq("turning PIN off purges it from every account", purge("pin").code, 0)
   check("neither account keeps a PIN",
     inspect(SLOT_A).pin === undefined && inspect(SLOT_B).pin === undefined, JSON.stringify([inspect(SLOT_A), inspect(SLOT_B)]))

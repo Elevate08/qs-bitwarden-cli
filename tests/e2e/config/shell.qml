@@ -13,7 +13,7 @@ ShellRoot {
     id: view
     property bool opened: false
     property string screenName: "TEST-1"
-    property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: true,
+    property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: Quickshell.env("QSBW_E2E_REMEMBER_SESSION") !== "0",
                               autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false,
                               sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1" })
     function showPopout() { opened = true }
