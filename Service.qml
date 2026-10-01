@@ -3153,6 +3153,7 @@ Item {
     if (opened) {
       if (!resumeFromPinentry()) onPanelOpened()
     } else if (!pinentryActive) {
+      pinentryAutoAsked = false
       clearRepromptGrant()
       cancelFingerprintUnlock()
       // Not a cancel; see releaseSurface() in FidoUnlock.qml.
@@ -5439,6 +5440,13 @@ Item {
   property bool pinentryWasOpen: false
   // The panel showing again after pinentry: a resume, not a fresh open.
   property bool pinentryReturning: false
+  // Pinentry was opened for the unlock form on this showing (on its own for a
+  // default PIN or password method, or by picking one). Coming back from
+  // pinentry, cancelled or not, does not open it again; a real close of the
+  // panel, or the end of an SSH unlock request, does.
+  property bool pinentryAutoAsked: false
+
+  onSshUnlockRequestChanged: if (sshUnlockRequest === null && !pinentryActive) pinentryAutoAsked = false
   // The helper's names for what was typed, while it is in use.
   property string pinentryMasterName: ""
   property string heldPinName: ""

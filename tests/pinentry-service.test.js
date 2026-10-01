@@ -279,7 +279,7 @@ check("a lock, another method's unlock and the panel being asked for end a pinen
   /cancelPinentry\(\)/.test(body("dropVaultState")) && /cancelPinentry\(\)/.test(body("onUnlockSuccess"))
     && /cancelPinentry\(\)/.test(body("open")), "")
 check("hiding the panel for pinentry is not a close; coming back is a resume",
-  /else if \(!pinentryActive\) \{\s*clearRepromptGrant\(\)/.test(service) && /!resumeFromPinentry\(\)/.test(service), "")
+  /else if \(!pinentryActive\) \{\s*pinentryAutoAsked = false\s*clearRepromptGrant\(\)/.test(service) && /!resumeFromPinentry\(\)/.test(service), "")
 check("a pinentry run never runs in the shell: without the helper it is refused",
   /capture\.indexOf\("pinentry:"\) === 0[\s\S]{0,200}proc\.finish\(/.test(body("vaultStart"))
     && body("vaultStart").indexOf("pinentry:") < body("vaultStart").indexOf("runLocally"), body("vaultStart"))
@@ -302,8 +302,22 @@ check("the fields stay as the fallback, with the reason when pinentry failed",
 {
   const use = (form.match(/function useMethod\(name\) \{[\s\S]*?\n  \}/) || [""])[0]
   check("picking PIN or Password opens pinentry straight away",
-    /if \(form\.pinentryOffered\) \{\s*form\.submitCurrentMethod\(\)\s*return\s*\}/.test(use)
+    /if \(form\.pinentryOffered\) \{\s*form\.vault\.pinentryAutoAsked = true\s*form\.submitCurrentMethod\(\)\s*return\s*\}/.test(use)
       && use.indexOf("form.pinentryOffered") > use.indexOf("form.chosen = name"), use)
+}
+{
+  const arm = (form.match(/function armOfferedMethod\(\) \{[\s\S]*?\n  \}/) || [""])[0]
+  check("a default PIN or password method opens pinentry once when the form shows",
+    /else if \(form\.pinentryOffered && !form\.vault\.pinentryAutoAsked && !form\.vault\.pinentryActive\) \{\s*form\.vault\.pinentryAutoAsked = true\s*form\.submitCurrentMethod\(\)/.test(arm), arm)
+  const use = (form.match(/function useMethod\(name\) \{[\s\S]*?\n  \}/) || [""])[0]
+  check("picking it counts as the ask, so it is not opened twice",
+    /if \(form\.pinentryOffered\) \{\s*form\.vault\.pinentryAutoAsked = true\s*form\.submitCurrentMethod\(\)/.test(use), use)
+  const opened = (service.match(/onOpenedChanged: \{[\s\S]*?\n  \}/) || [""])[0]
+  check("a cancelled pinentry does not reopen when the panel comes back; a real close asks again next time",
+    /\} else if \(!pinentryActive\) \{[\s\S]*pinentryAutoAsked = false/.test(opened)
+      && !/if \(opened\) \{[^}]*pinentryAutoAsked = false/.test(opened), opened)
+  check("an SSH unlock request that ends asks again for the next one",
+    /onSshUnlockRequestChanged: if \(sshUnlockRequest === null && !pinentryActive\) pinentryAutoAsked = false/.test(service), "")
 }
 check("Enter on the locked screen opens pinentry",
   /status === "locked" && unlockForm\.pinentryOffered\) \{\s*unlockForm\.submitCurrentMethod\(\)/.test(read("Panel.qml")), "")

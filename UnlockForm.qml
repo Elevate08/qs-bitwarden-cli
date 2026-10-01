@@ -85,6 +85,11 @@ Column {
     if (form.vault.isUnlocking) return
     if (method === "fido") form.vault.startFidoUnlock()
     else if (method === "fingerprint") form.vault.startFingerprintUnlock()
+    // A default PIN or password method: open pinentry, once per showing.
+    else if (form.pinentryOffered && !form.vault.pinentryAutoAsked && !form.vault.pinentryActive) {
+      form.vault.pinentryAutoAsked = true
+      form.submitCurrentMethod()
+    }
   }
 
   onFieldsOfferedChanged: armOfferedMethod()
@@ -125,6 +130,7 @@ Column {
     }
     // A typed method with pinentry: picking it is asking to type, so open it.
     if (form.pinentryOffered) {
+      form.vault.pinentryAutoAsked = true
       form.submitCurrentMethod()
       return
     }
