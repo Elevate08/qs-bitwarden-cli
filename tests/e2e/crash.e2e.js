@@ -7,6 +7,8 @@
 // - With the vault helper: the session key, the password and the note are
 //   not in the shell's core, while text the shell does hold (the item's
 //   name) is, so the core is real. A crashed helper leaves no core at all.
+//   A master password typed into pinentry (the stand-in, bin/pinentry) is not
+//   in the core either, while one typed into the panel's field is.
 // - Without it (the fallback): they are in the core, which shows this test
 //   can see a leak.
 //
@@ -20,7 +22,7 @@
 // the shell's environment: a core includes the environment.
 
 const { createSuite, repoRoot } = require("../harness")
-const { createShell, sleep } = require("./shell")
+const { createShell, sleep, pluginWithBuiltHelper } = require("./shell")
 const fs = require("fs")
 const path = require("path")
 const crypto = require("crypto")
@@ -94,8 +96,10 @@ function pluginWithoutHelper(into) {
 }
 
 function run(label, plugin, withHelper) {
-  const secrets = { password: marker("password"), note: marker("note") }
-  const shell = createShell("e2e-crash", check, { plugin, coreDumps: true })
+  const secrets = { password: marker("password"), note: marker("note"), pinentry: marker("pinentry"), typed: marker("typed") }
+  // pinentry's answers are in a file of the test's, not in the shell's environment.
+  const answers = path.join(fs.mkdtempSync("/tmp/qsbw-crash-answers-"), "answers")
+  const shell = createShell("e2e-crash", check, { plugin, coreDumps: true, env: { FAKE_PINENTRY_ANSWERS: answers } })
   // Given to the fake bw in its data directory, never through the shell's
   // environment (which a core includes).
   const data = path.join(shell.home, ".config", "Bitwarden CLI")
@@ -130,6 +134,24 @@ function run(label, plugin, withHelper) {
       shell.q("unlock", "pw-a@x")
       shell.expect(`${label}: and the vault unlocks again`, s => s.status === "unlocked" && s.items.length === 1)
     }
+    if (withHelper) {
+      // The master password typed into pinentry, then another typed into the
+      // panel's field as a control: the account's password is changed
+      // between, in a file the fake bw reads.
+      shell.expect(`${label}: the account's email is known`, s => s.email === "a@x")
+      for (const [how, secret] of [["pinentry", secrets.pinentry], ["field", secrets.typed]]) {
+        fs.writeFileSync(path.join(data, "fake-password"), secret)
+        shell.q("lock")
+        shell.expect(`${label}: locks before the ${how} unlock`, s => s.status === "locked")
+        if (how === "pinentry") {
+          fs.writeFileSync(answers, "pin:" + secret + "\n")
+          shell.q("unlockPinentry")
+        } else {
+          shell.q("unlock", secret)
+        }
+        shell.expect(`${label}: unlocks with a password typed into the ${how}`, s => s.status === "unlocked")
+      }
+    }
     const key = fs.readFileSync(path.join(data, "fake-session"), "utf8").trim()
 
     process.kill(shell.pid(), "SIGSEGV")
@@ -142,6 +164,10 @@ function run(label, plugin, withHelper) {
       check(`${label}: the session key is ${expected ? "" : "not "}in the core`, contains(core, key) === expected, "")
       check(`${label}: the password is ${expected ? "" : "not "}in the core`, contains(core, secrets.password) === expected, "")
       check(`${label}: the note is ${expected ? "" : "not "}in the core`, contains(core, secrets.note) === expected, "")
+      if (withHelper) {
+        check(`${label}: the password typed into pinentry is not in the core`, !contains(core, secrets.pinentry), "")
+        check(`${label}: the password typed into the panel's field is (the test can see one)`, contains(core, secrets.typed), "")
+      }
     }
   } catch (e) {
     failed = e
@@ -149,13 +175,14 @@ function run(label, plugin, withHelper) {
   } finally {
     if (failed || failures.length) console.error(`--- ${label} shell log (tail) ---\n` + shell.logTail())
     try { fs.rmSync(corePath, { force: true }) } catch (e) {}
+    try { fs.rmSync(path.dirname(answers), { recursive: true, force: true }) } catch (e) {}
     shell.cleanup()
   }
 }
 
-run("helper", repoRoot, true)
 const copy = fs.mkdtempSync("/tmp/qsbw-crash-plugin-")
 try {
+  run("helper", pluginWithBuiltHelper(path.join(copy, "plugin-helper")), true)
   run("fallback", pluginWithoutHelper(path.join(copy, "plugin")), false)
 } finally {
   fs.rmSync(copy, { recursive: true, force: true })

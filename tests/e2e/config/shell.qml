@@ -48,6 +48,10 @@ ShellRoot {
         clearPending: vault.allCredentialsClearPending,
         // What the shell itself holds: the vault helper keeps the rest.
         helper: vault.vaultHelperState, sessionHeld: vault.session === vault.heldSessionMarker,
+        // Typed into pinentry, the shell never holds them: these stay empty.
+        typed: [vault.masterPassword, vault.pinEntry, vault.pendingUnlockPassword].join("|"),
+        pinentry: { available: vault.pinentryAvailable, found: vault.pinentryFound, broken: vault.pinentryBroken,
+                    active: vault.pinentryActive, notice: vault.pinentryNotice },
         passwords: vault.items.map(function(i) { return i.password }),
         hasPasswords: vault.items.map(function(i) { return i.hasPassword }),
         ssh: { phase: vault.sshAgentPhase, keys: vault.sshAgentKeyCount, prompt: vault.sshPrompt !== null, unlock: vault.sshUnlockRequest !== null,
@@ -64,6 +68,9 @@ ShellRoot {
       vault.beginPinSetup(); vault.pinSetupPin = pin; vault.pinSetupConfirm = pin; vault.pinSetupMaster = pw; vault.submitPinSetup()
     }
     function pinUnlock(pin: string): void { vault.pinEntry = pin; vault.submitPinUnlock() }
+    // The unlock screen's action, as the button runs it: pinentry takes the typing.
+    function unlockPinentry(): void { vault.unlockWithPinentry() }
+    function pinUnlockPinentry(): void { vault.unlockPinWithPinentry() }
     function addAccount(): void { vault.beginAddAccount() }
     function cancelAdd(): void { vault.cancelAddAccount() }
     function switchTo(email: string): string {

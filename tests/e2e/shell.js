@@ -124,4 +124,29 @@ function createShell(name, check, options = {}) {
   }
 }
 
-module.exports = { createShell, sleep }
+// A copy of the checkout whose vault helper is the one built at
+// vault/target/debug (cargo build --manifest-path vault/Cargo.toml --locked)
+// rather than the shipped binary, which may predate the checkout's protocol
+// features. Everything else, the other helpers included, is the checkout's.
+function pluginWithBuiltHelper(into) {
+  const built = path.join(repoRoot, "vault", "target", "debug", "qs-bitwarden-vault")
+  if (!fs.existsSync(built)) {
+    console.error("the built vault helper is missing: cargo build --manifest-path vault/Cargo.toml --locked")
+    process.exit(1)
+  }
+  fs.cpSync(repoRoot, into, {
+    recursive: true,
+    filter: src => {
+      const rel = path.relative(repoRoot, src)
+      return !/^\.git(\/|$)/.test(rel) && !/(^|\/)target(\/|$)/.test(rel)
+        && rel !== "bin/x86_64-linux/qs-bitwarden-vault"
+    }
+  })
+  const dev = path.join(into, "vault", "target", "debug")
+  fs.mkdirSync(dev, { recursive: true })
+  fs.copyFileSync(built, path.join(dev, "qs-bitwarden-vault"))
+  fs.chmodSync(path.join(dev, "qs-bitwarden-vault"), 0o755)
+  return into
+}
+
+module.exports = { createShell, sleep, pluginWithBuiltHelper }

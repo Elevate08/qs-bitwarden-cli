@@ -7,6 +7,8 @@ state="$d/fake-state"; sess="$d/fake-session"
 logged_in() { [ -f "$state" ]; }
 field() { sed -n "s/^$1=//p" "$state"; }
 new_session() { printf '%s' "$(head -c 33 /dev/urandom | base64 -w0 | tr '+/' '-_')" > "$sess"; cat "$sess"; }
+# The account's password: "pw-<email>", or the contents of fake-password.
+want_pw() { if [ -s "$d/fake-password" ]; then cat "$d/fake-password"; else printf "pw-%s" "$1"; fi; }
 read_pw() {
   local pf="" pe=""
   while [ $# -gt 0 ]; do case "$1" in --passwordfile) pf="$2"; shift 2;; --passwordenv) pe="$2"; shift 2;; *) shift;; esac; done
@@ -25,14 +27,14 @@ case "$1" in
     shift; email="$1"; shift
     if logged_in; then echo "You are already logged in as $(field email)." >&2; exit 1; fi
     pw="$(read_pw "$@")"
-    [ "$pw" = "pw-$email" ] || { echo "Username or password is incorrect. Try again." >&2; exit 1; }
+    [ "$pw" = "$(want_pw "$email")" ] || { echo "Username or password is incorrect. Try again." >&2; exit 1; }
     printf 'email=%s\nid=id-%s\n' "$email" "$(printf '%s' "$email" | md5sum | cut -c1-12)" > "$state"
     new_session ;;
   unlock)
     shift
     logged_in || { echo "You are not logged in." >&2; exit 1; }
     pw="$(read_pw "$@")"
-    [ "$pw" = "pw-$(field email)" ] || { echo "Invalid master password." >&2; exit 1; }
+    [ "$pw" = "$(want_pw "$(field email)")" ] || { echo "Invalid master password." >&2; exit 1; }
     new_session ;;
   lock) rm -f "$sess"; echo "Your vault is locked." ;;
   logout) rm -f "$sess" "$state"; echo "You have logged out." ;;
