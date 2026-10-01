@@ -326,6 +326,7 @@ Column {
       width: parent.width
       placeholderText: "Enter your PIN..."
       password: true
+      inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
       text: form.vault.pinEntry
       onTextChanged: form.vault.pinEntry = text.replace(/[^0-9]/g, "")
       onAccepted: form.vault.submitPinUnlock()
@@ -354,6 +355,7 @@ Column {
       width: parent.width - eyeBtnUnlock.width - Style.space(8)
       placeholderText: "Master password..."
       password: !eyeBtnUnlock.revealed
+      inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
       text: form.vault.masterPassword
       onTextChanged: form.vault.masterPassword = text
       onActiveFocusChanged: if (activeFocus) form.vault.prepareUnlock()
