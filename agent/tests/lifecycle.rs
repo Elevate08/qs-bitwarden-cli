@@ -699,6 +699,45 @@ fn a_full_load_releasing_every_held_request_keeps_the_helper_alive() {
     agent.shutdown();
 }
 
+/// A key's name comes from a vault that others may share. A direction
+/// override or a line break in it must reach the panel written out, never raw.
+#[test]
+fn a_key_name_with_invisible_characters_reaches_the_panel_escaped() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let public_blob = key.public_key().to_bytes().unwrap();
+    let nonce = "0123456789abcdef0123456789abcdef";
+    agent.send(&format!(
+        "{{\"v\":1,\"type\":\"key_load_begin\",\"epoch\":1,\"loadId\":\"{nonce}\"}}"
+    ));
+    let mut item = disposable_item(&key);
+    item["name"] = serde_json::json!("prod\u{202e}gnihtemos\nsecond line");
+    agent.write_fifo(&jq_payload(nonce, &[item]));
+    agent.send("{\"v\":1,\"type\":\"key_load_end\",\"epoch\":1,\"status\":\"ok\"}");
+    loop {
+        if agent.read()["type"] == "keys_loaded" {
+            break;
+        }
+    }
+
+    let socket = agent.socket.clone();
+    let client = std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream.write_all(&sign_request(&public_blob)).unwrap();
+        read_agent_frame(&mut stream)
+    });
+    let approval = agent.read();
+    assert_eq!(approval["type"], "approval_required");
+    assert_eq!(
+        approval["keyName"],
+        "prod\\u202egnihtemos\\u000asecond line"
+    );
+    let id = approval["requestId"].as_u64().unwrap();
+    agent.send(&format!("{{\"v\":1,\"type\":\"deny\",\"requestId\":{id}}}"));
+    client.join().unwrap();
+    agent.shutdown();
+}
+
 /// Held requests come back in the order they were raised, not in the hash
 /// map's order: the panel pairs the shown prompt with the first approval it
 /// receives, so a stable order is part of the contract. Repeated, since a
