@@ -160,6 +160,14 @@ check("a card is not found by the middle of its number",
 check("an identity is found by name", Model.matchesQuery(listedIdentity, "person"), listedIdentity.subtitle)
 check("an identity is found by email", Model.matchesQuery(listedIdentity, "a@example.com"), listedIdentity.subtitle)
 
+// A note behind "ask for the master password" must not be readable by guessing
+// at it in the search box.
+check("a note is found by search", Model.matchesQuery({ name: "n", notes: "needle", reprompt: 0 }, "needle"), "")
+check("a note that asks for the master password is not found by search",
+  !Model.matchesQuery({ name: "n", notes: "needle", reprompt: 1 }, "needle"), "")
+check("a reprompt item is still found by its name",
+  Model.matchesQuery({ name: "needle", notes: "x", reprompt: 1 }, "needle"), "")
+
 // --- payloads ---------------------------------------------------------------
 
 const createdCard = Model.buildCreatePayload(3, "New", "", "", "", "", "", false, null, null, null,
