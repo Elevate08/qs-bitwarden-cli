@@ -23,7 +23,7 @@ A password you copy goes from the helper straight to `wl-copy` (with the same
 timed clear and "sensitive" marking); it never passes through the shell. TOTP
 codes are computed in the helper, and only the code reaches the shell. Search
 runs in the helper too, so it still finds text in notes the shell no longer
-has, and it stays fast on a large vault.
+has (except on items that ask for the master password), and it stays fast on a large vault.
 
 Locking, logging out and switching accounts tell the helper to forget
 everything. A lock that is still running `bw lock` keeps its own copy of the
