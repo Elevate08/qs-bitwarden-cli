@@ -1227,7 +1227,10 @@ var SANITIZED_ITEMS_FILTER = JQ_ITEM_HELPERS.concat([
 // The agent branch's projection: eligible private keys framed by the load
 // nonce. Re-prompt items and empty keys are dropped here (the companion also
 // refuses them) so fewer copies travel. The shape must match the companion's
-// `deny_unknown_fields` decoder exactly.
+// `deny_unknown_fields` decoder exactly. The key travels as base64 under its
+// own field name: a PEM's newlines would be JSON escapes, which the companion
+// could only unescape through copies it cannot wipe, and the new name makes
+// a companion or panel from before this change fail the load, not misread it.
 var AGENT_KEYS_FILTER = JQ_ITEM_HELPERS.concat([
   "if type != \"array\" then",
   "  error(\"expected one item array\")",
@@ -1239,12 +1242,12 @@ var AGENT_KEYS_FILTER = JQ_ITEM_HELPERS.concat([
   "      | {",
   "        itemId: (.id | string_or_empty),",
   "        name: (.name | string_or_empty),",
-  "        privateKey: ((try (.sshKey.privateKey // .privateKey) catch null) | string_or_empty),",
+  "        privateKeyB64: ((try (.sshKey.privateKey // .privateKey) catch null) | string_or_empty | @base64),",
   "        publicKey: ((try (.sshKey.publicKey // .publicKey) catch null) | string_or_empty),",
   "        fingerprint: ((try (.sshKey.fingerprint // .sshKey.keyFingerprint // .fingerprint // .keyFingerprint) catch null) | string_or_empty),",
   "        requiresReprompt: false",
   "      }",
-  "      | select(.privateKey != \"\")]",
+  "      | select(.privateKeyB64 != \"\")]",
   "  }",
   "end"
 ]).join("\n")
