@@ -13,6 +13,42 @@
   does. A helper that stops also clears the remembered session, the clipboard
   copy and the item list, and puts up the unlock screen, where it used to leave
   the list showing under a locked panel.
+- **An SSH approval always signs the request it shows.** When several
+  programs asked to sign while the vault was locked, unlocking released them
+  in no fixed order, and the prompt on screen could take the id of another
+  program's request: approving "git with key A" could sign for a different
+  program with key B. The prompt now takes over only the request it
+  describes, and the agent releases held requests in the order they arrived.
+- **A `bw` command still running at lock no longer refills the vault
+  helper.** One that finished after a lock, logout or account switch left the
+  helper holding its session key, password or decrypted item list while the
+  panel showed the vault locked. Its output is now dropped.
+- **Search no longer reads the notes of items that ask for the master
+  password.** Searching for a guess showed whether a protected note contained
+  it, without the prompt. Those notes are now left out of search; the item is
+  still found by its name, username and websites.
+- **The SSH approval prompt shows hidden characters.** A process path with a
+  newline, or a key name or signing namespace with right-to-left or
+  zero-width characters, could make the prompt show a different program or
+  key. These are now written out as `\uXXXX`, signing namespaces containing
+  them are refused, and a long path is cut from the left so the program's
+  name always shows.
+- **The SSH agent checks the program again before each signature.** A client
+  that started another program after connecting kept the first one's name on
+  its prompts and grants. A connection whose program changed is now closed.
+- **SSH private keys reach the agent without extra copies.** A key's line
+  breaks were JSON escapes, and undoing them left copies of the key in memory
+  the agent could not wipe. Keys now travel base64-encoded and are decoded
+  straight into wiped memory.
+- **A deleted item leaves the vault helper.** Its secrets stayed in the
+  helper, and in search, until the next full sync.
+- **Secret fields keep input methods and predictive text out.** The master
+  password on the unlock screen could be shown with the eye button, and then
+  an input method could read and learn it. The same applied to the PIN,
+  Send, setup and API-key fields.
+- **Links containing spaces or control characters are not opened.** A website
+  with a newline inside reached `xdg-open` as one argument and showed as
+  several lines in the "Opening" notice.
 
 ### Fixed
 
@@ -23,6 +59,22 @@
   moves its load counter on at logout and the panel did not, so the first load
   was refused as stale and the keys arrived only on the retry, which a second
   failure could not get.
+- **Command output past the vault helper's limit is a failure.** The helper
+  dropped only the part that crossed its 24 MiB limit and could pass on the
+  rest spliced together, with a successful exit. It now passes on nothing and
+  reports the command as failed.
+- **The vault helper refuses a second command under an id still in use**,
+  limits background commands, and stops tracking a finished command before
+  its process ID can be reused.
+
+### Documentation
+
+- SECURITY.md, docs/ssh-agent.md and docs/vault-helper.md say that neither
+  helper locks its memory, so secrets can be written to swap. Encrypted swap,
+  or zram with no disk swap, avoids that.
+- docs/vault-helper.md says that the helper does not defend against code
+  already running in the shell, and that the master-password prompt is
+  enforced by the panel.
 
 ## [1.11.2] - 2026-09-29
 
