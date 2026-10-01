@@ -53,8 +53,10 @@ Before it reads anything, the helper sets its core-file limit to zero (soft
 and hard) and makes itself non-dumpable, so no core is written for it and
 other programs cannot attach to it or read its memory. Buffers holding
 secrets are wiped when dropped; as with the SSH helper, that is best effort
-and cannot cover memory the allocator or the kernel keeps. Release builds
-abort on panic rather than unwinding.
+and cannot cover memory the allocator or the kernel keeps. Neither helper
+locks its memory, so the session key can be written to swap; encrypted swap,
+or zram with no disk swap, avoids that. Release builds abort on panic rather
+than unwinding.
 
 The commands it runs inherit the zero core limit, so a `bw` that crashes
 while holding your decrypted vault does not leave a core either.
