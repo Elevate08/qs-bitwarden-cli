@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -24,6 +25,9 @@ const MAX_STDERR: usize = 64 * 1024;
 /// What the save pipeline prints when the save worked but its output could
 /// not be sanitized (BitwardenModel.js SAVED_UNSANITIZED_MARKER).
 const SAVED_UNSANITIZED: &str = "__QSBW_SAVED_UNSANITIZED__";
+/// Detached commands at once (the lock the panel starts as it unloads); more
+/// are dropped, as there is no reply to refuse them with.
+const MAX_DETACHED: usize = 8;
 const EXIT_REFUSED: i32 = 126;
 /// Stands in for a kept session key in the output the panel gets. Shaped
 /// like a key (BitwardenModel.js SESSION_TOKEN_RE), so the panel's parsing
@@ -36,7 +40,29 @@ struct Helper {
     store: Shared<Store>,
     /// Run id -> process group, for `kill`.
     runs: Shared<HashMap<u64, u32>>,
+    /// Detached commands still running.
+    detached: Arc<AtomicUsize>,
     out: Sender<String>,
+}
+
+/// One of the `MAX_DETACHED` places; gives it back when dropped.
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    fn claim(count: &Arc<AtomicUsize>, max: usize) -> Option<Slot> {
+        count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < max).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Slot(Arc::clone(count)))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn main() {
@@ -91,6 +117,7 @@ fn main() {
     let helper = Helper {
         store: Arc::default(),
         runs: Arc::default(),
+        detached: Arc::default(),
         out,
     };
     let mut input = BufReader::new(std::io::stdin().lock());
@@ -115,19 +142,18 @@ fn main() {
     // The panel is gone or asked us to stop: nothing it started should
     // outlive it with the session key in its environment. SIGTERM first, so
     // the scripts' traps stop the `bw` they started in their own groups.
-    let groups: Vec<u32> = helper
-        .runs
-        .lock()
-        .unwrap()
-        .drain()
-        .map(|(_, group)| group)
-        .collect();
-    for group in &groups {
-        signal_group(*group, rustix::process::Signal::TERM);
-    }
-    if !groups.is_empty() {
+    // Signalled with the runs lock held: a run takes itself off the list
+    // before it is reaped, so a group listed here is still ours.
+    let any = {
+        let runs = helper.runs.lock().unwrap();
+        for group in runs.values() {
+            signal_group(*group, rustix::process::Signal::TERM);
+        }
+        !runs.is_empty()
+    };
+    if any {
         thread::sleep(std::time::Duration::from_millis(500));
-        for group in &groups {
+        for group in helper.runs.lock().unwrap().values() {
             signal_group(*group, rustix::process::Signal::KILL);
         }
     }
@@ -212,8 +238,10 @@ impl Helper {
                 ..
             } => self.exec(id, argv, env, inject, capture.as_deref(), stdin, detach),
             Request::Kill { id, .. } => {
-                let group = self.runs.lock().unwrap().get(&id).copied();
-                if let Some(group) = group {
+                let runs = self.runs.lock().unwrap();
+                if let Some(group) = runs.get(&id).copied() {
+                    signal_group(group, rustix::process::Signal::TERM);
+                    drop(runs);
                     stop_group(id, group, Arc::clone(&self.runs));
                 }
             }
@@ -338,6 +366,9 @@ impl Helper {
         }
 
         if detach {
+            let Some(slot) = Slot::claim(&self.detached, MAX_DETACHED) else {
+                return;
+            };
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -345,13 +376,23 @@ impl Helper {
             if let Ok(mut child) = command.spawn() {
                 thread::spawn(move || {
                     let _ = child.wait();
+                    drop(slot);
                 });
             }
             return;
         }
 
-        if self.runs.lock().unwrap().len() >= MAX_RUNS {
-            return refuse("too many runs");
+        {
+            let runs = self.runs.lock().unwrap();
+            if runs.len() >= MAX_RUNS {
+                return refuse("too many runs");
+            }
+            // A second run under a live id would take the first's place in
+            // the list: it could no longer be killed, and its end would
+            // remove the second's entry.
+            if runs.contains_key(&id) {
+                return refuse("run id in use");
+            }
         }
         // A run never outlives the helper: if it dies (a crash, a SIGKILL),
         // the kernel sends each run SIGTERM, which the auth scripts' traps
@@ -418,8 +459,22 @@ fn run(
         .and_then(|t| t.join().ok())
         .map(|drained| drained.bytes)
         .unwrap_or_default();
-    let status = child.wait();
+    // Leave the list before the child is reaped, not after: once reaped, its
+    // process group id can be handed to another process, and a `kill` that
+    // found the entry would signal that one. Waiting without reaping keeps
+    // the id ours until the entry is gone; a `kill` signals with the list
+    // locked, so it either lands before this or finds nothing.
+    if let Some(pid) = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::waitid(
+            rustix::process::WaitId::Pid(pid),
+            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
+        );
+    }
     runs.lock().unwrap().remove(&id);
+    let status = child.wait();
     let mut code = match status {
         Ok(status) => status
             .code()
@@ -537,10 +592,10 @@ fn drain(mut pipe: impl Read, cap: usize) -> Drained {
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn stop_group(id: u64, group: u32, runs: Shared<HashMap<u64, u32>>) {
-    signal_group(group, rustix::process::Signal::TERM);
     thread::spawn(move || {
         thread::sleep(STOP_GRACE);
-        if runs.lock().unwrap().get(&id) == Some(&group) {
+        let runs = runs.lock().unwrap();
+        if runs.get(&id) == Some(&group) {
             signal_group(group, rustix::process::Signal::KILL);
         }
     });
@@ -667,6 +722,17 @@ mod tests {
         store.lock().unwrap().forget(&["pw".to_owned()]);
         let (_, session, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
         assert!(!session);
+    }
+
+    #[test]
+    fn detached_commands_are_capped_and_give_their_place_back() {
+        let count: Arc<AtomicUsize> = Arc::default();
+        let held: Vec<Slot> = (0..3)
+            .map(|_| Slot::claim(&count, 3).expect("room"))
+            .collect();
+        assert!(Slot::claim(&count, 3).is_none());
+        drop(held);
+        assert!(Slot::claim(&count, 3).is_some());
     }
 
     /// Yields its chunks one read at a time.
