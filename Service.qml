@@ -7247,7 +7247,7 @@ Item {
     var resolved = Model.normalizeOpenableUrl(url)
     if (!resolved.ok) {
       errorMessage = resolved.reason === "ambiguous"
-        ? "Refusing to open an ambiguous link containing a backslash"
+        ? "Refusing to open an ambiguous link (backslash, space or control character)"
         : resolved.scheme
         ? ("Refusing to open a " + resolved.scheme + ": link -- only http and https are opened")
         : "That item has no link to open"

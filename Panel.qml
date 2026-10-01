@@ -1337,6 +1337,7 @@ Panel {
                 width: parent.width
                 placeholderText: "Recipient must enter this to open the Send..."
                 password: true
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 text: root.vault.sendFormPassword
                 onTextChanged: root.vault.sendFormPassword = text
                 enabled: !root.vault.sendBusy
@@ -1511,6 +1512,7 @@ Panel {
                 width: parent.width
                 placeholderText: "Confirm your master password..."
                 password: true
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 text: root.vault.fpSetupMaster
                 onTextChanged: root.vault.fpSetupMaster = text
                 onAccepted: root.vault.submitFingerprintSetup()
@@ -1965,6 +1967,7 @@ Panel {
               width: parent.width
               placeholderText: "Confirm your master password..."
               password: true
+              inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
               text: root.vault.pinSetupMaster
               onTextChanged: root.vault.pinSetupMaster = text
               enabled: !root.vault.pinBusy
@@ -1984,6 +1987,7 @@ Panel {
               width: parent.width
               placeholderText: Model.pinRecommendedLength() + " digits or more..."
               password: true
+              inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
               text: root.vault.pinSetupPin
               onTextChanged: root.vault.pinSetupPin = text.replace(/[^0-9]/g, "")
               enabled: !root.vault.pinBusy
@@ -2008,6 +2012,7 @@ Panel {
               width: parent.width
               placeholderText: "Repeat the PIN..."
               password: true
+              inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
               text: root.vault.pinSetupConfirm
               onTextChanged: root.vault.pinSetupConfirm = text.replace(/[^0-9]/g, "")
               onAccepted: root.vault.submitPinSetup()
@@ -3142,6 +3147,7 @@ Panel {
                 width: parent.width
                 placeholderText: "Client secret string..."
                 password: true
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 text: root.vault.loginClientSecret
                 onTextChanged: root.vault.loginClientSecret = text
               }
@@ -3156,6 +3162,7 @@ Panel {
                 width: parent.width
                 placeholderText: "Master password to unlock vault..."
                 password: true
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 text: root.vault.loginPassword
                 onTextChanged: root.vault.loginPassword = text
                 onAccepted: root.vault.submitLogin()

@@ -23,7 +23,8 @@ A password you copy goes from the helper straight to `wl-copy` (with the same
 timed clear and "sensitive" marking); it never passes through the shell. TOTP
 codes are computed in the helper, and only the code reaches the shell. Search
 runs in the helper too, so it still finds text in notes the shell no longer
-has, and it stays fast on a large vault.
+has, and it stays fast on a large vault. Notes of an item that asks for the
+master password are left out of search, so guessing cannot read them.
 
 Locking, logging out and switching accounts tell the helper to forget
 everything. A lock that is still running `bw lock` keeps its own copy of the
@@ -52,8 +53,10 @@ Before it reads anything, the helper sets its core-file limit to zero (soft
 and hard) and makes itself non-dumpable, so no core is written for it and
 other programs cannot attach to it or read its memory. Buffers holding
 secrets are wiped when dropped; as with the SSH helper, that is best effort
-and cannot cover memory the allocator or the kernel keeps. Release builds
-abort on panic rather than unwinding.
+and cannot cover memory the allocator or the kernel keeps. Neither helper
+locks its memory, so the session key can be written to swap; encrypted swap,
+or zram with no disk swap, avoids that. Release builds abort on panic rather
+than unwinding.
 
 The commands it runs inherit the zero core limit, so a `bw` that crashes
 while holding your decrypted vault does not leave a core either.
