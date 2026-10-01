@@ -59,6 +59,9 @@ check("saves update the helper's copy of the item",
 check("the keyring store gets the session from the helper",
   /id: keyringStoreProc[\s\S]{0,300}inject: root\.injectSession\(Model\.keyringSecretEnvVar\(\)\)/.test(service)
     && !/secretEnv\(root\.session\)/.test(service), "")
+check("an unknown plugin directory ends in the fallback, so queued runs are flushed rather than left waiting",
+  /sshAgentPluginDir === ""\) \{\s*useVaultFallback\(/.test(body("inspectVaultHelper"))
+    && /vaultHelperState = "fallback"[\s\S]*flushVaultWaiting\(\)/.test(body("useVaultFallback")), body("inspectVaultHelper"))
 check("a lock drops the helper's key and items",
   /forgetVault\(\)/.test(body("dropVaultState")), body("dropVaultState"))
 check("each queued lock keeps its own copy of the key until it has run",

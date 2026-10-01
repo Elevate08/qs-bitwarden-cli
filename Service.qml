@@ -871,7 +871,13 @@ Item {
   property var vaultLocalSecrets: ({})
 
   function inspectVaultHelper() {
-    if (vaultHelperInspectProc.running || sshAgentPluginDir === "") return
+    if (vaultHelperInspectProc.running) return
+    // The directory comes from this file's own URL and does not change, so
+    // waiting for it would leave every queued run waiting for good.
+    if (sshAgentPluginDir === "") {
+      useVaultFallback("the plugin's directory is not known, so the vault helper cannot be found.")
+      return
+    }
     vaultHelperInspectProc.command = Model.vaultHelperInspectCommand(root.sshAgentPluginDir)
     vaultHelperInspectProc.running = true
   }
