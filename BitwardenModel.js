@@ -1651,6 +1651,106 @@ function pinUnlockCommand(slot) {
   return ["bash", "-c", cappedScript(script)]
 }
 
+// -------------------------------------------------------------------------
+// Typed secrets in a pinentry
+// -------------------------------------------------------------------------
+//
+// The master password and the PIN are typed into `pinentry`, a separate
+// process, instead of the panel: a string typed into the shell stays in its
+// heap after it is cleared. The script below is the Assuan client. It runs
+// through the vault helper with capture "pinentry:<name>", so what it prints
+// (the answer, still percent-encoded) is decoded and held there and the shell
+// is told nothing of it. Everything the user can influence (account email,
+// error text) is an argument, encoded for Assuan, never part of the script.
+
+var PINENTRY_DEFAULT_PROGRAM = "pinentry"
+var PINENTRY_TEXT_MAX = 400
+// Exit codes of the script (and 127, 126 and 128+ for a program that is
+// missing, a helper that does not know the capture, or a kill).
+var PINENTRY_EXIT = { cancelled: 1, empty: 3, failed: 4, missing: 127 }
+
+function pinentryExitCodes() {
+  return { cancelled: PINENTRY_EXIT.cancelled, empty: PINENTRY_EXIT.empty,
+           failed: PINENTRY_EXIT.failed, missing: PINENTRY_EXIT.missing }
+}
+
+// pinentry's own "operation cancelled" is GPG_ERR_CANCELED (99) from source
+// 5, 83886179; any code whose low 16 bits are 99 is read as a cancel.
+var PINENTRY_SCRIPT = [
+  "__prog=\"$1\"; __title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"",
+  "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
+  // Assuan data: only %, CR and LF need encoding.
+  "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
+  "coproc PE { exec \"$__prog\" 2>/dev/null; }",
+  "__pid=\"$PE_PID\"",
+  "trap 'kill \"$__pid\" 2>/dev/null' EXIT",
+  "trap '' PIPE",
+  // 0: OK, 1: ERR, 2: gone or silent for $1 seconds.
+  "__reply() { while IFS= read -r -t \"$1\" -u \"${PE[0]}\" __l; do",
+  "  case \"$__l\" in OK|OK\\ *) return 0 ;; ERR|ERR\\ *) return 1 ;; esac",
+  "done; return 2; }",
+  "__ask() { printf '%s\\n' \"$1\" >&\"${PE[1]}\" || exit " + PINENTRY_EXIT.failed + "; __reply 30; }",
+  "__reply 10 || exit " + PINENTRY_EXIT.failed,
+  "__enc \"$__title\"; __ask \"SETTITLE $__e\"",
+  "__enc \"$__desc\"; __ask \"SETDESC $__e\"",
+  "__enc \"$__prompt\"; __ask \"SETPROMPT $__e\"",
+  "if [ -n \"$__err\" ]; then __enc \"$__err\"; __ask \"SETERROR $__e\"; fi",
+  "printf 'GETPIN\\n' >&\"${PE[1]}\" || exit " + PINENTRY_EXIT.failed,
+  "__d=''",
+  "while IFS= read -r -u \"${PE[0]}\" __l; do",
+  "  case \"$__l\" in",
+  "    'D '*) __d=\"$__d${__l:2}\" ;;",
+  "    OK|OK\\ *)",
+  "      printf 'BYE\\n' >&\"${PE[1]}\"",
+  "      [ -n \"$__d\" ] || exit " + PINENTRY_EXIT.empty,
+  "      printf '%s' \"$__d\"; exit 0 ;;",
+  "    ERR|ERR\\ *)",
+  "      __c=\"${__l#ERR }\"; __c=\"${__c%% *}\"",
+  "      if [[ \"$__c\" =~ ^[0-9]+$ ]] && (( (10#$__c & 65535) == 99 )); then exit " + PINENTRY_EXIT.cancelled + "; fi",
+  "      exit " + PINENTRY_EXIT.failed + " ;;",
+  "  esac",
+  "done",
+  "exit " + PINENTRY_EXIT.failed
+].join("\n")
+
+function pinentryText(value) {
+  return String(value === undefined || value === null ? "" : value)
+    .replace(/\u0000/g, "").slice(0, PINENTRY_TEXT_MAX)
+}
+
+// The program to run: a setting that names one, else `pinentry` from PATH.
+// Never an option: it is the first word of the command.
+function pinentryProgram(configured) {
+  var name = typeof configured === "string" ? configured.trim() : ""
+  if (!name || name.charAt(0) === "-" || name.indexOf("\u0000") !== -1) return PINENTRY_DEFAULT_PROGRAM
+  return name
+}
+
+// `opts`: { title, description, prompt, error } as plain text.
+function pinentryCommand(program, opts) {
+  var o = opts || {}
+  return ["bash", "-c", PINENTRY_SCRIPT, "_", pinentryProgram(program),
+    pinentryText(o.title), pinentryText(o.description), pinentryText(o.prompt), pinentryText(o.error)]
+}
+
+// Exit 0 when `program` names something runnable.
+function pinentryProbeCommand(program) {
+  return ["bash", "-c", "command -v -- \"$1\" >/dev/null 2>&1", "_", pinentryProgram(program)]
+}
+
+// purpose: "unlock" (master password), "pin", "reprompt".
+function pinentryDescription(purpose, email) {
+  var who = String(email || "").trim()
+  var suffix = who ? " for " + who : ""
+  if (purpose === "pin") return "Enter the PIN that unlocks Bitwarden" + suffix
+  if (purpose === "reprompt") return "Confirm your Bitwarden master password" + suffix
+  return "Unlock Bitwarden" + suffix
+}
+
+function pinentryPrompt(purpose) {
+  return purpose === "pin" ? "PIN:" : "Master password:"
+}
+
 function keyringClearPinCommand(slot) {
   return keyringClearEntryCommand(keyringEntryName(KEYRING_PIN, slot))
 }
