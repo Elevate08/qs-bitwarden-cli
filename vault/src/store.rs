@@ -63,9 +63,18 @@ pub struct Store {
     secrets: HashMap<String, Zeroizing<String>>,
     items: Vec<Held>,
     index: HashMap<String, usize>,
+    /// Counts `forget`s. A run remembers the count it started under, and
+    /// what it captured is dropped if the count has moved on: it belongs to
+    /// a vault the panel has since locked, logged out of or switched away
+    /// from.
+    generation: u64,
 }
 
 impl Store {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn session(&self) -> Option<&str> {
         self.session.as_deref().map(String::as_str)
     }
@@ -89,6 +98,7 @@ impl Store {
     /// Drops everything but the secrets named in `keep`: a lock, a logout
     /// or an account switch.
     pub fn forget(&mut self, keep: &[String]) {
+        self.generation = self.generation.wrapping_add(1);
         self.session = None;
         self.secrets.retain(|name, _| keep.contains(name));
         self.items.clear();
