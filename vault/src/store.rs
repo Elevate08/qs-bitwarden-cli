@@ -109,8 +109,8 @@ impl Store {
     }
 
     /// Ids whose search text contains `query`, in load order. Mirrors
-    /// matchesQuery() in BitwardenModel.js, notes included
-    /// unless the item asks for the master password.
+    /// matchesQuery() in BitwardenModel.js, notes included unless the item
+    /// asks for the master password.
     pub fn search(&self, query: &str) -> Vec<&str> {
         let needle = Zeroizing::new(query.trim().to_lowercase());
         if needle.is_empty() {
@@ -214,8 +214,9 @@ fn present(item: &Map<String, Value>, path: &[&str]) -> bool {
 
 /// What matchesQuery() compares, lowercased: name, username, notes (not for an
 /// item that asks for the master password, whose notes the detail view hides
-/// behind that prompt), the public key and fingerprint of an SSH record, card brand and holder, an
-/// identity's name, email, username and company, and every website.
+/// behind that prompt), the public key and fingerprint of an SSH record, card
+/// brand and holder, an identity's name, email, username and company, and
+/// every website.
 fn haystack(item: &Map<String, Value>) -> Zeroizing<String> {
     let mut parts: Vec<&str> = vec![
         text(item, &["name"]),
