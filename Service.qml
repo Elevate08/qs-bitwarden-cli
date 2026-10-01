@@ -853,7 +853,7 @@ Item {
   property var vaultHelper: Model.uninspectedHelper()
   // Set as the shell unloads: a helper exit then is expected.
   property bool shuttingDown: false
-  // "pending" | "starting" | "active" | "fallback"
+  // "pending" | "starting" | "active" | "fallback" | "stopped"
   property string vaultHelperState: "pending"
   readonly property bool vaultHelperActive: vaultHelperState === "active"
   property string vaultHelperWarning: ""
@@ -862,9 +862,13 @@ Item {
   property var vaultWaiting: []
   property int vaultQuerySeq: 0
   property var vaultQueries: ({})
-  // Restarts after an unexpected exit; past the limit, fall back.
+  // Restarts after an unexpected exit; past the limit, the helper is left
+  // stopped and the vault locked (stopVaultHelper()). The count clears once
+  // the helper has stayed up for vaultHelperSettledMs, so exits spread over a
+  // long session do not add up.
   property int vaultHelperRestarts: 0
   readonly property int vaultHelperMaxRestarts: 3
+  readonly property int vaultHelperSettledMs: 60000
   // What `session` holds while the helper has the key (not a secret).
   readonly property string heldSessionMarker: Model.vaultHeldSession()
   // Held values by name while falling back (the helper holds them otherwise).
@@ -906,6 +910,29 @@ Item {
     flushVaultWaiting()
   }
 
+  // A helper that keeps stopping (or is being killed) is not replaced by
+  // holding the vault in the shell: the vault stays locked, runs wait, and the
+  // banner offers to try again. Falling back is only for a helper that cannot
+  // be used at all when the shell starts (GHSA-6qjw-gmvg-7hvw).
+  function stopVaultHelper() {
+    vaultHelperState = "stopped"
+    vaultHelperWarning = "The vault helper keeps stopping, so the vault stays locked. Click here to try again."
+    console.warn("qs-bitwarden: the vault helper kept stopping; the vault stays locked")
+  }
+
+  function retryVaultHelper() {
+    if (vaultHelperState !== "stopped") return
+    vaultHelperRestarts = 0
+    vaultHelperWarning = ""
+    startVaultHelper()
+  }
+
+  Timer {
+    id: vaultHelperSettleTimer
+    interval: root.vaultHelperSettledMs
+    onTriggered: if (root.vaultHelperState === "active") root.vaultHelperRestarts = 0
+  }
+
   function onVaultHelperStarted() {
     vaultHelperProc.write(Model.vaultHelperLine("hello", {}))
   }
@@ -916,6 +943,7 @@ Item {
     if (message.type === "ready") {
       vaultHelperState = "active"
       vaultHelperWarning = ""
+      vaultHelperSettleTimer.restart()
       flushVaultWaiting()
     } else if (message.type === "exit") {
       var proc = vaultRuns[message.id]
@@ -939,6 +967,7 @@ Item {
   // The helper went away: its runs fail, and the session key went with it,
   // so an unlocked vault is locked here too. Restarted, within a limit.
   function onVaultHelperExited(exitCode) {
+    vaultHelperSettleTimer.stop()
     var wasActive = vaultHelperState === "active" || vaultHelperState === "starting"
     var unexpected = wasActive && !shuttingDown
     // Until it is back (or given up on), new runs wait rather than being
@@ -974,7 +1003,7 @@ Item {
       vaultHelperRestarts += 1
       Qt.callLater(startVaultHelper)
     } else {
-      useVaultFallback("the vault helper kept stopping.")
+      stopVaultHelper()
     }
   }
 
@@ -989,6 +1018,7 @@ Item {
   // Called by VaultProcess.start().
   function vaultStart(proc) {
     if (vaultHelperState === "pending" || vaultHelperState === "starting"
+        || vaultHelperState === "stopped"
         || (vaultHelperState === "active" && !vaultHelperProc.running)) {
       if (vaultWaiting.indexOf(proc) === -1) vaultWaiting = vaultWaiting.concat([proc])
       return
