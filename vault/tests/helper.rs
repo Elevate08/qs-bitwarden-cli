@@ -226,6 +226,41 @@ fn a_held_secret_is_injected_by_name() {
 }
 
 #[test]
+fn a_pinentry_answer_is_decoded_and_injected_by_name() {
+    let mut helper = Helper::start();
+    // What the panel's pinentry script prints: the `D` data, still encoded.
+    let kept = helper.exec(
+        1,
+        "printf '%s\\n' 'p%25w%0Ad+'",
+        json!({ "capture": "pinentry:pin" }),
+    );
+    assert_eq!(
+        (kept["out"].as_str(), kept["held"].as_bool()),
+        (Some(""), Some(true))
+    );
+    let run = helper.exec(
+        2,
+        "printf '%s' \"$PW\"",
+        json!({ "inject": { "PW": "secret:pin" } }),
+    );
+    assert_eq!(run["out"], "p%w\nd+");
+    // A cancel (exit 1) keeps nothing and tells the panel nothing.
+    let cancelled = helper.exec(
+        3,
+        "printf 'x'; exit 1",
+        json!({ "capture": "pinentry:other" }),
+    );
+    assert_eq!(
+        (
+            cancelled["out"].as_str(),
+            cancelled["held"].as_bool(),
+            cancelled["code"].as_i64()
+        ),
+        (Some(""), Some(false), Some(1))
+    );
+}
+
+#[test]
 fn a_vault_read_reaches_the_panel_without_secrets() {
     let mut helper = Helper::start();
     let script = format!("cat <<'EOF'\n{}\nEOF", vault_read());
