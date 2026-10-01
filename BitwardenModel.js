@@ -5239,9 +5239,32 @@ var SSH_AGENT_MAX_PATH_CHARS = 512
 
 function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 
-function boundedText(value, limit) {
+// Characters that draw as nothing or change how their neighbours are drawn:
+// C0 and C1 controls, line and paragraph separators, zero-width and direction
+// marks, bidi embeddings and isolates, and the byte order mark. A process path
+// or a key's name containing one can pass for something else on a prompt.
+var SSH_AGENT_INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g
+
+// `value` as text, with each of those written out as \uXXXX so the prompt
+// shows them.
+function visibleText(value) {
   var text = (value === undefined || value === null) ? "" : String(value)
+  return text.replace(SSH_AGENT_INVISIBLE_RE, function(c) {
+    return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
+  })
+}
+
+// Escaped first, so the limit bounds what is drawn.
+function boundedText(value, limit) {
+  var text = visibleText(value)
   return text.length > limit ? text.slice(0, limit) : text
+}
+
+// A path cut from the left, so the end of it -- the executable -- is what
+// remains.
+function boundedPath(value, limit) {
+  var text = visibleText(value)
+  return text.length > limit ? "\u2026" + text.slice(text.length - (limit - 1)) : text
 }
 
 function isRequestId(value) {
@@ -5274,7 +5297,7 @@ function sshAgentRevokeGrantLine(grantId) {
 
 // "/usr/bin/ssh" -> "ssh", for display beside the full path only.
 function processNameFromPath(processPath) {
-  var text = String(processPath === undefined || processPath === null ? "" : processPath)
+  var text = visibleText(processPath)
   var cut = text.lastIndexOf("/")
   var name = cut >= 0 ? text.slice(cut + 1) : text
   return boundedText(name, SSH_AGENT_MAX_NAME_CHARS)
@@ -5351,8 +5374,8 @@ function sshAgentPromptView(message, approvalWindowSec) {
     keyName: boundedText(request.keyName, SSH_AGENT_MAX_NAME_CHARS),
     fingerprint: boundedText(request.fingerprint, SSH_AGENT_MAX_NAME_CHARS),
     pid: Math.floor(Number(request.pid)) || 0,
-    processPath: boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS),
-    processName: processNameFromPath(boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS)),
+    processPath: boundedPath(request.processPath, SSH_AGENT_MAX_PATH_CHARS),
+    processName: processNameFromPath(request.processPath),
     operation: operation,
     operationLabel: sshAgentOperationLabel(operation, request.operationDetail),
     hostKey: hostKey,
@@ -5418,8 +5441,8 @@ function sshAgentGrantViews(grants, nowMs) {
       keyName: boundedText(grant.keyName, SSH_AGENT_MAX_NAME_CHARS),
       fingerprint: boundedText(grant.fingerprint, SSH_AGENT_MAX_NAME_CHARS),
       pid: Math.floor(Number(grant.pid)) || 0,
-      processPath: boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
-      processName: processNameFromPath(boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS)),
+      processPath: boundedPath(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
+      processName: processNameFromPath(grant.processPath),
       operationLabel: sshAgentOperationLabel(operation, grant.operationDetail),
       hostKey: hostKey,
       // Absolute expiry, so the countdown can be recomputed each tick.
