@@ -6175,19 +6175,22 @@ Item {
     // A confirmed re-prompt lasts while its item's detail is open, and the
     // edit form (and a generator trip from it) is part of that.
     // A prompt still waiting was for the screen being left.
-    var inItem = currentScreen === "detail" || currentScreen === "edit"
-      || (currentScreen === "generator" && generatorReturnScreen === "edit")
+    // An SSH approval shown in the panel covers the screen it came over and
+    // returns to it, so the item and its form are judged by that screen.
+    var screen = currentScreen === "sshApproval" ? screenBeforeSshApproval : currentScreen
+    var inItem = screen === "detail" || screen === "edit"
+      || (screen === "generator" && generatorReturnScreen === "edit")
     if (repromptPending) cancelReprompt()
     if (!inItem) {
       clearRepromptGrant()
       liveTotp = ""
-    } else if (currentScreen === "detail") {
+    } else if (screen === "detail") {
       // Back from the edit form: the whole item it loaded goes.
       withholdDetailSecrets()
     }
     // The edit form's copy of the item, a typed or generated password
     // included, goes with the form.
-    if (currentScreen !== "edit" && !(currentScreen === "generator" && generatorReturnScreen === "edit")) {
+    if (screen !== "edit" && !(screen === "generator" && generatorReturnScreen === "edit")) {
       resetItemForm()
     }
     restoreScreenFocus()

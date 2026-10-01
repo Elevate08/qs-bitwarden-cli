@@ -289,4 +289,14 @@ check("the detail from a helper row has no key to compute a code from",
   check("leaving drops what was revealed, and the detail keeps working", Object.keys(v.revealedFields).length === 0 && v.detailPassword === "hunter2", "")
 }
 
+// An SSH approval shown in the panel covers the edit form; coming back to it
+// must find the form as it was.
+{
+  const handler = (src.match(/onCurrentScreenChanged: \{[\s\S]*?\n  \}/) || [""])[0]
+  check("an SSH approval over the edit form keeps the form and the item",
+    /currentScreen === "sshApproval" \? screenBeforeSshApproval : currentScreen/.test(handler)
+      && /if \(screen !== "edit"[\s\S]*resetItemForm\(\)/.test(handler)
+      && !/if \(currentScreen !== "edit"/.test(handler), handler)
+}
+
 done()
