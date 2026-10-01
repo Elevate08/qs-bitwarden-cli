@@ -101,9 +101,8 @@ check("the SSH agent is locked even when the panel was not yet unlocked",
 }
 check("a run stopped after the helper died is not written to it",
   /if \(proc\.runId > 0\) \{[\s\S]{0,120}if \(vaultHelperActive\) vaultHelperProc\.write/.test(body("vaultKill")), body("vaultKill"))
-check("a failed or crashing helper falls back, and says so",
-  /useVaultFallback\(vaultHelper\.message\)/.test(body("onVaultHelperInspected"))
-    && /useVaultFallback\("the vault helper kept stopping\."\)/.test(body("onVaultHelperExited")), "")
+check("a helper that cannot be used at start falls back, and says so",
+  /useVaultFallback\(vaultHelper\.message\)/.test(body("onVaultHelperInspected")), "")
 check("the panel shows the fallback banner",
   /visible: root\.vaultHelperWarning !== ""/.test(readPluginSource("Panel.qml")), "")
 
@@ -112,6 +111,30 @@ const [held] = Model.parseItems([{ id: "a", type: 1, name: "n", login: { usernam
 check("an item from the helper says what it has without holding it",
   held.hasPassword && held.hasTotp && held.hasNotes && held.password === "" && held.totpKey === ""
     && held.rawObject === null && held.secretsHeld, JSON.stringify(held))
+
+// --- a helper that keeps stopping (GHSA-6qjw-gmvg-7hvw #2) -----------------------
+
+{
+  const exited = body("onVaultHelperExited")
+  check("a helper that keeps stopping leaves the vault locked rather than in the shell",
+    /stopVaultHelper\(\)/.test(exited) && !/useVaultFallback/.test(exited), exited)
+  const stop = body("stopVaultHelper")
+  check("stopped is its own state, with a banner and no fallback",
+    /vaultHelperState = "stopped"/.test(stop) && /vaultHelperWarning = /.test(stop)
+      && !/useVaultFallback|runLocally/.test(stop), stop)
+  const start = body("vaultStart")
+  check("runs wait while the helper is stopped instead of running in the shell",
+    /vaultHelperState === "stopped"/.test(start.split("runLocally")[0]), start)
+  const retry = body("retryVaultHelper")
+  check("trying again starts the helper with a fresh count",
+    /vaultHelperState !== "stopped"\) return/.test(retry) && /vaultHelperRestarts = 0/.test(retry)
+      && /startVaultHelper\(\)/.test(retry), retry)
+  check("the count clears once the helper has stayed up a minute",
+    /vaultHelperSettledMs: 60000/.test(service)
+      && /id: vaultHelperSettleTimer[\s\S]{0,200}vaultHelperRestarts = 0/.test(service)
+      && /vaultHelperSettleTimer\.restart\(\)/.test(body("onVaultHelperLine"))
+      && /vaultHelperSettleTimer\.stop\(\)/.test(exited), "")
+}
 
 // --- the real helper -------------------------------------------------------------
 
