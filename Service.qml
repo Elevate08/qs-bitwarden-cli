@@ -262,27 +262,116 @@ Item {
   // Selected item detail
   property var detailItem: null
   property string detailPassword: ""
-  // Revealed sensitive fields of the open item, by key; each eye is separate.
+  // Revealed sensitive fields of the open item: field key (as the helper names
+  // them: "password", "notes", "cardNumber", "cardCode", "ssn",
+  // "passportNumber", "licenseNumber", "customField:<index>", plus "totp",
+  // which has no value here) -> its value. Each eye is separate. A value is
+  // fetched when its eye is clicked and dropped when it is hidden, the item is
+  // closed or another opened, the screen is left or the vault locks.
   property var revealedFields: ({})
 
-  function isFieldRevealed(key) { return Boolean(revealedFields[key]) }
+  function isFieldRevealed(key) { return revealedFields[key] !== undefined }
+
+  // What a revealed field shows; `listed` (the masked placeholder) otherwise.
+  function shownSecret(key, listed) {
+    var value = revealedFields[key]
+    return value !== undefined && value !== "" ? value : listed
+  }
+
+  // `value` undefined hides the field.
+  function setFieldRevealed(key, value) {
+    var next = {}
+    for (var k in revealedFields) next[k] = revealedFields[k]
+    if (value !== undefined) next[key] = String(value)
+    else delete next[key]
+    revealedFields = next
+  }
 
   // Revealing a field of a re-prompt item asks for the master password
   // first; hiding one never does.
   function toggleFieldReveal(key) {
-    if (!revealedFields[key] && detailItem) {
-      withRevealedDetail(detailItem, function() { root.setFieldRevealed(key, true) })
+    var item = detailItem
+    if (!item) return
+    if (isFieldRevealed(key)) {
+      setFieldRevealed(key, undefined)
+      // A re-prompt item's code is fetched when it is revealed only.
+      if (key === "totp" && itemNeedsReprompt(item)) liveTotp = ""
       return
     }
-    setFieldRevealed(key, !revealedFields[key])
+    withReprompt(item, function() { root.revealField(item, key) })
   }
 
-  function setFieldRevealed(key, on) {
-    var next = {}
-    for (var k in revealedFields) next[k] = revealedFields[k]
-    if (on) next[key] = true
-    else delete next[key]
-    revealedFields = next
+  function revealField(item, key) {
+    if (key === "totp") {
+      // The code is computed in the helper; there is no value to fetch.
+      setFieldRevealed("totp", "")
+      fetchTotp(String(item.id))
+      return
+    }
+    readDetailSecret(item, key, function(value) { root.setFieldRevealed(key, value) })
+  }
+
+  // Whether the detail shows (and keeps refreshing) its TOTP code: always,
+  // except that a re-prompt item's code waits for its eye.
+  function totpWanted(item) {
+    return !!item && (!itemNeedsReprompt(item) || isFieldRevealed("totp"))
+  }
+
+  // The list row of an item whose secrets the helper holds, else null.
+  function helperRow(id) {
+    if (!vaultHelperActive) return null
+    var row = Model.findItemById(items, String(id))
+    return row && row.secretsHeld ? row : null
+  }
+
+  // The open item's one secret `key`: from the helper when it holds the item,
+  // else from the detail, which then holds the value already.
+  // `callback(value)` runs only if that item's detail is still open.
+  function readDetailSecret(item, key, callback) {
+    var id = String(item.id)
+    if (!helperRow(id)) {
+      var local = Model.detailSecretValue(detailItem, key)
+      if (local !== null) callback(local)
+      return
+    }
+    var epoch = vaultEpoch
+    vaultQuery("field", { id: id, field: key }, function(ok, value) {
+      if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+      if (!ok) {
+        root.errorMessage = "Could not read this value"
+        return
+      }
+      callback(String(value))
+    })
+  }
+
+  // The detail screen's copy of one secret: the helper hands it to wl-copy
+  // and it does not come here. Re-prompt items ask first.
+  function copyDetailField(key, label) {
+    var item = detailItem
+    if (!item) return
+    withReprompt(item, function() { root.copyDetailFieldNow(item, key, label) })
+  }
+
+  function copyDetailFieldNow(item, key, label) {
+    var id = String(item.id)
+    if (helperRow(id)) {
+      var epoch = vaultEpoch
+      vaultQuery("copyField", { id: id, field: key, clearSec: Math.max(0, Math.floor(Number(clearClipboardSec) || 0)) },
+        function(ok) {
+          if (epoch !== root.vaultEpoch) return
+          if (ok) {
+            root.resetAutoLockTimer()
+            root.flashNotification(label + " copied!")
+          } else {
+            root.errorMessage = "Could not read this value"
+          }
+        })
+      return
+    }
+    var value = Model.detailSecretValue(detailItem, key)
+    if (value) copyToClipboard(value, label)
   }
 
   // -------------------------------------------------------------------------
@@ -301,10 +390,12 @@ Item {
   // lasts only while that item's detail stays open: closing it, opening
   // another item, closing the panel or locking asks again.
   //
-  // With the vault helper the shell does not hold such an item's secrets
-  // before that: its detail is drawn from the list row (Model.publicItemDetail())
-  // and withRevealedDetail() asks the helper for the whole item once the
-  // password is confirmed. Ending the confirmation drops them again.
+  // With the vault helper the shell holds no item's secrets until a value is
+  // revealed or the item is edited: the detail is drawn from the list row
+  // (Model.publicItemDetail()). Revealing and copying go through the helper
+  // (readDetailSecret(), copyDetailField()), after the prompt for a re-prompt
+  // item; editing asks for the whole item (withRevealedDetail()). Ending the
+  // confirmation drops what was fetched.
   property bool repromptPending: false
   property string repromptItemId: ""
   property string repromptItemName: ""
@@ -401,22 +492,23 @@ Item {
     withholdDetailSecrets()
   }
 
-  // The open detail of a re-prompt item the helper keeps goes back to its
-  // public view, with no password, code or revealed field. A detail built from
-  // the list's own raw item (no helper) is left as it is.
+  // Drops every revealed value. An item the helper keeps goes back to its
+  // public view, with no password, notes or other secret that an edit loaded,
+  // and a re-prompt item's code is dropped too. A detail built from the list's
+  // own raw item (no helper) is otherwise left as it is.
   function withholdDetailSecrets() {
-    if (!detailItem || detailItem.secretsWithheld || !vaultHelperActive) return
-    if (!itemNeedsReprompt(detailItem) || detailItem.typeCode === 5) return
+    revealedFields = ({})
+    if (!detailItem || !vaultHelperActive) return
+    if (itemNeedsReprompt(detailItem)) liveTotp = ""
+    if (detailItem.secretsWithheld || detailItem.typeCode === 5) return
     var listed = Model.findItemById(items, String(detailItem.id))
     if (listed && !listed.secretsHeld) return
     detailItem = Model.publicItemDetail(detailItem)
     detailPassword = ""
-    liveTotp = ""
-    revealedFields = ({})
   }
 
-  // withReprompt(), then the whole item in `detailItem`, then `callback`. For
-  // an item whose detail is already whole (no re-prompt, or no helper) it is
+  // withReprompt(), then the whole item in `detailItem`, then `callback`: the
+  // edit form's. For an item whose detail is already whole (no helper) it is
   // withReprompt() alone. An answer for an item no longer open, a grant that
   // ended, or a vault that locked meanwhile runs nothing.
   function withRevealedDetail(item, callback) {
@@ -447,7 +539,6 @@ Item {
         }
         root.detailItem = parsed
         root.detailPassword = parsed.password
-        if (parsed.hasTotp) root.fetchTotp(id)
       }
       callback()
     })
@@ -6012,7 +6103,18 @@ Item {
     var inItem = currentScreen === "detail" || currentScreen === "edit"
       || (currentScreen === "generator" && generatorReturnScreen === "edit")
     if (repromptPending) cancelReprompt()
-    if (!inItem) clearRepromptGrant()
+    if (!inItem) {
+      clearRepromptGrant()
+      liveTotp = ""
+    } else if (currentScreen === "detail") {
+      // Back from the edit form: the whole item it loaded goes.
+      withholdDetailSecrets()
+    }
+    // The edit form's copy of the item, a typed or generated password
+    // included, goes with the form.
+    if (currentScreen !== "edit" && !(currentScreen === "generator" && generatorReturnScreen === "edit")) {
+      resetItemForm()
+    }
     restoreScreenFocus()
   }
 
@@ -6141,18 +6243,11 @@ Item {
     }
   }
 
-  // The item whose detail the helper was asked for (openDetail()).
-  property string detailRequestedId: ""
-
   function openDetail(item) {
     closeFilterGroup()
     if (!item || !item.id) return
     // Another item's confirmation does not carry over.
     if (String(item.id) !== repromptVerifiedId) clearRepromptGrant()
-    // Judged before the detail is reset: a confirmation for this very item
-    // still counts. Otherwise the helper is not asked for its secrets yet.
-    var withheld = vaultHelperActive && item.secretsHeld && !item.rawObject
-      && itemNeedsReprompt(item) && !repromptSatisfied(item)
     learnFromPick(item)
     isLoading = true
     errorMessage = ""
@@ -6180,29 +6275,21 @@ Item {
         currentScreen = "main"
         return
       }
-      if (withheld) {
-        // Nothing secret until the master password: the row's own fields,
-        // and the whole item (with its TOTP) after the prompt.
+      if (item.secretsHeld && vaultHelperActive) {
+        // Nothing secret: the row's own fields. Each secret is asked of the
+        // helper when it is revealed or copied.
         isLoading = false
         detailItem = Model.publicItemDetail(item)
-      } else if (item.secretsHeld && vaultHelperActive) {
-        // The helper has the whole item; only this one comes here. An answer
-        // for an item no longer being opened is dropped.
-        var id = String(item.id)
-        detailRequestedId = id
-        vaultQuery("item", { id: id }, function(ok, full) {
-          if (root.detailRequestedId !== id || root.currentScreen !== "detail") return
-          root.detailRequestedId = ""
-          root.onDetailFinished(ok ? String(full) : "")
-        })
       } else {
         getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
         getItemProc.running = true
       }
     }
 
-    // The TOTP is time-based, so it is fetched alongside.
-    if (item.hasTotp && !withheld) {
+    // The TOTP is time-based, so it is fetched alongside. The helper computes
+    // it; the key does not come here. A re-prompt item's code is fetched when
+    // it is revealed or copied.
+    if (item.hasTotp && !itemNeedsReprompt(item)) {
       fetchTotp(item.id)
     }
   }
@@ -6420,7 +6507,7 @@ Item {
 
   function applyTotpCode(itemId, code) {
     var c = String(code || "").trim()
-    if (detailItem && detailItem.id === itemId && !detailItem.secretsWithheld) liveTotp = c
+    if (detailItem && detailItem.id === itemId && totpWanted(detailItem)) liveTotp = c
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
       totpFollowupCode = c
     }
@@ -7315,7 +7402,7 @@ Item {
   function copyDetailTotp() {
     var item = detailItem
     if (!item || !item.hasTotp) return
-    withRevealedDetail(item, function() { root.copyTotpCodeNow(item) })
+    withReprompt(item, function() { root.copyTotpCodeNow(item) })
   }
 
   function copyTotpCodeNow(item) {
@@ -7752,7 +7839,7 @@ Item {
       root.totpSecRemaining = sec
       if (sec === 30) {
         if (root.currentScreen === "detail" && root.detailItem && root.detailItem.hasTotp
-            && !root.detailItem.secretsWithheld) {
+            && root.totpWanted(root.detailItem)) {
           root.fetchTotp(root.detailItem.id)
         } else if (root.totpFollowupActive && root.totpFollowupItem) {
           root.fetchTotp(root.totpFollowupItem.id)

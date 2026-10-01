@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 // A re-prompt item's secrets reach the shell only after the master password:
-// opening it draws the detail from the list's stripped row, and the helper is
-// asked for the whole item once an action on it has passed the prompt. The
-// functions run here against a stand-in vault with a scripted helper.
+// opening it draws the detail from the list's stripped row, and each value is
+// asked of the helper once an action on it has passed the prompt (the whole
+// item only for an edit). The functions run here against a stand-in vault
+// with a scripted helper (detail-vault.js); detail-on-demand.test.js covers
+// items without the flag.
 //
 //   node tests/reprompt-detail.test.js
 
-const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
-
-const Model = loadModule()
-const src = readPluginSource("Panel.qml")
-const body = name => functionBody(src, name)
+const { createSuite } = require("./harness")
+const { Model, src, body, makeVault: makeStandIn, answer, confirm } = require("./detail-vault")
 const { check, eq, done } = createSuite("reprompt-detail")
 
 // What the helper hands the list: secrets gone, `qsbwHeld` saying which there were.
@@ -62,84 +61,71 @@ check("a card's number and code are not in its public view",
 
 // --- the shell's side, run against a stand-in vault ------------------------------------------
 
-const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submitReprompt", "cancelReprompt",
-  "clearRepromptGrant", "withholdDetailSecrets", "withRevealedDetail", "loadFullDetail", "openDetail",
-  "onDetailFinished", "toggleFieldReveal", "setFieldRevealed", "isFieldRevealed", "startEditItem",
-  "copyDetailTotp", "applyTotpCode", "saveItemForm"]
-function makeVault(items) {
-  const v = {
-    Model,
-    items: items || listed, vaultHelperActive: true, status: "unlocked", vaultEpoch: 3, currentScreen: "main",
-    repromptPending: false, repromptItemId: "", repromptItemName: "", repromptError: "", repromptBusy: false,
-    repromptCallback: null, repromptEpoch: -1, repromptVerifiedId: "", repromptActionId: "",
-    detailItem: null, detailPassword: "", liveTotp: "", revealedFields: {}, errorMessage: "", isLoading: false,
-    showDeleteConfirm: false, attachmentQueue: [], attachmentSaved: {}, detailRequestedId: "",
-    totpFollowupActive: false, totpFollowupItem: null, totpFollowupCode: "", totpCopyItemId: "",
-    pendingSave: null, formIsEditing: true, formItemId: "g1",
-    queries: [], totps: [], answers: [], copied: [], edits: [], verify: null,
-    closeFilterGroup() {}, learnFromPick() {}, beginVaultRead() {}, vaultReadIsStale() { return false },
-    fetchTotp(id) { v.totps.push(id) },
-    copyToClipboard(value, label) { v.copied.push([value, label]) },
-    startEditItemNow(item) { v.edits.push(item) },
-    verifyMasterPassword(pw, done) { v.verify = done },
-    // The helper answers when the test says so.
-    vaultQuery(kind, args, cb) { v.queries.push({ kind, args }); v.answers.push(cb) }
-  }
-  v.root = v
-  const make = new Function("root", "with (root) {\n" + names.map(body).join("\n")
-    + "\nreturn {" + names.map(n => `${n}: ${n}`).join(", ") + "} }")
-  Object.assign(v, make(v))
-  return v
-}
-const answerItem = (v, i, raw) => v.answers[i](true, JSON.stringify(raw))
-const confirm = v => { v.submitReprompt("pw"); v.verify(true) }
+const makeVault = items => makeStandIn(items || listed)
+const answerItem = (v, i, raw) => answer(v, i, true, JSON.stringify(raw))
 
 {
   const v = makeVault()
   v.openDetail(row("g1"))
-  check("opening a protected item sends no item or TOTP query",
-    v.queries.length === 0 && v.totps.length === 0, JSON.stringify(v.queries))
+  check("opening a protected item sends no query and no TOTP request", v.queries.length === 0, JSON.stringify(v.queries))
   check("it draws the public detail and holds no secret",
     v.detailItem && v.detailItem.secretsWithheld && v.detailPassword === "" && v.liveTotp === ""
       && v.currentScreen === "detail" && !v.isLoading && v.detailItem.hasPassword && v.detailItem.hasTotp,
     JSON.stringify(v.detailItem))
 
-  // Reveal the password: prompt, then fetch, then the action.
+  // Reveal the password: prompt, then the one field.
   v.toggleFieldReveal("password")
   check("a reveal asks first and fetches nothing yet", v.repromptPending && v.queries.length === 0, "")
   confirm(v)
-  check("once confirmed the item is requested from the helper",
-    v.queries.length === 1 && v.queries[0].kind === "item" && v.queries[0].args.id === "g1" && !v.isFieldRevealed("password"),
+  check("once confirmed only that field is requested from the helper",
+    v.queries.length === 1 && v.queries[0].kind === "field" && v.queries[0].args.id === "g1"
+      && v.queries[0].args.field === "password" && !v.isFieldRevealed("password"),
     JSON.stringify(v.queries))
-  answerItem(v, 0, full)
-  check("the fetched item replaces the public view and the reveal runs",
-    !v.detailItem.secretsWithheld && v.detailPassword === "hunter2" && v.isFieldRevealed("password")
-      && v.detailItem.notes === "recovery words", JSON.stringify(v.detailItem))
-  check("its TOTP is asked for once the item is loaded", v.totps.join() === "g1", v.totps.join())
+  answer(v, 0, true, "hunter2")
+  check("the value is shown while revealed, and the detail stays public",
+    v.isFieldRevealed("password") && v.shownSecret("password", "") === "hunter2"
+      && v.detailItem.secretsWithheld && v.detailPassword === "" && v.detailItem.notes === "",
+    JSON.stringify(v.detailItem))
+  check("revealing the password asks for no TOTP code", v.queries.length === 1, JSON.stringify(v.queries))
 
   // Clearing the grant takes the secrets out again.
-  v.liveTotp = "123456"
   v.clearRepromptGrant()
-  check("clearing the grant empties the secrets and restores the public view",
+  check("clearing the grant empties the revealed values and keeps the public view",
     v.detailItem.secretsWithheld && v.detailPassword === "" && v.liveTotp === "" && !v.isFieldRevealed("password")
-      && !SECRETS.some(s => JSON.stringify(v.detailItem).includes(s)), JSON.stringify(v.detailItem))
+      && !SECRETS.some(s => JSON.stringify(v.revealedFields).includes(s)), JSON.stringify(v.revealedFields))
   v.toggleFieldReveal("password")
   check("and the next reveal asks again", v.repromptPending, "")
 }
 
 {
-  // A copy waits for the fetched value.
+  // The code of a flagged item: fetched on its eye, dropped when hidden.
   const v = makeVault()
   v.openDetail(row("g1"))
-  let value = ""
-  v.withRevealedDetail(v.detailItem, () => { value = v.detailPassword })
+  v.toggleFieldReveal("totp")
   confirm(v)
-  check("the action has not run before the item arrives", value === "" && v.queries.length === 1, value)
-  answerItem(v, 0, full)
-  eq("it runs with the fetched value", value, "hunter2")
-  let second = ""
-  v.withRevealedDetail(v.detailItem, () => { second = v.detailPassword })
-  check("a loaded item runs further actions at once, with no second fetch", second === "hunter2" && v.queries.length === 1, "")
+  check("the code is asked of the helper (no key, no item) after the prompt",
+    v.queries.length === 1 && v.queries[0].kind === "totp" && v.queries[0].args.id === "g1" && v.isFieldRevealed("totp"),
+    JSON.stringify(v.queries))
+  answer(v, 0, true, { code: "123456", period: 30 })
+  eq("it shows", v.liveTotp, "123456")
+  v.toggleFieldReveal("totp")
+  check("hiding it drops the code, with no prompt", v.liveTotp === "" && !v.isFieldRevealed("totp") && !v.repromptPending, v.liveTotp)
+  v.applyTotpCode("g1", "654321")
+  eq("a late answer does not refill a hidden code", v.liveTotp, "")
+}
+
+{
+  // A copy goes through the helper, and the value never comes here.
+  const v = makeVault()
+  v.openDetail(row("g1"))
+  v.copyDetailField("notes", "Notes")
+  confirm(v)
+  check("a copy after the prompt asks the helper to copy that one field",
+    v.queries.length === 1 && v.queries[0].kind === "copyField" && v.queries[0].args.field === "notes"
+      && v.queries[0].args.clearSec === 30, JSON.stringify(v.queries))
+  answer(v, 0, true, true)
+  check("the shell holds no value and says it copied",
+    v.copied.length === 0 && v.flashes.join() === "Notes copied!" && v.revealedFields.notes === undefined, JSON.stringify(v.flashes))
 }
 
 {
@@ -147,13 +133,12 @@ const confirm = v => { v.submitReprompt("pw"); v.verify(true) }
   const stale = (label, change) => {
     const v = makeVault()
     v.openDetail(row("g1"))
-    let ran = 0
-    v.withRevealedDetail(v.detailItem, () => ran++)
+    v.toggleFieldReveal("password")
     confirm(v)
     change(v)
-    answerItem(v, 0, full)
-    check(label, ran === 0 && v.detailPassword === "" && !SECRETS.some(s => JSON.stringify(v.detailItem || "").includes(s)),
-      JSON.stringify([ran, v.detailPassword, v.detailItem]))
+    answer(v, 0, true, "hunter2")
+    check(label, !v.isFieldRevealed("password") && !SECRETS.some(s => JSON.stringify(v.revealedFields).includes(s)),
+      JSON.stringify(v.revealedFields))
   }
   stale("an answer after another item was opened is dropped", v => v.openDetail(row("n1")))
   stale("an answer after the detail was closed is dropped", v => { v.currentScreen = "main"; v.clearRepromptGrant() })
@@ -162,29 +147,16 @@ const confirm = v => { v.submitReprompt("pw"); v.verify(true) }
 }
 
 {
-  // Not protected: one step, as before.
-  const v = makeVault()
-  v.openDetail(row("n1"))
-  check("an unprotected item still loads in one step",
-    v.queries.length === 1 && v.queries[0].kind === "item" && v.queries[0].args.id === "n1" && v.isLoading, JSON.stringify(v.queries))
-  answerItem(v, 0, { id: "n1", type: 1, name: "Mail", reprompt: 0, login: { username: "me", password: "pw" } })
-  check("and shows its password at once", v.detailPassword === "pw" && !v.detailItem.secretsWithheld, "")
-  let ran = 0
-  v.withRevealedDetail(v.detailItem, () => ran++)
-  check("its actions run without a prompt", ran === 1 && !v.repromptPending && v.queries.length === 1, "")
-  v.clearRepromptGrant()
-  check("clearing a grant leaves it alone", v.detailPassword === "pw", "")
-}
-
-{
-  // Reopening the confirmed item loads it whole.
+  // Reopening the confirmed item keeps the confirmation, not the values.
   const v = makeVault()
   v.openDetail(row("g1"))
-  v.withRevealedDetail(v.detailItem, () => {})
+  v.toggleFieldReveal("password")
   confirm(v)
-  answerItem(v, 0, full)
+  answer(v, 0, true, "hunter2")
   v.openDetail(row("g1"))
-  check("reopening the confirmed item loads it in one step", v.queries.length === 2 && v.queries[1].kind === "item", JSON.stringify(v.queries))
+  check("reopening the confirmed item shows nothing revealed", !v.isFieldRevealed("password") && v.detailItem.secretsWithheld,
+    JSON.stringify(v.revealedFields))
+  check("and the code of a flagged item is still not fetched", v.queries.length === 1, JSON.stringify(v.queries))
 }
 
 {
@@ -196,6 +168,9 @@ const confirm = v => { v.submitReprompt("pw"); v.verify(true) }
     v.queries.length === 0 && v.detailPassword === "hunter2" && !v.detailItem.secretsWithheld, JSON.stringify(v.detailItem))
   v.clearRepromptGrant()
   check("and clearing the grant leaves it working", v.detailPassword === "hunter2", "")
+  v.toggleFieldReveal("password")
+  confirm(v)
+  check("a reveal reads the detail, with no helper query", v.shownSecret("password", "") === "hunter2" && v.queries.length === 0, "")
 }
 
 {
@@ -204,31 +179,32 @@ const confirm = v => { v.submitReprompt("pw"); v.verify(true) }
   v.openDetail(row("g1"))
   v.startEditItem(v.detailItem)
   confirm(v)
-  check("an edit waits for the fetch", v.edits.length === 0 && v.queries.length === 1, "")
+  check("an edit waits for the fetch", v.edits.length === 0 && v.queries.length === 1 && v.queries[0].kind === "item", JSON.stringify(v.queries))
   answerItem(v, 0, full)
   check("then opens the form from the whole item",
     v.edits.length === 1 && v.edits[0].password === "hunter2" && v.edits[0].rawObject.login.password === "hunter2",
     JSON.stringify(v.edits))
   v.clearRepromptGrant()
+  check("clearing the grant puts the public view back", v.detailItem.secretsWithheld && v.detailPassword === "", JSON.stringify(v.detailItem))
   v.saveItemForm()
   check("a form kept past the grant cannot be saved from the public view",
     v.pendingSave === null && /open the item again/i.test(v.errorMessage), v.errorMessage)
 }
 
-check("a copy of a TOTP code goes through the fetch",
-  /withRevealedDetail\(item, function\(\) \{ root\.copyTotpCodeNow\(item\) \}\)/.test(body("copyDetailTotp")), body("copyDetailTotp"))
+check("a copy of a TOTP code goes through the prompt, not a fetch of the item",
+  /withReprompt\(item, function\(\) \{ root\.copyTotpCodeNow\(item\) \}\)/.test(body("copyDetailTotp")), body("copyDetailTotp"))
 
 // --- wiring in the source ------------------------------------------------------------------
 
-check("a late TOTP answer does not refill a withheld detail",
-  /!detailItem\.secretsWithheld/.test(body("applyTotpCode")), body("applyTotpCode"))
+check("a late TOTP answer does not refill a hidden code",
+  /totpWanted\(detailItem\)/.test(body("applyTotpCode")), body("applyTotpCode"))
 const timer = src.slice(src.indexOf("id: totpCountdownTimer"), src.indexOf("id: totpCountdownTimer") + 700)
-check("the countdown does not refetch a withheld TOTP", /!root\.detailItem\.secretsWithheld/.test(timer), timer)
+check("the countdown does not refetch a hidden TOTP", /root\.totpWanted\(root\.detailItem\)/.test(timer), timer)
 const screen = src.slice(src.indexOf("onCurrentScreenChanged:"), src.indexOf("onCurrentScreenChanged:") + 1400)
-check("leaving the item clears the grant and with it the secrets", /if \(!inItem\) clearRepromptGrant\(\)/.test(screen), screen)
-check("every secret copy on the detail screen reads its value after the fetch",
-  !/copyDetailSecret\(\s*(root\.)?(detailPassword|liveTotp|detailCard|detailIdentity|detailItem\.notes|value)/.test(src),
-  "copyDetailSecret was passed a value read before the prompt")
+check("leaving the item clears the grant and with it the secrets", /if \(!inItem\) \{\s*clearRepromptGrant\(\)/.test(screen), screen)
+check("every secret copy on the detail screen names its field, not a value",
+  !/copyDetailSecret\(\s*(function|root\.|detailPassword|liveTotp|detailCard|detailIdentity|detailItem\.notes|value)/.test(src),
+  "copyDetailSecret was passed a value or a reader")
 check("the TOTP button and key use the vault's own copy",
   /copyDetailTotp\(\)/.test(src.slice(src.indexOf("id: copyTotpBtn"), src.indexOf("id: copyTotpBtn") + 500)), "")
 

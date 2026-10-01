@@ -61,8 +61,9 @@ check("every use routes its copy through the panel's one clipboard path",
 check("a masked value's copy asks the re-prompt first",
   uses.filter(u => /sensitive:\s*true/.test(u)).every(u => /onCopyRequested:\s*root\.copyDetailSecret\(/.test(u)),
   uses.filter(u => /sensitive:\s*true/.test(u) && !/onCopyRequested:\s*root\.copyDetailSecret\(/.test(u)).join("\n---\n"))
-check("which reaches the clipboard only through withReprompt, and reads the value after it",
-  /function copyDetailSecret\(read, label\)[\s\S]{0,200}?root\.withRevealedDetail\(item, function\(\) \{\s*var value = read\(\)\s*if \(value\) root\.copyToClipboard\(value, label\)/.test(panelSrc)
+check("which reaches the clipboard only through withReprompt, by field name, never by value",
+  /function copyDetailSecret\(field, label\) \{\s*root\.copyDetailField\(field, label\)/.test(panelSrc)
+    && /function copyDetailField\(key, label\)[\s\S]{0,200}?withReprompt\(item, function\(\) \{ root\.copyDetailFieldNow\(item, key, label\)/.test(panelSrc)
     && /function protect\(item, action\) \{\s*root\.withReprompt\(item, action\)/.test(panelSrc),
   "copyDetailSecret must go through the vault's re-prompt")
 
@@ -128,11 +129,11 @@ check("custom fields are rendered from the parsed detail collection",
     && /model:\s*root\.detailItem\s*\?\s*root\.detailItem\.fields\s*:\s*\[\]/.test(customUse)
     && /delegate:\s*DetailField/.test(customUse)
     && /label:\s*modelData\.name/.test(customUse)
-    && /value:\s*modelData\.value/.test(customUse),
+    && /value:\s*root\.shownSecret\(revealKey, modelData\.value\)/.test(customUse),
   customUse)
 check("hidden custom fields are masked and reveal independently",
   /sensitive:\s*Boolean\(modelData\.sensitive\)/.test(customUse)
-    && /revealKey:\s*"customField:"\s*\+\s*index/.test(customUse)
+    && /revealKey:\s*"customField:"\s*\+\s*modelData\.index/.test(customUse)
     && /revealed:\s*root\.isFieldRevealed\(revealKey\)/.test(customUse)
     && /onRevealToggled:\s*root\.toggleProtectedReveal\(revealKey\)/.test(customUse),
   customUse)
@@ -170,7 +171,7 @@ check("custom fields can be added and removed from the form",
     && /onClicked:\s*editor\.panel\.addFormCustomField\(\)/.test(customEditorSrc),
   customEditorSrc)
 check("custom-field copies use the panel's guarded clipboard path",
-  /onCopyRequested:[\s\S]{0,200}?if \(sensitive\) root\.copyDetailSecret\(function\(\) \{ return root\.detailCustomFieldValue\(at\) \}, name\)\s*else root\.copyToClipboard\(value, name\)/.test(customUse),
+  /onCopyRequested:[\s\S]{0,200}?if \(sensitive\) root\.copyDetailSecret\(revealKey, modelData\.name\)\s*else root\.copyToClipboard\(modelData\.value, modelData\.name\)/.test(customUse),
   customUse)
 
 check("no single shared reveal flag is left",
@@ -178,8 +179,8 @@ check("no single shared reveal flag is left",
   "one flag for every masked field is what caused them to move together")
 
 check("toggling one key leaves the others alone",
-  /for \(var k in revealedFields\) next\[k\] = revealedFields\[k\]\s*\n\s*if \(on\) next\[key\] = true\s*\n\s*else delete next\[key\]/.test(panelSrc)
-    && /setFieldRevealed\(key, !revealedFields\[key\]\)/.test(panelSrc),
+  /for \(var k in revealedFields\) next\[k\] = revealedFields\[k\]\s*\n\s*if \(value !== undefined\) next\[key\] = String\(value\)\s*\n\s*else delete next\[key\]/.test(panelSrc)
+    && /if \(isFieldRevealed\(key\)\) \{\s*setFieldRevealed\(key, undefined\)/.test(panelSrc),
   "expected a per-key toggle over a copy of the map")
 
 // `v` cannot mean five things at once, so it reaches the one secret the item is
