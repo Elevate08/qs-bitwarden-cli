@@ -78,7 +78,23 @@ check("TOTP comes from the helper, bw only for keys it does not mirror",
 check("search asks the helper, and an answer for old text is dropped",
   /vaultQuery\("search"/.test(body("askHelperSearch")) && /root\.searchAskedQuery !== query\) return/.test(body("askHelperSearch")), "")
 check("a helper that stops locks a vault it held the key for",
-  /session === heldSessionMarker[\s\S]{0,200}status = "locked"/.test(body("onVaultHelperExited")), body("onVaultHelperExited"))
+  /session === heldSessionMarker[\s\S]{0,400}lockVault\(\)/.test(body("onVaultHelperExited")), body("onVaultHelperExited"))
+// A lock of its own here once skipped the SSH agent, which kept signing with
+// the vault's keys behind a panel that said it was locked.
+check("that lock is the ordinary one, not a copy of it",
+  !/status = "locked"/.test(body("onVaultHelperExited")), body("onVaultHelperExited"))
+check("the SSH agent is locked even when the panel was not yet unlocked",
+  /session === heldSessionMarker[\s\S]{0,600}\} else \{\s*applySshAgentLifecycle\("lock"\)\s*dropVaultState\(\)/
+    .test(body("onVaultHelperExited")), body("onVaultHelperExited"))
+// A `bw status` failing with the helper used to land first and read as a
+// sign-out, putting up the login screen instead of the unlock.
+{
+  const exited = body("onVaultHelperExited")
+  check("the vault is locked before the helper's runs fail",
+    exited.indexOf("lockVault()") > 0 && exited.indexOf("lockVault()") < exited.indexOf("runs[id].finish("), exited)
+}
+check("a run stopped after the helper died is not written to it",
+  /if \(proc\.runId > 0\) \{[\s\S]{0,120}if \(vaultHelperActive\) vaultHelperProc\.write/.test(body("vaultKill")), body("vaultKill"))
 check("a failed or crashing helper falls back, and says so",
   /useVaultFallback\(vaultHelper\.message\)/.test(body("onVaultHelperInspected"))
     && /useVaultFallback\("the vault helper kept stopping\."\)/.test(body("onVaultHelperExited")), "")

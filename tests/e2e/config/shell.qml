@@ -14,7 +14,8 @@ ShellRoot {
     property bool opened: false
     property string screenName: "TEST-1"
     property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: true,
-                              autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false })
+                              autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false,
+                              sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1" })
     function showPopout() { opened = true }
     function hidePopout() { opened = false }
     function focusField(name) {}
@@ -48,7 +49,9 @@ ShellRoot {
         // What the shell itself holds: the vault helper keeps the rest.
         helper: vault.vaultHelperState, sessionHeld: vault.session === vault.heldSessionMarker,
         passwords: vault.items.map(function(i) { return i.password }),
-        hasPasswords: vault.items.map(function(i) { return i.hasPassword })
+        hasPasswords: vault.items.map(function(i) { return i.hasPassword }),
+        ssh: { phase: vault.sshAgentPhase, keys: vault.sshAgentKeyCount, prompt: vault.sshPrompt !== null, unlock: vault.sshUnlockRequest !== null,
+               screenChecked: vault.screenLockCheckedAt > 0 }
       })
     }
     function open(): void { vault.open() }
@@ -70,5 +73,8 @@ ShellRoot {
     }
     function logout(): void { vault.logoutAccount() }
     function copyFirst(): void { vault.copyPassword(vault.items[0]) }
+    function approveSsh(seconds: int): void { vault.approveSshRequest(seconds) }
+    // A `bw status` check, as waking from sleep runs with the panel open.
+    function refresh(): void { vault.refreshStatus() }
   }
 }
