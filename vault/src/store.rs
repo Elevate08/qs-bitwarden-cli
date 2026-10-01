@@ -447,17 +447,18 @@ mod tests {
     fn a_forgotten_item_is_gone_from_item_and_search() {
         let mut store = Store::default();
         store.strip_vault(&vault(), true).unwrap();
+        let held = store.search("  ").len();
         store.forget_item("a");
         assert!(store.item("a").is_none());
         assert!(store.search("recovery").is_empty());
-        assert_eq!(store.search("  ").len(), 3);
+        assert_eq!(store.search("  ").len(), held - 1);
         // The ones after it are still found under their own ids.
         assert!(store.item("c").unwrap().contains("1111"));
         assert!(store.item("s").is_some());
         assert_eq!(store.search("ada l"), ["i"]);
         store.forget_item("a");
         store.forget_item("nope");
-        assert_eq!(store.search("  ").len(), 3);
+        assert_eq!(store.search("  ").len(), held - 1);
     }
 
     #[test]
