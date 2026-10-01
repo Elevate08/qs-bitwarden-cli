@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **A vault locked without the lock button now locks the SSH agent too.** When
+  the vault helper stopped, or a status check found the vault locked or logged
+  out (a `bw lock` or `bw logout` in a terminal), the panel said it was locked
+  but never told the SSH agent. The agent kept its private keys, and a program
+  with a live grant could keep signing until the grant ran out. Both now lock
+  the agent (or log it out, dropping its public keys too), as the lock button
+  does. A helper that stops also clears the remembered session, the clipboard
+  copy and the item list, and puts up the unlock screen, where it used to leave
+  the list showing under a locked panel.
+
+### Fixed
+
+- **A vault helper that stops mid-check no longer signs you out.** A `bw
+  status` running when the helper stopped failed first and read as a sign-out,
+  so the panel showed the login screen instead of asking you to unlock.
+- **SSH keys load on the first try after logging out and back in.** The agent
+  moves its load counter on at logout and the panel did not, so the first load
+  was refused as stale and the keys arrived only on the retry, which a second
+  failure could not get.
+
 ## [1.11.2] - 2026-09-29
 
 ### Security

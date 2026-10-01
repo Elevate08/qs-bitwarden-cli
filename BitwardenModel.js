@@ -5560,7 +5560,8 @@ function sshAgentLifecycleTransition(event, context) {
     startLoad: false,
     awaitLockAck: false,
     stopHelper: false,
-    clearPublic: false
+    clearPublic: false,
+    advanceEpoch: false
   }
   var live = Boolean(ctx.enabled) && Boolean(ctx.helperReady)
 
@@ -5587,6 +5588,9 @@ function sshAgentLifecycleTransition(event, context) {
     action.clearPublic = true
     // No ack needed: logout drops the public cache too.
     if (live) action.controlLines.push(sshAgentLoggedOutLine())
+    // The companion moves its epoch past the last one on logout, so the next
+    // load must start beyond that or it is refused as stale.
+    action.advanceEpoch = live
     return action
   }
 

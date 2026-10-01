@@ -77,7 +77,9 @@ shipped one is absent or unusable.
 If none can be used, or the helper keeps stopping, the panel works as it did
 before: the session and the items are held in the shell. A banner says crash
 protection is off and why. If the helper stops while the vault is open, the
-session key goes with it, so the vault locks and asks you to unlock again.
+session key goes with it, so the vault locks as the lock button would: the
+SSH agent drops its private keys and grants, the remembered session is
+cleared, and the panel asks you to unlock again.
 
 ## Verifying the shipped binary
 

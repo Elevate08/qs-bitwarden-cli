@@ -876,26 +876,36 @@ Item {
   // so an unlocked vault is locked here too. Restarted, within a limit.
   function onVaultHelperExited(exitCode) {
     var wasActive = vaultHelperState === "active" || vaultHelperState === "starting"
+    var unexpected = wasActive && !shuttingDown
     // Until it is back (or given up on), new runs wait rather than being
     // written to a process that is gone.
-    if (wasActive && !shuttingDown) vaultHelperState = "starting"
+    if (unexpected) {
+      vaultHelperState = "starting"
+      console.warn("qs-bitwarden: the vault helper exited (" + exitCode + ")")
+    }
+    // Locked before the runs fail, so their failures answer for a vault that
+    // is already gone: a `bw status` among them would otherwise read as
+    // signed out.
+    if (unexpected && session === heldSessionMarker) {
+      // The key went with the helper, so `bw lock` has nothing to run with.
+      // The rest is an ordinary lock: the SSH agent's keys and grants came
+      // from this vault and would otherwise keep signing behind it.
+      session = ""
+      if (status === "unlocked") {
+        lockVault()
+        errorMessage = "The vault helper stopped, so the vault was locked. Unlock again."
+      } else {
+        applySshAgentLifecycle("lock")
+        dropVaultState()
+      }
+    }
     var runs = vaultRuns
     vaultRuns = ({})
     for (var id in runs) runs[id].finish(1, "", "the vault helper stopped", false, false)
     var queries = vaultQueries
     vaultQueries = ({})
     for (var q in queries) queries[q](false, null)
-    if (!wasActive || shuttingDown) return
-    console.warn("qs-bitwarden: the vault helper exited (" + exitCode + ")")
-    if (session === heldSessionMarker) {
-      session = ""
-      dropVaultSecrets()
-      vaultEpoch += 1
-      if (status === "unlocked") {
-        status = "locked"
-        errorMessage = "The vault helper stopped, so the vault was locked. Unlock again."
-      }
-    }
+    if (!unexpected) return
     if (vaultHelperRestarts < vaultHelperMaxRestarts) {
       vaultHelperRestarts += 1
       Qt.callLater(startVaultHelper)
@@ -985,7 +995,8 @@ Item {
   // Called by VaultProcess when its caller stops it.
   function vaultKill(proc) {
     if (proc.runId > 0) {
-      vaultHelperProc.write(Model.vaultHelperLine("kill", { id: proc.runId }))
+      // A helper that is gone took the run with it.
+      if (vaultHelperActive) vaultHelperProc.write(Model.vaultHelperLine("kill", { id: proc.runId }))
     } else if (proc.runId === -1) {
       proc.killLocal()
     } else {
@@ -2475,6 +2486,7 @@ Item {
     for (var i = 0; i < action.controlLines.length; i++) {
       if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(action.controlLines[i])
     }
+    if (action.advanceEpoch) sshAgentEpoch += 1
     if (action.clearPublic) {
       root.sshAgentKeyCount = 0
       root.sshAgentKeysLoadedAt = 0
@@ -3093,6 +3105,7 @@ Item {
     }
     if (!st) {
       cancelAuthPrewarm()
+      followVaultClosedInSshAgent("unauthenticated")
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
         dropVaultState()
@@ -3128,6 +3141,7 @@ Item {
         syncVault()
       }
     } else if (st.locked) {
+      followVaultClosedInSshAgent("locked")
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
         dropVaultState()
@@ -3139,6 +3153,7 @@ Item {
       if (sshAuthSurfaceActive) armPresenceUnlock()
     } else {
       cancelAuthPrewarm()
+      followVaultClosedInSshAgent("unauthenticated")
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
         dropVaultState()
@@ -3147,6 +3162,14 @@ Item {
       currentScreen = "login"
       focusAppropriateField()
     }
+  }
+
+  // `bw status` found the vault closed under the panel (a `bw lock` or
+  // `bw logout` elsewhere, or a status check that failed): the SSH agent
+  // follows, as on the panel's own lock and logout, before the state goes.
+  function followVaultClosedInSshAgent(next) {
+    if (next === "locked" && status === "unlocked") applySshAgentLifecycle("lock")
+    else if (next === "unauthenticated" && (status === "unlocked" || status === "locked")) applySshAgentLifecycle("logout")
   }
 
   // -------------------------------------------------------------------------
@@ -5218,6 +5241,7 @@ Item {
         return
       }
       if (err.indexOf("not logged in") !== -1) {
+        followVaultClosedInSshAgent("unauthenticated")
         status = "unauthenticated"
         currentScreen = "login"
         errorMessage = "You are not logged in. Please log in below."

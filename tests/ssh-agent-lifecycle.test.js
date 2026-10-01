@@ -5,7 +5,7 @@
 //
 //   node tests/ssh-agent-lifecycle.test.js
 
-const { createSuite, loadModule, readPluginSource } = require("./harness")
+const { createSuite, loadModule, readPluginSource, functionBody } = require("./harness")
 const path = require("path")
 
 const Model = loadModule()
@@ -78,7 +78,13 @@ for (const event of ["logout", "account-change"]) {
   check(`${event} does not merely lock`,
     !t.controlLines.some(l => l.indexOf('"vault_locked"') >= 0), JSON.stringify(t.controlLines))
   eq(`${event} waits for no acknowledgment`, t.awaitLockAck, false)
+  // The companion moves its epoch on with the logout; a panel that did not
+  // started the next load at that same epoch, which was refused as stale.
+  eq(`${event} moves the panel's epoch on with the companion's`, t.advanceEpoch, true)
+  eq(`${event} with no live helper leaves the epoch alone`,
+    Model.sshAgentLifecycleTransition(event, ctx({ helperReady: false })).advanceEpoch, false)
 }
+eq("a lock leaves the epoch to the next load", lock.advanceEpoch, false)
 
 // Unlock and sync both ride the panel's existing read.
 for (const event of ["unlock", "sync"]) {
@@ -155,9 +161,59 @@ check("a locked acknowledgment stops the timer",
   /"locked"[\s\S]{0,300}?sshAgentLockAckTimer\.stop\(\)/.test(panelSrc),
   "the locked acknowledgment never stops the kill timer")
 
+check("the panel's epoch follows the companion's past a logout",
+  /function applySshAgentLifecycle\(event\)[\s\S]{0,700}?if \(action\.advanceEpoch\) sshAgentEpoch \+= 1/.test(panelSrc),
+  "the next load after a logout reuses an epoch the companion has passed")
 check("logout tells the companion the account is gone",
   /function logoutAccount\(\)[\s\S]{0,900}?applySshAgentLifecycle\("logout"\)/.test(panelSrc),
   "logoutAccount never notifies the companion")
+// The vault closed under the panel: `bw status` says locked or logged out (a
+// `bw lock` or `bw logout` in a terminal, or a failed check), or the vault
+// helper died with the session key. The panel used to drop its own state and
+// leave the companion signing with the vault's keys.
+const statusFinished = functionBody(panelSrc, "onStatusFinished")
+check("a status check that fails tells the companion before the vault goes",
+  /if \(!st\) \{\s*cancelAuthPrewarm\(\)\s*followVaultClosedInSshAgent\("unauthenticated"\)/.test(statusFinished),
+  statusFinished)
+check("a vault bw reports locked locks the companion before the vault goes",
+  /\} else if \(st\.locked\) \{\s*followVaultClosedInSshAgent\("locked"\)\s*if \(vaultStatePresent\(\)\)/.test(statusFinished),
+  statusFinished)
+check("an account bw reports logged out logs the companion out before the vault goes",
+  /\} else \{\s*cancelAuthPrewarm\(\)\s*followVaultClosedInSshAgent\("unauthenticated"\)\s*if \(vaultStatePresent\(\)\)/.test(statusFinished),
+  statusFinished)
+const followClosed = functionBody(panelSrc, "followVaultClosedInSshAgent")
+check("a vault found locked is a lock for the companion, only if it was open",
+  /next === "locked" && status === "unlocked"\) applySshAgentLifecycle\("lock"\)/.test(followClosed), followClosed)
+check("an account found logged out is a logout for the companion, from either signed-in state",
+  /next === "unauthenticated" && \(status === "unlocked" \|\| status === "locked"\)\) applySshAgentLifecycle\("logout"\)/
+    .test(followClosed), followClosed)
+check("an unlock refused as not logged in drops the companion's public keys too",
+  /"not logged in"\) !== -1\) \{\s*followVaultClosedInSshAgent\("unauthenticated"\)\s*status = "unauthenticated"/
+    .test(functionBody(panelSrc, "onUnlockOutput")), functionBody(panelSrc, "onUnlockOutput").slice(-600))
+
+// Every way the panel stops being unlocked reaches the companion. A new one
+// that does not is the bug above again, so each assignment must sit in a
+// function that tells it (directly or through a function that does), or be
+// named here with the reason it need not.
+{
+  const service = readPluginSource("Service.qml")
+  const tells = /applySshAgentLifecycle\(|lockVault\(\)|leaveActiveAccount\(\)|followVaultClosedInSshAgent\(/
+  const exempt = {
+    // The second half of logoutAccount(), which sent the logout.
+    finishLogoutIfReady: true
+  }
+  const leaving = /\bstatus = "(locked|unauthenticated)"/g
+  let m
+  while ((m = leaving.exec(service)) !== null) {
+    const before = service.slice(0, m.index)
+    const start = before.lastIndexOf("  function ")
+    const name = (/function (\w+)\(/.exec(service.slice(start)) || [])[1]
+    if (name === "lockVault" || exempt[name]) continue
+    check(`${name}() tells the companion when it sets ${m[0]}`, tells.test(service.slice(start, m.index)),
+      service.slice(start, m.index).slice(-400))
+  }
+}
+
 check("screen lock and suspend reach the companion through the lock path",
   /function onScreenLockState[\s\S]{0,300}?lockVault\(\)/.test(panelSrc)
     && /function onSleepSignal[\s\S]{0,900}?lockVault\(\)/.test(panelSrc),
