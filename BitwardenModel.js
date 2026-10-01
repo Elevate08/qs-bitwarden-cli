@@ -1131,6 +1131,8 @@ function normalizeOpenableUrl(raw) {
   if (!target) return { ok: false, scheme: "" }
   // Browsers treat `\` as `/` in http(s) authorities; refuse the ambiguity.
   if (target.indexOf("\\") !== -1) return { ok: false, scheme: "", reason: "ambiguous" }
+  // One argv element, shown in a notification: no controls, spaces or DEL.
+  if (/[\u0000-\u0020\u007f]/.test(target)) return { ok: false, scheme: "", reason: "ambiguous" }
 
   if (HTTP_URL_RE.test(target)) return { ok: true, url: target }
 
