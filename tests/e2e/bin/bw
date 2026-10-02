@@ -34,7 +34,10 @@ case "$1" in
     shift
     logged_in || { echo "You are not logged in." >&2; exit 1; }
     pw="$(read_pw "$@")"
-    [ "$pw" = "$(want_pw "$(field email)")" ] || { echo "Invalid master password." >&2; exit 1; }
+    # As bw 2026.2 says it: the SDK's log line, then its error.
+    [ "$pw" = "$(want_pw "$(field email)")" ] || {
+      printf '%s\n' "ERROR bitwarden_crypto::keys::master_key: error=The decryption operation failed" \
+        "The provided key is not the expected type" >&2; exit 1; }
     new_session ;;
   lock) rm -f "$sess"; echo "Your vault is locked." ;;
   logout) rm -f "$sess" "$state"; echo "You have logged out." ;;

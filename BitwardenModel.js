@@ -1731,9 +1731,24 @@ function pinentryFailedNotice() {
 }
 
 // `bw unlock` refusing the password itself, as opposed to any other failure
-// (a missing account, a broken install), which is shown as it is.
+// (a missing account, a broken install), which is shown as it is. Up to
+// 2025 bw said "Invalid master password."; from 2026.2 its SDK fails to
+// decrypt the user key, logs "The decryption operation failed" and exits with
+// "The provided key is not the expected type".
+var WRONG_MASTER_PASSWORD = [/invalid master password/i, /the decryption operation failed/i,
+  /the provided key is not the expected type/i]
+
 function isWrongMasterPassword(stderrText) {
-  return /invalid master password/i.test(String(stderrText || ""))
+  var text = String(stderrText || "")
+  return WRONG_MASTER_PASSWORD.some(function(pattern) { return pattern.test(text) })
+}
+
+// bw's stderr without the SDK's log lines ("ERROR bitwarden_crypto::...:"),
+// which are not meant for the person reading the panel.
+function bwErrorText(stderrText) {
+  return String(stderrText || "").replace(/\u001b\[[0-9;]*m/g, "").split("\n")
+    .filter(function(line) { return !/^\s*(ERROR|WARN|INFO|DEBUG|TRACE)\s+bitwarden_\w+(::\w+)*\s*:/.test(line) })
+    .map(function(line) { return line.trim() }).filter(Boolean).join("\n")
 }
 
 function pinentryText(value) {

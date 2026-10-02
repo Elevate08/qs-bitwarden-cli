@@ -165,9 +165,27 @@ function finish(v, code, held, stderr) {
   Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { if (x) starts.push(1); this._r = x } })
   v.onUnlockOutput("", "Some other failure.", 1)
   check("a failure that is not a wrong password does not reopen pinentry", starts.length === 0 && !v.pinentryActive, "")
-  check("isWrongMasterPassword matches bw's own message only",
-    Model.isWrongMasterPassword("Invalid master password.") && !Model.isWrongMasterPassword("You are not logged in.")
-      && !Model.isWrongMasterPassword(""), "")
+  const sdk = "\u001b[31mERROR\u001b[0m bitwarden_crypto::keys::master_key: error=The decryption operation failed\n"
+    + "The provided key is not the expected type"
+  check("isWrongMasterPassword matches bw's own messages, old and 2026.2, only",
+    Model.isWrongMasterPassword("Invalid master password.") && Model.isWrongMasterPassword(sdk)
+      && Model.isWrongMasterPassword("The provided key is not the expected type")
+      && !Model.isWrongMasterPassword("You are not logged in.") && !Model.isWrongMasterPassword(""), "")
+  eq("bwErrorText drops the SDK's log lines", Model.bwErrorText(sdk + "\n"), "The provided key is not the expected type")
+  eq("and keeps everything else", Model.bwErrorText("  Something else failed.\n"), "Something else failed.")
+  const w = makeVault()
+  Object.defineProperty(w.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
+  w.unlockWithPinentry()
+  finish(w, 0, true)
+  w.onUnlockOutput("", sdk, 1)
+  const f = makeVault()
+  f.onUnlockOutput("", sdk, 1)
+  eq("typed in the panel, it says so plainly, not with bw's log lines", f.errorMessage, "That is not your master password.")
+  const g = makeVault()
+  g.onUnlockOutput("", "ERROR bitwarden_core::x: noise\nThe vault is broken.", 1)
+  eq("another failure is shown without the log lines", g.errorMessage, "The vault is broken.")
+  check("bw 2026.2's wrong password reopens pinentry with the reason",
+    w.pinentryActive && /That is not your master password\./.test(w.proc.command[8]), JSON.stringify(w.proc.command && w.proc.command[8]))
 }
 
 // --- a run in the way, and being cancelled --------------------------------------------------

@@ -5809,7 +5809,8 @@ Item {
         currentScreen = "login"
         errorMessage = "You are not logged in. Please log in below."
       } else {
-        errorMessage = err || "Unlock failed: invalid master password"
+        errorMessage = Model.isWrongMasterPassword(err) ? "That is not your master password."
+          : (Model.bwErrorText(err) || "Unlock failed: invalid master password")
         Qt.callLater(prepareUnlock)
       }
     }
