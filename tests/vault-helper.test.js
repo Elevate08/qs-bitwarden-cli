@@ -59,7 +59,7 @@ check("saves update the helper's copy of the item",
 check("the keyring store gets the session from the helper",
   /id: keyringStoreProc[\s\S]{0,300}inject: root\.injectSession\(Model\.keyringSecretEnvVar\(\)\)/.test(service)
     && !/secretEnv\(root\.session\)/.test(service), "")
-check("an unknown plugin directory ends in the fallback, so queued runs are flushed rather than left waiting",
+check("an unknown plugin directory is decided at once, not left pending",
   /sshAgentPluginDir === ""\) \{\s*useVaultFallback\(/.test(body("inspectVaultHelper"))
     && /vaultHelperState = "fallback"[\s\S]*flushVaultWaiting\(\)/.test(body("useVaultFallback")), body("inspectVaultHelper"))
 check("a lock drops the helper's key and items",
@@ -107,7 +107,7 @@ check("the SSH agent is locked even when the panel was not yet unlocked",
 }
 check("a run stopped after the helper died is not written to it",
   /if \(proc\.runId > 0\) \{[\s\S]{0,120}if \(vaultHelperActive\) vaultHelperProc\.write/.test(body("vaultKill")), body("vaultKill"))
-check("a helper that cannot be used at start falls back, and says so",
+check("a helper that cannot be used at start goes through the fallback's gate, and says why",
   /useVaultFallback\(vaultHelper\.message\)/.test(body("onVaultHelperInspected")), "")
 check("the panel shows the fallback banner",
   /visible: root\.vaultHelperWarning !== ""/.test(readPluginSource("Panel.qml")), "")
@@ -132,14 +132,38 @@ check("an item from the helper says what it has without holding it",
   check("runs wait while the helper is stopped instead of running in the shell",
     /vaultHelperState === "stopped"/.test(start.split("runLocally")[0]), start)
   const retry = body("retryVaultHelper")
-  check("trying again starts the helper with a fresh count",
+  check("trying again checks the helper afresh, with a fresh count, while runs wait",
     /vaultHelperState !== "stopped"\) return/.test(retry) && /vaultHelperRestarts = 0/.test(retry)
-      && /startVaultHelper\(\)/.test(retry), retry)
+      && /vaultHelperState = "pending"\s*inspectVaultHelper\(\)/.test(retry), retry)
   check("the count clears once the helper has stayed up a minute",
     /vaultHelperSettledMs: 60000/.test(service)
       && /id: vaultHelperSettleTimer[\s\S]{0,200}vaultHelperRestarts = 0/.test(service)
       && /vaultHelperSettleTimer\.restart\(\)/.test(body("onVaultHelperLine"))
       && /vaultHelperSettleTimer\.stop\(\)/.test(exited), "")
+}
+
+// --- a helper that cannot be used at start ----------------------------------------
+//
+// The check is a child of the shell, which any program running as the user can
+// kill; an empty answer reads as "missing". It must not move the vault into
+// the shell unless the user asked for that in shell.json.
+
+{
+  const fallback = body("useVaultFallback")
+  const gate = fallback.indexOf("if (!allowVaultWithoutHelper)")
+  check("without allowVaultWithoutHelper the vault stays locked: stopped, before anything runs in the shell",
+    gate > 0 && gate < fallback.indexOf('vaultHelperState = "fallback"')
+      && /if \(!allowVaultWithoutHelper\) \{\s*vaultHelperState = "stopped"[\s\S]*?return\s*\}/.test(fallback)
+      && fallback.indexOf("flushVaultWaiting()") > fallback.indexOf('vaultHelperState = "fallback"'), fallback)
+  check("only a literal true in shell.json allows it, and it is off by default",
+    /readonly property bool allowVaultWithoutHelper: setting\("allowVaultWithoutHelper", false\) === true/.test(service), "")
+  check("it is not in the settings screen",
+    !/allowVaultWithoutHelper/.test(readPluginSource("BitwardenModel.js").split("SETTINGS_SCHEMA")[1] || ""), "")
+  check("the banner says the vault stays locked, how to try again and how to opt in",
+    /stays locked/.test(Model.vaultHelperUnavailableWarning("x.")) && /check again/.test(Model.vaultHelperUnavailableWarning(""))
+      && /allowVaultWithoutHelper/.test(Model.vaultHelperUnavailableWarning("")), Model.vaultHelperUnavailableWarning(""))
+  const parsed = Model.parseVaultHelperInspection("")
+  check("a killed check (no output) is not ready", !Model.helperReady(parsed) && parsed.state === "missing", parsed.state)
 }
 
 // --- the real helper -------------------------------------------------------------
