@@ -34,7 +34,9 @@ Every feature the plugin has, and why each one works the way it does. The
 - **Pinentry for typed secrets** (`usePinentry`, on by default):
   - The master password (unlock, and the re-prompt on a flagged item) and the PIN are typed into `pinentry`, a separate window and process, not into the panel, so they never enter the shell's memory. The panel hides while it is open. A wrong one opens it again with the reason; Cancel returns to the screen without an error.
   - Uses `pinentry` from `PATH`; set `pinentryProgram` in the plugin's `shell.json` entry to use another (for example `/usr/bin/pinentry-gnome3`). Needs the vault helper to be running.
-  - Without pinentry, with the setting off, without the helper, or if pinentry fails to run (a short notice says so), the panel's own field is used. The email login and the item forms always use the panel.
+  - Without pinentry, with the setting off, or without the helper, the panel's own field is used. If pinentry fails or is stopped, the panel says so and the next attempt opens it again; the field is used only when you pick "Type it here instead", until the panel closes or the vault locks or unlocks. A failure is never remembered, so another program cannot turn pinentry off by killing it.
+  - Pinentry closes itself after two minutes without an answer, as a cancel.
+  - The email login, quick-unlock setup (its master password and new PIN) and the item forms always use the panel.
   - See [Vault helper](vault-helper.md#typing-into-pinentry).
 
 - **PIN Unlock** (opt-in, `pinUnlock`):

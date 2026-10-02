@@ -18,7 +18,7 @@ The [README](../README.md#how-your-vault-is-held) has the short version.
 | Passwords, TOTP keys, passkeys, password history, notes, card numbers and codes, identity numbers, hidden custom fields | yes | only a value you reveal, while it is revealed; the whole item while you edit it |
 | The master password a PIN, fingerprint or FIDO2 key opens | yes, for that unlock | a reference by name |
 | What you type: the master password and PIN for unlocking, and the master password for a re-prompt | yes: typed into pinentry, a separate process, and passed to the helper | a reference by name |
-| What else you type (the email login, a new item's fields) | | yes, until you submit |
+| What else you type: the email login, the master password and new PIN when setting up PIN, fingerprint or FIDO2 unlock, and an item's fields | | yes, until you submit, and in memory after |
 
 Opening an item shows its name, username, websites, card brand, holder and
 expiry, identity name, email, address and phone, plain custom fields and
@@ -80,12 +80,24 @@ quick-unlock check or the re-prompt check by name, and is forgotten as soon as
 that has finished. A wrong password or PIN opens pinentry again with the
 reason.
 
+Pinentry closes itself after two minutes without an answer, which counts as
+a cancel.
+
 The pinentry used is `pinentry` from `PATH`; `pinentryProgram` in `shell.json`
 names another, and the setting "Type secrets in pinentry" turns this off. The
 panel's own field is used instead when pinentry is turned off or not installed,
-when the helper is not running (typed into the shell, pinentry would gain
-nothing), or when pinentry fails to run, which shows a short notice. The
-email login and the item forms are not covered.
+or when the helper is not running (typed into the shell, pinentry would gain
+nothing).
+
+When pinentry fails to run or stops before answering, the panel says so and
+the next attempt opens pinentry again. The panel's field is used only when you
+pick "Type it here instead", and only until the panel closes or the vault
+locks or unlocks. A failure is never remembered: any program running as you
+can kill pinentry, and it must not be able to turn pinentry off that way and
+have your master password typed into the shell.
+
+The email login, the setup of PIN, fingerprint and FIDO2 unlock (the master
+password and the new PIN) and the item forms are not covered.
 
 ## Hardening
 
@@ -109,8 +121,8 @@ while holding your decrypted vault does not leave a core either.
   `bw` command runs. That was true before the helper and is true of `bw`
   everywhere; see [SECURITY.md](../SECURITY.md) for what is in scope.
 - **What is on screen, and what you type, is in the shell.** That is what you
-  type into the panel's own fields (the email login, item fields, and the
-  master password or PIN when pinentry is not used). Clearing it does not wipe
+  type into the panel's own fields (the email login, item fields, quick-unlock
+  setup, and the master password or PIN when pinentry is not used). Clearing it does not wipe
   it, so it can stay in the shell's memory and be in a shell core dump.
 - **The shell's core dumps are left on.** The plugin does not lower the
   shell's core-file limit. The limit is per process and inherited, so it would
