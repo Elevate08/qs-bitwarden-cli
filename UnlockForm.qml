@@ -65,7 +65,10 @@ Column {
   onVisibleChanged: {
     if (!visible) {
       resetReveal()
-      form.chosen = ""
+      // Hidden so pinentry can take the keyboard is not a close: the method
+      // picked is still the one shown when the panel comes back, with
+      // pinentry's notice if it failed.
+      if (!form.vault.pinentryActive) form.chosen = ""
       return
     }
     armOfferedMethod()
