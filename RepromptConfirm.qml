@@ -128,7 +128,7 @@ Item {
 
       Text {
         textFormat: Text.PlainText
-        visible: confirm.usePinentry
+        visible: confirm.usePinentry && String(confirm.vault.repromptError || "") === ""
         width: parent.width
         text: "Your master password is typed in a separate window, not in this panel."
         color: confirm.panel.dim
@@ -151,6 +151,18 @@ Item {
           event.accepted = true
           confirm.cancel()
         }
+      }
+
+      // The field picked after a failed pinentry: what is typed stays.
+      Text {
+        textFormat: Text.PlainText
+        visible: !confirm.usePinentry && text !== ""
+        width: parent.width
+        text: String(confirm.vault.pinentryNotice || "")
+        color: confirm.panel.dim
+        font.family: confirm.panel.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
       }
 
       Text {
@@ -177,6 +189,19 @@ Item {
           fontSize: Style.font.bodySmall
           enabled: !confirm.busy && (confirm.usePinentry || passwordField.text !== "")
           onClicked: confirm.usePinentry ? confirm.ask() : confirm.submit()
+        }
+
+        // After a failed pinentry only, and only when picked.
+        Button {
+          visible: confirm.usePinentry && !confirm.busy && String(confirm.vault.pinentryNotice || "") !== ""
+          text: "Type it here"
+          iconText: "\u{F030C}"
+          fontFamily: confirm.panel.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: {
+            confirm.vault.repromptError = ""
+            confirm.vault.declinePinentry()
+          }
         }
 
         Button {

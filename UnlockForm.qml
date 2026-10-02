@@ -410,7 +410,7 @@ Column {
   // Where the typing happens, on the two typed methods.
   Text {
     textFormat: Text.PlainText
-    visible: form.fieldsOffered && form.pinentryOffered
+    visible: form.fieldsOffered && form.pinentryOffered && String(form.vault.pinentryNotice || "") === ""
     width: parent.width
     horizontalAlignment: Text.AlignHCenter
     text: "Your " + (form.method === "pin" ? "PIN" : "master password")
@@ -421,10 +421,11 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // Why the panel's own field is shown although pinentry is set to be used.
+  // Pinentry failed (the Unlock button tries it again), or the panel's own
+  // field was picked after that and what is typed stays in the shell.
   Text {
     textFormat: Text.PlainText
-    visible: form.fieldsOffered && !form.pinentryOffered && text !== ""
+    visible: form.fieldsOffered && text !== ""
       && (form.method === "pin" || form.method === "password")
     width: parent.width
     horizontalAlignment: Text.AlignHCenter
@@ -433,6 +434,22 @@ Column {
     font.family: form.panel.fontFamily
     font.pixelSize: Style.font.caption
     wrapMode: Text.WordWrap
+  }
+
+  // After a failed pinentry, typing here is the user's choice, never the
+  // panel's: see pinentryDeclined in Service.qml.
+  Button {
+    visible: form.fieldsOffered && form.pinentryOffered && String(form.vault.pinentryNotice || "") !== ""
+    width: parent.width
+    text: "Type it here instead"
+    iconText: "󰌌"
+    fontFamily: form.panel.fontFamily
+    focusable: form.buttonsFocusable
+    enabled: !form.busy
+    onClicked: {
+      form.vault.declinePinentry()
+      Qt.callLater(function() { if (form.focusField) form.focusField.forceActiveFocus() })
+    }
   }
 
   // One Unlock button for both typed methods.

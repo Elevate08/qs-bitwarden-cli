@@ -74,10 +74,11 @@ function run(label, plugin, withHelper) {
     answer(encoded)
     q("unlockPinentry")
     expect(`${label}: the master password typed into pinentry unlocks`, s => s.status === "unlocked")
+    check(`${label}: pinentry is told to give up on its own`, asked().includes("SETTIMEOUT 120"), asked().join("|"))
     check(`${label}: the description names the account, % encoded`,
       asked().includes("SETDESC Unlock Bitwarden for a%25b@x"), asked().join("|"))
     check(`${label}: the shell holds nothing typed`, shell.state().typed === "||", shell.state().typed)
-    expect(`${label}: pinentry is done`, s => !s.pinentry.active && !s.pinentry.broken)
+    expect(`${label}: pinentry is done`, s => !s.pinentry.active && !s.pinentry.declined)
     q("lock")
     expect(`${label}: locks again`, s => s.status === "locked")
 
@@ -98,19 +99,36 @@ function run(label, plugin, withHelper) {
     answer("cancel")
     q("unlockPinentry")
     expect(`${label}: a cancel leaves the vault locked, quietly`,
-      s => s.status === "locked" && s.error === "" && !s.pinentry.active && !s.pinentry.broken && s.pinentry.available)
+      s => s.status === "locked" && s.error === "" && !s.pinentry.active && !s.pinentry.declined && s.pinentry.available)
     check(`${label}: it asked once`, asked().filter(l => l === "GETPIN").length === 1, asked().join("|"))
 
-    // A pinentry that dies: the field is the way back, with a notice.
+    // A pinentry that dies (or is killed): not remembered. The next attempt
+    // opens pinentry again; the field is used only once picked.
     reset()
     answer("crash")
     q("unlockPinentry")
-    expect(`${label}: a pinentry that fails is turned off, with a notice`,
-      s => s.status === "locked" && s.pinentry.broken && !s.pinentry.available && /did not start/.test(s.pinentry.notice))
+    expect(`${label}: a pinentry that fails says so and stays offered`,
+      s => s.status === "locked" && !s.pinentry.active && !s.pinentry.declined && s.pinentry.available
+        && /stopped before answering/.test(s.pinentry.notice))
+    reset()
+    answer(encoded)
+    q("unlockPinentry")
+    expect(`${label}: trying again opens pinentry and unlocks`, s => s.status === "unlocked" && s.pinentry.notice === "")
+    check(`${label}: it was asked again`, asked().filter(l => l === "GETPIN").length === 1, asked().join("|"))
+    q("lock")
+    expect(`${label}: locks`, s => s.status === "locked")
+    reset()
+    answer("crash")
+    q("unlockPinentry")
+    expect(`${label}: fails again`, s => !s.pinentry.active && /stopped before answering/.test(s.pinentry.notice))
+    q("declinePinentry")
+    expect(`${label}: the field, once picked, is used and says what that costs`,
+      s => s.pinentry.declined && !s.pinentry.available && /stays in the shell's memory/.test(s.pinentry.notice))
     q("unlock", password)
     expect(`${label}: and the typed unlock works`, s => s.status === "unlocked")
     q("lock")
-    expect(`${label}: locks`, s => s.status === "locked")
+    expect(`${label}: locks, and pinentry is offered again`, s => s.status === "locked" && s.pinentry.available
+      && !s.pinentry.declined && s.pinentry.notice === "")
   } catch (e) {
     failed = e
     check(`${label}: ran to the end`, false, String(e && e.message))

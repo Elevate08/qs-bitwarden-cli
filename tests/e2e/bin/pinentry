@@ -6,7 +6,7 @@
 #   cancel       ERR 83886179 (also when the file is empty or missing)
 #   error        ERR 83886360, a failure that is not a cancel
 #   crash        exits without answering
-# Every SETDESC, SETERROR, SETPROMPT and SETTITLE is appended to
+# Every SETDESC, SETERROR, SETPROMPT, SETTIMEOUT and SETTITLE is appended to
 # $FAKE_PINENTRY_LOG as it arrived (the PIN never is), and each start to
 # $FAKE_PINENTRY_LOG as "start".
 log() { [ -z "${FAKE_PINENTRY_LOG:-}" ] || printf '%s\n' "$1" >> "$FAKE_PINENTRY_LOG"; }
@@ -21,7 +21,7 @@ log start
 echo "OK Pleased to meet you"
 while IFS= read -r line; do
   case "$line" in
-    SETTITLE*|SETDESC*|SETPROMPT*|SETERROR*) log "$line"; echo OK ;;
+    SETTITLE*|SETDESC*|SETPROMPT*|SETERROR*|SETTIMEOUT*) log "$line"; echo OK ;;
     GETPIN)
       log GETPIN
       answer="$(next_answer)"

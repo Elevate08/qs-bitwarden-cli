@@ -15,13 +15,14 @@ const { check, eq, done } = createSuite("pinentry-service")
 
 const names = ["requestPinentry", "onPinentryExited", "beginPinentry", "endPinentry", "cancelPinentry",
   "resumeFromPinentry", "unlockWithPinentry", "unlockPinWithPinentry", "retryPinentryPin", "releaseHeldPin",
-  "submitRepromptWithPinentry", "submitReprompt", "forgetHeldPassword", "forgetHeldAfter", "onUnlockOutput"]
+  "submitRepromptWithPinentry", "submitReprompt", "forgetHeldPassword", "forgetHeldAfter", "onUnlockOutput",
+  "declinePinentry", "resetPinentryChoice"]
 
 function makeVault(extra) {
   const v = {
     Model, Qt: { callLater: f => f() },
-    usePinentry: true, pinentryFound: true, pinentryBroken: false, vaultHelperActive: true,
-    get pinentryAvailable() { return this.usePinentry && this.pinentryFound && !this.pinentryBroken && this.vaultHelperActive },
+    usePinentry: true, pinentryFound: true, pinentryDeclined: false, vaultHelperActive: true,
+    get pinentryAvailable() { return this.usePinentry && this.pinentryFound && !this.pinentryDeclined && this.vaultHelperActive },
     pinentryProgramName: "pinentry", userEmail: "me@example.com",
     pinentryActive: false, pinentryRun: null, pinentryView: null, pinentryWasOpen: false, pinentryReturning: false,
     pinentryMasterName: "", pinentryNotice: "", heldPinName: "",
@@ -105,7 +106,7 @@ function finish(v, code, held, stderr) {
   finish(v, 1, false)
   check("a cancel starts nothing, forgets the name, says nothing and restores the panel",
     v.unlocks.length === 0 && v.forgotten.includes(second) && v.errorMessage === "" && v.opened && !v.pinentryActive
-      && !v.pinentryBroken, "")
+      && v.pinentryNotice === "", "")
 }
 
 // --- when pinentry cannot be used ---------------------------------------------------------
@@ -125,24 +126,48 @@ function finish(v, code, held, stderr) {
 {
   const v = makeVault()
   Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
+  const failed = () => /stopped before answering/.test(v.pinentryNotice)
   v.unlockWithPinentry()
   finish(v, 4, false, "")
-  check("a failed run turns pinentry off for the session and says why",
-    v.pinentryBroken && !v.pinentryAvailable && /did not start/.test(v.pinentryNotice) && v.opened && v.unlocks.length === 0,
-    v.pinentryNotice)
-  v.pinentryBroken = false
+  // A program running as you can kill pinentry: a failure that turned it off
+  // would have the master password typed into the shell.
+  check("a failed run says so, but pinentry stays offered",
+    failed() && !v.pinentryDeclined && v.pinentryAvailable && v.opened && v.unlocks.length === 0, v.pinentryNotice)
   v.unlockWithPinentry()
+  check("so the next attempt opens pinentry again", v.pinentryActive && v.pinentryRun !== null, "")
   finish(v, 126, false, "unknown capture")
-  check("a helper that does not know the capture is a failure, so the field comes back", v.pinentryBroken, "")
-  v.pinentryBroken = false
+  check("a helper that does not know the capture is a failure", failed() && v.pinentryAvailable, "")
   v.unlockWithPinentry()
   finish(v, 1, false, "the vault helper stopped")
-  check("a helper that stopped is not read as a cancel", v.pinentryBroken, "")
-  v.pinentryBroken = false
+  check("a helper that stopped is not read as a cancel", failed() && v.pinentryAvailable, "")
+  v.declinePinentry()
+  check("the field is used only once picked, with what that costs",
+    v.pinentryDeclined && !v.pinentryAvailable && /stays in the shell's memory/.test(v.pinentryNotice), v.pinentryNotice)
+  v.resetPinentryChoice()
+  check("and pinentry is back for the next secret", v.pinentryAvailable && v.pinentryNotice === "", "")
   v.unlockWithPinentry()
   finish(v, 3, false, "")
   check("an empty answer asks for a password and is not a failure",
-    v.errorMessage === "Master password required" && !v.pinentryBroken, v.errorMessage)
+    v.errorMessage === "Master password required" && v.pinentryNotice === "", v.errorMessage)
+  v.unlockWithPinentry()
+  v.declinePinentry()
+  check("the field cannot be picked while pinentry is asking", !v.pinentryDeclined, "")
+  finish(v, 1, false, "")
+}
+
+{
+  // bw failing for another reason than the password: shown, not asked again.
+  const v = makeVault()
+  Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
+  v.unlockWithPinentry()
+  finish(v, 0, true)
+  const starts = []
+  Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { if (x) starts.push(1); this._r = x } })
+  v.onUnlockOutput("", "Some other failure.", 1)
+  check("a failure that is not a wrong password does not reopen pinentry", starts.length === 0 && !v.pinentryActive, "")
+  check("isWrongMasterPassword matches bw's own message only",
+    Model.isWrongMasterPassword("Invalid master password.") && !Model.isWrongMasterPassword("You are not logged in.")
+      && !Model.isWrongMasterPassword(""), "")
 }
 
 // --- a run in the way, and being cancelled --------------------------------------------------
@@ -156,7 +181,7 @@ function finish(v, code, held, stderr) {
   check("cancelling stops the run, forgets its name and brings the panel back",
     !v.proc.running && v.forgotten.includes(name) && v.opened && !v.pinentryActive && v.pinentryRun === null, "")
   v.onPinentryExited(1, false, "")
-  check("the cancelled run's own exit changes nothing", v.errorMessage === "" && !v.pinentryBroken, "")
+  check("the cancelled run's own exit changes nothing", v.errorMessage === "" && v.pinentryNotice === "", "")
   v.proc.runId = 5
   let answer = null
   v.requestPinentry("unlock", "", r => { answer = r })
@@ -243,7 +268,7 @@ function finish(v, code, held, stderr) {
   w.submitRepromptWithPinentry()
   finish(w, 4, false)
   check("a pinentry that fails says so and frees the question for the field",
-    w.repromptBusy === false && /did not start/.test(w.repromptError) && w.pinentryBroken, w.repromptError)
+    w.repromptBusy === false && /stopped before answering/.test(w.repromptError) && w.pinentryAvailable, w.repromptError)
 }
 
 // --- the wiring ------------------------------------------------------------------------------------
@@ -279,7 +304,9 @@ check("a lock, another method's unlock and the panel being asked for end a pinen
   /cancelPinentry\(\)/.test(body("dropVaultState")) && /cancelPinentry\(\)/.test(body("onUnlockSuccess"))
     && /cancelPinentry\(\)/.test(body("open")), "")
 check("hiding the panel for pinentry is not a close; coming back is a resume",
-  /else if \(!pinentryActive\) \{\s*pinentryAutoAsked = false\s*clearRepromptGrant\(\)/.test(service) && /!resumeFromPinentry\(\)/.test(service), "")
+  /else if \(!pinentryActive\) \{\s*pinentryAutoAsked = false\s*clearRepromptGrant\(\)\s*resetPinentryChoice\(\)/.test(service) && /!resumeFromPinentry\(\)/.test(service), "")
+check("the field picked after a failure lasts until the panel closes or the vault locks or unlocks",
+  /resetPinentryChoice\(\)/.test(body("dropVaultState")) && /resetPinentryChoice\(\)/.test(body("onUnlockSuccess")), "")
 check("a pinentry run never runs in the shell: without the helper it is refused",
   /capture\.indexOf\("pinentry:"\) === 0[\s\S]{0,200}proc\.finish\(/.test(body("vaultStart"))
     && body("vaultStart").indexOf("pinentry:") < body("vaultStart").indexOf("runLocally"), body("vaultStart"))
@@ -317,7 +344,7 @@ check("the fields stay as the fallback, with the reason when pinentry failed",
     /\} else if \(!pinentryActive\) \{[\s\S]*pinentryAutoAsked = false/.test(opened)
       && !/if \(opened\) \{[^}]*pinentryAutoAsked = false/.test(opened), opened)
   check("an SSH unlock request that ends asks again for the next one",
-    /onSshUnlockRequestChanged: if \(sshUnlockRequest === null && !pinentryActive\) pinentryAutoAsked = false/.test(service), "")
+    /onSshUnlockRequestChanged: \{\s*if \(sshUnlockRequest !== null \|\| pinentryActive\) return\s*pinentryAutoAsked = false\s*resetPinentryChoice\(\)/.test(service), "")
 }
 check("Enter on the locked screen opens pinentry",
   /status === "locked" && unlockForm\.pinentryOffered\) \{\s*unlockForm\.submitCurrentMethod\(\)/.test(read("Panel.qml")), "")

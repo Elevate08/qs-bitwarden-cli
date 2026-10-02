@@ -50,7 +50,7 @@ ShellRoot {
         helper: vault.vaultHelperState, sessionHeld: vault.session === vault.heldSessionMarker,
         // Typed into pinentry, the shell never holds them: these stay empty.
         typed: [vault.masterPassword, vault.pinEntry, vault.pendingUnlockPassword].join("|"),
-        pinentry: { available: vault.pinentryAvailable, found: vault.pinentryFound, broken: vault.pinentryBroken,
+        pinentry: { available: vault.pinentryAvailable, found: vault.pinentryFound, declined: vault.pinentryDeclined,
                     active: vault.pinentryActive, notice: vault.pinentryNotice },
         // The open item's detail: whether it is the secret-free view, and
         // which fields are revealed.
@@ -75,6 +75,8 @@ ShellRoot {
     // The unlock screen's action, as the button runs it: pinentry takes the typing.
     function unlockPinentry(): void { vault.unlockWithPinentry() }
     function pinUnlockPinentry(): void { vault.unlockPinWithPinentry() }
+    // "Type it here instead", after pinentry failed.
+    function declinePinentry(): void { vault.declinePinentry() }
     function addAccount(): void { vault.beginAddAccount() }
     function cancelAdd(): void { vault.cancelAddAccount() }
     function switchTo(email: string): string {

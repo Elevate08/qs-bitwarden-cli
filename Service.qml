@@ -3155,6 +3155,7 @@ Item {
     } else if (!pinentryActive) {
       pinentryAutoAsked = false
       clearRepromptGrant()
+      resetPinentryChoice()
       cancelFingerprintUnlock()
       // Not a cancel; see releaseSurface() in FidoUnlock.qml.
       fidoUnlocker.releaseSurface()
@@ -5427,11 +5428,15 @@ Item {
   // Email login and the item forms are not covered.
   property bool pinentryFound: false
   // A run that failed (no display, a pinentry that needs a terminal, a helper
-  // that predates the capture): the panel's field is used until the setting
-  // or the program changes.
-  property bool pinentryBroken: false
+  // that predates the capture, or a pinentry another program killed) is not
+  // remembered: the next attempt opens pinentry again, and the notice offers
+  // the panel's field. That field is used only once the user picks it
+  // (declinePinentry()), and only until the panel closes or the vault locks
+  // or unlocks. Remembering the failure would let any program running as you
+  // kill pinentry once and have the master password typed into the shell.
+  property bool pinentryDeclined: false
   property string pinentryNotice: ""
-  readonly property bool pinentryAvailable: usePinentry && pinentryFound && !pinentryBroken
+  readonly property bool pinentryAvailable: usePinentry && pinentryFound && !pinentryDeclined
     && vaultHelperActive
   // Between the panel hiding for pinentry and pinentry's answer.
   property bool pinentryActive: false
@@ -5446,20 +5451,33 @@ Item {
   // panel, or the end of an SSH unlock request, does.
   property bool pinentryAutoAsked: false
 
-  onSshUnlockRequestChanged: if (sshUnlockRequest === null && !pinentryActive) pinentryAutoAsked = false
+  onSshUnlockRequestChanged: {
+    if (sshUnlockRequest !== null || pinentryActive) return
+    pinentryAutoAsked = false
+    resetPinentryChoice()
+  }
   // The helper's names for what was typed, while it is in use.
   property string pinentryMasterName: ""
   property string heldPinName: ""
 
   onPinentryProgramNameChanged: {
-    pinentryBroken = false
-    pinentryNotice = ""
+    resetPinentryChoice()
     probePinentry()
   }
 
-  onUsePinentryChanged: {
-    pinentryBroken = false
+  onUsePinentryChanged: resetPinentryChoice()
+
+  // Pinentry again for the next secret, with no notice.
+  function resetPinentryChoice() {
+    pinentryDeclined = false
     pinentryNotice = ""
+  }
+
+  // The user picked the panel's field after pinentry failed.
+  function declinePinentry() {
+    if (pinentryActive) return
+    pinentryDeclined = true
+    pinentryNotice = "Typed here, it stays in the shell's memory until the shell restarts."
   }
 
   function probePinentry() {
@@ -5508,12 +5526,8 @@ Item {
     else if (exitCode === E.empty) state = "empty"
     else if (exitCode === E.short) state = "short"
     if (state !== "ok") forgetVaultSecret(run.name)
-    if (state === "failed") {
-      pinentryBroken = true
-      pinentryNotice = "Pinentry did not start. Type it here instead."
-    } else {
-      pinentryNotice = ""
-    }
+    // Not remembered (see pinentryDeclined): the user picks the field.
+    pinentryNotice = state === "failed" ? Model.pinentryFailedNotice() : ""
     run.done({ state: state, name: run.name })
     // Unless done() asked again.
     if (pinentryRun === null) endPinentry()
@@ -5630,7 +5644,7 @@ Item {
       var current = root.repromptPending && root.repromptItemId === id && root.repromptEpoch === epoch
       if (current) root.repromptBusy = false
       if (r.state !== "ok") {
-        if (current && r.state === "failed") root.repromptError = "Pinentry did not start. Type your master password here."
+        if (current && r.state === "failed") root.repromptError = Model.pinentryFailedNotice()
         else if (current && r.state === "empty") root.repromptError = "Enter your master password."
         return
       }
@@ -5688,8 +5702,8 @@ Item {
       onUnlockSuccess(out)
     } else {
       // A master password typed into pinentry that `bw` refused: forgotten,
-      // and asked for again unless `bw` said the account is not logged in.
-      var askAgain = pinentryMasterName !== "" && err.indexOf("not logged in") === -1
+      // and asked for again. Any other failure is shown as it is.
+      var askAgain = pinentryMasterName !== "" && Model.isWrongMasterPassword(err)
       pinentryMasterName = ""
       var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
         || (pendingUnlockFrom === "pin" && pinFromEnvelope)
@@ -5795,6 +5809,7 @@ Item {
     pinentryMasterName = ""
     // Another method unlocked the vault while pinentry was asking.
     cancelPinentry()
+    resetPinentryChoice()
     if (!s) {
       forgetHeldPassword(pendingUnlockPassword)
       forgetHeldPassword(pendingPinForMigration)
@@ -5975,6 +5990,7 @@ Item {
     pinUnlockSubmitted = false
     // A question for the old vault's password is no longer wanted.
     cancelPinentry()
+    resetPinentryChoice()
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAttachmentDownloads()

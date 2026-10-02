@@ -1665,6 +1665,12 @@ function pinUnlockCommand(slot) {
 
 var PINENTRY_DEFAULT_PROGRAM = "pinentry"
 var PINENTRY_TEXT_MAX = 400
+// Pinentry closes itself after this long without an answer (SETTIMEOUT), so
+// a forgotten window does not keep the panel hidden and SSH prompts held
+// back. The script stops waiting a little later, for a pinentry that ignores
+// it.
+var PINENTRY_TIMEOUT_S = 120
+var PINENTRY_GIVE_UP_S = PINENTRY_TIMEOUT_S + 30
 // Exit codes of the script (and 127, 126 and 128+ for a program that is
 // missing, a helper that does not know the capture, or a kill).
 var PINENTRY_EXIT = { cancelled: 1, empty: 3, failed: 4, short: 5, missing: 127 }
@@ -1675,7 +1681,8 @@ function pinentryExitCodes() {
 }
 
 // pinentry's own "operation cancelled" is GPG_ERR_CANCELED (99) from source
-// 5, 83886179; any code whose low 16 bits are 99 is read as a cancel.
+// 5, 83886179; any code whose low 16 bits are 99 is read as a cancel. Its
+// timeout, GPG_ERR_TIMEOUT (62), is one too: nobody answered.
 var PINENTRY_SCRIPT = [
   "__prog=\"$1\"; __title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"; __min=\"${6:-0}\"",
   "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
@@ -1695,9 +1702,10 @@ var PINENTRY_SCRIPT = [
   "__enc \"$__desc\"; __ask \"SETDESC $__e\"",
   "__enc \"$__prompt\"; __ask \"SETPROMPT $__e\"",
   "if [ -n \"$__err\" ]; then __enc \"$__err\"; __ask \"SETERROR $__e\"; fi",
+  "__ask \"SETTIMEOUT " + PINENTRY_TIMEOUT_S + "\"",
   "printf 'GETPIN\\n' >&\"${PE[1]}\" || exit " + PINENTRY_EXIT.failed,
   "__d=''",
-  "while IFS= read -r -u \"${PE[0]}\" __l; do",
+  "while IFS= read -r -t " + PINENTRY_GIVE_UP_S + " -u \"${PE[0]}\" __l; do",
   "  case \"$__l\" in",
   "    'D '*) __d=\"$__d${__l:2}\" ;;",
   "    OK|OK\\ *)",
@@ -1709,12 +1717,24 @@ var PINENTRY_SCRIPT = [
   "      printf '%s' \"$__d\"; exit 0 ;;",
   "    ERR|ERR\\ *)",
   "      __c=\"${__l#ERR }\"; __c=\"${__c%% *}\"",
-  "      if [[ \"$__c\" =~ ^[0-9]+$ ]] && (( (10#$__c & 65535) == 99 )); then exit " + PINENTRY_EXIT.cancelled + "; fi",
+  "      if [[ \"$__c\" =~ ^[0-9]+$ ]] && (( (10#$__c & 65535) == 99 || (10#$__c & 65535) == 62 )); then exit " + PINENTRY_EXIT.cancelled + "; fi",
   "      exit " + PINENTRY_EXIT.failed + " ;;",
   "  esac",
   "done",
   "exit " + PINENTRY_EXIT.failed
 ].join("\n")
+
+// The notice after a run that failed. Not remembered: the next attempt
+// opens pinentry again, and the field is used only when picked.
+function pinentryFailedNotice() {
+  return "Pinentry stopped before answering. Try again, or type it here instead."
+}
+
+// `bw unlock` refusing the password itself, as opposed to any other failure
+// (a missing account, a broken install), which is shown as it is.
+function isWrongMasterPassword(stderrText) {
+  return /invalid master password/i.test(String(stderrText || ""))
+}
 
 function pinentryText(value) {
   return String(value === undefined || value === null ? "" : value)
