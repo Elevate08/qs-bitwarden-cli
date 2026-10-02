@@ -4,6 +4,35 @@
 
 ### Security
 
+Fixes for [GHSA-6qjw-gmvg-7hvw](https://github.com/Elevate08/qs-bitwarden-cli/security/advisories/GHSA-6qjw-gmvg-7hvw),
+reported by Nicolas Falesy (@nicolasfalesy). Secrets the shell itself had held
+could be in its core dump. Four kills of the vault helper, or one kill of its
+check as the shell started, moved the vault into the shell.
+
+- **Opening an item no longer loads its secrets into the shell.** A value is
+  fetched from the vault helper only when you reveal it, and copies go from
+  the helper to the clipboard. Notes are hidden until you show them. A value
+  you revealed can stay in the shell's memory after you hide it.
+- **The master password and PIN for unlocking, and the reprompt's password,
+  are typed into `pinentry`** when it is installed. It runs under the vault
+  helper, so what you type does not reach the shell. If pinentry fails or is
+  stopped, the panel says so and the next attempt opens it again. Its own
+  field is used only when you pick "Type it here instead", so another program
+  cannot switch pinentry off by killing it. Pinentry closes after two minutes
+  without an answer. Turn it off with `usePinentry`.
+- **A vault helper that keeps stopping leaves the vault locked.** It used to
+  fall back to holding the vault in the shell. The restart count also clears
+  once the helper has stayed up for a minute.
+- **A vault helper that cannot be used when the shell starts leaves the vault
+  locked**, with a banner that offers to check again. It used to hold the
+  vault in the shell, and killing the check was enough to cause that. Set
+  `allowVaultWithoutHelper` to `true` in `shell.json` for the old behaviour,
+  on a platform the helper is not built for.
+- **The master password a PIN, fingerprint or FIDO2 unlock recovers is
+  forgotten once the unlock is done**, instead of at the next lock.
+- **A disabled quick-unlock method's legacy keyring entry is removed** even
+  when it has no envelope entry.
+
 - **Locking the vault outside the panel locks the SSH agent.** When the vault
   helper stopped, or `bw lock` or `bw logout` ran in a terminal, the panel
   showed the vault locked but the SSH agent kept its keys. It is now locked
@@ -16,9 +45,6 @@
   password or item list was kept by the vault helper.
 - **Search skips the notes of items that ask for the master password.**
   Matching on them showed whether a protected note contained a search term.
-- **Secrets of an item that asks for the master password load after the
-  prompt.** Opening such an item fetched its password, notes and TOTP code
-  into the shell before the master password was given.
 - **The SSH approval prompt escapes hidden characters** (control,
   right-to-left and zero-width characters) in program paths and key names,
   and long paths keep their end visible.
@@ -39,6 +65,12 @@
   instead of being passed on with parts missing.
 - **The vault helper refuses duplicate run ids** and limits background
   commands.
+- **otpauth parameters need two hex digits after `%`**, so `%+f` is refused.
+- **A wrong master password says so** with bw 2026.2, which reports it as
+  "The provided key is not the expected type" after a logged decryption
+  error; the panel showed that text as it was.
+- **A vault helper that cannot be located is reported at once** instead of
+  leaving every command waiting with no message.
 
 ### Documentation
 
@@ -46,6 +78,12 @@
   or zram avoids that.
 - The vault helper does not protect against code running in the shell, and
   the master-password reprompt is checked by the panel.
+- What the shell has shown or you typed into it can stay in its memory after
+  it is cleared, and so be in a shell core dump. That includes the email
+  login, quick-unlock setup (its master password and new PIN), item forms,
+  and the master password or PIN when pinentry is not used. The plugin leaves
+  the shell's core dumps on: lowering the limit would also turn them off for
+  every other shell plugin and every app started from the launcher.
 
 ## [1.11.2] - 2026-09-29
 
