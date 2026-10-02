@@ -38,8 +38,9 @@ const asked = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n
 const reset = () => { fs.writeFileSync(log, "") }
 
 function run(label, plugin, withHelper) {
+  // Without a helper the vault is held in the shell only when allowed.
   const shell = createShell("e2e-pinentry", check, {
-    plugin, env: { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log }
+    plugin, env: { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log, QSBW_E2E_ALLOW_NO_HELPER: withHelper ? "0" : "1" }
   })
   const { q, expect } = shell
   let failed = null
