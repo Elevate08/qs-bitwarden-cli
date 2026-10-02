@@ -15,7 +15,8 @@ ShellRoot {
     property string screenName: "TEST-1"
     property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: Quickshell.env("QSBW_E2E_REMEMBER_SESSION") !== "0",
                               autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false,
-                              sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1" })
+                              sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1",
+                              allowVaultWithoutHelper: Quickshell.env("QSBW_E2E_ALLOW_NO_HELPER") === "1" })
     function showPopout() { opened = true }
     function hidePopout() { opened = false }
     function focusField(name) {}
@@ -47,7 +48,7 @@ ShellRoot {
         logoutCliDone: vault.logoutCliDone, logoutCredentialsDone: vault.logoutCredentialsDone,
         clearPending: vault.allCredentialsClearPending,
         // What the shell itself holds: the vault helper keeps the rest.
-        helper: vault.vaultHelperState, sessionHeld: vault.session === vault.heldSessionMarker,
+        helper: vault.vaultHelperState, helperWarning: vault.vaultHelperWarning, sessionHeld: vault.session === vault.heldSessionMarker,
         // The open item's detail: whether it is the secret-free view, and
         // which fields are revealed.
         detail: vault.detailItem ? { name: vault.detailItem.name, withheld: vault.detailItem.secretsWithheld === true } : null,
@@ -64,6 +65,8 @@ ShellRoot {
     }
     function unlock(pw: string): void { vault.masterPassword = pw; vault.unlockVault() }
     function lock(): void { vault.lockVault() }
+    // The banner's "check again", for a helper left stopped.
+    function retryHelper(): void { vault.retryVaultHelper() }
     function setPin(pin: string, pw: string): void {
       vault.beginPinSetup(); vault.pinSetupPin = pin; vault.pinSetupConfirm = pin; vault.pinSetupMaster = pw; vault.submitPinSetup()
     }
