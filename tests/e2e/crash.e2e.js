@@ -9,8 +9,8 @@
 //   name) is, so the core is real. A crashed helper leaves no core at all.
 // - Opening the item and not revealing anything leaves the password and the
 //   note out of the core too; revealing one field puts only that field in.
-// - Without it (the fallback): they are in the core, which shows this test
-//   can see a leak.
+// - Without it (the fallback, allowed in shell.json): they are in the core,
+//   which shows this test can see a leak.
 //
 // Needs systemd-coredump (core_pattern piping to it) and `coredumpctl`, plus
 // what shell.js needs. The cores it creates hold only fake secrets. Not run
@@ -120,7 +120,8 @@ function pluginWithLocalHelper(into) {
 
 function run(label, plugin, withHelper, reveal = null, openOnly = false) {
   const secrets = { password: marker("password"), note: marker("note") }
-  const shell = createShell("e2e-crash", check, { plugin, coreDumps: true })
+  const shell = createShell("e2e-crash", check,
+    { plugin, coreDumps: true, env: withHelper ? {} : { QSBW_E2E_ALLOW_NO_HELPER: "1" } })
   // Given to the fake bw in its data directory, never through the shell's
   // environment (which a core includes).
   const data = path.join(shell.home, ".config", "Bitwarden CLI")

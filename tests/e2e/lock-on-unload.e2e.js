@@ -23,8 +23,8 @@ const bwCalls = shell => {
   try { return fs.readFileSync(shell.bwLog, "utf8").split("\n").map(l => l.split("\t")[1]).filter(Boolean) } catch (e) { return [] }
 }
 
-// A copy of the plugin without the vault helper: the panel falls back to
-// holding the session itself.
+// A copy of the plugin without the vault helper: with allowVaultWithoutHelper
+// the panel falls back to holding the session itself.
 function pluginWithoutVaultHelper() {
   const dir = fs.mkdtempSync(path.join("/tmp", "qsbw-plugin-"))
   fs.cpSync(repoRoot, dir, {
@@ -41,7 +41,7 @@ function scenario(remember) {
   const label = remember ? "session remembered" : "session not remembered"
   const plugin = remember ? undefined : pluginWithoutVaultHelper()
   const shell = createShell("e2e-lock-on-unload", check,
-    { plugin, env: { QSBW_E2E_REMEMBER_SESSION: remember ? "1" : "0" } })
+    { plugin, env: { QSBW_E2E_REMEMBER_SESSION: remember ? "1" : "0", QSBW_E2E_ALLOW_NO_HELPER: remember ? "0" : "1" } })
   const sessionFile = path.join(shell.home, ".config", "Bitwarden CLI", "fake-session")
   try {
     shell.start()

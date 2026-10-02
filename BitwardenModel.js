@@ -5126,6 +5126,14 @@ function vaultHelperWarning(reason) {
     + " The vault is held in the shell, so a shell crash could write it to a core dump."
 }
 
+// The banner while the helper cannot be used and the vault stays locked
+// (`allowVaultWithoutHelper` not set).
+function vaultHelperUnavailableWarning(reason) {
+  return "The vault stays locked: " + (String(reason || "").trim() || "the vault helper is unavailable.")
+    + " Click here to check again. To hold the vault in the shell instead, without crash protection,"
+    + " set allowVaultWithoutHelper in shell.json."
+}
+
 // One request line. `fields` must not carry `type` or `v`.
 function vaultHelperLine(type, fields) {
   var message = { type: type, v: VAULT_HELPER_PROTOCOL }
