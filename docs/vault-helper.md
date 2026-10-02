@@ -141,9 +141,17 @@ architecture, the checksum in `bin/SHA256SUMS`, its own self-test, and the
 protocol version. A locally built one (`vault/target/debug/`) is used if the
 shipped one is absent or unusable.
 
-If none can be used when the shell starts, the panel works as it did before:
-the session and the items are held in the shell, and a banner says crash
-protection is off and why.
+If none can be used when the shell starts, the vault stays locked: commands
+wait, and a banner says why and offers to check again, which runs the whole
+check afresh (so a helper rebuilt or repaired meanwhile is found). The check
+is a child of the shell, so a program running as you can kill it, which
+reads as a missing helper; that must not move the vault into the shell.
+
+Only with `allowVaultWithoutHelper` set to `true` in `shell.json` (it is not
+in the settings screen) does the panel work as it did before the helper: the
+session and the items are held in the shell, and a banner says crash
+protection is off and why. That is for a platform the helper is not built
+for, or a source checkout without one.
 
 If the helper stops while the vault is open, the session key goes with it, so
 the vault locks as the lock button would: the SSH agent drops its private keys
@@ -151,7 +159,7 @@ and grants, the remembered session is cleared, and the panel asks you to
 unlock again. The helper is restarted up to three times; the count clears
 once it has stayed up for a minute. If it keeps stopping, the vault stays
 locked and the banner offers to try again. The panel does not move the vault
-into the shell in that case.
+into the shell in that case, even with `allowVaultWithoutHelper`.
 
 ## Verifying the shipped binary
 

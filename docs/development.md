@@ -130,9 +130,21 @@ the same client must get no signature. It also needs `ssh-keygen`:
 node tests/e2e/ssh-lock.e2e.js
 ```
 
+`tests/e2e/helper-stops.e2e.js` (about a minute) checks that the vault never
+moves into the shell because the vault helper is gone: killed four times, the
+helper is left stopped with the vault locked, and "check again" brings it
+back; a helper missing at start leaves the vault locked and runs no vault
+command, unless `allowVaultWithoutHelper` is set. `--settle` adds four kills a
+minute apart, which must not add up (about 5 minutes more):
+
+```bash
+node tests/e2e/helper-stops.e2e.js
+```
+
 `KEEP_E2E=1` keeps the temporary directory (the shell log, the stand-in
 `bw`'s call log and keyring) for a failed run. CI runs both in the **panel
 end-to-end** job: a digest-pinned Arch image with packages from a dated,
 signature-checked Arch Linux Archive snapshot, as an unprivileged user, with
-a read-only token and no secrets. Moving the snapshot date means moving the
+a read-only token and no secrets, along with `lock-on-unload` and
+`helper-stops`. Moving the snapshot date means moving the
 image digest with it, so the keyring and the packages stay from the same day.

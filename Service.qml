@@ -949,9 +949,10 @@ Item {
   // Holds the session key and the decrypted items outside this process, so
   // a shell crash cannot put them in a core dump (docs/vault-helper.md). Every
   // `bw` run is a VaultProcess: while the helper is up it runs there with the
-  // session added by the helper; otherwise (helper missing, failed or
-  // crashing) it runs here as before, and the panel says crash protection is
-  // off. Runs started before that is decided wait for it.
+  // session added by the helper. Without one, runs wait and the vault stays
+  // locked; they run here, with the panel saying crash protection is off, only
+  // when `allowVaultWithoutHelper` is set (useVaultFallback()). Runs started
+  // before that is decided wait for it.
   property var vaultHelper: Model.uninspectedHelper()
   // Set as the shell unloads: a helper exit then is expected.
   property bool shuttingDown: false
@@ -975,6 +976,8 @@ Item {
   readonly property string heldSessionMarker: Model.vaultHeldSession()
   // Held values by name while falling back (the helper holds them otherwise).
   property var vaultLocalSecrets: ({})
+  // Only in shell.json, never in the settings screen, and only `true` counts.
+  readonly property bool allowVaultWithoutHelper: setting("allowVaultWithoutHelper", false) === true
 
   function inspectVaultHelper() {
     if (vaultHelperInspectProc.running) return
@@ -1005,7 +1008,19 @@ Item {
     vaultHelperProc.running = true
   }
 
+  // A helper that cannot be used when the shell starts. The vault is held in
+  // the shell only when `allowVaultWithoutHelper` says so (a platform with no
+  // helper build, a checkout without one). Otherwise it stays locked, runs
+  // wait, and the banner offers to check again: the check is a child of the
+  // shell that any program running as you can kill, and a check that failed
+  // must not move the vault into a shell that can dump core.
   function useVaultFallback(reason) {
+    if (!allowVaultWithoutHelper) {
+      vaultHelperState = "stopped"
+      vaultHelperWarning = Model.vaultHelperUnavailableWarning(reason)
+      console.warn("qs-bitwarden: " + vaultHelperWarning)
+      return
+    }
     vaultHelperState = "fallback"
     vaultHelperWarning = Model.vaultHelperWarning(reason)
     console.warn("qs-bitwarden: " + vaultHelperWarning)
@@ -1013,20 +1028,22 @@ Item {
   }
 
   // A helper that keeps stopping (or is being killed) is not replaced by
-  // holding the vault in the shell: the vault stays locked, runs wait, and the
-  // banner offers to try again. Falling back is only for a helper that cannot
-  // be used at all when the shell starts (GHSA-6qjw-gmvg-7hvw).
+  // holding the vault in the shell, even with `allowVaultWithoutHelper`: the
+  // vault stays locked, runs wait, and the banner offers to try again.
   function stopVaultHelper() {
     vaultHelperState = "stopped"
     vaultHelperWarning = "The vault helper keeps stopping, so the vault stays locked. Click here to try again."
     console.warn("qs-bitwarden: the vault helper kept stopping; the vault stays locked")
   }
 
+  // Checked again from the start, so a helper rebuilt or repaired meanwhile
+  // is found; runs keep waiting until that is decided.
   function retryVaultHelper() {
     if (vaultHelperState !== "stopped") return
     vaultHelperRestarts = 0
     vaultHelperWarning = ""
-    startVaultHelper()
+    vaultHelperState = "pending"
+    inspectVaultHelper()
   }
 
   Timer {

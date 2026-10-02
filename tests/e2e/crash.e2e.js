@@ -11,8 +11,8 @@
 //   in the core either, while one typed into the panel's field is.
 // - Opening the item and not revealing anything leaves the password and the
 //   note out of the core too; revealing one field puts only that field in.
-// - Without it (the fallback): they are in the core, which shows this test
-//   can see a leak.
+// - Without it (the fallback, allowed in shell.json): they are in the core,
+//   which shows this test can see a leak.
 //
 // Needs systemd-coredump (core_pattern piping to it) and `coredumpctl`, plus
 // what shell.js needs. The cores it creates hold only fake secrets. Not run
@@ -125,7 +125,8 @@ function run(label, plugin, withHelper, reveal = null, openOnly = false, pinentr
   const secrets = { password: marker("password"), note: marker("note"), pinentry: marker("pinentry"), typed: marker("typed") }
   // pinentry's answers are in a file of the test's, not in the shell's environment.
   const answers = path.join(fs.mkdtempSync("/tmp/qsbw-crash-answers-"), "answers")
-  const shell = createShell("e2e-crash", check, { plugin, coreDumps: true, env: { FAKE_PINENTRY_ANSWERS: answers } })
+  const shell = createShell("e2e-crash", check, { plugin, coreDumps: true,
+    env: Object.assign({ FAKE_PINENTRY_ANSWERS: answers }, withHelper ? {} : { QSBW_E2E_ALLOW_NO_HELPER: "1" }) })
   // Given to the fake bw in its data directory, never through the shell's
   // environment (which a core includes).
   const data = path.join(shell.home, ".config", "Bitwarden CLI")
