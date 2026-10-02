@@ -66,6 +66,9 @@ check as the shell started, moved the vault into the shell.
 - **The vault helper refuses duplicate run ids** and limits background
   commands.
 - **otpauth parameters need two hex digits after `%`**, so `%+f` is refused.
+- **A wrong master password says so** with bw 2026.2, which reports it as
+  "The provided key is not the expected type" after a logged decryption
+  error; the panel showed that text as it was.
 - **A vault helper that cannot be located is reported at once** instead of
   leaving every command waiting with no message.
 
