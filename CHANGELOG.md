@@ -6,20 +6,28 @@
 
 Fixes for [GHSA-6qjw-gmvg-7hvw](https://github.com/Elevate08/qs-bitwarden-cli/security/advisories/GHSA-6qjw-gmvg-7hvw),
 reported by Nicolas Falesy (@nicolasfalesy). Secrets the shell itself had held
-could be in its core dump, and four kills of the vault helper moved the vault
-into the shell.
+could be in its core dump. Four kills of the vault helper, or one kill of its
+check as the shell started, moved the vault into the shell.
 
 - **Opening an item no longer loads its secrets into the shell.** A value is
-  fetched from the vault helper when you reveal it and dropped when you hide
-  it; copies go from the helper to the clipboard. Notes are hidden until you
-  show them.
+  fetched from the vault helper only when you reveal it, and copies go from
+  the helper to the clipboard. Notes are hidden until you show them. A value
+  you revealed can stay in the shell's memory after you hide it.
 - **The master password and PIN for unlocking, and the reprompt's password,
   are typed into `pinentry`** when it is installed. It runs under the vault
-  helper, so what you type does not reach the shell. Turn it off with
-  `usePinentry`.
+  helper, so what you type does not reach the shell. If pinentry fails or is
+  stopped, the panel says so and the next attempt opens it again. Its own
+  field is used only when you pick "Type it here instead", so another program
+  cannot switch pinentry off by killing it. Pinentry closes after two minutes
+  without an answer. Turn it off with `usePinentry`.
 - **A vault helper that keeps stopping leaves the vault locked.** It used to
   fall back to holding the vault in the shell. The restart count also clears
   once the helper has stayed up for a minute.
+- **A vault helper that cannot be used when the shell starts leaves the vault
+  locked**, with a banner that offers to check again. It used to hold the
+  vault in the shell, and killing the check was enough to cause that. Set
+  `allowVaultWithoutHelper` to `true` in `shell.json` for the old behaviour,
+  on a platform the helper is not built for.
 - **The master password a PIN, fingerprint or FIDO2 unlock recovers is
   forgotten once the unlock is done**, instead of at the next lock.
 - **A disabled quick-unlock method's legacy keyring entry is removed** even
@@ -58,8 +66,8 @@ into the shell.
 - **The vault helper refuses duplicate run ids** and limits background
   commands.
 - **otpauth parameters need two hex digits after `%`**, so `%+f` is refused.
-- **A vault helper that cannot be located falls back** instead of leaving
-  every command waiting.
+- **A vault helper that cannot be located is reported at once** instead of
+  leaving every command waiting with no message.
 
 ### Documentation
 
@@ -68,9 +76,11 @@ into the shell.
 - The vault helper does not protect against code running in the shell, and
   the master-password reprompt is checked by the panel.
 - What the shell has shown or you typed into it can stay in its memory after
-  it is cleared, and so be in a shell core dump. The plugin leaves the shell's
-  core dumps on: lowering the limit would also turn them off for every other
-  shell plugin and every app started from the launcher.
+  it is cleared, and so be in a shell core dump. That includes the email
+  login, quick-unlock setup (its master password and new PIN), item forms,
+  and the master password or PIN when pinentry is not used. The plugin leaves
+  the shell's core dumps on: lowering the limit would also turn them off for
+  every other shell plugin and every app started from the launcher.
 
 ## [1.11.2] - 2026-09-29
 
