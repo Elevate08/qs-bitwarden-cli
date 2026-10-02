@@ -697,6 +697,11 @@ Panel {
         }
       }
       onActivateRequested: {
+        // Pinentry takes the typing: Enter opens it, as it submits a field.
+        if (root.vault.status === "locked" && unlockForm.pinentryOffered) {
+          unlockForm.submitCurrentMethod()
+          return
+        }
         if (root.vault.currentScreen === "generator" && root.vault.generatorFeedsForm) {
           root.vault.useGeneratedPassword()
           return

@@ -30,7 +30,7 @@ const callers = service.split("\n").filter(l => !/^\s*\/\//.test(l))
   .join("\n").match(/storeAcceptedMasterPassword\(/g).length
 const unlockSuccess = bodyOf("onUnlockSuccess")
 check("a typed, accepted password reaches the writer from the unlock path",
-  /if \(pendingUnlockPassword && pendingUnlockFrom === ""\) \{\s*storeAcceptedMasterPassword\(pendingUnlockPassword\)/
+  /if \(pendingUnlockPassword && pendingUnlockFrom === ""\) \{[\s\S]{0,200}?storeAcceptedMasterPassword\(pendingUnlockPassword[,)]/
     .test(unlockSuccess), unlockSuccess)
 check("a quick unlock's password never does",
   !/pendingUnlockFrom === "(pin|fingerprint|fido)"[\s\S]{0,120}storeAcceptedMasterPassword/.test(service),
@@ -101,12 +101,12 @@ check("a held reference is forgotten by name, and plain text is left alone",
   /var name = Model\.heldSecretName\(value\)\s*if \(name\) forgetVaultSecret\(name\)/.test(bodyOf("forgetHeldPassword")),
   bodyOf("forgetHeldPassword"))
 check("a quick unlock's password is forgotten when the unlock succeeds, unless the legacy PIN migration still needs it",
-  /migrateLegacyPin\(pendingUnlockPassword, pendingPinForMigration\)\s*\} else \{\s*forgetHeldPassword\(pendingUnlockPassword\)/.test(unlockSuccess),
+  /migrateLegacyPin\(pendingUnlockPassword, pendingPinForMigration\)\s*\} else \{\s*if \(pendingUnlockFrom !== ""\) forgetHeldPassword\(pendingUnlockPassword\)/.test(unlockSuccess),
   unlockSuccess)
 check("the legacy PIN migration forgets it when it ends, on every path",
   /!quickUnlockAvailable\) \{\s*forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin"))
     && /onDone: function\(code\) \{\s*root\.forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin"))
-    && /function\(\) \{ root\.forgetHeldPassword\(password\) \}\)/.test(bodyOf("migrateLegacyPin")),
+    && /function\(\) \{\s*root\.forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin")),
   bodyOf("migrateLegacyPin"))
 check("a refused unlock forgets the password, except the one kept for a re-seal",
   /if \(!fromEnvelope\) \{\s*forgetHeldPassword\(pendingUnlockPassword\)\s*pendingUnlockPassword = ""/.test(unlockOutput)
@@ -219,7 +219,7 @@ check("an envelope answer is only acted on for a live, submitted unlock",
   /pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"/.test(bodyOf("onEnvelopePinResult")),
   bodyOf("onEnvelopePinResult"))
 check("a legacy blob's PIN is held only until that unlock settles, then migrated",
-  /pendingPinForMigration = String\(pinEntry \|\| ""\)/.test(bodyOf("onPinUnlockResult"))
+  /pendingPinForMigration = heldPin \? [^\n]*: String\(pinEntry \|\| ""\)/.test(bodyOf("onPinUnlockResult"))
     && /pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword\) \{\s*migrateLegacyPin/
       .test(unlockSuccess)
     && /pendingPinForMigration = ""/.test(unlockSuccess)

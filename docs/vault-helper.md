@@ -17,7 +17,8 @@ The [README](../README.md#how-your-vault-is-held) has the short version.
 | The item list | every item in full | names, usernames, websites, folders, flags such as "has a password" |
 | Passwords, TOTP keys, passkeys, password history, notes, card numbers and codes, identity numbers, hidden custom fields | yes | only a value you reveal, while it is revealed; the whole item while you edit it |
 | The master password a PIN, fingerprint or FIDO2 key opens | yes, for that unlock | a reference by name |
-| What you type (master password, PIN, a new item's fields) | | yes, until you submit |
+| What you type: the master password and PIN for unlocking, and the master password for a re-prompt | yes: typed into pinentry, a separate process, and passed to the helper | a reference by name |
+| What else you type: the email login, the master password and new PIN when setting up PIN, fingerprint or FIDO2 unlock, and an item's fields | | yes, until you submit, and in memory after |
 
 Opening an item shows its name, username, websites, card brand, holder and
 expiry, identity name, email, address and phone, plain custom fields and
@@ -60,7 +61,43 @@ output is handed back as it is, except:
   secrets removed (the shell then asks for one value at a time: `field` to
   show it, `copyField` to copy it, `item` to edit);
 - the master password a quick-unlock method opens is kept, and the shell gets
-  a reference to it.
+  a reference to it;
+- a password or PIN typed into pinentry (below) is kept, and the shell gets
+  only whether there was an answer.
+
+## Typing into pinentry
+
+A string typed into the panel stays in the shell's memory after the field is
+cleared, so a shell core dump could hold it. The master password for
+unlocking and for a re-prompt, and the PIN, are therefore typed into
+`pinentry`, a separate process. The panel hides while it runs so it can take
+the keyboard, and shows again after.
+
+The helper runs a small script that speaks the pinentry protocol, and keeps
+what it prints, decoded, under a name; the shell only learns whether you
+answered or cancelled. The held password or PIN goes to `bw unlock`, the
+quick-unlock check or the re-prompt check by name, and is forgotten as soon as
+that has finished. A wrong password or PIN opens pinentry again with the
+reason.
+
+Pinentry closes itself after two minutes without an answer, which counts as
+a cancel.
+
+The pinentry used is `pinentry` from `PATH`; `pinentryProgram` in `shell.json`
+names another, and the setting "Type secrets in pinentry" turns this off. The
+panel's own field is used instead when pinentry is turned off or not installed,
+or when the helper is not running (typed into the shell, pinentry would gain
+nothing).
+
+When pinentry fails to run or stops before answering, the panel says so and
+the next attempt opens pinentry again. The panel's field is used only when you
+pick "Type it here instead", and only until the panel closes or the vault
+locks or unlocks. A failure is never remembered: any program running as you
+can kill pinentry, and it must not be able to turn pinentry off that way and
+have your master password typed into the shell.
+
+The email login, the setup of PIN, fingerprint and FIDO2 unlock (the master
+password and the new PIN) and the item forms are not covered.
 
 ## Hardening
 
@@ -83,9 +120,10 @@ while holding your decrypted vault does not leave a core either.
   user read another's `/proc/<pid>/environ`, so the key is readable while a
   `bw` command runs. That was true before the helper and is true of `bw`
   everywhere; see [SECURITY.md](../SECURITY.md) for what is in scope.
-- **What is on screen, and what you type, is in the shell.** Clearing it does
-  not wipe it, so it can stay in the shell's memory and be in a shell core
-  dump.
+- **What is on screen, and what you type, is in the shell.** That is what you
+  type into the panel's own fields (the email login, item fields, quick-unlock
+  setup, and the master password or PIN when pinentry is not used). Clearing it does not wipe
+  it, so it can stay in the shell's memory and be in a shell core dump.
 - **The shell's core dumps are left on.** The plugin does not lower the
   shell's core-file limit. The limit is per process and inherited, so it would
   also turn off core dumps for every other plugin in the shell and for every

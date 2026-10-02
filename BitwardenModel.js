@@ -1651,6 +1651,146 @@ function pinUnlockCommand(slot) {
   return ["bash", "-c", cappedScript(script)]
 }
 
+// -------------------------------------------------------------------------
+// Typed secrets in a pinentry
+// -------------------------------------------------------------------------
+//
+// The master password and the PIN are typed into `pinentry`, a separate
+// process, instead of the panel: a string typed into the shell stays in its
+// heap after it is cleared. The script below is the Assuan client. It runs
+// through the vault helper with capture "pinentry:<name>", so what it prints
+// (the answer, still percent-encoded) is decoded and held there and the shell
+// is told nothing of it. Everything the user can influence (account email,
+// error text) is an argument, encoded for Assuan, never part of the script.
+
+var PINENTRY_DEFAULT_PROGRAM = "pinentry"
+var PINENTRY_TEXT_MAX = 400
+// Pinentry closes itself after this long without an answer (SETTIMEOUT), so
+// a forgotten window does not keep the panel hidden and SSH prompts held
+// back. The script stops waiting a little later, for a pinentry that ignores
+// it.
+var PINENTRY_TIMEOUT_S = 120
+var PINENTRY_GIVE_UP_S = PINENTRY_TIMEOUT_S + 30
+// Exit codes of the script (and 127, 126 and 128+ for a program that is
+// missing, a helper that does not know the capture, or a kill).
+var PINENTRY_EXIT = { cancelled: 1, empty: 3, failed: 4, short: 5, missing: 127 }
+
+function pinentryExitCodes() {
+  return { cancelled: PINENTRY_EXIT.cancelled, empty: PINENTRY_EXIT.empty,
+           failed: PINENTRY_EXIT.failed, short: PINENTRY_EXIT.short, missing: PINENTRY_EXIT.missing }
+}
+
+// pinentry's own "operation cancelled" is GPG_ERR_CANCELED (99) from source
+// 5, 83886179; any code whose low 16 bits are 99 is read as a cancel. Its
+// timeout, GPG_ERR_TIMEOUT (62), is one too: nobody answered.
+var PINENTRY_SCRIPT = [
+  "__prog=\"$1\"; __title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"; __min=\"${6:-0}\"",
+  "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
+  // Assuan data: only %, CR and LF need encoding.
+  "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
+  "coproc PE { exec \"$__prog\" 2>/dev/null; }",
+  "__pid=\"$PE_PID\"",
+  "trap 'kill \"$__pid\" 2>/dev/null' EXIT",
+  "trap '' PIPE",
+  // 0: OK, 1: ERR, 2: gone or silent for $1 seconds.
+  "__reply() { while IFS= read -r -t \"$1\" -u \"${PE[0]}\" __l; do",
+  "  case \"$__l\" in OK|OK\\ *) return 0 ;; ERR|ERR\\ *) return 1 ;; esac",
+  "done; return 2; }",
+  "__ask() { printf '%s\\n' \"$1\" >&\"${PE[1]}\" || exit " + PINENTRY_EXIT.failed + "; __reply 30; }",
+  "__reply 10 || exit " + PINENTRY_EXIT.failed,
+  "__enc \"$__title\"; __ask \"SETTITLE $__e\"",
+  "__enc \"$__desc\"; __ask \"SETDESC $__e\"",
+  "__enc \"$__prompt\"; __ask \"SETPROMPT $__e\"",
+  "if [ -n \"$__err\" ]; then __enc \"$__err\"; __ask \"SETERROR $__e\"; fi",
+  "__ask \"SETTIMEOUT " + PINENTRY_TIMEOUT_S + "\"",
+  "printf 'GETPIN\\n' >&\"${PE[1]}\" || exit " + PINENTRY_EXIT.failed,
+  "__d=''",
+  "while IFS= read -r -t " + PINENTRY_GIVE_UP_S + " -u \"${PE[0]}\" __l; do",
+  "  case \"$__l\" in",
+  "    'D '*) __d=\"$__d${__l:2}\" ;;",
+  "    OK|OK\\ *)",
+  "      printf 'BYE\\n' >&\"${PE[1]}\"",
+  "      [ -n \"$__d\" ] || exit " + PINENTRY_EXIT.empty,
+  // The length of what was typed: each %XX stands for one character.
+  "      __t=\"${__d//[^%]/}\"; __n=$(( ${#__d} - 2 * ${#__t} ))",
+  "      if [[ \"$__min\" =~ ^[0-9]+$ ]] && (( __n < __min )); then exit " + PINENTRY_EXIT.short + "; fi",
+  "      printf '%s' \"$__d\"; exit 0 ;;",
+  "    ERR|ERR\\ *)",
+  "      __c=\"${__l#ERR }\"; __c=\"${__c%% *}\"",
+  "      if [[ \"$__c\" =~ ^[0-9]+$ ]] && (( (10#$__c & 65535) == 99 || (10#$__c & 65535) == 62 )); then exit " + PINENTRY_EXIT.cancelled + "; fi",
+  "      exit " + PINENTRY_EXIT.failed + " ;;",
+  "  esac",
+  "done",
+  "exit " + PINENTRY_EXIT.failed
+].join("\n")
+
+// The notice after a run that failed. Not remembered: the next attempt
+// opens pinentry again, and the field is used only when picked.
+function pinentryFailedNotice() {
+  return "Pinentry stopped before answering. Try again, or type it here instead."
+}
+
+// `bw unlock` refusing the password itself, as opposed to any other failure
+// (a missing account, a broken install), which is shown as it is. Up to
+// 2025 bw said "Invalid master password."; from 2026.2 its SDK fails to
+// decrypt the user key, logs "The decryption operation failed" and exits with
+// "The provided key is not the expected type".
+var WRONG_MASTER_PASSWORD = [/invalid master password/i, /the decryption operation failed/i,
+  /the provided key is not the expected type/i]
+
+function isWrongMasterPassword(stderrText) {
+  var text = String(stderrText || "")
+  return WRONG_MASTER_PASSWORD.some(function(pattern) { return pattern.test(text) })
+}
+
+// bw's stderr without the SDK's log lines ("ERROR bitwarden_crypto::...:"),
+// which are not meant for the person reading the panel.
+function bwErrorText(stderrText) {
+  return String(stderrText || "").replace(/\u001b\[[0-9;]*m/g, "").split("\n")
+    .filter(function(line) { return !/^\s*(ERROR|WARN|INFO|DEBUG|TRACE)\s+bitwarden_\w+(::\w+)*\s*:/.test(line) })
+    .map(function(line) { return line.trim() }).filter(Boolean).join("\n")
+}
+
+function pinentryText(value) {
+  return String(value === undefined || value === null ? "" : value)
+    .replace(/\u0000/g, "").slice(0, PINENTRY_TEXT_MAX)
+}
+
+// The program to run: a setting that names one, else `pinentry` from PATH.
+// Never an option: it is the first word of the command.
+function pinentryProgram(configured) {
+  var name = typeof configured === "string" ? configured.trim() : ""
+  if (!name || name.charAt(0) === "-" || name.indexOf("\u0000") !== -1) return PINENTRY_DEFAULT_PROGRAM
+  return name
+}
+
+// `opts`: { title, description, prompt, error } as plain text, and
+// `minLength`: an answer of fewer characters exits short (nothing is held).
+function pinentryCommand(program, opts) {
+  var o = opts || {}
+  return ["bash", "-c", PINENTRY_SCRIPT, "_", pinentryProgram(program),
+    pinentryText(o.title), pinentryText(o.description), pinentryText(o.prompt), pinentryText(o.error),
+    String(Math.max(0, Math.floor(Number(o.minLength) || 0)))]
+}
+
+// Exit 0 when `program` names something runnable.
+function pinentryProbeCommand(program) {
+  return ["bash", "-c", "command -v -- \"$1\" >/dev/null 2>&1", "_", pinentryProgram(program)]
+}
+
+// purpose: "unlock" (master password), "pin", "reprompt".
+function pinentryDescription(purpose, email) {
+  var who = String(email || "").trim()
+  var suffix = who ? " for " + who : ""
+  if (purpose === "pin") return "Enter the PIN that unlocks Bitwarden" + suffix
+  if (purpose === "reprompt") return "Confirm your Bitwarden master password" + suffix
+  return "Unlock Bitwarden" + suffix
+}
+
+function pinentryPrompt(purpose) {
+  return purpose === "pin" ? "PIN:" : "Master password:"
+}
+
 function keyringClearPinCommand(slot) {
   return keyringClearEntryCommand(keyringEntryName(KEYRING_PIN, slot))
 }
@@ -6090,6 +6230,8 @@ var SETTINGS_SCHEMA = [
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "A PIN of 6 digits or more opens your master password, stored once, encrypted and sealed to this machine. A program running as you can copy it and try every 6-digit PIN in about 16 hours, so use 8 or more (about 2 months)." },
+  { key: "usePinentry", group: "security", type: "bool", label: "Type secrets in pinentry", defaultValue: true,
+    description: "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; otherwise the panel's own field is used." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },

@@ -1,6 +1,7 @@
 //! The helper's process: reads requests from the panel, one JSON object per
 //! line, and writes replies the same way. See `lib.rs`.
 
+use qs_bitwarden_vault::assuan;
 use qs_bitwarden_vault::control::{self, Capture, Request, Source};
 use qs_bitwarden_vault::store::{self, Store};
 use qs_bitwarden_vault::{harden_process, self_test, totp};
@@ -555,6 +556,18 @@ fn keep(
             }
             Zeroizing::new(String::new())
         }
+        // Only an answer the script finished (exit 0): a cancel or a crash
+        // keeps nothing, and neither does an empty or malformed answer.
+        Capture::Pinentry(name) => {
+            if current && code == 0 {
+                let answer = assuan::decode(text.trim_end_matches('\n'));
+                if let Some(pin) = answer.filter(|pin| !pin.is_empty()) {
+                    store.set_secret(name.clone(), pin);
+                    held = true;
+                }
+            }
+            Zeroizing::new(String::new())
+        }
         Capture::Vault | Capture::VaultMerge => {
             let replace = *capture == Capture::Vault;
             let stripped = if code == 0 && current {
@@ -699,6 +712,28 @@ mod tests {
         assert!(shown.is_empty());
         assert!(!held);
         assert!(store.lock().unwrap().secret("pw").is_none());
+    }
+
+    #[test]
+    fn a_pinentry_answer_is_decoded_kept_and_never_forwarded() {
+        let store = shared();
+        let now = store.lock().unwrap().generation();
+        let capture = Capture::Pinentry("pin".to_owned());
+        let (shown, session, held) = keep(&store, now, &capture, 0, &text("a%25%0Ab+c\n"));
+        assert!(shown.is_empty() && !session && held);
+        assert_eq!(store.lock().unwrap().secret("pin"), Some("a%\nb+c"));
+
+        // A cancel, an empty answer, malformed data and a crash keep
+        // nothing, and do not replace what is held.
+        for (code, answer) in [(1, "x"), (0, ""), (0, "%zz"), (4, "x")] {
+            let (shown, _, held) = keep(&store, now, &capture, code, &text(answer));
+            assert!(shown.is_empty() && !held, "{code} {answer}");
+        }
+        assert_eq!(store.lock().unwrap().secret("pin"), Some("a%\nb+c"));
+        store.lock().unwrap().forget(&[]);
+        let (_, _, held) = keep(&store, now, &capture, 0, &text("late"));
+        assert!(!held);
+        assert!(store.lock().unwrap().secret("pin").is_none());
     }
 
     #[test]

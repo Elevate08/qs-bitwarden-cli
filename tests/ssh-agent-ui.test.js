@@ -729,8 +729,8 @@ check("a rejected PIN keeps its reason after the PIN method is gone",
     && !/form\.vault\.pinError/.test(unlockFormSrc),
   "an exhausted PIN clears itself, so the reason has to outlive it -- but a setup-form error is not that reason")
 check("a hand-picked method lasts only as long as the screen",
-  /onVisibleChanged:\s*\{[\s\S]{0,200}?form\.chosen = ""/.test(unlockFormSrc),
-  "a reopened lock screen starts at the leading method again")
+  /onVisibleChanged:\s*\{[\s\S]{0,500}?if \(!form\.vault\.pinentryActive\) form\.chosen = ""/.test(unlockFormSrc),
+  "a reopened lock screen starts at the leading method again; hiding for pinentry is not a close")
 check("dismissing the popup re-points every view's secret fields at the vault",
   /function clearSshPopupUnlockState\(\)[\s\S]{0,900}?syncLoginFieldsToState\(\)/.test(panelSrc),
   "the popup clears masterPassword and pinEntry; the fields must follow them")

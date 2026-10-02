@@ -144,6 +144,10 @@ pub enum Capture {
     VaultMerge,
     /// Keep stdout as a named secret.
     Secret(String),
+    /// Stdout is the `D` data of a `pinentry` answer (the panel's pinentry
+    /// script prints it still encoded): decode it and keep it as a named
+    /// secret, only when the run exited 0. The panel is told nothing of it.
+    Pinentry(String),
 }
 
 impl Capture {
@@ -156,7 +160,13 @@ impl Capture {
             other => other
                 .strip_prefix("secret:")
                 .filter(|name| valid_name(name))
-                .map(|name| Self::Secret(name.to_owned())),
+                .map(|name| Self::Secret(name.to_owned()))
+                .or_else(|| {
+                    other
+                        .strip_prefix("pinentry:")
+                        .filter(|name| valid_name(name))
+                        .map(|name| Self::Pinentry(name.to_owned()))
+                }),
         }
     }
 }
@@ -265,6 +275,12 @@ mod tests {
         assert_eq!(Capture::parse(Some("secret:")), None);
         assert_eq!(Capture::parse(Some("secret:a b")), None);
         assert_eq!(Capture::parse(Some("other")), None);
+        assert_eq!(
+            Capture::parse(Some("pinentry:pw3")),
+            Some(Capture::Pinentry("pw3".into()))
+        );
+        assert_eq!(Capture::parse(Some("pinentry:")), None);
+        assert_eq!(Capture::parse(Some("pinentry:a b")), None);
         assert!(matches!(parse_source("session"), Some(Source::Session)));
         assert!(matches!(
             parse_source("secret:pw"),
