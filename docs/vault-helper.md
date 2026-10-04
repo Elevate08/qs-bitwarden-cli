@@ -85,9 +85,21 @@ a cancel.
 
 The pinentry used is `pinentry` from `PATH`; `pinentryProgram` in `shell.json`
 names another, and the setting "Type secrets in pinentry" turns this off. The
-panel's own field is used instead when pinentry is turned off or not installed,
-or when the helper is not running (typed into the shell, pinentry would gain
-nothing).
+panel's own field is used instead only when pinentry is turned off or not
+installed, or when the vault is held in the shell because
+`allowVaultWithoutHelper` allows it (below). "Not installed" is what a check
+at start says when it runs to its end; a check that was killed says nothing,
+and pinentry is still used.
+
+Pinentry runs under the helper, so while the helper is starting, restarting
+or left stopped the unlock screen and the re-prompt wait for it ("Waiting for
+the vault helper...") with no field to type into. Offering the field then
+would put the master password into the shell, and killing the helper is
+something any program running as you can do.
+
+A helper that does not answer `hello` within ten seconds is stopped with a
+retry banner. A retry waits for the old process to exit before checking and
+starting another helper; a late `ready` cannot activate the stopped process.
 
 When pinentry fails to run or stops before answering, the panel says so and
 the next attempt opens pinentry again. The panel's field is used only when you
@@ -95,6 +107,37 @@ pick "Type it here instead", and only until the panel closes or the vault
 locks or unlocks. A failure is never remembered: any program running as you
 can kill pinentry, and it must not be able to turn pinentry off that way and
 have your master password typed into the shell.
+
+When pinentry is ended from the panel's side (you open the panel, the vault
+locks, another method unlocks it), the screen that asked is told, and an
+answer pinentry gave just before is forgotten by the helper as well.
+
+Quick-unlock answers that arrive after their authentication surface closes
+are forgotten too. Locking cancels queued authentication opens and rejects
+their late results by account and vault generation; envelope setup, re-seal
+and purge writes keep their place in the queue. Removing a disabled method
+also clears its legacy entry. A missing entry counts as already removed;
+a keyring error is shown and cleanup gets at most three attempts, after
+which restarting the shell permits another cleanup attempt. Account changes
+settle cancelled purges and restore their attempt budget. Reenabling a method
+invalidates its old queued purges, retries and completions across accounts,
+so those cannot remove a newly stored wrap or mark it already removed.
+Envelope lookup errors, including killed lookups, fail cleanup; only a
+missing entry (exit 1 with no stderr) counts as already removed.
+
+### Which pinentry
+
+A pinentry that draws its own prompt (`pinentry-qt`, `pinentry-gtk`,
+`pinentry-curses`, `pinentry-tty`) is a child of the helper: what you type is
+in its memory and the helper's, and both have the helper's zero core-file
+limit. `pinentry-gnome3` is different: it hands the prompt to `gcr-prompter`
+over D-Bus, which the session bus starts, not the helper. `gcr-prompter` does
+not have the helper's limit, and what you type passes through it, so if it
+crashes its core dump can contain your master password or PIN. The plugin
+does not lower any other process's limit (see "Limits" below). If that matters
+to you, set `pinentryProgram` to a pinentry that draws its own prompt, for
+example `/usr/bin/pinentry-qt`. Check what `pinentry` on your `PATH` runs; on
+some systems it is a link or a script that picks `pinentry-gnome3`.
 
 The email login, the setup of PIN, fingerprint and FIDO2 unlock (the master
 password and the new PIN) and the item forms are not covered.
@@ -111,7 +154,10 @@ or zram with no disk swap, avoids that. Release builds abort on panic rather
 than unwinding.
 
 The commands it runs inherit the zero core limit, so a `bw` that crashes
-while holding your decrypted vault does not leave a core either.
+while holding your decrypted vault does not leave a core either. So does a
+pinentry that draws its own prompt, but not a program a command reaches some
+other way, such as `gcr-prompter` for `pinentry-gnome3`
+([Which pinentry](#which-pinentry)).
 
 ## Limits
 
@@ -129,6 +175,9 @@ while holding your decrypted vault does not leave a core either.
   also turn off core dumps for every other plugin in the shell and for every
   app started from the shell's launcher, until the shell restarts. The plugin
   keeps secrets out of the shell instead.
+- **`pinentry-gnome3` types into `gcr-prompter`**, which D-Bus starts outside
+  the helper, so the zero core limit does not cover what you type there
+  ([Which pinentry](#which-pinentry)).
 - **Code running in the shell.** The helper does not protect against it.
   Such code can ask the helper to run a command with the session key or a
   held password in its environment.

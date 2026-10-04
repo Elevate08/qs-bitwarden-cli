@@ -20,6 +20,25 @@ check as the shell started, moved the vault into the shell.
   field is used only when you pick "Type it here instead", so another program
   cannot switch pinentry off by killing it. Pinentry closes after two minutes
   without an answer. Turn it off with `usePinentry`.
+  - While the vault helper is starting, restarting or left stopped, the
+    unlock screen and the reprompt wait for it instead of offering the
+    panel's own field, which four kills of the helper used to bring up.
+  - A killed check for pinentry no longer counts as pinentry missing.
+  - Opening the panel while pinentry asks for a reprompt no longer leaves the
+    question stuck on "Checking...".
+  - An answer pinentry gave just as it was cancelled is forgotten by the
+    vault helper too.
+  - Unlock fields that are not shown no longer take keys sent to them.
+  - A helper that never answers `hello` is stopped after ten seconds, with
+    a retry banner. A late answer cannot activate the stopped helper.
+  - Abandoned quick-unlock answers are forgotten, and queued authentication
+    opens cannot run after a lock or account change.
+  - Failed removal of a legacy quick-unlock entry is surfaced and retried
+    at most three times; an absent entry counts as already removed.
+  - Leaving an account settles cancelled cleanup so returning can retry.
+    Reenabling a method invalidates its old purges and their callbacks, so
+    an obsolete retry cannot remove a newly added wrap. Failed or killed
+    envelope lookups cannot be mistaken for an absent envelope.
 - **A vault helper that keeps stopping leaves the vault locked.** It used to
   fall back to holding the vault in the shell. The restart count also clears
   once the helper has stayed up for a minute.
@@ -84,6 +103,10 @@ check as the shell started, moved the vault into the shell.
   and the master password or PIN when pinentry is not used. The plugin leaves
   the shell's core dumps on: lowering the limit would also turn them off for
   every other shell plugin and every app started from the launcher.
+- `pinentry-gnome3` hands the prompt to `gcr-prompter`, which D-Bus starts
+  outside the vault helper, so the helper's zero core-file limit does not
+  cover what is typed there. A pinentry that draws its own prompt (such as
+  `pinentry-qt`) is covered.
 
 ## [1.11.2] - 2026-09-29
 
