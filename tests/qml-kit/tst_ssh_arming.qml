@@ -99,6 +99,8 @@ TestCase {
     property bool fingerprintAvailable: false
     property bool fingerprintStored: false
     property string pinUnlockError: ""
+    // Typed into the panel's field (pinentry off): the field this test arms.
+    property string typedSecretEntry: "field"
     function prepareUnlock() {}
     function armPresenceUnlock() {}
     function releaseFidoUnlock() {}

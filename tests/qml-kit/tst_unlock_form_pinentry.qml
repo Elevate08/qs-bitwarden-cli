@@ -54,6 +54,8 @@ TestCase {
     property string fingerprintError: ""
     property string fingerprintMessage: ""
     property bool pinentryAvailable: true
+    // "pinentry", "wait" (for the vault helper) or "field" (Service.qml).
+    property string typedSecretEntry: "pinentry"
     property bool pinentryActive: false
     property bool pinentryAutoAsked: false
     property string pinentryNotice: ""
@@ -66,7 +68,7 @@ TestCase {
     function unlockPinWithPinentry() { tc.calls.push("pinentry:pin") }
     function submitPinUnlock() { tc.calls.push("submitPin") }
     function unlockVault() { tc.calls.push("unlockVault") }
-    function declinePinentry() { tc.calls.push("decline"); pinentryAvailable = false }
+    function declinePinentry() { tc.calls.push("decline"); pinentryAvailable = false; typedSecretEntry = "field" }
   }
 
   Item {
@@ -89,8 +91,29 @@ TestCase {
     return false
   }
 
+  function textItem(item, text) {
+    if (!item || !item.visible) return null
+    if (String(item.text || "") === text) return item
+    var kids = item.children || []
+    for (var i = 0; i < kids.length; i++) {
+      var found = textItem(kids[i], text)
+      if (found) return found
+    }
+    return null
+  }
+
+  // Where the vault says typing goes; pinentryAvailable follows it.
+  function entry(where) {
+    fakeVault.typedSecretEntry = where
+    fakeVault.pinentryAvailable = where === "pinentry"
+    wait(0)
+  }
+
   function init() {
     tc.calls = []
+    fakeVault.masterPassword = ""
+    fakeVault.pinEntry = ""
+    fakeVault.typedSecretEntry = "pinentry"
     fakeVault.pinentryAvailable = true
     fakeVault.pinentryActive = false
     fakeVault.pinentryAutoAsked = false
@@ -131,6 +154,55 @@ TestCase {
     verify(shownWithText(form, fakeVault.pinentryNotice), "the notice is not shown")
     verify(shownWithText(form, "Type it here instead"), "the button is not shown")
     compare(form.method, "password")
+  }
+
+  // The vault helper is not running yet, or was left stopped: pinentry runs
+  // under it, so it cannot ask, and the panel's field is not offered in its
+  // place (what is typed there stays in the shell).
+  function test_waiting_for_the_helper_offers_no_field() {
+    entry("wait")
+    form.useMethod("password")
+    compare(form.method, "password")
+    verify(!form.passwordField.visible, "the master password field is offered while the helper is not running")
+    verify(textItem(form, "Waiting for the vault helper...") !== null, "the form does not say it is waiting")
+    verify(!textItem(form, "Waiting for the vault helper...").enabled, "the Unlock button can be pressed")
+    form.submitCurrentMethod()
+    form.useMethod("pin")
+    verify(!form.pinField.visible, "the PIN field is offered while the helper is not running")
+    form.submitCurrentMethod()
+    compare(tc.calls.filter(function(c) { return c !== "fingerprint" }).join(","), "",
+      "something was submitted or asked for while waiting")
+  }
+
+  // A field that is not offered takes no keys, even if focus is pushed there
+  // (the vault focuses "pass" or "pin" on the locked screen).
+  function test_a_field_not_offered_takes_no_keys() {
+    var cases = ["pinentry", "wait"]
+    for (var i = 0; i < cases.length; i++) {
+      entry(cases[i])
+      form.chosen = "password"
+      wait(0)
+      form.passwordField.forceActiveFocus()
+      keyClick(Qt.Key_S)
+      compare(fakeVault.masterPassword, "", "a key reached the hidden password field (" + cases[i] + ")")
+      form.chosen = "pin"
+      wait(0)
+      form.pinField.forceActiveFocus()
+      keyClick(Qt.Key_7)
+      compare(fakeVault.pinEntry, "", "a key reached the hidden PIN field (" + cases[i] + ")")
+    }
+  }
+
+  // Pinentry turned off, missing or declined, or the vault held in the shell
+  // as allowed: the field is the way in.
+  function test_the_field_when_it_is_the_way_in() {
+    entry("field")
+    form.useMethod("password")
+    verify(form.passwordField.visible, "the field is not offered")
+    form.passwordField.forceActiveFocus()
+    keyClick(Qt.Key_S)
+    compare(fakeVault.masterPassword, "s")
+    verify(textItem(form, "Waiting for the vault helper...") === null, "it says it is waiting")
   }
 
   function test_a_real_close_forgets_the_method_picked() {

@@ -35,12 +35,17 @@ Column {
   readonly property var availableMethods: ["fido", "fingerprint", "pin", "password"]
     .filter(function(name) { return methodAvailable(name) })
   // The master password and the PIN are typed into pinentry, a separate
-  // process, when it is available; the fields below are the fallback.
-  readonly property bool pinentryOffered: form.vault.pinentryAvailable === true
+  // process, when it is available; the fields below are used only where the
+  // vault says (Model.typedSecretEntry()). Otherwise, while the vault helper
+  // pinentry runs under is not up, the form waits for it with no field.
+  readonly property bool typesHere: form.vault.typedSecretEntry === "field"
+  readonly property bool pinentryOffered: form.vault.typedSecretEntry === "pinentry"
+    && (method === "pin" || method === "password")
+  readonly property bool waitingForHelper: !typesHere && !pinentryOffered
     && (method === "pin" || method === "password")
   // The field this method types into (none for fingerprint or FIDO2, nor
-  // when pinentry takes the typing).
-  readonly property var focusField: pinentryOffered ? null : (method === "pin"
+  // when pinentry takes the typing or the form waits for it).
+  readonly property var focusField: !typesHere ? null : (method === "pin"
     ? pinField
     : (method === "password" ? passwordField : null))
   // A FIDO2 attempt: scanning, authorized, then unlocking.
@@ -141,6 +146,7 @@ Column {
   }
 
   function submitCurrentMethod() {
+    if (form.waitingForHelper) return
     if (form.pinentryOffered) {
       if (form.method === "pin") form.vault.unlockPinWithPinentry()
       else form.vault.unlockWithPinentry()
@@ -330,7 +336,7 @@ Column {
   }
 
   Column {
-    visible: form.fieldsOffered && form.method === "pin" && !form.pinentryOffered
+    visible: form.fieldsOffered && form.method === "pin" && form.typesHere
     width: parent.width
     spacing: Style.space(8)
 
@@ -352,7 +358,8 @@ Column {
       text: form.vault.pinEntry
       onTextChanged: form.vault.pinEntry = text.replace(/[^0-9]/g, "")
       onAccepted: form.vault.submitPinUnlock()
-      enabled: !form.vault.pinBusy && !form.vault.isUnlocking
+      // Hidden is not enough: a hidden field keeps keys focus pushes to it.
+      enabled: form.typesHere && !form.vault.pinBusy && !form.vault.isUnlocking
     }
 
     Text {
@@ -368,7 +375,7 @@ Column {
   }
 
   Row {
-    visible: form.fieldsOffered && form.method === "password" && !form.pinentryOffered
+    visible: form.fieldsOffered && form.method === "password" && form.typesHere
     width: parent.width
     spacing: Style.space(8)
 
@@ -382,7 +389,7 @@ Column {
       onTextChanged: form.vault.masterPassword = text
       onActiveFocusChanged: if (activeFocus) form.vault.prepareUnlock()
       onAccepted: form.vault.unlockVault()
-      enabled: !form.vault.isUnlocking
+      enabled: form.typesHere && !form.vault.isUnlocking
     }
 
     Button {
@@ -418,6 +425,20 @@ Column {
     horizontalAlignment: Text.AlignHCenter
     text: "Your " + (form.method === "pin" ? "PIN" : "master password")
       + " is typed in a separate window, not in this panel."
+    color: form.panel.dim
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
+  // The same window, once the vault helper it runs under is up.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && form.waitingForHelper
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: "Your " + (form.method === "pin" ? "PIN" : "master password")
+      + " is typed in a separate window once the vault helper is running."
     color: form.panel.dim
     font.family: form.panel.fontFamily
     font.pixelSize: Style.font.caption
@@ -460,14 +481,15 @@ Column {
     visible: form.fieldsOffered && form.method !== "fingerprint" && form.method !== "fido"
     width: parent.width
     text: form.busy ? (form.method === "pin" ? "Checking..." : "Unlocking...")
-      : (form.canSubmit ? "Unlock Vault" : "Checking vault status...")
-    iconText: form.busy || !form.canSubmit ? "󰑐" : "󰌋"
-    iconSpinning: form.busy || !form.canSubmit
+      : (form.waitingForHelper ? "Waiting for the vault helper..."
+        : (form.canSubmit ? "Unlock Vault" : "Checking vault status..."))
+    iconText: form.busy || !form.canSubmit || form.waitingForHelper ? "󰑐" : "󰌋"
+    iconSpinning: form.busy || !form.canSubmit || form.waitingForHelper
     selected: true
     accent: Color.accent
     fontFamily: form.panel.fontFamily
     focusable: form.buttonsFocusable
-    enabled: !form.busy && form.canSubmit
+    enabled: !form.busy && form.canSubmit && !form.waitingForHelper
     onClicked: form.submitCurrentMethod()
   }
 

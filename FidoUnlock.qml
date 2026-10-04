@@ -259,7 +259,11 @@ Item {
       legacyStored = false
       if (vault) vault.refreshEnvelope()
     }
-    if (!accepting) { out = ""; return }
+    if (!accepting) {
+      if (vault) vault.forgetHeldPassword(out)
+      out = ""
+      return
+    }
 
     if (exitCode === 0 || exitCode === codes.legacyUsed) {
       busyRetries = 0

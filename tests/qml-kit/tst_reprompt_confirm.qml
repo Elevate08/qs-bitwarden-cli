@@ -32,7 +32,12 @@ TestCase {
     property string repromptItemName: ""
     property string repromptError: ""
     property bool repromptBusy: false
+    // "pinentry", "wait" (for the vault helper) or "field" (Service.qml).
+    property string typedSecretEntry: "field"
+    property bool pinentryAvailable: false
+    property string pinentryNotice: ""
     function submitReprompt(password) { tc.calls.push("submit(" + password + ")") }
+    function submitRepromptWithPinentry() { tc.calls.push("pinentry") }
     function cancelReprompt() { tc.calls.push("cancel"); repromptPending = false }
     function restoreScreenFocus() { tc.calls.push("restoreFocus") }
   }
@@ -67,7 +72,34 @@ TestCase {
 
   function cleanup() {
     fakeVault.repromptPending = false
+    fakeVault.typedSecretEntry = "field"
+    fakeVault.pinentryAvailable = false
     wait(0)
+  }
+
+  function shownText(item, text) {
+    if (!item || !item.visible) return null
+    if (String(item.text || "") === text) return item
+    for (var i = 0; i < item.children.length; i++) {
+      var found = shownText(item.children[i], text)
+      if (found) return found
+    }
+    return null
+  }
+
+  // The vault helper is not running: pinentry cannot ask, and the field is
+  // not offered in its place; Enter and Confirm do nothing, Escape cancels.
+  function test_waiting_for_the_helper_offers_no_field() {
+    fakeVault.typedSecretEntry = "wait"
+    wait(0)
+    var f = field()
+    verify(!(f && f.echoMode === TextInput.Password && f.visible), "the password field is offered while waiting")
+    verify(shownText(confirm, "Waiting for the vault helper...") !== null, "it does not say it is waiting")
+    keyClick(Qt.Key_A)
+    keyClick(Qt.Key_Return)
+    compare(tc.calls.join(","), "", "something was submitted or asked for while waiting")
+    keyClick(Qt.Key_Escape)
+    verify(tc.calls.indexOf("cancel") !== -1, "Escape did not cancel while waiting")
   }
 
   function test_hidden_until_asked() {

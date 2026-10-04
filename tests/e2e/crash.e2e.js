@@ -27,6 +27,7 @@ const { createSuite, repoRoot } = require("../harness")
 const { createShell, sleep } = require("./shell")
 const fs = require("fs")
 const path = require("path")
+const os = require("os")
 const crypto = require("crypto")
 const { spawnSync } = require("child_process")
 
@@ -124,7 +125,7 @@ function pluginWithLocalHelper(into) {
 function run(label, plugin, withHelper, reveal = null, openOnly = false, pinentry = false) {
   const secrets = { password: marker("password"), note: marker("note"), pinentry: marker("pinentry"), typed: marker("typed") }
   // pinentry's answers are in a file of the test's, not in the shell's environment.
-  const answers = path.join(fs.mkdtempSync("/tmp/qsbw-crash-answers-"), "answers")
+  const answers = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-crash-answers-")), "answers")
   const shell = createShell("e2e-crash", check, { plugin, coreDumps: true,
     env: Object.assign({ FAKE_PINENTRY_ANSWERS: answers }, withHelper ? {} : { QSBW_E2E_ALLOW_NO_HELPER: "1" }) })
   // Given to the fake bw in its data directory, never through the shell's
@@ -222,7 +223,7 @@ function run(label, plugin, withHelper, reveal = null, openOnly = false, pinentr
   }
 }
 
-const local = fs.mkdtempSync("/tmp/qsbw-crash-local-")
+const local = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-crash-local-"))
 try {
   const plugin = pluginWithLocalHelper(path.join(local, "plugin"))
   run("helper", plugin, true, null, false, true)
@@ -232,7 +233,7 @@ try {
 } finally {
   fs.rmSync(local, { recursive: true, force: true })
 }
-const copy = fs.mkdtempSync("/tmp/qsbw-crash-plugin-")
+const copy = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-crash-plugin-"))
 try {
   run("fallback", pluginWithoutHelper(path.join(copy, "plugin")), false)
 } finally {

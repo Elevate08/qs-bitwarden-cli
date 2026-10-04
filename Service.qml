@@ -972,6 +972,9 @@ Item {
   property int vaultHelperRestarts: 0
   readonly property int vaultHelperMaxRestarts: 3
   readonly property int vaultHelperSettledMs: 60000
+  readonly property int vaultHelperReadyMs: 10000
+  property bool vaultHelperReadyTimedOut: false
+  property bool vaultHelperRetryPending: false
   // What `session` holds while the helper has the key (not a secret).
   readonly property string heldSessionMarker: Model.vaultHeldSession()
   // Held values by name while falling back (the helper holds them otherwise).
@@ -1004,6 +1007,7 @@ Item {
       return
     }
     vaultHelperState = "starting"
+    vaultHelperReadyTimer.restart()
     vaultHelperProc.command = [path]
     vaultHelperProc.running = true
   }
@@ -1040,10 +1044,32 @@ Item {
   // is found; runs keep waiting until that is decided.
   function retryVaultHelper() {
     if (vaultHelperState !== "stopped") return
+    // Process termination is asynchronous. Its old exit must not be read
+    // as a failure of the new attempt, or restart the helper twice.
+    if (vaultHelperReadyTimedOut && vaultHelperProc.pid > 0) {
+      vaultHelperRetryPending = true
+      return
+    }
+    vaultHelperReadyTimedOut = false
+    vaultHelperRetryPending = false
     vaultHelperRestarts = 0
     vaultHelperWarning = ""
     vaultHelperState = "pending"
     inspectVaultHelper()
+  }
+
+  Timer {
+    id: vaultHelperReadyTimer
+    interval: root.vaultHelperReadyMs
+    onTriggered: root.onVaultHelperReadyTimeout()
+  }
+
+  function onVaultHelperReadyTimeout() {
+    if (vaultHelperState !== "starting") return
+    vaultHelperReadyTimedOut = vaultHelperProc.running
+    vaultHelperState = "stopped"
+    vaultHelperWarning = "The vault helper did not answer hello in time, so the vault stays locked. Click here to try again."
+    vaultHelperProc.running = false
   }
 
   Timer {
@@ -1060,6 +1086,8 @@ Item {
     var message = Model.parseVaultHelperLine(line)
     if (!message) return
     if (message.type === "ready") {
+      if (vaultHelperState !== "starting" || vaultHelperReadyTimedOut) return
+      vaultHelperReadyTimer.stop()
       vaultHelperState = "active"
       vaultHelperWarning = ""
       vaultHelperSettleTimer.restart()
@@ -1086,7 +1114,13 @@ Item {
   // The helper went away: its runs fail, and the session key went with it,
   // so an unlocked vault is locked here too. Restarted, within a limit.
   function onVaultHelperExited(exitCode) {
+    vaultHelperReadyTimer.stop()
     vaultHelperSettleTimer.stop()
+    if (vaultHelperReadyTimedOut) {
+      vaultHelperReadyTimedOut = false
+      if (vaultHelperRetryPending && !shuttingDown) Qt.callLater(retryVaultHelper)
+      return
+    }
     var wasActive = vaultHelperState === "active" || vaultHelperState === "starting"
     var unexpected = wasActive && !shuttingDown
     // Until it is back (or given up on), new runs wait rather than being
@@ -1383,14 +1417,8 @@ Item {
       if (pendingPurges.indexOf(method) === -1) pendingPurges = pendingPurges.concat([method])
       return
     }
-    queueEnvelopeJob({
-      command: Model.quickUnlockPurgeCommand(envelopeTool(), accountSlotsForPurge(), method),
-      writes: true,
-      onDone: function(code) {
-        if (code !== 0) console.log("qs-bitwarden envelope: removing " + method + " unlock left a way in (" + code + ")")
-        root.refreshEnvelope()
-      }
-    })
+    var slots = accountSlotsForPurge()
+    queueQuickUnlockPurge(slots, method, slots.join(",") + ":" + method)
   }
 
   function runPendingPurges() {
@@ -1405,15 +1433,95 @@ Item {
   // and the envelope read in between must not take that for "turned off".
   property var quickUnlockEnabledAt: ({})
   readonly property int quickUnlockEnableGraceMs: 60000
-  // Removals already tried this session, per account and method, so one that
-  // fails is not retried on every read.
+  // Only successful removals are reconciled. Failed keyring operations get
+  // at most three attempts per session and remain visible to the user.
   property var reconciledMethods: ({})
+  property var quickUnlockPurgeAttempts: ({})
+  property var quickUnlockPurgePending: ({})
+  property var quickUnlockPurgeFailures: ({})
+  property var quickUnlockMethodGeneration: ({})
+  property var quickUnlockAccountGeneration: ({})
+  readonly property int quickUnlockPurgeMaxAttempts: 3
+
+  function queueQuickUnlockPurge(slots, method, key) {
+    if (reconciledMethods[key] || quickUnlockPurgePending[key]
+        || Number(quickUnlockPurgeAttempts[key] || 0) >= quickUnlockPurgeMaxAttempts) return
+    quickUnlockPurgeAttempts = Object.assign({}, quickUnlockPurgeAttempts)
+    quickUnlockPurgeAttempts[key] = Number(quickUnlockPurgeAttempts[key] || 0) + 1
+    quickUnlockPurgePending = Object.assign({}, quickUnlockPurgePending)
+    var accountSlot = activeSlot
+    var methodGeneration = Number(quickUnlockMethodGeneration[method] || 0)
+    var accountGeneration = Number(quickUnlockAccountGeneration[accountSlot] || 0)
+    var job = {
+      command: Model.quickUnlockPurgeCommand(envelopeTool(), slots, method),
+      writes: true,
+      // Settle cleanup separately from auth results, subject to its generations.
+      alwaysDone: true,
+      isCurrent: function() {
+        return methodGeneration === Number(root.quickUnlockMethodGeneration[method] || 0)
+          && accountGeneration === Number(root.quickUnlockAccountGeneration[accountSlot] || 0)
+      },
+      onCancelled: function() {
+        if (root.quickUnlockPurgePending[key] !== job) return
+        root.quickUnlockPurgePending = Object.assign({}, root.quickUnlockPurgePending)
+        delete root.quickUnlockPurgePending[key]
+        // Cancellation accepts no result. Restore this job's budget so a
+        // returning account can retry even after the final allowed attempt.
+        root.quickUnlockPurgeAttempts = Object.assign({}, root.quickUnlockPurgeAttempts)
+        root.quickUnlockPurgeAttempts[key] = Math.max(0, Number(root.quickUnlockPurgeAttempts[key] || 0) - 1)
+      },
+      onDone: function(code) {
+        if (!job.isCurrent() || root.quickUnlockPurgePending[key] !== job) return
+        root.quickUnlockPurgePending = Object.assign({}, root.quickUnlockPurgePending)
+        delete root.quickUnlockPurgePending[key]
+        root.quickUnlockPurgeFailures = Object.assign({}, root.quickUnlockPurgeFailures)
+        if (code === 0) {
+          root.reconciledMethods = Object.assign({}, root.reconciledMethods)
+          root.reconciledMethods[key] = true
+          delete root.quickUnlockPurgeFailures[key]
+          if (Object.keys(root.quickUnlockPurgeFailures).length === 0
+              && root.errorMessage.indexOf("Could not remove disabled quick unlock") === 0) root.errorMessage = ""
+        } else {
+          root.quickUnlockPurgeFailures[key] = true
+          root.errorMessage = "Could not remove disabled quick unlock from the OS keyring. A stored way in may remain. Check the keyring service and restart to retry cleanup."
+          console.warn("qs-bitwarden envelope: removing " + method + " unlock failed (" + code + ")")
+          if (!root.logoutPending) Qt.callLater(function() {
+            if (!root.logoutPending && job.isCurrent()) root.queueQuickUnlockPurge(slots, method, key)
+          })
+        }
+        if (!root.logoutPending) root.refreshEnvelope()
+      }
+    }
+    quickUnlockPurgePending[key] = job
+    queueEnvelopeJob(job)
+  }
 
   function noteQuickUnlockEnabled(method) {
+    quickUnlockMethodGeneration = Object.assign({}, quickUnlockMethodGeneration)
+    quickUnlockMethodGeneration[method] = Number(quickUnlockMethodGeneration[method] || 0) + 1
+    // Settings are shared: reenabling invalidates this method's old purges
+    // for every account, including retries already in the writer queue.
+    var pending = Object.assign({}, quickUnlockPurgePending)
+    var failures = Object.assign({}, quickUnlockPurgeFailures)
+    for (var p in pending) if (p.slice(-(method.length + 1)) === ":" + method) delete pending[p]
+    for (var f in failures) if (f.slice(-(method.length + 1)) === ":" + method) delete failures[f]
+    quickUnlockPurgePending = pending
+    quickUnlockPurgeFailures = failures
+    if (Object.keys(failures).length === 0
+        && errorMessage.indexOf("Could not remove disabled quick unlock") === 0) errorMessage = ""
+    pendingPurges = pendingPurges.filter(function(m) { return m !== method })
     var next = {}
     for (var k in quickUnlockEnabledAt) next[k] = quickUnlockEnabledAt[k]
     next[method] = Date.now()
     quickUnlockEnabledAt = next
+    // A later disable must remove the newly added way in, even if this
+    // method was successfully purged earlier in the same session.
+    var reconciled = Object.assign({}, reconciledMethods)
+    var attempts = Object.assign({}, quickUnlockPurgeAttempts)
+    for (var key in reconciled) if (key.slice(-(method.length + 1)) === ":" + method) delete reconciled[key]
+    for (var k in attempts) if (k.slice(-(method.length + 1)) === ":" + method) delete attempts[k]
+    reconciledMethods = reconciled
+    quickUnlockPurgeAttempts = attempts
   }
 
   // Off in shell.json itself: an absent key (settings not pushed yet) is
@@ -1425,8 +1533,7 @@ Item {
   // A method whose setting is off loses its way in even when the envelope has
   // none: the purge also clears the legacy keyring entry, which an account
   // with no envelope yet (or one turned off before it migrated) still has. The
-  // purge succeeds when there is nothing to remove, and runs once per account
-  // and method per session.
+  // purge succeeds when there is nothing to remove.
   function reconcileDisabledMethods() {
     if (!quickUnlockAvailable || !accountId) return
     var checks = [
@@ -1440,15 +1547,7 @@ Item {
       if (Date.now() - Number(quickUnlockEnabledAt[c.method] || 0) < quickUnlockEnableGraceMs) continue
       var key = activeSlot + ":" + c.method
       if (reconciledMethods[key]) continue
-      var marked = {}
-      for (var k in reconciledMethods) marked[k] = reconciledMethods[k]
-      marked[key] = true
-      reconciledMethods = marked
-      queueEnvelopeJob({
-        command: Model.quickUnlockPurgeCommand(envelopeTool(), [activeSlot], c.method),
-        writes: true,
-        onDone: function(code) { root.refreshEnvelope() }
-      })
+      queueQuickUnlockPurge([activeSlot], c.method, key)
     }
   }
 
@@ -1457,6 +1556,7 @@ Item {
   function queueEnvelopeJob(job) {
     // Answers for an account no longer active are dropped (onEnvelopeJobExited()).
     job.slot = activeSlot
+    job.epoch = vaultEpoch
     var jobs = envelopeJobs.slice()
     jobs.push(job)
     envelopeJobs = jobs
@@ -1468,6 +1568,17 @@ Item {
     var jobs = envelopeJobs.slice()
     var job = jobs.shift()
     envelopeJobs = jobs
+    if (job.isCurrent && !job.isCurrent()) {
+      if (job.onCancelled) job.onCancelled()
+      pumpEnvelopeJobs()
+      return
+    }
+    if (job.unlock && (job.cancelled || job.slot !== activeSlot || job.epoch !== vaultEpoch || logoutPending)) {
+      for (var key in job.env) forgetHeldPassword(job.env[key])
+      job.env = null
+      pumpEnvelopeJobs()
+      return
+    }
     envelopeJob = job
     envelopeProc.command = job.command
     // Most jobs are the unlock tool's and need no session; `bw` jobs ask.
@@ -1494,15 +1605,54 @@ Item {
     envelopeProc.environment = {}
     // The output was the master password: scrub the collector.
     if (job && job.secretOutput) clearProcessCollectorSoon(envelopeProc)
-    if (job && job.onDone && !logoutPending && job.slot === activeSlot) job.onDone(exitCode, out)
+    var accepting = job && !logoutPending && job.slot === activeSlot
+      && (!job.unlock || (!job.cancelled && job.epoch === vaultEpoch))
+    if (job && job.onDone && (accepting || job.alwaysDone)) job.onDone(exitCode, out)
+    else if (job && job.holdOutput) forgetHeldPassword(out)
     out = ""
     if (logoutPending && allCredentialsClearPending) Qt.callLater(requestAllCredentialClear)
     Qt.callLater(pumpEnvelopeJobs)
   }
 
-  // Logout: nothing queued may run after the keyring is cleared.
+  // A lock cancels only authentication opens. Setup, re-seal and purge writes
+  // keep their place in the single-writer queue.
+  function cancelEnvelopeUnlockJobs() {
+    envelopeJobs = envelopeJobs.filter(function(job) {
+      if (!job.unlock) return true
+      for (var key in job.env) root.forgetHeldPassword(job.env[key])
+      job.env = null
+      return false
+    })
+    if (envelopeJob && envelopeJob.unlock) {
+      envelopeJob.cancelled = true
+      envelopeProc.running = false
+      // A run waiting for a helper has no id and will never send an exit.
+      if (envelopeProc.runId === 0) {
+        vaultKill(envelopeProc)
+        envelopeJob = null
+        envelopeProc.environment = {}
+        Qt.callLater(pumpEnvelopeJobs)
+      }
+    }
+    pinBusy = false
+  }
+
+  // Leaving an account or logging out invalidates its cleanup callbacks.
+  // Nothing queued may run after a logout's keyring clear.
   function dropEnvelopeState() {
+    var discarded = envelopeJobs
     envelopeJobs = []
+    for (var i = 0; i < discarded.length; i++) {
+      var job = discarded[i]
+      for (var key in job.env) forgetHeldPassword(job.env[key])
+      job.env = null
+      if (job.onCancelled) job.onCancelled()
+    }
+    // An in-flight writer still finishes before another write can start;
+    // its old completion must not reconcile or retry in the new account.
+    if (envelopeJob && envelopeJob.onCancelled) envelopeJob.onCancelled()
+    quickUnlockAccountGeneration = Object.assign({}, quickUnlockAccountGeneration)
+    quickUnlockAccountGeneration[activeSlot] = Number(quickUnlockAccountGeneration[activeSlot] || 0) + 1
     // The next login may be another account.
     accountId = ""
     accountServer = ""
@@ -2435,6 +2585,7 @@ Item {
   // Leave no password, PIN, PAM conversation or prewarmed CLI behind a
   // dismissed or expired popup.
   function clearSshPopupUnlockState() {
+    cancelEnvelopeUnlockJobs()
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAuthPrewarm()
@@ -3686,6 +3837,7 @@ Item {
   }
 
   function abandonAuthSecrets() {
+    cancelEnvelopeUnlockJobs()
     masterPassword = ""
     // Also dropped when the panel closes; see dropVaultSecrets().
     rotationOldPassword = ""
@@ -4787,7 +4939,7 @@ Item {
       env[Model.pinEnvVar()] = held || String(pinEntry || "")
       queueEnvelopeJob({
         command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
-        env: env, secretOutput: true, holdOutput: true,
+        env: env, secretOutput: true, holdOutput: true, unlock: true,
         onDone: function(code, out) { root.onEnvelopePinResult(code, out) }
       })
       return
@@ -4804,7 +4956,7 @@ Item {
     pinBusy = false
     // The PIN has done its work, right or wrong.
     var viaPinentry = releaseHeldPin()
-    if (!accepting) return
+    if (!accepting) { forgetHeldPassword(out); return }
     if (code === 0 && out) {
       pinAttempts = 0
       pinFromEnvelope = true
@@ -4842,6 +4994,7 @@ Item {
     var heldPin = heldPinName
     if (!accepting) {
       releaseHeldPin()
+      forgetHeldPassword(password)
       clearProcessCollectorSoon(pinUnlockProc)
       return
     }
@@ -5261,7 +5414,7 @@ Item {
   function openEnvelopeForFingerprint() {
     queueEnvelopeJob({
       command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "fingerprint" }),
-      secretOutput: true, holdOutput: true,
+      secretOutput: true, holdOutput: true, unlock: true,
       onDone: function(code, out) {
         if (code === 0 && out) {
           root.fingerprintFromEnvelope = true
@@ -5288,6 +5441,7 @@ Item {
   function onFingerprintPasswordRetrieved(raw) {
     if (!fingerprintAuthorized || !sshAuthSurfaceActive || status !== "locked") {
       fingerprintAuthorized = false
+      forgetHeldPassword(raw)
       clearProcessCollectorSoon(keyringLookupMasterProc)
       return
     }
@@ -5440,10 +5594,18 @@ Item {
   // dump. The pinentry runs through the vault helper (Model.pinentryCommand()),
   // which holds what was typed under a name; the shell sees only that name,
   // and uses it like the password a quick-unlock method produced
-  // (Model.heldSecretRef()). Not available without the helper: held in the
-  // shell the answer would gain nothing, so the panel's own field is used.
-  // Email login and the item forms are not covered.
-  property bool pinentryFound: false
+  // (Model.heldSecretRef()). Not available without the helper: while it is
+  // starting, restarting or left stopped the panel waits for it rather than
+  // offer its own field, which is used only where Model.typedSecretEntry()
+  // says (pinentry off, missing or declined, or the vault held in the shell
+  // as allowVaultWithoutHelper allows). Email login and the item forms are
+  // not covered.
+  //
+  // Set only by a probe that ran to its end and found no such program
+  // (Model.pinentryProbeMissing()): a probe killed or still running leaves
+  // pinentry offered, for the same reason as below.
+  property bool pinentryMissing: false
+  onPinentryMissingChanged: resetPinentryChoice()
   // A run that failed (no display, a pinentry that needs a terminal, a helper
   // that predates the capture, or a pinentry another program killed) is not
   // remembered: the next attempt opens pinentry again, and the notice offers
@@ -5453,8 +5615,10 @@ Item {
   // kill pinentry once and have the master password typed into the shell.
   property bool pinentryDeclined: false
   property string pinentryNotice: ""
-  readonly property bool pinentryAvailable: usePinentry && pinentryFound && !pinentryDeclined
-    && vaultHelperActive
+  // "pinentry", "wait" (for the vault helper; no field meanwhile) or "field".
+  readonly property string typedSecretEntry: Model.typedSecretEntry({ usePinentry: usePinentry,
+    missing: pinentryMissing, declined: pinentryDeclined, helperState: vaultHelperState })
+  readonly property bool pinentryAvailable: typedSecretEntry === "pinentry"
   // Between the panel hiding for pinentry and pinentry's answer.
   property bool pinentryActive: false
   property var pinentryRun: null
@@ -5487,7 +5651,8 @@ Item {
   // Pinentry again for the next secret, with no notice.
   function resetPinentryChoice() {
     pinentryDeclined = false
-    pinentryNotice = ""
+    pinentryNotice = usePinentry && pinentryMissing
+      ? "Pinentry is not installed. Typed here, it stays in the shell's memory until the shell restarts." : ""
   }
 
   // The user picked the panel's field after pinentry failed.
@@ -5533,8 +5698,12 @@ Item {
   function onPinentryExited(exitCode, held, stderrText) {
     var run = pinentryRun
     pinentryRun = null
-    // Cancelled meanwhile (cancelPinentry() already forgot the answer).
-    if (!run) return
+    // Cancelled meanwhile. cancelPinentry() forgot the name, but pinentry may
+    // have been answering: the helper then kept the answer after that.
+    if (!run) {
+      if (held) forgetVaultSecret(String(pinentryProc.capture).slice("pinentry:".length))
+      return
+    }
     var E = Model.pinentryExitCodes()
     var state = "failed"
     if (exitCode === 0 && held) state = "ok"
@@ -5584,12 +5753,16 @@ Item {
 
   // Stops a pinentry in progress and forgets what it answered; the vault
   // locked or was left, another method unlocked it, or the panel was asked
-  // for.
+  // for. The flow that asked hears "cancelled", once (its run is gone, so the
+  // exit that follows answers nobody): the re-prompt waits on it.
   function cancelPinentry() {
     var run = pinentryRun
     pinentryRun = null
     if (pinentryProc.running) pinentryProc.running = false
-    if (run) forgetVaultSecret(run.name)
+    if (run) {
+      forgetVaultSecret(run.name)
+      run.done({ state: "cancelled", name: run.name })
+    }
     endPinentry()
   }
 
@@ -6006,6 +6179,7 @@ Item {
   function dropVaultState() {
     initialSyncAttempted = false
     pinUnlockSubmitted = false
+    cancelEnvelopeUnlockJobs()
     // A question for the old vault's password is no longer wanted.
     cancelPinentry()
     resetPinentryChoice()
@@ -8539,7 +8713,8 @@ Item {
 
   Process {
     id: pinentryProbeProc
-    onExited: function(exitCode) { root.pinentryFound = exitCode === 0 }
+    stdout: StdioCollector { id: pinentryProbeOut; waitForEnd: true }
+    onExited: function(exitCode) { root.pinentryMissing = Model.pinentryProbeMissing(exitCode, pinentryProbeOut.text) }
   }
 
   // ---- Legacy PIN blob ----

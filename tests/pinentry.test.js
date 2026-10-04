@@ -50,6 +50,13 @@ eq("a cancel exits 1 and prints nothing", `${r.code}|${r.out}`, `${exits.cancell
 r = run("empty")
 eq("an empty answer is told apart from a cancel", `${r.code}|${r.out}`, `${exits.empty}|`)
 check("a cancel and an empty answer differ", exits.cancelled !== exits.empty, "")
+// SETTIMEOUT ran out: pinentry says GPG_ERR_TIMEOUT (62), from source 5 as
+// the stand-in sends it. Nobody answered, which is a cancel, not a failure
+// that would offer the panel's field.
+r = run("timeout")
+eq("pinentry's own timeout (ERR 83886142) is a cancel", `${r.code}|${r.out}`, `${exits.cancelled}|`)
+check("the timeout asked for is the one the script waits past",
+  r.log.includes("SETTIMEOUT 120") && /read -r -t 150 /.test(Model.pinentryCommand(fake, {})[2]), r.log.join("|"))
 r = run("error")
 eq("an error that is not a cancel is a failure", `${r.code}|${r.out}`, `${exits.failed}|`)
 r = run("crash")
@@ -108,12 +115,30 @@ eq("a blank override is the default", Model.pinentryProgram("  "), "pinentry")
 eq("an override is used as given", Model.pinentryProgram(" /usr/bin/pinentry-gnome3 "), "/usr/bin/pinentry-gnome3")
 eq("an override cannot be an option", Model.pinentryProgram("--help"), "pinentry")
 eq("an override that is not text is ignored", Model.pinentryProgram({ a: 1 }), "pinentry")
-const probe = program => {
+// What the panel concludes from one probe run: only a probe that ran to its
+// end and said so makes pinentry missing.
+const probe = (program, env) => {
   const argv = Model.pinentryProbeCommand(program)
-  return spawnSync(argv[0], argv.slice(1)).status
+  const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", timeout: 1000, killSignal: "SIGKILL",
+    env: Object.assign({}, process.env, env || {}) })
+  // As Qt reports it: a signal's number for a kill.
+  const code = r.status === null ? require("os").constants.signals[r.signal] : r.status
+  return Model.pinentryProbeMissing(code, r.stdout)
 }
-check("the probe finds the stand-in and not a missing program",
-  probe(fake) === 0 && probe(path.join(dir, "nope")) !== 0, `${probe(fake)} ${probe(path.join(dir, "nope"))}`)
+eq("the probe finds the stand-in", probe(fake), false)
+eq("and reports a missing program as missing", probe(path.join(dir, "nope")), true)
+{
+  // A probe killed before it answers (any program running as you can) is not
+  // a missing pinentry: the field would be offered on the strength of it.
+  const slow = path.join(dir, "slow-bin")
+  fs.mkdirSync(slow)
+  fs.writeFileSync(path.join(slow, "bash"), "#!/usr/bin/bash\nsleep 5\nexec /usr/bin/bash \"$@\"\n", { mode: 0o755 })
+  eq("a probe killed before it answers, for a missing program, is not 'missing'",
+    probe(path.join(dir, "nope"), { PATH: `${slow}:${process.env.PATH}` }), false)
+}
+check("nor is any other end that is not the probe's own answer",
+  [[9, ""], [15, ""], [1, ""], [127, ""], [0, ""], [1, "missing"], [0, "missing\nfound"]]
+    .every(([code, out]) => Model.pinentryProbeMissing(code, out) === false), "")
 
 // --- through the vault helper -----------------------------------------------------
 

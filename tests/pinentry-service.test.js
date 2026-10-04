@@ -21,8 +21,12 @@ const names = ["requestPinentry", "onPinentryExited", "beginPinentry", "endPinen
 function makeVault(extra) {
   const v = {
     Model, Qt: { callLater: f => f() },
-    usePinentry: true, pinentryFound: true, pinentryDeclined: false, vaultHelperActive: true,
-    get pinentryAvailable() { return this.usePinentry && this.pinentryFound && !this.pinentryDeclined && this.vaultHelperActive },
+    usePinentry: true, pinentryMissing: false, pinentryDeclined: false, vaultHelperActive: true,
+    // As Service.qml binds them.
+    get vaultHelperState() { return this.vaultHelperActive ? "active" : "stopped" },
+    get typedSecretEntry() { return Model.typedSecretEntry({ usePinentry: this.usePinentry,
+      missing: this.pinentryMissing, declined: this.pinentryDeclined, helperState: this.vaultHelperState }) },
+    get pinentryAvailable() { return this.typedSecretEntry === "pinentry" },
     pinentryProgramName: "pinentry", userEmail: "me@example.com",
     pinentryActive: false, pinentryRun: null, pinentryView: null, pinentryWasOpen: false, pinentryReturning: false,
     pinentryMasterName: "", pinentryNotice: "", heldPinName: "",
@@ -120,7 +124,25 @@ function finish(v, code, held, stderr) {
     && v.unlocks.length === 0, "")
   check("it is not available then", v.pinentryAvailable === false, "")
   check("nor when turned off or not installed",
-    makeVault({ usePinentry: false }).pinentryAvailable === false && makeVault({ pinentryFound: false }).pinentryAvailable === false, "")
+    makeVault({ usePinentry: false }).pinentryAvailable === false && makeVault({ pinentryMissing: true }).pinentryAvailable === false, "")
+}
+
+{
+  // Where the master password and PIN are typed, for every state of the vault
+  // helper. Pinentry runs under the helper: while it is not up the panel
+  // waits for it rather than offer its own field, which would keep what is
+  // typed in the shell. The field is used only when pinentry is off, reported
+  // missing, declined after a failure, or the vault is held in the shell as
+  // allowVaultWithoutHelper allows.
+  const entry = (helperState, extra) => Model.typedSecretEntry(Object.assign(
+    { usePinentry: true, missing: false, declined: false, helperState }, extra || {}))
+  const states = { pending: "wait", starting: "wait", active: "pinentry", stopped: "wait", fallback: "field", "": "wait", other: "wait" }
+  for (const [state, expected] of Object.entries(states)) eq(`helper ${state || "(none)"}: typed in ${expected}`, entry(state), expected)
+  for (const state of Object.keys(states)) {
+    eq(`helper ${state || "(none)"}, pinentry turned off: the field`, entry(state, { usePinentry: false }), "field")
+    eq(`helper ${state || "(none)"}, pinentry missing: the field`, entry(state, { missing: true }), "field")
+    eq(`helper ${state || "(none)"}, the field picked: the field`, entry(state, { declined: true }), "field")
+  }
 }
 
 {
@@ -204,6 +226,46 @@ function finish(v, code, held, stderr) {
   let answer = null
   v.requestPinentry("unlock", "", r => { answer = r })
   check("a run still ending is not started over", answer && answer.state === "unavailable", JSON.stringify(answer))
+}
+
+{
+  // The flow that asked is told of a cancel, once: the re-prompt's question
+  // is waiting on it ("Checking...", Enter ignored) until it hears.
+  const v = makeVault()
+  Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
+  const answers = []
+  v.requestPinentry("unlock", "", r => answers.push(r.state))
+  v.cancelPinentry()
+  v.cancelPinentry()
+  v.onPinentryExited(1, false, "")
+  eq("a cancelled run is answered once, as cancelled, and its exit adds nothing", answers.join(), "cancelled")
+
+  const w = makeVault({ status: "unlocked", repromptPending: true, repromptItemId: "i1", repromptItemName: "Bank" })
+  Object.defineProperty(w.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
+  w.submitRepromptWithPinentry()
+  check("the re-prompt waits on pinentry", w.repromptBusy && w.pinentryActive, "")
+  // The panel asked for while pinentry is up (open()): the panel wins.
+  w.cancelPinentry()
+  check("a cancel frees the re-prompt question, still open and quiet",
+    !w.repromptBusy && w.repromptPending && w.repromptError === "" && !w.pinentryActive && w.opened,
+    JSON.stringify({ busy: w.repromptBusy, pending: w.repromptPending, error: w.repromptError }))
+  w.submitRepromptWithPinentry()
+  check("so the question can ask pinentry again", w.repromptBusy && w.pinentryActive && w.pinentryRun !== null, "")
+}
+
+{
+  // Pinentry was already answering when the cancel came: the helper kept the
+  // answer after it was told to forget the name. Nothing else would.
+  const v = makeVault()
+  Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
+  v.unlockWithPinentry()
+  const name = v.pinentryRun.name
+  v.cancelPinentry()
+  v.forgotten.length = 0
+  v.onPinentryExited(0, true, "")
+  check("an answer held after the cancel is forgotten when its run ends, and used for nothing",
+    v.forgotten.join() === name && v.unlocks.length === 0 && !v.pinentryActive && v.pinentryNotice === "",
+    JSON.stringify({ forgotten: v.forgotten, unlocks: v.unlocks }))
 }
 
 // --- the PIN ---------------------------------------------------------------------------------
@@ -337,10 +399,12 @@ check("pinentry counts as an auth surface while it is up, and covers the SSH pop
 // --- the screens --------------------------------------------------------------------------------------
 
 const form = read("UnlockForm.qml")
-check("the unlock form hides its fields when pinentry takes the typing, and offers it for both typed methods",
-  /pinentryOffered: form\.vault\.pinentryAvailable === true\s*&& \(method === "pin" \|\| method === "password"\)/.test(form)
-    && /form\.method === "pin" && !form\.pinentryOffered/.test(form)
-    && /form\.method === "password" && !form\.pinentryOffered/.test(form)
+// Drawn and typed into: tests/qml-kit/tst_unlock_form_pinentry.qml.
+check("the unlock form shows its fields only where the vault says, and offers pinentry for both typed methods",
+  /typesHere: form\.vault\.typedSecretEntry === "field"/.test(form)
+    && /pinentryOffered: form\.vault\.typedSecretEntry === "pinentry"\s*&& \(method === "pin" \|\| method === "password"\)/.test(form)
+    && /form\.method === "pin" && form\.typesHere/.test(form)
+    && /form\.method === "password" && form\.typesHere/.test(form)
     && /form\.vault\.unlockPinWithPinentry\(\)/.test(form) && /form\.vault\.unlockWithPinentry\(\)/.test(form), "")
 check("the fields stay as the fallback, with the reason when pinentry failed",
   /id: passwordField/.test(form) && /id: pinField/.test(form) && /form\.vault\.pinentryNotice/.test(form), "")
@@ -367,8 +431,10 @@ check("the fields stay as the fallback, with the reason when pinentry failed",
 check("Enter on the locked screen opens pinentry",
   /status === "locked" && unlockForm\.pinentryOffered\) \{\s*unlockForm\.submitCurrentMethod\(\)/.test(read("Panel.qml")), "")
 const confirm = read("RepromptConfirm.qml")
-check("the re-prompt question asks pinentry when it can, and keeps its field otherwise",
-  /usePinentry: vault\.pinentryAvailable === true/.test(confirm) && /visible: !confirm\.usePinentry/.test(confirm)
+// Drawn and typed into: tests/qml-kit/tst_reprompt_confirm.qml.
+check("the re-prompt question asks pinentry when it can, and shows its field only where the vault says",
+  /usePinentry: vault\.typedSecretEntry === "pinentry"/.test(confirm)
+    && /typesHere: vault\.typedSecretEntry === "field"/.test(confirm) && /visible: confirm\.typesHere\n/.test(confirm)
     && /vault\.submitRepromptWithPinentry\(\)/.test(confirm) && /id: passwordField/.test(confirm), "")
 
 // --- settings -----------------------------------------------------------------------------------------

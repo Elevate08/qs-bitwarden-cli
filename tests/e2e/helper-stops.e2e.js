@@ -18,25 +18,14 @@
 //   node tests/e2e/helper-stops.e2e.js [--settle]
 
 const { createSuite, repoRoot } = require("../harness")
-const { createShell, sleep } = require("./shell")
+const { createShell, sleep, helperPid } = require("./shell")
 const fs = require("fs")
+const os = require("os")
 const path = require("path")
 
 const { check, done, failures } = createSuite("e2e-helper-stops")
 const settle = process.argv.includes("--settle")
-const scratch = fs.mkdtempSync("/tmp/qsbw-helper-stops-e2e-")
-
-function helperPid(parent) {
-  for (const entry of fs.readdirSync("/proc")) {
-    if (!/^\d+$/.test(entry)) continue
-    try {
-      const stat = fs.readFileSync(`/proc/${entry}/stat`, "utf8")
-      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])
-      if (ppid === parent && /^qs-bitwarden-va/.test(fs.readFileSync(`/proc/${entry}/comm`, "utf8"))) return Number(entry)
-    } catch (e) {}
-  }
-  return 0
-}
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-helper-stops-e2e-"))
 
 // `bw` commands that touch the vault: the version probe (a plain process,
 // before any account) is not one.
@@ -122,8 +111,13 @@ function kills(label, plugin, gapMs) {
     const after = shell.state()
     check(`${label}: it stays stopped, never the fallback`, after.helper === "stopped" && after.status === "locked",
       JSON.stringify(after && { helper: after.helper, status: after.status }))
+    // Pinentry runs under the helper: the panel's field is not offered in
+    // its place, so the master password is not typed into the shell.
+    check(`${label}: the unlock screen waits for the helper, with no field to type in`,
+      after.pinentry.entry === "wait" && after.pinentry.available === false, JSON.stringify(after && after.pinentry))
     shell.q("retryHelper")
     shell.expect(`${label}: checking again brings the helper back`, s => s.helper === "active" && s.helperWarning === "")
+    shell.expect(`${label}: and pinentry with it`, s => s.pinentry.entry === "pinentry" && s.pinentry.available)
     shell.q("unlock", "pw-a@x")
     shell.expect(`${label}: and the vault unlocks`, s => s.status === "unlocked" && s.sessionHeld)
   })
@@ -137,12 +131,14 @@ function missing(label, allow) {
     if (allow) {
       shell.expect(`${label}: falls back, and says crash protection is off`,
         s => s.helper === "fallback" && /Crash protection is off/.test(s.helperWarning))
+      check(`${label}: allowed, the panel's field is the way in`, shell.state().pinentry.entry === "field", "")
       shell.q("login", "a@x", "pw-a@x")
       shell.expect(`${label}: signs in with the vault in the shell`, s => s.status === "unlocked" && !s.sessionHeld)
       return
     }
     shell.expect(`${label}: the helper is stopped and the banner says the vault stays locked`,
       s => s.helper === "stopped" && /stays locked/.test(s.helperWarning) && /allowVaultWithoutHelper/.test(s.helperWarning))
+    check(`${label}: no field to type the master password into meanwhile`, shell.state().pinentry.entry === "wait", "")
     shell.q("login", "a@x", "pw-a@x")
     sleep(3000)
     const s = shell.state()

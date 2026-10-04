@@ -2,13 +2,16 @@
 # Fake pinentry: speaks enough Assuan for the panel's pinentry script. No
 # window. Each GETPIN takes the next line of $FAKE_PINENTRY_ANSWERS:
 #   pin:<text>   answers with `D <text>` as written (percent-encoded by the test)
+#   held:<text>  the same, once the file $FAKE_PINENTRY_RELEASE exists
 #   empty        OK with no data
 #   cancel       ERR 83886179 (also when the file is empty or missing)
+#   timeout      ERR 83886142, pinentry's own timeout (GPG_ERR_TIMEOUT)
 #   error        ERR 83886360, a failure that is not a cancel
 #   crash        exits without answering
+#   hang         never answers (until it is killed)
 # Every SETDESC, SETERROR, SETPROMPT, SETTIMEOUT and SETTITLE is appended to
-# $FAKE_PINENTRY_LOG as it arrived (the PIN never is), and each start to
-# $FAKE_PINENTRY_LOG as "start".
+# $FAKE_PINENTRY_LOG as it arrived (the PIN never is), each start as "start",
+# and a held: answer's release as "released".
 log() { [ -z "${FAKE_PINENTRY_LOG:-}" ] || printf '%s\n' "$1" >> "$FAKE_PINENTRY_LOG"; }
 next_answer() {
   local f="${FAKE_PINENTRY_ANSWERS:-}" first
@@ -27,9 +30,15 @@ while IFS= read -r line; do
       answer="$(next_answer)"
       case "$answer" in
         pin:*) printf 'D %s\nOK\n' "${answer#pin:}" ;;
+        held:*)
+          while [ ! -e "${FAKE_PINENTRY_RELEASE:-/nonexistent}" ]; do sleep 0.1; done
+          log released
+          printf 'D %s\nOK\n' "${answer#held:}" ;;
         empty) echo OK ;;
+        timeout) echo "ERR 83886142 Timeout <Pinentry>" ;;
         error) echo "ERR 83886360 Unexpected error <Pinentry>" ;;
         crash) exit 1 ;;
+        hang) while :; do sleep 1; done ;;
         *) echo "ERR 83886179 Operation cancelled <Pinentry>" ;;
       esac ;;
     BYE) echo "OK closing connection"; exit 0 ;;

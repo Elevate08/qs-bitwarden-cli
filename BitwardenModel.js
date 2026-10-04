@@ -1773,9 +1773,33 @@ function pinentryCommand(program, opts) {
     String(Math.max(0, Math.floor(Number(o.minLength) || 0)))]
 }
 
-// Exit 0 when `program` names something runnable.
+// Prints "found" or "missing": whether `program` names something runnable.
 function pinentryProbeCommand(program) {
-  return ["bash", "-c", "command -v -- \"$1\" >/dev/null 2>&1", "_", pinentryProgram(program)]
+  return ["bash", "-c", "command -v -- \"$1\" >/dev/null 2>&1 && echo found || echo missing", "_",
+    pinentryProgram(program)]
+}
+
+// Whether a probe run says the program is missing. Only the probe's own
+// answer counts: one that was killed (any program running as you can) or
+// stopped early says nothing, and pinentry is still tried; a pinentry that
+// is really missing then fails, and the panel offers its field when picked.
+function pinentryProbeMissing(exitCode, stdoutText) {
+  return exitCode === 0 && String(stdoutText || "").trim() === "missing"
+}
+
+// Where the master password and PIN are typed: "pinentry", "wait" or
+// "field" (the panel's own). `o`: { usePinentry, missing, declined,
+// helperState }. Pinentry runs under the vault helper, so until the helper is
+// up the panel waits for it: offering the field instead would put what is
+// typed into the shell whenever the helper is starting, restarting or was
+// left stopped (which a program running as you can cause by killing it). The
+// field is used only when pinentry is off, reported missing or declined, or
+// when the vault is held in the shell as allowVaultWithoutHelper allows.
+function typedSecretEntry(o) {
+  if (!o.usePinentry || o.missing || o.declined) return "field"
+  if (o.helperState === "active") return "pinentry"
+  if (o.helperState === "fallback") return "field"
+  return "wait"
 }
 
 // purpose: "unlock" (master password), "pin", "reprompt".
@@ -2136,9 +2160,21 @@ function envelopeMethodPurgeScript(tool, slot, method) {
     : (method === "fingerprint" ? ".fingerprint == true" : "(.fido | length) > 0")
   var script = envelopePrelude(tool, slot)
     + "for __round in $(seq 1 " + MAX_PURGE_ROUNDS + "); do "
-    + "__sealed=\"$(__lookup)\"; [ -n \"$__sealed\" ] || exit 0; "
+    // libsecret uses exit 1 for absence and for errors (with stderr).
+    // FD 3 captures diagnostics separately; the last line carries status
+    // and base64-framed stdout, so even newline-only stderr is preserved.
+    // No envelope or diagnostics need a temporary file.
+    + "__lookup_result=\"$({ __sealed=\"$(secret-tool lookup" + keyringAttributes(keyringEntryName(KEYRING_ENVELOPE, slot))
+    + " 2>&3 | head -c " + MAX_ENVELOPE_SEALED_BYTES + ")\"; __lookup_rc=$?; "
+    + "printf '\\n%s:%s' \"$__lookup_rc\" \"$(printf '%s' \"$__sealed\" | base64 -w0)\"; } 3>&1)\"; "
+    + "__lookup_data=\"${__lookup_result##*$'\\n'}\"; __lookup_error=\"${__lookup_result%$'\\n'*}\"; "
+    + "__lookup_rc=\"${__lookup_data%%:*}\"; [ -z \"$__lookup_error\" ] || exit 1; "
+    + "__sealed=\"$(printf '%s' \"${__lookup_data#*:}\" | base64 -d)\" || exit 1; "
+    + "if [ \"$__lookup_rc\" -eq 1 ] && [ -z \"$__sealed\" ]; then exit 0; fi; "
+    + "[ \"$__lookup_rc\" -eq 0 ] && [ -n \"$__sealed\" ] || exit 1; "
     + "__summary=\"$(__unseal \"$__sealed\" | \"$__tool\" inspect)\" || exit " + ENVELOPE_EXIT.unseal + "; "
-    + "printf '%s' \"$__summary\" | jq -e " + shellQuote(present) + " >/dev/null || exit 0; "
+    + "printf '%s' \"$__summary\" | jq -e " + shellQuote(present) + " >/dev/null; __present_rc=$?; "
+    + "case \"$__present_rc\" in 0) ;; 1) exit 0 ;; *) exit 1 ;; esac; "
     + "__id=\"$(printf '%s' \"$__summary\" | jq -r '.account.id')\"; "
     + "__server=\"$(printf '%s' \"$__summary\" | jq -r '.account.server')\"; "
   if (method === "fido") {
@@ -2170,8 +2206,11 @@ function quickUnlockPurgeCommand(tool, slots, method) {
   var script = "rc=0; "
   for (var j = 0; j < list.length; j++) {
     script += nestedScript(envelopeMethodPurgeScript(tool, list[j], method)) + " || rc=1; "
-      + "secret-tool clear" + keyringAttributes(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j]))
-      + " >/dev/null 2>&1; "
+      // libsecret's clear returns 1 without stderr when no matching item
+      // exists; service failures also return 1, with an error on stderr.
+      + "__clear_error=$(secret-tool clear" + keyringAttributes(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j]))
+      + " 2>&1 >/dev/null; __status=$?; printf '.'; exit \"$__status\"); __clear_rc=$?; __clear_error=\"${__clear_error%.}\"; "
+      + "if [ \"$__clear_rc\" -ne 0 ] && { [ \"$__clear_rc\" -ne 1 ] || [ -n \"$__clear_error\" ]; }; then rc=1; fi; "
   }
   script += "exit \"$rc\""
   return ["bash", "-c", script]
@@ -6231,7 +6270,7 @@ var SETTINGS_SCHEMA = [
     action: "pin",
     description: "A PIN of 6 digits or more opens your master password, stored once, encrypted and sealed to this machine. A program running as you can copy it and try every 6-digit PIN in about 16 hours, so use 8 or more (about 2 months)." },
   { key: "usePinentry", group: "security", type: "bool", label: "Type secrets in pinentry", defaultValue: true,
-    description: "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; otherwise the panel's own field is used." },
+    description: "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },

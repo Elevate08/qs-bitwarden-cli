@@ -74,6 +74,11 @@ function createShell(name, check, options = {}) {
     shell = spawn(command[0], command[1], { env, stdio: ["ignore", out, out], detached: true })
     fs.closeSync(out)
     for (let i = 0; i < 120; i++) {
+      // A denied Unix socket cannot become ready by waiting. Fail promptly
+      // so restricted environments still run the remaining scenarios.
+      if (/Failed to start IPC server/.test(fs.readFileSync(shellLog, "utf8"))) {
+        throw new Error("the test shell could not create its IPC socket")
+      }
       if (ipc("qsbwtest", "state").ok) return
       sleep(250)
     }
@@ -160,4 +165,17 @@ function pluginWithBuiltHelper(into) {
   return into
 }
 
-module.exports = { createShell, sleep, pluginWithBuiltHelper }
+// The vault helper's pid, a child of the shell `parent`; 0 if none.
+function helperPid(parent) {
+  for (const entry of fs.readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue
+    try {
+      const stat = fs.readFileSync(`/proc/${entry}/stat`, "utf8")
+      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])
+      if (ppid === parent && /^qs-bitwarden-va/.test(fs.readFileSync(`/proc/${entry}/comm`, "utf8"))) return Number(entry)
+    } catch (e) {}
+  }
+  return 0
+}
+
+module.exports = { createShell, sleep, pluginWithBuiltHelper, helperPid }

@@ -23,27 +23,31 @@ Item {
   onBusyChanged: if (!busy && shown) Qt.callLater(function() { if (confirm.shown) confirm.focusEntry() })
 
   // The master password is typed into pinentry, a separate process, when it
-  // is available; the field below is the fallback.
-  readonly property bool usePinentry: vault.pinentryAvailable === true
+  // is available; the field below is used only where the vault says
+  // (Model.typedSecretEntry()). Otherwise the question waits for the vault
+  // helper pinentry runs under, with no field.
+  readonly property bool usePinentry: vault.typedSecretEntry === "pinentry"
+  readonly property bool typesHere: vault.typedSecretEntry === "field"
   onUsePinentryChanged: if (shown) Qt.callLater(function() { if (confirm.shown) confirm.focusEntry() })
+  onTypesHereChanged: if (shown) Qt.callLater(function() { if (confirm.shown) confirm.focusEntry() })
 
   visible: shown
   z: 30
 
   // The field, or the key handler that stands in for it.
   function focusEntry() {
-    if (confirm.usePinentry) pinentryKeys.forceActiveFocus()
-    else passwordField.forceActiveFocus()
+    if (confirm.typesHere) passwordField.forceActiveFocus()
+    else pinentryKeys.forceActiveFocus()
   }
 
   // Opens pinentry; the vault holds the answer, not this panel.
   function ask() {
-    if (confirm.busy) return
+    if (confirm.busy || !confirm.usePinentry) return
     confirm.vault.submitRepromptWithPinentry()
   }
 
   function submit() {
-    if (confirm.busy || passwordField.text === "") return
+    if (confirm.busy || !confirm.typesHere || passwordField.text === "") return
     var typed = passwordField.text
     // Not kept in the field once handed over, right or wrong.
     passwordField.text = ""
@@ -137,14 +141,27 @@ Item {
         wrapMode: Text.WordWrap
       }
 
+      // The same window, once the vault helper it runs under is up.
+      Text {
+        textFormat: Text.PlainText
+        visible: !confirm.usePinentry && !confirm.typesHere
+        width: parent.width
+        text: "Waiting for the vault helper..."
+        color: confirm.panel.dim
+        font.family: confirm.panel.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
+
       TextField {
         id: passwordField
-        visible: !confirm.usePinentry
+        visible: confirm.typesHere
         width: parent.width
         placeholderText: "Master password..."
         password: true
         inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
-        enabled: !confirm.busy
+        // Hidden is not enough: a hidden field keeps keys focus pushes to it.
+        enabled: confirm.typesHere && !confirm.busy
         onAccepted: confirm.submit()
         // Taken here: the panel's own Escape would leave the screen.
         Keys.onEscapePressed: function(event) {
@@ -156,7 +173,7 @@ Item {
       // The field picked after a failed pinentry: what is typed stays.
       Text {
         textFormat: Text.PlainText
-        visible: !confirm.usePinentry && text !== ""
+        visible: confirm.typesHere && text !== ""
         width: parent.width
         text: String(confirm.vault.pinentryNotice || "")
         color: confirm.panel.dim
@@ -187,7 +204,7 @@ Item {
           accent: Color.accent
           fontFamily: confirm.panel.fontFamily
           fontSize: Style.font.bodySmall
-          enabled: !confirm.busy && (confirm.usePinentry || passwordField.text !== "")
+          enabled: !confirm.busy && (confirm.usePinentry || (confirm.typesHere && passwordField.text !== ""))
           onClicked: confirm.usePinentry ? confirm.ask() : confirm.submit()
         }
 
