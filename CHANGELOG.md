@@ -31,8 +31,11 @@ check as the shell started, moved the vault into the shell.
   - Unlock fields that are not shown no longer take keys sent to them.
   - A helper that never answers `hello` is stopped after ten seconds, with
     a retry banner. A late answer cannot activate the stopped helper.
+    A requested retry waits for the old process to exit before checking again.
   - Abandoned quick-unlock answers are forgotten, and queued authentication
     opens cannot run after a lock or account change.
+    Closing and reopening during a legacy PIN attempt keeps its held-password
+    capture owned by that attempt until the process exits.
   - Failed removal of a legacy quick-unlock entry is surfaced and retried
     at most three times; an absent entry counts as already removed.
   - Leaving an account settles cancelled cleanup so returning can retry.

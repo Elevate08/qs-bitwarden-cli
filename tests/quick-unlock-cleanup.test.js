@@ -58,6 +58,26 @@ function vault() {
   }
   return v
 }
+// Closing during a legacy PIN run must not allow a new submission to rename
+// the capture that owns the first run's held master password.
+{
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, pinReady: true, isUnlocking: false,
+    pinBusy: false, pinEntry: "123456", envelopeSummary: null, pendingUnlockPassword: "",
+    syncLoginFieldsToState() {}, clearLoginAttempt() {} })
+  bind(v, service, ["submitPinUnlock", "abandonAuthSecrets"])
+  v.submitPinUnlock()
+  const capture = v.pinUnlockProc.capture
+  v.abandonAuthSecrets()
+  eq("abandoned legacy PIN remains busy until its process exits", v.pinBusy, true)
+  v.pinEntry = "654321"
+  v.submitPinUnlock()
+  eq("resubmission preserves the in-flight legacy capture", v.pinUnlockProc.capture, capture)
+  v.pinUnlockProc.running = false
+  v.onPinUnlockResult(0, Model.heldSecretRef(capture.slice(7)))
+  check("abandoned legacy answer is forgotten", v.forgotten.includes(capture.slice(7)))
+  eq("legacy exit releases busy state", v.pinBusy, false)
+}
 const ref = Model.heldSecretRef("late-master")
 for (const method of ["envelope PIN", "legacy PIN", "fingerprint", "FIDO2"]) {
   for (const active of [false, true]) {

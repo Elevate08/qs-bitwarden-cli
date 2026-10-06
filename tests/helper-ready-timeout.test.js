@@ -18,7 +18,7 @@ function vault() {
     vaultHelperReadyTimedOut: false, vaultHelperRetryPending: false,
     vaultRuns: {}, vaultQueries: {}, session: "", heldSessionMarker: Model.vaultHeldSession(),
     vaultHelperMaxRestarts: 3, inspections: 0, flushed: 0,
-    vaultHelperProc: { running: false, pid: 123, writes: [], write(value) { this.writes.push(value) } },
+    vaultHelperProc: { running: false, processId: 123, writes: [], write(value) { this.writes.push(value) } },
     vaultHelperSettleTimer: { restart() {}, stop() {} },
     vaultHelperReadyTimer: { armed: false, restart() { this.armed = true }, stop() { this.armed = false } },
     inspectVaultHelper() { this.inspections++ }, flushVaultWaiting() { this.flushed++ },
@@ -52,7 +52,7 @@ const ready = JSON.stringify({ type: "ready" })
   eq("late ready cannot reopen the timed-out helper", v.vaultHelperState, "stopped")
   v.retryVaultHelper()
   eq("retry waits for old helper exit", v.inspections, 0)
-  v.vaultHelperProc.pid = 0
+  v.vaultHelperProc.processId = 0
   v.onVaultHelperExited(15)
   eq("old exit starts one requested retry", v.inspections, 1)
   eq("retry returns to inspection", v.vaultHelperState, "pending")
@@ -64,7 +64,7 @@ const ready = JSON.stringify({ type: "ready" })
 }
 {
   const v = vault(); v.startVaultHelper(); v.advanceDeadline()
-  v.vaultHelperProc.pid = 0; v.onVaultHelperExited(15)
+  v.vaultHelperProc.processId = 0; v.onVaultHelperExited(15)
   eq("timeout exit does not automatically restart", v.vaultHelperState, "stopped")
   eq("timeout never selects allowed fallback", v.flushed, 0)
   v.retryVaultHelper()

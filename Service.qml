@@ -1046,7 +1046,7 @@ Item {
     if (vaultHelperState !== "stopped") return
     // Process termination is asynchronous. Its old exit must not be read
     // as a failure of the new attempt, or restart the helper twice.
-    if (vaultHelperReadyTimedOut && vaultHelperProc.pid > 0) {
+    if (vaultHelperReadyTimedOut && vaultHelperProc.processId > 0) {
       vaultHelperRetryPending = true
       return
     }
@@ -1634,7 +1634,8 @@ Item {
         Qt.callLater(pumpEnvelopeJobs)
       }
     }
-    pinBusy = false
+    // A legacy PIN run owns its capture until its exit; reopening must not rename it.
+    if (!pinUnlockProc.running) pinBusy = false
   }
 
   // Leaving an account or logging out invalidates its cleanup callbacks.
