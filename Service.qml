@@ -78,6 +78,7 @@ Item {
     function hidePopout() {}
     function focusField(name) {}
     function fieldHasFocus(name) { return false }
+    function focusState() { return null }
     function loginFieldHasFocus() { return false }
     function unlockFieldHasFocus() { return false }
     function syncLoginFields() {}
@@ -9313,6 +9314,29 @@ Item {
         presenter: root.presenter.screenName,
         focusedScreen: root.focusedScreen,
         screens: screens
+      })
+    }
+    // Read-only desktop diagnostics. No field values, account identifiers,
+    // item names, device identifiers or authentication errors are returned.
+    function desktopState(): string {
+      var views = []
+      for (var i = 0; i < root.views.length; i++) {
+        var view = root.views[i]
+        views.push(typeof view.focusState === "function" ? view.focusState() : null)
+      }
+      return JSON.stringify({
+        status: root.status,
+        screen: root.currentScreen,
+        opened: root.opened,
+        pinentryActive: root.pinentryActive,
+        unlocking: root.isUnlocking,
+        typedSecretEntry: root.typedSecretEntry,
+        pinReady: root.pinReady,
+        fingerprintReady: root.fingerprintReady,
+        fidoReady: root.fidoReady,
+        fingerprintScanning: root.fingerprintScanning,
+        fidoScanning: root.fidoScanning,
+        views: views
       })
     }
     // Non-secret SSH agent diagnostics: no keys, fingerprints or paths.

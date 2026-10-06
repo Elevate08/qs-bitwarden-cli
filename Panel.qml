@@ -124,6 +124,21 @@ Panel {
     return !!field && field.activeFocus
   }
 
+  // Desktop test/diagnostic contract: state only, never field contents.
+  function focusState() {
+    return {
+      opened: root.opened,
+      visible: panel.visible,
+      windowFocused: keyCatcher.Window.active,
+      targetFocused: !!panel.focusTarget && panel.focusTarget.activeFocus,
+      searchFocused: searchField.activeFocus,
+      keysArmed: root.sshKeysArmed,
+      method: unlockForm.method,
+      passwordFocused: unlockForm.passwordField.activeFocus,
+      pinFocused: unlockForm.pinField.activeFocus
+    }
+  }
+
   function revealListIndex(index) {
     if (itemsListView) itemsListView.positionViewAtIndex(index, ListView.Contain)
   }
