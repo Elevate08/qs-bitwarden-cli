@@ -1635,8 +1635,8 @@ Item {
         Qt.callLater(pumpEnvelopeJobs)
       }
     }
-    // A legacy PIN run owns its capture until its exit; reopening must not rename it.
-    if (!pinUnlockProc.running) pinBusy = false
+    // A queued or exiting legacy PIN run still owns its capture.
+    if (!pinUnlockProc.running && pinUnlockProc.runId === 0) pinBusy = false
   }
 
   // Leaving an account or logging out invalidates its cleanup callbacks.
@@ -2594,7 +2594,8 @@ Item {
     cancelPinentry()
     if (pinUnlockProc.running) pinUnlockProc.running = false
     root.pinUnlockSubmitted = false
-    root.pinBusy = false
+    // running goes false at cancellation; finish releases runId at the exit.
+    if (pinUnlockProc.runId === 0) root.pinBusy = false
     root.releaseHeldPin()
     root.masterPassword = ""
     root.pinentryMasterName = ""

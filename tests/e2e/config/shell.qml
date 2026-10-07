@@ -9,6 +9,10 @@ import "plugin" as Plugin
 // target. Never loaded by a real shell: the plugin's entry points are
 // Panel.qml and Service.qml, and this file is neither.
 ShellRoot {
+  id: testRoot
+  property int legacyPinExitCode: -999
+  property bool legacyPinExitHeld: false
+  property var legacyPinFixtureProc: null
   QtObject {
     id: view
     property bool opened: false
@@ -59,6 +63,8 @@ ShellRoot {
         email: vault.userEmail, accountId: vault.accountId, adding: vault.addingAccount,
         accounts: vault.accountRows, items: vault.items.map(function(i) { return i.name }),
         pinConfigured: vault.pinConfigured, pinReady: vault.pinReady,
+        legacyPin: { busy: vault.pinBusy, submitted: vault.pinUnlockSubmitted, attempts: vault.pinAttempts,
+                     exitCode: testRoot.legacyPinExitCode, outputHeld: testRoot.legacyPinExitHeld },
         envelope: vault.envelopeSummary ? { pin: !!vault.envelopeSummary.pin, account: vault.envelopeSummary.account } : null,
         quick: vault.quickUnlockAvailable, error: vault.errorMessage, pinError: vault.pinError,
         pinUnlockError: vault.pinUnlockError, logoutPending: vault.logoutPending, opened: vault.opened,
@@ -101,6 +107,45 @@ ShellRoot {
       vault.beginPinSetup(); vault.pinSetupPin = pin; vault.pinSetupConfirm = pin; vault.pinSetupMaster = pw; vault.submitPinSetup()
     }
     function pinUnlock(pin: string): void { vault.pinEntry = pin; vault.submitPinUnlock() }
+    function beginLegacyPinForLateResult(): void {
+      vault.pinConfigured = true
+      vault.envelopeSummary = null
+      vault.pinEntry = "123456"
+      vault.submitPinUnlock()
+      testRoot.legacyPinFixtureProc = vault.vaultRuns[vault.vaultRunSeq]
+    }
+    // Reproduce a second UI action before a killed VaultProcess can finish.
+    // This target exists only in the disposable fixture, never in the plugin.
+    function cancelLegacyPinAndRetry(cleanup: string): string {
+      if (cleanup !== "late") beginLegacyPinForLateResult()
+      var proc = testRoot.legacyPinFixtureProc
+      if (!proc || proc.capture.indexOf("secret:") !== 0) return JSON.stringify({ started: false })
+      var capture = proc.capture
+      var runId = proc.runId
+      testRoot.legacyPinExitCode = -999
+      testRoot.legacyPinExitHeld = false
+      var onExit = function(code, status) {
+        testRoot.legacyPinExitCode = code
+        testRoot.legacyPinExitHeld = proc.outputHeld
+        proc.exited.disconnect(onExit)
+      }
+      proc.exited.connect(onExit)
+      if (cleanup === "late") {
+        // Fixture only: let the helper finish while Qt exit callbacks wait.
+        // Allow slow CI workers time for the real PBKDF2 decrypt. The test
+        // separately requires a successful, held result before cancellation.
+        var deadline = Date.now() + 8000
+        while (Date.now() < deadline) {}
+      }
+      vault.clearSshPopupUnlockState()
+      if (cleanup === "twice") vault.clearSshPopupUnlockState()
+      if (cleanup === "panel") vault.abandonAuthSecrets()
+      vault.pinEntry = "654321"
+      vault.submitPinUnlock()
+      return JSON.stringify({ started: runId > 0, stopped: !proc.running,
+        sameRun: proc.runId === runId, captureStable: proc.capture === capture,
+        busy: vault.pinBusy, submitted: vault.pinUnlockSubmitted, heldName: capture.slice(7) })
+    }
     // The unlock screen's action, as the button runs it: pinentry takes the typing.
     function unlockPinentry(): void { vault.unlockWithPinentry() }
     function pinUnlockPinentry(): void { vault.unlockPinWithPinentry() }

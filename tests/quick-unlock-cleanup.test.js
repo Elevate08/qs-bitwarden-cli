@@ -36,7 +36,7 @@ function vault() {
     releaseHeldPin() { return false }, countWrongPin() {}, retryPinentryPin() {},
     clearProcessCollectorSoon() {}, finishScrubRun() { return false },
     vaultKill(proc) { this.vaultWaiting = this.vaultWaiting.filter(p => p !== proc) }, vaultWaiting: [],
-    refreshEnvelope() { this.refreshes++ }, pinUnlockProc: {}, keyringLookupMasterProc: {},
+    refreshEnvelope() { this.refreshes++ }, pinUnlockProc: { running: false, runId: 0 }, keyringLookupMasterProc: {},
     cancelPinentry() {}, resetPinentryChoice() {}, cancelFingerprintUnlock() {}, cancelFidoUnlock() {},
     cancelAttachmentDownloads() {}, forgetVault() {}, resetItemForm() {}, dropVaultSecrets() {},
     quickUnlockAvailable: true, accountId: "synthetic-id", quickUnlockEnabledAt: {},
@@ -67,6 +67,7 @@ function vault() {
     syncLoginFieldsToState() {}, clearLoginAttempt() {} })
   bind(v, service, ["submitPinUnlock", "abandonAuthSecrets"])
   v.submitPinUnlock()
+  v.pinUnlockProc.runId = 1
   const capture = v.pinUnlockProc.capture
   v.abandonAuthSecrets()
   eq("abandoned legacy PIN remains busy until its process exits", v.pinBusy, true)
@@ -74,9 +75,92 @@ function vault() {
   v.submitPinUnlock()
   eq("resubmission preserves the in-flight legacy capture", v.pinUnlockProc.capture, capture)
   v.pinUnlockProc.running = false
+  v.pinUnlockProc.runId = 0
   v.onPinUnlockResult(0, Model.heldSecretRef(capture.slice(7)))
   check("abandoned legacy answer is forgotten", v.forgotten.includes(capture.slice(7)))
   eq("legacy exit releases busy state", v.pinBusy, false)
+}
+// VaultProcess keeps its runId after a kill request; only finish releases it.
+// Exercise the real cancellation/result paths while its helper exit is delayed.
+for (const cleanup of ["dismiss", "dismiss twice", "dismiss then panel close"]) {
+  for (const exitCode of [143, 0]) {
+    const v = vault(); const starts = []; const held = new Set()
+    Object.assign(v, { sshAuthSurfaceActive: true, pinReady: true, isUnlocking: false,
+      pinBusy: false, pinAttempts: 0, pinMaxAttempts: 5, pinEntry: "123456",
+      envelopeSummary: null, pendingUnlockPassword: "", cancelAuthPrewarm() {},
+      syncLoginFieldsToState() {}, clearLoginAttempt() {} })
+    bind(v, service, ["submitPinUnlock", "clearSshPopupUnlockState", "abandonAuthSecrets",
+      "countWrongPin", "releaseHeldPin", "heldOutput"])
+    v.forgetVaultSecret = name => { v.forgotten.push(name); held.delete(name) }
+    // Model the process boundary, including the running-change start guard.
+    let running = false
+    v.pinUnlockProc = { runId: 0, capture: "plain", outputHeld: false,
+      get running() { return running },
+      set running(value) {
+        if (running === value) return
+        running = value
+        if (value && this.runId === 0) {
+          this.runId = starts.length + 1
+          starts.push(this.capture)
+        }
+      }
+    }
+    const finish = code => {
+      if (code === 0) held.add(starts[starts.length - 1].slice(7))
+      v.pinUnlockProc.outputHeld = code === 0
+      v.pinUnlockProc.runId = 0
+      running = false
+      v.onPinUnlockResult(code, v.heldOutput(v.pinUnlockProc, ""))
+    }
+    const label = `${cleanup}, exit ${exitCode}`
+    v.submitPinUnlock()
+    const capture = v.pinUnlockProc.capture
+    v.clearSshPopupUnlockState()
+    if (cleanup === "dismiss twice") v.clearSshPopupUnlockState()
+    if (cleanup === "dismiss then panel close") v.abandonAuthSecrets()
+    eq(`${label}: kill awaits the original exit`, v.pinUnlockProc.runId, 1)
+    eq(`${label}: cancellation stays busy until exit`, v.pinBusy, true)
+    // A newly opened auth surface may submit before the cancelled run exits.
+    v.sshAuthSurfaceActive = true
+    v.pinEntry = "654321"
+    v.submitPinUnlock()
+    eq(`${label}: original process is still the only run`, starts.length, 1)
+    eq(`${label}: pending run retains capture ownership`, v.pinUnlockProc.capture, capture)
+    eq(`${label}: pending run has no replacement submission`, v.pinUnlockSubmitted, false)
+    finish(exitCode)
+    eq(`${label}: cancellation does not charge a PIN attempt`, v.pinAttempts, 0)
+    eq(`${label}: cancelled result does not unlock`, v.unlocks.length, 0)
+    if (exitCode === 0) eq(`${label}: abandoned held output is forgotten`, held.size, 0)
+    eq(`${label}: exit releases busy`, v.pinBusy, false)
+    v.pinEntry = "654321"
+    v.submitPinUnlock()
+    eq(`${label}: next attempt actually starts`, starts.length, 2)
+    finish(0)
+    eq(`${label}: next correct PIN unlocks`, v.unlocks.length, 1)
+    eq(`${label}: next correct PIN retains its own password`,
+      v.unlocks[0], Model.heldSecretRef(starts[1].slice(7)))
+  }
+}
+// A queued legacy process is running with no id until the helper starts it.
+// Generic panel cleanup must preserve its ownership; popup cancellation can
+// release it immediately because no started process will send an exit.
+{
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, pinReady: true, isUnlocking: false,
+    pinBusy: false, pinEntry: "123456", envelopeSummary: null, pendingUnlockPassword: "",
+    cancelAuthPrewarm() {}, syncLoginFieldsToState() {}, clearLoginAttempt() {} })
+  bind(v, service, ["submitPinUnlock", "abandonAuthSecrets", "clearSshPopupUnlockState"])
+  v.submitPinUnlock()
+  const capture = v.pinUnlockProc.capture
+  eq("waiting legacy run has no exit id yet", v.pinUnlockProc.runId, 0)
+  v.abandonAuthSecrets()
+  eq("waiting legacy run remains busy", v.pinBusy, true)
+  v.pinEntry = "654321"
+  v.submitPinUnlock()
+  eq("waiting legacy run keeps its capture", v.pinUnlockProc.capture, capture)
+  v.clearSshPopupUnlockState()
+  eq("cancelling a never-started legacy run releases busy", v.pinBusy, false)
+  eq("never-started cancellation cannot accept a result", v.pinUnlockSubmitted, false)
 }
 const ref = Model.heldSecretRef("late-master")
 for (const method of ["envelope PIN", "legacy PIN", "fingerprint", "FIDO2"]) {

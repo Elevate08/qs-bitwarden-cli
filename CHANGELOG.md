@@ -36,6 +36,8 @@ check as the shell started, moved the vault into the shell.
     opens cannot run after a lock or account change.
     Closing and reopening during a legacy PIN attempt keeps its held-password
     capture owned by that attempt until the process exits.
+    Dismissing or expiring the SSH unlock popup also waits for that exit, so
+    a second submission cannot rename the capture or charge a failed PIN attempt.
   - Failed removal of a legacy quick-unlock entry is surfaced and retried
     at most three times; an absent entry counts as already removed.
   - Leaving an account settles cancelled cleanup so returning can retry.
