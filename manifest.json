@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.elevate08.qs-bitwarden-cli",
   "name": "Bitwarden",
-  "version": "1.11.2",
+  "version": "1.11.3",
   "author": "David Spencer",
   "license": "MIT",
   "description": "Bitwarden password manager integration for the Omarchy status bar and quick access panel.",
@@ -137,7 +137,7 @@
         "key": "usePinentry",
         "type": "boolean",
         "label": "Type secrets in pinentry",
-        "description": "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; otherwise the panel's own field is used.",
+        "description": "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field.",
         "defaultValue": true
       },
       {

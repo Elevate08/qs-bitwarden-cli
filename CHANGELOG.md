@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.3] - 2026-10-08
+
 ### Security
 
 Fixes for [GHSA-6qjw-gmvg-7hvw](https://github.com/Elevate08/qs-bitwarden-cli/security/advisories/GHSA-6qjw-gmvg-7hvw),
