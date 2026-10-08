@@ -10,7 +10,7 @@ const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0,
 const required = process.argv.includes('--require')
 if (!process.argv.includes('--isolated')) {
   const missing = ['dbus-run-session', 'gnome-keyring-daemon', 'secret-tool', 'gdbus'].filter(name =>
-    spawnSync('which', [name], { encoding: 'utf8' }).status !== 0)
+    spawnSync('bash', ['-c', 'command -v -- "$1"', '_', name], { encoding: 'utf8' }).status !== 0)
   if (missing.length) {
     console.log('SKIP real-keyring: missing ' + missing.join(', ')); process.exit(required ? 1 : 0)
   }
