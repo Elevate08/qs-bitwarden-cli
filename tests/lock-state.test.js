@@ -333,7 +333,8 @@ check("logout drops queued envelope work and waits for a running write",
     && /envelopeProc\.running/.test(bodyOf("credentialStoresRunning")),
   bodyOf("credentialStoresRunning"))
 check("an envelope job that finishes after logout starts no follow-up",
-  /job\.onDone && !logoutPending/.test(bodyOf("onEnvelopeJobExited")),
+  /var accepting = job && !logoutPending/.test(bodyOf("onEnvelopeJobExited"))
+    && /if \(!root\.logoutPending\) root\.refreshEnvelope\(\)/.test(bodyOf("queueQuickUnlockPurge")),
   bodyOf("onEnvelopeJobExited"))
 check("a learned-association read cannot repopulate account metadata after logout",
   /associationsReadEpoch\s*=\s*associationsEpoch/.test(bodyOf("loadAssociations"))

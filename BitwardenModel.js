@@ -1131,6 +1131,8 @@ function normalizeOpenableUrl(raw) {
   if (!target) return { ok: false, scheme: "" }
   // Browsers treat `\` as `/` in http(s) authorities; refuse the ambiguity.
   if (target.indexOf("\\") !== -1) return { ok: false, scheme: "", reason: "ambiguous" }
+  // One argv element, shown in a notification: no controls, spaces or DEL.
+  if (/[\u0000-\u0020\u007f]/.test(target)) return { ok: false, scheme: "", reason: "ambiguous" }
 
   if (HTTP_URL_RE.test(target)) return { ok: true, url: target }
 
@@ -1225,7 +1227,10 @@ var SANITIZED_ITEMS_FILTER = JQ_ITEM_HELPERS.concat([
 // The agent branch's projection: eligible private keys framed by the load
 // nonce. Re-prompt items and empty keys are dropped here (the companion also
 // refuses them) so fewer copies travel. The shape must match the companion's
-// `deny_unknown_fields` decoder exactly.
+// `deny_unknown_fields` decoder exactly. The key travels as base64 under its
+// own field name: a PEM's newlines would be JSON escapes, which the companion
+// could only unescape through copies it cannot wipe, and the new name makes
+// a companion or panel from before this change fail the load, not misread it.
 var AGENT_KEYS_FILTER = JQ_ITEM_HELPERS.concat([
   "if type != \"array\" then",
   "  error(\"expected one item array\")",
@@ -1237,12 +1242,12 @@ var AGENT_KEYS_FILTER = JQ_ITEM_HELPERS.concat([
   "      | {",
   "        itemId: (.id | string_or_empty),",
   "        name: (.name | string_or_empty),",
-  "        privateKey: ((try (.sshKey.privateKey // .privateKey) catch null) | string_or_empty),",
+  "        privateKeyB64: ((try (.sshKey.privateKey // .privateKey) catch null) | string_or_empty | @base64),",
   "        publicKey: ((try (.sshKey.publicKey // .publicKey) catch null) | string_or_empty),",
   "        fingerprint: ((try (.sshKey.fingerprint // .sshKey.keyFingerprint // .fingerprint // .keyFingerprint) catch null) | string_or_empty),",
   "        requiresReprompt: false",
   "      }",
-  "      | select(.privateKey != \"\")]",
+  "      | select(.privateKeyB64 != \"\")]",
   "  }",
   "end"
 ]).join("\n")
@@ -1646,6 +1651,170 @@ function pinUnlockCommand(slot) {
   return ["bash", "-c", cappedScript(script)]
 }
 
+// -------------------------------------------------------------------------
+// Typed secrets in a pinentry
+// -------------------------------------------------------------------------
+//
+// The master password and the PIN are typed into `pinentry`, a separate
+// process, instead of the panel: a string typed into the shell stays in its
+// heap after it is cleared. The script below is the Assuan client. It runs
+// through the vault helper with capture "pinentry:<name>", so what it prints
+// (the answer, still percent-encoded) is decoded and held there and the shell
+// is told nothing of it. Everything the user can influence (account email,
+// error text) is an argument, encoded for Assuan, never part of the script.
+
+var PINENTRY_DEFAULT_PROGRAM = "pinentry"
+var PINENTRY_TEXT_MAX = 400
+// Pinentry closes itself after this long without an answer (SETTIMEOUT), so
+// a forgotten window does not keep the panel hidden and SSH prompts held
+// back. The script stops waiting a little later, for a pinentry that ignores
+// it.
+var PINENTRY_TIMEOUT_S = 120
+var PINENTRY_GIVE_UP_S = PINENTRY_TIMEOUT_S + 30
+// Exit codes of the script (and 127, 126 and 128+ for a program that is
+// missing, a helper that does not know the capture, or a kill).
+var PINENTRY_EXIT = { cancelled: 1, empty: 3, failed: 4, short: 5, missing: 127 }
+
+function pinentryExitCodes() {
+  return { cancelled: PINENTRY_EXIT.cancelled, empty: PINENTRY_EXIT.empty,
+           failed: PINENTRY_EXIT.failed, short: PINENTRY_EXIT.short, missing: PINENTRY_EXIT.missing }
+}
+
+// pinentry's own "operation cancelled" is GPG_ERR_CANCELED (99) from source
+// 5, 83886179; any code whose low 16 bits are 99 is read as a cancel. Its
+// timeout, GPG_ERR_TIMEOUT (62), is one too: nobody answered.
+var PINENTRY_SCRIPT = [
+  "__prog=\"$1\"; __title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"; __min=\"${6:-0}\"",
+  "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
+  // Assuan data: only %, CR and LF need encoding.
+  "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
+  "coproc PE { exec \"$__prog\" 2>/dev/null; }",
+  "__pid=\"$PE_PID\"",
+  "trap 'kill \"$__pid\" 2>/dev/null' EXIT",
+  "trap '' PIPE",
+  // 0: OK, 1: ERR, 2: gone or silent for $1 seconds.
+  "__reply() { while IFS= read -r -t \"$1\" -u \"${PE[0]}\" __l; do",
+  "  case \"$__l\" in OK|OK\\ *) return 0 ;; ERR|ERR\\ *) return 1 ;; esac",
+  "done; return 2; }",
+  "__ask() { printf '%s\\n' \"$1\" >&\"${PE[1]}\" || exit " + PINENTRY_EXIT.failed + "; __reply 30; }",
+  "__reply 10 || exit " + PINENTRY_EXIT.failed,
+  "__enc \"$__title\"; __ask \"SETTITLE $__e\"",
+  "__enc \"$__desc\"; __ask \"SETDESC $__e\"",
+  "__enc \"$__prompt\"; __ask \"SETPROMPT $__e\"",
+  "if [ -n \"$__err\" ]; then __enc \"$__err\"; __ask \"SETERROR $__e\"; fi",
+  "__ask \"SETTIMEOUT " + PINENTRY_TIMEOUT_S + "\"",
+  "printf 'GETPIN\\n' >&\"${PE[1]}\" || exit " + PINENTRY_EXIT.failed,
+  "__d=''",
+  "while IFS= read -r -t " + PINENTRY_GIVE_UP_S + " -u \"${PE[0]}\" __l; do",
+  "  case \"$__l\" in",
+  "    'D '*) __d=\"$__d${__l:2}\" ;;",
+  "    OK|OK\\ *)",
+  "      printf 'BYE\\n' >&\"${PE[1]}\"",
+  "      [ -n \"$__d\" ] || exit " + PINENTRY_EXIT.empty,
+  // The length of what was typed: each %XX stands for one character.
+  "      __t=\"${__d//[^%]/}\"; __n=$(( ${#__d} - 2 * ${#__t} ))",
+  "      if [[ \"$__min\" =~ ^[0-9]+$ ]] && (( __n < __min )); then exit " + PINENTRY_EXIT.short + "; fi",
+  "      printf '%s' \"$__d\"; exit 0 ;;",
+  "    ERR|ERR\\ *)",
+  "      __c=\"${__l#ERR }\"; __c=\"${__c%% *}\"",
+  "      if [[ \"$__c\" =~ ^[0-9]+$ ]] && (( (10#$__c & 65535) == 99 || (10#$__c & 65535) == 62 )); then exit " + PINENTRY_EXIT.cancelled + "; fi",
+  "      exit " + PINENTRY_EXIT.failed + " ;;",
+  "  esac",
+  "done",
+  "exit " + PINENTRY_EXIT.failed
+].join("\n")
+
+// The notice after a run that failed. Not remembered: the next attempt
+// opens pinentry again, and the field is used only when picked.
+function pinentryFailedNotice() {
+  return "Pinentry stopped before answering. Try again, or type it here instead."
+}
+
+// `bw unlock` refusing the password itself, as opposed to any other failure
+// (a missing account, a broken install), which is shown as it is. Up to
+// 2025 bw said "Invalid master password."; from 2026.2 its SDK fails to
+// decrypt the user key, logs "The decryption operation failed" and exits with
+// "The provided key is not the expected type".
+var WRONG_MASTER_PASSWORD = [/invalid master password/i, /the decryption operation failed/i,
+  /the provided key is not the expected type/i]
+
+function isWrongMasterPassword(stderrText) {
+  var text = String(stderrText || "")
+  return WRONG_MASTER_PASSWORD.some(function(pattern) { return pattern.test(text) })
+}
+
+// bw's stderr without the SDK's log lines ("ERROR bitwarden_crypto::...:"),
+// which are not meant for the person reading the panel.
+function bwErrorText(stderrText) {
+  return String(stderrText || "").replace(/\u001b\[[0-9;]*m/g, "").split("\n")
+    .filter(function(line) { return !/^\s*(ERROR|WARN|INFO|DEBUG|TRACE)\s+bitwarden_\w+(::\w+)*\s*:/.test(line) })
+    .map(function(line) { return line.trim() }).filter(Boolean).join("\n")
+}
+
+function pinentryText(value) {
+  return String(value === undefined || value === null ? "" : value)
+    .replace(/\u0000/g, "").slice(0, PINENTRY_TEXT_MAX)
+}
+
+// The program to run: a setting that names one, else `pinentry` from PATH.
+// Never an option: it is the first word of the command.
+function pinentryProgram(configured) {
+  var name = typeof configured === "string" ? configured.trim() : ""
+  if (!name || name.charAt(0) === "-" || name.indexOf("\u0000") !== -1) return PINENTRY_DEFAULT_PROGRAM
+  return name
+}
+
+// `opts`: { title, description, prompt, error } as plain text, and
+// `minLength`: an answer of fewer characters exits short (nothing is held).
+function pinentryCommand(program, opts) {
+  var o = opts || {}
+  return ["bash", "-c", PINENTRY_SCRIPT, "_", pinentryProgram(program),
+    pinentryText(o.title), pinentryText(o.description), pinentryText(o.prompt), pinentryText(o.error),
+    String(Math.max(0, Math.floor(Number(o.minLength) || 0)))]
+}
+
+// Prints "found" or "missing": whether `program` names something runnable.
+function pinentryProbeCommand(program) {
+  return ["bash", "-c", "command -v -- \"$1\" >/dev/null 2>&1 && echo found || echo missing", "_",
+    pinentryProgram(program)]
+}
+
+// Whether a probe run says the program is missing. Only the probe's own
+// answer counts: one that was killed (any program running as you can) or
+// stopped early says nothing, and pinentry is still tried; a pinentry that
+// is really missing then fails, and the panel offers its field when picked.
+function pinentryProbeMissing(exitCode, stdoutText) {
+  return exitCode === 0 && String(stdoutText || "").trim() === "missing"
+}
+
+// Where the master password and PIN are typed: "pinentry", "wait" or
+// "field" (the panel's own). `o`: { usePinentry, missing, declined,
+// helperState }. Pinentry runs under the vault helper, so until the helper is
+// up the panel waits for it: offering the field instead would put what is
+// typed into the shell whenever the helper is starting, restarting or was
+// left stopped (which a program running as you can cause by killing it). The
+// field is used only when pinentry is off, reported missing or declined, or
+// when the vault is held in the shell as allowVaultWithoutHelper allows.
+function typedSecretEntry(o) {
+  if (!o.usePinentry || o.missing || o.declined) return "field"
+  if (o.helperState === "active") return "pinentry"
+  if (o.helperState === "fallback") return "field"
+  return "wait"
+}
+
+// purpose: "unlock" (master password), "pin", "reprompt".
+function pinentryDescription(purpose, email) {
+  var who = String(email || "").trim()
+  var suffix = who ? " for " + who : ""
+  if (purpose === "pin") return "Enter the PIN that unlocks Bitwarden" + suffix
+  if (purpose === "reprompt") return "Confirm your Bitwarden master password" + suffix
+  return "Unlock Bitwarden" + suffix
+}
+
+function pinentryPrompt(purpose) {
+  return purpose === "pin" ? "PIN:" : "Master password:"
+}
+
 function keyringClearPinCommand(slot) {
   return keyringClearEntryCommand(keyringEntryName(KEYRING_PIN, slot))
 }
@@ -1991,9 +2160,21 @@ function envelopeMethodPurgeScript(tool, slot, method) {
     : (method === "fingerprint" ? ".fingerprint == true" : "(.fido | length) > 0")
   var script = envelopePrelude(tool, slot)
     + "for __round in $(seq 1 " + MAX_PURGE_ROUNDS + "); do "
-    + "__sealed=\"$(__lookup)\"; [ -n \"$__sealed\" ] || exit 0; "
+    // libsecret uses exit 1 for absence and for errors (with stderr).
+    // FD 3 captures diagnostics separately; the last line carries status
+    // and base64-framed stdout, so even newline-only stderr is preserved.
+    // No envelope or diagnostics need a temporary file.
+    + "__lookup_result=\"$({ __sealed=\"$(secret-tool lookup" + keyringAttributes(keyringEntryName(KEYRING_ENVELOPE, slot))
+    + " 2>&3 | head -c " + MAX_ENVELOPE_SEALED_BYTES + ")\"; __lookup_rc=$?; "
+    + "printf '\\n%s:%s' \"$__lookup_rc\" \"$(printf '%s' \"$__sealed\" | base64 -w0)\"; } 3>&1)\"; "
+    + "__lookup_data=\"${__lookup_result##*$'\\n'}\"; __lookup_error=\"${__lookup_result%$'\\n'*}\"; "
+    + "__lookup_rc=\"${__lookup_data%%:*}\"; [ -z \"$__lookup_error\" ] || exit 1; "
+    + "__sealed=\"$(printf '%s' \"${__lookup_data#*:}\" | base64 -d)\" || exit 1; "
+    + "if [ \"$__lookup_rc\" -eq 1 ] && [ -z \"$__sealed\" ]; then exit 0; fi; "
+    + "[ \"$__lookup_rc\" -eq 0 ] && [ -n \"$__sealed\" ] || exit 1; "
     + "__summary=\"$(__unseal \"$__sealed\" | \"$__tool\" inspect)\" || exit " + ENVELOPE_EXIT.unseal + "; "
-    + "printf '%s' \"$__summary\" | jq -e " + shellQuote(present) + " >/dev/null || exit 0; "
+    + "printf '%s' \"$__summary\" | jq -e " + shellQuote(present) + " >/dev/null; __present_rc=$?; "
+    + "case \"$__present_rc\" in 0) ;; 1) exit 0 ;; *) exit 1 ;; esac; "
     + "__id=\"$(printf '%s' \"$__summary\" | jq -r '.account.id')\"; "
     + "__server=\"$(printf '%s' \"$__summary\" | jq -r '.account.server')\"; "
   if (method === "fido") {
@@ -2025,8 +2206,11 @@ function quickUnlockPurgeCommand(tool, slots, method) {
   var script = "rc=0; "
   for (var j = 0; j < list.length; j++) {
     script += nestedScript(envelopeMethodPurgeScript(tool, list[j], method)) + " || rc=1; "
-      + "secret-tool clear" + keyringAttributes(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j]))
-      + " >/dev/null 2>&1; "
+      // libsecret's clear returns 1 without stderr when no matching item
+      // exists; service failures also return 1, with an error on stderr.
+      + "__clear_error=$(secret-tool clear" + keyringAttributes(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j]))
+      + " 2>&1 >/dev/null; __status=$?; printf '.'; exit \"$__status\"); __clear_rc=$?; __clear_error=\"${__clear_error%.}\"; "
+      + "if [ \"$__clear_rc\" -ne 0 ] && { [ \"$__clear_rc\" -ne 1 ] || [ -n \"$__clear_error\" ]; }; then rc=1; fi; "
   }
   script += "exit \"$rc\""
   return ["bash", "-c", script]
@@ -2647,6 +2831,9 @@ function itemCustomFields(fields, item) {
       ? null : Number(field.linkedId)
     customFields.push({
       name: String(field.name || ""),
+      // Its position in the item's own `fields`, which the helper's
+      // `customField:<index>` names (nameless fields are skipped above).
+      index: i,
       // Keep an explicit boolean false.
       value: type === 3
         ? linkedCustomFieldValue(item, linkedId)
@@ -2736,6 +2923,12 @@ function parseItems(raw) {
       identity: identityDetail(it.identity),
       notes: String(it.notes || ""),
       hasNotes: Boolean(it.notes) || Boolean(held && held.notes),
+      // Custom fields of an item the helper holds, hidden values already
+      // gone: its detail is drawn from the row (publicItemDetail()).
+      fields: held ? itemCustomFields(it.fields, it) : [],
+      // Which other secrets the helper holds for it (card code, identity
+      // numbers), so the detail draws a row for each without the value.
+      heldFlags: held,
       // A stripped item is no base for the detail or edit views: they ask the
       // helper for the whole item.
       rawObject: held ? null : it,
@@ -2916,6 +3109,7 @@ function itemDetailFromObject(it) {
     password: String(login.password || ""),
     // The password row's `visible` binding reads this.
     hasPassword: Boolean(login.password),
+    hasNotes: Boolean(it.notes),
     hasTotp: Boolean(login.totp),
     totpKey: String(login.totp || ""),
     uris: uris,
@@ -2929,6 +3123,95 @@ function itemDetailFromObject(it) {
   }
 }
 
+// Stands in for a secret in a row of publicItemDetail(): the row is drawn
+// (masked) so its buttons can be used; it is never revealed or copied from
+// the public view.
+var WITHHELD = "\u2022"
+
+// The detail of an item without its secrets: from a list row the helper
+// stripped (secretsHeld) or from a loaded detail being closed again. Which
+// secrets exist is kept (hasPassword, hasTotp, hasNotes, a row per card code,
+// identity number and hidden custom field) so the view still offers them;
+// each value is fetched when it is revealed or copied. A row from a helper
+// that does not report the card code and identity numbers is drawn with all
+// of them, as it cannot say.
+function publicItemDetail(src) {
+  if (!src || typeof src !== "object") return null
+  var unknown = Boolean(src.secretsHeld)
+  var flags = src.heldFlags && typeof src.heldFlags === "object" ? src.heldFlags : {}
+  var has = function(flag, value) {
+    return flags[flag] !== undefined ? Boolean(flags[flag]) : (unknown || value !== "")
+  }
+  var card = null
+  if (src.card) {
+    card = cardDetail(src.card)
+    if (card.number !== "") card.number = WITHHELD
+    card.code = has("cardCode", card.code) ? WITHHELD : ""
+  }
+  var identity = null
+  if (src.identity) {
+    identity = identityDetail(src.identity)
+    var numbers = ["ssn", "passportNumber", "licenseNumber"]
+    for (var n = 0; n < numbers.length; n++) {
+      identity[numbers[n]] = has(numbers[n], identity[numbers[n]]) ? WITHHELD : ""
+    }
+  }
+  var fields = toList(src.fields).map(function(f) {
+    return { name: f.name, value: f.sensitive ? WITHHELD : f.value, type: f.type,
+      linkedId: f.linkedId, sensitive: f.sensitive, index: f.index }
+  })
+  var attachments = toList(src.attachments)
+  return {
+    id: String(src.id || ""),
+    organizationId: src.organizationId ? String(src.organizationId) : null,
+    folderId: src.folderId ? String(src.folderId) : null,
+    name: String(src.name || "Untitled"),
+    type: src.type,
+    typeCode: Number(src.typeCode || 1),
+    favorite: Boolean(src.favorite),
+    notes: "",
+    username: String(src.username || ""),
+    password: "",
+    hasPassword: Boolean(src.hasPassword),
+    hasNotes: Boolean(src.hasNotes) || Boolean(src.notes),
+    hasTotp: Boolean(src.hasTotp),
+    totpKey: "",
+    uris: toList(src.uris),
+    reprompt: repromptValue(src.reprompt),
+    attachments: attachments,
+    hasAttachments: attachments.length > 0,
+    card: card,
+    identity: identity,
+    fields: fields,
+    rawObject: null,
+    secretsWithheld: true
+  }
+}
+
+// The value `key` names in a detail that holds its secrets (no helper, or an
+// item loaded for editing): a field key as the helper names them ("password",
+// "notes", "cardNumber", "cardCode", "ssn", "passportNumber", "licenseNumber",
+// "customField:<index>"). null if there is none.
+function detailSecretValue(detail, key) {
+  if (!detail || typeof detail !== "object") return null
+  var card = detail.card || {}
+  var identity = detail.identity || {}
+  var values = {
+    password: detail.password, notes: detail.notes,
+    cardNumber: card.number, cardCode: card.code,
+    ssn: identity.ssn, passportNumber: identity.passportNumber, licenseNumber: identity.licenseNumber
+  }
+  var value = Object.prototype.hasOwnProperty.call(values, key) ? values[key] : undefined
+  if (String(key).indexOf("customField:") === 0) {
+    var index = Number(String(key).slice("customField:".length))
+    var fields = toList(detail.fields)
+    for (var i = 0; i < fields.length; i++) {
+      if (fields[i].index === index) value = fields[i].value
+    }
+  }
+  return value === undefined || value === null ? null : String(value)
+}
+
 // -------------------------------------------------------------------------
 // Filtering and search
 // -------------------------------------------------------------------------
@@ -2939,7 +3222,10 @@ function matchesQuery(item, query) {
   if (!q) return true
 
   var has = function(value) { return String(value || "").toLowerCase().indexOf(q) !== -1 }
-  if (has(item.name) || has(item.username) || has(item.notes)
+  // Notes of an item that asks for the master password stay out of search;
+  // otherwise guessing at them would read what the detail view hides.
+  var notesSearchable = Number(item.reprompt) !== 1
+  if (has(item.name) || has(item.username) || (notesSearchable && has(item.notes))
       || has(item.publicKey) || has(item.fingerprint)) return true
 
   // Match what card and identity rows display; for a card number, only the
@@ -5019,6 +5305,14 @@ function vaultHelperWarning(reason) {
     + " The vault is held in the shell, so a shell crash could write it to a core dump."
 }
 
+// The banner while the helper cannot be used and the vault stays locked
+// (`allowVaultWithoutHelper` not set).
+function vaultHelperUnavailableWarning(reason) {
+  return "The vault stays locked: " + (String(reason || "").trim() || "the vault helper is unavailable.")
+    + " Click here to check again. To hold the vault in the shell instead, without crash protection,"
+    + " set allowVaultWithoutHelper in shell.json."
+}
+
 // One request line. `fields` must not carry `type` or `v`.
 function vaultHelperLine(type, fields) {
   var message = { type: type, v: VAULT_HELPER_PROTOCOL }
@@ -5239,9 +5533,32 @@ var SSH_AGENT_MAX_PATH_CHARS = 512
 
 function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 
-function boundedText(value, limit) {
+// Characters that draw as nothing or change how their neighbours are drawn:
+// C0 and C1 controls, line and paragraph separators, zero-width and direction
+// marks, bidi embeddings and isolates, and the byte order mark. A process path
+// or a key's name containing one can pass for something else on a prompt.
+var SSH_AGENT_INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g
+
+// `value` as text, with each of those written out as \uXXXX so the prompt
+// shows them.
+function visibleText(value) {
   var text = (value === undefined || value === null) ? "" : String(value)
+  return text.replace(SSH_AGENT_INVISIBLE_RE, function(c) {
+    return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
+  })
+}
+
+// Escaped first, so the limit bounds what is drawn.
+function boundedText(value, limit) {
+  var text = visibleText(value)
   return text.length > limit ? text.slice(0, limit) : text
+}
+
+// A path cut from the left, so the end of it -- the executable -- is what
+// remains.
+function boundedPath(value, limit) {
+  var text = visibleText(value)
+  return text.length > limit ? "\u2026" + text.slice(text.length - (limit - 1)) : text
 }
 
 function isRequestId(value) {
@@ -5274,7 +5591,7 @@ function sshAgentRevokeGrantLine(grantId) {
 
 // "/usr/bin/ssh" -> "ssh", for display beside the full path only.
 function processNameFromPath(processPath) {
-  var text = String(processPath === undefined || processPath === null ? "" : processPath)
+  var text = visibleText(processPath)
   var cut = text.lastIndexOf("/")
   var name = cut >= 0 ? text.slice(cut + 1) : text
   return boundedText(name, SSH_AGENT_MAX_NAME_CHARS)
@@ -5351,8 +5668,8 @@ function sshAgentPromptView(message, approvalWindowSec) {
     keyName: boundedText(request.keyName, SSH_AGENT_MAX_NAME_CHARS),
     fingerprint: boundedText(request.fingerprint, SSH_AGENT_MAX_NAME_CHARS),
     pid: Math.floor(Number(request.pid)) || 0,
-    processPath: boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS),
-    processName: processNameFromPath(boundedText(request.processPath, SSH_AGENT_MAX_PATH_CHARS)),
+    processPath: boundedPath(request.processPath, SSH_AGENT_MAX_PATH_CHARS),
+    processName: processNameFromPath(request.processPath),
     operation: operation,
     operationLabel: sshAgentOperationLabel(operation, request.operationDetail),
     hostKey: hostKey,
@@ -5367,6 +5684,21 @@ function sshAgentPromptView(message, approvalWindowSec) {
     forwardedWarning: forwarded ? SSH_AGENT_FORWARDED_WARNING : "",
     provenanceNote: SSH_AGENT_PROVENANCE_NOTE
   }
+}
+
+// Whether an approval_required is the release of the request an unlock_required
+// held: the same program, key and kind of signature. Request ids differ (the
+// release issues a new one), so they are not compared.
+function sshAgentSameRequest(unlockMessage, approvalMessage) {
+  var a = unlockMessage
+  var b = approvalMessage
+  if (!a || !b) return false
+  var fields = ["fingerprint", "pid", "processPath", "operation", "operationDetail",
+    "hostKey", "forwarded", "grantOffered"]
+  for (var i = 0; i < fields.length; i++) {
+    if (a[fields[i]] !== b[fields[i]]) return false
+  }
+  return typeof a.fingerprint === "string" && a.fingerprint !== ""
 }
 
 // FIFO queue of prompts, capped at the companion's MAX_PENDING.
@@ -5418,8 +5750,8 @@ function sshAgentGrantViews(grants, nowMs) {
       keyName: boundedText(grant.keyName, SSH_AGENT_MAX_NAME_CHARS),
       fingerprint: boundedText(grant.fingerprint, SSH_AGENT_MAX_NAME_CHARS),
       pid: Math.floor(Number(grant.pid)) || 0,
-      processPath: boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
-      processName: processNameFromPath(boundedText(grant.processPath, SSH_AGENT_MAX_PATH_CHARS)),
+      processPath: boundedPath(grant.processPath, SSH_AGENT_MAX_PATH_CHARS),
+      processName: processNameFromPath(grant.processPath),
       operationLabel: sshAgentOperationLabel(operation, grant.operationDetail),
       hostKey: hostKey,
       // Absolute expiry, so the countdown can be recomputed each tick.
@@ -5560,7 +5892,8 @@ function sshAgentLifecycleTransition(event, context) {
     startLoad: false,
     awaitLockAck: false,
     stopHelper: false,
-    clearPublic: false
+    clearPublic: false,
+    advanceEpoch: false
   }
   var live = Boolean(ctx.enabled) && Boolean(ctx.helperReady)
 
@@ -5587,6 +5920,9 @@ function sshAgentLifecycleTransition(event, context) {
     action.clearPublic = true
     // No ack needed: logout drops the public cache too.
     if (live) action.controlLines.push(sshAgentLoggedOutLine())
+    // The companion moves its epoch past the last one on logout, so the next
+    // load must start beyond that or it is refused as stale.
+    action.advanceEpoch = live
     return action
   }
 
@@ -5933,6 +6269,8 @@ var SETTINGS_SCHEMA = [
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "A PIN of 6 digits or more opens your master password, stored once, encrypted and sealed to this machine. A program running as you can copy it and try every 6-digit PIN in about 16 hours, so use 8 or more (about 2 months)." },
+  { key: "usePinentry", group: "security", type: "bool", label: "Type secrets in pinentry", defaultValue: true,
+    description: "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },

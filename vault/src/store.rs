@@ -21,6 +21,76 @@ const SECRET_PATHS: &[&[&str]] = &[
     &["identity", "licenseNumber"],
 ];
 
+/// A value the panel may ask for one at a time (`field`, `copyField`): the
+/// secrets of `SECRET_PATHS` it shows or copies, and hidden custom fields. The
+/// TOTP key and passkeys are not on the list: the code is computed here, and
+/// the rest are not shown.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SecretField {
+    Password,
+    Notes,
+    CardNumber,
+    CardCode,
+    Ssn,
+    PassportNumber,
+    LicenseNumber,
+    /// The custom field at this position in the item's `fields`.
+    Custom(usize),
+}
+
+impl SecretField {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "password" => Self::Password,
+            "notes" => Self::Notes,
+            "cardNumber" => Self::CardNumber,
+            "cardCode" => Self::CardCode,
+            "ssn" => Self::Ssn,
+            "passportNumber" => Self::PassportNumber,
+            "licenseNumber" => Self::LicenseNumber,
+            other => {
+                let index = other.strip_prefix("customField:")?;
+                // Plain digits without a leading zero, so a field has one name.
+                if index.is_empty()
+                    || index.len() > 4
+                    || !index.bytes().all(|b| b.is_ascii_digit())
+                    || (index.len() > 1 && index.starts_with('0'))
+                {
+                    return None;
+                }
+                Self::Custom(index.parse().ok()?)
+            }
+        })
+    }
+
+    fn path(&self) -> Option<&'static [&'static str]> {
+        Some(match self {
+            Self::Password => &["login", "password"],
+            Self::Notes => &["notes"],
+            Self::CardNumber => &["card", "number"],
+            Self::CardCode => &["card", "code"],
+            Self::Ssn => &["identity", "ssn"],
+            Self::PassportNumber => &["identity", "passportNumber"],
+            Self::LicenseNumber => &["identity", "licenseNumber"],
+            Self::Custom(_) => return None,
+        })
+    }
+}
+
+/// The item field a linked custom field points at, for the linked fields the
+/// panel treats as secret (BitwardenModel.js linkedCustomFieldIsSensitive).
+fn linked_secret_path(linked_id: u64) -> Option<&'static [&'static str]> {
+    Some(match linked_id {
+        101 => &["login", "password"],
+        303 => &["card", "code"],
+        305 => &["card", "number"],
+        412 => &["identity", "ssn"],
+        414 => &["identity", "passportNumber"],
+        415 => &["identity", "licenseNumber"],
+        _ => return None,
+    })
+}
+
 /// A session key as `bw` prints one (BitwardenModel.js SESSION_TOKEN_RE).
 pub fn is_session_token(value: &str) -> bool {
     value.len() >= 32
@@ -63,9 +133,18 @@ pub struct Store {
     secrets: HashMap<String, Zeroizing<String>>,
     items: Vec<Held>,
     index: HashMap<String, usize>,
+    /// Counts `forget`s. A run remembers the count it started under, and
+    /// what it captured is dropped if the count has moved on: it belongs to
+    /// a vault the panel has since locked, logged out of or switched away
+    /// from.
+    generation: u64,
 }
 
 impl Store {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn session(&self) -> Option<&str> {
         self.session.as_deref().map(String::as_str)
     }
@@ -89,10 +168,22 @@ impl Store {
     /// Drops everything but the secrets named in `keep`: a lock, a logout
     /// or an account switch.
     pub fn forget(&mut self, keep: &[String]) {
+        self.generation = self.generation.wrapping_add(1);
         self.session = None;
         self.secrets.retain(|name, _| keep.contains(name));
         self.items.clear();
         self.index.clear();
+    }
+
+    /// Drops one item, from search as well as from `item`.
+    pub fn forget_item(&mut self, id: &str) {
+        let Some(at) = self.index.remove(id) else {
+            return;
+        };
+        self.items.remove(at);
+        for (position, held) in self.items.iter().enumerate().skip(at) {
+            self.index.insert(held.id.clone(), position);
+        }
     }
 
     /// Copies the session key into the secret `name`; false if there is none.
@@ -108,8 +199,45 @@ impl Store {
         self.index.get(id).map(|at| self.items[*at].full.as_str())
     }
 
+    /// One string at `path` of a held item.
+    pub fn value_at(&self, id: &str, path: &[&str]) -> Option<Zeroizing<String>> {
+        let mut item: Value = serde_json::from_str(self.item(id)?).ok()?;
+        let value = get_value(&item, path)
+            .and_then(Value::as_str)
+            .map(|s| Zeroizing::new(s.to_owned()));
+        wipe_value(&mut item);
+        value
+    }
+
+    /// The value `field` names; `None` if the item or the value is absent. A
+    /// custom field answers only if it is hidden (type 1) or links to a secret.
+    pub fn item_secret(&self, id: &str, field: &SecretField) -> Option<Zeroizing<String>> {
+        if let Some(path) = field.path() {
+            return self.value_at(id, path);
+        }
+        let SecretField::Custom(index) = field else {
+            return None;
+        };
+        let mut item: Value = serde_json::from_str(self.item(id)?).ok()?;
+        let value = (|| {
+            let custom = item.get("fields")?.as_array()?.get(*index)?;
+            let text = |node: &Value| node.as_str().map(|s| Zeroizing::new(s.to_owned()));
+            match custom.get("type").and_then(Value::as_u64)? {
+                1 => text(custom.get("value")?),
+                3 => {
+                    let path = linked_secret_path(custom.get("linkedId")?.as_u64()?)?;
+                    text(get_value(&item, path)?)
+                }
+                _ => None,
+            }
+        })();
+        wipe_value(&mut item);
+        value
+    }
+
     /// Ids whose search text contains `query`, in load order. Mirrors
-    /// matchesQuery() in BitwardenModel.js, notes included.
+    /// matchesQuery() in BitwardenModel.js, notes included unless the item
+    /// asks for the master password.
     pub fn search(&self, query: &str) -> Vec<&str> {
         let needle = Zeroizing::new(query.trim().to_lowercase());
         if needle.is_empty() {
@@ -198,6 +326,10 @@ fn get<'a>(item: &'a Map<String, Value>, path: &[&str]) -> Option<&'a Value> {
     map.get(*last)
 }
 
+fn get_value<'a>(item: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter().try_fold(item, |node, key| node.get(*key))
+}
+
 fn text<'a>(item: &'a Map<String, Value>, path: &[&str]) -> &'a str {
     get(item, path).and_then(Value::as_str).unwrap_or("")
 }
@@ -211,14 +343,20 @@ fn present(item: &Map<String, Value>, path: &[&str]) -> bool {
     }
 }
 
-/// What matchesQuery() compares, lowercased: name, username, notes, the
-/// public key and fingerprint of an SSH record, card brand and holder, an
-/// identity's name, email, username and company, and every website.
+/// What matchesQuery() compares, lowercased: name, username, notes (not for an
+/// item that asks for the master password, whose notes the detail view hides
+/// behind that prompt), the public key and fingerprint of an SSH record, card
+/// brand and holder, an identity's name, email, username and company, and
+/// every website.
 fn haystack(item: &Map<String, Value>) -> Zeroizing<String> {
     let mut parts: Vec<&str> = vec![
         text(item, &["name"]),
         text(item, &["login", "username"]),
-        text(item, &["notes"]),
+        if item.get("reprompt").and_then(Value::as_u64) == Some(1) {
+            ""
+        } else {
+            text(item, &["notes"])
+        },
         text(item, &["publicKey"]),
         text(item, &["fingerprint"]),
         text(item, &["card", "brand"]),
@@ -257,6 +395,16 @@ fn strip_item(item: &mut Map<String, Value>) {
         Value::Bool(present(item, &["login", "totp"])),
     );
     held.insert("notes".into(), Value::Bool(present(item, &["notes"])));
+    // Which of the other secrets there were, so the panel draws a row for
+    // each and asks for its value only when it is revealed or copied.
+    for (flag, path) in [
+        ("cardCode", &["card", "code"][..]),
+        ("ssn", &["identity", "ssn"][..]),
+        ("passportNumber", &["identity", "passportNumber"][..]),
+        ("licenseNumber", &["identity", "licenseNumber"][..]),
+    ] {
+        held.insert(flag.into(), Value::Bool(present(item, path)));
+    }
     for path in SECRET_PATHS {
         remove(item, path);
     }
@@ -338,7 +486,8 @@ mod tests {
                   "fields": [{ "name": "pin", "value": "4242", "type": 1 }, { "name": "note", "value": "plain", "type": 0 }] },
                 { "id": "c", "type": 3, "name": "Card",
                   "card": { "brand": "Visa", "number": "4111111111111111", "code": "123", "cardholderName": "Me" } },
-                { "id": "i", "type": 4, "name": "Me", "identity": { "firstName": "Ada", "lastName": "L", "ssn": "123-45-6789" } }
+                { "id": "i", "type": 4, "name": "Me", "identity": { "firstName": "Ada", "lastName": "L", "ssn": "123-45-6789" } },
+                { "id": "r", "type": 2, "name": "Guarded", "reprompt": 1, "notes": "BEGIN OPENSSH" }
             ],
             "sshKeys": [{ "id": "s", "name": "Laptop", "type": 5, "publicKey": "ssh-ed25519 AAAA", "fingerprint": "SHA256:x" }]
         })
@@ -369,14 +518,116 @@ mod tests {
         let bank = &parsed["items"][0];
         assert_eq!(
             bank["qsbwHeld"],
-            serde_json::json!({ "password": true, "totp": true, "notes": true })
+            serde_json::json!({ "password": true, "totp": true, "notes": true, "cardCode": false,
+                                "ssn": false, "passportNumber": false, "licenseNumber": false })
         );
+        assert_eq!(parsed["items"][1]["qsbwHeld"]["cardCode"], true);
+        assert_eq!(parsed["items"][2]["qsbwHeld"]["ssn"], true);
+        assert_eq!(parsed["items"][2]["qsbwHeld"]["passportNumber"], false);
         assert_eq!(bank["login"]["uris"][0]["match"], 3);
         assert_eq!(bank["fields"][1]["value"], "plain");
         assert_eq!(parsed["items"][1]["card"]["number"], "1111");
         assert_eq!(parsed["sshKeys"][0]["publicKey"], "ssh-ed25519 AAAA");
         // The full item stays in the helper.
         assert!(store.item("a").unwrap().contains("hunter2"));
+    }
+
+    #[test]
+    fn secret_fields_have_a_fixed_set_of_names() {
+        for (name, field) in [
+            ("password", SecretField::Password),
+            ("notes", SecretField::Notes),
+            ("cardNumber", SecretField::CardNumber),
+            ("cardCode", SecretField::CardCode),
+            ("ssn", SecretField::Ssn),
+            ("passportNumber", SecretField::PassportNumber),
+            ("licenseNumber", SecretField::LicenseNumber),
+            ("customField:0", SecretField::Custom(0)),
+            ("customField:12", SecretField::Custom(12)),
+        ] {
+            assert_eq!(SecretField::parse(name), Some(field), "{name}");
+        }
+        for name in [
+            "",
+            "totp",
+            "login.password",
+            "fido2Credentials",
+            "passwordHistory",
+            "Password",
+            "passport",
+            "customField:",
+            "customField:-1",
+            "customField:+1",
+            "customField:01",
+            "customField:1 ",
+            "customField:a",
+            "customField:12345",
+            "customField:99999999999999999999",
+            "customfield:1",
+        ] {
+            assert_eq!(SecretField::parse(name), None, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn one_secret_is_looked_up_at_a_time() {
+        let mut store = Store::default();
+        let vault = serde_json::json!({ "items": [
+            { "id": "a", "type": 1, "name": "Bank", "notes": "recovery words",
+              "login": { "password": "hunter2", "totp": "JBSWY3DPEHPK3PXP" },
+              "fields": [{ "name": "label", "value": "plain", "type": 0 },
+                         { "name": "pin", "value": "4242", "type": 1 },
+                         { "name": "flag", "value": "true", "type": 2 },
+                         { "name": "pw", "type": 3, "linkedId": 101 },
+                         { "name": "user", "type": 3, "linkedId": 100 }] },
+            { "id": "c", "type": 3, "name": "Card",
+              "card": { "number": "4111111111111111", "code": "123" },
+              "fields": [{ "name": "code", "type": 3, "linkedId": 303 }] },
+            { "id": "i", "type": 4, "name": "Me",
+              "identity": { "ssn": "123-45-6789", "passportNumber": "P1", "licenseNumber": "L1" } }
+        ], "sshKeys": [] });
+        store.strip_vault(&vault.to_string(), true).unwrap();
+        let get = |id: &str, field: &str| {
+            store
+                .item_secret(id, &SecretField::parse(field).unwrap())
+                .map(|value| String::from(&**value))
+        };
+        assert_eq!(get("a", "password").as_deref(), Some("hunter2"));
+        assert_eq!(get("a", "notes").as_deref(), Some("recovery words"));
+        assert_eq!(get("c", "cardNumber").as_deref(), Some("4111111111111111"));
+        assert_eq!(get("c", "cardCode").as_deref(), Some("123"));
+        assert_eq!(get("i", "ssn").as_deref(), Some("123-45-6789"));
+        assert_eq!(get("i", "passportNumber").as_deref(), Some("P1"));
+        assert_eq!(get("i", "licenseNumber").as_deref(), Some("L1"));
+        // Custom fields count from the first, whatever their type.
+        assert_eq!(get("a", "customField:1").as_deref(), Some("4242"));
+        assert_eq!(get("a", "customField:3").as_deref(), Some("hunter2"));
+        assert_eq!(get("c", "customField:0").as_deref(), Some("123"));
+        assert_eq!(
+            get("a", "customField:0"),
+            None,
+            "a plain field is not a secret"
+        );
+        assert_eq!(get("a", "customField:2"), None);
+        assert_eq!(
+            get("a", "customField:4"),
+            None,
+            "a linked username is not a secret"
+        );
+        assert_eq!(get("a", "customField:9"), None);
+        // Absent values and items.
+        assert_eq!(get("a", "cardCode"), None);
+        assert_eq!(get("nope", "password"), None);
+        // The key of a TOTP is not a field.
+        assert_eq!(
+            store
+                .value_at("a", &["login", "totp"])
+                .as_deref()
+                .map(String::as_str),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+        store.forget_item("a");
+        assert!(store.item_secret("a", &SecretField::Password).is_none());
     }
 
     #[test]
@@ -393,7 +644,12 @@ mod tests {
             "passwords are never searched"
         );
         assert!(store.search("4242").is_empty(), "nor hidden fields");
-        assert_eq!(store.search("  ").len(), 4);
+        assert!(
+            store.search("openssh").is_empty(),
+            "a note behind the master-password prompt is not searchable"
+        );
+        assert_eq!(store.search("guarded"), ["r"], "though the item is");
+        assert_eq!(store.search("  ").len(), 5);
     }
 
     #[test]
@@ -407,6 +663,24 @@ mod tests {
         store.strip_vault(&saved.to_string(), true).unwrap();
         assert!(store.item("c").is_none());
         assert!(store.strip_vault("not json", true).is_none());
+    }
+
+    #[test]
+    fn a_forgotten_item_is_gone_from_item_and_search() {
+        let mut store = Store::default();
+        store.strip_vault(&vault(), true).unwrap();
+        let held = store.search("  ").len();
+        store.forget_item("a");
+        assert!(store.item("a").is_none());
+        assert!(store.search("recovery").is_empty());
+        assert_eq!(store.search("  ").len(), held - 1);
+        // The ones after it are still found under their own ids.
+        assert!(store.item("c").unwrap().contains("1111"));
+        assert!(store.item("s").is_some());
+        assert_eq!(store.search("ada l"), ["i"]);
+        store.forget_item("a");
+        store.forget_item("nope");
+        assert_eq!(store.search("  ").len(), held - 1);
     }
 
     #[test]

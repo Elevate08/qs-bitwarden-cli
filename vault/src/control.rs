@@ -56,7 +56,13 @@ pub enum Request {
         v: u8,
         name: String,
     },
-    /// One item in full, for the detail and edit views.
+    /// Drop one item, once the vault no longer has it (deleted or trashed):
+    /// nothing else would, until the next full list.
+    ForgetItem {
+        v: u8,
+        id: String,
+    },
+    /// One item in full, for the edit view.
     Item {
         v: u8,
         q: u64,
@@ -67,6 +73,24 @@ pub enum Request {
         v: u8,
         q: u64,
         id: String,
+        #[serde(rename = "clearSec")]
+        clear_sec: u32,
+    },
+    /// One secret value of an item, for display while the user has it
+    /// revealed. `field` names it (`store::SecretField`); anything not on
+    /// that list is answered with a failure.
+    Field {
+        v: u8,
+        q: u64,
+        id: String,
+        field: String,
+    },
+    /// As `copyPassword`, for any value `field` can name.
+    CopyField {
+        v: u8,
+        q: u64,
+        id: String,
+        field: String,
         #[serde(rename = "clearSec")]
         clear_sec: u32,
     },
@@ -94,8 +118,11 @@ impl Request {
             | Self::Forget { v, .. }
             | Self::HoldSession { v, .. }
             | Self::ForgetSecret { v, .. }
+            | Self::ForgetItem { v, .. }
             | Self::Item { v, .. }
             | Self::CopyPassword { v, .. }
+            | Self::Field { v, .. }
+            | Self::CopyField { v, .. }
             | Self::Totp { v, .. }
             | Self::Search { v, .. }
             | Self::Shutdown { v } => *v,
@@ -117,6 +144,10 @@ pub enum Capture {
     VaultMerge,
     /// Keep stdout as a named secret.
     Secret(String),
+    /// Stdout is the `D` data of a `pinentry` answer (the panel's pinentry
+    /// script prints it still encoded): decode it and keep it as a named
+    /// secret, only when the run exited 0. The panel is told nothing of it.
+    Pinentry(String),
 }
 
 impl Capture {
@@ -129,7 +160,13 @@ impl Capture {
             other => other
                 .strip_prefix("secret:")
                 .filter(|name| valid_name(name))
-                .map(|name| Self::Secret(name.to_owned())),
+                .map(|name| Self::Secret(name.to_owned()))
+                .or_else(|| {
+                    other
+                        .strip_prefix("pinentry:")
+                        .filter(|name| valid_name(name))
+                        .map(|name| Self::Pinentry(name.to_owned()))
+                }),
         }
     }
 }
@@ -187,10 +224,45 @@ mod tests {
         assert!(parse(r#"{"type":"hello","v":2}"#).is_err());
         assert!(parse(r#"{"type":"hello","v":1,"extra":true}"#).is_err());
         assert!(parse(r#"{"type":"unknown","v":1}"#).is_err());
+        assert!(matches!(
+            parse(r#"{"type":"forgetItem","v":1,"id":"a"}"#),
+            Ok(Request::ForgetItem { .. })
+        ));
+        assert!(parse(r#"{"type":"forgetItem","v":1,"id":"a","extra":1}"#).is_err());
+        assert!(parse(r#"{"type":"forgetItem","v":2,"id":"a"}"#).is_err());
         let exec = parse(
             r#"{"type":"exec","v":1,"id":3,"argv":["bw","status"],"inject":{"BW_SESSION":"session"},"env":{"A":"b","C":null}}"#,
         );
         assert!(matches!(exec, Ok(Request::Exec { id: 3, .. })));
+    }
+
+    #[test]
+    fn field_requests_are_strict() {
+        let field = parse(r#"{"type":"field","v":1,"q":4,"id":"a","field":"notes"}"#);
+        assert!(matches!(&field, Ok(Request::Field { q: 4, field, .. }) if field == "notes"));
+        assert!(parse(r#"{"type":"field","v":1,"q":4,"id":"a"}"#).is_err());
+        assert!(parse(r#"{"type":"field","v":1,"q":4,"id":"a","field":"notes","x":1}"#).is_err());
+        assert!(parse(r#"{"type":"field","v":2,"q":4,"id":"a","field":"notes"}"#).is_err());
+        let copy =
+            parse(r#"{"type":"copyField","v":1,"q":5,"id":"a","field":"cardCode","clearSec":30}"#);
+        assert!(matches!(
+            copy,
+            Ok(Request::CopyField {
+                q: 5,
+                clear_sec: 30,
+                ..
+            })
+        ));
+        // A copy names its clear time, and it is not negative.
+        assert!(parse(r#"{"type":"copyField","v":1,"q":5,"id":"a","field":"cardCode"}"#).is_err());
+        assert!(parse(
+            r#"{"type":"copyField","v":1,"q":5,"id":"a","field":"cardCode","clearSec":-1}"#
+        )
+        .is_err());
+        assert!(parse(
+            r#"{"type":"copyField","v":3,"q":5,"id":"a","field":"cardCode","clearSec":30}"#
+        )
+        .is_err());
     }
 
     #[test]
@@ -203,6 +275,12 @@ mod tests {
         assert_eq!(Capture::parse(Some("secret:")), None);
         assert_eq!(Capture::parse(Some("secret:a b")), None);
         assert_eq!(Capture::parse(Some("other")), None);
+        assert_eq!(
+            Capture::parse(Some("pinentry:pw3")),
+            Some(Capture::Pinentry("pw3".into()))
+        );
+        assert_eq!(Capture::parse(Some("pinentry:")), None);
+        assert_eq!(Capture::parse(Some("pinentry:a b")), None);
         assert!(matches!(parse_source("session"), Some(Source::Session)));
         assert!(matches!(
             parse_source("secret:pw"),

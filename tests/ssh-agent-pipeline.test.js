@@ -44,6 +44,12 @@ const baseEnv = () => Object.assign({}, process.env, {
 const privatePem = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + PRIVATE_MARKER + "\n-----END OPENSSH PRIVATE KEY-----"
 const repromptPem = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + REPROMPT_MARKER + "\n-----END OPENSSH PRIVATE KEY-----"
 
+// The panel sends keys base64-encoded, so a leak check has to look for the
+// encoding as well as the plain marker or it would pass on any leak.
+function carriesKey(text, marker, pem) {
+  return text.indexOf(marker) >= 0 || text.indexOf(Buffer.from(pem).toString("base64")) >= 0
+}
+
 const fixture = [
   { object: "item", id: "login-1", type: 1, name: "Login", login: { username: "u", password: "p" } },
   { object: "item", id: "ssh-1", type: 5, name: "Work", favorite: true, reprompt: 0,
@@ -161,14 +167,20 @@ const payload = JSON.parse(enabled.fifo)
 eq("the FIFO payload carries the matching nonce", payload.loadId, LOAD_ID)
 eq("the FIFO payload carries only eligible keys", payload.items.length, 1)
 eq("the eligible key is the non-reprompt one", payload.items[0].itemId, "ssh-1")
-eq("the eligible key carries its private material", payload.items[0].privateKey, privatePem)
+eq("the eligible key carries its private material, base64-encoded",
+  Buffer.from(payload.items[0].privateKeyB64, "base64").toString("utf8"), privatePem)
+check("the encoded key is canonical standard base64",
+  /^[A-Za-z0-9+\/]+={0,2}$/.test(payload.items[0].privateKeyB64) &&
+    Buffer.from(payload.items[0].privateKeyB64, "base64").toString("base64") === payload.items[0].privateKeyB64,
+  payload.items[0].privateKeyB64)
+check("the old plain-text field is gone", !("privateKey" in payload.items[0]), "privateKey present")
 eq("the eligible key carries its public blob", payload.items[0].publicKey, "ssh-ed25519 AAAAWORK")
 eq("the eligible key carries its fingerprint", payload.items[0].fingerprint, "SHA256:work")
 eq("the eligible key is not marked re-prompt", payload.items[0].requiresReprompt, false)
 
 // Re-prompt private keys never leave the jq stage, so the companion is never
 // asked to hold one -- its own skip rule is the second line, not the first.
-check("no re-prompt private key reaches the FIFO", enabled.fifo.indexOf(REPROMPT_MARKER) < 0, "leaked")
+check("no re-prompt private key reaches the FIFO", !carriesKey(enabled.fifo, REPROMPT_MARKER, repromptPem), "leaked")
 check("no ordinary item reaches the FIFO", enabled.fifo.indexOf("login-1") < 0, "leaked")
 check("no unknown cipher type reaches the FIFO", enabled.fifo.indexOf("UNKNOWN_TYPE_MARKER") < 0, "leaked")
 
@@ -178,7 +190,7 @@ eq("the envelope has exactly loadId and items",
   Object.keys(payload).sort().join(","), "items,loadId")
 eq("each item has exactly the agreed fields",
   Object.keys(payload.items[0]).sort().join(","),
-  "fingerprint,itemId,name,privateKey,publicKey,requiresReprompt")
+  "fingerprint,itemId,name,privateKeyB64,publicKey,requiresReprompt")
 
 // -------------------------------------------------------------------------
 // The optional branch can never break the ordinary list
@@ -202,7 +214,7 @@ eq("each item has exactly the agreed fields",
   eq("a squatted FIFO path still loads the item list", run.status, 0)
   eq("the squatting file is untouched", fs.readFileSync(fifoPath, "utf8"), "not a fifo\n")
   check("no private key was written to the squatting file",
-    fs.readFileSync(fifoPath, "utf8").indexOf(PRIVATE_MARKER) < 0, "leaked")
+    !carriesKey(fs.readFileSync(fifoPath, "utf8"), PRIVATE_MARKER, privatePem), "leaked")
   fs.unlinkSync(fifoPath)
 }
 
@@ -243,7 +255,7 @@ for (const [label, contents] of [
       { [Model.loadIdEnvVar()]: LOAD_ID }, contents))
   check(`${label} fails the whole read`, run.result.status !== 0, `status ${run.result.status}`)
   check(`${label} produces no item list`, run.result.stdout.trim() === "", run.result.stdout.slice(0, 200))
-  check(`${label} publishes no private key`, run.fifo.indexOf(PRIVATE_MARKER) < 0, "leaked")
+  check(`${label} publishes no private key`, !carriesKey(run.fifo, PRIVATE_MARKER, privatePem), "leaked")
   check(`${label} publishes no complete payload`, (() => {
     if (run.fifo.trim() === "") return true
     try { JSON.parse(run.fifo); return false } catch (e) { return true }
@@ -293,7 +305,7 @@ for (const [label, contents] of [
   check("a cross-typed item leaks no private key to QML",
     run.result.stdout.indexOf(PRIVATE_MARKER) < 0, "leaked")
   check("a cross-typed item leaks no private key to the FIFO",
-    run.fifo.indexOf(PRIVATE_MARKER) < 0, "leaked")
+    !carriesKey(run.fifo, PRIVATE_MARKER, privatePem), "leaked")
 }
 
 // -------------------------------------------------------------------------

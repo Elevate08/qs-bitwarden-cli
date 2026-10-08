@@ -74,6 +74,11 @@ function createShell(name, check, options = {}) {
     shell = spawn(command[0], command[1], { env, stdio: ["ignore", out, out], detached: true })
     fs.closeSync(out)
     for (let i = 0; i < 120; i++) {
+      // A denied Unix socket cannot become ready by waiting. Fail promptly
+      // so restricted environments still run the remaining scenarios.
+      if (/Failed to start IPC server/.test(fs.readFileSync(shellLog, "utf8"))) {
+        throw new Error("the test shell could not create its IPC socket")
+      }
       if (ipc("qsbwtest", "state").ok) return
       sleep(250)
     }
@@ -88,6 +93,17 @@ function createShell(name, check, options = {}) {
       sleep(100)
     }
     try { process.kill(-shell.pid, "SIGKILL") } catch (e) {}
+    shell = null
+  }
+
+  // The shell's own way out (`quickshell kill`): it unloads the config, so
+  // the service's Component.onDestruction runs, which a SIGTERM does not.
+  // Unlike stop(), the process group is left alone: a command the shell
+  // started detached on its way out is in it and must be left to finish.
+  function quit() {
+    if (!shell) return
+    spawnSync("quickshell", ["kill", "-p", config], { env, encoding: "utf8", timeout: 20000 })
+    for (let i = 0; i < 100 && spawnSync("kill", ["-0", String(shell.pid)]).status === 0; i++) sleep(100)
     shell = null
   }
 
@@ -119,9 +135,47 @@ function createShell(name, check, options = {}) {
 
   return {
     root, config, home, keyring, bwLog, shellLog, env,
-    start, stop, cleanup, q, product, state, expect, scriptErrors, logTail,
+    start, stop, quit, cleanup, q, product, state, expect, scriptErrors, logTail,
     pid: () => (shell ? shell.pid : 0)
   }
 }
 
-module.exports = { createShell, sleep }
+// A copy of the checkout whose vault helper is the one built at
+// vault/target/debug (cargo build --manifest-path vault/Cargo.toml --locked)
+// rather than the shipped binary, which may predate the checkout's protocol
+// features. Everything else, the other helpers included, is the checkout's.
+function pluginWithBuiltHelper(into) {
+  const built = path.join(repoRoot, "vault", "target", "debug", "qs-bitwarden-vault")
+  if (!fs.existsSync(built)) {
+    console.error("the built vault helper is missing: cargo build --manifest-path vault/Cargo.toml --locked")
+    process.exit(1)
+  }
+  fs.cpSync(repoRoot, into, {
+    recursive: true,
+    filter: src => {
+      const rel = path.relative(repoRoot, src)
+      return !/^\.git(\/|$)/.test(rel) && !/(^|\/)target(\/|$)/.test(rel)
+        && rel !== "bin/x86_64-linux/qs-bitwarden-vault"
+    }
+  })
+  const dev = path.join(into, "vault", "target", "debug")
+  fs.mkdirSync(dev, { recursive: true })
+  fs.copyFileSync(built, path.join(dev, "qs-bitwarden-vault"))
+  fs.chmodSync(path.join(dev, "qs-bitwarden-vault"), 0o755)
+  return into
+}
+
+// The vault helper's pid, a child of the shell `parent`; 0 if none.
+function helperPid(parent) {
+  for (const entry of fs.readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue
+    try {
+      const stat = fs.readFileSync(`/proc/${entry}/stat`, "utf8")
+      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])
+      if (ppid === parent && /^qs-bitwarden-va/.test(fs.readFileSync(`/proc/${entry}/comm`, "utf8"))) return Number(entry)
+    } catch (e) {}
+  }
+  return 0
+}
+
+module.exports = { createShell, sleep, pluginWithBuiltHelper, helperPid }

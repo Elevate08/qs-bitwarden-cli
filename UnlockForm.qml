@@ -34,10 +34,20 @@ Column {
   // offers each one, and a method turned off in settings is not in it.
   readonly property var availableMethods: ["fido", "fingerprint", "pin", "password"]
     .filter(function(name) { return methodAvailable(name) })
-  // The field this method types into (none for fingerprint or FIDO2).
-  readonly property var focusField: method === "pin"
+  // The master password and the PIN are typed into pinentry, a separate
+  // process, when it is available; the fields below are used only where the
+  // vault says (Model.typedSecretEntry()). Otherwise, while the vault helper
+  // pinentry runs under is not up, the form waits for it with no field.
+  readonly property bool typesHere: form.vault.typedSecretEntry === "field"
+  readonly property bool pinentryOffered: form.vault.typedSecretEntry === "pinentry"
+    && (method === "pin" || method === "password")
+  readonly property bool waitingForHelper: !typesHere && !pinentryOffered
+    && (method === "pin" || method === "password")
+  // The field this method types into (none for fingerprint or FIDO2, nor
+  // when pinentry takes the typing or the form waits for it).
+  readonly property var focusField: !typesHere ? null : (method === "pin"
     ? pinField
-    : (method === "password" ? passwordField : null)
+    : (method === "password" ? passwordField : null))
   // A FIDO2 attempt: scanning, authorized, then unlocking.
   readonly property bool fidoBusy: form.vault.fidoScanning
     || form.vault.fidoAuthorized
@@ -60,7 +70,10 @@ Column {
   onVisibleChanged: {
     if (!visible) {
       resetReveal()
-      form.chosen = ""
+      // Hidden so pinentry can take the keyboard is not a close: the method
+      // picked is still the one shown when the panel comes back, with
+      // pinentry's notice if it failed.
+      if (!form.vault.pinentryActive) form.chosen = ""
       return
     }
     armOfferedMethod()
@@ -80,6 +93,11 @@ Column {
     if (form.vault.isUnlocking) return
     if (method === "fido") form.vault.startFidoUnlock()
     else if (method === "fingerprint") form.vault.startFingerprintUnlock()
+    // A default PIN or password method: open pinentry, once per showing.
+    else if (form.pinentryOffered && !form.vault.pinentryAutoAsked && !form.vault.pinentryActive) {
+      form.vault.pinentryAutoAsked = true
+      form.submitCurrentMethod()
+    }
   }
 
   onFieldsOfferedChanged: armOfferedMethod()
@@ -118,11 +136,21 @@ Column {
       form.vault.startFidoUnlock()
       return
     }
+    // A typed method with pinentry: picking it is asking to type, so open it.
+    if (form.pinentryOffered) {
+      form.vault.pinentryAutoAsked = true
+      form.submitCurrentMethod()
+      return
+    }
     if (form.focusField) form.focusField.forceActiveFocus()
   }
 
   function submitCurrentMethod() {
-    if (form.method === "pin") form.vault.submitPinUnlock()
+    if (form.waitingForHelper) return
+    if (form.pinentryOffered) {
+      if (form.method === "pin") form.vault.unlockPinWithPinentry()
+      else form.vault.unlockWithPinentry()
+    } else if (form.method === "pin") form.vault.submitPinUnlock()
     else form.vault.unlockVault()
   }
 
@@ -308,7 +336,7 @@ Column {
   }
 
   Column {
-    visible: form.fieldsOffered && form.method === "pin"
+    visible: form.fieldsOffered && form.method === "pin" && form.typesHere
     width: parent.width
     spacing: Style.space(8)
 
@@ -326,10 +354,12 @@ Column {
       width: parent.width
       placeholderText: "Enter your PIN..."
       password: true
+      inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
       text: form.vault.pinEntry
       onTextChanged: form.vault.pinEntry = text.replace(/[^0-9]/g, "")
       onAccepted: form.vault.submitPinUnlock()
-      enabled: !form.vault.pinBusy && !form.vault.isUnlocking
+      // Hidden is not enough: a hidden field keeps keys focus pushes to it.
+      enabled: form.typesHere && !form.vault.pinBusy && !form.vault.isUnlocking
     }
 
     Text {
@@ -345,7 +375,7 @@ Column {
   }
 
   Row {
-    visible: form.fieldsOffered && form.method === "password"
+    visible: form.fieldsOffered && form.method === "password" && form.typesHere
     width: parent.width
     spacing: Style.space(8)
 
@@ -354,11 +384,12 @@ Column {
       width: parent.width - eyeBtnUnlock.width - Style.space(8)
       placeholderText: "Master password..."
       password: !eyeBtnUnlock.revealed
+      inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
       text: form.vault.masterPassword
       onTextChanged: form.vault.masterPassword = text
       onActiveFocusChanged: if (activeFocus) form.vault.prepareUnlock()
       onAccepted: form.vault.unlockVault()
-      enabled: !form.vault.isUnlocking
+      enabled: form.typesHere && !form.vault.isUnlocking
     }
 
     Button {
@@ -372,19 +403,93 @@ Column {
     }
   }
 
+  // The PIN's own field shows this when pinentry takes the typing.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && form.method === "pin" && form.pinentryOffered
+      && form.vault.pinUnlockError !== ""
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: form.vault.pinUnlockError
+    color: form.panel.urgent
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
+  // Where the typing happens, on the two typed methods.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && form.pinentryOffered && String(form.vault.pinentryNotice || "") === ""
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: "Your " + (form.method === "pin" ? "PIN" : "master password")
+      + " is typed in a separate window, not in this panel."
+    color: form.panel.dim
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
+  // The same window, once the vault helper it runs under is up.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && form.waitingForHelper
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: "Your " + (form.method === "pin" ? "PIN" : "master password")
+      + " is typed in a separate window once the vault helper is running."
+    color: form.panel.dim
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
+  // Pinentry failed (the Unlock button tries it again), or the panel's own
+  // field was picked after that and what is typed stays in the shell.
+  Text {
+    textFormat: Text.PlainText
+    visible: form.fieldsOffered && text !== ""
+      && (form.method === "pin" || form.method === "password")
+    width: parent.width
+    horizontalAlignment: Text.AlignHCenter
+    text: String(form.vault.pinentryNotice || "")
+    color: form.panel.dim
+    font.family: form.panel.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
+  // After a failed pinentry, typing here is the user's choice, never the
+  // panel's: see pinentryDeclined in Service.qml.
+  Button {
+    visible: form.fieldsOffered && form.pinentryOffered && String(form.vault.pinentryNotice || "") !== ""
+    width: parent.width
+    text: "Type it here instead"
+    iconText: "󰌌"
+    fontFamily: form.panel.fontFamily
+    focusable: form.buttonsFocusable
+    enabled: !form.busy
+    onClicked: {
+      form.vault.declinePinentry()
+      Qt.callLater(function() { if (form.focusField) form.focusField.forceActiveFocus() })
+    }
+  }
+
   // One Unlock button for both typed methods.
   Button {
     visible: form.fieldsOffered && form.method !== "fingerprint" && form.method !== "fido"
     width: parent.width
     text: form.busy ? (form.method === "pin" ? "Checking..." : "Unlocking...")
-      : (form.canSubmit ? "Unlock Vault" : "Checking vault status...")
-    iconText: form.busy || !form.canSubmit ? "󰑐" : "󰌋"
-    iconSpinning: form.busy || !form.canSubmit
+      : (form.waitingForHelper ? "Waiting for the vault helper..."
+        : (form.canSubmit ? "Unlock Vault" : "Checking vault status..."))
+    iconText: form.busy || !form.canSubmit || form.waitingForHelper ? "󰑐" : "󰌋"
+    iconSpinning: form.busy || !form.canSubmit || form.waitingForHelper
     selected: true
     accent: Color.accent
     fontFamily: form.panel.fontFamily
     focusable: form.buttonsFocusable
-    enabled: !form.busy && form.canSubmit
+    enabled: !form.busy && form.canSubmit && !form.waitingForHelper
     onClicked: form.submitCurrentMethod()
   }
 

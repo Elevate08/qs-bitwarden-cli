@@ -1165,7 +1165,7 @@ check("a PIN unlock is refused until status is locked",
   /if \(status !== "locked"\)[\s\S]{0,120}pinUnlockError =[\s\S]{0,60}return/.test(bodyOf("submitPinUnlock")),
   bodyOf("submitPinUnlock"))
 check("a failed password delivery drops the held password",
-  /target === "unlock"[\s\S]{0,120}pendingUnlockPassword = ""/.test(bodyOf("onAuthPasswordWriterExited")),
+  /target === "unlock"[\s\S]{0,260}pendingUnlockPassword = ""/.test(bodyOf("onAuthPasswordWriterExited")),
   bodyOf("onAuthPasswordWriterExited"))
 check("the Unlock button waits for a known locked vault",
   /canSubmit: form\.vault\.status === "locked"/.test(unlockFormSrc)

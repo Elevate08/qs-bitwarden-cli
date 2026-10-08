@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.elevate08.qs-bitwarden-cli",
   "name": "Bitwarden",
-  "version": "1.11.2",
+  "version": "1.11.3",
   "author": "David Spencer",
   "license": "MIT",
   "description": "Bitwarden password manager integration for the Omarchy status bar and quick access panel.",
@@ -33,6 +33,7 @@
       "fingerprintUnlock": false,
       "fidoUnlock": false,
       "pinUnlock": false,
+      "usePinentry": true,
       "sshAgentEnabled": false,
       "sshAgentUnlockOnDemand": false,
       "sshAgentApprovalPopup": true,
@@ -131,6 +132,13 @@
         "label": "Unlock with PIN",
         "description": "Unlock the vault with a numeric PIN of at least 6 digits (8 or more recommended; 6 and 7 are flagged as weak while you type). Your master password is stored once, encrypted and sealed to this machine; the PIN opens it through Argon2id, so reading the keyring alone does not reveal it. A program running as you can still copy the stored item and try PINs offline on every core: every 6-digit PIN in about 16 hours, 8 digits in about 2 months, on a 16-thread laptop. Turning this off removes the PIN's access for every account.",
         "defaultValue": false
+      },
+      {
+        "key": "usePinentry",
+        "type": "boolean",
+        "label": "Type secrets in pinentry",
+        "description": "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field.",
+        "defaultValue": true
       },
       {
         "key": "sshAgentEnabled",

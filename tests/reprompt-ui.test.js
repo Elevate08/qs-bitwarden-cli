@@ -41,7 +41,7 @@ for (const [call, owners] of Object.entries(allowed)) {
   const stray = [...outside.matchAll(new RegExp(`root\\.vault\\.${call}\\(([^\\n]*)`, "g"))].map(m => m[1])
   // Copying a username, an address or a plain custom field asks nothing.
   const secret = stray.filter(args => call !== "copyToClipboard"
-    || !/^(?:root\.vault\.detailItem \? root\.vault\.detailItem\.username|root\.vault\.detailItem\.username|root\.vault\.detailIdentity\.(?:email|username)|root\.vault\.detailIdentity \? root\.vault\.detailIdentity\.(?:username|company|email|phone)|root\.vault\.detailIdentityName|root\.vault\.detailIdentityAddress|root\.vault\.detailCard \? root\.vault\.detailCard\.(?:cardholderName|brand)|root\.vault\.detailCardExpiry|value, name\)|\"\"|"")/.test(args.trim()))
+    || !/^(?:root\.vault\.detailItem \? root\.vault\.detailItem\.username|root\.vault\.detailItem\.username|root\.vault\.detailIdentity\.(?:email|username)|root\.vault\.detailIdentity \? root\.vault\.detailIdentity\.(?:username|company|email|phone)|root\.vault\.detailIdentityName|root\.vault\.detailIdentityAddress|root\.vault\.detailCard \? root\.vault\.detailCard\.(?:cardholderName|brand)|root\.vault\.detailCardExpiry|value, name\)|modelData\.value, modelData\.name\)|\"\"|"")/.test(args.trim()))
   check(`${call}() on a secret is reached only through ${owners.join(", ")}`,
     secret.length === 0, secret.join("\n    "))
 }
@@ -65,7 +65,7 @@ check("smartEnter() asks only when Enter would copy a password",
   functionBody(view, "smartEnter"))
 check("the detail keys copy, reveal and edit through the protected helpers",
   /lower === "y" \|\| lower === "p"\) \{\s*root\.copyPrimarySecret\(\)/.test(view)
-    && /lower === "m"\) \{\s*if \(root\.vault\.liveTotp\) root\.copyDetailSecret\(/.test(view)
+    && /lower === "m"\) \{\s*root\.vault\.copyDetailTotp\(\)/.test(view)
     && /lower === "e"\) \{\s*root\.editDetailItem\(\)/.test(view)
     && /lower === "v"\) \{[^\n]*\n[^\n]*root\.toggleProtectedReveal\(root\.vault\.primaryRevealKey\)/.test(view),
   "a detail shortcut bypasses the re-prompt")
@@ -81,9 +81,9 @@ check("and so does its detail header",
 check("the flag is Bitwarden's reprompt value 1",
   /function asksMasterPassword\(item\) \{\s*return !!item && Number\(item\.reprompt\) === 1/.test(view),
   functionBody(view, "asksMasterPassword"))
-check("a flagged item's TOTP code and notes stay hidden until revealed",
+check("a flagged item's TOTP code stays hidden until revealed, and every item's notes do",
   /asksMasterPassword\(root\.vault\.detailItem\) && !root\.vault\.isFieldRevealed\("totp"\)/.test(view)
-    && /asksMasterPassword\(root\.vault\.detailItem\) && !root\.vault\.isFieldRevealed\("notes"\)/.test(view)
+    && /!root\.vault\.isFieldRevealed\("notes"\)\s*\?\s*\(root\.asksMasterPassword\(root\.vault\.detailItem\)/.test(view)
     && /root\.toggleProtectedReveal\("totp"\)/.test(view) && /root\.toggleProtectedReveal\("notes"\)/.test(view),
   "a flagged item's code or notes are drawn in the clear")
 

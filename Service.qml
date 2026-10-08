@@ -78,6 +78,7 @@ Item {
     function hidePopout() {}
     function focusField(name) {}
     function fieldHasFocus(name) { return false }
+    function focusState() { return null }
     function loginFieldHasFocus() { return false }
     function unlockFieldHasFocus() { return false }
     function syncLoginFields() {}
@@ -127,6 +128,11 @@ Item {
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
+  // Type the master password and PIN into pinentry, a separate process,
+  // rather than the panel. `pinentryProgram` (not in the settings screen)
+  // names a different program than `pinentry` from PATH.
+  readonly property bool usePinentry: Model.boolSetting("usePinentry", setting("usePinentry", true))
+  readonly property string pinentryProgramName: Model.pinentryProgram(setting("pinentryProgram", ""))
   // Opt-in: nothing starts, binds or opens a FIFO while false.
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
@@ -262,27 +268,116 @@ Item {
   // Selected item detail
   property var detailItem: null
   property string detailPassword: ""
-  // Revealed sensitive fields of the open item, by key; each eye is separate.
+  // Revealed sensitive fields of the open item: field key (as the helper names
+  // them: "password", "notes", "cardNumber", "cardCode", "ssn",
+  // "passportNumber", "licenseNumber", "customField:<index>", plus "totp",
+  // which has no value here) -> its value. Each eye is separate. A value is
+  // fetched when its eye is clicked and dropped when it is hidden, the item is
+  // closed or another opened, the screen is left or the vault locks.
   property var revealedFields: ({})
 
-  function isFieldRevealed(key) { return Boolean(revealedFields[key]) }
+  function isFieldRevealed(key) { return revealedFields[key] !== undefined }
+
+  // What a revealed field shows; `listed` (the masked placeholder) otherwise.
+  function shownSecret(key, listed) {
+    var value = revealedFields[key]
+    return value !== undefined && value !== "" ? value : listed
+  }
+
+  // `value` undefined hides the field.
+  function setFieldRevealed(key, value) {
+    var next = {}
+    for (var k in revealedFields) next[k] = revealedFields[k]
+    if (value !== undefined) next[key] = String(value)
+    else delete next[key]
+    revealedFields = next
+  }
 
   // Revealing a field of a re-prompt item asks for the master password
   // first; hiding one never does.
   function toggleFieldReveal(key) {
-    if (!revealedFields[key] && detailItem) {
-      withReprompt(detailItem, function() { root.setFieldRevealed(key, true) })
+    var item = detailItem
+    if (!item) return
+    if (isFieldRevealed(key)) {
+      setFieldRevealed(key, undefined)
+      // A re-prompt item's code is fetched when it is revealed only.
+      if (key === "totp" && itemNeedsReprompt(item)) liveTotp = ""
       return
     }
-    setFieldRevealed(key, !revealedFields[key])
+    withReprompt(item, function() { root.revealField(item, key) })
   }
 
-  function setFieldRevealed(key, on) {
-    var next = {}
-    for (var k in revealedFields) next[k] = revealedFields[k]
-    if (on) next[key] = true
-    else delete next[key]
-    revealedFields = next
+  function revealField(item, key) {
+    if (key === "totp") {
+      // The code is computed in the helper; there is no value to fetch.
+      setFieldRevealed("totp", "")
+      fetchTotp(String(item.id))
+      return
+    }
+    readDetailSecret(item, key, function(value) { root.setFieldRevealed(key, value) })
+  }
+
+  // Whether the detail shows (and keeps refreshing) its TOTP code: always,
+  // except that a re-prompt item's code waits for its eye.
+  function totpWanted(item) {
+    return !!item && (!itemNeedsReprompt(item) || isFieldRevealed("totp"))
+  }
+
+  // The list row of an item whose secrets the helper holds, else null.
+  function helperRow(id) {
+    if (!vaultHelperActive) return null
+    var row = Model.findItemById(items, String(id))
+    return row && row.secretsHeld ? row : null
+  }
+
+  // The open item's one secret `key`: from the helper when it holds the item,
+  // else from the detail, which then holds the value already.
+  // `callback(value)` runs only if that item's detail is still open.
+  function readDetailSecret(item, key, callback) {
+    var id = String(item.id)
+    if (!helperRow(id)) {
+      var local = Model.detailSecretValue(detailItem, key)
+      if (local !== null) callback(local)
+      return
+    }
+    var epoch = vaultEpoch
+    vaultQuery("field", { id: id, field: key }, function(ok, value) {
+      if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+      if (!ok) {
+        root.errorMessage = "Could not read this value"
+        return
+      }
+      callback(String(value))
+    })
+  }
+
+  // The detail screen's copy of one secret: the helper hands it to wl-copy
+  // and it does not come here. Re-prompt items ask first.
+  function copyDetailField(key, label) {
+    var item = detailItem
+    if (!item) return
+    withReprompt(item, function() { root.copyDetailFieldNow(item, key, label) })
+  }
+
+  function copyDetailFieldNow(item, key, label) {
+    var id = String(item.id)
+    if (helperRow(id)) {
+      var epoch = vaultEpoch
+      vaultQuery("copyField", { id: id, field: key, clearSec: Math.max(0, Math.floor(Number(clearClipboardSec) || 0)) },
+        function(ok) {
+          if (epoch !== root.vaultEpoch) return
+          if (ok) {
+            root.resetAutoLockTimer()
+            root.flashNotification(label + " copied!")
+          } else {
+            root.errorMessage = "Could not read this value"
+          }
+        })
+      return
+    }
+    var value = Model.detailSecretValue(detailItem, key)
+    if (value) copyToClipboard(value, label)
   }
 
   // -------------------------------------------------------------------------
@@ -300,6 +395,13 @@ Item {
   // it travels in the environment, never argv, and is not kept. A success
   // lasts only while that item's detail stays open: closing it, opening
   // another item, closing the panel or locking asks again.
+  //
+  // With the vault helper the shell holds no item's secrets until a value is
+  // revealed or the item is edited: the detail is drawn from the list row
+  // (Model.publicItemDetail()). Revealing and copying go through the helper
+  // (readDetailSecret(), copyDetailField()), after the prompt for a re-prompt
+  // item; editing asks for the whole item (withRevealedDetail()). Ending the
+  // confirmation drops what was fetched.
   property bool repromptPending: false
   property string repromptItemId: ""
   property string repromptItemName: ""
@@ -342,7 +444,9 @@ Item {
     repromptPending = true
   }
 
-  function submitReprompt(password) {
+  // `after(outcome)`, when given, is told "stale", "wrong" or "ok" once the
+  // password has been judged (before an accepted one's action runs).
+  function submitReprompt(password, after) {
     if (!repromptPending || repromptBusy) return
     var pw = String(password === undefined || password === null ? "" : password)
     if (!pw) {
@@ -358,13 +462,16 @@ Item {
       if (!root.repromptPending || root.repromptItemId !== id || root.repromptEpoch !== epoch
           || root.vaultEpoch !== epoch || root.status !== "unlocked") {
         if (root.repromptItemId === id) root.repromptBusy = false
+        if (after) after("stale")
         return
       }
       root.repromptBusy = false
       if (!ok) {
         root.repromptError = "That is not your master password."
+        if (after) after("wrong")
         return
       }
+      if (after) after("ok")
       var callback = root.repromptCallback
       root.repromptCallback = null
       root.repromptPending = false
@@ -393,6 +500,59 @@ Item {
   function clearRepromptGrant() {
     repromptVerifiedId = ""
     if (repromptPending) cancelReprompt()
+    withholdDetailSecrets()
+  }
+
+  // Drops every revealed value. An item the helper keeps goes back to its
+  // public view, with no password, notes or other secret that an edit loaded,
+  // and a re-prompt item's code is dropped too. A detail built from the list's
+  // own raw item (no helper) is otherwise left as it is.
+  function withholdDetailSecrets() {
+    revealedFields = ({})
+    if (!detailItem || !vaultHelperActive) return
+    if (itemNeedsReprompt(detailItem)) liveTotp = ""
+    if (detailItem.secretsWithheld || detailItem.typeCode === 5) return
+    var listed = Model.findItemById(items, String(detailItem.id))
+    if (listed && !listed.secretsHeld) return
+    detailItem = Model.publicItemDetail(detailItem)
+    detailPassword = ""
+  }
+
+  // withReprompt(), then the whole item in `detailItem`, then `callback`: the
+  // edit form's. For an item whose detail is already whole (no helper) it is
+  // withReprompt() alone. An answer for an item no longer open, a grant that
+  // ended, or a vault that locked meanwhile runs nothing.
+  function withRevealedDetail(item, callback) {
+    if (!item || typeof callback !== "function") return
+    withReprompt(item, function() { root.loadFullDetail(item, callback) })
+  }
+
+  function loadFullDetail(item, callback) {
+    var id = String(item.id || "")
+    if (!detailItem || String(detailItem.id) !== id) return
+    if (!detailItem.secretsWithheld) {
+      callback()
+      return
+    }
+    if (!vaultHelperActive) {
+      errorMessage = "Could not load item details"
+      return
+    }
+    var epoch = vaultEpoch
+    vaultQuery("item", { id: id }, function(ok, full) {
+      if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+      if (root.detailItem.secretsWithheld) {
+        var parsed = ok ? Model.parseItemDetail(String(full)) : null
+        if (!parsed) {
+          root.errorMessage = "Could not load item details"
+          return
+        }
+        root.detailItem = parsed
+        root.detailPassword = parsed.password
+      }
+      callback()
+    })
   }
 
   // Whether `password` is the master password: `done(ok)`. The stored copy
@@ -711,6 +871,7 @@ Item {
     root.sshAgentSettingsReady = true
     if (root.sshAgentEnabled) root.inspectSshAgentHelper()
     root.inspectVaultHelper()
+    root.probePinentry()
     root.inspectUnlockKey()
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
@@ -789,13 +950,14 @@ Item {
   // Holds the session key and the decrypted items outside this process, so
   // a shell crash cannot put them in a core dump (docs/vault-helper.md). Every
   // `bw` run is a VaultProcess: while the helper is up it runs there with the
-  // session added by the helper; otherwise (helper missing, failed or
-  // crashing) it runs here as before, and the panel says crash protection is
-  // off. Runs started before that is decided wait for it.
+  // session added by the helper. Without one, runs wait and the vault stays
+  // locked; they run here, with the panel saying crash protection is off, only
+  // when `allowVaultWithoutHelper` is set (useVaultFallback()). Runs started
+  // before that is decided wait for it.
   property var vaultHelper: Model.uninspectedHelper()
   // Set as the shell unloads: a helper exit then is expected.
   property bool shuttingDown: false
-  // "pending" | "starting" | "active" | "fallback"
+  // "pending" | "starting" | "active" | "fallback" | "stopped"
   property string vaultHelperState: "pending"
   readonly property bool vaultHelperActive: vaultHelperState === "active"
   property string vaultHelperWarning: ""
@@ -804,16 +966,31 @@ Item {
   property var vaultWaiting: []
   property int vaultQuerySeq: 0
   property var vaultQueries: ({})
-  // Restarts after an unexpected exit; past the limit, fall back.
+  // Restarts after an unexpected exit; past the limit, the helper is left
+  // stopped and the vault locked (stopVaultHelper()). The count clears once
+  // the helper has stayed up for vaultHelperSettledMs, so exits spread over a
+  // long session do not add up.
   property int vaultHelperRestarts: 0
   readonly property int vaultHelperMaxRestarts: 3
+  readonly property int vaultHelperSettledMs: 60000
+  readonly property int vaultHelperReadyMs: 10000
+  property bool vaultHelperReadyTimedOut: false
+  property bool vaultHelperRetryPending: false
   // What `session` holds while the helper has the key (not a secret).
   readonly property string heldSessionMarker: Model.vaultHeldSession()
   // Held values by name while falling back (the helper holds them otherwise).
   property var vaultLocalSecrets: ({})
+  // Only in shell.json, never in the settings screen, and only `true` counts.
+  readonly property bool allowVaultWithoutHelper: setting("allowVaultWithoutHelper", false) === true
 
   function inspectVaultHelper() {
-    if (vaultHelperInspectProc.running || sshAgentPluginDir === "") return
+    if (vaultHelperInspectProc.running) return
+    // The directory comes from this file's own URL and does not change, so
+    // waiting for it would leave every queued run waiting for good.
+    if (sshAgentPluginDir === "") {
+      useVaultFallback("the plugin's directory is not known, so the vault helper cannot be found.")
+      return
+    }
     vaultHelperInspectProc.command = Model.vaultHelperInspectCommand(root.sshAgentPluginDir)
     vaultHelperInspectProc.running = true
   }
@@ -831,15 +1008,75 @@ Item {
       return
     }
     vaultHelperState = "starting"
+    vaultHelperReadyTimer.restart()
     vaultHelperProc.command = [path]
     vaultHelperProc.running = true
   }
 
+  // A helper that cannot be used when the shell starts. The vault is held in
+  // the shell only when `allowVaultWithoutHelper` says so (a platform with no
+  // helper build, a checkout without one). Otherwise it stays locked, runs
+  // wait, and the banner offers to check again: the check is a child of the
+  // shell that any program running as you can kill, and a check that failed
+  // must not move the vault into a shell that can dump core.
   function useVaultFallback(reason) {
+    if (!allowVaultWithoutHelper) {
+      vaultHelperState = "stopped"
+      vaultHelperWarning = Model.vaultHelperUnavailableWarning(reason)
+      console.warn("qs-bitwarden: " + vaultHelperWarning)
+      return
+    }
     vaultHelperState = "fallback"
     vaultHelperWarning = Model.vaultHelperWarning(reason)
     console.warn("qs-bitwarden: " + vaultHelperWarning)
     flushVaultWaiting()
+  }
+
+  // A helper that keeps stopping (or is being killed) is not replaced by
+  // holding the vault in the shell, even with `allowVaultWithoutHelper`: the
+  // vault stays locked, runs wait, and the banner offers to try again.
+  function stopVaultHelper() {
+    vaultHelperState = "stopped"
+    vaultHelperWarning = "The vault helper keeps stopping, so the vault stays locked. Click here to try again."
+    console.warn("qs-bitwarden: the vault helper kept stopping; the vault stays locked")
+  }
+
+  // Checked again from the start, so a helper rebuilt or repaired meanwhile
+  // is found; runs keep waiting until that is decided.
+  function retryVaultHelper() {
+    if (vaultHelperState !== "stopped") return
+    // Process termination is asynchronous. Its old exit must not be read
+    // as a failure of the new attempt, or restart the helper twice.
+    if (vaultHelperReadyTimedOut && vaultHelperProc.processId > 0) {
+      vaultHelperRetryPending = true
+      return
+    }
+    vaultHelperReadyTimedOut = false
+    vaultHelperRetryPending = false
+    vaultHelperRestarts = 0
+    vaultHelperWarning = ""
+    vaultHelperState = "pending"
+    inspectVaultHelper()
+  }
+
+  Timer {
+    id: vaultHelperReadyTimer
+    interval: root.vaultHelperReadyMs
+    onTriggered: root.onVaultHelperReadyTimeout()
+  }
+
+  function onVaultHelperReadyTimeout() {
+    if (vaultHelperState !== "starting") return
+    vaultHelperReadyTimedOut = vaultHelperProc.running
+    vaultHelperState = "stopped"
+    vaultHelperWarning = "The vault helper did not answer hello in time, so the vault stays locked. Click here to try again."
+    vaultHelperProc.running = false
+  }
+
+  Timer {
+    id: vaultHelperSettleTimer
+    interval: root.vaultHelperSettledMs
+    onTriggered: if (root.vaultHelperState === "active") root.vaultHelperRestarts = 0
   }
 
   function onVaultHelperStarted() {
@@ -850,8 +1087,11 @@ Item {
     var message = Model.parseVaultHelperLine(line)
     if (!message) return
     if (message.type === "ready") {
+      if (vaultHelperState !== "starting" || vaultHelperReadyTimedOut) return
+      vaultHelperReadyTimer.stop()
       vaultHelperState = "active"
       vaultHelperWarning = ""
+      vaultHelperSettleTimer.restart()
       flushVaultWaiting()
     } else if (message.type === "exit") {
       var proc = vaultRuns[message.id]
@@ -875,32 +1115,49 @@ Item {
   // The helper went away: its runs fail, and the session key went with it,
   // so an unlocked vault is locked here too. Restarted, within a limit.
   function onVaultHelperExited(exitCode) {
+    vaultHelperReadyTimer.stop()
+    vaultHelperSettleTimer.stop()
+    if (vaultHelperReadyTimedOut) {
+      vaultHelperReadyTimedOut = false
+      if (vaultHelperRetryPending && !shuttingDown) Qt.callLater(retryVaultHelper)
+      return
+    }
     var wasActive = vaultHelperState === "active" || vaultHelperState === "starting"
+    var unexpected = wasActive && !shuttingDown
     // Until it is back (or given up on), new runs wait rather than being
     // written to a process that is gone.
-    if (wasActive && !shuttingDown) vaultHelperState = "starting"
+    if (unexpected) {
+      vaultHelperState = "starting"
+      console.warn("qs-bitwarden: the vault helper exited (" + exitCode + ")")
+    }
+    // Locked before the runs fail, so their failures answer for a vault that
+    // is already gone: a `bw status` among them would otherwise read as
+    // signed out.
+    if (unexpected && session === heldSessionMarker) {
+      // The key went with the helper, so `bw lock` has nothing to run with.
+      // The rest is an ordinary lock: the SSH agent's keys and grants came
+      // from this vault and would otherwise keep signing behind it.
+      session = ""
+      if (status === "unlocked") {
+        lockVault()
+        errorMessage = "The vault helper stopped, so the vault was locked. Unlock again."
+      } else {
+        applySshAgentLifecycle("lock")
+        dropVaultState()
+      }
+    }
     var runs = vaultRuns
     vaultRuns = ({})
     for (var id in runs) runs[id].finish(1, "", "the vault helper stopped", false, false)
     var queries = vaultQueries
     vaultQueries = ({})
     for (var q in queries) queries[q](false, null)
-    if (!wasActive || shuttingDown) return
-    console.warn("qs-bitwarden: the vault helper exited (" + exitCode + ")")
-    if (session === heldSessionMarker) {
-      session = ""
-      dropVaultSecrets()
-      vaultEpoch += 1
-      if (status === "unlocked") {
-        status = "locked"
-        errorMessage = "The vault helper stopped, so the vault was locked. Unlock again."
-      }
-    }
+    if (!unexpected) return
     if (vaultHelperRestarts < vaultHelperMaxRestarts) {
       vaultHelperRestarts += 1
       Qt.callLater(startVaultHelper)
     } else {
-      useVaultFallback("the vault helper kept stopping.")
+      stopVaultHelper()
     }
   }
 
@@ -915,6 +1172,7 @@ Item {
   // Called by VaultProcess.start().
   function vaultStart(proc) {
     if (vaultHelperState === "pending" || vaultHelperState === "starting"
+        || vaultHelperState === "stopped"
         || (vaultHelperState === "active" && !vaultHelperProc.running)) {
       if (vaultWaiting.indexOf(proc) === -1) vaultWaiting = vaultWaiting.concat([proc])
       return
@@ -929,6 +1187,11 @@ Item {
       else environment[key] = proc.environment[key]
     }
     if (!vaultHelperActive) {
+      // What was typed into pinentry would come back to the shell: not run.
+      if (proc.capture.indexOf("pinentry:") === 0) {
+        Qt.callLater(function() { proc.finish(Model.pinentryExitCodes().missing, "", "no vault helper", false, false) })
+        return
+      }
       proc.runLocally(vaultLocalEnv(environment, inject))
       return
     }
@@ -982,10 +1245,31 @@ Item {
     vaultLocalSecrets = held
   }
 
+  // A password or PIN passed around by reference (Model.heldSecretRef(), from
+  // a quick unlock or typed into pinentry): drop the held copy. Anything that
+  // is not a reference is left alone.
+  function forgetHeldPassword(value) {
+    var name = Model.heldSecretName(value)
+    if (name) forgetVaultSecret(name)
+  }
+
+  // A callback that forgets the reference `value` names, for a consumer that
+  // reports when it is done.
+  function forgetHeldAfter(value) {
+    var kept = value
+    return function() { root.forgetHeldPassword(kept) }
+  }
+
+  // An item the vault no longer has (deleted or trashed).
+  function forgetVaultItem(id) {
+    if (vaultHelperActive) vaultHelperProc.write(Model.vaultHelperLine("forgetItem", { id: id }))
+  }
+
   // Called by VaultProcess when its caller stops it.
   function vaultKill(proc) {
     if (proc.runId > 0) {
-      vaultHelperProc.write(Model.vaultHelperLine("kill", { id: proc.runId }))
+      // A helper that is gone took the run with it.
+      if (vaultHelperActive) vaultHelperProc.write(Model.vaultHelperLine("kill", { id: proc.runId }))
     } else if (proc.runId === -1) {
       proc.killLocal()
     } else {
@@ -1134,14 +1418,8 @@ Item {
       if (pendingPurges.indexOf(method) === -1) pendingPurges = pendingPurges.concat([method])
       return
     }
-    queueEnvelopeJob({
-      command: Model.quickUnlockPurgeCommand(envelopeTool(), accountSlotsForPurge(), method),
-      writes: true,
-      onDone: function(code) {
-        if (code !== 0) console.log("qs-bitwarden envelope: removing " + method + " unlock left a way in (" + code + ")")
-        root.refreshEnvelope()
-      }
-    })
+    var slots = accountSlotsForPurge()
+    queueQuickUnlockPurge(slots, method, slots.join(",") + ":" + method)
   }
 
   function runPendingPurges() {
@@ -1156,15 +1434,95 @@ Item {
   // and the envelope read in between must not take that for "turned off".
   property var quickUnlockEnabledAt: ({})
   readonly property int quickUnlockEnableGraceMs: 60000
-  // Removals already tried this session, per account and method, so one that
-  // fails is not retried on every read.
+  // Only successful removals are reconciled. Failed keyring operations get
+  // at most three attempts per session and remain visible to the user.
   property var reconciledMethods: ({})
+  property var quickUnlockPurgeAttempts: ({})
+  property var quickUnlockPurgePending: ({})
+  property var quickUnlockPurgeFailures: ({})
+  property var quickUnlockMethodGeneration: ({})
+  property var quickUnlockAccountGeneration: ({})
+  readonly property int quickUnlockPurgeMaxAttempts: 3
+
+  function queueQuickUnlockPurge(slots, method, key) {
+    if (reconciledMethods[key] || quickUnlockPurgePending[key]
+        || Number(quickUnlockPurgeAttempts[key] || 0) >= quickUnlockPurgeMaxAttempts) return
+    quickUnlockPurgeAttempts = Object.assign({}, quickUnlockPurgeAttempts)
+    quickUnlockPurgeAttempts[key] = Number(quickUnlockPurgeAttempts[key] || 0) + 1
+    quickUnlockPurgePending = Object.assign({}, quickUnlockPurgePending)
+    var accountSlot = activeSlot
+    var methodGeneration = Number(quickUnlockMethodGeneration[method] || 0)
+    var accountGeneration = Number(quickUnlockAccountGeneration[accountSlot] || 0)
+    var job = {
+      command: Model.quickUnlockPurgeCommand(envelopeTool(), slots, method),
+      writes: true,
+      // Settle cleanup separately from auth results, subject to its generations.
+      alwaysDone: true,
+      isCurrent: function() {
+        return methodGeneration === Number(root.quickUnlockMethodGeneration[method] || 0)
+          && accountGeneration === Number(root.quickUnlockAccountGeneration[accountSlot] || 0)
+      },
+      onCancelled: function() {
+        if (root.quickUnlockPurgePending[key] !== job) return
+        root.quickUnlockPurgePending = Object.assign({}, root.quickUnlockPurgePending)
+        delete root.quickUnlockPurgePending[key]
+        // Cancellation accepts no result. Restore this job's budget so a
+        // returning account can retry even after the final allowed attempt.
+        root.quickUnlockPurgeAttempts = Object.assign({}, root.quickUnlockPurgeAttempts)
+        root.quickUnlockPurgeAttempts[key] = Math.max(0, Number(root.quickUnlockPurgeAttempts[key] || 0) - 1)
+      },
+      onDone: function(code) {
+        if (!job.isCurrent() || root.quickUnlockPurgePending[key] !== job) return
+        root.quickUnlockPurgePending = Object.assign({}, root.quickUnlockPurgePending)
+        delete root.quickUnlockPurgePending[key]
+        root.quickUnlockPurgeFailures = Object.assign({}, root.quickUnlockPurgeFailures)
+        if (code === 0) {
+          root.reconciledMethods = Object.assign({}, root.reconciledMethods)
+          root.reconciledMethods[key] = true
+          delete root.quickUnlockPurgeFailures[key]
+          if (Object.keys(root.quickUnlockPurgeFailures).length === 0
+              && root.errorMessage.indexOf("Could not remove disabled quick unlock") === 0) root.errorMessage = ""
+        } else {
+          root.quickUnlockPurgeFailures[key] = true
+          root.errorMessage = "Could not remove disabled quick unlock from the OS keyring. A stored way in may remain. Check the keyring service and restart to retry cleanup."
+          console.warn("qs-bitwarden envelope: removing " + method + " unlock failed (" + code + ")")
+          if (!root.logoutPending) Qt.callLater(function() {
+            if (!root.logoutPending && job.isCurrent()) root.queueQuickUnlockPurge(slots, method, key)
+          })
+        }
+        if (!root.logoutPending) root.refreshEnvelope()
+      }
+    }
+    quickUnlockPurgePending[key] = job
+    queueEnvelopeJob(job)
+  }
 
   function noteQuickUnlockEnabled(method) {
+    quickUnlockMethodGeneration = Object.assign({}, quickUnlockMethodGeneration)
+    quickUnlockMethodGeneration[method] = Number(quickUnlockMethodGeneration[method] || 0) + 1
+    // Settings are shared: reenabling invalidates this method's old purges
+    // for every account, including retries already in the writer queue.
+    var pending = Object.assign({}, quickUnlockPurgePending)
+    var failures = Object.assign({}, quickUnlockPurgeFailures)
+    for (var p in pending) if (p.slice(-(method.length + 1)) === ":" + method) delete pending[p]
+    for (var f in failures) if (f.slice(-(method.length + 1)) === ":" + method) delete failures[f]
+    quickUnlockPurgePending = pending
+    quickUnlockPurgeFailures = failures
+    if (Object.keys(failures).length === 0
+        && errorMessage.indexOf("Could not remove disabled quick unlock") === 0) errorMessage = ""
+    pendingPurges = pendingPurges.filter(function(m) { return m !== method })
     var next = {}
     for (var k in quickUnlockEnabledAt) next[k] = quickUnlockEnabledAt[k]
     next[method] = Date.now()
     quickUnlockEnabledAt = next
+    // A later disable must remove the newly added way in, even if this
+    // method was successfully purged earlier in the same session.
+    var reconciled = Object.assign({}, reconciledMethods)
+    var attempts = Object.assign({}, quickUnlockPurgeAttempts)
+    for (var key in reconciled) if (key.slice(-(method.length + 1)) === ":" + method) delete reconciled[key]
+    for (var k in attempts) if (k.slice(-(method.length + 1)) === ":" + method) delete attempts[k]
+    reconciledMethods = reconciled
+    quickUnlockPurgeAttempts = attempts
   }
 
   // Off in shell.json itself: an absent key (settings not pushed yet) is
@@ -1173,29 +1531,24 @@ Item {
     return !!settings && settings[name] === false
   }
 
+  // A method whose setting is off loses its way in even when the envelope has
+  // none: the purge also clears the legacy keyring entry, which an account
+  // with no envelope yet (or one turned off before it migrated) still has. The
+  // purge succeeds when there is nothing to remove.
   function reconcileDisabledMethods() {
-    var summary = envelopeSummary
-    if (!summary || !quickUnlockAvailable || !accountId) return
+    if (!quickUnlockAvailable || !accountId) return
     var checks = [
-      { method: "pin", setting: "pinUnlock", present: !!summary.pin },
-      { method: "fingerprint", setting: "fingerprintUnlock", present: summary.fingerprint === true },
-      { method: "fido", setting: "fidoUnlock", present: Array.isArray(summary.fido) && summary.fido.length > 0 }
+      { method: "pin", setting: "pinUnlock" },
+      { method: "fingerprint", setting: "fingerprintUnlock" },
+      { method: "fido", setting: "fidoUnlock" }
     ]
     for (var i = 0; i < checks.length; i++) {
       var c = checks[i]
-      if (!c.present || !quickUnlockSettingOff(c.setting)) continue
+      if (!quickUnlockSettingOff(c.setting)) continue
       if (Date.now() - Number(quickUnlockEnabledAt[c.method] || 0) < quickUnlockEnableGraceMs) continue
       var key = activeSlot + ":" + c.method
       if (reconciledMethods[key]) continue
-      var marked = {}
-      for (var k in reconciledMethods) marked[k] = reconciledMethods[k]
-      marked[key] = true
-      reconciledMethods = marked
-      queueEnvelopeJob({
-        command: Model.quickUnlockPurgeCommand(envelopeTool(), [activeSlot], c.method),
-        writes: true,
-        onDone: function(code) { root.refreshEnvelope() }
-      })
+      queueQuickUnlockPurge([activeSlot], c.method, key)
     }
   }
 
@@ -1204,6 +1557,7 @@ Item {
   function queueEnvelopeJob(job) {
     // Answers for an account no longer active are dropped (onEnvelopeJobExited()).
     job.slot = activeSlot
+    job.epoch = vaultEpoch
     var jobs = envelopeJobs.slice()
     jobs.push(job)
     envelopeJobs = jobs
@@ -1215,6 +1569,17 @@ Item {
     var jobs = envelopeJobs.slice()
     var job = jobs.shift()
     envelopeJobs = jobs
+    if (job.isCurrent && !job.isCurrent()) {
+      if (job.onCancelled) job.onCancelled()
+      pumpEnvelopeJobs()
+      return
+    }
+    if (job.unlock && (job.cancelled || job.slot !== activeSlot || job.epoch !== vaultEpoch || logoutPending)) {
+      for (var key in job.env) forgetHeldPassword(job.env[key])
+      job.env = null
+      pumpEnvelopeJobs()
+      return
+    }
     envelopeJob = job
     envelopeProc.command = job.command
     // Most jobs are the unlock tool's and need no session; `bw` jobs ask.
@@ -1241,15 +1606,55 @@ Item {
     envelopeProc.environment = {}
     // The output was the master password: scrub the collector.
     if (job && job.secretOutput) clearProcessCollectorSoon(envelopeProc)
-    if (job && job.onDone && !logoutPending && job.slot === activeSlot) job.onDone(exitCode, out)
+    var accepting = job && !logoutPending && job.slot === activeSlot
+      && (!job.unlock || (!job.cancelled && job.epoch === vaultEpoch))
+    if (job && job.onDone && (accepting || job.alwaysDone)) job.onDone(exitCode, out)
+    else if (job && job.holdOutput) forgetHeldPassword(out)
     out = ""
     if (logoutPending && allCredentialsClearPending) Qt.callLater(requestAllCredentialClear)
     Qt.callLater(pumpEnvelopeJobs)
   }
 
-  // Logout: nothing queued may run after the keyring is cleared.
+  // A lock cancels only authentication opens. Setup, re-seal and purge writes
+  // keep their place in the single-writer queue.
+  function cancelEnvelopeUnlockJobs() {
+    envelopeJobs = envelopeJobs.filter(function(job) {
+      if (!job.unlock) return true
+      for (var key in job.env) root.forgetHeldPassword(job.env[key])
+      job.env = null
+      return false
+    })
+    if (envelopeJob && envelopeJob.unlock) {
+      envelopeJob.cancelled = true
+      envelopeProc.running = false
+      // A run waiting for a helper has no id and will never send an exit.
+      if (envelopeProc.runId === 0) {
+        vaultKill(envelopeProc)
+        envelopeJob = null
+        envelopeProc.environment = {}
+        Qt.callLater(pumpEnvelopeJobs)
+      }
+    }
+    // A queued or exiting legacy PIN run still owns its capture.
+    if (!pinUnlockProc.running && pinUnlockProc.runId === 0) pinBusy = false
+  }
+
+  // Leaving an account or logging out invalidates its cleanup callbacks.
+  // Nothing queued may run after a logout's keyring clear.
   function dropEnvelopeState() {
+    var discarded = envelopeJobs
     envelopeJobs = []
+    for (var i = 0; i < discarded.length; i++) {
+      var job = discarded[i]
+      for (var key in job.env) forgetHeldPassword(job.env[key])
+      job.env = null
+      if (job.onCancelled) job.onCancelled()
+    }
+    // An in-flight writer still finishes before another write can start;
+    // its old completion must not reconcile or retry in the new account.
+    if (envelopeJob && envelopeJob.onCancelled) envelopeJob.onCancelled()
+    quickUnlockAccountGeneration = Object.assign({}, quickUnlockAccountGeneration)
+    quickUnlockAccountGeneration[activeSlot] = Number(quickUnlockAccountGeneration[activeSlot] || 0) + 1
     // The next login may be another account.
     accountId = ""
     accountServer = ""
@@ -1307,7 +1712,10 @@ Item {
           root.envelopeSummary = null
         }
         root.envelopeChecked = true
-        if (code === 0 && root.envelopeSummary) root.reconcileDisabledMethods()
+        // No envelope yet is read too: a legacy entry may be all there is.
+        if ((code === 0 && root.envelopeSummary) || code === Model.envelopeExitCodes().absent) {
+          root.reconcileDisabledMethods()
+        }
         root.recomputeFingerprintStored()
         root.recomputePinConfigured()
         // A switched-to account's methods are known only now.
@@ -1354,9 +1762,15 @@ Item {
   // a quick-unlock method produced. `done(ok)` is optional.
   function storeAcceptedMasterPassword(password, done) {
     var pw = String(password || "")
-    var finish = function(ok) { if (done) done(ok) }
+    var oldPassword = ""
+    // The old password of a refused quick unlock is held by reference; its
+    // last use is the re-seal below, so it goes with the end of this call.
+    var finish = function(ok) {
+      root.forgetHeldPassword(oldPassword)
+      if (done) done(ok)
+    }
     if (!pw || !quickUnlockAvailable) { finish(false); return }
-    var oldPassword = rotationOldPassword
+    oldPassword = rotationOldPassword
     rotationOldPassword = ""
     withEnvelopeAccount(function() {
       var E = Model.envelopeExitCodes()
@@ -1522,8 +1936,15 @@ Item {
 
   // Migrates the legacy PIN blob at the PIN unlock that decrypted it; the blob
   // is deleted only once the new PIN wrap yields the same password.
+  // `password` may be held by reference, and `pin` may be a PIN typed into
+  // pinentry, held too; their last use is this migration, so both are
+  // forgotten when it ends, whichever way.
   function migrateLegacyPin(password, pin) {
-    if (!quickUnlockAvailable) return
+    if (!quickUnlockAvailable) {
+      forgetHeldPassword(password)
+      forgetHeldPassword(pin)
+      return
+    }
     withEnvelopeAccount(function() {
       var env = {}
       env[Model.keyringSecretEnvVar()] = password
@@ -1533,11 +1954,16 @@ Item {
         command: Model.legacyPinMigrationCommand(root.envelopeTool(), root.envelopeAccount()),
         env: env, writes: true,
         onDone: function(code) {
+          root.forgetHeldPassword(password)
+          root.forgetHeldPassword(pin)
           if (code === 0 || code === codes.none) root.legacyPinStored = false
           else console.log("qs-bitwarden envelope: PIN migration left the legacy blob (" + code + ")")
           root.refreshEnvelope()
         }
       })
+    }, function() {
+      root.forgetHeldPassword(password)
+      root.forgetHeldPassword(pin)
     })
   }
 
@@ -2028,7 +2454,7 @@ Item {
     && (sshPrompt !== null || sshUnlockRequest !== null)
   // Completion handlers treat the SSH popup as an auth surface even with the
   // panel closed.
-  readonly property bool sshAuthSurfaceActive: opened || sshApprovalPopupOpen
+  readonly property bool sshAuthSurfaceActive: opened || sshApprovalPopupOpen || pinentryActive
   // The last announced grants, and a view re-derived each tick so countdowns
   // move and lapsed grants disappear.
   property var sshGrantsAnnounced: []
@@ -2121,6 +2547,7 @@ Item {
     root.sshPrompt = null
     root.sshPromptQueue = []
     root.sshPromotedOldId = null
+    root.sshPromotedRaw = null
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
     root.sshUnlockQueue = []
@@ -2160,13 +2587,19 @@ Item {
   // Leave no password, PIN, PAM conversation or prewarmed CLI behind a
   // dismissed or expired popup.
   function clearSshPopupUnlockState() {
+    cancelEnvelopeUnlockJobs()
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAuthPrewarm()
+    cancelPinentry()
     if (pinUnlockProc.running) pinUnlockProc.running = false
     root.pinUnlockSubmitted = false
-    root.pinBusy = false
+    // running goes false at cancellation; finish releases runId at the exit.
+    if (pinUnlockProc.runId === 0) root.pinBusy = false
+    root.releaseHeldPin()
     root.masterPassword = ""
+    root.pinentryMasterName = ""
+    root.forgetHeldPassword(root.pendingUnlockPassword)
     root.pendingUnlockPassword = ""
     root.pendingUnlockFrom = ""
     root.pinEntry = ""
@@ -2270,11 +2703,17 @@ Item {
   }
 
   property var sshPromotedOldId: null
+  // The unlock_required message the shown prompt was promoted from. An unlock
+  // releases every held request in no fixed order, so the first approval_required
+  // to arrive is adopted only if it is this same request.
+  property var sshPromotedRaw: null
 
   function adoptSshPrompt(message) {
-    if (root.sshPromotedOldId !== null && root.sshPrompt) {
+    if (root.sshPromotedOldId !== null && root.sshPrompt
+        && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
       root.sshPrompt.requestId = message.requestId
       root.sshPromotedOldId = null
+      root.sshPromotedRaw = null
       return true
     }
     return false
@@ -2475,6 +2914,7 @@ Item {
     for (var i = 0; i < action.controlLines.length; i++) {
       if (sshAgentProc.running && sshAgentProc.stdinEnabled) sshAgentProc.write(action.controlLines[i])
     }
+    if (action.advanceEpoch) sshAgentEpoch += 1
     if (action.clearPublic) {
       root.sshAgentKeyCount = 0
       root.sshAgentKeysLoadedAt = 0
@@ -2554,6 +2994,7 @@ Item {
     if (root.sshUnlockRaw.reason === "list-identities") return
     var raw = root.sshUnlockRaw
     root.sshPromotedOldId = raw.requestId
+    root.sshPromotedRaw = raw
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
     root.sshUnlockQueue = []
@@ -2711,6 +3152,9 @@ Item {
   // -------------------------------------------------------------------------
 
   function open(view) {
+    // The user asking for the panel while pinentry is up: the panel wins.
+    cancelPinentry()
+    pinentryReturning = false
     errorMessage = ""
     flashMessage = ""
     revealedFields = ({})
@@ -2875,10 +3319,14 @@ Item {
     })
   }
 
+  // The panel hidden so pinentry can take the keyboard is not a close.
   onOpenedChanged: {
-    if (opened) onPanelOpened()
-    else {
+    if (opened) {
+      if (!resumeFromPinentry()) onPanelOpened()
+    } else if (!pinentryActive) {
+      pinentryAutoAsked = false
       clearRepromptGrant()
+      resetPinentryChoice()
       cancelFingerprintUnlock()
       // Not a cancel; see releaseSurface() in FidoUnlock.qml.
       fidoUnlocker.releaseSurface()
@@ -3093,6 +3541,7 @@ Item {
     }
     if (!st) {
       cancelAuthPrewarm()
+      followVaultClosedInSshAgent("unauthenticated")
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
         dropVaultState()
@@ -3128,6 +3577,7 @@ Item {
         syncVault()
       }
     } else if (st.locked) {
+      followVaultClosedInSshAgent("locked")
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
         dropVaultState()
@@ -3139,6 +3589,7 @@ Item {
       if (sshAuthSurfaceActive) armPresenceUnlock()
     } else {
       cancelAuthPrewarm()
+      followVaultClosedInSshAgent("unauthenticated")
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
         dropVaultState()
@@ -3147,6 +3598,14 @@ Item {
       currentScreen = "login"
       focusAppropriateField()
     }
+  }
+
+  // `bw status` found the vault closed under the panel (a `bw lock` or
+  // `bw logout` elsewhere, or a status check that failed): the SSH agent
+  // follows, as on the panel's own lock and logout, before the state goes.
+  function followVaultClosedInSshAgent(next) {
+    if (next === "locked" && status === "unlocked") applySshAgentLifecycle("lock")
+    else if (next === "unauthenticated" && (status === "unlocked" || status === "locked")) applySshAgentLifecycle("logout")
   }
 
   // -------------------------------------------------------------------------
@@ -3381,11 +3840,15 @@ Item {
   }
 
   function abandonAuthSecrets() {
+    cancelEnvelopeUnlockJobs()
     masterPassword = ""
     // Also dropped when the panel closes; see dropVaultSecrets().
     rotationOldPassword = ""
     clearLoginAttempt()
+    pinentryMasterName = ""
+    forgetHeldPassword(pendingUnlockPassword)
     pendingUnlockPassword = ""
+    releaseHeldPin()
     pendingUnlockFrom = ""
     authPasswordWriteValue = ""
     pinEntry = ""
@@ -3414,6 +3877,8 @@ Item {
     if (target === "unlock") {
       unlockSubmitted = false
       isUnlocking = false
+      pinentryMasterName = ""
+      forgetHeldPassword(pendingUnlockPassword)
       pendingUnlockPassword = ""
       if (unlockProc.running) unlockProc.running = false
       errorMessage = "Could not deliver the password to Bitwarden. Please try again."
@@ -4451,7 +4916,11 @@ Item {
     })
   }
 
-  function submitPinUnlock() {
+  // `heldPin`, when given, is a PIN typed into pinentry and held by the
+  // helper (a reference, Model.heldSecretRef()); it is used instead of the
+  // panel's field, and forgotten once its consumer has finished.
+  function submitPinUnlock(heldPin) {
+    var held = Model.heldSecretName(heldPin) ? String(heldPin) : ""
     if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
     // As for the password: the PIN's result is discarded unless locked.
     if (status !== "locked") {
@@ -4460,19 +4929,20 @@ Item {
     }
     // The unlock floor, not the setup one: a PIN set before the floor was
     // raised still has to work.
-    if (String(pinEntry || "").length < Model.pinUnlockMinLength()) {
+    if (!held && String(pinEntry || "").length < Model.pinUnlockMinLength()) {
       pinUnlockError = "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
       return
     }
     pinUnlockError = ""
     pinBusy = true
     pinUnlockSubmitted = true
+    heldPinName = Model.heldSecretName(held)
     if (quickUnlockAvailable && accountId && envelopeSummary && envelopeSummary.pin) {
       var env = {}
-      env[Model.pinEnvVar()] = String(pinEntry || "")
+      env[Model.pinEnvVar()] = held || String(pinEntry || "")
       queueEnvelopeJob({
         command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
-        env: env, secretOutput: true, holdOutput: true,
+        env: env, secretOutput: true, holdOutput: true, unlock: true,
         onDone: function(code, out) { root.onEnvelopePinResult(code, out) }
       })
       return
@@ -4487,7 +4957,9 @@ Item {
     var accepting = pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"
     pinUnlockSubmitted = false
     pinBusy = false
-    if (!accepting) return
+    // The PIN has done its work, right or wrong.
+    var viaPinentry = releaseHeldPin()
+    if (!accepting) { forgetHeldPassword(out); return }
     if (code === 0 && out) {
       pinAttempts = 0
       pinFromEnvelope = true
@@ -4497,6 +4969,7 @@ Item {
     }
     if (code === 3) {
       countWrongPin()
+      if (viaPinentry) retryPinentryPin()
       return
     }
     pinEntry = ""
@@ -4521,20 +4994,28 @@ Item {
     var accepting = pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"
     pinUnlockSubmitted = false
     pinBusy = false
+    var heldPin = heldPinName
     if (!accepting) {
+      releaseHeldPin()
+      forgetHeldPassword(password)
       clearProcessCollectorSoon(pinUnlockProc)
       return
     }
     var pw = String(password || "")
 
     if (exitCode !== 0 || !pw) {
+      var viaPinentry = releaseHeldPin()
       countWrongPin()
+      if (viaPinentry) retryPinentryPin()
       return
     }
 
     // A legacy blob: keep the PIN until this unlock settles, to migrate it.
+    // A PIN held by the helper stays held until then (migrateLegacyPin()
+    // or onUnlockOutput() forget it).
     pinAttempts = 0
-    pendingPinForMigration = String(pinEntry || "")
+    pendingPinForMigration = heldPin ? Model.heldSecretRef(heldPin) : String(pinEntry || "")
+    heldPinName = ""
     pendingUnlockFrom = "pin"
     unlockVaultWithPassword(pw)
   }
@@ -4936,7 +5417,7 @@ Item {
   function openEnvelopeForFingerprint() {
     queueEnvelopeJob({
       command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "fingerprint" }),
-      secretOutput: true, holdOutput: true,
+      secretOutput: true, holdOutput: true, unlock: true,
       onDone: function(code, out) {
         if (code === 0 && out) {
           root.fingerprintFromEnvelope = true
@@ -4963,6 +5444,7 @@ Item {
   function onFingerprintPasswordRetrieved(raw) {
     if (!fingerprintAuthorized || !sshAuthSurfaceActive || status !== "locked") {
       fingerprintAuthorized = false
+      forgetHeldPassword(raw)
       clearProcessCollectorSoon(keyringLookupMasterProc)
       return
     }
@@ -5106,6 +5588,271 @@ Item {
   }
 
   // -------------------------------------------------------------------------
+  // Typed secrets in pinentry
+  // -------------------------------------------------------------------------
+  //
+  // The master password (unlock, re-prompt) and the PIN are typed into
+  // `pinentry`, a separate process, not into the panel: a string typed into
+  // the shell stays in its heap after it is cleared and lands in a shell core
+  // dump. The pinentry runs through the vault helper (Model.pinentryCommand()),
+  // which holds what was typed under a name; the shell sees only that name,
+  // and uses it like the password a quick-unlock method produced
+  // (Model.heldSecretRef()). Not available without the helper: while it is
+  // starting, restarting or left stopped the panel waits for it rather than
+  // offer its own field, which is used only where Model.typedSecretEntry()
+  // says (pinentry off, missing or declined, or the vault held in the shell
+  // as allowVaultWithoutHelper allows). Email login and the item forms are
+  // not covered.
+  //
+  // Set only by a probe that ran to its end and found no such program
+  // (Model.pinentryProbeMissing()): a probe killed or still running leaves
+  // pinentry offered, for the same reason as below.
+  property bool pinentryMissing: false
+  onPinentryMissingChanged: resetPinentryChoice()
+  // A run that failed (no display, a pinentry that needs a terminal, a helper
+  // that predates the capture, or a pinentry another program killed) is not
+  // remembered: the next attempt opens pinentry again, and the notice offers
+  // the panel's field. That field is used only once the user picks it
+  // (declinePinentry()), and only until the panel closes or the vault locks
+  // or unlocks. Remembering the failure would let any program running as you
+  // kill pinentry once and have the master password typed into the shell.
+  property bool pinentryDeclined: false
+  property string pinentryNotice: ""
+  // "pinentry", "wait" (for the vault helper; no field meanwhile) or "field".
+  readonly property string typedSecretEntry: Model.typedSecretEntry({ usePinentry: usePinentry,
+    missing: pinentryMissing, declined: pinentryDeclined, helperState: vaultHelperState })
+  readonly property bool pinentryAvailable: typedSecretEntry === "pinentry"
+  // Between the panel hiding for pinentry and pinentry's answer.
+  property bool pinentryActive: false
+  property var pinentryRun: null
+  property var pinentryView: null
+  property bool pinentryWasOpen: false
+  // The panel showing again after pinentry: a resume, not a fresh open.
+  property bool pinentryReturning: false
+  // Pinentry was opened for the unlock form on this showing (on its own for a
+  // default PIN or password method, or by picking one). Coming back from
+  // pinentry, cancelled or not, does not open it again; a real close of the
+  // panel, or the end of an SSH unlock request, does.
+  property bool pinentryAutoAsked: false
+
+  onSshUnlockRequestChanged: {
+    if (sshUnlockRequest !== null || pinentryActive) return
+    pinentryAutoAsked = false
+    resetPinentryChoice()
+  }
+  // The helper's names for what was typed, while it is in use.
+  property string pinentryMasterName: ""
+  property string heldPinName: ""
+
+  onPinentryProgramNameChanged: {
+    resetPinentryChoice()
+    probePinentry()
+  }
+
+  onUsePinentryChanged: resetPinentryChoice()
+
+  // Pinentry again for the next secret, with no notice.
+  function resetPinentryChoice() {
+    pinentryDeclined = false
+    pinentryNotice = usePinentry && pinentryMissing
+      ? "Pinentry is not installed. Typed here, it stays in the shell's memory until the shell restarts." : ""
+  }
+
+  // The user picked the panel's field after pinentry failed.
+  function declinePinentry() {
+    if (pinentryActive) return
+    pinentryDeclined = true
+    pinentryNotice = "Typed here, it stays in the shell's memory until the shell restarts."
+  }
+
+  function probePinentry() {
+    if (pinentryProbeProc.running) pinentryProbeProc.running = false
+    pinentryProbeProc.command = Model.pinentryProbeCommand(pinentryProgramName)
+    pinentryProbeProc.running = true
+  }
+
+  // Runs pinentry for `purpose` ("unlock", "pin", "reprompt"), with `error`
+  // shown above the field on a retry. `done({ state, name })`: state is "ok"
+  // (the helper holds the answer as `name`), "cancelled", "empty", "failed" or
+  // "unavailable" (not run). The panel is hidden meanwhile so pinentry can
+  // take the keyboard, and shown again after `done` returns, unless `done`
+  // asked again.
+  function requestPinentry(purpose, error, done) {
+    if (!pinentryAvailable || pinentryRun !== null || pinentryProc.running || pinentryProc.runId !== 0) {
+      done({ state: "unavailable", name: "" })
+      return
+    }
+    var name = newHeldName()
+    pinentryRun = { purpose: purpose, name: name, done: done }
+    beginPinentry()
+    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, {
+      title: "Bitwarden",
+      description: Model.pinentryDescription(purpose, userEmail),
+      prompt: Model.pinentryPrompt(purpose),
+      error: error,
+      // The unlock's own floor, as for the field: a shorter PIN is asked for
+      // again, not counted as a wrong attempt.
+      minLength: purpose === "pin" ? Model.pinUnlockMinLength() : 0
+    })
+    pinentryProc.capture = "pinentry:" + name
+    pinentryProc.running = true
+  }
+
+  function onPinentryExited(exitCode, held, stderrText) {
+    var run = pinentryRun
+    pinentryRun = null
+    // Cancelled meanwhile. cancelPinentry() forgot the name, but pinentry may
+    // have been answering: the helper then kept the answer after that.
+    if (!run) {
+      if (held) forgetVaultSecret(String(pinentryProc.capture).slice("pinentry:".length))
+      return
+    }
+    var E = Model.pinentryExitCodes()
+    var state = "failed"
+    if (exitCode === 0 && held) state = "ok"
+    // A cancel prints nothing; a helper that stopped says so on stderr.
+    else if (exitCode === E.cancelled && String(stderrText || "").trim() === "") state = "cancelled"
+    else if (exitCode === E.empty) state = "empty"
+    else if (exitCode === E.short) state = "short"
+    if (state !== "ok") forgetVaultSecret(run.name)
+    // Not remembered (see pinentryDeclined): the user picks the field.
+    pinentryNotice = state === "failed" ? Model.pinentryFailedNotice() : ""
+    run.done({ state: state, name: run.name })
+    // Unless done() asked again.
+    if (pinentryRun === null) endPinentry()
+  }
+
+  // Hides the panel, which holds the keyboard, until the answer is in. Not a
+  // close: nothing is abandoned (see onOpenedChanged).
+  function beginPinentry() {
+    if (pinentryActive) return
+    pinentryActive = true
+    pinentryWasOpen = opened
+    if (!opened) return
+    pinentryView = presenter
+    eachView(function(view) { view.hidePopout() })
+  }
+
+  function endPinentry() {
+    if (!pinentryActive) return
+    pinentryActive = false
+    var show = pinentryWasOpen && !opened && pinentryView !== null
+    pinentryWasOpen = false
+    var view = pinentryView
+    pinentryView = null
+    if (!show) return
+    pinentryReturning = true
+    view.showPopout()
+  }
+
+  // The panel showing again after pinentry resumes where it was; that is not
+  // a fresh open. Whether this was one.
+  function resumeFromPinentry() {
+    if (!pinentryReturning) return false
+    pinentryReturning = false
+    restoreScreenFocus()
+    return true
+  }
+
+  // Stops a pinentry in progress and forgets what it answered; the vault
+  // locked or was left, another method unlocked it, or the panel was asked
+  // for. The flow that asked hears "cancelled", once (its run is gone, so the
+  // exit that follows answers nobody): the re-prompt waits on it.
+  function cancelPinentry() {
+    var run = pinentryRun
+    pinentryRun = null
+    if (pinentryProc.running) pinentryProc.running = false
+    if (run) {
+      forgetVaultSecret(run.name)
+      run.done({ state: "cancelled", name: run.name })
+    }
+    endPinentry()
+  }
+
+  // The unlock screen's action: the master password, typed into pinentry.
+  function unlockWithPinentry(error) {
+    if (status !== "locked") {
+      errorMessage = "Still checking the vault. Try again in a moment."
+      return
+    }
+    if (isUnlocking || pinentryActive) return
+    requestPinentry("unlock", error || "", function(r) {
+      if (r.state === "ok") {
+        pendingUnlockFrom = ""
+        pinentryMasterName = r.name
+        root.unlockVaultWithPassword(Model.heldSecretRef(r.name))
+      } else if (r.state === "empty") {
+        root.errorMessage = "Master password required"
+      }
+    })
+  }
+
+  // The same for the PIN; submitPinUnlock() judges it.
+  function unlockPinWithPinentry(error) {
+    // requestPinentry() refuses a second run; this also asks again from
+    // inside an answer (a short PIN), while the panel is still hidden.
+    if (!sshAuthSurfaceActive || !pinReady || isUnlocking || pinBusy) return
+    if (status !== "locked") {
+      pinUnlockError = "Still checking the vault. Try again in a moment."
+      return
+    }
+    requestPinentry("pin", error || "", function(r) {
+      if (r.state === "ok") {
+        root.submitPinUnlock(Model.heldSecretRef(r.name))
+        // Not taken up (the vault stopped being locked meanwhile).
+        if (!root.pinUnlockSubmitted) root.forgetVaultSecret(r.name)
+      } else if (r.state === "empty") {
+        root.pinUnlockError = "Enter your PIN."
+      } else if (r.state === "short") {
+        root.pinUnlockError = "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
+        root.unlockPinWithPinentry(root.pinUnlockError)
+      }
+    })
+  }
+
+  // A wrong PIN typed into pinentry: ask again with the count shown, while
+  // PIN unlock is still offered.
+  function retryPinentryPin() {
+    if (pinReady && status === "locked") Qt.callLater(function() { root.unlockPinWithPinentry(root.pinUnlockError) })
+  }
+
+  // The PIN the helper holds for the unlock in flight, forgotten; whether
+  // there was one.
+  function releaseHeldPin() {
+    var name = heldPinName
+    heldPinName = ""
+    if (!name) return false
+    forgetVaultSecret(name)
+    return true
+  }
+
+  // The re-prompt's confirmation: the master password, typed into pinentry,
+  // judged by submitReprompt(). A wrong one asks again.
+  function submitRepromptWithPinentry(error) {
+    if (!repromptPending || repromptBusy) return
+    var id = repromptItemId
+    var epoch = repromptEpoch
+    repromptBusy = true
+    requestPinentry("reprompt", error || "", function(r) {
+      var current = root.repromptPending && root.repromptItemId === id && root.repromptEpoch === epoch
+      if (current) root.repromptBusy = false
+      if (r.state !== "ok") {
+        if (current && r.state === "failed") root.repromptError = Model.pinentryFailedNotice()
+        else if (current && r.state === "empty") root.repromptError = "Enter your master password."
+        return
+      }
+      if (!current) {
+        root.forgetVaultSecret(r.name)
+        return
+      }
+      root.submitReprompt(Model.heldSecretRef(r.name), function(outcome) {
+        root.forgetVaultSecret(r.name)
+        if (outcome === "wrong") root.submitRepromptWithPinentry("That is not your master password.")
+      })
+    })
+  }
+
+  // -------------------------------------------------------------------------
   // Unlock and lock
   // -------------------------------------------------------------------------
 
@@ -5147,11 +5894,26 @@ Item {
       fingerprintFromEnvelope = false
       onUnlockSuccess(out)
     } else {
+      // A master password typed into pinentry that `bw` refused: forgotten,
+      // and asked for again. Any other failure is shown as it is.
+      var askAgain = pinentryMasterName !== "" && Model.isWrongMasterPassword(err)
+      pinentryMasterName = ""
       var fromEnvelope = (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope)
         || (pendingUnlockFrom === "pin" && pinFromEnvelope)
         || (pendingUnlockFrom === "fido" && fidoFromEnvelope)
-      if (!fromEnvelope) pendingUnlockPassword = ""
+      // A held password stays only where a re-seal needs it
+      // (rotationOldPassword, below); otherwise nothing uses it again.
+      if (!fromEnvelope) {
+        forgetHeldPassword(pendingUnlockPassword)
+        pendingUnlockPassword = ""
+      }
+      forgetHeldPassword(pendingPinForMigration)
       pendingPinForMigration = ""
+      if (askAgain && pendingUnlockFrom === "") {
+        Qt.callLater(prepareUnlock)
+        unlockWithPinentry("That is not your master password.")
+        return
+      }
       // A stored secret the vault rejects: say which method went stale.
       if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
         // Changed elsewhere: keep the method and remember the old password so
@@ -5218,11 +5980,13 @@ Item {
         return
       }
       if (err.indexOf("not logged in") !== -1) {
+        followVaultClosedInSshAgent("unauthenticated")
         status = "unauthenticated"
         currentScreen = "login"
         errorMessage = "You are not logged in. Please log in below."
       } else {
-        errorMessage = err || "Unlock failed: invalid master password"
+        errorMessage = Model.isWrongMasterPassword(err) ? "That is not your master password."
+          : (Model.bwErrorText(err) || "Unlock failed: invalid master password")
         Qt.callLater(prepareUnlock)
       }
     }
@@ -5236,7 +6000,13 @@ Item {
     syncLoginFieldsToState()
     isUnlocking = false
     unlockSubmitted = false
+    pinentryMasterName = ""
+    // Another method unlocked the vault while pinentry was asking.
+    cancelPinentry()
+    resetPinentryChoice()
     if (!s) {
+      forgetHeldPassword(pendingUnlockPassword)
+      forgetHeldPassword(pendingPinForMigration)
       errorMessage = "Unlock did not return a session key"
       return
     }
@@ -5255,12 +6025,22 @@ Item {
     // A typed password `bw` accepted is the only source of the stored one;
     // this also re-seals after a change made elsewhere.
     if (pendingUnlockPassword && pendingUnlockFrom === "") {
-      storeAcceptedMasterPassword(pendingUnlockPassword)
+      // A password typed into pinentry is held by the helper: forgotten
+      // once the stored copy has been dealt with.
+      storeAcceptedMasterPassword(pendingUnlockPassword, forgetHeldAfter(pendingUnlockPassword))
     } else {
+      forgetHeldPassword(rotationOldPassword)
       rotationOldPassword = ""
     }
+    // The unlock is done with a password a quick-unlock method produced: drop
+    // it now, unless the legacy PIN migration still has to use it (it forgets
+    // it and the PIN when it ends). A typed password (from === "") is used by
+    // the re-seal above, which forgets it when it ends.
     if (pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword) {
       migrateLegacyPin(pendingUnlockPassword, pendingPinForMigration)
+    } else {
+      if (pendingUnlockFrom !== "") forgetHeldPassword(pendingUnlockPassword)
+      forgetHeldPassword(pendingPinForMigration)
     }
     pendingPinForMigration = ""
     pinFromEnvelope = false
@@ -5402,6 +6182,10 @@ Item {
   function dropVaultState() {
     initialSyncAttempted = false
     pinUnlockSubmitted = false
+    cancelEnvelopeUnlockJobs()
+    // A question for the old vault's password is no longer wanted.
+    cancelPinentry()
+    resetPinentryChoice()
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAttachmentDownloads()
@@ -5914,10 +6698,24 @@ Item {
     // A confirmed re-prompt lasts while its item's detail is open, and the
     // edit form (and a generator trip from it) is part of that.
     // A prompt still waiting was for the screen being left.
-    var inItem = currentScreen === "detail" || currentScreen === "edit"
-      || (currentScreen === "generator" && generatorReturnScreen === "edit")
+    // An SSH approval shown in the panel covers the screen it came over and
+    // returns to it, so the item and its form are judged by that screen.
+    var screen = currentScreen === "sshApproval" ? screenBeforeSshApproval : currentScreen
+    var inItem = screen === "detail" || screen === "edit"
+      || (screen === "generator" && generatorReturnScreen === "edit")
     if (repromptPending) cancelReprompt()
-    if (!inItem) repromptVerifiedId = ""
+    if (!inItem) {
+      clearRepromptGrant()
+      liveTotp = ""
+    } else if (screen === "detail") {
+      // Back from the edit form: the whole item it loaded goes.
+      withholdDetailSecrets()
+    }
+    // The edit form's copy of the item, a typed or generated password
+    // included, goes with the form.
+    if (screen !== "edit" && !(screen === "generator" && generatorReturnScreen === "edit")) {
+      resetItemForm()
+    }
     restoreScreenFocus()
   }
 
@@ -6046,9 +6844,6 @@ Item {
     }
   }
 
-  // The item whose detail the helper was asked for (openDetail()).
-  property string detailRequestedId: ""
-
   function openDetail(item) {
     closeFilterGroup()
     if (!item || !item.id) return
@@ -6082,23 +6877,20 @@ Item {
         return
       }
       if (item.secretsHeld && vaultHelperActive) {
-        // The helper has the whole item; only this one comes here. An answer
-        // for an item no longer being opened is dropped.
-        var id = String(item.id)
-        detailRequestedId = id
-        vaultQuery("item", { id: id }, function(ok, full) {
-          if (root.detailRequestedId !== id || root.currentScreen !== "detail") return
-          root.detailRequestedId = ""
-          root.onDetailFinished(ok ? String(full) : "")
-        })
+        // Nothing secret: the row's own fields. Each secret is asked of the
+        // helper when it is revealed or copied.
+        isLoading = false
+        detailItem = Model.publicItemDetail(item)
       } else {
         getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
         getItemProc.running = true
       }
     }
 
-    // The TOTP is time-based, so it is fetched alongside.
-    if (item.hasTotp) {
+    // The TOTP is time-based, so it is fetched alongside. The helper computes
+    // it; the key does not come here. A re-prompt item's code is fetched when
+    // it is revealed or copied.
+    if (item.hasTotp && !itemNeedsReprompt(item)) {
       fetchTotp(item.id)
     }
   }
@@ -6316,7 +7108,7 @@ Item {
 
   function applyTotpCode(itemId, code) {
     var c = String(code || "").trim()
-    if (detailItem && detailItem.id === itemId) liveTotp = c
+    if (detailItem && detailItem.id === itemId && totpWanted(detailItem)) liveTotp = c
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
       totpFollowupCode = c
     }
@@ -6659,8 +7451,10 @@ Item {
       errorMessage = "Still saving this item -- one moment"
       return
     }
-    // The form shows the password and TOTP secret.
-    withReprompt(item, function() { root.startEditItemNow(item) })
+    // The form shows the password and TOTP secret, from the whole item.
+    withRevealedDetail(item, function() {
+      if (root.detailItem && String(root.detailItem.id) === String(item.id)) root.startEditItemNow(root.detailItem)
+    })
   }
 
   function startEditItemNow(item) {
@@ -6705,6 +7499,12 @@ Item {
   function saveItemForm() {
     if (pendingSave) {
       errorMessage = "Still saving " + pendingSave.name + " -- one moment"
+      return
+    }
+
+    // The public view of a re-prompt item has no raw item to write back.
+    if (formIsEditing && detailItem && detailItem.secretsWithheld) {
+      errorMessage = "Open the item again to save it"
       return
     }
 
@@ -6845,6 +7645,9 @@ Item {
 
     var removal = pendingDelete
     pendingDelete = null
+    // Gone from the vault, whatever the panel has done since: no reload
+    // follows, so the helper would keep its secrets and go on serving them.
+    if (exitCode === 0 && removal) forgetVaultItem(removal.id)
     if (vaultReadIsStale("itemDelete")) return
 
     if (exitCode === 0) {
@@ -7195,6 +7998,14 @@ Item {
     withReprompt(item, function() { root.copyTotpCodeNow(item) })
   }
 
+  // The detail screen's TOTP copy: the code of a re-prompt item is fetched
+  // after the prompt.
+  function copyDetailTotp() {
+    var item = detailItem
+    if (!item || !item.hasTotp) return
+    withReprompt(item, function() { root.copyTotpCodeNow(item) })
+  }
+
   function copyTotpCodeNow(item) {
     closeFilterGroup()
     if (!item || !Model.isLoginItem(item)) return
@@ -7215,7 +8026,7 @@ Item {
     var resolved = Model.normalizeOpenableUrl(url)
     if (!resolved.ok) {
       errorMessage = resolved.reason === "ambiguous"
-        ? "Refusing to open an ambiguous link containing a backslash"
+        ? "Refusing to open an ambiguous link (backslash, space or control character)"
         : resolved.scheme
         ? ("Refusing to open a " + resolved.scheme + ": link -- only http and https are opened")
         : "That item has no link to open"
@@ -7628,7 +8439,8 @@ Item {
       var sec = 30 - (Math.floor(Date.now() / 1000) % 30)
       root.totpSecRemaining = sec
       if (sec === 30) {
-        if (root.currentScreen === "detail" && root.detailItem && root.detailItem.hasTotp) {
+        if (root.currentScreen === "detail" && root.detailItem && root.detailItem.hasTotp
+            && root.totpWanted(root.detailItem)) {
           root.fetchTotp(root.detailItem.id)
         } else if (root.totpFollowupActive && root.totpFollowupItem) {
           root.fetchTotp(root.totpFollowupItem.id)
@@ -7889,6 +8701,25 @@ Item {
     }
   }
 
+  // ---- pinentry ----
+  //
+  // The Assuan client script runs in the vault helper; what it prints (the
+  // answer) is decoded and held there, so nothing typed comes back here.
+
+  VaultProcess {
+    id: pinentryProc
+    vault: root
+    session: false
+    stderr: VaultCollector { id: pinentryStderr; waitForEnd: true }
+    onExited: function(exitCode) { root.onPinentryExited(exitCode, pinentryProc.outputHeld, pinentryStderr.text) }
+  }
+
+  Process {
+    id: pinentryProbeProc
+    stdout: StdioCollector { id: pinentryProbeOut; waitForEnd: true }
+    onExited: function(exitCode) { root.pinentryMissing = Model.pinentryProbeMissing(exitCode, pinentryProbeOut.text) }
+  }
+
   // ---- Legacy PIN blob ----
   //
   // Decrypted in one process with the PIN from the environment, so only the
@@ -7899,7 +8730,7 @@ Item {
     vault: root
     session: false
     command: Model.pinUnlockCommand(root.activeSlot)
-    environment: root.pinEnv(root.pinEntry)
+    environment: root.pinEnv(root.heldPinName ? Model.heldSecretRef(root.heldPinName) : root.pinEntry)
     stdout: VaultCollector { id: pinUnlockStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (root.finishScrubRun(pinUnlockProc)) return
@@ -8484,6 +9315,29 @@ Item {
         presenter: root.presenter.screenName,
         focusedScreen: root.focusedScreen,
         screens: screens
+      })
+    }
+    // Read-only desktop diagnostics. No field values, account identifiers,
+    // item names, device identifiers or authentication errors are returned.
+    function desktopState(): string {
+      var views = []
+      for (var i = 0; i < root.views.length; i++) {
+        var view = root.views[i]
+        views.push(typeof view.focusState === "function" ? view.focusState() : null)
+      }
+      return JSON.stringify({
+        status: root.status,
+        screen: root.currentScreen,
+        opened: root.opened,
+        pinentryActive: root.pinentryActive,
+        unlocking: root.isUnlocking,
+        typedSecretEntry: root.typedSecretEntry,
+        pinReady: root.pinReady,
+        fingerprintReady: root.fingerprintReady,
+        fidoReady: root.fidoReady,
+        fingerprintScanning: root.fingerprintScanning,
+        fidoScanning: root.fidoScanning,
+        views: views
       })
     }
     // Non-secret SSH agent diagnostics: no keys, fingerprints or paths.

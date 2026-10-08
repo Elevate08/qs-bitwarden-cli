@@ -36,12 +36,12 @@ check("so do SSH key rows and their details",
 // --- the gate, run against a stand-in vault ------------------------------------------
 
 const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submitReprompt", "cancelReprompt",
-  "clearRepromptGrant"]
+  "clearRepromptGrant", "withholdDetailSecrets"]
 function makeVault() {
   const v = {
     repromptPending: false, repromptItemId: "", repromptItemName: "", repromptError: "", repromptBusy: false,
     repromptCallback: null, repromptEpoch: -1, repromptVerifiedId: "", repromptActionId: "",
-    detailItem: null, status: "unlocked", vaultEpoch: 7,
+    detailItem: null, status: "unlocked", vaultEpoch: 7, vaultHelperActive: false,
     checks: [], answer: null,
     // The password check answers when the test says so.
     verifyMasterPassword(pw, done) { v.checks.push(pw); v.answer = done }
@@ -131,13 +131,15 @@ const mail = { id: "p0", name: "Mail", reprompt: 0 }
 // --- what is gated, and when the confirmation is forgotten -----------------------------
 
 for (const [fn, now] of [["copyPassword", "copyPasswordNow"], ["copyTotpCode", "copyTotpCodeNow"],
-                         ["startEditItem", "startEditItemNow"], ["deleteCurrentItem", "deleteCurrentItemNow"],
+                         ["deleteCurrentItem", "deleteCurrentItemNow"],
                          ["handleSmartEnter", "smartCopy"]]) {
   check(`${fn} goes through the re-prompt`,
     new RegExp(`withReprompt\\([^,]+, function\\(\\) \\{[^}]*${now}\\(`).test(body(fn)), body(fn))
 }
+check("editing goes through it, on the whole item",
+  /withRevealedDetail\(item, function\(\) \{[^]*?startEditItemNow\(/.test(body("startEditItem")), body("startEditItem"))
 check("revealing a field goes through it; hiding one does not",
-  /if \(!revealedFields\[key\] && detailItem\) \{\s*withReprompt\(detailItem/.test(body("toggleFieldReveal")),
+  /if \(isFieldRevealed\(key\)\) \{[^]*?return\s*\}\s*withReprompt\(item, function\(\) \{ root\.revealField\(item, key\)/.test(body("toggleFieldReveal")),
   body("toggleFieldReveal"))
 check("the TOTP that follows Enter's copy is not asked for again",
   /totpFollowupActive && totpFollowupItem && totpFollowupItem\.id === item\.id\) \{\s*copyTotpCodeNow\(item\)/.test(body("copyTotpCode"))
@@ -148,7 +150,7 @@ check("closing the panel forgets it",
   /clearRepromptGrant\(\)/.test(src.slice(src.indexOf("onOpenedChanged:"), src.indexOf("onOpenedChanged:") + 200)), "")
 const screen = src.slice(src.indexOf("onCurrentScreenChanged:"), src.indexOf("onCurrentScreenChanged:") + 1400)
 check("leaving the item (detail, its edit form, a generator trip from it) forgets it",
-  /if \(!inItem\) repromptVerifiedId = ""/.test(screen) && /if \(repromptPending\) cancelReprompt\(\)/.test(screen), screen)
+  /if \(!inItem\) \{\s*clearRepromptGrant\(\)/.test(screen) && /if \(repromptPending\) cancelReprompt\(\)/.test(screen), screen)
 check("opening another item forgets it",
   /String\(item\.id\) !== repromptVerifiedId\) clearRepromptGrant\(\)/.test(body("openDetail")), body("openDetail"))
 check("Escape dismisses a waiting prompt first",

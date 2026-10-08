@@ -251,9 +251,10 @@ jobs:
           pacman-key --populate archlinux
           # diffutils: the envelope's write check compares with `cmp`, which
           # every desktop has but the bare image does not.
-          pacman -Syu --noconfirm --needed quickshell argon2 jq nodejs diffutils
+          # openssh: ssh-keygen, the SSH agent test's client.
+          pacman -Syu --noconfirm --needed quickshell argon2 jq nodejs diffutils openssh dbus gnome-keyring libsecret
           # Log what was installed, so behaviour changes can be traced.
-          pacman -Q quickshell qt6-declarative nodejs argon2 jq diffutils
+          pacman -Q quickshell qt6-declarative nodejs argon2 jq diffutils openssh dbus gnome-keyring libsecret
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -265,6 +266,12 @@ jobs:
           useradd --create-home e2e
           # Read-only use of the checkout: the tests write only under /tmp.
           runuser -u e2e -- node tests/e2e/accounts.e2e.js
+          runuser -u e2e -- node tests/e2e/ssh-lock.e2e.js
+          runuser -u e2e -- node tests/e2e/legacy-pin-cancel.e2e.js
+          runuser -u e2e -- node tests/e2e/lock-on-unload.e2e.js
+          runuser -u e2e -- node tests/e2e/helper-stops.e2e.js
+          # Private bus and disposable keyring; never the runner's user keyring.
+          runuser -u e2e -- node tests/desktop/keyring.integration.js --require
 
   javascript:
     name: panel tests

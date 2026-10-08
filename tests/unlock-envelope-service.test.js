@@ -30,7 +30,7 @@ const callers = service.split("\n").filter(l => !/^\s*\/\//.test(l))
   .join("\n").match(/storeAcceptedMasterPassword\(/g).length
 const unlockSuccess = bodyOf("onUnlockSuccess")
 check("a typed, accepted password reaches the writer from the unlock path",
-  /if \(pendingUnlockPassword && pendingUnlockFrom === ""\) \{\s*storeAcceptedMasterPassword\(pendingUnlockPassword\)/
+  /if \(pendingUnlockPassword && pendingUnlockFrom === ""\) \{[\s\S]{0,200}?storeAcceptedMasterPassword\(pendingUnlockPassword[,)]/
     .test(unlockSuccess), unlockSuccess)
 check("a quick unlock's password never does",
   !/pendingUnlockFrom === "(pin|fingerprint|fido)"[\s\S]{0,120}storeAcceptedMasterPassword/.test(service),
@@ -90,10 +90,34 @@ check("without it, fingerprint's wrap can supply the key",
 check("otherwise the envelope is only marked stale, and nothing is dropped",
   /kind: "mark-stale"/.test(writer) && !/remove/.test(writer), writer)
 check("the held old password is taken once, and cleared when no typed unlock uses it",
-  /var oldPassword = rotationOldPassword\s*\n\s*rotationOldPassword = ""/.test(writer)
-    && /\} else \{\s*rotationOldPassword = ""/.test(unlockSuccess)
+  /oldPassword = rotationOldPassword\s*\n\s*rotationOldPassword = ""/.test(writer)
+    && /\} else \{\s*forgetHeldPassword\(rotationOldPassword\)\s*rotationOldPassword = ""/.test(unlockSuccess)
     && /rotationOldPassword = ""/.test(bodyOf("dropEnvelopeState")),
   writer.slice(0, 400))
+
+// A master password a quick unlock produced is held by reference; it goes once
+// nothing needs it.
+check("a held reference is forgotten by name, and plain text is left alone",
+  /var name = Model\.heldSecretName\(value\)\s*if \(name\) forgetVaultSecret\(name\)/.test(bodyOf("forgetHeldPassword")),
+  bodyOf("forgetHeldPassword"))
+check("a quick unlock's password is forgotten when the unlock succeeds, unless the legacy PIN migration still needs it",
+  /migrateLegacyPin\(pendingUnlockPassword, pendingPinForMigration\)\s*\} else \{\s*if \(pendingUnlockFrom !== ""\) forgetHeldPassword\(pendingUnlockPassword\)/.test(unlockSuccess),
+  unlockSuccess)
+check("the legacy PIN migration forgets it when it ends, on every path",
+  /!quickUnlockAvailable\) \{\s*forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin"))
+    && /onDone: function\(code\) \{\s*root\.forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin"))
+    && /function\(\) \{\s*root\.forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin")),
+  bodyOf("migrateLegacyPin"))
+check("a refused unlock forgets the password, except the one kept for a re-seal",
+  /if \(!fromEnvelope\) \{\s*forgetHeldPassword\(pendingUnlockPassword\)\s*pendingUnlockPassword = ""/.test(unlockOutput)
+    && /rotationOldPassword = pendingUnlockPassword/.test(unlockOutput),
+  unlockOutput)
+check("the kept old password is forgotten when the re-seal ends",
+  /var finish = function\(ok\) \{\s*root\.forgetHeldPassword\(oldPassword\)/.test(writer), writer)
+check("an unlock that returns no key, or whose password never reached bw, forgets it too",
+  /if \(!s\) \{\s*forgetHeldPassword\(pendingUnlockPassword\)/.test(unlockSuccess)
+    && /forgetHeldPassword\(pendingUnlockPassword\)\s*pendingUnlockPassword = ""\s*if \(unlockProc\.running\)/.test(bodyOf("onAuthPasswordWriterExited")),
+  "")
 
 // -------------------------------------------------------------------------
 // Review findings, 2026-09-22 (/code-review of release/1.10.1)
@@ -195,7 +219,7 @@ check("an envelope answer is only acted on for a live, submitted unlock",
   /pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"/.test(bodyOf("onEnvelopePinResult")),
   bodyOf("onEnvelopePinResult"))
 check("a legacy blob's PIN is held only until that unlock settles, then migrated",
-  /pendingPinForMigration = String\(pinEntry \|\| ""\)/.test(bodyOf("onPinUnlockResult"))
+  /pendingPinForMigration = heldPin \? [^\n]*: String\(pinEntry \|\| ""\)/.test(bodyOf("onPinUnlockResult"))
     && /pendingUnlockFrom === "pin" && !pinFromEnvelope && pendingPinForMigration && pendingUnlockPassword\) \{\s*migrateLegacyPin/
       .test(unlockSuccess)
     && /pendingPinForMigration = ""/.test(unlockSuccess)
@@ -275,8 +299,10 @@ check("turning FIDO2 off purges it from every account",
   /vault\.purgeQuickUnlockMethod\("fido"\)/.test(fidoArmed), fidoArmed)
 check("the purge names every account slot the panel holds",
   /accountRegistry\.accounts\[i\]\.slot/.test(bodyOf("accountSlotsForPurge"))
-    && /Model\.quickUnlockPurgeCommand\(envelopeTool\(\), accountSlotsForPurge\(\), method\)/.test(bodyOf("purgeQuickUnlockMethod"))
-    && /writes:\s*true/.test(bodyOf("purgeQuickUnlockMethod")),
+    && /var slots = accountSlotsForPurge\(\)/.test(bodyOf("purgeQuickUnlockMethod"))
+    && /queueQuickUnlockPurge\(slots, method,/.test(bodyOf("purgeQuickUnlockMethod"))
+    && /Model\.quickUnlockPurgeCommand\(envelopeTool\(\), slots, method\)/.test(bodyOf("queueQuickUnlockPurge"))
+    && /writes:\s*true/.test(bodyOf("queueQuickUnlockPurge")),
   bodyOf("purgeQuickUnlockMethod"))
 check("a purge asked for before the unlock tool is ready runs once it is",
   /pendingPurges/.test(bodyOf("purgeQuickUnlockMethod")) && /runPendingPurges\(\)/.test(bodyOf("envelopeReadinessChanged")),
@@ -295,7 +321,15 @@ check("a method just enabled is not taken for off while its setting write lands"
     && /noteQuickUnlockEnabled\("fingerprint"\)/.test(bodyOf("submitFingerprintSetup"))
     && /noteQuickUnlockEnabled\("fido"\)/.test(fidoSrc),
   reconcile)
-check("a removal is tried once per account and method, so a failure cannot loop",
-  /reconciledMethods\[key\]\) continue/.test(reconcile), reconcile)
+check("a method that is off is purged even with no envelope entry for it, which clears its legacy entry",
+  !/present/.test(reconcile) && !/summary/.test(reconcile)
+    && /if \(!quickUnlockSettingOff\(c\.setting\)\) continue/.test(reconcile)
+    && /queueQuickUnlockPurge\(\[activeSlot\], c\.method, key\)/.test(reconcile),
+  reconcile)
+check("an account with no envelope at all is reconciled too",
+  /code === Model\.envelopeExitCodes\(\)\.absent\) \{\s*root\.reconcileDisabledMethods\(\)/.test(refresh), refresh)
+check("successful cleanup is reconciled; retries of a failure have a bound",
+  /reconciledMethods\[key\]\) continue/.test(reconcile)
+    && /quickUnlockPurgeMaxAttempts/.test(bodyOf("queueQuickUnlockPurge")), reconcile)
 
 done()

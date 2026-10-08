@@ -9,12 +9,19 @@ import "plugin" as Plugin
 // target. Never loaded by a real shell: the plugin's entry points are
 // Panel.qml and Service.qml, and this file is neither.
 ShellRoot {
+  id: testRoot
+  property int legacyPinExitCode: -999
+  property bool legacyPinExitHeld: false
+  property var legacyPinFixtureProc: null
   QtObject {
     id: view
     property bool opened: false
     property string screenName: "TEST-1"
-    property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: true,
-                              autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false })
+    property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: Quickshell.env("QSBW_E2E_REMEMBER_SESSION") !== "0",
+                              autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false,
+                              sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1",
+                              allowVaultWithoutHelper: Quickshell.env("QSBW_E2E_ALLOW_NO_HELPER") === "1",
+                              pinentryProgram: Quickshell.env("QSBW_E2E_PINENTRY") || "" })
     function showPopout() { opened = true }
     function hidePopout() { opened = false }
     function focusField(name) {}
@@ -32,6 +39,22 @@ ShellRoot {
     Component.onCompleted: attachView(view)
   }
 
+  // Whether the vault helper holds a secret under a name ("held" or "none"),
+  // asked through the helper itself; the value never comes back.
+  QtObject {
+    id: heldCheck
+    property string result: ""
+  }
+
+  Plugin.VaultProcess {
+    id: heldCheckProc
+    vault: vault
+    session: false
+    command: ["bash", "-c", "if [ -n \"${QSBW_HELD:-}\" ]; then echo held; else echo none; fi"]
+    stdout: Plugin.VaultCollector { id: heldCheckOut; waitForEnd: true }
+    onExited: function(exitCode) { heldCheck.result = String(heldCheckOut.text).trim() }
+  }
+
   IpcHandler {
     target: "qsbwtest"
     function state(): string {
@@ -40,15 +63,36 @@ ShellRoot {
         email: vault.userEmail, accountId: vault.accountId, adding: vault.addingAccount,
         accounts: vault.accountRows, items: vault.items.map(function(i) { return i.name }),
         pinConfigured: vault.pinConfigured, pinReady: vault.pinReady,
+        legacyPin: { busy: vault.pinBusy, submitted: vault.pinUnlockSubmitted, attempts: vault.pinAttempts,
+                     exitCode: testRoot.legacyPinExitCode, outputHeld: testRoot.legacyPinExitHeld },
         envelope: vault.envelopeSummary ? { pin: !!vault.envelopeSummary.pin, account: vault.envelopeSummary.account } : null,
         quick: vault.quickUnlockAvailable, error: vault.errorMessage, pinError: vault.pinError,
         pinUnlockError: vault.pinUnlockError, logoutPending: vault.logoutPending, opened: vault.opened,
         logoutCliDone: vault.logoutCliDone, logoutCredentialsDone: vault.logoutCredentialsDone,
         clearPending: vault.allCredentialsClearPending,
         // What the shell itself holds: the vault helper keeps the rest.
-        helper: vault.vaultHelperState, sessionHeld: vault.session === vault.heldSessionMarker,
+        helper: vault.vaultHelperState, helperWarning: vault.vaultHelperWarning, sessionHeld: vault.session === vault.heldSessionMarker,
+        // Typed into pinentry, the shell never holds them: these stay empty.
+        typed: [vault.masterPassword, vault.pinEntry, vault.pendingUnlockPassword].join("|"),
+        pinentry: { available: vault.pinentryAvailable, missing: vault.pinentryMissing, declined: vault.pinentryDeclined,
+                    active: vault.pinentryActive, notice: vault.pinentryNotice,
+                    // Where the unlock form and the re-prompt take the typing:
+                    // "pinentry", "wait" or "field" (a plugin without
+                    // typedSecretEntry offered the field whenever pinentry was
+                    // not available).
+                    entry: vault.typedSecretEntry !== undefined ? vault.typedSecretEntry
+                      : (vault.pinentryAvailable ? "pinentry" : "field") },
+        reprompt: { pending: vault.repromptPending, busy: vault.repromptBusy, error: vault.repromptError },
+        // The name the pinentry in progress is held under, and checkHeld()'s answer.
+        pinentryName: vault.pinentryRun ? vault.pinentryRun.name : "", held: heldCheck.result,
+        // The open item's detail: whether it is the secret-free view, and
+        // which fields are revealed.
+        detail: vault.detailItem ? { name: vault.detailItem.name, withheld: vault.detailItem.secretsWithheld === true } : null,
+        revealed: Object.keys(vault.revealedFields),
         passwords: vault.items.map(function(i) { return i.password }),
-        hasPasswords: vault.items.map(function(i) { return i.hasPassword })
+        hasPasswords: vault.items.map(function(i) { return i.hasPassword }),
+        ssh: { phase: vault.sshAgentPhase, keys: vault.sshAgentKeyCount, prompt: vault.sshPrompt !== null, unlock: vault.sshUnlockRequest !== null,
+               screenChecked: vault.screenLockCheckedAt > 0 }
       })
     }
     function open(): void { vault.open() }
@@ -57,10 +101,63 @@ ShellRoot {
     }
     function unlock(pw: string): void { vault.masterPassword = pw; vault.unlockVault() }
     function lock(): void { vault.lockVault() }
+    // The banner's "check again", for a helper left stopped.
+    function retryHelper(): void { vault.retryVaultHelper() }
     function setPin(pin: string, pw: string): void {
       vault.beginPinSetup(); vault.pinSetupPin = pin; vault.pinSetupConfirm = pin; vault.pinSetupMaster = pw; vault.submitPinSetup()
     }
     function pinUnlock(pin: string): void { vault.pinEntry = pin; vault.submitPinUnlock() }
+    function beginLegacyPinForLateResult(): void {
+      vault.pinConfigured = true
+      vault.envelopeSummary = null
+      vault.pinEntry = "123456"
+      vault.submitPinUnlock()
+      testRoot.legacyPinFixtureProc = vault.vaultRuns[vault.vaultRunSeq]
+    }
+    // Reproduce a second UI action before a killed VaultProcess can finish.
+    // This target exists only in the disposable fixture, never in the plugin.
+    function cancelLegacyPinAndRetry(cleanup: string): string {
+      if (cleanup !== "late") beginLegacyPinForLateResult()
+      var proc = testRoot.legacyPinFixtureProc
+      if (!proc || proc.capture.indexOf("secret:") !== 0) return JSON.stringify({ started: false })
+      var capture = proc.capture
+      var runId = proc.runId
+      testRoot.legacyPinExitCode = -999
+      testRoot.legacyPinExitHeld = false
+      var onExit = function(code, status) {
+        testRoot.legacyPinExitCode = code
+        testRoot.legacyPinExitHeld = proc.outputHeld
+        proc.exited.disconnect(onExit)
+      }
+      proc.exited.connect(onExit)
+      if (cleanup === "late") {
+        // Fixture only: let the helper finish while Qt exit callbacks wait.
+        // Allow slow CI workers time for the real PBKDF2 decrypt. The test
+        // separately requires a successful, held result before cancellation.
+        var deadline = Date.now() + 8000
+        while (Date.now() < deadline) {}
+      }
+      vault.clearSshPopupUnlockState()
+      if (cleanup === "twice") vault.clearSshPopupUnlockState()
+      if (cleanup === "panel") vault.abandonAuthSecrets()
+      vault.pinEntry = "654321"
+      vault.submitPinUnlock()
+      return JSON.stringify({ started: runId > 0, stopped: !proc.running,
+        sameRun: proc.runId === runId, captureStable: proc.capture === capture,
+        busy: vault.pinBusy, submitted: vault.pinUnlockSubmitted, heldName: capture.slice(7) })
+    }
+    // The unlock screen's action, as the button runs it: pinentry takes the typing.
+    function unlockPinentry(): void { vault.unlockWithPinentry() }
+    function pinUnlockPinentry(): void { vault.unlockPinWithPinentry() }
+    // The re-prompt question's Confirm, as it runs with pinentry.
+    function repromptPinentry(): void { vault.submitRepromptWithPinentry() }
+    function checkHeld(name: string): void {
+      heldCheck.result = ""
+      heldCheckProc.inject = { QSBW_HELD: "secret:" + name }
+      heldCheckProc.running = true
+    }
+    // "Type it here instead", after pinentry failed.
+    function declinePinentry(): void { vault.declinePinentry() }
     function addAccount(): void { vault.beginAddAccount() }
     function cancelAdd(): void { vault.cancelAddAccount() }
     function switchTo(email: string): string {
@@ -70,5 +167,11 @@ ShellRoot {
     }
     function logout(): void { vault.logoutAccount() }
     function copyFirst(): void { vault.copyPassword(vault.items[0]) }
+    function openFirst(): void { vault.openDetail(vault.items[0]) }
+    function reveal(key: string): void { vault.toggleFieldReveal(key) }
+    function copyField(key: string): void { vault.copyDetailField(key, key) }
+    function approveSsh(seconds: int): void { vault.approveSshRequest(seconds) }
+    // A `bw status` check, as waking from sleep runs with the panel open.
+    function refresh(): void { vault.refreshStatus() }
   }
 }

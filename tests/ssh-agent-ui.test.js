@@ -158,6 +158,47 @@ const huge = Model.sshAgentPromptView(Object.assign({}, request, {
 check("an absurd key name is bounded", huge.keyName.length <= 256, String(huge.keyName.length))
 check("an absurd path is bounded", huge.processPath.length <= 512, String(huge.processPath.length))
 
+// Text that draws as nothing, or as something else, is written out. A path may
+// hold a newline, so a directory can end in a line that looks like the
+// requesting program.
+const spoofed = Model.sshAgentPromptView(Object.assign({}, request, {
+  processPath: "/home/u/x\n/usr/bin/ssh-keygen",
+  keyName: "prod\u202egnihtemos\u200b key\u0085",
+  operation: "sshsig", operationDetail: "git\u2066"
+}), 120)
+eq("a newline in a path is shown, not drawn", spoofed.processPath, "/home/u/x\\u000a/usr/bin/ssh-keygen")
+eq("the name beside it is the real executable", spoofed.processName, "ssh-keygen")
+eq("a direction override and zero-width space in a key name are shown",
+  spoofed.keyName, "prod\\u202egnihtemos\\u200b key\\u0085")
+check("the signature namespace is escaped too", spoofed.operationLabel.indexOf("\u2066") < 0
+  && spoofed.operationLabel.indexOf("\\u2066") >= 0, spoofed.operationLabel)
+const everyInvisible = Model.sshAgentPromptView(Object.assign({}, request, {
+  keyName: "\u0000\u001f\u007f\u009f\u200b\u200f\u2028\u202a\u202e\u2066\u2069\ufeff"
+}), 120)
+check("no control, bidi or zero-width character reaches the prompt",
+  !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/.test(everyInvisible.keyName),
+  JSON.stringify(everyInvisible.keyName))
+eq("ordinary text, including non-Latin, is left alone",
+  Model.sshAgentPromptView(Object.assign({}, request, { keyName: "Schl\u00fcssel \u9375" }), 120).keyName,
+  "Schl\u00fcssel \u9375")
+
+// A long path loses its beginning, never the executable.
+const longPath = "/" + "d".repeat(600) + "/bin/ssh-keygen"
+const longView = Model.sshAgentPromptView(Object.assign({}, request, { processPath: longPath }), 120)
+check("a long path keeps its end", longView.processPath.length === 512
+  && longView.processPath.charAt(0) === "\u2026" && longView.processPath.endsWith("/bin/ssh-keygen"),
+  longView.processPath.slice(-30))
+eq("the name is taken from the whole path", longView.processName, "ssh-keygen")
+const longName = Model.sshAgentPromptView(Object.assign({}, request, {
+  processPath: "/usr/bin/" + "n".repeat(600) + "/ssh"
+}), 120)
+eq("a name past the cut is still the real one", longName.processName, "ssh")
+const hiddenInGrant = Model.sshAgentGrantViews([
+  { grantId: 1, keyName: "k\n", fingerprint: "SHA256:x", pid: 1, processPath: "/a\n/b/ssh", expiresInSec: 5 }])
+check("a grant's path and key name are escaped",
+  hiddenInGrant[0].processPath === "/a\\u000a/b/ssh" && hiddenInGrant[0].keyName === "k\\u000a",
+  JSON.stringify(hiddenInGrant[0]))
+
 // The panel's countdown has to agree with the companion's deadline, or it
 // counts down to a moment nothing happens at.
 eq("the request deadline matches the companion's", Model.sshAgentRequestDeadlineMs(), 120000)
@@ -650,8 +691,8 @@ check("each method draws on its own, so only one is on screen",
     .every((name) => new RegExp(`visible: form\\.fieldsOffered && form\\.method === "${name}"`).test(unlockFormSrc)),
   unlockFormSrc)
 check("one Unlock Vault button submits whichever typed method is offered",
-  /visible: form\.fieldsOffered && form\.method !== "fingerprint"[\s\S]{0,400}?text: form\.busy \?[\s\S]{0,200}?"Unlock Vault"[\s\S]{0,300}?onClicked: form\.submitCurrentMethod\(\)/.test(unlockFormSrc)
-    && /function submitCurrentMethod\(\)[\s\S]{0,200}?submitPinUnlock\(\)[\s\S]{0,120}?unlockVault\(\)/.test(unlockFormSrc),
+  /visible: form\.fieldsOffered && form\.method !== "fingerprint"[\s\S]{0,400}?text: form\.busy \?[\s\S]{0,200}?"Unlock Vault"[\s\S]{0,400}?onClicked: form\.submitCurrentMethod\(\)/.test(unlockFormSrc)
+    && /function submitCurrentMethod\(\)[\s\S]{0,300}?submitPinUnlock\(\)[\s\S]{0,120}?unlockVault\(\)/.test(unlockFormSrc),
   "the PIN and the master password must be submitted the same way")
 check("a failed fingerprint keeps its reason on whichever screen follows",
   /visible: form\.vault\.fingerprintError !== ""/.test(unlockFormSrc)
@@ -688,8 +729,8 @@ check("a rejected PIN keeps its reason after the PIN method is gone",
     && !/form\.vault\.pinError/.test(unlockFormSrc),
   "an exhausted PIN clears itself, so the reason has to outlive it -- but a setup-form error is not that reason")
 check("a hand-picked method lasts only as long as the screen",
-  /onVisibleChanged:\s*\{[\s\S]{0,200}?form\.chosen = ""/.test(unlockFormSrc),
-  "a reopened lock screen starts at the leading method again")
+  /onVisibleChanged:\s*\{[\s\S]{0,500}?if \(!form\.vault\.pinentryActive\) form\.chosen = ""/.test(unlockFormSrc),
+  "a reopened lock screen starts at the leading method again; hiding for pinentry is not a close")
 check("dismissing the popup re-points every view's secret fields at the vault",
   /function clearSshPopupUnlockState\(\)[\s\S]{0,900}?syncLoginFieldsToState\(\)/.test(panelSrc),
   "the popup clears masterPassword and pinEntry; the fields must follow them")

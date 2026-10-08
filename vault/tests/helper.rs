@@ -226,6 +226,41 @@ fn a_held_secret_is_injected_by_name() {
 }
 
 #[test]
+fn a_pinentry_answer_is_decoded_and_injected_by_name() {
+    let mut helper = Helper::start();
+    // What the panel's pinentry script prints: the `D` data, still encoded.
+    let kept = helper.exec(
+        1,
+        "printf '%s\\n' 'p%25w%0Ad+'",
+        json!({ "capture": "pinentry:pin" }),
+    );
+    assert_eq!(
+        (kept["out"].as_str(), kept["held"].as_bool()),
+        (Some(""), Some(true))
+    );
+    let run = helper.exec(
+        2,
+        "printf '%s' \"$PW\"",
+        json!({ "inject": { "PW": "secret:pin" } }),
+    );
+    assert_eq!(run["out"], "p%w\nd+");
+    // A cancel (exit 1) keeps nothing and tells the panel nothing.
+    let cancelled = helper.exec(
+        3,
+        "printf 'x'; exit 1",
+        json!({ "capture": "pinentry:other" }),
+    );
+    assert_eq!(
+        (
+            cancelled["out"].as_str(),
+            cancelled["held"].as_bool(),
+            cancelled["code"].as_i64()
+        ),
+        (Some(""), Some(false), Some(1))
+    );
+}
+
+#[test]
 fn a_vault_read_reaches_the_panel_without_secrets() {
     let mut helper = Helper::start();
     let script = format!("cat <<'EOF'\n{}\nEOF", vault_read());
@@ -290,6 +325,75 @@ fn a_vault_read_reaches_the_panel_without_secrets() {
 }
 
 #[test]
+fn one_secret_is_served_or_copied_by_name() {
+    let mut helper = Helper::start();
+    let vault = json!({ "sshCapability": "unconfirmed", "sshKeys": [], "items": [
+        { "id": "a", "type": 1, "name": "Bank", "notes": "recovery words",
+          "login": { "password": "hunter2", "totp": "JBSWY3DPEHPK3PXP" },
+          "fields": [{ "name": "pin", "value": "4242", "type": 1 }] },
+        { "id": "c", "type": 3, "name": "Card", "card": { "number": "4111111111111111", "code": "123" } }
+    ] })
+    .to_string();
+    let script = format!("cat <<'EOF'\n{vault}\nEOF");
+    let read = helper.exec(1, &script, json!({ "capture": "vault" }));
+    assert!(!read["out"].as_str().unwrap().contains("4242"));
+
+    let field = |helper: &mut Helper, q: u64, id: &str, name: &str| {
+        helper.query(q, json!({ "type": "field", "id": id, "field": name }))
+    };
+    assert_eq!(
+        field(&mut helper, 10, "a", "notes")["value"],
+        "recovery words"
+    );
+    assert_eq!(
+        field(&mut helper, 11, "a", "customField:0")["value"],
+        "4242"
+    );
+    assert_eq!(
+        field(&mut helper, 12, "c", "cardNumber")["value"],
+        "4111111111111111"
+    );
+    for (q, id, name) in [
+        (13, "a", "totp"),
+        (14, "a", "login.password"),
+        (15, "a", "customField:7"),
+        (16, "a", "cardCode"),
+        (17, "nope", "password"),
+    ] {
+        assert_eq!(field(&mut helper, q, id, name)["ok"], false, "{name}");
+    }
+
+    let copy = helper.query(
+        20,
+        json!({ "type": "copyField", "id": "c", "field": "cardCode", "clearSec": 30 }),
+    );
+    assert_eq!(copy["ok"], true);
+    assert!(
+        !copy.to_string().contains("123"),
+        "a copy's reply holds no value: {copy}"
+    );
+    let clip = helper.dir.join("clipboard");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::read_to_string(&clip).unwrap_or_default() != "123" {
+        assert!(Instant::now() < deadline, "the code never reached wl-copy");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let args = std::fs::read_to_string(helper.dir.join("clipboard-args")).unwrap();
+    assert_eq!(args.trim(), "--foreground --sensitive");
+    for (q, id, name) in [
+        (21, "c", "totp"),
+        (22, "c", "ssn"),
+        (23, "nope", "cardCode"),
+    ] {
+        let reply = helper.query(
+            q,
+            json!({ "type": "copyField", "id": id, "field": name, "clearSec": 0 }),
+        );
+        assert_eq!(reply["ok"], false, "{name}");
+    }
+}
+
+#[test]
 fn runs_can_be_killed_and_stdin_is_delivered() {
     let mut helper = Helper::start();
     helper.send(
@@ -316,6 +420,19 @@ fn runs_can_be_killed_and_stdin_is_delivered() {
     assert_eq!(echoed["out"], "payload");
     let missing = helper.exec(9, "true", json!({ "capture": "bogus" }));
     assert_eq!(missing["code"], 126);
+}
+
+#[test]
+fn a_reused_run_id_is_refused_and_the_first_run_stays_killable() {
+    let mut helper = Helper::start();
+    helper.send(json!({ "type": "exec", "v": 1, "id": 21, "argv": ["sh", "-c", "sleep 30"] }));
+    std::thread::sleep(Duration::from_millis(200));
+    let again = helper.exec(21, "echo second", json!({}));
+    assert_eq!(again["code"], 126);
+    assert_eq!(again["err"], "run id in use");
+    // The first run still has its kill handle and its entry.
+    helper.send(json!({ "type": "kill", "v": 1, "id": 21 }));
+    assert_eq!(helper.reply("id", 21)["code"], 143);
 }
 
 #[test]

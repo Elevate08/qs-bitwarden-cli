@@ -124,6 +124,21 @@ Panel {
     return !!field && field.activeFocus
   }
 
+  // Desktop test/diagnostic contract: state only, never field contents.
+  function focusState() {
+    return {
+      opened: root.opened,
+      visible: panel.visible,
+      windowFocused: keyCatcher.Window.active,
+      targetFocused: !!panel.focusTarget && panel.focusTarget.activeFocus,
+      searchFocused: searchField.activeFocus,
+      keysArmed: root.sshKeysArmed,
+      method: unlockForm.method,
+      passwordFocused: unlockForm.passwordField.activeFocus,
+      pinFocused: unlockForm.pinField.activeFocus
+    }
+  }
+
   function revealListIndex(index) {
     if (itemsListView) itemsListView.positionViewAtIndex(index, ListView.Contain)
   }
@@ -185,19 +200,22 @@ Panel {
     else root.protect(root.vault.detailItem, function() { root.vault.toggleFieldReveal(key) })
   }
 
-  // Copies a protected value of the item on the detail screen.
-  function copyDetailSecret(value, label) {
-    if (!value) return
-    root.protect(root.vault.detailItem, function() { root.vault.copyToClipboard(value, label) })
+  // Copies a protected value of the item on the detail screen. `field` names
+  // it as the helper does ("password", "cardNumber", "customField:2"); with the
+  // helper it goes from there to the clipboard and not through the panel.
+  function copyDetailSecret(field, label) {
+    root.vault.copyDetailField(field, label)
   }
 
   // Enter, `y` and `p` on the detail screen: a card's number, else a login's
   // password.
   function copyPrimarySecret() {
     if (root.vault.detailIsCard) {
-      if (root.vault.detailCard && root.vault.detailCard.number) root.copyDetailSecret(root.vault.detailCard.number, "Card number")
-    } else if (root.vault.detailIsLoginLike && root.vault.detailPassword) {
-      root.copyDetailSecret(root.vault.detailPassword, "Password")
+      if (root.vault.detailCard && root.vault.detailCard.number) {
+        root.copyDetailSecret("cardNumber", "Card number")
+      }
+    } else if (root.vault.detailIsLoginLike && root.vault.detailItem && root.vault.detailItem.hasPassword) {
+      root.copyDetailSecret("password", "Password")
     }
   }
 
@@ -694,6 +712,11 @@ Panel {
         }
       }
       onActivateRequested: {
+        // Pinentry takes the typing: Enter opens it, as it submits a field.
+        if (root.vault.status === "locked" && unlockForm.pinentryOffered) {
+          unlockForm.submitCurrentMethod()
+          return
+        }
         if (root.vault.currentScreen === "generator" && root.vault.generatorFeedsForm) {
           root.vault.useGeneratedPassword()
           return
@@ -739,11 +762,11 @@ Panel {
             root.copyPrimarySecret()
           } else if (lower === "n") {
             if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.number) {
-              root.copyDetailSecret(root.vault.detailCard.number, "Card number")
+              root.copyDetailSecret("cardNumber", "Card number")
             }
           } else if (lower === "k") {
             if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.code) {
-              root.copyDetailSecret(root.vault.detailCard.code, "Security code")
+              root.copyDetailSecret("cardCode", "Security code")
             }
           } else if (lower === "u" || lower === "c") {
             // `u` copies the identifier, `c` the contact address (both the
@@ -758,7 +781,7 @@ Panel {
               root.vault.copyToClipboard(root.vault.detailItem.username, "Username")
             }
           } else if (lower === "m") {
-            if (root.vault.liveTotp) root.copyDetailSecret(root.vault.liveTotp, "TOTP")
+            root.vault.copyDetailTotp()
           } else if (lower === "e") {
             root.editDetailItem()
           } else if (lower === "x") {
@@ -989,8 +1012,9 @@ Panel {
         // -------------------------------------------------------------------
         // Crash protection banner
         // -------------------------------------------------------------------
-        // Shown while the vault helper is unavailable and the vault is held in
-        // the shell instead (Service.qml "The vault helper").
+        // Shown while the vault helper is unavailable: the vault stays locked,
+        // or, with allowVaultWithoutHelper, is held in the shell instead
+        // (Service.qml "The vault helper").
         BorderSurface {
           visible: root.vault.vaultHelperWarning !== "" && root.vault.activeScreen !== "settings"
           width: parent.width
@@ -998,6 +1022,15 @@ Panel {
           color: Util.alpha(Color.urgent, 0.15)
           radius: Style.cornerRadius
           borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+          // A helper left stopped (Service.qml stopVaultHelper(), or one that
+          // could not be used at start) can be tried again.
+          MouseArea {
+            anchors.fill: parent
+            enabled: root.vault.vaultHelperState === "stopped"
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: root.vault.retryVaultHelper()
+          }
 
           Row {
             anchors.centerIn: parent
@@ -1337,6 +1370,7 @@ Panel {
                 width: parent.width
                 placeholderText: "Recipient must enter this to open the Send..."
                 password: true
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 text: root.vault.sendFormPassword
                 onTextChanged: root.vault.sendFormPassword = text
                 enabled: !root.vault.sendBusy
@@ -1511,6 +1545,7 @@ Panel {
                 width: parent.width
                 placeholderText: "Confirm your master password..."
                 password: true
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 text: root.vault.fpSetupMaster
                 onTextChanged: root.vault.fpSetupMaster = text
                 onAccepted: root.vault.submitFingerprintSetup()
@@ -1965,6 +2000,7 @@ Panel {
               width: parent.width
               placeholderText: "Confirm your master password..."
               password: true
+              inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
               text: root.vault.pinSetupMaster
               onTextChanged: root.vault.pinSetupMaster = text
               enabled: !root.vault.pinBusy
@@ -1984,6 +2020,7 @@ Panel {
               width: parent.width
               placeholderText: Model.pinRecommendedLength() + " digits or more..."
               password: true
+              inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
               text: root.vault.pinSetupPin
               onTextChanged: root.vault.pinSetupPin = text.replace(/[^0-9]/g, "")
               enabled: !root.vault.pinBusy
@@ -2008,6 +2045,7 @@ Panel {
               width: parent.width
               placeholderText: "Repeat the PIN..."
               password: true
+              inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
               text: root.vault.pinSetupConfirm
               onTextChanged: root.vault.pinSetupConfirm = text.replace(/[^0-9]/g, "")
               onAccepted: root.vault.submitPinSetup()
@@ -3142,6 +3180,7 @@ Panel {
                 width: parent.width
                 placeholderText: "Client secret string..."
                 password: true
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 text: root.vault.loginClientSecret
                 onTextChanged: root.vault.loginClientSecret = text
               }
@@ -3156,6 +3195,7 @@ Panel {
                 width: parent.width
                 placeholderText: "Master password to unlock vault..."
                 password: true
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 text: root.vault.loginPassword
                 onTextChanged: root.vault.loginPassword = text
                 onAccepted: root.vault.submitLogin()
@@ -4130,7 +4170,7 @@ Panel {
                       textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.vault.isFieldRevealed("password")
-                        ? root.vault.detailPassword : Model.maskString(root.vault.detailPassword || "password")
+                        ? root.vault.shownSecret("password", "") : Model.maskString(root.vault.detailPassword || "password")
                       color: root.fg
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.body
@@ -4154,7 +4194,7 @@ Panel {
                         iconText: "󰌆"
                         tooltipText: "Copy password (y / Enter)"
                         fontFamily: root.fontFamily
-                        onClicked: root.copyDetailSecret(root.vault.detailPassword, "Password")
+                        onClicked: root.copyDetailSecret("password", "Password")
                       }
                     }
                   }
@@ -4236,8 +4276,9 @@ Panel {
                         iconText: "󰥔"
                         tooltipText: "Copy TOTP code (m)"
                         fontFamily: root.fontFamily
-                        enabled: root.vault.liveTotp !== ""
-                        onClicked: root.copyDetailSecret(root.vault.liveTotp, "TOTP code")
+                        // A flagged item's code comes after the prompt.
+                        enabled: root.vault.liveTotp !== "" || root.asksMasterPassword(root.vault.detailItem)
+                        onClicked: root.vault.copyDetailTotp()
                       }
                     }
                   }
@@ -4407,7 +4448,8 @@ Panel {
 
               // FIELD: Notes
               Column {
-                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5 && root.vault.detailItem.notes !== "")
+                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5
+                  && (root.vault.detailItem.notes !== "" || root.vault.detailItem.hasNotes))
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -4416,9 +4458,8 @@ Panel {
                   PanelSectionHeader { text: "NOTES" }
                   Item { Layout.fillWidth: true }
                   PanelActionButton {
-                    visible: root.asksMasterPassword(root.vault.detailItem)
                     iconText: root.vault.isFieldRevealed("notes") ? "󰈉" : "󰈈"
-                    tooltipText: root.vault.isFieldRevealed("notes") ? "Hide notes" : "Reveal notes"
+                    tooltipText: root.vault.isFieldRevealed("notes") ? "Hide notes" : "Show notes"
                     size: Style.space(20)
                     fontFamily: root.fontFamily
                     onClicked: root.toggleProtectedReveal("notes")
@@ -4428,7 +4469,7 @@ Panel {
                     tooltipText: "Copy notes"
                     size: Style.space(20)
                     fontFamily: root.fontFamily
-                    onClicked: if (root.vault.detailItem) root.copyDetailSecret(root.vault.detailItem.notes, "Notes")
+                    onClicked: root.copyDetailSecret("notes", "Notes")
                   }
                 }
 
@@ -4444,12 +4485,14 @@ Panel {
                     textFormat: Text.PlainText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
-                    // A flagged item's notes (a Secure Note's whole content)
-                    // stay hidden until revealed.
+                    // Notes (a Secure Note's whole content) stay hidden until
+                    // shown, and are fetched from the helper only then.
                     text: !root.vault.detailItem ? ""
-                      : (root.asksMasterPassword(root.vault.detailItem) && !root.vault.isFieldRevealed("notes")
-                        ? "Hidden: this item asks for your master password first."
-                        : root.vault.detailItem.notes)
+                      : (!root.vault.isFieldRevealed("notes")
+                        ? (root.asksMasterPassword(root.vault.detailItem)
+                          ? "Hidden: this item asks for your master password first."
+                          : "Hidden. Use the eye button to show the notes.")
+                        : root.vault.shownSecret("notes", ""))
                     color: root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -4488,11 +4531,11 @@ Panel {
                 revealHint: "v"
                 sensitive: true
                 revealed: root.vault.isFieldRevealed("cardNumber")
-                value: root.vault.detailCard ? root.vault.detailCard.number : ""
+                value: root.vault.shownSecret("cardNumber", root.vault.detailCard ? root.vault.detailCard.number : "")
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 onRevealToggled: root.toggleProtectedReveal("cardNumber")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailCard ? root.vault.detailCard.number : "", "Card number")
+                onCopyRequested: root.copyDetailSecret("cardNumber", "Card number")
               }
 
               DetailField {
@@ -4511,11 +4554,11 @@ Panel {
                 shortcutHint: "k"
                 sensitive: true
                 revealed: root.vault.isFieldRevealed("cardCode")
-                value: root.vault.detailCard ? root.vault.detailCard.code : ""
+                value: root.vault.shownSecret("cardCode", root.vault.detailCard ? root.vault.detailCard.code : "")
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 onRevealToggled: root.toggleProtectedReveal("cardCode")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailCard ? root.vault.detailCard.code : "", "Security code")
+                onCopyRequested: root.copyDetailSecret("cardCode", "Security code")
               }
 
               // -----------------------------------------------------------
@@ -4576,11 +4619,11 @@ Panel {
                 copyLabel: "SSN"
                 sensitive: true
                 revealed: root.vault.isFieldRevealed("ssn")
-                value: root.vault.detailIdentity ? root.vault.detailIdentity.ssn : ""
+                value: root.vault.shownSecret("ssn", root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "")
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 onRevealToggled: root.toggleProtectedReveal("ssn")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "", "SSN")
+                onCopyRequested: root.copyDetailSecret("ssn", "SSN")
               }
 
               DetailField {
@@ -4588,12 +4631,12 @@ Panel {
                 label: "Passport Number"
                 copyLabel: "Passport number"
                 sensitive: true
-                revealed: root.vault.isFieldRevealed("passport")
-                value: root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : ""
+                revealed: root.vault.isFieldRevealed("passportNumber")
+                value: root.vault.shownSecret("passportNumber", root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "")
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.toggleProtectedReveal("passport")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "", "Passport number")
+                onRevealToggled: root.toggleProtectedReveal("passportNumber")
+                onCopyRequested: root.copyDetailSecret("passportNumber", "Passport number")
               }
 
               DetailField {
@@ -4601,12 +4644,12 @@ Panel {
                 label: "Licence Number"
                 copyLabel: "Licence number"
                 sensitive: true
-                revealed: root.vault.isFieldRevealed("licence")
-                value: root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : ""
+                revealed: root.vault.isFieldRevealed("licenseNumber")
+                value: root.vault.shownSecret("licenseNumber", root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "")
                 foreground: root.fg
                 fontFamily: root.fontFamily
-                onRevealToggled: root.toggleProtectedReveal("licence")
-                onCopyRequested: root.copyDetailSecret(root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "", "Licence number")
+                onRevealToggled: root.toggleProtectedReveal("licenseNumber")
+                onCopyRequested: root.copyDetailSecret("licenseNumber", "Licence number")
               }
 
               PanelSectionHeader {
@@ -4672,11 +4715,12 @@ Panel {
                   delegate: DetailField {
                     required property var modelData
                     required property int index
-                    readonly property string revealKey: "customField:" + index
+                    // The helper names a field by its place in the item's own list.
+                    readonly property string revealKey: "customField:" + modelData.index
 
                     label: modelData.name
                     copyLabel: modelData.name
-                    value: modelData.value
+                    value: root.vault.shownSecret(revealKey, modelData.value)
                     sensitive: Boolean(modelData.sensitive)
                     revealed: root.vault.isFieldRevealed(revealKey)
                     foreground: root.fg
@@ -4684,10 +4728,8 @@ Panel {
                     onRevealToggled: root.toggleProtectedReveal(revealKey)
                     // Hidden fields are protected; plain ones are not.
                     onCopyRequested: {
-                      var value = modelData.value
-                      var name = modelData.name
-                      if (sensitive) root.copyDetailSecret(value, name)
-                      else root.vault.copyToClipboard(value, name)
+                      if (sensitive) root.copyDetailSecret(revealKey, modelData.name)
+                      else root.vault.copyToClipboard(modelData.value, modelData.name)
                     }
                   }
                 }

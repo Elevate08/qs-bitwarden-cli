@@ -7,6 +7,7 @@
 //! answers for one item, one password copy, one TOTP code or one search at a
 //! time. See docs/vault-helper.md.
 
+pub mod assuan;
 pub mod control;
 pub mod store;
 pub mod totp;

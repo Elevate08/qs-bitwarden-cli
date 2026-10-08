@@ -17,7 +17,8 @@ Item {
   property bool running: false
   property VaultCollector stdout: null
   property VaultCollector stderr: null
-  // "plain" | "session" | "vault" | "vaultMerge" | "secret:<name>"
+  // "plain" | "session" | "vault" | "vaultMerge" | "secret:<name>" |
+  // "pinentry:<name>" (the answer of Model.pinentryCommand(), held decoded)
   property string capture: "plain"
   // Add BW_SESSION.
   property bool session: true
