@@ -134,7 +134,7 @@ check("the release job runs the bytes outside the build container",
 // to verify both.
 const attestation = /attest-build-provenance@[0-9a-f]{40}[\s\S]{0,500}?subject-path: \|?([\s\S]*?)\n\s*\n/
   .exec(releaseJob)
-for (const binary of ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key"]) {
+for (const binary of ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key", "qs-bitwarden-vault"]) {
   check(`the attestation names ${binary} as a subject`,
     !!attestation && attestation[1].includes(`bin/x86_64-linux/${binary}`),
     "the provenance attestation does not bind these tracked bytes")

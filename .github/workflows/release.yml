@@ -357,7 +357,8 @@ jobs:
           notes=dist/release-notes.md
           assets=(dist/*.json dist/*.txt dist/*.gz dist/DEBUG-SYMBOLS.md dist/SHA256SUMS
                   bin/x86_64-linux/qs-bitwarden-ssh-agent
-                  bin/x86_64-linux/qs-bitwarden-unlock-key)
+                  bin/x86_64-linux/qs-bitwarden-unlock-key
+                  bin/x86_64-linux/qs-bitwarden-vault)
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           # A draft: the tag is on a release branch not yet merged to master.
