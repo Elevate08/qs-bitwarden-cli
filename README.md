@@ -660,13 +660,7 @@ cargo's own semver rules already hold `0.10` back from `0.11`.
 
 Every accepted bump, major or not, changes the shipped bytes and so needs the
 binary rebuilt in the same change, by hand -- see the `needs-binary-rebuild`
-label:
-
-```bash
-gh pr checkout <n>
-./scripts/build-agent.sh    # re-enters the digest-pinned image
-git commit -am "deps: rebuild the agent binary" && git push
-```
+label.
 
 For other source changes CI does it: on a pull request into a release branch
 from this repository, `helper-rebuild.yml` rebuilds the helpers in the pinned
