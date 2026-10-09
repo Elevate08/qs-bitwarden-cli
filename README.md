@@ -39,7 +39,10 @@ and Vaultwarden.
 
 Using SSO, a Duo push, or a hardware key? **Launch Terminal** runs `bw login` in
 a real terminal so Bitwarden's own prompts handle it, then hands the session
-straight back to the panel -- no second login just to get in.
+straight back to the panel -- no second login just to get in. The same goes for
+a two-step code with Bitwarden's standalone `bw` binary: the panel hands the code
+to `bw` through a Node preload, which the standalone build does not load, so it
+asks you to finish in the terminal rather than put the code on a command line.
 
 <br clear="all">
 

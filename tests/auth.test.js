@@ -216,7 +216,15 @@ for (const [label, cmd] of everyCommand) {
   // leak: the assignment lands in the wrapping shell's own command line.
   check(`${label} assigns no credential inline in the script`,
     !/\b(BW_PASSWORD|BW_CLIENTID|BW_CLIENTSECRET)=/.test(text), text)
+  // bw would keep an expanded code in its own argv while it derives the key
+  // and logs in; bw-login-code.js hands it over in memory instead.
+  check(`${label} never puts a two-step code on bw's command line`,
+    !text.includes("--code") && !text.includes("$" + Model.twoFactorCodeEnvVar()), text)
 }
+check("a login with a code carries the placeholder instead",
+  flat(emailFull).includes(" " + Model.twoFactorCodeFlag() + " ")
+    && !flat(emailPlain).includes(Model.twoFactorCodeFlag()),
+  flat(emailFull))
 
 // The builders cannot leak what they are never given, so also assert they no
 // longer accept a secret -- a caller passing one would be silently ignored.
@@ -238,7 +246,7 @@ const emailNoMethod = Model.emailLoginPrewarmCommand("john@example.com", true, "
 check("a chosen method is passed to bw as a bare integer",
   / --method 0 /.test(flat(emailMethod) + " "), flat(emailMethod))
 check("the method is sent before the code, as bw's own option order has it",
-  flat(emailMethod).indexOf("--method") < flat(emailMethod).indexOf("--code"),
+  flat(emailMethod).indexOf("--method") < flat(emailMethod).indexOf(Model.twoFactorCodeFlag()),
   flat(emailMethod))
 check("no method at all is sent when none was chosen, so bw picks for itself",
   !flat(emailNoMethod).includes("--method")
@@ -249,7 +257,7 @@ check("a method outside the table never reaches the command line",
     (m) => !flat(Model.emailLoginPrewarmCommand("john@example.com", true, "", m)).includes("--method")),
   "only table members may be interpolated")
 check("the email login stage that carries a method carries no code with it",
-  !flat(Model.emailLoginPrewarmCommand("john@example.com", false, "", 1)).includes("--code")
+  !flat(Model.emailLoginPrewarmCommand("john@example.com", false, "", 1)).includes(Model.twoFactorCodeFlag())
     && flat(Model.emailLoginPrewarmCommand("john@example.com", false, "", 1)).includes("--method 1"),
   "choosing Email must be able to ask bw to send the mail")
 
@@ -322,14 +330,15 @@ check("interaction is disabled through the environment, not the command line",
   Model.noInteractionEnvVar())
 
 // --- the two-step code, the one exception, is still kept out of the shell ----
-// bw has no env option for --code, but the shell must expand it from the
-// environment rather than inline it in the longer-lived script.
+// bw takes the code only from --code. Neither the shell nor bw's argv may
+// carry it: bw-login-code.js reads it from the environment instead
+// (tests/bw-login-code.test.js).
 
-check("a 2FA code is expanded from the environment, never inlined",
-  flat(emailFull).includes('--code "$' + Model.twoFactorCodeEnvVar() + '"')
-    && !flat(emailFull).includes(CODE), flat(emailFull))
-check("no --code flag at all when no code was entered",
-  !flat(emailPlain).includes("--code"), flat(emailPlain))
+check("a 2FA code is neither inlined nor expanded into argv",
+  !flat(emailFull).includes(CODE) && !flat(emailFull).includes("--code")
+    && !flat(emailFull).includes(Model.twoFactorCodeEnvVar()), flat(emailFull))
+check("no code placeholder at all when no code was entered",
+  !flat(emailPlain).includes(Model.twoFactorCodeFlag()), flat(emailPlain))
 
 // --- the rest of the command shape still has to be right --------------------
 
@@ -642,6 +651,23 @@ check("restarting email login clears both the second-factor stage and its code",
 // Fixes #4. The device-verification branch has to be reached first: the
 // second-factor test below it matches the same message, so testing in the
 // other order would re-prompt for a code bw is never going to read.
+// A bw that never loaded bw-login-code.js refuses the placeholder. Its exit
+// must not read as new-device verification, which also follows a sent code,
+// and the code must not be retried any other way.
+check("a bw without the code preload is recognised by its refusal of the placeholder",
+  Model.loginCodeChannelMissing("", "error: unknown option '" + Model.twoFactorCodeFlag() + "'")
+    && !Model.loginCodeChannelMissing("", "error: unknown option '--raw'")
+    && !Model.loginCodeChannelMissing("", "Code is required."),
+  "only bw's refusal of the placeholder counts")
+check("that refusal disarms the password writer, whose failure would retry the login over the message",
+  /loginCodeChannelMissing\(out, err\)\) \{[\s\S]{0,200}authPasswordWriteTarget = ""[\s\S]{0,80}authPasswordWriteValue = ""[\s\S]{0,120}authPasswordWriterProc\.running = false/.test(loginOutput)
+    && /var target = authPasswordWriteTarget[\s\S]{0,200}if \(!target\) return/.test(functionBody(read("Service.qml"), "onAuthPasswordWriterExited")),
+  loginOutput)
+check("that refusal is handled before device verification, and sends the user to the terminal",
+  /loginAttemptHadCode && Model\.loginCodeChannelMissing\(out, err\)[\s\S]{0,800}terminal login[\s\S]{0,40}return/.test(loginOutput)
+    && loginOutput.indexOf("loginCodeChannelMissing")
+       < loginOutput.indexOf("loginNeedsDeviceVerification"),
+  loginOutput)
 check("device verification is decided before the second-factor prompt is raised",
   /loginNeedsDeviceVerification/.test(loginOutput)
     && loginOutput.indexOf("loginNeedsDeviceVerification")
@@ -678,7 +704,7 @@ check("every command that carries a code also carries a method",
     const noMethod = Model.emailLoginPrewarmCommand("a@b.c", true, "", -1).join(" ")
     // The builder still honours -1; it is the panel that must never reach it
     // with a code. Assert the builder pairs them when asked to.
-    return withCode.includes("--method 1") && withCode.includes("--code")
+    return withCode.includes("--method 1") && withCode.includes(Model.twoFactorCodeFlag())
       && !noMethod.includes("--method")
   })(),
   "the pairing is the panel's to enforce, and the builder must support it")

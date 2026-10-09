@@ -4029,6 +4029,23 @@ Item {
       return
     }
 
+    // This bw never loaded bw-login-code.js, so it refused the code's
+    // placeholder before contacting the server. Passing the code as --code
+    // would show it to every local user, so the terminal login takes it.
+    if (loginAttemptHadCode && Model.loginCodeChannelMissing(out, err)) {
+      // bw never opened the FIFO. Disarm the writer first, or its failure
+      // retries the login and replaces this message.
+      authPasswordWriteTarget = ""
+      authPasswordWriteValue = ""
+      if (authPasswordWriterProc.running) authPasswordWriterProc.running = false
+      login2faCode = ""
+      syncLoginFieldsToState()
+      logLogin("code-channel-missing", out, err, exitCode)
+      errorMessage = "This Bitwarden CLI cannot take the two-step code privately "
+        + "(a standalone bw ignores the panel's preload). Use the terminal login."
+      return
+    }
+
     // Before the second-factor check, which matches the same sentence: a code
     // was sent and still "required" means new-device verification, which only
     // the terminal login can answer.
@@ -4418,7 +4435,7 @@ Item {
     if (password) env[Model.passwordEnvVar()] = String(password)
     if (clientId) env[Model.clientIdEnvVar()] = String(clientId)
     if (clientSecret) env[Model.clientSecretEnvVar()] = String(clientSecret)
-    // No env option exists for this; see TWOFACTOR_CODE_ENV.
+    // Read by bw-login-code.js, never expanded into argv; see TWOFACTOR_CODE_ENV.
     if (code) env[Model.twoFactorCodeEnvVar()] = String(code)
     return env
   }

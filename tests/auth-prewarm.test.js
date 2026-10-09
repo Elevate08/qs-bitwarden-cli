@@ -33,8 +33,9 @@ if (Model.unlockPrewarmCommand && Model.emailLoginPrewarmCommand && Model.authPa
   check("email and server inputs remain shell-quoted",
     flat(email2fa).includes("'person@example.com'")
       && flat(email2fa).includes("'https://vault.example.com'"), flat(email2fa))
-  check("2FA still expands from its environment binding",
-    flat(email2fa).includes('--code "$QSBW_CODE"'), flat(email2fa))
+  check("2FA carries only the placeholder bw-login-code.js swaps for the code",
+    flat(email2fa).includes(" " + Model.twoFactorCodeFlag() + " ")
+      && !flat(email2fa).includes("--code") && !flat(email2fa).includes("QSBW_CODE"), flat(email2fa))
   check("the writer reads the password from the existing protected environment binding",
     flat(writer).includes('"$' + Model.passwordEnvVar() + '"'), flat(writer))
   check("neither half embeds a password in its command",

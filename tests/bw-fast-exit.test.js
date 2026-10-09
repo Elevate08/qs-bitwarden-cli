@@ -19,7 +19,9 @@ const { check, done } = createSuite("bw-fast-exit")
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-fast-exit-"))
 const pluginDir = path.join(tmp, "plug in\"s")
 fs.mkdirSync(pluginDir)
-fs.copyFileSync(path.join(repoRoot, "bw-fast-exit.js"), path.join(pluginDir, "bw-fast-exit.js"))
+for (const file of ["bw-fast-exit.js", "bw-login-code.js"]) {
+  fs.copyFileSync(path.join(repoRoot, file), path.join(pluginDir, file))
+}
 
 // Behaves like the CLI: answers, records an exit code, then a timer keeps the
 // process alive. `late` output after the exit code shows whether it was cut.
@@ -84,8 +86,9 @@ check("only the command word counts as serve", search.ms < 1500 && !search.out.i
   JSON.stringify({ rc: search.rc, ms: search.ms }))
 
 // --- NODE_OPTIONS composition ------------------------------------------------
-check("the user's NODE_OPTIONS are kept ahead of the preload",
+check("the user's NODE_OPTIONS are kept ahead of both preloads",
   options.startsWith("--max-old-space-size=512 --require \"")
+    && options.indexOf("bw-login-code.js\" --require \"") !== -1
     && options.endsWith("bw-fast-exit.js\""),
   options)
 check("no plugin directory adds nothing",
