@@ -82,6 +82,12 @@ instead of 2.7-3.0 s, and `get item`/`password`/`totp` 1.25 s instead of
 3.1 s, each with identical output and exit code. `tests/bw-fast-exit.test.js`
 covers the guard that keeps the preload to `bw` itself.
 
+`bw-login-code.js`, the other preload, gives `bw login` the two-step code from
+`QSBW_CODE` in place of the `--qsbw-code-from-env` placeholder, so the code is
+in `bw`'s parsed arguments but not in `/proc/<pid>/cmdline`.
+`tests/bw-login-code.test.js` checks both, and that every case it does not
+handle leaves the placeholder for `bw` to refuse.
+
 Some suites need Qt rather than Node -- which any machine running the plugin
 already has. They cover the things only a real Qt can answer: that Escape
 reaches the panel from inside a text field, how Qt itself decides to draw a

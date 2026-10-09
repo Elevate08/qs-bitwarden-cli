@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.11.4] - 2026-10-09
+
+### Security
+
+- **The two-step login code no longer reaches `bw`'s command line.** It was
+  passed as `--code`, and `bw` kept it there while deriving the key and
+  logging in, so another local user could read it from `/proc/<pid>/cmdline`.
+  A preload, `bw-login-code.js`, now hands the code to `bw` in memory. A
+  standalone `bw` binary ignores the preload, so the panel asks you to finish
+  that login in the terminal instead of exposing the code.
+
 ## [1.11.3] - 2026-10-08
 
 ### Security

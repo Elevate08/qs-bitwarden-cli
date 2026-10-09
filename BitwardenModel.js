@@ -361,10 +361,12 @@ const PASSWORD_ENV = "BW_PASSWORD"
 const CLIENT_ID_ENV = "BW_CLIENTID"
 const CLIENT_SECRET_ENV = "BW_CLIENTSECRET"
 
-// bw has no env option for the two-step code, so it lands in bw's argv via
-// --code. The env var keeps it out of the wrapping shell's longer-lived argv;
-// the code is single-use and short-lived.
+// bw takes the two-step code only from --code, an argv every local user can
+// read. The login command carries TWOFACTOR_CODE_FLAG instead, which
+// bw-login-code.js swaps for --code=$QSBW_CODE inside bw's own process.argv.
+// Both names are repeated in that file.
 const TWOFACTOR_CODE_ENV = "QSBW_CODE"
+const TWOFACTOR_CODE_FLAG = "--qsbw-code-from-env"
 
 // Auth commands run non-interactively so a hidden prompt fails fast. The
 // exception is deviceVerificationLoginCommand().
@@ -382,18 +384,25 @@ function sessionEnvVar() {
   return SESSION_ENV
 }
 
-// NODE_OPTIONS for every `bw`: the user's own, plus bw-fast-exit.js from the
-// plugin directory, which saves the ~2 s bw idles after answering. Node reads
-// NODE_OPTIONS with double quotes and backslash escapes. No plugin directory
-// (not a file URL) leaves the options as they were.
+// NODE_OPTIONS for every `bw`: the user's own, plus two preloads from the
+// plugin directory: bw-login-code.js, which hands bw the two-step code without
+// an argv, and bw-fast-exit.js, which saves the ~2 s bw idles after answering.
+// Node reads NODE_OPTIONS with double quotes and backslash escapes. No plugin
+// directory (not a file URL) leaves the options as they were.
+var BW_LOGIN_CODE_FILE = "bw-login-code.js"
 var BW_FAST_EXIT_FILE = "bw-fast-exit.js"
 
 function bwNodeOptions(pluginDir, existing) {
   var base = String(existing || "").trim()
   var dir = String(pluginDir || "").replace(/\/+$/, "")
   if (dir === "") return base
-  var file = dir + "/" + BW_FAST_EXIT_FILE
-  var option = "--require \"" + file.replace(/(["\\])/g, "\\$1") + "\""
+  var options = []
+  var files = [BW_LOGIN_CODE_FILE, BW_FAST_EXIT_FILE]
+  for (var i = 0; i < files.length; i++) {
+    var file = dir + "/" + files[i]
+    options.push("--require \"" + file.replace(/(["\\])/g, "\\$1") + "\"")
+  }
+  var option = options.join(" ")
   return base ? base + " " + option : option
 }
 
@@ -411,6 +420,10 @@ function clientSecretEnvVar() {
 
 function twoFactorCodeEnvVar() {
   return TWOFACTOR_CODE_ENV
+}
+
+function twoFactorCodeFlag() {
+  return TWOFACTOR_CODE_FLAG
 }
 
 function noInteractionEnvVar() {
@@ -766,7 +779,7 @@ function emailLoginPrewarmCommand(email, hasCode, serverUrl, method) {
   var command = serverConfigPrefix(serverUrl)
   command += "bw login " + shellQuote(email) + " --passwordfile \"$__auth_fifo\""
   if (isTwoFactorMethod(method)) command += " --method " + String(method)
-  if (hasCode) command += " --code \"$" + TWOFACTOR_CODE_ENV + "\""
+  if (hasCode) command += " " + TWOFACTOR_CODE_FLAG
   command += " --raw | head -c " + MAX_TOKEN_BYTES
   return supervisedAuthCommand("login", command, appDataDirPrelude())
 }
@@ -845,6 +858,12 @@ function loginNeedsSecondFactor(stdoutText, stderrText) {
 function loginNeedsDeviceVerification(stdoutText, stderrText, codeWasSent) {
   if (!codeWasSent) return false
   return loginCodeIsRequiredChallenge(stdoutText, stderrText)
+}
+
+// bw rejected the placeholder for the two-step code: bw-login-code.js did not
+// run (a standalone bw ignores NODE_OPTIONS), so the code was never sent.
+function loginCodeChannelMissing(stdoutText, stderrText) {
+  return combinedOutput(stdoutText, stderrText).indexOf("unknown option '" + TWOFACTOR_CODE_FLAG + "'") !== -1
 }
 
 // bw's reply when several providers are usable and none was chosen: a menu it
