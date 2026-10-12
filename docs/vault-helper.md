@@ -83,10 +83,12 @@ reason.
 Pinentry closes itself after two minutes without an answer, which counts as
 a cancel.
 
-The pinentry used is `pinentry` from `PATH`; `pinentryProgram` in `shell.json`
-names another, and the setting "Type secrets in pinentry" turns this off. The
-panel's own field is used instead only when pinentry is turned off or not
-installed, or when the vault is held in the shell because
+The pinentry used is `pinentry-qt` when it is runnable, else `pinentry` from
+`PATH`, chosen each time it is needed; `pinentryProgram` in `shell.json`
+names another (used exactly as given, so `pinentry` means `pinentry` even with
+`pinentry-qt` installed), and the setting "Type secrets in pinentry" turns
+this off. The panel's own field is used instead only when pinentry is turned
+off or not installed, or when the vault is held in the shell because
 `allowVaultWithoutHelper` allows it (below). "Not installed" is what a check
 at start says when it runs to its end; a check that was killed says nothing,
 and pinentry is still used.
@@ -134,10 +136,13 @@ limit. `pinentry-gnome3` is different: it hands the prompt to `gcr-prompter`
 over D-Bus, which the session bus starts, not the helper. `gcr-prompter` does
 not have the helper's limit, and what you type passes through it, so if it
 crashes its core dump can contain your master password or PIN. The plugin
-does not lower any other process's limit (see "Limits" below). If that matters
-to you, set `pinentryProgram` to a pinentry that draws its own prompt, for
-example `/usr/bin/pinentry-qt`. Check what `pinentry` on your `PATH` runs; on
-some systems it is a link or a script that picks `pinentry-gnome3`.
+does not lower any other process's limit (see "Limits" below). Left unset,
+the plugin therefore prefers `pinentry-qt`, which draws its own prompt and
+always has a show/hide button, and falls back to `pinentry` from `PATH` only
+when `pinentry-qt` is not runnable. Without `pinentry-qt`, check
+what `pinentry` on your `PATH` runs; on some systems (Arch among them) it is a
+script that picks `pinentry-gnome3`. Set `pinentryProgram` to name a pinentry
+yourself.
 
 The email login, the setup of PIN, fingerprint and FIDO2 unlock (the master
 password and the new PIN) and the item forms are not covered.

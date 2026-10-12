@@ -110,11 +110,13 @@ check("the description copes with no account",
 
 // --- the program ----------------------------------------------------------------
 
-eq("pinentry from PATH by default", Model.pinentryProgram(undefined), "pinentry")
-eq("a blank override is the default", Model.pinentryProgram("  "), "pinentry")
+eq("unset is the automatic choice", Model.pinentryProgram(undefined), "")
+eq("a blank override is the automatic choice", Model.pinentryProgram("  "), "")
 eq("an override is used as given", Model.pinentryProgram(" /usr/bin/pinentry-gnome3 "), "/usr/bin/pinentry-gnome3")
-eq("an override cannot be an option", Model.pinentryProgram("--help"), "pinentry")
-eq("an override that is not text is ignored", Model.pinentryProgram({ a: 1 }), "pinentry")
+eq("an explicit pinentry is kept", Model.pinentryProgram("pinentry"), "pinentry")
+eq("an override cannot be an option", Model.pinentryProgram("--help"), "")
+eq("an override with NUL is ignored", Model.pinentryProgram("a\u0000b"), "")
+eq("an override that is not text is ignored", Model.pinentryProgram({ a: 1 }), "")
 // What the panel concludes from one probe run: only a probe that ran to its
 // end and said so makes pinentry missing.
 const probe = (program, env) => {
@@ -139,6 +141,51 @@ eq("and reports a missing program as missing", probe(path.join(dir, "nope")), tr
 check("nor is any other end that is not the probe's own answer",
   [[9, ""], [15, ""], [1, ""], [127, ""], [0, ""], [1, "missing"], [0, "missing\nfound"]]
     .every(([code, out]) => Model.pinentryProbeMissing(code, out) === false), "")
+
+// --- the automatic choice, made when the scripts run ---------------------------------
+
+{
+  // A PATH holding only stand-ins that record which name ran, then act as the
+  // fake pinentry. Neither the real pinentry-qt nor pinentry is on it.
+  const marker = path.join(dir, "ran")
+  const mkBin = names => {
+    const d = fs.mkdtempSync(path.join(dir, "bin-"))
+    for (const n of names) {
+      fs.writeFileSync(path.join(d, n), `#!/usr/bin/bash\necho ${n} >> "${marker}"\nexec /usr/bin/bash "${fake}" "$@"\n`, { mode: 0o755 })
+    }
+    // What the stand-in itself needs, and nothing named pinentry.
+    for (const t of ["head", "tail", "mv", "sleep"]) fs.symlinkSync(`/usr/bin/${t}`, path.join(d, t))
+    return d
+  }
+  const bash = "/usr/bin/bash"
+  const ran = (program, names) => {
+    fs.writeFileSync(marker, "")
+    fs.writeFileSync(answers, "pin:x\n")
+    fs.writeFileSync(log, "")
+    const env = Object.assign({}, process.env, { PATH: mkBin(names), FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log })
+    const argv = Model.pinentryCommand(program, { title: "t", prompt: "p" })
+    const r = spawnSync(bash, argv.slice(1), { encoding: "utf8", timeout: 20000, env })
+    const pr = Model.pinentryProbeCommand(program)
+    const pb = spawnSync(bash, pr.slice(1), { encoding: "utf8", timeout: 5000, env })
+    return { code: r.status, out: r.stdout, ran: fs.readFileSync(marker, "utf8").trim(), probe: pb.stdout.trim() }
+  }
+  let a = ran("", ["pinentry-qt", "pinentry"])
+  eq("automatic picks pinentry-qt when it is on PATH", `${a.code}|${a.out}|${a.ran}|${a.probe}`, "0|x|pinentry-qt|found")
+  a = ran("", ["pinentry"])
+  eq("automatic falls back to pinentry", `${a.code}|${a.out}|${a.ran}|${a.probe}`, "0|x|pinentry|found")
+  a = ran("", ["pinentry-qt"])
+  eq("automatic with only pinentry-qt uses it", `${a.code}|${a.ran}|${a.probe}`, "0|pinentry-qt|found")
+  a = ran("", [])
+  eq("automatic reports missing when neither is on PATH", `${a.code}|${a.out}|${a.ran}|${a.probe}`, `${exits.missing}|||missing`)
+  a = ran("pinentry", ["pinentry-qt", "pinentry"])
+  eq("an explicit pinentry stays pinentry even with pinentry-qt present", `${a.code}|${a.ran}|${a.probe}`, "0|pinentry|found")
+  a = ran("pinentry", ["pinentry-qt"])
+  eq("an explicit pinentry is missing without it, whatever else exists", `${a.code}|${a.ran}|${a.probe}`, `${exits.missing}||missing`)
+  a = ran(fake, ["pinentry-qt", "pinentry"])
+  eq("an explicit path is used as given", `${a.code}|${a.ran}|${a.probe}`, "0||found")
+  check("the automatic choice is not an argument value that could be an option",
+    Model.pinentryCommand("", {})[4] === "" && Model.pinentryProbeCommand("--x")[4] === "", "")
+}
 
 // --- through the vault helper -----------------------------------------------------
 
