@@ -130,7 +130,8 @@ Item {
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
   // Type the master password and PIN into pinentry, a separate process,
   // rather than the panel. `pinentryProgram` (not in the settings screen)
-  // names a different program than `pinentry` from PATH.
+  // names a different program; unset, "" lets the scripts pick pinentry-qt
+  // when runnable, else `pinentry` from PATH.
   readonly property bool usePinentry: Model.boolSetting("usePinentry", setting("usePinentry", true))
   readonly property string pinentryProgramName: Model.pinentryProgram(setting("pinentryProgram", ""))
   // Opt-in: nothing starts, binds or opens a FIFO while false.

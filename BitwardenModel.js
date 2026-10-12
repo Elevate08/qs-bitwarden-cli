@@ -1682,7 +1682,15 @@ function pinUnlockCommand(slot) {
 // is told nothing of it. Everything the user can influence (account email,
 // error text) is an argument, encoded for Assuan, never part of the script.
 
+// Left unset, the program is chosen when the script runs: `pinentry-qt` if it
+// is runnable, else `pinentry`. (`pinentry` on some systems is a wrapper that
+// picks pinentry-gnome3, which has no show/hide control and types into
+// gcr-prompter.) pinentryProgram() gives "" for that automatic choice.
+var PINENTRY_PREFERRED_PROGRAM = "pinentry-qt"
 var PINENTRY_DEFAULT_PROGRAM = "pinentry"
+// Shell that sets __prog from "$1": the given program, or for "" the automatic choice.
+var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ]; then if command -v -- " + PINENTRY_PREFERRED_PROGRAM
+  + " >/dev/null 2>&1; then __prog=" + PINENTRY_PREFERRED_PROGRAM + "; else __prog=" + PINENTRY_DEFAULT_PROGRAM + "; fi; fi"
 var PINENTRY_TEXT_MAX = 400
 // Pinentry closes itself after this long without an answer (SETTIMEOUT), so
 // a forgotten window does not keep the panel hidden and SSH prompts held
@@ -1703,7 +1711,8 @@ function pinentryExitCodes() {
 // 5, 83886179; any code whose low 16 bits are 99 is read as a cancel. Its
 // timeout, GPG_ERR_TIMEOUT (62), is one too: nobody answered.
 var PINENTRY_SCRIPT = [
-  "__prog=\"$1\"; __title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"; __min=\"${6:-0}\"",
+  PINENTRY_RESOLVE,
+  "__title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"; __min=\"${6:-0}\"",
   "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
   // Assuan data: only %, CR and LF need encoding.
   "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
@@ -1775,11 +1784,13 @@ function pinentryText(value) {
     .replace(/\u0000/g, "").slice(0, PINENTRY_TEXT_MAX)
 }
 
-// The program to run: a setting that names one, else `pinentry` from PATH.
-// Never an option: it is the first word of the command.
+// The program to run: a setting that names one, used exactly as given (even
+// "pinentry"), else "" for the automatic choice made by the scripts
+// (pinentry-qt, else `pinentry` from PATH). Never an option: it is the first
+// word of the command.
 function pinentryProgram(configured) {
   var name = typeof configured === "string" ? configured.trim() : ""
-  if (!name || name.charAt(0) === "-" || name.indexOf("\u0000") !== -1) return PINENTRY_DEFAULT_PROGRAM
+  if (!name || name.charAt(0) === "-" || name.indexOf("\u0000") !== -1) return ""
   return name
 }
 
@@ -1794,7 +1805,7 @@ function pinentryCommand(program, opts) {
 
 // Prints "found" or "missing": whether `program` names something runnable.
 function pinentryProbeCommand(program) {
-  return ["bash", "-c", "command -v -- \"$1\" >/dev/null 2>&1 && echo found || echo missing", "_",
+  return ["bash", "-c", PINENTRY_RESOLVE + "; command -v -- \"$__prog\" >/dev/null 2>&1 && echo found || echo missing", "_",
     pinentryProgram(program)]
 }
 

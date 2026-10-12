@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [1.11.5] - 2026-10-12
+
+### Security
+
+- **Another program's clipboard can no longer stall or exhaust the shell
+  through the panel's fields.** Under Qt 6.12.0, every editable text input
+  reads the whole Wayland clipboard on each clipboard change, in the shell's
+  GUI thread and with no size limit. The panel's text and number fields no
+  longer use one. Paste runs outside the shell instead: text only, capped at
+  64 KiB and three seconds, and stopped, with its whole process group, when
+  the field closes. Number fields do not paste.
+
+### Changed
+
+- With `pinentryProgram` unset, the plugin now runs `pinentry-qt` when it is
+  runnable and falls back to `pinentry` from `PATH` otherwise. `pinentry` on
+  Arch picks `pinentry-gnome3`, which has no show/hide control and types into
+  `gcr-prompter`, outside the vault helper's core-dump protection. The choice
+  is made each time pinentry runs. An explicit `pinentryProgram`, including
+  `pinentry`, is used exactly as given.
+- The helpers are rebuilt with `zeroize` 1.9.1 and, for the SSH agent,
+  `tokio` 1.53.2, both upstream bug-fix releases.
+
 ## [1.11.4] - 2026-10-09
 
 ### Security

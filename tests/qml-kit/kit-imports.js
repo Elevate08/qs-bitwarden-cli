@@ -48,6 +48,59 @@ function strip(src) {
   return s
 }
 
+// qmltestrunner has no `qs` binary, and Quickshell.Io's types are linked into
+// that binary (`prefer :/qt/qml/Quickshell/Io/`). A QML stand-in lets a field
+// construct Process without starting one. The shell itself still loads the
+// real module.
+const ioDir = path.join(out, "Quickshell", "Io")
+fs.mkdirSync(ioDir, { recursive: true })
+fs.writeFileSync(path.join(ioDir, "qmldir"), [
+  "module Quickshell.Io",
+  "depends QtQuick",
+  "Process 0.0 Process.qml",
+  "StdioCollector 0.0 StdioCollector.qml",
+  "",
+].join("\n"))
+fs.writeFileSync(path.join(ioDir, "Process.qml"), [
+  "import QtQuick",
+  "QtObject {",
+  "  property bool running: false",
+  "  property int processId: 0",
+  "  property var command: []",
+  "  property var stdout: null",
+  "  signal exited(int exitCode, int exitStatus)",
+  "  function signal(number) { running = false }",
+  "  function exec(cmd) { command = cmd }",
+  "}",
+  "",
+].join("\n"))
+fs.writeFileSync(path.join(ioDir, "StdioCollector.qml"), [
+  "import QtQuick",
+  "QtObject {",
+  "  property bool waitForEnd: true",
+  "  property string text: \"\"",
+  "  signal streamFinished()",
+  "}",
+  "",
+].join("\n"))
+
+// Plugin files that import Quickshell for execDetached get a recording stand-in.
+fs.writeFileSync(path.join(out, "Quickshell", "qmldir"), [
+  "module Quickshell",
+  "depends QtQuick",
+  "singleton Quickshell 0.0 Quickshell.qml",
+  "",
+].join("\n"))
+fs.writeFileSync(path.join(out, "Quickshell", "Quickshell.qml"), [
+  "pragma Singleton",
+  "import QtQuick",
+  "QtObject {",
+  "  property var detached: []",
+  "  function execDetached(cmd) { detached = detached.concat([cmd]) }",
+  "}",
+  "",
+].join("\n"))
+
 for (const dir of ["Commons", "Ui"]) {
   const from = path.join(kit, dir)
   const to = path.join(out, "qs", dir)

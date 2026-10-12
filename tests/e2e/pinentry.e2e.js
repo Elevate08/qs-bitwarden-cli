@@ -354,7 +354,7 @@ function runProbeKilled(plugin) {
   fs.writeFileSync(path.join(wrap, "bash"), [
     "#!/usr/bin/bash",
     // The probe alone (Model.pinentryProbeCommand(): bash -c <script> _ <program>).
-    'if [ "$#" -eq 4 ] && [[ "$2" == "command -v -- \\"\\$1\\""* ]]; then echo "$$" >> "$QSBW_PROBE_PIDS"; sleep 600; fi',
+    'if [ "$#" -eq 4 ] && [[ "$2" == *"echo found"* ]]; then echo "$$" >> "$QSBW_PROBE_PIDS"; sleep 600; fi',
     'exec /usr/bin/bash "$@"',
     ""
   ].join("\n"), { mode: 0o755 })

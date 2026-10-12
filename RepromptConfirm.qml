@@ -153,7 +153,7 @@ Item {
         wrapMode: Text.WordWrap
       }
 
-      TextField {
+      LineField {
         id: passwordField
         visible: confirm.typesHere
         width: parent.width

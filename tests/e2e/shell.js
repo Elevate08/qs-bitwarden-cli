@@ -52,7 +52,10 @@ function createShell(name, check, options = {}) {
     QT_QPA_PLATFORM: "offscreen",
     FAKE_BW_LOG: bwLog,
     FAKE_KEYRING: keyring,
-    FAKE_SESSION_STORE_DELAY: "1"
+    FAKE_SESSION_STORE_DELAY: "1",
+    // Left unset, the plugin prefers a real pinentry-qt from /usr/bin. Name
+    // the stand-in so every suite gets it; a suite may set its own.
+    QSBW_E2E_PINENTRY: path.join(__dirname, "bin", "pinentry")
   }, options.env || {})
 
   let shell = null

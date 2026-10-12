@@ -349,7 +349,7 @@ Column {
       font.bold: true
     }
 
-    TextField {
+    LineField {
       id: pinField
       width: parent.width
       placeholderText: "Enter your PIN..."
@@ -379,7 +379,7 @@ Column {
     width: parent.width
     spacing: Style.space(8)
 
-    TextField {
+    LineField {
       id: passwordField
       width: parent.width - eyeBtnUnlock.width - Style.space(8)
       placeholderText: "Master password..."
