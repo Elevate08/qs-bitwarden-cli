@@ -93,7 +93,7 @@ Column {
           font.bold: true
         }
 
-        TextField {
+        LineField {
           width: parent.width
           placeholderText: "Field label"
           text: editor.vault.formCustomFieldLabelDraft
@@ -135,7 +135,8 @@ Column {
         }
       }
 
-      TextField {
+      LineField {
+        id: customValue
         visible: !fieldRow.editingLabel
           && (Number(fieldRow.modelData.type) === 0 || Number(fieldRow.modelData.type) === 1)
         width: parent.width
@@ -152,6 +153,7 @@ Column {
 
         Button {
           id: revealButton
+          parent: customValue
           visible: Number(fieldRow.modelData.type) === 1
           anchors.right: parent.right
           anchors.rightMargin: Style.space(3)
@@ -287,7 +289,7 @@ Column {
       width: parent.width
       spacing: Style.space(6)
 
-      TextField {
+      LineField {
         width: parent.width - addButton.width - Style.space(6)
         placeholderText: "Field label"
         text: editor.vault.formNewCustomFieldName

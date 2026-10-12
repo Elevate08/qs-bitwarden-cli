@@ -106,7 +106,7 @@ Column {
       font.bold: true
     }
 
-    TextField {
+    LineField {
       id: masterField
       width: parent.width
       placeholderText: "Needed once, to store for FIDO2 unlock..."

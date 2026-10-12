@@ -382,7 +382,7 @@ Panel {
     return self ? self.y + self.height : 0
   }
 
-  // A form row: label, optional caption note, and a NumberField.
+  // A form row: label, optional caption note, and a NumberEntry.
   component NumberRow: Row {
     id: numberRow
     property string label: ""
@@ -413,7 +413,7 @@ Panel {
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
     }
-    NumberField {
+    NumberEntry {
       anchors.verticalCenter: parent.verticalCenter
       value: numberRow.value
       from: numberRow.from
@@ -1312,7 +1312,7 @@ Panel {
               spacing: Style.space(8)
 
               Text { textFormat: Text.PlainText; text: "NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              TextField {
+              LineField {
                 id: sendNameField
                 width: parent.width
                 placeholderText: "What is this? (optional)"
@@ -1322,7 +1322,7 @@ Panel {
               }
 
               Text { textFormat: Text.PlainText; text: "TEXT TO SEND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              TextField {
+              LineField {
                 id: sendTextField
                 width: parent.width
                 placeholderText: "The secret to share..."
@@ -1365,7 +1365,7 @@ Panel {
               }
 
               Text { textFormat: Text.PlainText; text: "PASSWORD (OPTIONAL)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              TextField {
+              LineField {
                 id: sendPasswordField
                 width: parent.width
                 placeholderText: "Recipient must enter this to open the Send..."
@@ -1540,7 +1540,7 @@ Panel {
 
               Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
-              TextField {
+              LineField {
                 id: fpMasterField
                 width: parent.width
                 placeholderText: "Confirm your master password..."
@@ -1841,7 +1841,7 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                 }
-                NumberField {
+                NumberEntry {
                   anchors.verticalCenter: parent.verticalCenter
                   value: root.vault.genOpts.minNumber
                   from: 0
@@ -1867,7 +1867,7 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                 }
-                NumberField {
+                NumberEntry {
                   anchors.verticalCenter: parent.verticalCenter
                   value: root.vault.genOpts.minSpecial
                   from: 0
@@ -1907,7 +1907,7 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                 }
-                TextField {
+                LineField {
                   anchors.verticalCenter: parent.verticalCenter
                   width: Style.space(90)
                   text: root.vault.genOpts.separator
@@ -1996,7 +1996,7 @@ Panel {
             spacing: Style.space(8)
 
             Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-            TextField {
+            LineField {
               width: parent.width
               placeholderText: "Confirm your master password..."
               password: true
@@ -2015,7 +2015,7 @@ Panel {
               font.pixelSize: Style.font.caption
               font.bold: true
             }
-            TextField {
+            LineField {
               id: pinSetupPinField
               width: parent.width
               placeholderText: Model.pinRecommendedLength() + " digits or more..."
@@ -2041,7 +2041,7 @@ Panel {
             }
 
             Text { textFormat: Text.PlainText; text: "CONFIRM PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-            TextField {
+            LineField {
               width: parent.width
               placeholderText: "Repeat the PIN..."
               password: true
@@ -2529,7 +2529,7 @@ Panel {
                       font.pixelSize: Style.font.caption
                     }
 
-                    NumberField {
+                    NumberEntry {
                       anchors.verticalCenter: parent.verticalCenter
                       visible: modelData.type === "int"
                       value: modelData.type === "int" ? root.vault.settingValue(modelData) : 0
@@ -2866,7 +2866,7 @@ Panel {
               }
             }
 
-            TextField {
+            LineField {
               id: serverUrlField
               visible: root.vault.loginServerRegion === "custom"
               width: parent.width
@@ -2892,7 +2892,7 @@ Panel {
               width: parent.width
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "EMAIL ADDRESS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              TextField {
+              LineField {
                 id: emailField
                 width: parent.width
                 placeholderText: "you@example.com"
@@ -2915,7 +2915,7 @@ Panel {
               Row {
                 width: parent.width
                 spacing: Style.space(6)
-                TextField {
+                LineField {
                   id: loginPassField
                   width: parent.width - eyeBtnLogin.width - Style.space(6)
                   placeholderText: "Master password..."
@@ -2974,7 +2974,7 @@ Panel {
                 wrapMode: Text.WordWrap
               }
 
-              TextField {
+              LineField {
                 id: deviceCodeField
                 width: parent.width
                 placeholderText: "Code from your email..."
@@ -3099,7 +3099,7 @@ Panel {
                 font.bold: true
               }
 
-              TextField {
+              LineField {
                 id: code2faField
                 width: parent.width
                 placeholderText: "6-digit Authenticator / Email verification code..."
@@ -3162,7 +3162,7 @@ Panel {
               width: parent.width
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "CLIENT ID"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              TextField {
+              LineField {
                 id: apiClientIdField
                 width: parent.width
                 placeholderText: "user.xxxxxxxx-xxxx-xxxx..."
@@ -3175,7 +3175,7 @@ Panel {
               width: parent.width
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "CLIENT SECRET"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              TextField {
+              LineField {
                 id: apiClientSecretField
                 width: parent.width
                 placeholderText: "Client secret string..."
@@ -3190,7 +3190,7 @@ Panel {
               width: parent.width
               spacing: Style.space(3)
               Text { textFormat: Text.PlainText; text: "MASTER PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              TextField {
+              LineField {
                 id: apiMasterField
                 width: parent.width
                 placeholderText: "Master password to unlock vault..."
@@ -3300,7 +3300,7 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
-            TextField {
+            LineField {
               id: searchField
               width: parent.width - (root.vault.searchQuery ? clearSearchBtn.width + Style.space(6) : 0)
               placeholderText: "Search items, usernames, URLs, public keys, fingerprints..."
@@ -4840,7 +4840,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "TITLE / NAME *"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   id: formNameField
                   width: parent.width
                   placeholderText: "e.g. GitHub, Google, Work Server..."
@@ -4917,7 +4917,7 @@ Panel {
                   width: parent.width
                   spacing: Style.space(6)
 
-                  TextField {
+                  LineField {
                     width: parent.width - Style.space(96)
                     placeholderText: "New folder name..."
                     text: root.vault.newFolderName
@@ -5089,7 +5089,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "USERNAME / EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "username or email address..."
                   text: root.vault.formUsername
@@ -5118,7 +5118,7 @@ Panel {
                 Row {
                   width: parent.width
                   spacing: Style.space(6)
-                  TextField {
+                  LineField {
                     id: formPassField
                     width: parent.width - eyeBtnForm.width - Style.space(6)
                     placeholderText: "Password..."
@@ -5158,7 +5158,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "WEBSITE URL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "https://example.com/login..."
                   text: root.vault.formUri
@@ -5175,7 +5175,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "CARDHOLDER NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "Name as printed on the card"
                   text: root.vault.formCardholderName
@@ -5187,7 +5187,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "BRAND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "Visa, Mastercard, Amex..."
                   text: root.vault.formCardBrand
@@ -5212,7 +5212,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "EXPIRY MONTH"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "MM"
                   text: root.vault.formCardExpMonth
@@ -5224,7 +5224,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "EXPIRY YEAR"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "YYYY"
                   text: root.vault.formCardExpYear
@@ -5253,7 +5253,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "TITLE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "Mr, Ms, Dr..."
                   text: root.vault.formIdTitle
@@ -5265,7 +5265,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "FIRST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdFirstName
@@ -5277,7 +5277,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "MIDDLE NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdMiddleName
@@ -5289,7 +5289,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "LAST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdLastName
@@ -5301,7 +5301,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "USERNAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdUsername
@@ -5313,7 +5313,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "COMPANY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdCompany
@@ -5325,7 +5325,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "name@example.com"
                   text: root.vault.formIdEmail
@@ -5337,7 +5337,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "PHONE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdPhone
@@ -5388,7 +5388,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "ADDRESS LINE 1"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdAddress1
@@ -5400,7 +5400,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "ADDRESS LINE 2"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdAddress2
@@ -5412,7 +5412,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "ADDRESS LINE 3"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdAddress3
@@ -5424,7 +5424,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "CITY / TOWN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdCity
@@ -5436,7 +5436,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "STATE / COUNTY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdState
@@ -5448,7 +5448,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "POSTAL CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdPostalCode
@@ -5460,7 +5460,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "COUNTRY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: ""
                   text: root.vault.formIdCountry
@@ -5479,7 +5479,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "NOTES"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                TextField {
+                LineField {
                   width: parent.width
                   placeholderText: "Additional secure notes..."
                   text: root.vault.formNotes

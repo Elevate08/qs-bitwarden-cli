@@ -7,9 +7,9 @@ import qs.Ui
 // seed): masked until its eye is pressed. The item form used plain fields for
 // these, which drew them in the clear, offered their text to input methods
 // (prediction learns it) and copied a selection to the primary selection.
-// Masked, Qt does neither; the hints below keep input methods out while
-// revealed too.
-TextField {
+// LineField masks the glyphs and does not publish a selection; the hints
+// below keep input methods out while revealed too.
+LineField {
   id: field
 
   property bool revealed: false
@@ -25,6 +25,7 @@ TextField {
 
   Button {
     id: eye
+    parent: field
     anchors.right: parent.right
     anchors.rightMargin: Style.space(3)
     anchors.verticalCenter: parent.verticalCenter
