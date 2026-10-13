@@ -360,7 +360,9 @@ echo "Saved $out"
 `)
 fs.chmodSync(path.join(bin, "bw"), 0o755)
 
-const env = { PATH: bin + ":/usr/bin:/bin", HOME: home }
+// The claim and open steps run `node`, which CI installs outside /usr/bin.
+const nodeDir = path.dirname(process.execPath)
+const env = { PATH: bin + ":" + nodeDir + ":/usr/bin:/bin", HOME: home }
 const run = (fileName, extra, declaredSize) => {
   const cmd = Model.attachmentDownloadCommand("att-id", "item-id", declaredSize)
   return execFileSync(cmd[0], cmd.slice(1), {
@@ -648,7 +650,7 @@ if (realGio) {
   e[Model.openPathEnvVar()] = openTarget
   execFileSync(openCmd[0], openCmd.slice(1), {
     env: Object.assign({}, env, e, {
-      PATH: path.dirname(realGio) + ":/usr/bin:/bin", XDG_RUNTIME_DIR: runtimeDir, QSBW_TEST_SCAN: openScan,
+      PATH: path.dirname(realGio) + ":" + nodeDir + ":/usr/bin:/bin", XDG_RUNTIME_DIR: runtimeDir, QSBW_TEST_SCAN: openScan,
       XDG_DATA_HOME: path.join(xdg, "data"), XDG_DATA_DIRS: path.join(xdg, "data") + ":/usr/share",
       XDG_CONFIG_HOME: path.join(xdg, "config")
     }), encoding: "utf8"
