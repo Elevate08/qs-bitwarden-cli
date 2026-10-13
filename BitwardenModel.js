@@ -2636,13 +2636,98 @@ function baseName(path) {
   return cut < 0 ? p : p.slice(cut + 1)
 }
 
-// Saves one attachment to the download dir without overwriting (" (1)", ...)
-// and prints the final path. Vault ids and names are quoted. The file is
-// staged in a private temp dir and claimed with link(), which never follows a
+// The decrypted file name travels in the environment: argv is world-readable
+// in /proc, and the vault helper passes argv through unchanged.
+var ATTACHMENT_NAME_ENV = "QSBW_ATTACHMENT_NAME"
+
+function attachmentNameEnvVar() {
+  return ATTACHMENT_NAME_ENV
+}
+
+function attachmentDownloadEnv(fileName) {
+  var env = {}
+  env[ATTACHMENT_NAME_ENV] = safeAttachmentFileName(fileName)
+  return env
+}
+
+// Claims a free name in argv[1] for the staged file argv[2], reading the name
+// from the environment so it never reaches any argv. link() never follows a
 // symlink and fails if the name exists, so there is no check-then-write race.
-// The declared size is only the server's claim; RLIMIT_FSIZE, a timeout and a
-// free-space check bound the transfer.
-function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize) {
+// Without hard links (some removable/FUSE filesystems) the bytes are copied
+// into the descriptor that O_EXCL created: rename() could replace an entry
+// raced in after the claim. A failed or cancelled copy empties that
+// descriptor rather than unlink the name, which by then may be another
+// file, so it leaves an empty file. The signal handlers go in before the
+// claim and act only between copy steps, so no write lands after the
+// truncation.
+var ATTACHMENT_CLAIM_SCRIPT = [
+  "const fs = require(\"fs\");",
+  "const dir = process.argv[1], tmp = process.argv[2];",
+  "const name = process.env." + ATTACHMENT_NAME_ENV + " || \"\";",
+  "const done = p => { process.stdout.write(p); process.exit(0); };",
+  "const fail = m => { process.stderr.write(m + \"\\n\"); process.exit(1); };",
+  "if (!name || /[\\/\\0]/.test(name) || name === \".\" || name === \"..\") fail(\"Invalid attachment name.\");",
+  "const dot = name.lastIndexOf(\".\");",
+  "const stem = dot >= 0 ? name.slice(0, dot) : name;",
+  "const ext = dot >= 0 ? name.slice(dot) : \"\";",
+  "let hardlink = true, cand = null, fd = null, busy = false, stopped = false;",
+  "const abandon = code => {",
+  "  let emptied = true;",
+  "  try { fs.ftruncateSync(fd, 0); } catch (e) { emptied = false; }",
+  "  const left = cand.slice(dir.length + 1);",
+  "  if (code !== 143) process.stderr.write(\"Could not save into the download folder; \" + (emptied",
+  "    ? \"an empty \" + left + \" was left there.\"",
+  "    : left + \" there may still hold part of the attachment.\") + \"\\n\");",
+  "  process.exit(code);",
+  "};",
+  // Node runs these from its event loop: never inside the synchronous claim,
+  // and while a read or write is in flight only by flagging it.
+  "for (const sig of [\"SIGTERM\", \"SIGHUP\", \"SIGINT\"]) process.on(sig, () => {",
+  "  if (fd === null) process.exit(143);",
+  "  stopped = true;",
+  "  if (!busy) abandon(143);",
+  "});",
+  "for (let n = 0; n <= 999 && cand === null; n++) {",
+  "  const c = dir + \"/\" + (n === 0 ? name : stem + \" (\" + n + \")\" + ext);",
+  "  if (hardlink) {",
+  "    try { fs.linkSync(tmp, c); done(c); }",
+  "    catch (e) { if (e.code === \"EEXIST\") continue; hardlink = false; }",
+  "  }",
+  "  try { fd = fs.openSync(c, \"wx\"); cand = c; }",
+  "  catch (e) { if (e.code !== \"EEXIST\") fail(\"Could not save into the download folder.\"); }",
+  "}",
+  "if (cand === null) fail(\"Could not find a free name in the download folder.\");",
+  "let src;",
+  "try { src = fs.openSync(tmp, \"r\"); } catch (e) { abandon(1); }",
+  "const buf = Buffer.allocUnsafe(1 << 20);",
+  "const pump = () => {",
+  "  busy = true;",
+  "  fs.read(src, buf, 0, buf.length, null, (e, got) => {",
+  "    busy = false;",
+  "    if (stopped) return abandon(143);",
+  "    if (e) return abandon(1);",
+  "    if (got === 0) return done(cand);",
+  "    put(0, got);",
+  "  });",
+  "};",
+  "const put = (off, got) => {",
+  "  busy = true;",
+  "  fs.write(fd, buf, off, got - off, null, (e, wrote) => {",
+  "    busy = false;",
+  "    if (stopped) return abandon(143);",
+  "    if (e) return abandon(1);",
+  "    if (off + wrote < got) put(off + wrote, got); else pump();",
+  "  });",
+  "};",
+  "pump();"
+].join("\n")
+
+// Saves one attachment to the download dir without overwriting (" (1)", ...)
+// and prints the final path. Vault ids are quoted; the name comes from
+// attachmentDownloadEnv(). The file is staged in a private temp dir and
+// claimed by ATTACHMENT_CLAIM_SCRIPT. The declared size is only the server's
+// claim; RLIMIT_FSIZE, a timeout and a free-space check bound the transfer.
+function attachmentDownloadCommand(attachmentId, itemId, declaredSize) {
   var maxBytes = MAX_ATTACHMENT_BYTES
   var maxMb = Math.round(maxBytes / (1024 * 1024))
   var maxBlocks = Math.ceil(maxBytes / 1024)          // ulimit -f counts 1 KB blocks
@@ -2665,7 +2750,6 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     // Decrypted bytes stay private, staged and final.
     "umask 077",
     "exec 2> >(head -c " + MAX_STDERR_BYTES + " >&2)",
-    "name=" + shellQuote(safeAttachmentFileName(fileName)),
     "max=" + maxBytes,
     "want=" + want,
     "dir=\"$(xdg-user-dir DOWNLOAD 2>/dev/null || true)\"",
@@ -2707,34 +2791,49 @@ function attachmentDownloadCommand(attachmentId, itemId, fileName, declaredSize)
     "  echo 'Attachment exceeded the " + maxMb + " MB download limit.' >&2; exit 1",
     "fi",
 
-    // Probe hard-link support once rather than guess from a failure.
-    "hardlink=1",
-    ": > \"$work/probe\"",
-    "ln -- \"$work/probe\" \"$work/probe2\" 2>/dev/null || hardlink=0",
-    "rm -f -- \"$work/probe\" \"$work/probe2\"",
-
-    "stem=\"$name\"; ext=\"\"",
-    "case \"$name\" in *.*) stem=\"${name%.*}\"; ext=\".${name##*.}\";; esac",
-    "out=''; n=0",
-    "while [ \"$n\" -le 999 ]; do",
-    "  if [ \"$n\" -eq 0 ]; then cand=\"$dir/$name\"; else cand=\"$dir/$stem ($n)$ext\"; fi",
-    "  if [ \"$hardlink\" = 1 ]; then",
-    "    if ln -- \"$tmp\" \"$cand\" 2>/dev/null; then out=\"$cand\"; break; fi",
-    // No hard links (some removable/FUSE filesystems): mv -n after rejecting
-    // an existing entry or dangling symlink.
-    "  elif [ ! -e \"$cand\" ] && [ ! -L \"$cand\" ] && mv -n -- \"$tmp\" \"$cand\" 2>/dev/null; then",
-    "    out=\"$cand\"; break",
-    "  fi",
-    "  n=$((n+1))",
-    "done",
-    "if [ -z \"$out\" ]; then",
-    "  echo 'Could not find a free name in the download folder.' >&2; exit 1",
-    "fi",
+    "out=$(node -e " + shellQuote(ATTACHMENT_CLAIM_SCRIPT) + " \"$dir\" \"$tmp\")",
     "printf %s \"$out\" | head -c 4096"
   ].join("\n")
   // Its own process group, so cancelling on lock reaches bw, timeout and the
   // cleanup trap.
   return supervisedProcessCommand(script)
+}
+
+// Opening a saved attachment: the opener and the app it starts keep their
+// arguments for the app's lifetime, and argv is world-readable in /proc. They
+// get a neutral symlink in the private runtime dir instead, made from a path
+// passed in the environment. The extension stays (it picks the app) only when
+// it is short and plain. Links live until the runtime dir goes at logout, so
+// an app that rereads its file keeps working.
+//
+// `gio open` detects the type in-process and launches with the link. Only
+// without gio does xdg-open run, and its MIME query resolves the link and
+// hands the real path to `file` for that moment.
+var OPEN_PATH_ENV = "QSBW_OPEN_PATH"
+
+function openPathEnvVar() {
+  return OPEN_PATH_ENV
+}
+
+var OPEN_LINK_SCRIPT = [
+  "const fs = require(\"fs\");",
+  "const target = process.env." + OPEN_PATH_ENV + " || \"\";",
+  "if (target.charAt(0) !== \"/\" || target.indexOf(\"\\0\") !== -1) process.exit(1);",
+  "const base = target.slice(target.lastIndexOf(\"/\") + 1), dot = base.lastIndexOf(\".\");",
+  "const ext = dot > 0 && /^\\.[A-Za-z0-9]{1,10}$/.test(base.slice(dot)) ? base.slice(dot) : \"\";",
+  "const link = fs.mkdtempSync(process.argv[1] + \"/\") + \"/attachment\" + ext;",
+  "fs.symlinkSync(target, link);",
+  "process.stdout.write(link);"
+].join("\n")
+
+function attachmentOpenCommand() {
+  var script = "set -e; umask 077; test -n \"${XDG_RUNTIME_DIR:-}\"; "
+  script += "__dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; " + privateDirScript("__dir")
+  script += "__open=\"$__dir/open\"; " + privateDirScript("__open")
+  script += "__link=$(node -e " + shellQuote(OPEN_LINK_SCRIPT) + " \"$__open\"); "
+  script += "if command -v gio >/dev/null 2>&1; then exec env -u " + OPEN_PATH_ENV + " gio open \"$__link\"; fi; "
+  script += "exec env -u " + OPEN_PATH_ENV + " xdg-open \"$__link\""
+  return ["bash", "-c", script]
 }
 
 function loginUris(login) {

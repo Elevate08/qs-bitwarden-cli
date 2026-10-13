@@ -52,6 +52,57 @@ for (const id of ["envelopeProc", "lockProc", "listProc", "unlockProc", "loginPr
                   "sessionHandoffProc", "keyringLookupProc", "authPasswordWriterProc", "pinUnlockProc", "keyringLookupMasterProc"]) {
   check(`${id} is a VaultProcess`, new RegExp(`VaultProcess \\{\\s*id: ${id}\\b`).test(service), id)
 }
+// A local start deferred behind the previous run's collector clear runs the
+// command it was given, and not at all once cancelled or replaced. Driven
+// with VaultProcess.qml's own functions over a stand-in scope.
+const vaultProcess = read("VaultProcess.qml")
+const deferredStart = () => {
+  const later = []
+  const local = { running: true }
+  const scope = { running: false, runId: 0, startSeq: 0, command: [], stdinText: "", local }
+  const make = new Function("scope", "Qt", "local", "proc",
+    "with (scope) { " + functionBody(vaultProcess, "runLocally") + "\n"
+      + functionBody(vaultProcess, "launchLocal") + "\n"
+      + "return { runLocally: runLocally, launchLocal: launchLocal } }")
+  const finished = []
+  scope.finish = code => { finished.push(code); scope.running = false; scope.runId = 0 }
+  const proc = {}
+  Object.assign(proc, make(scope, { callLater: f => later.push(f) }, local, proc))
+  const begin = (cmd, env) => { scope.running = true; scope.startSeq += 1; scope.command = cmd; proc.runLocally(env) }
+  const settle = () => { local.running = false; while (later.length) later.shift()() }
+  return { scope, local, begin, settle, finished }
+}
+{
+  const t = deferredStart()
+  t.begin(["a"], { NAME: "a" })
+  t.scope.running = false
+  t.settle()
+  check("a deferred local start never runs once cancelled",
+    t.local.running === false && t.local.command === undefined, JSON.stringify(t.local))
+  check("but still ends, as a killed run would, so a caller waiting on exited() moves on",
+    t.finished.join() === "143", t.finished.join())
+}
+{
+  const t = deferredStart()
+  t.begin(["a"], { NAME: "a" })
+  t.scope.running = false
+  t.begin(["b"], { NAME: "b" })
+  t.settle()
+  check("a replaced deferred start never pairs one run's environment with another's command",
+    t.local.running === true && t.local.command[0] === "b" && t.local.environment.NAME === "b",
+    JSON.stringify(t.local))
+  check("and the replaced start does not end the run that replaced it",
+    t.finished.length === 0 && t.scope.running === true, t.finished.join())
+}
+{
+  const t = deferredStart()
+  t.begin(["a"], { NAME: "a" })
+  t.scope.command = ["later"]
+  t.settle()
+  check("a deferred start keeps the command it was started with",
+    t.local.running === true && t.local.command[0] === "a" && t.scope.runId === -1, JSON.stringify(t.local))
+}
+
 check("the list read keeps its items in the helper",
   /VaultProcess \{\s*id: listProc\s*vault: root\s*capture: "vault"/.test(service), "")
 check("saves update the helper's copy of the item",
