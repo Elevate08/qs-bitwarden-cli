@@ -475,17 +475,20 @@ let partial = null
 try { run("partial.txt", Object.assign({ QSBW_TEST_READ_FAIL: "1" }, noLinkFaultsEnv)) } catch (e) { partial = e }
 check("a copy that fails partway leaves an empty file, not decrypted bytes, and says so",
   partial !== null && isEmptyFile(path.join(downloads, "partial.txt"))
-    && String(partial.stderr).indexOf("an empty partial.txt was left there") !== -1,
+    && String(partial.stderr).split("\n")[0].indexOf("an empty partial.txt was left there") !== -1,
   partial ? String(partial.stderr) : "succeeded")
 
 let unemptied = null
 try {
   run("unemptied.txt", Object.assign({ QSBW_TEST_READ_FAIL: "1", QSBW_TEST_TRUNCATE_FAIL: "1" }, noLinkFaultsEnv))
 } catch (e) { unemptied = e }
+// Only the first line: the panel shows that one, and bash's job-control
+// report after it can quote the whole script.
+const unemptiedLine = unemptied ? String(unemptied.stderr).split("\n")[0] : ""
 check("and when it cannot even empty it, it says part of the attachment may remain",
-  unemptied !== null && String(unemptied.stderr).indexOf("unemptied.txt there may still hold part of the attachment") !== -1
-    && String(unemptied.stderr).indexOf("an empty") === -1,
-  unemptied ? String(unemptied.stderr) : "succeeded")
+  unemptiedLine.indexOf("unemptied.txt there may still hold part of the attachment") !== -1
+    && unemptiedLine.indexOf("an empty") === -1,
+  unemptied ? unemptiedLine : "succeeded")
 
 let cancelled = null
 try { run("cancelled.txt", Object.assign({ QSBW_TEST_CANCEL: "1" }, noLinkFaultsEnv)) } catch (e) { cancelled = e }
@@ -518,7 +521,7 @@ try {
   execFileSync(cmd[0], cmd.slice(1), { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 } catch (e) { unnamed = e }
 check("a run with no name in its environment fails instead of inventing a path",
-  unnamed !== null && String(unnamed.stderr).indexOf("Invalid attachment name.") !== -1,
+  unnamed !== null && String(unnamed.stderr).split("\n")[0] === "Invalid attachment name.",
   unnamed ? String(unnamed.stderr) : "succeeded")
 
 const traversed = run("../../.bashrc")
