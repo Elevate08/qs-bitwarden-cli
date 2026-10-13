@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [1.11.6] - 2026-10-12
+
+### Security
+
+- **Saving an attachment no longer shows its file name to other local
+  users.** The decrypted name was written into the download script's
+  `bash -c` arguments, which any local user can read from `/proc` for the
+  whole transfer, with or without the vault helper. It now travels in the
+  process environment, which only you can read, and the final name is claimed
+  by a short Node step that reads it from there, so no process's arguments
+  hold it.
+- **Opening a saved attachment no longer shows its file name to other local
+  users either.** `xdg-open`, and the app it starts, were given the saved
+  path as an argument for as long as the app stayed open. The app now gets a
+  neutral link, `attachment.<ext>`, in a private directory under
+  `$XDG_RUNTIME_DIR`, so it shows that name rather than the original. The
+  link is opened with `gio open`, which works out the file type itself;
+  `xdg-open` is used only where `gio` is missing, and while it works out the
+  type it briefly runs `file` with the real path.
+
+### Changed
+
+- On a download folder without hard links (some removable or FUSE
+  filesystems), a save that fails or is cancelled partway can now leave an
+  empty file under the name it claimed, and says so. The name is claimed
+  before the bytes are copied in, since the move that used to place the file
+  took its name as an argument; deleting the name afterwards could remove a
+  different file that had taken its place.
+
 ## [1.11.5] - 2026-10-12
 
 ### Security

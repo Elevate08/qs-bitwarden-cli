@@ -37,6 +37,8 @@ Item {
   // The helper's id for the run in flight, 0 if none, -1 while it runs here.
   property int runId: 0
   property bool finishing: false
+  // Moves on every start, so a deferred local start can tell it was replaced.
+  property int startSeq: 0
 
   onRunningChanged: {
     if (finishing) return
@@ -45,6 +47,7 @@ Item {
   }
 
   function start() {
+    startSeq += 1
     sessionHeld = false
     outputHeld = false
     // A lock's scrub (Model.scrubCommand()): here it is only clearing text.
@@ -62,13 +65,24 @@ Item {
 
   // Called by the vault: run here instead of in the helper.
   function runLocally(env) {
-    // The previous run's collector clear may still be going.
+    launchLocal(command, env, startSeq)
+  }
+
+  // The command is taken with its environment. A start deferred behind the
+  // previous run's collector clear is dropped once replaced, and once
+  // cancelled ends as a killed run would, so exited() still arrives.
+  function launchLocal(cmd, env, seq) {
+    if (seq !== startSeq) return
+    if (!running) {
+      finish(143, "", "", false, false)
+      return
+    }
     if (local.running) {
-      Qt.callLater(function() { proc.runLocally(env) })
+      Qt.callLater(function() { proc.launchLocal(cmd, env, seq) })
       return
     }
     runId = -1
-    local.command = command
+    local.command = cmd
     local.environment = env
     local.stdinEnabled = stdinText !== ""
     local.running = true

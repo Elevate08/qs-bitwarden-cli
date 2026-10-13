@@ -625,6 +625,8 @@ Item {
   // another item opens.
   property var attachmentQueue: []
   property string attachmentBusyId: ""
+  // The in-flight attachment's file name, passed in the environment.
+  property string attachmentBusyName: ""
   property var attachmentSaved: ({})
 
   // Enter copies the password, then a second Enter copies the TOTP.
@@ -6932,6 +6934,7 @@ Item {
   function cancelAttachmentDownloads() {
     attachmentQueue = []
     attachmentBusyId = ""
+    attachmentBusyName = ""
     invalidateEpochOperation("attachment")
     // Its process group cleans up its staging dir and commits nothing after
     // a lock or close.
@@ -6971,14 +6974,16 @@ Item {
     var job = next.shift()
     attachmentQueue = next
     attachmentBusyId = job.id
+    attachmentBusyName = String(job.fileName || "")
     beginVaultRead("attachment")
-    attachmentProc.command = Model.attachmentDownloadCommand(job.id, job.itemId, job.fileName, job.size)
+    attachmentProc.command = Model.attachmentDownloadCommand(job.id, job.itemId, job.size)
     attachmentProc.running = true
   }
 
   function onAttachmentDownloaded(exitCode, savedPath, stderrText) {
     var id = attachmentBusyId
     attachmentBusyId = ""
+    attachmentBusyName = ""
     if (vaultReadIsStale("attachment")) return
     var path = String(savedPath || "").trim()
 
@@ -7010,11 +7015,15 @@ Item {
     return false
   }
 
+  // The path, which names the attachment, travels in the environment; the
+  // opener gets a neutral link (Model.attachmentOpenCommand()).
   function openSavedAttachment(id) {
     var path = attachmentSaved[id]
     if (!path) return
     resetAutoLockTimer()
-    Quickshell.execDetached(["xdg-open", path])
+    var env = {}
+    env[Model.openPathEnvVar()] = String(path)
+    Quickshell.execDetached({ command: Model.attachmentOpenCommand(), environment: env })
   }
 
   function revealSavedAttachment(id) {
@@ -8598,7 +8607,7 @@ Item {
   VaultProcess {
     id: attachmentProc
     vault: root
-    environment: root.bwEnv()
+    environment: root.bwEnv(Model.attachmentDownloadEnv(root.attachmentBusyName))
     stdout: VaultCollector { id: attachmentStdout; waitForEnd: true }
     stderr: VaultCollector { id: attachmentStderr; waitForEnd: true }
     onExited: function(exitCode) {
