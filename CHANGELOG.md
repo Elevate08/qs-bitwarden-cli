@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.6] - 2026-10-12
+
 ### Security
 
 - **Saving an attachment no longer shows its file name to other local
