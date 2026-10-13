@@ -475,20 +475,20 @@ let partial = null
 try { run("partial.txt", Object.assign({ QSBW_TEST_READ_FAIL: "1" }, noLinkFaultsEnv)) } catch (e) { partial = e }
 check("a copy that fails partway leaves an empty file, not decrypted bytes, and says so",
   partial !== null && isEmptyFile(path.join(downloads, "partial.txt"))
-    && String(partial.stderr).split("\n")[0].indexOf("an empty partial.txt was left there") !== -1,
+    && /^Could not save into the download folder; an empty partial\.txt was left there\.$/m.test(String(partial.stderr)),
   partial ? String(partial.stderr) : "succeeded")
 
 let unemptied = null
 try {
   run("unemptied.txt", Object.assign({ QSBW_TEST_READ_FAIL: "1", QSBW_TEST_TRUNCATE_FAIL: "1" }, noLinkFaultsEnv))
 } catch (e) { unemptied = e }
-// Only the first line: the panel shows that one, and bash's job-control
-// report after it can quote the whole script.
-const unemptiedLine = unemptied ? String(unemptied.stderr).split("\n")[0] : ""
+// Whole lines only: bash 5.2's job-control report (Ubuntu CI, not Arch's
+// 5.3) can come before or after the message and quotes the whole script.
+const unemptiedErr = unemptied ? String(unemptied.stderr) : ""
 check("and when it cannot even empty it, it says part of the attachment may remain",
-  unemptiedLine.indexOf("unemptied.txt there may still hold part of the attachment") !== -1
-    && unemptiedLine.indexOf("an empty") === -1,
-  unemptied ? unemptiedLine : "succeeded")
+  /^Could not save into the download folder; unemptied\.txt there may still hold part of the attachment\.$/m.test(unemptiedErr)
+    && !/^Could not save into the download folder; an empty/m.test(unemptiedErr),
+  unemptied ? unemptiedErr : "succeeded")
 
 let cancelled = null
 try { run("cancelled.txt", Object.assign({ QSBW_TEST_CANCEL: "1" }, noLinkFaultsEnv)) } catch (e) { cancelled = e }
@@ -521,7 +521,7 @@ try {
   execFileSync(cmd[0], cmd.slice(1), { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 } catch (e) { unnamed = e }
 check("a run with no name in its environment fails instead of inventing a path",
-  unnamed !== null && String(unnamed.stderr).split("\n")[0] === "Invalid attachment name.",
+  unnamed !== null && /^Invalid attachment name\.$/m.test(String(unnamed.stderr)),
   unnamed ? String(unnamed.stderr) : "succeeded")
 
 const traversed = run("../../.bashrc")
