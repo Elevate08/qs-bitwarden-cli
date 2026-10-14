@@ -4,6 +4,17 @@
 
 ## [1.11.7] - 2026-10-14
 
+### Security
+
+- **Exporting SSH public keys no longer shows their item names to other
+  local users.** With the SSH agent on, each key load writes one `.pub` file
+  per key, named after its vault item, and the script that wrote and pruned
+  them passed those names to `mv`, `basename` and `rm` as arguments, which
+  any local user can read from `/proc`. Clearing the files on logout did the
+  same through `rm`. The names now reach a short Node step on standard input,
+  which writes, renames and prunes the files itself, and clearing matches
+  them with `find`, so no process's arguments hold them.
+
 ## [1.11.6] - 2026-10-12
 
 ### Security
