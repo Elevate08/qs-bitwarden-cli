@@ -3,9 +3,12 @@
 //! Run inside short shell pipelines between `secret-tool`, `systemd-creds`,
 //! `argon2` and `fido2-assert`. Secrets arrive in the environment, the
 //! envelope on stdin; the result (envelope, password, or secret-free summary)
-//! goes to stdout. No argument ever carries a secret.
+//! goes to stdout. No argument ever carries a secret, nor the account
+//! (/proc/<pid>/cmdline is world-readable).
 //!
 //! Environment:
+//!   QSBW_ACCOUNT_ID       create/open/add/rotate: the account's user id
+//!   QSBW_SERVER           the same: its server URL (may be empty)
 //!   QSBW_UNLOCK_PASSWORD  create: the password `bw` accepted
 //!                         rotate: the new password `bw` accepted
 //!   QSBW_UNLOCK_KEY       the key for --via / --auth: `argon2 -r` hex for
@@ -29,6 +32,8 @@ use std::os::unix::ffi::OsStringExt;
 use zeroize::Zeroizing;
 
 const NAME: &str = "qs-bitwarden-unlock-key";
+const ACCOUNT_ID_ENV: &str = "QSBW_ACCOUNT_ID";
+const SERVER_ENV: &str = "QSBW_SERVER";
 const PASSWORD_ENV: &str = "QSBW_UNLOCK_PASSWORD";
 const KEY_ENV: &str = "QSBW_UNLOCK_KEY";
 const NEW_KEY_ENV: &str = "QSBW_UNLOCK_NEW_KEY";
@@ -82,7 +87,10 @@ fn main() {
             }
         }
         Some("--version") if args.len() == 1 => {
-            println!("{NAME} {} (envelope v1)", env!("CARGO_PKG_VERSION"));
+            println!(
+                "{NAME} {} (envelope v1) (cli v2)",
+                env!("CARGO_PKG_VERSION")
+            );
             0
         }
         Some("--self-test") if args.len() == 1 => self_test(),
@@ -137,7 +145,7 @@ fn run(command: &str, rest: &[String]) -> Outcome {
 }
 
 fn create(flags: &Flags) -> Outcome {
-    flags.only(&["account-id", "server", "salt", "m", "t", "p"])?;
+    flags.only(&["salt", "m", "t", "p"])?;
     let password = secret_env(PASSWORD_ENV)?;
     let master_key = hex_env(NEW_KEY_ENV)?;
     let envelope = Envelope::create(flags.account()?, &password, flags.argon2()?, &master_key)?;
@@ -145,7 +153,7 @@ fn create(flags: &Flags) -> Outcome {
 }
 
 fn open(flags: &Flags) -> Outcome {
-    flags.only(&["account-id", "server", "via", "cred"])?;
+    flags.only(&["via", "cred"])?;
     let envelope = read_envelope(Some(&flags.account()?))?;
     let key = ViaKey::from_env(flags.required("via")?, flags.optional("cred"))?;
     Ok(envelope.open(&key.via())?)
@@ -153,8 +161,6 @@ fn open(flags: &Flags) -> Outcome {
 
 fn add(flags: &Flags) -> Outcome {
     flags.only(&[
-        "account-id",
-        "server",
         "auth",
         "auth-cred",
         "method",
@@ -205,16 +211,7 @@ fn remove(flags: &Flags) -> Outcome {
 }
 
 fn rotate(flags: &Flags) -> Outcome {
-    flags.only(&[
-        "account-id",
-        "server",
-        "auth",
-        "auth-cred",
-        "salt",
-        "m",
-        "t",
-        "p",
-    ])?;
+    flags.only(&["auth", "auth-cred", "salt", "m", "t", "p"])?;
     let mut envelope = read_envelope(Some(&flags.account()?))?;
     let auth = ViaKey::from_env(flags.required("auth")?, flags.optional("auth-cred"))?;
     let password = secret_env(PASSWORD_ENV)?;
@@ -330,8 +327,8 @@ impl<'a> Flags<'a> {
 
     fn account(&self) -> Result<Account, Failure> {
         Ok(Account::new(
-            self.required("account-id")?,
-            self.required("server")?,
+            &text_env(ACCOUNT_ID_ENV)?,
+            &text_env(SERVER_ENV)?,
         )?)
     }
 
@@ -366,6 +363,11 @@ fn secret_env(name: &str) -> Result<Zeroizing<Vec<u8>>, Failure> {
         .ok_or(Failure::Usage(
             "a required secret is missing from the environment",
         ))
+}
+
+/// A value that may be empty (a server URL), but must be set.
+fn text_env(name: &str) -> Result<String, Failure> {
+    std::env::var(name).map_err(|_| Failure::Usage("the account is missing from the environment"))
 }
 
 fn hex_env(name: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, Failure> {
@@ -502,16 +504,17 @@ fn print_help() {
         "{NAME} <command> [--flag value]...
 
 The master password encrypted once, for the Bitwarden panel's quick unlock.
-Secrets come only from the environment; the envelope comes on stdin.
+Secrets and the account (QSBW_ACCOUNT_ID, QSBW_SERVER; create, open, add and
+rotate) come only from the environment; the envelope comes on stdin.
 
-  create      --account-id --server --salt --m --t --p
-  open        --account-id --server --via master|pin|fingerprint|fido [--cred]
-  add         --account-id --server --auth <method> [--auth-cred] --method pin
+  create      --salt --m --t --p
+  open        --via master|pin|fingerprint|fido [--cred]
+  add         --auth <method> [--auth-cred] --method pin
                   --salt --m --t --p
               ... --method fingerprint
               ... --method fido --cred --rp --fido-salt
   remove      --method pin|fingerprint|fido [--cred]
-  rotate      --account-id --server --auth <method> [--auth-cred] --salt --m --t --p
+  rotate      --auth <method> [--auth-cred] --salt --m --t --p
   mark-stale
   inspect
   --version | --self-test | --help"
