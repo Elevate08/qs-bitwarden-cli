@@ -5617,6 +5617,44 @@ function sshExportDirPrelude() {
     + "done; "
 }
 
+// Writes the payload's files into argv[1] and prunes stale *.pub files. File
+// names come from vault item names, which are encrypted vault content, so
+// they arrive on stdin and every rename and unlink happens in-process: as
+// mv, basename or rm arguments they would be readable by every local user
+// from /proc. The whole payload is checked before anything is written.
+var SSH_EXPORT_WRITE_SCRIPT = [
+  "const fs = require(\"fs\"), crypto = require(\"crypto\");",
+  "const dir = process.argv[1];",
+  "let entries;",
+  "try { entries = JSON.parse(fs.readFileSync(0, \"utf8\")); } catch (e) { process.exit(1); }",
+  "if (!Array.isArray(entries)) process.exit(1);",
+  "for (const e of entries) {",
+  "  const f = e && e.fileName, k = e && e.publicKey;",
+  "  if (typeof f !== \"string\" || typeof k !== \"string\") process.exit(1);",
+  "  if (f === \"\" || f === \".\" || f === \"..\" || /[\\/\\0]/.test(f)) process.exit(1);",
+  "}",
+  "const keep = new Set();",
+  "for (const e of entries) {",
+  // Write by rename: no partial files, and symlinks are replaced.
+  "  const tmp = dir + \"/.export.\" + crypto.randomBytes(9).toString(\"hex\");",
+  "  try {",
+  "    const fd = fs.openSync(tmp, \"wx\", 0o600);",
+  "    try { fs.fchmodSync(fd, 0o600); fs.writeFileSync(fd, e.publicKey + \"\\n\"); }",
+  "    finally { fs.closeSync(fd); }",
+  "    fs.renameSync(tmp, dir + \"/\" + e.fileName);",
+  "  } catch (err) { try { fs.unlinkSync(tmp); } catch (ignored) {} process.exit(1); }",
+  "  keep.add(e.fileName);",
+  "}",
+  // Remove stale *.pub files from earlier loads; other files, hidden ones
+  // included (export never writes those), are left alone.
+  "for (const name of fs.readdirSync(dir)) {",
+  "  const stale = name.charAt(0) !== \".\" && name.endsWith(\".pub\") && !keep.has(name);",
+  "  if (stale || name.startsWith(\".export.\")) {",
+  "    try { fs.unlinkSync(dir + \"/\" + name); } catch (ignored) {}",
+  "  }",
+  "}"
+].join("\n")
+
 function sshExportCommand() {
   var script = sshExportDirPrelude()
     // A symlinked export dir or parent was already refused by the prelude.
@@ -5628,35 +5666,8 @@ function sshExportCommand() {
     + "  [ -d \"$__dir\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "else (umask 077 && mkdir -- \"$__dir\") || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
     + "chmod 700 -- \"$__dir\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
-    // Read stdin whole so a partial payload writes nothing.
-    + "__payload=\"$(cat)\"; "
-    + "printf '%s' \"$__payload\" | jq -e 'type == \"array\"' >/dev/null 2>&1 || exit "
+    + "node -e " + shellQuote(SSH_EXPORT_WRITE_SCRIPT) + " \"$__dir\" || exit "
     + SSH_EXPORT_EXIT_WRITE + "; "
-    // NUL-delimited records. Kept names go in a bash array ("$x\n" in a
-    // string would add a literal backslash-n).
-    + "__keep=(); "
-    + "while IFS= read -r -d '' __file && IFS= read -r -d '' __key; do "
-    + "  case \"$__file\" in */*|..|.|\"\") exit " + SSH_EXPORT_EXIT_WRITE + ";; esac; "
-    // Write by rename: no partial files, and symlinks are replaced.
-    + "  __tmp=\"$(mktemp \"$__dir/.export.XXXXXX\")\" || exit " + SSH_EXPORT_EXIT_WRITE + "; "
-    + "  printf '%s\\n' \"$__key\" > \"$__tmp\" || { rm -f -- \"$__tmp\"; exit "
-    + SSH_EXPORT_EXIT_WRITE + "; }; "
-    + "  chmod 600 -- \"$__tmp\" || { rm -f -- \"$__tmp\"; exit " + SSH_EXPORT_EXIT_WRITE + "; }; "
-    + "  mv -f -- \"$__tmp\" \"$__dir/$__file\" || { rm -f -- \"$__tmp\"; exit "
-    + SSH_EXPORT_EXIT_WRITE + "; }; "
-    + "  __keep+=(\"$__file\"); "
-    + "done < <(printf '%s' \"$__payload\" | jq -j '.[] | .fileName, \"\\u0000\", .publicKey, \"\\u0000\"'); "
-    // Remove stale *.pub files from earlier loads; other files are left alone.
-    + "for __existing in \"$__dir\"/*.pub; do "
-    + "  [ -e \"$__existing\" ] || [ -L \"$__existing\" ] || continue; "
-    + "  __name=\"$(basename -- \"$__existing\")\"; "
-    + "  __found=0; "
-    + "  for __k in ${__keep[@]+\"${__keep[@]}\"}; do "
-    + "    if [ \"$__k\" = \"$__name\" ]; then __found=1; break; fi; "
-    + "  done; "
-    + "  [ \"$__found\" = \"1\" ] || rm -f -- \"$__existing\"; "
-    + "done; "
-    + "rm -f -- \"$__dir\"/.export.* 2>/dev/null; "
     + "echo exported"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
@@ -5666,7 +5677,11 @@ function sshExportCommand() {
 function sshExportClearCommand() {
   var script = sshExportDirPrelude()
     + "[ -d \"$__dir\" ] || { echo cleared; exit 0; }; "
-    + "rm -f -- \"$__dir\"/*.pub \"$__dir\"/.export.* 2>/dev/null; "
+    // find matches in-process: an rm glob would put the vault-derived names
+    // in argv. Unlike the glob, find's * matches a leading dot, so hidden
+    // *.pub files are excluded by name.
+    + "find \"$__dir\" -mindepth 1 -maxdepth 1 \\( -name '[!.]*.pub' -o -name '.export.*' \\) "
+    + "! -type d -delete 2>/dev/null; "
     + "rmdir -- \"$__dir\" 2>/dev/null; "
     + "echo cleared"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
