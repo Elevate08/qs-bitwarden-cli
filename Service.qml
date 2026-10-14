@@ -5155,11 +5155,18 @@ Item {
 
   function installMissing() {
     var pkgs = Model.missingPackages(dependencies)
-    var cmd = Model.installPackagesCommand(pkgs,
+    var cmd = Model.dependencyInstallCommand(dependencies, pkgs,
       pkgs.length === 1 ? "Bitwarden CLI" : "Bitwarden plugin dependencies")
     if (!cmd) return
     Quickshell.execDetached(cmd)
-    flashNotification("Installing -- this screen updates itself")
+    flashNotification(Model.installNeedsConfirmation(dependencies, pkgs)
+      ? "Answer pacman in the installer -- this screen updates itself"
+      : "Installing -- this screen updates itself")
+  }
+
+  // The Install buttons' tooltips: what they will run.
+  function installHint(pkgs) {
+    return Model.dependencyInstallHint(dependencies, pkgs)
   }
 
   function installOne(dep) {
@@ -5169,10 +5176,12 @@ Item {
       runFingerprintSetup()
       return
     }
-    var cmd = Model.installPackagesCommand([dep.pkg], dep.label)
+    var cmd = Model.dependencyInstallCommand(dependencies, [dep.pkg], dep.label)
     if (!cmd) return
     Quickshell.execDetached(cmd)
-    flashNotification("Installing " + dep.pkg + " -- this screen updates itself")
+    flashNotification(Model.installNeedsConfirmation(dependencies, [dep.pkg])
+      ? "Answer pacman in the installer -- this screen updates itself"
+      : "Installing " + dep.pkg + " -- this screen updates itself")
   }
 
   // Skip setup, releasing the status probe it was holding back.
