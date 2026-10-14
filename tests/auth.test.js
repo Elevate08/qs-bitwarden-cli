@@ -110,21 +110,31 @@ check("only a listed method may reach the command line",
 // shell.json is not validated by whatever writes it, and this value goes
 // straight back into an argv.
 const R = Model.rememberedTwoFactorMethodFor
-const STORE = { "a@example.com": 0, "b@example.com": 1 }
+// The map is keyed by a SHA-256 of the lower-cased, trimmed email: it is
+// written through `omarchy bar set`, so its keys reach argv (see below).
+const sha = (email) => require("crypto").createHash("sha256").update(email.trim().toLowerCase()).digest("hex")
+const K = (email) => Model.twoFactorAccountKey(email)
+const KA = sha("a@example.com"), KB = sha("b@example.com")
+const STORE = { [KA]: 0, [KB]: 1 }
+check("the key is the SHA-256 of the normalised email",
+  K("a@example.com") === KA && K("  A@Example.COM ") === KA && K("") === ""
+    && K("naïve@例え.jp") === sha("naïve@例え.jp") && Model.sha256Hex("") === sha("")
+    && Model.sha256Hex("a".repeat(200)) === require("crypto").createHash("sha256").update("a".repeat(200)).digest("hex"),
+  K("a@example.com"))
 check("a remembered method is validated on the way back out of shell.json",
   R && R(STORE, "a@example.com") === 0
-    && R({ "a@example.com": "3" }, "a@example.com") === 3
-    && R({ "a@example.com": 2 }, "a@example.com") === -1
-    && R({ "a@example.com": 9 }, "a@example.com") === -1
-    && R({ "a@example.com": "; rm -rf /" }, "a@example.com") === -1
-    && R({ "a@example.com": null }, "a@example.com") === -1
+    && R({ [KA]: "3" }, "a@example.com") === 3
+    && R({ [KA]: 2 }, "a@example.com") === -1
+    && R({ [KA]: 9 }, "a@example.com") === -1
+    && R({ [KA]: "; rm -rf /" }, "a@example.com") === -1
+    && R({ [KA]: null }, "a@example.com") === -1
     // Number() reads all of these as 0, which is Authenticator. An unset entry
     // must not come back as a confident answer.
-    && R({ "a@example.com": "" }, "a@example.com") === -1
-    && R({ "a@example.com": false }, "a@example.com") === -1
-    && R({ "a@example.com": true }, "a@example.com") === -1
-    && R({ "a@example.com": [1] }, "a@example.com") === -1
-    && R({ "a@example.com": {} }, "a@example.com") === -1,
+    && R({ [KA]: "" }, "a@example.com") === -1
+    && R({ [KA]: false }, "a@example.com") === -1
+    && R({ [KA]: true }, "a@example.com") === -1
+    && R({ [KA]: [1] }, "a@example.com") === -1
+    && R({ [KA]: {} }, "a@example.com") === -1,
   "anything not in the table reads as not remembered")
 
 // The bug this replaced: one method for the whole machine, so a second vault
@@ -135,7 +145,7 @@ check("each account keeps its own method",
   JSON.stringify(STORE))
 check("the login address is matched the way Bitwarden treats it",
   R(STORE, "  A@Example.COM  ") === 0
-    && Model.rememberTwoFactorMethodIn({}, "  A@Example.COM ", 1)["a@example.com"] === 1,
+    && Model.rememberTwoFactorMethodIn({}, "  A@Example.COM ", 1)[KA] === 1,
   "case and whitespace must not make an account remember itself twice")
 check("no account, no memory",
   R(STORE, "") === -1 && R(STORE, null) === -1 && R(null, "a@example.com") === -1
@@ -145,36 +155,88 @@ check("no account, no memory",
 // Rebuilt rather than mutated, so a hand-edit cannot survive into what is
 // written back.
 const grown = Model.rememberTwoFactorMethodIn(
-  { "a@example.com": 0, "junk@example.com": 99, "b@example.com": 1 }, "c@example.com", 3)
+  { [KA]: 0, [sha("junk@example.com")]: 99, [KB]: 1 }, "c@example.com", 3)
 check("remembering one account leaves the others alone and drops what it cannot read",
-  grown["a@example.com"] === 0 && grown["b@example.com"] === 1
-    && grown["c@example.com"] === 3 && !("junk@example.com" in grown),
+  grown[KA] === 0 && grown[KB] === 1
+    && grown[sha("c@example.com")] === 3 && !(sha("junk@example.com") in grown),
   JSON.stringify(grown))
 check("an existing account is updated rather than duplicated",
   (() => {
     const out = Model.rememberTwoFactorMethodIn(STORE, "a@example.com", 1)
-    return out["a@example.com"] === 1 && Object.keys(out).length === 2
+    return out[KA] === 1 && Object.keys(out).length === 2
   })(),
   "re-answering must replace, not append")
+check("when plain and hashed keys name one account, the hashed entry wins",
+  (() => {
+    const out = Model.rememberTwoFactorMethodIn(
+      { "a@example.com": 0, [KA]: 1, "b@example.com": 1 }, "c@example.com", 3)
+    return out[KA] === 1 && out[sha("b@example.com")] === 1 && !("a@example.com" in out)
+      && Object.keys(out).length === 3
+  })(),
+  "a stale plain entry must not shadow the newer hashed one on rewrite")
+check("migrating hashes every plain key, adds nothing and keeps the cap",
+  (() => {
+    const out = Model.migrateTwoFactorStore({ "A@example.com": 0, [KB]: 1, "junk@example.com": 99 })
+    let big = {}
+    for (let i = 0; i < 30; i++) big[`u${i}@example.com`] = 0
+    const capped = Model.migrateTwoFactorStore(big)
+    return out[KA] === 0 && out[KB] === 1 && Object.keys(out).length === 2
+      && Object.keys(capped).length <= 10
+      && Model.migrateTwoFactorStore({ [KA]: 0 }) === null
+      && Model.migrateTwoFactorStore(null) === null && Model.migrateTwoFactorStore({}) === null
+  })(), "")
 check("the store is bounded, because a config file is not a history",
   (() => {
     let store = {}
     for (let i = 0; i < 30; i++) {
       store = Model.rememberTwoFactorMethodIn(store, `u${i}@example.com`, 0)
     }
-    return Object.keys(store).length <= 10 && store["u29@example.com"] === 0
+    return Object.keys(store).length <= 10 && store[sha("u29@example.com")] === 0
   })(),
   "the newest answer must always survive the cap")
 check("forgetting one account forgets only that one",
   (() => {
     const out = Model.forgetTwoFactorMethodIn(STORE, "a@example.com")
-    return !("a@example.com" in out) && out["b@example.com"] === 1
+    return !(KA in out) && out[KB] === 1
   })(),
   "a stale method for one vault must not clear another's")
+
+// Maps written before the key was hashed hold the email itself.
+const LEGACY = { "a@example.com": 0, "b@example.com": 1, "junk@example.com": 99 }
+check("an older map keyed by email is still read",
+  R(LEGACY, "a@example.com") === 0 && R(LEGACY, "  B@example.com ") === 1 && R(LEGACY, "c@example.com") === -1
+    && Model.twoFactorStoreHasPlainKeys(LEGACY) && !Model.twoFactorStoreHasPlainKeys(STORE),
+  "a remembered method must survive the upgrade")
+check("a hashed entry wins over a stale plain one for the same account",
+  R({ "a@example.com": 1, [KA]: 3 }, "a@example.com") === 3, "")
+{
+  const out = Model.rememberTwoFactorMethodIn(LEGACY, "c@example.com", 3)
+  check("the next write rewrites an older map hashed, with no email left",
+    out[KA] === 0 && out[KB] === 1 && out[sha("c@example.com")] === 3
+      && Object.keys(out).length === 3 && !/@/.test(JSON.stringify(out)), JSON.stringify(out))
+  const forgot = Model.forgetTwoFactorMethodIn(LEGACY, "a@example.com")
+  check("so does forgetting one",
+    !(KA in forgot) && forgot[KB] === 1 && !/@/.test(JSON.stringify(forgot)), JSON.stringify(forgot))
+  const same = Model.rememberTwoFactorMethodIn({ "a@example.com": 0, [KA]: 0 }, "b@example.com", 1)
+  check("a plain and a hashed entry for one account collapse to one",
+    Object.keys(same).length === 2, JSON.stringify(same))
+  check("a migrated map still counts only 10 accounts",
+    (() => {
+      const old = {}
+      for (let i = 0; i < 10; i++) old[`o${i}@example.com`] = 0
+      return Object.keys(Model.rememberTwoFactorMethodIn(old, "new@example.com", 1)).length === 10
+    })(), "")
+}
+// `omarchy bar set` takes the value as an argument (it has no stdin or file
+// form), so no key of the map, and nothing else a setting holds, may name an
+// account: the key is hashed before it is written.
+const writtenMap = Model.rememberTwoFactorMethodIn({}, "me@example.com", 1)
 // `flat` is declared further down; this block runs before it.
-const jsonWrite = Model.settingWriteCommand("twoFactorMethods", { "a@example.com": 1 }, "json").join(" ")
+const jsonWrite = Model.settingWriteCommand("twoFactorMethods", writtenMap, "json").join(" ")
 check("a per-account map reaches shell.json as JSON, not as a number",
-  jsonWrite.includes('{"a@example.com":1}') && jsonWrite.includes("--json"), jsonWrite)
+  jsonWrite.includes(JSON.stringify(writtenMap)) && jsonWrite.includes("--json"), jsonWrite)
+check("the settings write puts no email in the argv",
+  !/me@example\.com|@/.test(jsonWrite.replace("io.github.elevate08.qs-bitwarden-cli", "")), jsonWrite)
 check("an integer setting is still written as an integer",
   Model.settingWriteCommand("autoLockMinutes", 15, "int").join(" ").includes("'15'"),
   Model.settingWriteCommand("autoLockMinutes", 15, "int").join(" "))
@@ -1030,7 +1092,8 @@ check("every email login attempt records the method it sent",
 check("a method is remembered only once it has actually worked",
   /rememberTwoFactorMethod\(login2faMethod\)/.test(loginOutput)
     && loginOutput.indexOf("rememberTwoFactorMethod") > loginOutput.indexOf("exitCode === 0")
-    && /Model\.isTwoFactorMethod\(method\)[\s\S]{0,40}return/.test(rememberMethod),
+    && /!Model\.isTwoFactorMethod\(method\)\)[\s\S]{0,400}?return/.test(rememberMethod)
+    && /Model\.migrateTwoFactorStore\(twoFactorMethodStore\)/.test(rememberMethod),
   loginOutput + "\n---\n" + rememberMethod)
 check("the remembered method is written without the settings screen's flash",
   /writeSettingQuietly\("twoFactorMethods", next, "json"\)/.test(rememberMethod)

@@ -4,6 +4,37 @@
 
 ## [1.11.8] - 2026-10-14
 
+### Security
+
+- **A forwarded SSH agent no longer tells the remote host your key item
+  names.** The agent listed each key with its vault item name as the comment,
+  so with `ssh -A` any process on the remote host could run `ssh-add -l` and
+  read the name of every SSH key in your vault, without a prompt. Connections
+  OpenSSH marks as forwarded (or whose bind the helper refused) now list their
+  keys with an empty comment; local connections still show the names.
+- **Your account email, user id and server no longer show in other local
+  users' process lists.** The pinentry prompt's "Unlock Bitwarden for
+  <email>" was an argument to the script that runs pinentry, the quick-unlock
+  tool took the account's user id and server URL as `--account-id` and
+  `--server` on every PIN, fingerprint or security-key unlock, and
+  remembering a two-step login method wrote every remembered email into the
+  arguments of `omarchy bar set`, all readable from `/proc`. The prompt text
+  and the account now travel in the environment, which only you can read, and
+  the two-step map is keyed by a SHA-256 of the email, so neither its
+  arguments nor `shell.json` hold the address; an older map is read as it is
+  and rewritten on the next login. `bw login` and `bw config server` still
+  take the email and server as arguments, since `bw` reads them no other way;
+  SECURITY.md now says so, and that a link you open is given to the browser
+  the same way.
+- **A release no longer runs the bundled helpers beside its write token.**
+  The release job ran each helper's `--self-test` with the token that
+  publishes the release and signs its attestation still in reach, so a
+  compromised dependency built into a helper could have used it. The helpers
+  now run in a separate read-only job first, checkouts no longer keep the
+  token, the report tools are pinned to exact versions, and CI no longer
+  rebuilds and commits helpers by itself when a pull request changes a
+  `.cargo` config, a `build.rs` or the build script.
+
 ## [1.11.7] - 2026-10-14
 
 ### Security

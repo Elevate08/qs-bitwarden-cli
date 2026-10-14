@@ -192,6 +192,9 @@ Item {
     startedAtMs = Date.now()
     var tool = vault.envelopeTool()
     var account = vault.envelopeAccount()
+    // The tool reads the account from the environment, not argv (this run is
+    // outside Service's envelope queue, which sets it for the others).
+    assertProc.environment = Model.envelopeAccountEnv(account)
     assertProc.command = target.mode === "envelope"
       ? Model.fidoUnlockCommand(tool, account, target)
       : Model.fidoLegacyUnlockCommand(tool, account, target)

@@ -45,6 +45,8 @@ jobs:
           # Full history, for `git archive` and the diff against the base.
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          # This job runs the PR's build; the token that can push lives in `commit`.
+          persist-credentials: false
 
       - name: Compare, and rebuild if eligible
         id: rebuild
