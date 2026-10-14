@@ -4414,6 +4414,11 @@ var DEPENDENCIES = [
   {
     key: "bw", label: "Bitwarden CLI", binary: "bw", pkg: "bitwarden-cli", aur: false,
     required: true,
+    // Arch builds bitwarden-cli against one Node LTS package (nodejs-lts-jod),
+    // which conflicts with whatever else provides `nodejs` -- the plain nodejs
+    // package Zed pulls in, for one. `omarchy install app` answers pacman's
+    // "Remove nodejs?" with its default N, so that install cannot succeed.
+    provider: "nodejs",
     purpose: "Reads and writes your vault. The panel installs it for you on first run."
   },
   {
@@ -4454,7 +4459,37 @@ function dependencyCheckCommand() {
   parts.push("if command -v omarchy-hw-fingerprint >/dev/null 2>&1 && omarchy-hw-fingerprint >/dev/null 2>&1; "
     + "then echo fingerprint_hw=1; else echo fingerprint_hw=0; fi")
   parts.push("if command -v omarchy >/dev/null 2>&1; then echo omarchy=1; else echo omarchy=0; fi")
+  for (var p = 0; p < DEPENDENCIES.length; p++) {
+    if (DEPENDENCIES[p].provider) parts.push(providerProbe(DEPENDENCIES[p]))
+  }
   return ["bash", "-c", cappedScript("{ " + parts.join("; ") + "; } | head -c 4096")]
+}
+
+// Only while the tool is missing: which installed package provides the
+// runtime (`pacman -Qq` resolves provides), and which one the repo package
+// depends on. Read from the sync database, so a rebuild against another LTS
+// is picked up without a plugin release.
+function providerProbe(dep) {
+  var have = dep.key + "_provider_have"
+  var need = dep.key + "_provider_need"
+  return "if ! command -v " + dep.binary + " >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1; then "
+    + "printf '" + have + "=%s\\n' \"$(pacman -Qq " + dep.provider + " 2>/dev/null | head -n 1)\"; "
+    + "printf '" + need + "=%s\\n' \"$(LC_ALL=C pacman -Si " + dep.pkg + " 2>/dev/null "
+    + "| sed -n 's/^Depends On *: //p' | head -n 1 | tr -s ' ' '\\n' | sed 's/[<>=].*//' "
+    + "| grep -m 1 -x '" + dep.provider + "\\(-[a-z0-9-]*\\)\\?')\"; "
+    + "else echo " + shellQuote(have + "=") + "; echo " + shellQuote(need + "=") + "; fi"
+}
+
+// The installed provider and the one the package needs, when installing the
+// package would replace the first. Null when there is nothing to replace.
+function providerSwap(found, dep) {
+  if (!dep.provider) return null
+  var have = String(found[dep.key + "_provider_have"] || "").trim()
+  var need = String(found[dep.key + "_provider_need"] || "").trim()
+  if (!isPlainPackageName(have) || !isPlainPackageName(need)) return null
+  // `nodejs` itself as the dependency: any provider does.
+  if (need === dep.provider || have === need) return null
+  return { installed: have, required: need }
 }
 
 // Only a strict calendar-version token reaches QML.
@@ -4506,6 +4541,12 @@ function parseDependencies(raw, probedVersion) {
     var installed = found[dep.key] === "1"
     var ready = dep.key === "fprintd" ? found["fingerprint_ready"] === "1" : installed
     var note = ""
+    var swap = installed ? null : providerSwap(found, dep)
+    if (swap) {
+      note = dep.label + " needs " + swap.required + ", which replaces your " + swap.installed
+        + " package. The installer opens a terminal where pacman asks before removing it. To keep "
+        + swap.installed + ", install bw with npm or mise instead and put it on your PATH."
+    }
     if (dep.key === "bw" && installed) {
       if (sshCliStatus === "unsupported") {
         note = "SSH keys need Bitwarden CLI " + SSH_CLI_MIN_VERSION + " or newer"
@@ -4529,6 +4570,8 @@ function parseDependencies(raw, probedVersion) {
       // fprintd on PATH is not the same as a usable reader with an enrolled finger.
       ready: ready,
       version: dep.key === "bw" ? bwVersion : "",
+      // Installing it replaces another package, which pacman must confirm.
+      swap: swap,
       note: note
     })
   }
@@ -6353,6 +6396,44 @@ function installPackagesCommand(pkgs, displayName) {
   }
   var name = displayName || (pkgs.length === 1 ? pkgs[0] : "Bitwarden plugin dependencies")
   return ["omarchy", "install", "app", name, pkgs.join(" ")]
+}
+
+// pacman itself, without --noconfirm, so it can ask before replacing a
+// conflicting package -- the one question omarchy-pkg-add cannot put to the
+// user. Same floating terminal as `omarchy install app`.
+function confirmedInstallCommand(pkgs, displayName) {
+  if (!pkgs || pkgs.length === 0) return null
+  for (var i = 0; i < pkgs.length; i++) {
+    if (!isPlainPackageName(pkgs[i])) return null
+  }
+  var name = displayName || (pkgs.length === 1 ? pkgs[0] : "Bitwarden plugin dependencies")
+  return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
+    "echo " + shellQuote("Installing " + name + "...") + "; sudo pacman -S --needed " + pkgs.join(" ")]
+}
+
+// Whether installing `pkgs` replaces a package, so pacman has to ask.
+function installNeedsConfirmation(deps, pkgs) {
+  if (!deps || !deps.items || !pkgs) return false
+  for (var i = 0; i < deps.items.length; i++) {
+    var d = deps.items[i]
+    if (d.swap && !d.installed && pkgs.indexOf(d.pkg) !== -1) return true
+  }
+  return false
+}
+
+// Omarchy's installer, unless a package swap needs pacman to ask. One
+// transaction either way, so a single terminal opens.
+function dependencyInstallCommand(deps, pkgs, displayName) {
+  return installNeedsConfirmation(deps, pkgs)
+    ? confirmedInstallCommand(pkgs, displayName)
+    : installPackagesCommand(pkgs, displayName)
+}
+
+// What the Install button runs, for its tooltip.
+function dependencyInstallHint(deps, pkgs) {
+  if (!pkgs || pkgs.length === 0) return ""
+  return (installNeedsConfirmation(deps, pkgs) ? "sudo pacman -S --needed " : "omarchy install app ")
+    + pkgs.join(" ")
 }
 
 // Omarchy's interactive fingerprint setup (packages, enrolment, PAM stack),

@@ -288,6 +288,76 @@ check("install refuses a package name that is not one",
   Model.installPackagesCommand(["bitwarden-cli; rm -rf /"]) === null,
   JSON.stringify(Model.installPackagesCommand(["bitwarden-cli; rm -rf /"])))
 
+// --- a Node.js provider bitwarden-cli would replace (#101) ------------------
+// omarchy-pkg-add runs pacman with --noconfirm, which answers "Remove nodejs?"
+// with N, so that install can never succeed while the swap is pending.
+const swapRaw = "bw=0\njq=1\nfprintd=0\nfingerprint_ready=0\nomarchy=1\n"
+const nodeSwap = Model.parseDependencies(swapRaw + "bw_provider_have=nodejs\nbw_provider_need=nodejs-lts-jod")
+check("a conflicting Node provider is reported on the bw row, with the way to keep it",
+  byKey(nodeSwap, "bw").swap.installed === "nodejs"
+    && byKey(nodeSwap, "bw").swap.required === "nodejs-lts-jod"
+    && /nodejs-lts-jod/.test(byKey(nodeSwap, "bw").note)
+    && /npm or mise/.test(byKey(nodeSwap, "bw").note),
+  JSON.stringify(byKey(nodeSwap, "bw")))
+const swapCmd = Model.dependencyInstallCommand(nodeSwap, ["bitwarden-cli", "jq"], "Bitwarden plugin dependencies")
+check("a pending swap installs with pacman itself, which can ask",
+  swapCmd.slice(0, 6).join(" ") === "omarchy launch floating terminal with presentation"
+    && swapCmd.length === 7
+    && /; sudo pacman -S --needed bitwarden-cli jq$/.test(swapCmd[6])
+    && !/--noconfirm|--ask/.test(swapCmd[6]),
+  JSON.stringify(swapCmd))
+check("the tooltip names the command the swap actually runs",
+  Model.dependencyInstallHint(nodeSwap, ["bitwarden-cli"]) === "sudo pacman -S --needed bitwarden-cli",
+  Model.dependencyInstallHint(nodeSwap, ["bitwarden-cli"]))
+check("a swap on bw does not reroute an install that leaves bw out",
+  Model.dependencyInstallCommand(nodeSwap, ["jq"], "jq").slice(0, 3).join(" ") === "omarchy install app",
+  JSON.stringify(Model.dependencyInstallCommand(nodeSwap, ["jq"], "jq")))
+check("the pacman install refuses a package name that is not one",
+  Model.confirmedInstallCommand(["bitwarden-cli; rm -rf /"]) === null
+    && Model.confirmedInstallCommand([]) === null,
+  JSON.stringify(Model.confirmedInstallCommand(["bitwarden-cli; rm -rf /"])))
+for (const [label, fields] of [
+  ["the needed provider already installed", "bw_provider_have=nodejs-lts-jod\nbw_provider_need=nodejs-lts-jod"],
+  ["no Node installed", "bw_provider_have=\nbw_provider_need=nodejs-lts-jod"],
+  ["an unreadable sync database", "bw_provider_have=nodejs\nbw_provider_need="],
+  ["a package that takes any nodejs", "bw_provider_have=nodejs-lts-krypton\nbw_provider_need=nodejs"],
+  ["a crafted provider name", "bw_provider_have=nodejs;id\nbw_provider_need=nodejs-lts-jod"],
+  ["a probe from before this check", ""]
+]) {
+  const deps = Model.parseDependencies(swapRaw + fields)
+  check("no swap, so Omarchy's installer as before: " + label,
+    byKey(deps, "bw").swap === null && byKey(deps, "bw").note === ""
+      && Model.dependencyInstallCommand(deps, ["bitwarden-cli"], "Bitwarden CLI").slice(0, 3).join(" ")
+        === "omarchy install app",
+    JSON.stringify(byKey(deps, "bw")))
+}
+check("an installed bw never reports a swap",
+  byKey(Model.parseDependencies("bw=1\nbw_version=2026.2.0\njq=1\nomarchy=1\n"
+    + "bw_provider_have=nodejs\nbw_provider_need=nodejs-lts-jod"), "bw").swap === null,
+  "expected null")
+check("the probe asks pacman only while bw is missing, in the C locale",
+  /if ! command -v bw [^;]*&& command -v pacman[^;]*; then printf 'bw_provider_have=%s\\n' "\$\(pacman -Qq nodejs /.test(dependencyProbe)
+    && dependencyProbe.includes("LC_ALL=C pacman -Si bitwarden-cli"),
+  dependencyProbe)
+{
+  // Run the probe's pacman half against fake pacman output.
+  const fs = require("fs"), os = require("os"), cp = require("child_process")
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-pacman-"))
+  fs.writeFileSync(path.join(bin, "pacman"), [
+    "#!/bin/bash",
+    "case \"$1\" in",
+    "  -Qq) echo nodejs ;;",
+    "  -Si) printf 'Name            : bitwarden-cli\\nDepends On      : nodejs-lts-jod>=22  argon2  semver\\n' ;;",
+    "esac"].join("\n"), { mode: 0o755 })
+  const probe = Model.providerProbe(Object.assign({}, Model.DEPENDENCIES.find(d => d.key === "bw"),
+    { binary: "qsbw-no-such-binary" }))
+  const out = cp.execFileSync("bash", ["-c", probe],
+    { env: Object.assign({}, process.env, { PATH: bin + ":" + process.env.PATH }) }).toString()
+  fs.rmSync(bin, { recursive: true, force: true })
+  check("the probe reads the installed provider and the versioned dependency",
+    out === "bw_provider_have=nodejs\nbw_provider_need=nodejs-lts-jod\n", JSON.stringify(out))
+}
+
 // The probe must be a single process, not one per tool.
 check("dependency probe is one shell invocation",
   Model.dependencyCheckCommand()[0] === "bash" && Model.dependencyCheckCommand().length === 3,
