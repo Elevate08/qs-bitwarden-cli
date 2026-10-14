@@ -2235,7 +2235,7 @@ Panel {
                   iconText: modelData.setup ? "󰈷" : "󰐕"
                   tooltipText: modelData.setup
                     ? "omarchy setup security fingerprint"
-                    : "omarchy install app " + modelData.pkg
+                    : root.vault.installHint([modelData.pkg])
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.installOne(modelData)
@@ -2263,7 +2263,7 @@ Panel {
               iconText: "󰐕"
               selected: true
               accent: Color.accent
-              tooltipText: "omarchy install app " + root.vault.installablePackages.join(" ")
+              tooltipText: root.vault.installHint(root.vault.installablePackages)
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.installMissing()

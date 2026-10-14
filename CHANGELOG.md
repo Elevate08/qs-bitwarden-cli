@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [1.11.7] - 2026-10-14
+
+### Security
+
+- **Exporting SSH public keys no longer shows their item names to other
+  local users.** With the SSH agent on, each key load writes one `.pub` file
+  per key, named after its vault item, and the script that wrote and pruned
+  them passed those names to `mv`, `basename` and `rm` as arguments, which
+  any local user can read from `/proc`. Clearing the files on logout did the
+  same through `rm`. The names now reach a short Node step on standard input,
+  which writes, renames and prunes the files itself, and clearing matches
+  them with `find`, so no process's arguments hold them.
+
+### Fixed
+
+- **Installing the Bitwarden CLI works when another Node.js package is
+  installed** ([#101](https://github.com/Elevate08/qs-bitwarden-cli/issues/101)).
+  Arch's `bitwarden-cli` needs `nodejs-lts-jod`, which conflicts with
+  `nodejs` -- installed, for one, alongside Zed -- and Omarchy's installer
+  runs pacman with `--noconfirm`, which declines the swap, so the install
+  failed every time. The setup screen now spots the conflict, says what will
+  be replaced and how to keep it instead, and installs with pacman itself in
+  Omarchy's floating terminal, so pacman can ask you. Without a conflict
+  nothing changes.
+
 ## [1.11.6] - 2026-10-12
 
 ### Security
