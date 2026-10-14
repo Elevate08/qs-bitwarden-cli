@@ -57,6 +57,12 @@ you to it.
   shell core dump. The plugin does not lower the shell's core-file limit,
   because the limit would also apply to every other shell plugin and every app
   the shell starts; see docs/vault-helper.md.
+- The address of a link you open from an item. The browser has to be given
+  it, so it is an argument to `xdg-open` and, when that starts the browser,
+  to the browser for as long as it runs, where other local users can read it.
+  Keep tokens and passwords out of the URIs you open, or open them by hand.
+- Your account email and server address in the arguments of `bw login` and
+  `bw config server`, which take them only that way, while you sign in.
 - Bugs in the Bitwarden server, `bw`, gnome-keyring, systemd, Quickshell or
   Omarchy. Report those upstream, and tell us if the plugin makes them worse.
 - An attacker who already controls your unlocked session or your user
