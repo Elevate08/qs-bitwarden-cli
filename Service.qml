@@ -1561,6 +1561,8 @@ Item {
     // Answers for an account no longer active are dropped (onEnvelopeJobExited()).
     job.slot = activeSlot
     job.epoch = vaultEpoch
+    // The tool reads the account from the environment, not argv.
+    job.accountEnv = Model.envelopeAccountEnv(envelopeAccount())
     var jobs = envelopeJobs.slice()
     jobs.push(job)
     envelopeJobs = jobs
@@ -1592,7 +1594,7 @@ Item {
     if (job.holdOutput) job.heldName = newHeldName()
     envelopeProc.capture = job.holdOutput ? "secret:" + job.heldName : (job.capture || "plain")
     envelopeProc.inject = job.inject || ({})
-    envelopeProc.environment = job.env || {}
+    envelopeProc.environment = Object.assign({}, job.accountEnv || {}, job.env || {})
     job.env = null
     envelopeProc.running = true
   }
@@ -5332,8 +5334,15 @@ Item {
   }
 
   function rememberTwoFactorMethod(method) {
-    if (!Model.isTwoFactorMethod(method)) return
-    if (method === rememberedTwoFactorMethod) return
+    if (!Model.isTwoFactorMethod(method)) {
+      // A login with no two-step method still moves an older email-keyed map
+      // to hashed keys (login-time only: a startup write would restart the shell).
+      var migrated = Model.migrateTwoFactorStore(twoFactorMethodStore)
+      if (migrated) writeSettingQuietly("twoFactorMethods", migrated, "json")
+      return
+    }
+    // An older map keyed by email is rewritten even when nothing changes.
+    if (method === rememberedTwoFactorMethod && !Model.twoFactorStoreHasPlainKeys(twoFactorMethodStore)) return
     var next = Model.rememberTwoFactorMethodIn(twoFactorMethodStore, loginEmail, method)
     if (next) writeSettingQuietly("twoFactorMethods", next, "json")
   }
@@ -5714,7 +5723,7 @@ Item {
     var name = newHeldName()
     pinentryRun = { purpose: purpose, name: name, done: done }
     beginPinentry()
-    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, {
+    var ask = {
       title: "Bitwarden",
       description: Model.pinentryDescription(purpose, userEmail),
       prompt: Model.pinentryPrompt(purpose),
@@ -5722,7 +5731,10 @@ Item {
       // The unlock's own floor, as for the field: a shorter PIN is asked for
       // again, not counted as a wrong attempt.
       minLength: purpose === "pin" ? Model.pinUnlockMinLength() : 0
-    })
+    }
+    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, ask)
+    // The description names the account: environment, not argv.
+    pinentryProc.environment = Model.pinentryEnvironment(ask)
     pinentryProc.capture = "pinentry:" + name
     pinentryProc.running = true
   }
