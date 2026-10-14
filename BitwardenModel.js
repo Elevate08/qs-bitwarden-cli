@@ -6400,7 +6400,9 @@ function installPackagesCommand(pkgs, displayName) {
 
 // pacman itself, without --noconfirm, so it can ask before replacing a
 // conflicting package -- the one question omarchy-pkg-add cannot put to the
-// user. Same floating terminal as `omarchy install app`.
+// user. Same floating terminal as `omarchy install app`, and the same red
+// line as omarchy-pkg-add when nothing went in, since the terminal's "Done!"
+// follows either way.
 function confirmedInstallCommand(pkgs, displayName) {
   if (!pkgs || pkgs.length === 0) return null
   for (var i = 0; i < pkgs.length; i++) {
@@ -6408,7 +6410,8 @@ function confirmedInstallCommand(pkgs, displayName) {
   }
   var name = displayName || (pkgs.length === 1 ? pkgs[0] : "Bitwarden plugin dependencies")
   return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
-    "echo " + shellQuote("Installing " + name + "...") + "; sudo pacman -S --needed " + pkgs.join(" ")]
+    "echo " + shellQuote("Installing " + name + "...") + "; sudo pacman -S --needed " + pkgs.join(" ")
+      + " || printf '\\033[31mError: %s did not install\\033[0m\\n' " + shellQuote(name) + " >&2"]
 }
 
 // Whether installing `pkgs` replaces a package, so pacman has to ask.

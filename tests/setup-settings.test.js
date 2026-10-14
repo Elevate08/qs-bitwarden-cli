@@ -303,9 +303,27 @@ const swapCmd = Model.dependencyInstallCommand(nodeSwap, ["bitwarden-cli", "jq"]
 check("a pending swap installs with pacman itself, which can ask",
   swapCmd.slice(0, 6).join(" ") === "omarchy launch floating terminal with presentation"
     && swapCmd.length === 7
-    && /; sudo pacman -S --needed bitwarden-cli jq$/.test(swapCmd[6])
+    && /; sudo pacman -S --needed bitwarden-cli jq \|\| printf /.test(swapCmd[6])
     && !/--noconfirm|--ask/.test(swapCmd[6]),
   JSON.stringify(swapCmd))
+{
+  // Declining the swap leaves pacman non-zero; the terminal still says
+  // "Done!", so the script has to say nothing went in. Run it with a sudo
+  // that fails the way a declined pacman does.
+  const fs = require("fs"), os = require("os"), cp = require("child_process")
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-sudo-"))
+  fs.writeFileSync(path.join(bin, "sudo"), "#!/bin/bash\nexit 1\n", { mode: 0o755 })
+  const r = cp.spawnSync("bash", ["-c", swapCmd[6]],
+    { env: Object.assign({}, process.env, { PATH: bin + ":" + process.env.PATH }) })
+  fs.writeFileSync(path.join(bin, "sudo"), "#!/bin/bash\nexit 0\n", { mode: 0o755 })
+  const ok = cp.spawnSync("bash", ["-c", swapCmd[6]],
+    { env: Object.assign({}, process.env, { PATH: bin + ":" + process.env.PATH }) })
+  fs.rmSync(bin, { recursive: true, force: true })
+  check("a declined swap says nothing was installed; a completed one does not",
+    /Error: Bitwarden plugin dependencies did not install/.test(r.stderr.toString())
+      && ok.stderr.toString() === "",
+    JSON.stringify({ declined: r.stderr.toString(), completed: ok.stderr.toString() }))
+}
 check("the tooltip names the command the swap actually runs",
   Model.dependencyInstallHint(nodeSwap, ["bitwarden-cli"]) === "sudo pacman -S --needed bitwarden-cli",
   Model.dependencyInstallHint(nodeSwap, ["bitwarden-cli"]))
@@ -345,9 +363,10 @@ check("the probe asks pacman only while bw is missing, in the C locale",
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-pacman-"))
   fs.writeFileSync(path.join(bin, "pacman"), [
     "#!/bin/bash",
-    "case \"$1\" in",
-    "  -Qq) echo nodejs ;;",
-    "  -Si) printf 'Name            : bitwarden-cli\\nDepends On      : nodejs-lts-jod>=22  argon2  semver\\n' ;;",
+    "case \"$*\" in",
+    "  '-Qq nodejs') echo nodejs ;;",
+    "  '-Si bitwarden-cli') [ \"$LC_ALL\" = C ] && printf 'Name            : bitwarden-cli\\nDepends On      : nodejs-lts-jod>=22  argon2  semver\\n' ;;",
+    "  *) exit 1 ;;",
     "esac"].join("\n"), { mode: 0o755 })
   const probe = Model.providerProbe(Object.assign({}, Model.DEPENDENCIES.find(d => d.key === "bw"),
     { binary: "qsbw-no-such-binary" }))

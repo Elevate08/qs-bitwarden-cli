@@ -31,8 +31,8 @@ If another Node.js package is already installed -- `nodejs`, which Zed pulls
 in, for one -- Arch's `bitwarden-cli` cannot go in beside it: it needs
 `nodejs-lts-jod`, and Omarchy's installer answers pacman's "Remove nodejs?"
 with no. The setup screen says so, and **Install** then opens the same
-floating terminal running `sudo pacman -S --needed bitwarden-cli`, so pacman
-can ask you itself. Answering yes swaps in Node 22 LTS, which provides
+floating terminal running `sudo pacman -S --needed bitwarden-cli` (with `jq`
+too, if that is also missing), so pacman can ask you itself. Answering yes swaps in Node 22 LTS, which provides
 `nodejs`, so packages that need it stay satisfied; pacman stops instead if one
 needs a newer Node than that. To keep your Node instead, install `bw` with
 npm or mise and make sure it is on the shell's `PATH`; the panel uses
