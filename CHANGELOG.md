@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.7] - 2026-10-14
+
 ### Fixed
 
 - **Installing the Bitwarden CLI works when another Node.js package is
