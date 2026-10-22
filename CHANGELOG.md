@@ -50,6 +50,11 @@
   never reached `bw` is now reported as not delivered instead of as an
   invalid master password.
 
+### Changed
+
+- The helpers are rebuilt with `serde_json` 1.0.154 and, for the SSH agent,
+  `tokio` 1.53.3, both upstream bug-fix releases.
+
 ## [1.11.7] - 2026-10-14
 
 ### Security
