@@ -49,6 +49,10 @@
   dropped anyway says "try again" and frees the next attempt. A password that
   never reached `bw` is now reported as not delivered instead of as an
   invalid master password.
+- **The notice that the vault helper stopped stays on screen.** When the
+  helper exits and the vault locks, an SSH approval that was waiting at the
+  time is cancelled a moment later, and closing it cleared the panel's
+  message, so the reason for the lock could vanish before you saw it.
 
 ### Changed
 

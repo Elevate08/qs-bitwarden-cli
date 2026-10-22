@@ -714,6 +714,10 @@ Item {
   property bool initialSyncAttempted: false
   property bool syncReloadPending: false
   property string errorMessage: ""
+  // Why a lock happened without the user asking. Outlives the SSH popup's
+  // cleanup, which would otherwise wipe it when a request from before the
+  // lock is cancelled afterwards.
+  readonly property string vaultHelperLostMessage: "The vault helper stopped, so the vault was locked. Unlock again."
   property string flashMessage: ""
   property bool cursorActive: false
 
@@ -1143,7 +1147,7 @@ Item {
       session = ""
       if (status === "unlocked") {
         lockVault()
-        errorMessage = "The vault helper stopped, so the vault was locked. Unlock again."
+        errorMessage = vaultHelperLostMessage
       } else {
         applySshAgentLifecycle("lock")
         dropVaultState()
@@ -2620,7 +2624,8 @@ Item {
     root.pinUnlockError = ""
     root.fingerprintMessage = ""
     root.fingerprintError = ""
-    root.errorMessage = ""
+    // Not the reason the vault was locked under the popup.
+    if (root.errorMessage !== root.vaultHelperLostMessage) root.errorMessage = ""
     syncLoginFieldsToState()
   }
 
