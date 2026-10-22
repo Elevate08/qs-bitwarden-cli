@@ -28,6 +28,8 @@ function vault() {
     heldPinName: "", pinEntry: "", pendingPinForMigration: "", session: "", readEpochs: {},
     forgotten: [], unlocks: [], refreshes: 0, activeSlot: "default", vaultEpoch: 4,
     logoutPending: false, allCredentialsClearPending: false,
+    loginSubmitted: false, unlockSubmitted: false, statusRecheckAfterUnlock: false, statusChecks: 0,
+    runStatusCheck() { this.statusChecks++ }, pinUnlockError: "", fingerprintError: "", fingerprintMessage: "",
     envelopeJobs: [], envelopeJob: null, envelopeProc: { running: false, outputHeld: true },
     envelopeStdout: { text: "" }, seq: 0,
     newHeldName() { return "pw" + (++this.seq) },
@@ -51,7 +53,8 @@ function vault() {
   v.root = v
   bind(v, service, ["forgetHeldPassword", "onEnvelopePinResult", "onPinUnlockResult",
     "onFingerprintPasswordRetrieved", "queueEnvelopeJob", "pumpEnvelopeJobs", "onEnvelopeJobExited",
-    "dropVaultState", "quickUnlockSettingOff", "reconcileDisabledMethods", "openEnvelopeForFingerprint", "noteQuickUnlockEnabled", "dropEnvelopeState"])
+    "dropVaultState", "authAttemptInFlight", "unlockJobInFlight", "envelopeUnlockJobPending",
+    "recheckStatusAfterUnlock", "onPinJobDropped", "quickUnlockSettingOff", "reconcileDisabledMethods", "openEnvelopeForFingerprint", "noteQuickUnlockEnabled", "dropEnvelopeState"])
   // Optional additions are exercised through their existing callers.
   for (const name of ["cancelEnvelopeUnlockJobs", "onQuickUnlockPurgeDone", "queueQuickUnlockPurge", "reportQuickUnlockPurgeFailure"]) {
     if (functionBody(service, name)) bind(v, service, [name])

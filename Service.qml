@@ -1582,6 +1582,7 @@ Item {
     if (job.unlock && (job.cancelled || job.slot !== activeSlot || job.epoch !== vaultEpoch || logoutPending)) {
       for (var key in job.env) forgetHeldPassword(job.env[key])
       job.env = null
+      if (job.unlock && job.onDropped) job.onDropped(job.cancelled === true)
       pumpEnvelopeJobs()
       return
     }
@@ -1614,7 +1615,12 @@ Item {
     var accepting = job && !logoutPending && job.slot === activeSlot
       && (!job.unlock || (!job.cancelled && job.epoch === vaultEpoch))
     if (job && job.onDone && (accepting || job.alwaysDone)) job.onDone(exitCode, out)
-    else if (job && job.holdOutput) forgetHeldPassword(out)
+    else {
+      if (job && job.holdOutput) forgetHeldPassword(out)
+      // An answer nobody takes up must not leave its submit marked busy.
+      if (job && job.unlock && job.onDropped) job.onDropped(job.cancelled === true)
+    }
+    if (job && job.unlock) recheckStatusAfterUnlock()
     out = ""
     if (logoutPending && allCredentialsClearPending) Qt.callLater(requestAllCredentialClear)
     Qt.callLater(pumpEnvelopeJobs)
@@ -2018,6 +2024,8 @@ Item {
   // A status probe stopped by a switch; its stale answer restarts the probe.
   property bool statusRefreshPending: false
   property bool statusCheckQueued: false
+  // A `bw status` result was set aside because a quick unlock was running.
+  property bool statusRecheckAfterUnlock: false
   property string pendingAccountsJson: ""
   property bool accountsWritePending: false
   // Slots to sign out of and delete, one process at a time.
@@ -3487,8 +3495,11 @@ Item {
     }
     var token = String(rawToken || "").trim()
     if (token) {
+      // Adopted unconfirmed: `bw status` may yet reject it, and a bump now
+      // would drop a quick unlock already running. Only a session it replaces
+      // has reads to invalidate.
+      if (session && session !== token) vaultEpoch += 1
       session = token
-      vaultEpoch += 1
     }
     runStatusCheck()
     // A remembered session is usually still good, so read the list alongside
@@ -3513,7 +3524,31 @@ Item {
 
   // An authentication the user has actually submitted, still running.
   function authAttemptInFlight() {
-    return loginSubmitted || unlockSubmitted
+    return loginSubmitted || unlockSubmitted || unlockJobInFlight()
+  }
+
+  // A quick unlock (PIN or fingerprint) between the user's answer and the
+  // password it yields: the envelope open runs while `unlockSubmitted` is
+  // still false, and a status result landing then must not cancel it.
+  function unlockJobInFlight() {
+    return pinUnlockSubmitted || envelopeUnlockJobPending()
+  }
+
+  function envelopeUnlockJobPending() {
+    if (envelopeJob && envelopeJob.unlock && !envelopeJob.cancelled) return true
+    for (var i = 0; i < envelopeJobs.length; i++) {
+      if (envelopeJobs[i].unlock && !envelopeJobs[i].cancelled) return true
+    }
+    return false
+  }
+
+  // A status held back by an unlock job is asked for again once the job is
+  // over (unless a typed unlock has taken its place), so a vault unlocked or
+  // closed elsewhere meanwhile is still noticed.
+  function recheckStatusAfterUnlock() {
+    if (!statusRecheckAfterUnlock || authAttemptInFlight()) return
+    statusRecheckAfterUnlock = false
+    Qt.callLater(runStatusCheck)
   }
 
   function onStatusFinished(rawJson) {
@@ -3525,6 +3560,7 @@ Item {
     // it started; acting on it would cancel the submitted login. The attempt
     // will set the state itself.
     if (authAttemptInFlight()) {
+      if (unlockJobInFlight() && !loginSubmitted && !unlockSubmitted) statusRecheckAfterUnlock = true
       return
     }
     isLoading = false
@@ -4965,13 +5001,27 @@ Item {
       queueEnvelopeJob({
         command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
         env: env, secretOutput: true, holdOutput: true, unlock: true,
-        onDone: function(code, out) { root.onEnvelopePinResult(code, out) }
+        onDone: function(code, out) { root.onEnvelopePinResult(code, out) },
+        onDropped: function(cancelled) { root.onPinJobDropped(cancelled) }
       })
       return
     }
     pinUnlockProc.command = Model.pinUnlockCommand(activeSlot)
     pinUnlockProc.capture = "secret:" + newHeldName()
     pinUnlockProc.running = true
+  }
+
+  // The PIN's open was discarded without an answer (the vault's state moved
+  // on under it). A deliberate cancel has already cleaned up; anything else
+  // must not leave the submit marked busy, which would ignore the next PIN.
+  function onPinJobDropped(cancelled) {
+    if (cancelled || envelopeUnlockJobPending()) return
+    releaseHeldPin()
+    if (!pinUnlockSubmitted && !pinBusy) return
+    pinUnlockSubmitted = false
+    pinBusy = false
+    if (status === "locked") pinUnlockError = "PIN unlock was interrupted. Enter your PIN again."
+    recheckStatusAfterUnlock()
   }
 
   // The envelope's answer to a PIN; exit 3 is a wrong PIN.
@@ -5021,6 +5071,7 @@ Item {
       releaseHeldPin()
       forgetHeldPassword(password)
       clearProcessCollectorSoon(pinUnlockProc)
+      recheckStatusAfterUnlock()
       return
     }
     var pw = String(password || "")
@@ -5474,6 +5525,14 @@ Item {
         root.fingerprintMessage = ""
         root.fingerprintError = "Could not read the stored password. Unlock with your master password."
         root.refreshEnvelope()
+      },
+      // Discarded without an answer: not left "Unlocking..." for nothing.
+      onDropped: function(cancelled) {
+        if (cancelled || root.envelopeUnlockJobPending()) return
+        root.fingerprintAuthorized = false
+        root.fingerprintMessage = ""
+        if (root.status === "locked") root.fingerprintError = "Fingerprint unlock was interrupted. Try again."
+        root.recheckStatusAfterUnlock()
       }
     })
   }
@@ -5934,6 +5993,20 @@ Item {
     if (exitCode === 0 && out) {
       fingerprintFromEnvelope = false
       onUnlockSuccess(out)
+    } else if (exitCode === 0 && !err) {
+      // `bw` exits 0 with nothing at all when it never got a password (it
+      // falls back to a prompt it cannot show): not a wrong one.
+      pinentryMasterName = ""
+      forgetHeldPassword(pendingUnlockPassword)
+      pendingUnlockPassword = ""
+      forgetHeldPassword(pendingPinForMigration)
+      pendingPinForMigration = ""
+      pendingUnlockFrom = ""
+      fingerprintFromEnvelope = false
+      pinFromEnvelope = false
+      fidoFromEnvelope = false
+      errorMessage = "Could not deliver the password to Bitwarden. Please try again."
+      Qt.callLater(prepareUnlock)
     } else {
       // A master password typed into pinentry that `bw` refused: forgotten,
       // and asked for again. Any other failure is shown as it is.
