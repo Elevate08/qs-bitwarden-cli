@@ -975,13 +975,17 @@ function loginHasNoUsableProvider(stdoutText, stderrText) {
   return /no\s+providers\s+available\s+for\s+this\s+client/.test(combinedOutput(stdoutText, stderrText))
 }
 
-// Writes BW_PASSWORD into the FIFO. The script names the variable, never its
-// value; `timeout` stops a dead reader from blocking the writer forever.
+// Writes BW_PASSWORD into the FIFO (exit 3 if it is empty or missing). The
+// script names the variable, never its value; `timeout` stops a dead reader
+// from blocking the writer forever.
 function authPasswordWriteCommand(channel) {
   var fifoName = authPasswordFifoName(channel)
   if (!fifoName) return []
 
   var script = "test -n \"${XDG_RUNTIME_DIR:-}\" || exit 1; "
+  // A password the helper no longer holds arrives as an unset variable. Fail
+  // here: bw takes an empty one for no password at all and exits 0.
+  script += "test -n \"${" + PASSWORD_ENV + ":-}\" || exit 3; "
   script += "__auth_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
   script += "__auth_fifo=\"$__auth_dir/" + fifoName + "\"; "
   // Started alongside the reader, so on the first login after boot the dir

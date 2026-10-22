@@ -35,6 +35,21 @@
   rebuilds and commits helpers by itself when a pull request changes a
   `.cargo` config, a `build.rs` or the build script.
 
+### Fixed
+
+- **A correct PIN or fingerprint unlock is no longer silently lost when the
+  panel's startup checks land during it**
+  ([#110](https://github.com/Elevate08/qs-bitwarden-cli/issues/110)). The
+  `bw status` and remembered-session checks that run when the panel opens
+  could arrive while the PIN or fingerprint was being opened, cancel it
+  without a word and leave the next PIN ignored until the panel was closed,
+  so it took several tries. Those checks now wait for a quick unlock to
+  finish (and run again afterwards), a remembered session is no longer
+  counted as confirmed before `bw status` agrees, and an unlock that is
+  dropped anyway says "try again" and frees the next attempt. A password that
+  never reached `bw` is now reported as not delivered instead of as an
+  invalid master password.
+
 ## [1.11.7] - 2026-10-14
 
 ### Security
