@@ -21,11 +21,13 @@
   arguments of `omarchy bar set`, all readable from `/proc`. The prompt text
   and the account now travel in the environment, which only you can read, and
   the two-step map is keyed by a SHA-256 of the email, so neither its
-  arguments nor `shell.json` hold the address; an older map is read as it is
-  and rewritten on the next login. `bw login` and `bw config server` still
-  take the email and server as arguments, since `bw` reads them no other way;
-  SECURITY.md now says so, and that a link you open is given to the browser
-  the same way.
+  arguments nor `shell.json` hold the address in plain text; an older map is
+  read as it is and rewritten on the next login. The hash is not keyed, so
+  anyone who can read those arguments or `shell.json` and guesses the address
+  can confirm it with one hash, and see which two-step method it uses.
+  `bw login` and `bw config server` still take the email and server as
+  arguments, since `bw` reads them no other way; SECURITY.md now says so, and
+  that a link you open is given to the browser the same way.
 - **A release no longer runs the bundled helpers beside its write token.**
   The release job ran each helper's `--self-test` with the token that
   publishes the release and signs its attestation still in reach, so a

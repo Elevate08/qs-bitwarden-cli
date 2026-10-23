@@ -559,12 +559,15 @@ The following settings are read from the plugin's own entry in the
 
 One further key, `twoFactorMethods`, is written to the same entry but is not a
 setting you configure. It records which two-step method last logged each
-account in, keyed by login address -- `{"you@example.com": 0}`, where `0` is
-authenticator, `1` email and `3` YubiKey -- so an account with more than one
-method is asked only once, and two vaults on one machine each keep their own
-answer. **Change method** on the code screen asks again and rewrites it. Entries
-are capped at ten accounts, and anything unreadable is treated as not
-remembered, which costs that account one extra prompt.
+account in, keyed by a SHA-256 of the login address --
+`{"<64 hex digits>": 0}`, where `0` is authenticator, `1` email and `3`
+YubiKey. The hash keeps the address out of `omarchy bar set`'s arguments and
+`shell.json` in plain text, but it is unkeyed, so someone who can read either
+and guesses the address can confirm it and see its method. An account with
+more than one method is asked only once, and two vaults on one machine each
+keep their own answer. **Change method** on the code screen asks again and
+rewrites it. Entries are capped at ten accounts, and anything unreadable is
+treated as not remembered, which costs that account one extra prompt.
 
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
 
