@@ -1652,6 +1652,9 @@ Item {
     }
     // A queued or exiting legacy PIN run still owns its capture.
     if (!pinUnlockProc.running && pinUnlockProc.runId === 0) pinBusy = false
+    // A status held back for a queued job, or one that never started, has no
+    // exit to trigger the recheck. A running job's exit still does it.
+    if (!(envelopeJob && envelopeJob.unlock)) recheckStatusAfterUnlock()
   }
 
   // Leaving an account or logging out invalidates its cleanup callbacks.
@@ -2604,13 +2607,13 @@ Item {
   // Leave no password, PIN, PAM conversation or prewarmed CLI behind a
   // dismissed or expired popup.
   function clearSshPopupUnlockState() {
+    root.pinUnlockSubmitted = false
     cancelEnvelopeUnlockJobs()
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAuthPrewarm()
     cancelPinentry()
     if (pinUnlockProc.running) pinUnlockProc.running = false
-    root.pinUnlockSubmitted = false
     // running goes false at cancellation; finish releases runId at the exit.
     if (pinUnlockProc.runId === 0) root.pinBusy = false
     root.releaseHeldPin()
