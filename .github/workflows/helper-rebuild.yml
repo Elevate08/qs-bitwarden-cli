@@ -3,10 +3,12 @@
 #
 # Only when scripts/helper-autocommit-eligible.sh -- the base branch's copy,
 # never the PR's own -- says so: a same-repository
-# PR into a release branch that leaves Cargo.lock, Cargo.toml and
-# rust-toolchain.toml alone. Dependency and toolchain changes are still rebuilt
-# by a person, because reading that diff is the only check against a
-# malicious crate (which builds just as reproducibly as an honest one).
+# PR into a release branch whose Rust changes are all plain source under
+# {agent,unlock-key,vault}/src/. Anything else that shapes the build (a
+# Cargo or rust-toolchain file at any depth, a .cargo config, a build.rs, the
+# build script) is still rebuilt by a person, because reading that diff is the
+# only check against a malicious crate (which builds just as reproducibly as
+# an honest one).
 #
 # Two jobs, so the job that runs repository code never holds a write token:
 #
