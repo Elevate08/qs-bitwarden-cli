@@ -681,8 +681,13 @@ label.
 
 For other source changes CI does it: on a pull request into a release branch
 from this repository, `helper-rebuild.yml` rebuilds the helpers in the pinned
-image and commits them to the PR branch. It never does so when `Cargo.lock`,
-`Cargo.toml` or `rust-toolchain.toml` changed, or for Dependabot or a fork.
+image and commits them to the PR branch. It does so only when the Rust
+changes are plain source under `agent/src/`, `unlock-key/src/` or `vault/src/`
+(QML, JS and docs beside them are fine). Any `Cargo.toml`, `Cargo.lock`,
+`rust-toolchain` or `rust-toolchain.toml` at any depth (the repo root
+included), any `.cargo` directory, a `build.rs`, `.gitattributes`, the build
+script, a symlink, or any other file inside a package directory makes the PR
+ineligible, as do Dependabot and forks.
 `--compare-tracked` proves the committed bytes are what the committed source
 builds; it cannot tell you whether that source is trustworthy, and a malicious
 crate builds just as reproducibly as an honest one. Reading the `Cargo.lock`

@@ -2,12 +2,24 @@
 # Whether CI may rebuild and commit the helper binaries for this pull request.
 # Prints `yes` or `no`, and the reason on stderr.
 #
-# Only a same-repository PR into a release branch that leaves the dependency
-# set, toolchain and build configuration alone. A change to Cargo.lock,
-# Cargo.toml, rust-toolchain.toml, a .cargo config (a package's, or the repo
-# root's, which Cargo also reads), a build.rs or the build script changes what
-# gets compiled in without the manifests showing it, so its rebuild stays a
-# human step: someone reads that diff before the bytes are committed.
+# Only a same-repository PR into a release branch whose every changed file is
+# either ordinary (QML, JS, docs, tests: anything the build never reads) or
+# plain Rust source under {agent,unlock-key,vault}/src/. This is an allow-list
+# on purpose: build-agent.sh archives the whole tree and runs cargo inside
+# each package, and cargo and rustup read configuration from every parent
+# directory too, so a deny-list of known file names misses a repo-root
+# Cargo.toml (`[patch.crates-io]`), a rust-toolchain file, and the like.
+# Anything that changes what gets compiled in without the source showing it
+# stays a human step: someone reads that diff before the bytes are committed.
+# None of these is ever eligible, at any depth:
+#   Cargo.lock, Cargo.toml (any Cargo.*), rust-toolchain, rust-toolchain.toml
+#   (any rust-toolchain*), anything under a .cargo directory, build.rs,
+#   .gitattributes (export-ignore and export-subst alter `git archive`),
+#   scripts/build-agent.sh (the build definition, image pin included),
+#   a symlink, and
+#   any file inside agent/, unlock-key/ or vault/ other than src/** (tests,
+#   benches and examples are not shipped, but are kept out to stay
+#   conservative).
 #
 # Reads GITHUB_EVENT_NAME, GITHUB_BASE_REF, IS_FORK and ACTOR from the
 # environment; needs the base branch fetched (checkout with fetch-depth: 0).
@@ -26,15 +38,34 @@ case "${GITHUB_BASE_REF:-}" in release/*) ;; *) no "not a pull request into a re
 
 base="origin/$GITHUB_BASE_REF"
 git rev-parse --verify --quiet "$base" >/dev/null || no "base branch $base is not fetched"
-changed="$(git diff --name-only "$base"...HEAD -- \
-  agent/Cargo.lock agent/Cargo.toml agent/rust-toolchain.toml \
-  unlock-key/Cargo.lock unlock-key/Cargo.toml unlock-key/rust-toolchain.toml \
-  vault/Cargo.lock vault/Cargo.toml vault/rust-toolchain.toml \
-  .cargo agent/.cargo unlock-key/.cargo vault/.cargo \
-  agent/build.rs unlock-key/build.rs vault/build.rs \
-  scripts/build-agent.sh)" \
+
+raw="$(mktemp)" || no "could not create a temporary file"
+trap 'rm -f "$raw"' EXIT
+# --no-renames lists both sides of a rename; -z keeps odd file names intact.
+git diff --raw --no-renames -z "$base"...HEAD >"$raw" 2>/dev/null \
   || no "could not diff against $base"
-[ -z "$changed" ] || no "dependencies, toolchain or build configuration changed ($(echo $changed)); rebuild by hand"
+
+blocked=""
+# `--raw -z` alternates `:<old mode> <new mode> <old sha> <new sha> <status>`
+# with the path.
+while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+  read -r old_mode new_mode _ <<<"${meta#:}"
+  if [ "$old_mode" = "120000" ] || [ "$new_mode" = "120000" ]; then
+    blocked="$blocked $path"; continue
+  fi
+  case "/$path" in
+    */.cargo|*/.cargo/*) blocked="$blocked $path"; continue ;;
+  esac
+  case "${path##*/}" in
+    Cargo.*|rust-toolchain*|build.rs|.gitattributes) blocked="$blocked $path"; continue ;;
+  esac
+  case "$path" in
+    scripts/build-agent.sh) blocked="$blocked $path" ;;
+    agent/src/*|unlock-key/src/*|vault/src/*) ;;
+    agent/*|unlock-key/*|vault/*) blocked="$blocked $path" ;;
+  esac
+done <"$raw"
+[ -z "$blocked" ] || no "dependencies, toolchain or build configuration changed ($(echo $blocked)); rebuild by hand"
 
 echo "helper-autocommit: eligible" >&2
 echo yes
