@@ -39,6 +39,14 @@
 
 ### Fixed
 
+- **Dismissing the SSH unlock popup no longer leaves the vault's real state
+  unseen.** When you submitted a PIN or fingerprint while the
+  plugin was still busy setting up, the `bw status` result that arrived
+  meanwhile was held back until the unlock finished. If the popup was then
+  dismissed or timed out before the unlock got to run, nothing asked again,
+  so a vault that had been unlocked elsewhere, logged out or had its
+  remembered session rejected kept showing the old state. Cancelling the
+  unlock now runs the held-back check once nothing else is in flight.
 - **A correct PIN or fingerprint unlock is no longer silently lost when the
   panel's startup checks land during it**
   ([#110](https://github.com/Elevate08/qs-bitwarden-cli/issues/110)). The

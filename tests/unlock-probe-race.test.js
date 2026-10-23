@@ -45,7 +45,8 @@ function vault(extra) {
   v.root = v
   bind(v, ["forgetHeldPassword", "queueEnvelopeJob", "pumpEnvelopeJobs", "onEnvelopeJobExited",
     "authAttemptInFlight", "unlockJobInFlight", "envelopeUnlockJobPending", "recheckStatusAfterUnlock",
-    "onPinJobDropped", "submitPinUnlock", "releaseHeldPin", "openEnvelopeForFingerprint"])
+    "onPinJobDropped", "submitPinUnlock", "releaseHeldPin", "openEnvelopeForFingerprint",
+    "cancelEnvelopeUnlockJobs"])
   return v
 }
 
@@ -193,6 +194,41 @@ for (const how of ["queued", "running"]) {
       env: Object.assign({ PATH: process.env.PATH, XDG_RUNTIME_DIR: "/nonexistent-qsbw" }, env) })
     eq("writer with " + label + " password exits 3 at once", r.status, 3)
   }
+}
+
+// --- a cancelled open still releases a held-back status ----------------------
+for (const how of ["queued", "waiting for the helper", "running"]) {
+  const v = vault({ vaultWaiting: [], vaultKill() {} })
+  if (how === "queued") v.envelopeProc.running = true // another write holds the slot
+  v.submitPinUnlock()
+  if (how !== "queued") v.pumpEnvelopeJobs()
+  v.envelopeProc.runId = 0 // no helper run id yet
+  if (how === "running") { v.envelopeProc.running = true; v.envelopeProc.runId = 7 }
+  v.statusRecheckAfterUnlock = true // the startup status was held back
+  v.pinUnlockSubmitted = false // every caller clears it first
+  v.cancelEnvelopeUnlockJobs()
+  if (how === "running") {
+    eq(how + ": no recheck while the cancelled run is still exiting", v.statusChecks, 0)
+    v.envelopeProc.running = false
+    v.onEnvelopeJobExited(143)
+  }
+  eq(how + ": the held-back status is asked for once", v.statusChecks, 1)
+  eq(how + ": the flag is cleared", v.statusRecheckAfterUnlock, false)
+}
+{
+  const v = vault({ vaultWaiting: [], vaultKill() {} })
+  v.statusRecheckAfterUnlock = true
+  v.unlockSubmitted = true // a typed unlock took over
+  v.cancelEnvelopeUnlockJobs()
+  eq("a typed unlock in flight still defers the recheck", v.statusChecks, 0)
+  eq("and the flag is kept for later", v.statusRecheckAfterUnlock, true)
+}
+
+{
+  const body = functionBody(service, "clearSshPopupUnlockState")
+  check("the popup clears the submitted flag before cancelling, so the recheck can run",
+    body.indexOf("pinUnlockSubmitted = false") !== -1
+      && body.indexOf("pinUnlockSubmitted = false") < body.indexOf("cancelEnvelopeUnlockJobs()"))
 }
 
 done()
