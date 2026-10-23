@@ -32,8 +32,12 @@
   compromised dependency built into a helper could have used it. The helpers
   now run in a separate read-only job first, checkouts no longer keep the
   token, the report tools are pinned to exact versions, and CI no longer
-  rebuilds and commits helpers by itself when a pull request changes a
-  `.cargo` config, a `build.rs` or the build script.
+  rebuilds and commits helpers by itself unless every Rust change in the
+  pull request is plain source under a helper's `src/`: a `Cargo.toml`,
+  `Cargo.lock` or `rust-toolchain` file at any depth (the repository root
+  included, which Cargo also reads), a `.cargo` config, a `build.rs`, the
+  build script or any other file in a helper's directory now leaves the
+  rebuild to a person.
 
 ### Fixed
 
