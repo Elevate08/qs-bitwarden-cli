@@ -204,6 +204,39 @@ for (const method of ["envelope PIN", "legacy PIN", "fingerprint", "FIDO2"]) {
       v.forgotten.includes("late-master"), !active)
   }
 }
+// A typed or FIDO unlock bumps the epoch while a PIN open and a fingerprint
+// open are both pending. Each dropped job cleans up its own method's state
+// (another method's job must not hold it back), and the last cleanup to run
+// releases the held status recheck.
+for (const order of ["running PIN job exits first", "queued PIN job dropped last"]) {
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, pinReady: true, isUnlocking: false,
+    pinBusy: false, pinAttempts: 0, pinMaxAttempts: 5, pinEntry: "123456",
+    envelopeSummary: { pin: true }, pendingUnlockPassword: "", cancelAuthPrewarm() {},
+    syncLoginFieldsToState() {}, clearLoginAttempt() {}, statusRecheckAfterUnlock: true,
+    runStatusCheck() { v.statusChecks++ } })
+  bind(v, service, ["submitPinUnlock"])
+  if (order.startsWith("running")) {
+    v.submitPinUnlock()
+    v.openEnvelopeForFingerprint()
+  } else {
+    v.envelopeProc.running = true // blocks both until released
+    v.submitPinUnlock()
+    v.openEnvelopeForFingerprint()
+    v.envelopeProc.running = false
+  }
+  v.vaultEpoch++ // onUnlockSuccess()
+  if (order.startsWith("running")) {
+    v.envelopeProc.running = false
+    v.onEnvelopeJobExited(0)
+  }
+  v.pumpEnvelopeJobs()
+  v.pumpEnvelopeJobs()
+  eq(`${order}: PIN submit marker cleared`, v.pinUnlockSubmitted, false)
+  eq(`${order}: PIN busy cleared`, v.pinBusy, false)
+  eq(`${order}: fingerprint authorization cleared`, v.fingerprintAuthorized, false)
+  eq(`${order}: held status recheck ran`, v.statusChecks, 1)
+}
 for (const invalidate of ["lock", "account switch", "epoch change"]) {
   const v = vault()
   v.envelopeProc.running = true // An unrelated write is in flight.

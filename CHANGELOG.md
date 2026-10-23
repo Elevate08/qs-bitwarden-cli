@@ -68,11 +68,18 @@
   time is cancelled a moment later, and closing it cleared the panel's
   message, so the reason for the lock could vanish before you saw it.
 - **A wrong PIN no longer hides a logout or unlock that happened
-  elsewhere.** If the vault was logged out or unlocked
-  somewhere else while a PIN unlock was running, a wrong PIN dropped the
-  status check that had been held back for it, so the panel kept showing the
-  PIN prompt (and could keep spinning) with the real state unseen. The check
-  now runs again once the PIN attempt is over.
+  elsewhere.** If the vault was logged out or unlocked somewhere else while a
+  PIN unlock was running, a wrong PIN dropped the status check that had been
+  held back for it, so the panel kept showing the PIN prompt (and could keep
+  spinning) with the real state unseen. The check now runs again once the PIN
+  attempt is over.
+- **Unlocking another way while a PIN or fingerprint was being opened no
+  longer leaves the panel unable to notice the vault's state.** If a FIDO
+  key touch or a typed password unlocked the vault while both a PIN and a
+  fingerprint were waiting to open, the leftover PIN attempt was never
+  cleared, and the panel then ignored every later vault status check until
+  it was closed. Each quick unlock now clears its own leftovers when it is
+  dropped, whatever the other method is doing.
 
 ### Changed
 

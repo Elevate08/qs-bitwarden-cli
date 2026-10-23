@@ -3542,10 +3542,14 @@ Item {
     return pinUnlockSubmitted || envelopeUnlockJobPending()
   }
 
-  function envelopeUnlockJobPending() {
-    if (envelopeJob && envelopeJob.unlock && !envelopeJob.cancelled) return true
+  // With `method`, only that method's jobs count: a dropped job's cleanup is
+  // about its own state, which another method's pending job does not hold.
+  function envelopeUnlockJobPending(method) {
+    if (envelopeJob && envelopeJob.unlock && !envelopeJob.cancelled
+        && (!method || envelopeJob.method === method)) return true
     for (var i = 0; i < envelopeJobs.length; i++) {
-      if (envelopeJobs[i].unlock && !envelopeJobs[i].cancelled) return true
+      if (envelopeJobs[i].unlock && !envelopeJobs[i].cancelled
+          && (!method || envelopeJobs[i].method === method)) return true
     }
     return false
   }
@@ -5008,7 +5012,7 @@ Item {
       env[Model.pinEnvVar()] = held || String(pinEntry || "")
       queueEnvelopeJob({
         command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
-        env: env, secretOutput: true, holdOutput: true, unlock: true,
+        env: env, secretOutput: true, holdOutput: true, unlock: true, method: "pin",
         onDone: function(code, out) { root.onEnvelopePinResult(code, out) },
         onDropped: function(cancelled) { root.onPinJobDropped(cancelled) }
       })
@@ -5023,7 +5027,7 @@ Item {
   // on under it). A deliberate cancel has already cleaned up; anything else
   // must not leave the submit marked busy, which would ignore the next PIN.
   function onPinJobDropped(cancelled) {
-    if (cancelled || envelopeUnlockJobPending()) return
+    if (cancelled || envelopeUnlockJobPending("pin")) return
     releaseHeldPin()
     if (!pinUnlockSubmitted && !pinBusy) return
     pinUnlockSubmitted = false
@@ -5517,7 +5521,7 @@ Item {
   function openEnvelopeForFingerprint() {
     queueEnvelopeJob({
       command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "fingerprint" }),
-      secretOutput: true, holdOutput: true, unlock: true,
+      secretOutput: true, holdOutput: true, unlock: true, method: "fingerprint",
       onDone: function(code, out) {
         if (code === 0 && out) {
           root.fingerprintFromEnvelope = true
@@ -5539,7 +5543,7 @@ Item {
       },
       // Discarded without an answer: not left "Unlocking..." for nothing.
       onDropped: function(cancelled) {
-        if (cancelled || root.envelopeUnlockJobPending()) return
+        if (cancelled || root.envelopeUnlockJobPending("fingerprint")) return
         root.fingerprintAuthorized = false
         root.fingerprintMessage = ""
         if (root.status === "locked") root.fingerprintError = "Fingerprint unlock was interrupted. Try again."
