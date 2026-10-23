@@ -713,20 +713,96 @@ function twoFactorMethodLabel(method) {
   return ""
 }
 
-// Remembered two-step methods, keyed by account email.
+// Remembered two-step methods, keyed by a hash of the account email. The map
+// is written with `omarchy bar set <id> <key> <value>`, which has no stdin or
+// file form for the value, so it would sit in argv (world-readable) with every
+// email in it. Hashed, argv shows no address in plain text. The hash is
+// unkeyed, so whoever can read argv or shell.json and guesses an address can
+// confirm it and see its method. Maps written before 1.11.8 are keyed by the
+// plain email: read by either key, rewritten hashed on the next write.
 var MAX_REMEMBERED_ACCOUNTS = 10
 
+// SHA-256 of a string as 64 hex digits. TotpModel.js has one over byte arrays;
+// it cannot be imported here, as the tests evaluate this file on its own.
+var SHA256_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+]
+
+function sha256Hex(text) {
+  var bytes = []
+  var utf8 = unescape(encodeURIComponent(String(text)))
+  for (var i = 0; i < utf8.length; i++) bytes.push(utf8.charCodeAt(i))
+  var bitLength = bytes.length * 8
+  bytes.push(0x80)
+  while (bytes.length % 64 !== 56) bytes.push(0)
+  for (var hi = 3; hi >= 0; hi--) bytes.push((Math.floor(bitLength / 4294967296) >>> (hi * 8)) & 0xff)
+  for (var lo = 3; lo >= 0; lo--) bytes.push((bitLength >>> (lo * 8)) & 0xff)
+  var h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+  var w = new Array(64)
+  function rotr(x, n) { return (x >>> n) | (x << (32 - n)) }
+  for (var off = 0; off < bytes.length; off += 64) {
+    for (var t = 0; t < 64; t++) {
+      if (t < 16) {
+        w[t] = (bytes[off + t * 4] << 24) | (bytes[off + t * 4 + 1] << 16)
+          | (bytes[off + t * 4 + 2] << 8) | bytes[off + t * 4 + 3]
+      } else {
+        var s0 = rotr(w[t - 15], 7) ^ rotr(w[t - 15], 18) ^ (w[t - 15] >>> 3)
+        var s1 = rotr(w[t - 2], 17) ^ rotr(w[t - 2], 19) ^ (w[t - 2] >>> 10)
+        w[t] = (w[t - 16] + s0 + w[t - 7] + s1) | 0
+      }
+    }
+    var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], k = h[7]
+    for (var r = 0; r < 64; r++) {
+      var t1 = (k + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + SHA256_K[r] + w[r]) | 0
+      var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0
+      k = g; g = f; f = e; e = (d + t1) | 0
+      d = c; c = b; b = a; a = (t1 + t2) | 0
+    }
+    h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0
+    h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0; h[6] = (h[6] + g) | 0; h[7] = (h[7] + k) | 0
+  }
+  return h.map(function(x) { return ("00000000" + (x >>> 0).toString(16)).slice(-8) }).join("")
+}
+
 // Bitwarden compares login emails case-insensitively.
-function twoFactorAccountKey(email) {
+function twoFactorPlainKey(email) {
   return String(email || "").trim().toLowerCase()
 }
 
-// shell.json is unvalidated and the method goes into argv, so it is checked
-// against the table on read; anything else is "not remembered" (-1).
-function rememberedTwoFactorMethodFor(store, email) {
-  var key = twoFactorAccountKey(email)
-  if (!key || !store || typeof store !== "object") return -1
-  var raw = store[key]
+function twoFactorAccountKey(email) {
+  var plain = twoFactorPlainKey(email)
+  return plain ? sha256Hex(plain) : ""
+}
+
+// An email cannot be 64 hex digits (it has an @), so this tells the two kinds
+// of key apart.
+function isTwoFactorHashKey(key) {
+  return /^[0-9a-f]{64}$/.test(String(key))
+}
+
+// The key a stored entry is kept under from now on: hashed keys as they are,
+// plain emails (an older map) hashed.
+function twoFactorStoredKey(key) {
+  return isTwoFactorHashKey(key) ? String(key) : twoFactorAccountKey(key)
+}
+
+// Whether the map still has a key that is an email, to be rewritten.
+function twoFactorStoreHasPlainKeys(store) {
+  if (!store || typeof store !== "object") return false
+  for (var k in store) if (!isTwoFactorHashKey(k)) return true
+  return false
+}
+
+// A stored value as a method, or -1. shell.json is unvalidated and the method
+// goes into argv, so it is checked against the table on read.
+function twoFactorMethodOf(raw) {
   // Number() alone reads null, "" and false as 0 (Authenticator).
   var m = (typeof raw === "number" || (typeof raw === "string" && String(raw).trim() !== ""))
     ? Math.floor(Number(raw))
@@ -734,24 +810,49 @@ function rememberedTwoFactorMethodFor(store, email) {
   return isFinite(m) && isTwoFactorMethod(m) ? m : -1
 }
 
-// Rebuilt, not mutated, so unknown or invalid entries are dropped; capped at
-// MAX_REMEMBERED_ACCOUNTS.
-function rememberTwoFactorMethodIn(store, email, method) {
+// Anything but a valid entry is "not remembered" (-1).
+function rememberedTwoFactorMethodFor(store, email) {
   var key = twoFactorAccountKey(email)
-  if (!key || !isTwoFactorMethod(method)) return null
+  if (!key || !store || typeof store !== "object") return -1
+  var found = twoFactorMethodOf(store[key])
+  return found >= 0 ? found : twoFactorMethodOf(store[twoFactorPlainKey(email)])
+}
+
+// Rebuilt, not mutated, so unknown or invalid entries are dropped and plain
+// email keys become hashed; capped at MAX_REMEMBERED_ACCOUNTS. Hashed keys go
+// first: when both forms exist for one account the hashed one is the newer
+// answer, and a plain key (first in JSON order) must not shadow it.
+function twoFactorKeptEntries(store, key, room) {
   var next = {}
   var kept = 0
   if (store && typeof store === "object") {
-    for (var k in store) {
-      var other = twoFactorAccountKey(k)
-      if (!other || other === key) continue
-      var existing = rememberedTwoFactorMethodFor(store, k)
-      if (existing < 0) continue
-      if (kept >= MAX_REMEMBERED_ACCOUNTS - 1) continue
-      next[other] = existing
-      kept++
+    for (var pass = 0; pass < 2; pass++) {
+      for (var k in store) {
+        if (isTwoFactorHashKey(k) !== (pass === 0)) continue
+        var other = twoFactorStoredKey(k)
+        if (!other || other === key || next[other] !== undefined) continue
+        var existing = twoFactorMethodOf(store[k])
+        if (existing < 0) continue
+        if (kept >= room) continue
+        next[other] = existing
+        kept++
+      }
     }
   }
+  return next
+}
+
+// The map with plain email keys hashed and nothing added, or null when it has
+// none (nothing to write).
+function migrateTwoFactorStore(store) {
+  if (!twoFactorStoreHasPlainKeys(store)) return null
+  return twoFactorKeptEntries(store, "", MAX_REMEMBERED_ACCOUNTS)
+}
+
+function rememberTwoFactorMethodIn(store, email, method) {
+  var key = twoFactorAccountKey(email)
+  if (!key || !isTwoFactorMethod(method)) return null
+  var next = twoFactorKeptEntries(store, key, MAX_REMEMBERED_ACCOUNTS - 1)
   next[key] = method
   return next
 }
@@ -759,24 +860,20 @@ function rememberTwoFactorMethodIn(store, email, method) {
 function forgetTwoFactorMethodIn(store, email) {
   var key = twoFactorAccountKey(email)
   if (!key || !store || typeof store !== "object") return null
-  var next = {}
-  for (var k in store) {
-    var other = twoFactorAccountKey(k)
-    if (!other || other === key) continue
-    var existing = rememberedTwoFactorMethodFor(store, k)
-    if (existing >= 0) next[other] = existing
-  }
-  return next
+  return twoFactorKeptEntries(store, key, MAX_REMEMBERED_ACCOUNTS)
 }
 
 // `bw config server <url> && `, or "" for the default server.
 function serverConfigPrefix(serverUrl) {
   var url = String(serverUrl || "").trim()
+  // The URL stays in argv (here and in the terminal login): `bw config server`
+  // takes it only as an argument. A server URL is not a secret.
   return url ? "bw config server " + shellQuote(url) + " >/dev/null 2>&1 && " : ""
 }
 
 function emailLoginPrewarmCommand(email, hasCode, serverUrl, method) {
   var command = serverConfigPrefix(serverUrl)
+  // The email stays in argv: `bw login` takes it only as an argument.
   command += "bw login " + shellQuote(email) + " --passwordfile \"$__auth_fifo\""
   if (isTwoFactorMethod(method)) command += " --method " + String(method)
   if (hasCode) command += " " + TWOFACTOR_CODE_FLAG
@@ -796,6 +893,7 @@ var DEVICE_VERIFICATION_TIMEOUT_S = 60
 function deviceVerificationLoginCommand(email, serverUrl, method) {
   var command = serverConfigPrefix(serverUrl)
   command += "printf '%s\\n' \"$" + DEVICE_CODE_ENV + "\" | "
+  // The email stays in argv here too: `bw login` takes it only as an argument.
   command += "timeout " + DEVICE_VERIFICATION_TIMEOUT_S + "s bw login " + shellQuote(email)
     + " --passwordfile \"$__auth_fifo\""
   if (isTwoFactorMethod(method)) command += " --method " + String(method)
@@ -878,13 +976,17 @@ function loginHasNoUsableProvider(stdoutText, stderrText) {
   return /no\s+providers\s+available\s+for\s+this\s+client/.test(combinedOutput(stdoutText, stderrText))
 }
 
-// Writes BW_PASSWORD into the FIFO. The script names the variable, never its
-// value; `timeout` stops a dead reader from blocking the writer forever.
+// Writes BW_PASSWORD into the FIFO (exit 3 if it is empty or missing). The
+// script names the variable, never its value; `timeout` stops a dead reader
+// from blocking the writer forever.
 function authPasswordWriteCommand(channel) {
   var fifoName = authPasswordFifoName(channel)
   if (!fifoName) return []
 
   var script = "test -n \"${XDG_RUNTIME_DIR:-}\" || exit 1; "
+  // A password the helper no longer holds arrives as an unset variable. Fail
+  // here: bw takes an empty one for no password at all and exits 0.
+  script += "test -n \"${" + PASSWORD_ENV + ":-}\" || exit 3; "
   script += "__auth_dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; "
   script += "__auth_fifo=\"$__auth_dir/" + fifoName + "\"; "
   // Started alongside the reader, so on the first login after boot the dir
@@ -981,6 +1083,7 @@ function terminalLoginCommand(mode, serverUrl, slot) {
     // Remove a stale entry before opening the output path, so a pre-created
     // symlink is unlinked rather than followed by shell redirection.
     + "rm -f -- \"$f\" || exit 1; "
+    // Argv, as `bw config server` needs (see serverConfigPrefix()).
     + configureServer
     + "if bw " + verb + " --raw > \"$f\" && [ -s \"$f\" ]; then "
     // Bring the panel back itself rather than making the user find it again.
@@ -1255,7 +1358,7 @@ var AGENT_KEYS_FILTER = JQ_ITEM_HELPERS.concat([
   "  error(\"expected one item array\")",
   "else",
   "  {",
-  "    loadId: $loadId,",
+  "    loadId: ($ENV.QSBW_LOAD_ID // \"\"),",
   "    items: [.[] | objects | select(ssh_type)",
   "      | select((.reprompt | reprompt_or_zero) == 0)",
   "      | {",
@@ -1352,7 +1455,8 @@ function agentBranchScript() {
     // A cheap pre-check (the fstat is the real one) that skips the whole
     // decrypt-and-filter pass when the agent is gone.
     + "if [ -p \"$__qsbw_fifo\" ]; then "
-    + "timeout 10 jq -c --arg loadId \"${" + LOAD_ID_ENV + ":-}\" "
+    // The nonce is read from the environment, not argv, where ps could see it.
+    + "timeout 10 jq -c "
     + shellQuote(AGENT_KEYS_FILTER) + " 2>/dev/null | timeout 10 node -e "
     + shellQuote(fifoWriter) + " \"$__qsbw_fifo\" 2>/dev/null || true; "
     + "fi; "
@@ -1692,6 +1796,8 @@ var PINENTRY_DEFAULT_PROGRAM = "pinentry"
 var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ]; then if command -v -- " + PINENTRY_PREFERRED_PROGRAM
   + " >/dev/null 2>&1; then __prog=" + PINENTRY_PREFERRED_PROGRAM + "; else __prog=" + PINENTRY_DEFAULT_PROGRAM + "; fi; fi"
 var PINENTRY_TEXT_MAX = 400
+var PINENTRY_DESC_ENV = "QSBW_PE_DESC"
+var PINENTRY_ERR_ENV = "QSBW_PE_ERR"
 // Pinentry closes itself after this long without an answer (SETTIMEOUT), so
 // a forgotten window does not keep the panel hidden and SSH prompts held
 // back. The script stops waiting a little later, for a pinentry that ignores
@@ -1712,7 +1818,11 @@ function pinentryExitCodes() {
 // timeout, GPG_ERR_TIMEOUT (62), is one too: nobody answered.
 var PINENTRY_SCRIPT = [
   PINENTRY_RESOLVE,
-  "__title=\"$2\"; __desc=\"$3\"; __prompt=\"$4\"; __err=\"$5\"; __min=\"${6:-0}\"",
+  // The description and error can name the account, so they come in the
+  // environment, not argv, and are gone before pinentry starts.
+  "__title=\"$2\"; __prompt=\"$3\"; __min=\"${4:-0}\"",
+  "__desc=\"$" + PINENTRY_DESC_ENV + "\"; __err=\"$" + PINENTRY_ERR_ENV + "\"",
+  "unset " + PINENTRY_DESC_ENV + " " + PINENTRY_ERR_ENV,
   "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
   // Assuan data: only %, CR and LF need encoding.
   "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
@@ -1799,8 +1909,18 @@ function pinentryProgram(configured) {
 function pinentryCommand(program, opts) {
   var o = opts || {}
   return ["bash", "-c", PINENTRY_SCRIPT, "_", pinentryProgram(program),
-    pinentryText(o.title), pinentryText(o.description), pinentryText(o.prompt), pinentryText(o.error),
+    pinentryText(o.title), pinentryText(o.prompt),
     String(Math.max(0, Math.floor(Number(o.minLength) || 0)))]
+}
+
+// The environment pinentryCommand() reads its description and error from
+// (/proc/<pid>/cmdline is world-readable, and the description names the account).
+function pinentryEnvironment(opts) {
+  var o = opts || {}
+  var env = {}
+  env[PINENTRY_DESC_ENV] = pinentryText(o.description)
+  env[PINENTRY_ERR_ENV] = pinentryText(o.error)
+  return env
 }
 
 // Prints "found" or "missing": whether `program` names something runnable.
@@ -1914,8 +2034,19 @@ function envelopeArgsOk(tool, account) {
     && !/[\x00-\x1f\x7f]/.test(account.id + account.server)
 }
 
-function envelopeAccountArgs(account) {
-  return " --account-id " + shellQuote(account.id) + " --server " + shellQuote(account.server)
+// The account the tool checks the envelope against. It travels in the
+// environment (QSBW_ACCOUNT_ID, QSBW_SERVER), never argv: a user id and server
+// URL are readable by any local user in /proc/<pid>/cmdline, and every script
+// below runs as `bash -c <script>`, so they must not be in the script text
+// either. A job's runner exports these (envelopeAccountEnv()).
+var ENVELOPE_ACCOUNT_ID_ENV = "QSBW_ACCOUNT_ID"
+var ENVELOPE_SERVER_ENV = "QSBW_SERVER"
+
+function envelopeAccountEnv(account) {
+  var env = {}
+  env[ENVELOPE_ACCOUNT_ID_ENV] = String(account && account.id || "")
+  env[ENVELOPE_SERVER_ENV] = String(account && account.server || "")
+  return env
 }
 
 // Functions every envelope script starts with.
@@ -1952,7 +2083,8 @@ function envelopePrelude(tool, slot) {
     + "__kdf \"$2\" \"$__s\" \"$__t\" \"$__m\" \"$__p\" || exit " + ENVELOPE_EXIT.kdf + "; }; "
     // The new envelope must re-open, for the right account...
     + "__verify_account() { __unseal \"$__new\" | \"$__tool\" inspect "
-    + "| jq -e --arg id \"$1\" --arg server \"$2\" '.account.id == $id and .account.server == $server' "
+    + "| " + ENVELOPE_ACCOUNT_ID_ENV + "=\"$1\" " + ENVELOPE_SERVER_ENV + "=\"$2\" "
+    + "jq -e '.account.id == $ENV." + ENVELOPE_ACCOUNT_ID_ENV + " and .account.server == $ENV." + ENVELOPE_SERVER_ENV + "' "
     + ">/dev/null || exit " + ENVELOPE_EXIT.verify + "; }; "
     // ...and yield exactly the password through the way just written. cmp on
     // streams keeps a trailing newline significant; the way's key ($__vk)
@@ -1989,7 +2121,7 @@ function unlockEnvelopeInspectCommand(tool, slot) {
 //   { kind: "fido", cred }    hmac-secret for `cred` in FIDO_HMAC_ENV
 function unlockEnvelopeOpenCommand(tool, account, via) {
   if (!envelopeArgsOk(tool, account) || !via) return envelopeRefused()
-  var open = "\"$__tool\" open" + envelopeAccountArgs(account)
+  var open = "\"$__tool\" open"
   var script = envelopePrelude(tool, account.slot) + "__load; "
   if (via.kind === "master" || via.kind === "pin") {
     var secret = via.kind === "master" ? KEYRING_SECRET_ENV : PIN_ENV
@@ -2016,10 +2148,10 @@ function unlockEnvelopeCreateCommand(tool, account) {
     + "__k=\"$(" + envelopeNewKey("\"$" + KEYRING_SECRET_ENV + "\"", "__s") + ")\" || exit "
     + ENVELOPE_EXIT.kdf + "; "
     + "__new=\"$(QSBW_UNLOCK_PASSWORD=\"$" + KEYRING_SECRET_ENV + "\" QSBW_UNLOCK_NEW_KEY=\"$__k\" "
-    + "\"$__tool\" create" + envelopeAccountArgs(account) + envelopeArgon2Args("__s") + " | __seal)\" "
+    + "\"$__tool\" create" + envelopeArgon2Args("__s") + " | __seal)\" "
     + "|| exit $?; "
-    + "__verify_account " + shellQuote(account.id) + " " + shellQuote(account.server) + "; "
-    + "__vk=\"$__k\"; __verify_opens \"$" + KEYRING_SECRET_ENV + "\"" + envelopeAccountArgs(account)
+    + "__verify_account \"$" + ENVELOPE_ACCOUNT_ID_ENV + "\" \"$" + ENVELOPE_SERVER_ENV + "\"; "
+    + "__vk=\"$__k\"; __verify_opens \"$" + KEYRING_SECRET_ENV + "\""
     + " --via master; "
     + "__store"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
@@ -2039,7 +2171,6 @@ function unlockEnvelopeCreateCommand(tool, account) {
 // wrap; nothing typed is stored.
 function unlockEnvelopeUpdateCommand(tool, account, op) {
   if (!envelopeArgsOk(tool, account) || !op) return envelopeRefused()
-  var acct = envelopeAccountArgs(account)
   var masterKey = "__mk=\"$(__wrap_key '.master' \"$" + KEYRING_SECRET_ENV + "\")\" || exit $?; "
   var transform = ""
   var verifyOpen = ""
@@ -2048,13 +2179,13 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
   if (op.kind === "add-pin") {
     pre = masterKey + "__s=\"$(__salt)\"; "
       + "__pk=\"$(" + envelopeNewKey("\"$" + PIN_ENV + "\"", "__s") + ")\" || exit " + ENVELOPE_EXIT.kdf + "; "
-    transform = "QSBW_UNLOCK_KEY=\"$__mk\" QSBW_UNLOCK_NEW_KEY=\"$__pk\" \"$__tool\" add" + acct
+    transform = "QSBW_UNLOCK_KEY=\"$__mk\" QSBW_UNLOCK_NEW_KEY=\"$__pk\" \"$__tool\" add"
       + " --auth master --method pin" + envelopeArgon2Args("__s")
-    verifyOpen = "__vk=\"$__pk\"; __verify_opens \"$" + KEYRING_SECRET_ENV + "\"" + acct + " --via pin; "
+    verifyOpen = "__vk=\"$__pk\"; __verify_opens \"$" + KEYRING_SECRET_ENV + "\" --via pin; "
   } else if (op.kind === "add-fingerprint") {
     pre = masterKey
-    transform = "QSBW_UNLOCK_KEY=\"$__mk\" \"$__tool\" add" + acct + " --auth master --method fingerprint"
-    verifyOpen = "__vk=''; __verify_opens \"$" + KEYRING_SECRET_ENV + "\"" + acct + " --via fingerprint; "
+    transform = "QSBW_UNLOCK_KEY=\"$__mk\" \"$__tool\" add --auth master --method fingerprint"
+    verifyOpen = "__vk=''; __verify_opens \"$" + KEYRING_SECRET_ENV + "\" --via fingerprint; "
   } else if (op.kind === "add-fido") {
     // `saltFromEnv`: a fresh salt drawn earlier in the same pipeline.
     var saltArg = op.saltFromEnv ? "\"$" + FIDO_SALT_ENV + "\"" : shellQuote(op.salt)
@@ -2062,10 +2193,10 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
         || (!op.saltFromEnv && !ENVELOPE_BASE64_RE.test(String(op.salt || "")))
         || !op.rp || /[\x00-\x1f\x7f]/.test(String(op.rp))) return envelopeRefused()
     pre = masterKey
-    transform = "QSBW_UNLOCK_KEY=\"$__mk\" QSBW_UNLOCK_NEW_KEY=\"$" + FIDO_HMAC_ENV + "\" \"$__tool\" add" + acct
+    transform = "QSBW_UNLOCK_KEY=\"$__mk\" QSBW_UNLOCK_NEW_KEY=\"$" + FIDO_HMAC_ENV + "\" \"$__tool\" add"
       + " --auth master --method fido --cred " + shellQuote(op.cred) + " --rp " + shellQuote(op.rp)
       + " --fido-salt " + saltArg
-    verifyOpen = "__vk=\"$" + FIDO_HMAC_ENV + "\"; __verify_opens \"$" + KEYRING_SECRET_ENV + "\"" + acct
+    verifyOpen = "__vk=\"$" + FIDO_HMAC_ENV + "\"; __verify_opens \"$" + KEYRING_SECRET_ENV + "\""
       + " --via fido --cred " + shellQuote(op.cred) + "; "
   } else if (op.kind === "remove") {
     if (op.method === "pin" || op.method === "fingerprint") {
@@ -2092,17 +2223,17 @@ function unlockEnvelopeUpdateCommand(tool, account, op) {
     pre += "__s=\"$(__salt)\"; "
       + "__nk=\"$(" + envelopeNewKey("\"$" + NEW_SECRET_ENV + "\"", "__s") + ")\" || exit " + ENVELOPE_EXIT.kdf + "; "
     transform = authArgs + "QSBW_UNLOCK_PASSWORD=\"$" + NEW_SECRET_ENV + "\" QSBW_UNLOCK_NEW_KEY=\"$__nk\" "
-      + "\"$__tool\" rotate" + acct + " --auth " + auth.kind
+      + "\"$__tool\" rotate --auth " + auth.kind
       + (auth.kind === "fido" ? " --auth-cred " + shellQuote(auth.cred) : "")
       + envelopeArgon2Args("__s")
-    verifyOpen = "__vk=\"$__nk\"; __verify_opens \"$" + NEW_SECRET_ENV + "\"" + acct + " --via master; "
+    verifyOpen = "__vk=\"$__nk\"; __verify_opens \"$" + NEW_SECRET_ENV + "\" --via master; "
   } else {
     return envelopeRefused()
   }
 
   var script = envelopePrelude(tool, account.slot) + "__load; " + pre
     + "__new=\"$(__unseal \"$__sealed\" | " + transform + " | __seal)\" || exit $?; "
-    + "__verify_account " + shellQuote(account.id) + " " + shellQuote(account.server) + "; "
+    + "__verify_account \"$" + ENVELOPE_ACCOUNT_ID_ENV + "\" \"$" + ENVELOPE_SERVER_ENV + "\"; "
     + verifyOpen
     + "__store"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
@@ -5392,6 +5523,10 @@ function helperReady(inspection) {
 // argon2, fido2-assert and systemd-creds. Shipped and inspected like the SSH
 // helper. If it fails, only quick unlock is disabled.
 var UNLOCK_KEY_ENVELOPE_VERSION = 1
+// The command-line contract the builders above speak. v2 reads the account from
+// QSBW_ACCOUNT_ID and QSBW_SERVER instead of --account-id and --server, so a
+// v1 binary (which would refuse the missing flags) is turned away up front.
+var UNLOCK_KEY_CLI_VERSION = 2
 var UNLOCK_KEY_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-unlock-key"
 var UNLOCK_KEY_DEVELOPMENT_RELATIVE = "unlock-key/target/debug/qs-bitwarden-unlock-key"
 
@@ -5399,7 +5534,7 @@ var UNLOCK_KEY_SPEC = {
   name: "qs-bitwarden-unlock-key",
   bundled: UNLOCK_KEY_BUNDLED_RELATIVE,
   development: UNLOCK_KEY_DEVELOPMENT_RELATIVE,
-  protocolSed: "s/.*envelope v\\([0-9]*\\).*/\\1/p"
+  protocolSed: "s/.*cli v\\([0-9]*\\).*/\\1/p"
 }
 
 function unlockKeyInspectCommand(pluginDir) {
@@ -5407,10 +5542,10 @@ function unlockKeyInspectCommand(pluginDir) {
 }
 
 var UNLOCK_KEY_MESSAGES = helperMessages("quick-unlock tool", "unlock-key/Cargo.toml",
-  "uses a different envelope format")
+  "uses a different command interface")
 
 function parseUnlockKeyInspection(raw) {
-  return parseHelperInspection(raw, UNLOCK_KEY_ENVELOPE_VERSION, UNLOCK_KEY_MESSAGES)
+  return parseHelperInspection(raw, UNLOCK_KEY_CLI_VERSION, UNLOCK_KEY_MESSAGES)
 }
 
 // -------------------------------------------------------------------------

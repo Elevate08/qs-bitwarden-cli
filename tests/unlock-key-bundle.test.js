@@ -47,6 +47,8 @@ eq("the bundled path is architecture-scoped",
 eq("the development path is cargo's debug output for its own package",
   Model.UNLOCK_KEY_DEVELOPMENT_RELATIVE, "unlock-key/target/debug/qs-bitwarden-unlock-key")
 eq("the panel reads envelope v1", Model.UNLOCK_KEY_ENVELOPE_VERSION, 1)
+// v2: the account comes in QSBW_ACCOUNT_ID / QSBW_SERVER, not --account-id / --server.
+eq("the panel speaks command interface v2", Model.UNLOCK_KEY_CLI_VERSION, 2)
 
 // -------------------------------------------------------------------------
 // The inspection, run against real files
@@ -71,7 +73,7 @@ const sample = fs.existsSync(bundled) ? bundled : development
   eq("and it is the shipped one when one is tracked",
     result.source, fs.existsSync(bundled) ? "bundled" : "development")
   check("its version is reported", /^\d+\.\d+\.\d+$/.test(result.version), result.version)
-  eq("its envelope version is the panel's", result.protocol, 1)
+  eq("its command interface version is the panel's", result.protocol, 2)
   eq("its self-test passed", result.selfTest, "pass")
   eq("quick unlock would be offered", Model.helperReady(result), true)
 }
@@ -131,11 +133,11 @@ if (fs.existsSync(sample)) {
   })
 }
 
-// The panel, not the shell, decides whether an envelope format is one it
-// can read.
+// The panel, not the shell, decides whether a command interface is one it
+// can drive: a v1 tool (flags for the account) would be refused, not misused.
 {
-  const newer = Model.parseUnlockKeyInspection("state=ok\nsource=bundled\nversion=0.2.0\nprotocol=2\n")
-  eq("an envelope format the panel does not read is refused", newer.state, "protocol-mismatch")
+  const newer = Model.parseUnlockKeyInspection("state=ok\nsource=bundled\nversion=0.2.0\nprotocol=1\n")
+  eq("a command interface the panel does not speak is refused", newer.state, "protocol-mismatch")
   check("and the message says to reinstall", /Reinstall/.test(newer.message), newer.message)
 }
 

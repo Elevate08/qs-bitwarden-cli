@@ -161,9 +161,12 @@ check("envelope jobs run one at a time",
   /if \(envelopeProc\.running \|\| envelopeJob !== null \|\| envelopeJobs\.length === 0\) return/
     .test(bodyOf("pumpEnvelopeJobs")), bodyOf("pumpEnvelopeJobs"))
 check("a job's secrets are dropped the moment it starts",
-  /envelopeProc\.environment = job\.env \|\| \{\}\s*\n\s*job\.env = null/.test(bodyOf("pumpEnvelopeJobs"))
+  /envelopeProc\.environment = Object\.assign\(\{\}, job\.accountEnv \|\| \{\}, job\.env \|\| \{\}\)\s*\n\s*job\.env = null/.test(bodyOf("pumpEnvelopeJobs"))
     && /envelopeProc\.environment = \{\}/.test(bodyOf("onEnvelopeJobExited")),
   bodyOf("pumpEnvelopeJobs"))
+check("every job carries the account in its environment, not its argv",
+  /job\.accountEnv = Model\.envelopeAccountEnv\(envelopeAccount\(\)\)/.test(bodyOf("queueEnvelopeJob")),
+  bodyOf("queueEnvelopeJob"))
 check("a job that printed the password has its collector scrubbed",
   /job\.secretOutput\) clearProcessCollectorSoon\(envelopeProc\)/.test(bodyOf("onEnvelopeJobExited")),
   bodyOf("onEnvelopeJobExited"))
