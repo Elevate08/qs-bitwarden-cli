@@ -83,6 +83,24 @@ function vault() {
   check("abandoned legacy answer is forgotten", v.forgotten.includes(capture.slice(7)))
   eq("legacy exit releases busy state", v.pinBusy, false)
 }
+// A status held back during a legacy PIN run is re-run on every exit that
+// does not hand off to a typed unlock, including a wrong PIN.
+for (const [label, code, out] of [["wrong PIN", 1, ""], ["empty output", 0, ""]]) {
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, pinBusy: true, pinMaxAttempts: 5,
+    statusRecheckAfterUnlock: true, runStatusCheck: () => { v.statusChecks++ } })
+  v.onPinUnlockResult(code, out)
+  eq(`legacy ${label}: held status is re-run`, v.statusChecks, 1)
+  eq(`legacy ${label}: recheck flag cleared`, v.statusRecheckAfterUnlock, false)
+  eq(`legacy ${label}: no unlock started`, v.unlocks.length, 0)
+}
+{
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, statusRecheckAfterUnlock: true,
+    runStatusCheck: () => { v.statusChecks++ } })
+  v.onPinUnlockResult(0, Model.heldSecretRef("pwx"))
+  eq("legacy accepted PIN hands off without a status recheck", v.statusChecks, 0)
+}
 // VaultProcess keeps its runId after a kill request; only finish releases it.
 // Exercise the real cancellation/result paths while its helper exit is delayed.
 for (const cleanup of ["dismiss", "dismiss twice", "dismiss then panel close"]) {

@@ -55,6 +55,12 @@
   helper exits and the vault locks, an SSH approval that was waiting at the
   time is cancelled a moment later, and closing it cleared the panel's
   message, so the reason for the lock could vanish before you saw it.
+- **A wrong PIN no longer hides a logout or unlock that happened
+  elsewhere.** If the vault was logged out or unlocked
+  somewhere else while a PIN unlock was running, a wrong PIN dropped the
+  status check that had been held back for it, so the panel kept showing the
+  PIN prompt (and could keep spinning) with the real state unseen. The check
+  now runs again once the PIN attempt is over.
 
 ### Changed
 

@@ -5084,6 +5084,9 @@ Item {
     if (exitCode !== 0 || !pw) {
       var viaPinentry = releaseHeldPin()
       countWrongPin()
+      // A status held back while this job ran is asked for again now; a
+      // pinentry retry that follows holds the next one back the same way.
+      recheckStatusAfterUnlock()
       if (viaPinentry) retryPinentryPin()
       return
     }
