@@ -22,7 +22,7 @@ const fs = require("fs")
 const path = require("path")
 const { spawnSync } = require("child_process")
 
-const { check, done } = createSuite("e2e-ssh-lock")
+const { check, done, failures } = createSuite("e2e-ssh-lock")
 
 if (spawnSync("ssh-keygen", ["-?"]).error) {
   console.error("e2e-ssh-lock: needs ssh-keygen")
@@ -140,6 +140,9 @@ try {
   fs.rmSync(path.join(data, "fake-status-delay"))
   shell.expect("losing the helper locks the vault, and says why",
     s => s.status === "locked" && s.screen === "locked" && /vault helper stopped/.test(s.error))
+  shell.q("refresh")
+  check("a background refresh keeps the reason the vault locked",
+    /vault helper stopped/.test(shell.state()?.error), "the helper-loss notice was cleared")
   shell.expect("the list went with it", s => s.items.length === 0)
   refusedAfterLock("after the helper died")
   check("still locked, not signed out by the failed check", shell.state().status === "locked", "")
@@ -161,7 +164,7 @@ try {
 } catch (e) {
   check("ran to the end", false, String(e && e.stack))
 } finally {
-  if (process.exitCode || process.env.KEEP_E2E) console.error(shell.logTail())
+  if (failures.length || process.exitCode || process.env.KEEP_E2E) console.error(shell.logTail())
   shell.cleanup()
 }
 done()

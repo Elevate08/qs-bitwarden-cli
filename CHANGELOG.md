@@ -66,7 +66,9 @@
 - **The notice that the vault helper stopped stays on screen.** When the
   helper exits and the vault locks, an SSH approval that was waiting at the
   time is cancelled a moment later, and closing it cleared the panel's
-  message, so the reason for the lock could vanish before you saw it.
+  message, so the reason for the lock could vanish before you saw it. A
+  delayed status probe or background refresh also keeps this notice until
+  you reopen the panel or start another unlock.
 - **A wrong PIN no longer hides a logout or unlock that happened
   elsewhere.** If the vault was logged out or unlocked somewhere else while a
   PIN unlock was running, a wrong PIN dropped the status check that had been

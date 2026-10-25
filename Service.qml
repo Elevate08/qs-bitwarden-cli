@@ -3393,7 +3393,8 @@ Item {
   // -------------------------------------------------------------------------
 
   function refreshStatus() {
-    errorMessage = ""
+    // A delayed probe or wake-up refresh must not erase why the vault locked.
+    if (errorMessage !== vaultHelperLostMessage) errorMessage = ""
     if (logoutPending) return
     // Wait for the dependency probe, which owns the first status transition.
     if (!depsChecked) {
