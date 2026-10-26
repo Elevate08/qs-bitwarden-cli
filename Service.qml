@@ -780,8 +780,14 @@ Item {
   property string sendFormPassword: ""
   property int sendIndex: 0
 
-  // Generator state (session-scoped; the browser extension's options)
+  // Generator state (the browser extension's options). The options are kept
+  // in shell.json (`generatorOptions`), restored on the first visit and saved
+  // a moment after each change, so stepping the length writes once.
   property var genOpts: Model.generatorDefaults()
+  property bool genOptsRestored: false
+  // The options last written (or read), as JSON.
+  property string genOptsSaved: ""
+  property bool genOptsWritePending: false
   property string genValue: ""
   property bool genBusy: false
   property bool genRegeneratePending: false
@@ -4662,12 +4668,17 @@ Item {
     generatorReturnScreen = (currentScreen === "edit") ? "edit" : "main"
     screenBeforeSettings = "main"
     currentScreen = "generator"
+    restoreGeneratorOptions()
     // The form wants a fresh value; a standalone visit keeps the last one.
     if (generatorFeedsForm || !genValue) regenerate()
   }
 
   function closeGenerator() {
     var toForm = generatorFeedsForm
+    if (genOptsSaveTimer.running) {
+      genOptsSaveTimer.stop()
+      saveGeneratorOptions()
+    }
     currentScreen = generatorReturnScreen
     generatorReturnScreen = "main"
     // Land back on the field the trip was about, filled in or not.
@@ -4870,11 +4881,34 @@ Item {
 
   // Every control changes options here: normalise and regenerate.
   function setGenOpt(key, value) {
+    restoreGeneratorOptions()
     var next = {}
     for (var k in genOpts) next[k] = genOpts[k]
     next[key] = value
     genOpts = Model.normalizeGeneratorOptions(next)
+    genOptsSaveTimer.restart()
     regenerate()
+  }
+
+  // Once per service: after that the options in memory are the newer ones.
+  function restoreGeneratorOptions() {
+    if (genOptsRestored) return
+    genOptsRestored = true
+    genOpts = Model.restoreGeneratorOptions(setting("generatorOptions", null))
+    genOptsSaved = JSON.stringify(Model.generatorOptionsToStore(genOpts))
+  }
+
+  // The options only, never a generated value; no "Saved" flash.
+  function saveGeneratorOptions() {
+    var stored = Model.generatorOptionsToStore(genOpts)
+    if (JSON.stringify(stored) === genOptsSaved) return
+    if (genOptsWriteProc.running) {
+      genOptsWritePending = true
+      return
+    }
+    genOptsSaved = JSON.stringify(stored)
+    genOptsWriteProc.command = Model.settingWriteCommand("generatorOptions", stored, "json")
+    genOptsWriteProc.running = true
   }
 
   function copyGenerated() {
@@ -8949,6 +8983,26 @@ Item {
         root.errorMessage = (settingWriteStderr.text || "").trim() || "Could not save setting to shell.json"
       }
     }
+  }
+
+  // Its own process: settingWriteProc may be busy with a setting, and a
+  // Process ignores a new command while it runs.
+  Process {
+    id: genOptsWriteProc
+    onExited: function(exitCode) {
+      // Not saved: the next change, or the one waiting, tries again.
+      if (exitCode !== 0) root.genOptsSaved = ""
+      if (root.genOptsWritePending) {
+        root.genOptsWritePending = false
+        root.saveGeneratorOptions()
+      }
+    }
+  }
+
+  Timer {
+    id: genOptsSaveTimer
+    interval: 800
+    onTriggered: root.saveGeneratorOptions()
   }
 
   Timer {

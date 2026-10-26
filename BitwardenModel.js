@@ -6847,6 +6847,41 @@ function normalizeGeneratorOptions(opts) {
   return o
 }
 
+// The options as saved to shell.json (`generatorOptions`): the option keys
+// only, so nothing else (a generated value above all) can ride along.
+function generatorOptionsToStore(opts) {
+  var o = normalizeGeneratorOptions(opts || {})
+  var out = {}
+  for (var k in GENERATOR_DEFAULTS) out[k] = o[k]
+  return out
+}
+
+// Whether a value read back from shell.json, which nothing validates, can
+// stand for this option. Anything else keeps the default.
+function generatorOptionValid(key, value) {
+  var limit = GENERATOR_LIMITS[key]
+  if (limit) {
+    return typeof value === "number" && Math.floor(value) === value
+      && value >= limit.min && value <= limit.max
+  }
+  if (key === "type") return value === "password" || value === "passphrase"
+  // One printable character, as the separator field takes.
+  if (key === "separator") return typeof value === "string" && value.length === 1 && !/[\x00-\x1f\x7f]/.test(value)
+  return typeof value === "boolean"
+}
+
+// The saved options, or the defaults for anything missing or unreadable.
+function restoreGeneratorOptions(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return generatorDefaults()
+  var o = generatorDefaults()
+  // No option name is inherited from Object.prototype, and nothing inherited
+  // would pass the check anyway.
+  for (var k in GENERATOR_DEFAULTS) {
+    if (generatorOptionValid(k, raw[k])) o[k] = raw[k]
+  }
+  return normalizeGeneratorOptions(o)
+}
+
 // -------------------------------------------------------------------------
 // Generator over `bw serve`
 // -------------------------------------------------------------------------

@@ -158,6 +158,7 @@ live strength meter.
 
 Generation comes from Bitwarden's own generator, not a reimplementation, and
 answers in about **2ms** rather than the ~2.9s a fresh `bw generate` costs.
+The options you pick are remembered, across shell restarts too.
 
 <br clear="all">
 
@@ -568,6 +569,15 @@ more than one method is asked only once, and two vaults on one machine each
 keep their own answer. **Change method** on the code screen asks again and
 rewrites it. Entries are capped at ten accounts, and anything unreadable is
 treated as not remembered, which costs that account one extra prompt.
+
+Another, `generatorOptions`, holds the password generator's last options --
+`type`, `length`, `uppercase`, `lowercase`, `numbers`, `special`,
+`minNumber`, `minSpecial`, `ambiguous`, `words`, `separator`, `capitalize`
+and `includeNumber` -- written a moment after you change one and read when
+the generator first opens. It never holds a generated password. A value that
+is missing, of the wrong type or out of range (length `5`-`128`, words
+`3`-`20`, minimums `0`-`9`) uses its default, and at least one character set
+stays on.
 
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
 

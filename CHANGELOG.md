@@ -82,6 +82,13 @@
   cleared, and the panel then ignored every later vault status check until
   it was closed. Each quick unlock now clears its own leftovers when it is
   dropped, whatever the other method is doing.
+- **The password generator remembers its options.** Length, character sets,
+  minimum numbers and special characters, and the passphrase options went
+  back to the defaults every time the shell restarted. They are now saved to
+  the plugin's entry in `shell.json` (`generatorOptions`) shortly after each
+  change and restored when the generator opens; a value that is missing or
+  out of range uses its default. Only the options are saved, never a
+  generated password.
 
 ### Changed
 

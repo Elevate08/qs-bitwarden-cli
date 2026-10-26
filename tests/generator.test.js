@@ -70,6 +70,105 @@ check("defaults are a fresh object each call",
   Model.generatorDefaults() !== Model.generatorDefaults(), "same reference returned")
 
 
+// --- remembered options -------------------------------------------------------
+// The options are kept in shell.json (`generatorOptions`), which nothing
+// validates, so what comes back is checked key by key.
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+const restore = raw => Model.restoreGeneratorOptions(raw)
+const store = opts => Model.generatorOptionsToStore(opts)
+
+for (const [what, raw] of [["nothing saved", undefined], ["null", null], ["a string", "length=20"],
+                           ["an array", [20, true]], ["a number", 20]]) {
+  check(`${what} restores the defaults unchanged`,
+    same(restore(raw), Model.generatorDefaults()), JSON.stringify(restore(raw)))
+}
+
+const chosen = Model.normalizeGeneratorOptions({ length: 24, numbers: true, minNumber: 3,
+  special: true, minSpecial: 2, ambiguous: true })
+const roundTrip = restore(JSON.parse(JSON.stringify(store(chosen))))
+check("saved options come back as they were chosen",
+  same(roundTrip, chosen), JSON.stringify(roundTrip))
+const phrase = Model.normalizeGeneratorOptions({ type: "passphrase", words: 6, separator: "_",
+  capitalize: true, includeNumber: true })
+check("saved passphrase options come back as they were chosen",
+  same(restore(JSON.parse(JSON.stringify(store(phrase)))), phrase),
+  JSON.stringify(restore(store(phrase))))
+
+const stored = store(Object.assign({}, chosen, { value: "Tr0ub4dor&3", password: "hunter2" }))
+check("only the option keys are saved, never a generated value",
+  Object.keys(stored).every(k => k in Model.generatorDefaults())
+    && !/Tr0ub4dor|hunter2/.test(JSON.stringify(stored)),
+  JSON.stringify(stored))
+check("the saved options reach shell.json as JSON",
+  Model.settingWriteCommand("generatorOptions", stored, "json")[2].includes("--json"),
+  Model.settingWriteCommand("generatorOptions", stored, "json")[2])
+
+check("a partial save keeps the defaults for the rest",
+  same(restore({ length: 32 }), Model.normalizeGeneratorOptions({ length: 32 })),
+  JSON.stringify(restore({ length: 32 })))
+
+// The minimums are checked with their character set on, so they are not
+// zeroed for being unused.
+for (const [key, bad] of [["length", "abc"], ["length", 4], ["length", 129], ["length", 20.5],
+                          ["length", null], ["words", 2], ["words", 21], ["minNumber", -1],
+                          ["minNumber", 10], ["minSpecial", "9"], ["numbers", "false"],
+                          ["uppercase", 0], ["special", "true"], ["type", "pin"],
+                          ["separator", "--"], ["separator", ""], ["separator", "\n"], ["separator", 7]]) {
+  const base = key.startsWith("min") ? { numbers: true, special: true } : {}
+  const got = restore(Object.assign({}, base, { [key]: bad }))[key]
+  check(`a saved ${key} of ${JSON.stringify(bad)} falls back to the default`,
+    got === Model.generatorDefaults()[key], `got ${JSON.stringify(got)}`)
+}
+
+const allOff = restore({ uppercase: false, lowercase: false, numbers: false, special: false })
+check("a save with every character set off still enables one",
+  allOff.uppercase || allOff.lowercase || allOff.numbers || allOff.special, JSON.stringify(allOff))
+const tooShort = restore({ length: 5, numbers: true, minNumber: 9, special: true, minSpecial: 9 })
+check("restored minimums still fit within the length",
+  tooShort.length >= tooShort.minNumber + tooShort.minSpecial
+    && tooShort.length <= 128, JSON.stringify(tooShort))
+const polluted = restore(JSON.parse('{"__proto__":{"x":1},"length":20}'))
+check("unknown saved keys are dropped",
+  !("value" in restore({ value: "x", length: 20 }))
+    && polluted.x === undefined && !Object.keys(polluted).includes("__proto__") && polluted.length === 20,
+  JSON.stringify(restore({ value: "x", length: 20 })))
+
+// The panel side: restored on the first visit (a shell restart starts a fresh
+// service), saved shortly after each change and when the generator closes.
+const openBody = bodyOf("openGenerator")
+const restoreBody = bodyOf("restoreGeneratorOptions")
+const saveBody = bodyOf("saveGeneratorOptions")
+check("opening the generator restores the saved options before generating",
+  /restoreGeneratorOptions\(\)/.test(openBody)
+    && openBody.indexOf("restoreGeneratorOptions()") < openBody.indexOf("regenerate()"),
+  openBody)
+check("the saved options are read once, through the validator",
+  /if\s*\(genOptsRestored\)\s*return/.test(restoreBody)
+    && /genOpts\s*=\s*Model\.restoreGeneratorOptions\(setting\("generatorOptions"/.test(restoreBody),
+  restoreBody)
+check("changing an option schedules a save",
+  /genOptsSaveTimer\.restart\(\)/.test(bodyOf("setGenOpt")), bodyOf("setGenOpt"))
+check("a change applies on top of the saved options, which cannot overwrite it later",
+  /^\s*function setGenOpt\(key, value\) \{\s*restoreGeneratorOptions\(\)/.test(bodyOf("setGenOpt")),
+  bodyOf("setGenOpt"))
+check("closing the generator saves a change still waiting",
+  /genOptsSaveTimer\.running[\s\S]*saveGeneratorOptions\(\)/.test(bodyOf("closeGenerator")),
+  bodyOf("closeGenerator"))
+check("the save writes only the options, quietly",
+  /Model\.generatorOptionsToStore\(genOpts\)/.test(saveBody)
+    && /Model\.settingWriteCommand\("generatorOptions",[^)]*"json"\)/.test(saveBody)
+    && !/genValue|settingsFlash|console\./.test(saveBody),
+  saveBody)
+check("an unchanged option set is not written again",
+  /===\s*genOptsSaved\)\s*return/.test(saveBody), saveBody)
+check("a change made while a save runs is written after it",
+  /genOptsWriteProc\.running[\s\S]*genOptsWritePending\s*=\s*true/.test(saveBody)
+    && /genOptsWritePending[\s\S]*saveGeneratorOptions\(\)/.test(
+      panelSrc.slice(panelSrc.indexOf("id: genOptsWriteProc"), panelSrc.indexOf("id: genOptsWriteProc") + 900)),
+  saveBody)
+
+
 // --- the same options over `bw serve` ---------------------------------------
 // `bw serve` URLs, verified against a live locked `bw serve`.
 
