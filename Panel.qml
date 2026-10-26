@@ -4794,6 +4794,14 @@ Panel {
               width: editFlickable.width - root.scrollGutter
               spacing: Style.space(10)
 
+              // Enter's save, with the Save button's guards. A form field's
+              // Return lands here (LineField.submitsForm), so the next field
+              // added saves without wiring of its own.
+              function submitForm() {
+                if (root.vault.activeScreen !== "edit" || root.vault.formPicker !== "" || root.vault.isLoading) return
+                root.vault.saveItemForm()
+              }
+
               // Item Type Selector (only for new items)
               Row {
                 visible: !root.vault.formIsEditing
@@ -4922,6 +4930,8 @@ Panel {
                     placeholderText: "New folder name..."
                     text: root.vault.newFolderName
                     onTextChanged: root.vault.newFolderName = text
+                    // Enter adds the folder; it does not save the item.
+                    submitsForm: false
                     onAccepted: root.vault.submitNewFolder()
                     enabled: !root.vault.creatingFolder
                   }
@@ -5500,12 +5510,14 @@ Panel {
                 }
               }
 
-              // Enter saves from anywhere in the form (one Shortcut rather than
-              // onAccepted on 30+ fields), except while a picker has it.
+              // Enter saves from anywhere in the form, except while a picker
+              // has it. An editable text field claims Return before any
+              // Shortcut and calls submitForm() itself; this covers the rest
+              // (a masked field, or focus on no field).
               Shortcut {
                 sequences: ["Return", "Enter"]
-                enabled: root.vault.activeScreen === "edit" && root.vault.formPicker === ""
-                onActivated: root.vault.saveItemForm()
+                enabled: root.vault.activeScreen === "edit" && root.vault.formPicker === "" && !root.vault.isLoading
+                onActivated: editFormCol.submitForm()
               }
 
               // Save Action Button

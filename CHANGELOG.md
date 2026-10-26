@@ -82,6 +82,12 @@
   cleared, and the panel then ignored every later vault status check until
   it was closed. Each quick unlock now clears its own leftovers when it is
   dropped, whatever the other method is doing.
+- **Enter saves a new or edited item again.** Since 1.11.5 the item form's
+  text fields kept Enter to themselves, so pressing it in the name, username
+  or any other unmasked field did nothing and saving meant scrolling down to
+  the Save button. Enter (Return or keypad Enter) in any field now saves,
+  with the button's checks, except in the new-folder and custom-field label
+  boxes, where it still adds the folder or field.
 - **The password generator remembers its options.** Length, character sets,
   minimum numbers and special characters, and the passphrase options went
   back to the defaults every time the shell restarted. They are now saved to

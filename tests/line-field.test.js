@@ -8,7 +8,7 @@
 
 const fs = require("fs")
 const path = require("path")
-const { createSuite, repoRoot } = require("./harness")
+const { createSuite, repoRoot, read, functionBody } = require("./harness")
 
 const { check, done } = createSuite("line-field")
 
@@ -75,5 +75,63 @@ check("a finished paste destroys its collector",
 check("a paste started before the field closed is dropped",
   /pasteEpoch/.test(line) && /function acceptPaste[\s\S]*?editingOpen\(\)/.test(line),
   "closing a form hides it without disabling the field")
+
+// Enter saves the item form from a text field. The editable TextEdit claims
+// Return in ShortcutOverride, so the form's Shortcut never sees it; the field
+// hands it to the form instead. Behaviour: tests/qml-kit/tst_item_form_enter.qml.
+function blocks(src, type) {
+  const found = []
+  const opener = new RegExp(`\\b${type}\\s*\\{`, "g")
+  let m
+  while ((m = opener.exec(src))) found.push(balanced(src, m.index))
+  return found
+}
+
+function balanced(src, from) {
+  let depth = 0
+  let i = src.indexOf("{", from)
+  const start = i
+  for (; i < src.length; i++) {
+    if (src[i] === "{") depth++
+    else if (src[i] === "}" && --depth === 0) break
+  }
+  return src.slice(start, i + 1)
+}
+
+const submit = functionBody(line, "submit")
+check("Return and Enter both submit",
+  /Keys\.onReturnPressed: function\(event\) \{\s*event\.accepted = true\s*root\.submit\(\)/.test(line)
+    && /Keys\.onEnterPressed: function\(event\) \{\s*event\.accepted = true\s*root\.submit\(\)/.test(line),
+  "keypad Enter must do what Return does")
+check("a field's Return reaches the form around it",
+  /if \(!enabled \|\| readOnly\) return\s*accepted\(\)\s*if \(!submitsForm\) return/.test(submit)
+    && /typeof item\.submitForm === "function"/.test(submit) && /item = item\.parent/.test(submit),
+  submit || "submit() missing")
+
+const panel = read("Panel.qml")
+const formAt = panel.indexOf("id: editFormCol")
+const itemForm = balanced(panel, panel.lastIndexOf("Column {", formAt))
+const submitForm = functionBody(itemForm, "submitForm")
+const saveButton = itemForm.match(/\/\/ Save Action Button\s*Button \{[\s\S]*?\n {14}\}/)?.[0] || ""
+check("the item form saves on Enter with the Save button's guards",
+  /root\.vault\.formPicker !== ""/.test(submitForm) && /root\.vault\.isLoading/.test(submitForm)
+    && /root\.vault\.saveItemForm\(\)/.test(submitForm)
+    && /enabled: !root\.vault\.isLoading && root\.vault\.formPicker === ""/.test(saveButton),
+  submitForm || "editFormCol has no submitForm()")
+check("the form's Enter Shortcut saves through submitForm()",
+  /Shortcut \{\s*sequences: \["Return", "Enter"\][\s\S]*?onActivated: editFormCol\.submitForm\(\)/.test(itemForm),
+  "the Shortcut and a field's Return must share one guarded path")
+
+// A field whose own Return does something else (a new folder, a custom field)
+// must not also save the item; every other field must.
+const formFields = [itemForm, read("CustomFieldsEditor.qml")]
+  .flatMap(src => [...blocks(src, "LineField"), ...blocks(src, "SecretField")])
+check("the item form has its fields", formFields.length > 30, `${formFields.length} fields`)
+for (const field of formFields) {
+  const ownReturn = /\bonAccepted:/.test(field)
+  const optedOut = /\bsubmitsForm: false\b/.test(field)
+  check("a form field saves on Enter unless its own Return does something else",
+    ownReturn === optedOut, field.split("\n").slice(0, 6).join("\n"))
+}
 
 done()
