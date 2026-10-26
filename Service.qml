@@ -788,6 +788,8 @@ Item {
   // The options last written (or read), as JSON.
   property string genOptsSaved: ""
   property bool genOptsWritePending: false
+  // Failed saves retried since the last change; one is allowed.
+  property int genOptsRetries: 0
   property string genValue: ""
   property bool genBusy: false
   property bool genRegeneratePending: false
@@ -4886,6 +4888,7 @@ Item {
     for (var k in genOpts) next[k] = genOpts[k]
     next[key] = value
     genOpts = Model.normalizeGeneratorOptions(next)
+    genOptsRetries = 0
     genOptsSaveTimer.restart()
     regenerate()
   }
@@ -8990,11 +8993,19 @@ Item {
   Process {
     id: genOptsWriteProc
     onExited: function(exitCode) {
-      // Not saved: the next change, or the one waiting, tries again.
-      if (exitCode !== 0) root.genOptsSaved = ""
       if (root.genOptsWritePending) {
+        if (exitCode !== 0) root.genOptsSaved = ""
         root.genOptsWritePending = false
         root.saveGeneratorOptions()
+        return
+      }
+      // Not saved: tried once more, then left to the next change.
+      if (exitCode !== 0) {
+        root.genOptsSaved = ""
+        if (root.genOptsRetries < 1) {
+          root.genOptsRetries++
+          genOptsSaveTimer.restart()
+        }
       }
     }
   }

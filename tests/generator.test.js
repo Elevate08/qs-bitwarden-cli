@@ -114,10 +114,19 @@ for (const [key, bad] of [["length", "abc"], ["length", 4], ["length", 129], ["l
                           ["length", null], ["words", 2], ["words", 21], ["minNumber", -1],
                           ["minNumber", 10], ["minSpecial", "9"], ["numbers", "false"],
                           ["uppercase", 0], ["special", "true"], ["type", "pin"],
-                          ["separator", "--"], ["separator", ""], ["separator", "\n"], ["separator", 7]]) {
+                          ["separator", "--"], ["separator", ""], ["separator", "\n"], ["separator", 7],
+                          // Half a surrogate pair, a C1 control, line breaks and
+                          // bidi controls draw nothing or reorder the passphrase.
+                          ["separator", "\ud800"], ["separator", "\udfff"], ["separator", "\u0085"],
+                          ["separator", "\u009f"], ["separator", "\u2028"], ["separator", "\u2029"],
+                          ["separator", "\u202a"], ["separator", "\u202e"], ["separator", "\u2066"],
+                          ["separator", "\u2069"], ["separator", "\u200e"], ["separator", "\u200f"]]) {
   const base = key.startsWith("min") ? { numbers: true, special: true } : {}
   const got = restore(Object.assign({}, base, { [key]: bad }))[key]
-  check(`a saved ${key} of ${JSON.stringify(bad)} falls back to the default`,
+  // Invisible characters spelled out, so the report can be read.
+  const shown = JSON.stringify(bad).replace(/[^\x20-\x7e]/g,
+    c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"))
+  check(`a saved ${key} of ${shown} falls back to the default`,
     got === Model.generatorDefaults()[key], `got ${JSON.stringify(got)}`)
 }
 
@@ -167,6 +176,12 @@ check("a change made while a save runs is written after it",
     && /genOptsWritePending[\s\S]*saveGeneratorOptions\(\)/.test(
       panelSrc.slice(panelSrc.indexOf("id: genOptsWriteProc"), panelSrc.indexOf("id: genOptsWriteProc") + 900)),
   saveBody)
+const writeProcBlock = panelSrc.slice(panelSrc.indexOf("id: genOptsWriteProc"),
+  panelSrc.indexOf("id: genOptsSaveTimer"))
+check("a failed save is retried once, not forever, and each change allows one more",
+  /exitCode\s*!==\s*0[\s\S]*genOptsRetries\s*<\s*1[\s\S]*genOptsRetries\+\+[\s\S]*genOptsSaveTimer\.restart\(\)/.test(writeProcBlock)
+    && /genOptsRetries\s*=\s*0/.test(bodyOf("setGenOpt")),
+  writeProcBlock + "\n" + bodyOf("setGenOpt"))
 
 
 // --- the same options over `bw serve` ---------------------------------------

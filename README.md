@@ -577,7 +577,8 @@ and `includeNumber` -- written a moment after you change one and read when
 the generator first opens. It never holds a generated password. A value that
 is missing, of the wrong type or out of range (length `5`-`128`, words
 `3`-`20`, minimums `0`-`9`) uses its default, and at least one character set
-stays on.
+stays on. As when you change them in the panel, a minimum is reset to `0` when
+its character set is off, and the length is raised to fit the minimums.
 
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
 

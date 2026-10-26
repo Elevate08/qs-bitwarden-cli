@@ -6865,8 +6865,13 @@ function generatorOptionValid(key, value) {
       && value >= limit.min && value <= limit.max
   }
   if (key === "type") return value === "password" || value === "passphrase"
-  // One printable character, as the separator field takes.
-  if (key === "separator") return typeof value === "string" && value.length === 1 && !/[\x00-\x1f\x7f]/.test(value)
+  // One printable character, as the separator field takes: no C0 or C1
+  // control, half a surrogate pair, line or paragraph separator, or bidi
+  // control, which draw nothing or reorder the passphrase around them.
+  if (key === "separator") {
+    return typeof value === "string" && value.length === 1
+      && !/[\x00-\x1f\x7f-\x9f\ud800-\udfff\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f]/.test(value)
+  }
   return typeof value === "boolean"
 }
 
