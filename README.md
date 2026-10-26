@@ -158,6 +158,7 @@ live strength meter.
 
 Generation comes from Bitwarden's own generator, not a reimplementation, and
 answers in about **2ms** rather than the ~2.9s a fresh `bw generate` costs.
+The options you pick are remembered, across shell restarts too.
 
 <br clear="all">
 
@@ -559,12 +560,25 @@ The following settings are read from the plugin's own entry in the
 
 One further key, `twoFactorMethods`, is written to the same entry but is not a
 setting you configure. It records which two-step method last logged each
-account in, keyed by login address -- `{"you@example.com": 0}`, where `0` is
-authenticator, `1` email and `3` YubiKey -- so an account with more than one
-method is asked only once, and two vaults on one machine each keep their own
-answer. **Change method** on the code screen asks again and rewrites it. Entries
-are capped at ten accounts, and anything unreadable is treated as not
-remembered, which costs that account one extra prompt.
+account in, keyed by a SHA-256 of the login address --
+`{"<64 hex digits>": 0}`, where `0` is authenticator, `1` email and `3`
+YubiKey. The hash keeps the address out of `omarchy bar set`'s arguments and
+`shell.json` in plain text, but it is unkeyed, so someone who can read either
+and guesses the address can confirm it and see its method. An account with
+more than one method is asked only once, and two vaults on one machine each
+keep their own answer. **Change method** on the code screen asks again and
+rewrites it. Entries are capped at ten accounts, and anything unreadable is
+treated as not remembered, which costs that account one extra prompt.
+
+Another, `generatorOptions`, holds the password generator's last options --
+`type`, `length`, `uppercase`, `lowercase`, `numbers`, `special`,
+`minNumber`, `minSpecial`, `ambiguous`, `words`, `separator`, `capitalize`
+and `includeNumber` -- written a moment after you change one and read when
+the generator first opens. It never holds a generated password. A value that
+is missing, of the wrong type or out of range (length `5`-`128`, words
+`3`-`20`, minimums `0`-`9`) uses its default, and at least one character set
+stays on. As when you change them in the panel, a minimum is reset to `0` when
+its character set is off, and the length is raised to fit the minimums.
 
 Learned suggestions are stored separately in `~/.local/state/qs-bitwarden-cli/associations.json`. Delete that file to reset everything the panel has learned; logging out deletes it for you.
 
@@ -678,8 +692,13 @@ label.
 
 For other source changes CI does it: on a pull request into a release branch
 from this repository, `helper-rebuild.yml` rebuilds the helpers in the pinned
-image and commits them to the PR branch. It never does so when `Cargo.lock`,
-`Cargo.toml` or `rust-toolchain.toml` changed, or for Dependabot or a fork.
+image and commits them to the PR branch. It does so only when the Rust
+changes are plain source under `agent/src/`, `unlock-key/src/` or `vault/src/`
+(QML, JS and docs beside them are fine). Any `Cargo.toml`, `Cargo.lock`,
+`rust-toolchain` or `rust-toolchain.toml` at any depth (the repo root
+included), any `.cargo` directory, a `build.rs`, `.gitattributes`, the build
+script, a symlink, or any other file inside a package directory makes the PR
+ineligible, as do Dependabot and forks.
 `--compare-tracked` proves the committed bytes are what the committed source
 builds; it cannot tell you whether that source is trustworthy, and a malicious
 crate builds just as reproducibly as an honest one. Reading the `Cargo.lock`

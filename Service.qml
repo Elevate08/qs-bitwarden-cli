@@ -714,6 +714,10 @@ Item {
   property bool initialSyncAttempted: false
   property bool syncReloadPending: false
   property string errorMessage: ""
+  // Why a lock happened without the user asking. Outlives the SSH popup's
+  // cleanup, which would otherwise wipe it when a request from before the
+  // lock is cancelled afterwards.
+  readonly property string vaultHelperLostMessage: "The vault helper stopped, so the vault was locked. Unlock again."
   property string flashMessage: ""
   property bool cursorActive: false
 
@@ -776,8 +780,16 @@ Item {
   property string sendFormPassword: ""
   property int sendIndex: 0
 
-  // Generator state (session-scoped; the browser extension's options)
+  // Generator state (the browser extension's options). The options are kept
+  // in shell.json (`generatorOptions`), restored on the first visit and saved
+  // a moment after each change, so stepping the length writes once.
   property var genOpts: Model.generatorDefaults()
+  property bool genOptsRestored: false
+  // The options last written (or read), as JSON.
+  property string genOptsSaved: ""
+  property bool genOptsWritePending: false
+  // Failed saves retried since the last change; one is allowed.
+  property int genOptsRetries: 0
   property string genValue: ""
   property bool genBusy: false
   property bool genRegeneratePending: false
@@ -1143,7 +1155,7 @@ Item {
       session = ""
       if (status === "unlocked") {
         lockVault()
-        errorMessage = "The vault helper stopped, so the vault was locked. Unlock again."
+        errorMessage = vaultHelperLostMessage
       } else {
         applySshAgentLifecycle("lock")
         dropVaultState()
@@ -1561,6 +1573,8 @@ Item {
     // Answers for an account no longer active are dropped (onEnvelopeJobExited()).
     job.slot = activeSlot
     job.epoch = vaultEpoch
+    // The tool reads the account from the environment, not argv.
+    job.accountEnv = Model.envelopeAccountEnv(envelopeAccount())
     var jobs = envelopeJobs.slice()
     jobs.push(job)
     envelopeJobs = jobs
@@ -1580,6 +1594,7 @@ Item {
     if (job.unlock && (job.cancelled || job.slot !== activeSlot || job.epoch !== vaultEpoch || logoutPending)) {
       for (var key in job.env) forgetHeldPassword(job.env[key])
       job.env = null
+      if (job.unlock && job.onDropped) job.onDropped(job.cancelled === true)
       pumpEnvelopeJobs()
       return
     }
@@ -1592,7 +1607,7 @@ Item {
     if (job.holdOutput) job.heldName = newHeldName()
     envelopeProc.capture = job.holdOutput ? "secret:" + job.heldName : (job.capture || "plain")
     envelopeProc.inject = job.inject || ({})
-    envelopeProc.environment = job.env || {}
+    envelopeProc.environment = Object.assign({}, job.accountEnv || {}, job.env || {})
     job.env = null
     envelopeProc.running = true
   }
@@ -1612,7 +1627,12 @@ Item {
     var accepting = job && !logoutPending && job.slot === activeSlot
       && (!job.unlock || (!job.cancelled && job.epoch === vaultEpoch))
     if (job && job.onDone && (accepting || job.alwaysDone)) job.onDone(exitCode, out)
-    else if (job && job.holdOutput) forgetHeldPassword(out)
+    else {
+      if (job && job.holdOutput) forgetHeldPassword(out)
+      // An answer nobody takes up must not leave its submit marked busy.
+      if (job && job.unlock && job.onDropped) job.onDropped(job.cancelled === true)
+    }
+    if (job && job.unlock) recheckStatusAfterUnlock()
     out = ""
     if (logoutPending && allCredentialsClearPending) Qt.callLater(requestAllCredentialClear)
     Qt.callLater(pumpEnvelopeJobs)
@@ -1640,6 +1660,9 @@ Item {
     }
     // A queued or exiting legacy PIN run still owns its capture.
     if (!pinUnlockProc.running && pinUnlockProc.runId === 0) pinBusy = false
+    // A status held back for a queued job, or one that never started, has no
+    // exit to trigger the recheck. A running job's exit still does it.
+    if (!(envelopeJob && envelopeJob.unlock)) recheckStatusAfterUnlock()
   }
 
   // Leaving an account or logging out invalidates its cleanup callbacks.
@@ -2016,6 +2039,8 @@ Item {
   // A status probe stopped by a switch; its stale answer restarts the probe.
   property bool statusRefreshPending: false
   property bool statusCheckQueued: false
+  // A `bw status` result was set aside because a quick unlock was running.
+  property bool statusRecheckAfterUnlock: false
   property string pendingAccountsJson: ""
   property bool accountsWritePending: false
   // Slots to sign out of and delete, one process at a time.
@@ -2590,13 +2615,13 @@ Item {
   // Leave no password, PIN, PAM conversation or prewarmed CLI behind a
   // dismissed or expired popup.
   function clearSshPopupUnlockState() {
+    root.pinUnlockSubmitted = false
     cancelEnvelopeUnlockJobs()
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAuthPrewarm()
     cancelPinentry()
     if (pinUnlockProc.running) pinUnlockProc.running = false
-    root.pinUnlockSubmitted = false
     // running goes false at cancellation; finish releases runId at the exit.
     if (pinUnlockProc.runId === 0) root.pinBusy = false
     root.releaseHeldPin()
@@ -2610,7 +2635,8 @@ Item {
     root.pinUnlockError = ""
     root.fingerprintMessage = ""
     root.fingerprintError = ""
-    root.errorMessage = ""
+    // Not the reason the vault was locked under the popup.
+    if (root.errorMessage !== root.vaultHelperLostMessage) root.errorMessage = ""
     syncLoginFieldsToState()
   }
 
@@ -3375,7 +3401,8 @@ Item {
   // -------------------------------------------------------------------------
 
   function refreshStatus() {
-    errorMessage = ""
+    // A delayed probe or wake-up refresh must not erase why the vault locked.
+    if (errorMessage !== vaultHelperLostMessage) errorMessage = ""
     if (logoutPending) return
     // Wait for the dependency probe, which owns the first status transition.
     if (!depsChecked) {
@@ -3448,6 +3475,9 @@ Item {
       vaultEpoch += 1
       storeCurrentSession()
 
+      // Unlocked now: drop any lock reason (refreshStatus() keeps the
+      // helper-loss one) so it doesn't hide the flash below.
+      errorMessage = ""
       // bw just minted this key: trust it and load now; `bw status` runs
       // alongside, only for the account email.
       status = "unlocked"
@@ -3485,8 +3515,11 @@ Item {
     }
     var token = String(rawToken || "").trim()
     if (token) {
+      // Adopted unconfirmed: `bw status` may yet reject it, and a bump now
+      // would drop a quick unlock already running. Only a session it replaces
+      // has reads to invalidate.
+      if (session && session !== token) vaultEpoch += 1
       session = token
-      vaultEpoch += 1
     }
     runStatusCheck()
     // A remembered session is usually still good, so read the list alongside
@@ -3511,7 +3544,35 @@ Item {
 
   // An authentication the user has actually submitted, still running.
   function authAttemptInFlight() {
-    return loginSubmitted || unlockSubmitted
+    return loginSubmitted || unlockSubmitted || unlockJobInFlight()
+  }
+
+  // A quick unlock (PIN or fingerprint) between the user's answer and the
+  // password it yields: the envelope open runs while `unlockSubmitted` is
+  // still false, and a status result landing then must not cancel it.
+  function unlockJobInFlight() {
+    return pinUnlockSubmitted || envelopeUnlockJobPending()
+  }
+
+  // With `method`, only that method's jobs count: a dropped job's cleanup is
+  // about its own state, which another method's pending job does not hold.
+  function envelopeUnlockJobPending(method) {
+    if (envelopeJob && envelopeJob.unlock && !envelopeJob.cancelled
+        && (!method || envelopeJob.method === method)) return true
+    for (var i = 0; i < envelopeJobs.length; i++) {
+      if (envelopeJobs[i].unlock && !envelopeJobs[i].cancelled
+          && (!method || envelopeJobs[i].method === method)) return true
+    }
+    return false
+  }
+
+  // A status held back by an unlock job is asked for again once the job is
+  // over (unless a typed unlock has taken its place), so a vault unlocked or
+  // closed elsewhere meanwhile is still noticed.
+  function recheckStatusAfterUnlock() {
+    if (!statusRecheckAfterUnlock || authAttemptInFlight()) return
+    statusRecheckAfterUnlock = false
+    Qt.callLater(runStatusCheck)
   }
 
   function onStatusFinished(rawJson) {
@@ -3523,6 +3584,7 @@ Item {
     // it started; acting on it would cancel the submitted login. The attempt
     // will set the state itself.
     if (authAttemptInFlight()) {
+      if (unlockJobInFlight() && !loginSubmitted && !unlockSubmitted) statusRecheckAfterUnlock = true
       return
     }
     isLoading = false
@@ -4611,12 +4673,17 @@ Item {
     generatorReturnScreen = (currentScreen === "edit") ? "edit" : "main"
     screenBeforeSettings = "main"
     currentScreen = "generator"
+    restoreGeneratorOptions()
     // The form wants a fresh value; a standalone visit keeps the last one.
     if (generatorFeedsForm || !genValue) regenerate()
   }
 
   function closeGenerator() {
     var toForm = generatorFeedsForm
+    if (genOptsSaveTimer.running) {
+      genOptsSaveTimer.stop()
+      saveGeneratorOptions()
+    }
     currentScreen = generatorReturnScreen
     generatorReturnScreen = "main"
     // Land back on the field the trip was about, filled in or not.
@@ -4819,11 +4886,35 @@ Item {
 
   // Every control changes options here: normalise and regenerate.
   function setGenOpt(key, value) {
+    restoreGeneratorOptions()
     var next = {}
     for (var k in genOpts) next[k] = genOpts[k]
     next[key] = value
     genOpts = Model.normalizeGeneratorOptions(next)
+    genOptsRetries = 0
+    genOptsSaveTimer.restart()
     regenerate()
+  }
+
+  // Once per service: after that the options in memory are the newer ones.
+  function restoreGeneratorOptions() {
+    if (genOptsRestored) return
+    genOptsRestored = true
+    genOpts = Model.restoreGeneratorOptions(setting("generatorOptions", null))
+    genOptsSaved = JSON.stringify(Model.generatorOptionsToStore(genOpts))
+  }
+
+  // The options only, never a generated value; no "Saved" flash.
+  function saveGeneratorOptions() {
+    var stored = Model.generatorOptionsToStore(genOpts)
+    if (JSON.stringify(stored) === genOptsSaved) return
+    if (genOptsWriteProc.running) {
+      genOptsWritePending = true
+      return
+    }
+    genOptsSaved = JSON.stringify(stored)
+    genOptsWriteProc.command = Model.settingWriteCommand("generatorOptions", stored, "json")
+    genOptsWriteProc.running = true
   }
 
   function copyGenerated() {
@@ -4962,14 +5053,28 @@ Item {
       env[Model.pinEnvVar()] = held || String(pinEntry || "")
       queueEnvelopeJob({
         command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "pin" }),
-        env: env, secretOutput: true, holdOutput: true, unlock: true,
-        onDone: function(code, out) { root.onEnvelopePinResult(code, out) }
+        env: env, secretOutput: true, holdOutput: true, unlock: true, method: "pin",
+        onDone: function(code, out) { root.onEnvelopePinResult(code, out) },
+        onDropped: function(cancelled) { root.onPinJobDropped(cancelled) }
       })
       return
     }
     pinUnlockProc.command = Model.pinUnlockCommand(activeSlot)
     pinUnlockProc.capture = "secret:" + newHeldName()
     pinUnlockProc.running = true
+  }
+
+  // The PIN's open was discarded without an answer (the vault's state moved
+  // on under it). A deliberate cancel has already cleaned up; anything else
+  // must not leave the submit marked busy, which would ignore the next PIN.
+  function onPinJobDropped(cancelled) {
+    if (cancelled || envelopeUnlockJobPending("pin")) return
+    releaseHeldPin()
+    if (!pinUnlockSubmitted && !pinBusy) return
+    pinUnlockSubmitted = false
+    pinBusy = false
+    if (status === "locked") pinUnlockError = "PIN unlock was interrupted. Enter your PIN again."
+    recheckStatusAfterUnlock()
   }
 
   // The envelope's answer to a PIN; exit 3 is a wrong PIN.
@@ -5019,6 +5124,7 @@ Item {
       releaseHeldPin()
       forgetHeldPassword(password)
       clearProcessCollectorSoon(pinUnlockProc)
+      recheckStatusAfterUnlock()
       return
     }
     var pw = String(password || "")
@@ -5026,6 +5132,9 @@ Item {
     if (exitCode !== 0 || !pw) {
       var viaPinentry = releaseHeldPin()
       countWrongPin()
+      // A status held back while this job ran is asked for again now; a
+      // pinentry retry that follows holds the next one back the same way.
+      recheckStatusAfterUnlock()
       if (viaPinentry) retryPinentryPin()
       return
     }
@@ -5332,8 +5441,15 @@ Item {
   }
 
   function rememberTwoFactorMethod(method) {
-    if (!Model.isTwoFactorMethod(method)) return
-    if (method === rememberedTwoFactorMethod) return
+    if (!Model.isTwoFactorMethod(method)) {
+      // A login with no two-step method still moves an older email-keyed map
+      // to hashed keys (login-time only: a startup write would restart the shell).
+      var migrated = Model.migrateTwoFactorStore(twoFactorMethodStore)
+      if (migrated) writeSettingQuietly("twoFactorMethods", migrated, "json")
+      return
+    }
+    // An older map keyed by email is rewritten even when nothing changes.
+    if (method === rememberedTwoFactorMethod && !Model.twoFactorStoreHasPlainKeys(twoFactorMethodStore)) return
     var next = Model.rememberTwoFactorMethodIn(twoFactorMethodStore, loginEmail, method)
     if (next) writeSettingQuietly("twoFactorMethods", next, "json")
   }
@@ -5446,7 +5562,7 @@ Item {
   function openEnvelopeForFingerprint() {
     queueEnvelopeJob({
       command: Model.unlockEnvelopeOpenCommand(envelopeTool(), envelopeAccount(), { kind: "fingerprint" }),
-      secretOutput: true, holdOutput: true, unlock: true,
+      secretOutput: true, holdOutput: true, unlock: true, method: "fingerprint",
       onDone: function(code, out) {
         if (code === 0 && out) {
           root.fingerprintFromEnvelope = true
@@ -5465,6 +5581,14 @@ Item {
         root.fingerprintMessage = ""
         root.fingerprintError = "Could not read the stored password. Unlock with your master password."
         root.refreshEnvelope()
+      },
+      // Discarded without an answer: not left "Unlocking..." for nothing.
+      onDropped: function(cancelled) {
+        if (cancelled || root.envelopeUnlockJobPending("fingerprint")) return
+        root.fingerprintAuthorized = false
+        root.fingerprintMessage = ""
+        if (root.status === "locked") root.fingerprintError = "Fingerprint unlock was interrupted. Try again."
+        root.recheckStatusAfterUnlock()
       }
     })
   }
@@ -5714,7 +5838,7 @@ Item {
     var name = newHeldName()
     pinentryRun = { purpose: purpose, name: name, done: done }
     beginPinentry()
-    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, {
+    var ask = {
       title: "Bitwarden",
       description: Model.pinentryDescription(purpose, userEmail),
       prompt: Model.pinentryPrompt(purpose),
@@ -5722,7 +5846,10 @@ Item {
       // The unlock's own floor, as for the field: a shorter PIN is asked for
       // again, not counted as a wrong attempt.
       minLength: purpose === "pin" ? Model.pinUnlockMinLength() : 0
-    })
+    }
+    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, ask)
+    // The description names the account: environment, not argv.
+    pinentryProc.environment = Model.pinentryEnvironment(ask)
     pinentryProc.capture = "pinentry:" + name
     pinentryProc.running = true
   }
@@ -5922,6 +6049,20 @@ Item {
     if (exitCode === 0 && out) {
       fingerprintFromEnvelope = false
       onUnlockSuccess(out)
+    } else if (exitCode === 0 && !err) {
+      // `bw` exits 0 with nothing at all when it never got a password (it
+      // falls back to a prompt it cannot show): not a wrong one.
+      pinentryMasterName = ""
+      forgetHeldPassword(pendingUnlockPassword)
+      pendingUnlockPassword = ""
+      forgetHeldPassword(pendingPinForMigration)
+      pendingPinForMigration = ""
+      pendingUnlockFrom = ""
+      fingerprintFromEnvelope = false
+      pinFromEnvelope = false
+      fidoFromEnvelope = false
+      errorMessage = "Could not deliver the password to Bitwarden. Please try again."
+      Qt.callLater(prepareUnlock)
     } else {
       // A master password typed into pinentry that `bw` refused: forgotten,
       // and asked for again. Any other failure is shown as it is.
@@ -8848,6 +8989,34 @@ Item {
         root.errorMessage = (settingWriteStderr.text || "").trim() || "Could not save setting to shell.json"
       }
     }
+  }
+
+  // Its own process: settingWriteProc may be busy with a setting, and a
+  // Process ignores a new command while it runs.
+  Process {
+    id: genOptsWriteProc
+    onExited: function(exitCode) {
+      if (root.genOptsWritePending) {
+        if (exitCode !== 0) root.genOptsSaved = ""
+        root.genOptsWritePending = false
+        root.saveGeneratorOptions()
+        return
+      }
+      // Not saved: tried once more, then left to the next change.
+      if (exitCode !== 0) {
+        root.genOptsSaved = ""
+        if (root.genOptsRetries < 1) {
+          root.genOptsRetries++
+          genOptsSaveTimer.restart()
+        }
+      }
+    }
+  }
+
+  Timer {
+    id: genOptsSaveTimer
+    interval: 800
+    onTriggered: root.saveGeneratorOptions()
   }
 
   Timer {

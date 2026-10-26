@@ -2,6 +2,106 @@
 
 ## [Unreleased]
 
+## [1.11.8] - 2026-10-26
+
+### Security
+
+- **A forwarded SSH agent no longer tells the remote host your key item
+  names.** The agent listed each key with its vault item name as the comment,
+  so with `ssh -A` any process on the remote host could run `ssh-add -l` and
+  read the name of every SSH key in your vault, without a prompt. Connections
+  OpenSSH marks as forwarded (or whose bind the helper refused) now list their
+  keys with an empty comment; local connections still show the names.
+- **Your account email, user id and server no longer show in other local
+  users' process lists.** The pinentry prompt's "Unlock Bitwarden for
+  <email>" was an argument to the script that runs pinentry, the quick-unlock
+  tool took the account's user id and server URL as `--account-id` and
+  `--server` on every PIN, fingerprint or security-key unlock, and
+  remembering a two-step login method wrote every remembered email into the
+  arguments of `omarchy bar set`, all readable from `/proc`. The prompt text
+  and the account now travel in the environment, which only you can read, and
+  the two-step map is keyed by a SHA-256 of the email, so neither its
+  arguments nor `shell.json` hold the address in plain text; an older map is
+  read as it is and rewritten on the next login. The hash is not keyed, so
+  anyone who can read those arguments or `shell.json` and guesses the address
+  can confirm it with one hash, and see which two-step method it uses.
+  `bw login` and `bw config server` still take the email and server as
+  arguments, since `bw` reads them no other way; SECURITY.md now says so, and
+  that a link you open is given to the browser the same way.
+- **A release no longer runs the bundled helpers beside its write token.**
+  The release job ran each helper's `--self-test` with the token that
+  publishes the release and signs its attestation still in reach, so a
+  compromised dependency built into a helper could have used it. The helpers
+  now run in a separate read-only job first, checkouts no longer keep the
+  token, the report tools are pinned to exact versions, and CI no longer
+  rebuilds and commits helpers by itself unless every Rust change in the
+  pull request is plain source under a helper's `src/`: a `Cargo.toml`,
+  `Cargo.lock` or `rust-toolchain` file at any depth (the repository root
+  included, which Cargo also reads), a `.cargo` config, a `build.rs`, the
+  build script or any other file in a helper's directory now leaves the
+  rebuild to a person.
+
+### Fixed
+
+- **Dismissing the SSH unlock popup no longer leaves the vault's real state
+  unseen.** When you submitted a PIN or fingerprint while the
+  plugin was still busy setting up, the `bw status` result that arrived
+  meanwhile was held back until the unlock finished. If the popup was then
+  dismissed or timed out before the unlock got to run, nothing asked again,
+  so a vault that had been unlocked elsewhere, logged out or had its
+  remembered session rejected kept showing the old state. Cancelling the
+  unlock now runs the held-back check once nothing else is in flight.
+- **A correct PIN or fingerprint unlock is no longer silently lost when the
+  panel's startup checks land during it**
+  ([#110](https://github.com/Elevate08/qs-bitwarden-cli/issues/110)). The
+  `bw status` and remembered-session checks that run when the panel opens
+  could arrive while the PIN or fingerprint was being opened, cancel it
+  without a word and leave the next PIN ignored until the panel was closed,
+  so it took several tries. Those checks now wait for a quick unlock to
+  finish (and run again afterwards), a remembered session is no longer
+  counted as confirmed before `bw status` agrees, and an unlock that is
+  dropped anyway says "try again" and frees the next attempt. A password that
+  never reached `bw` is now reported as not delivered instead of as an
+  invalid master password.
+- **The notice that the vault helper stopped stays on screen.** When the
+  helper exits and the vault locks, an SSH approval that was waiting at the
+  time is cancelled a moment later, and closing it cleared the panel's
+  message, so the reason for the lock could vanish before you saw it. A
+  delayed status probe or background refresh also keeps this notice until
+  you reopen the panel or start another unlock, and a sign-in from the
+  terminal that unlocks the vault clears it.
+- **A wrong PIN no longer hides a logout or unlock that happened
+  elsewhere.** If the vault was logged out or unlocked somewhere else while a
+  PIN unlock was running, a wrong PIN dropped the status check that had been
+  held back for it, so the panel kept showing the PIN prompt (and could keep
+  spinning) with the real state unseen. The check now runs again once the PIN
+  attempt is over.
+- **Unlocking another way while a PIN or fingerprint was being opened no
+  longer leaves the panel unable to notice the vault's state.** If a FIDO
+  key touch or a typed password unlocked the vault while both a PIN and a
+  fingerprint were waiting to open, the leftover PIN attempt was never
+  cleared, and the panel then ignored every later vault status check until
+  it was closed. Each quick unlock now clears its own leftovers when it is
+  dropped, whatever the other method is doing.
+- **Enter saves a new or edited item again.** Since 1.11.5 the item form's
+  text fields kept Enter to themselves, so pressing it in the name, username
+  or any other unmasked field did nothing and saving meant scrolling down to
+  the Save button. Enter (Return or keypad Enter) in any field now saves,
+  with the button's checks, except in the new-folder and custom-field label
+  boxes, where it still adds the folder or field.
+- **The password generator remembers its options.** Length, character sets,
+  minimum numbers and special characters, and the passphrase options went
+  back to the defaults every time the shell restarted. They are now saved to
+  the plugin's entry in `shell.json` (`generatorOptions`) shortly after each
+  change and restored when the generator opens; a value that is missing or
+  out of range uses its default. Only the options are saved, never a
+  generated password.
+
+### Changed
+
+- The helpers are rebuilt with `serde_json` 1.0.154 and, for the SSH agent,
+  `tokio` 1.53.3, both upstream bug-fix releases.
+
 ## [1.11.7] - 2026-10-14
 
 ### Security

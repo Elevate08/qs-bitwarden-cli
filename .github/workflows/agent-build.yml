@@ -48,6 +48,8 @@ jobs:
           # Full history: the build exports a clean tree with `git archive`,
           # which needs the commit rather than a detached shallow blob.
           fetch-depth: 0
+          # Nothing here pushes; the build runs repository code.
+          persist-credentials: false
 
       - name: Record the build environment
         run: |
@@ -168,6 +170,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Each gate runs per Cargo package; no package's checks cover another.
       - name: Formatting
@@ -279,6 +283,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install what the panel tests shell out to
         # The tests run the real pipeline, so its tools must be installed. From

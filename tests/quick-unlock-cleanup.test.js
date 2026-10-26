@@ -28,6 +28,8 @@ function vault() {
     heldPinName: "", pinEntry: "", pendingPinForMigration: "", session: "", readEpochs: {},
     forgotten: [], unlocks: [], refreshes: 0, activeSlot: "default", vaultEpoch: 4,
     logoutPending: false, allCredentialsClearPending: false,
+    loginSubmitted: false, unlockSubmitted: false, statusRecheckAfterUnlock: false, statusChecks: 0,
+    runStatusCheck() { this.statusChecks++ }, pinUnlockError: "", fingerprintError: "", fingerprintMessage: "",
     envelopeJobs: [], envelopeJob: null, envelopeProc: { running: false, outputHeld: true },
     envelopeStdout: { text: "" }, seq: 0,
     newHeldName() { return "pw" + (++this.seq) },
@@ -51,7 +53,8 @@ function vault() {
   v.root = v
   bind(v, service, ["forgetHeldPassword", "onEnvelopePinResult", "onPinUnlockResult",
     "onFingerprintPasswordRetrieved", "queueEnvelopeJob", "pumpEnvelopeJobs", "onEnvelopeJobExited",
-    "dropVaultState", "quickUnlockSettingOff", "reconcileDisabledMethods", "openEnvelopeForFingerprint", "noteQuickUnlockEnabled", "dropEnvelopeState"])
+    "dropVaultState", "authAttemptInFlight", "unlockJobInFlight", "envelopeUnlockJobPending",
+    "recheckStatusAfterUnlock", "onPinJobDropped", "quickUnlockSettingOff", "reconcileDisabledMethods", "openEnvelopeForFingerprint", "noteQuickUnlockEnabled", "dropEnvelopeState"])
   // Optional additions are exercised through their existing callers.
   for (const name of ["cancelEnvelopeUnlockJobs", "onQuickUnlockPurgeDone", "queueQuickUnlockPurge", "reportQuickUnlockPurgeFailure"]) {
     if (functionBody(service, name)) bind(v, service, [name])
@@ -79,6 +82,24 @@ function vault() {
   v.onPinUnlockResult(0, Model.heldSecretRef(capture.slice(7)))
   check("abandoned legacy answer is forgotten", v.forgotten.includes(capture.slice(7)))
   eq("legacy exit releases busy state", v.pinBusy, false)
+}
+// A status held back during a legacy PIN run is re-run on every exit that
+// does not hand off to a typed unlock, including a wrong PIN.
+for (const [label, code, out] of [["wrong PIN", 1, ""], ["empty output", 0, ""]]) {
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, pinBusy: true, pinMaxAttempts: 5,
+    statusRecheckAfterUnlock: true, runStatusCheck: () => { v.statusChecks++ } })
+  v.onPinUnlockResult(code, out)
+  eq(`legacy ${label}: held status is re-run`, v.statusChecks, 1)
+  eq(`legacy ${label}: recheck flag cleared`, v.statusRecheckAfterUnlock, false)
+  eq(`legacy ${label}: no unlock started`, v.unlocks.length, 0)
+}
+{
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, statusRecheckAfterUnlock: true,
+    runStatusCheck: () => { v.statusChecks++ } })
+  v.onPinUnlockResult(0, Model.heldSecretRef("pwx"))
+  eq("legacy accepted PIN hands off without a status recheck", v.statusChecks, 0)
 }
 // VaultProcess keeps its runId after a kill request; only finish releases it.
 // Exercise the real cancellation/result paths while its helper exit is delayed.
@@ -182,6 +203,39 @@ for (const method of ["envelope PIN", "legacy PIN", "fingerprint", "FIDO2"]) {
     eq(`${method}, ${active ? "live" : "abandoned"}: held password ownership`,
       v.forgotten.includes("late-master"), !active)
   }
+}
+// A typed or FIDO unlock bumps the epoch while a PIN open and a fingerprint
+// open are both pending. Each dropped job cleans up its own method's state
+// (another method's job must not hold it back), and the last cleanup to run
+// releases the held status recheck.
+for (const order of ["running PIN job exits first", "queued PIN job dropped last"]) {
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, pinReady: true, isUnlocking: false,
+    pinBusy: false, pinAttempts: 0, pinMaxAttempts: 5, pinEntry: "123456",
+    envelopeSummary: { pin: true }, pendingUnlockPassword: "", cancelAuthPrewarm() {},
+    syncLoginFieldsToState() {}, clearLoginAttempt() {}, statusRecheckAfterUnlock: true,
+    runStatusCheck() { v.statusChecks++ } })
+  bind(v, service, ["submitPinUnlock"])
+  if (order.startsWith("running")) {
+    v.submitPinUnlock()
+    v.openEnvelopeForFingerprint()
+  } else {
+    v.envelopeProc.running = true // blocks both until released
+    v.submitPinUnlock()
+    v.openEnvelopeForFingerprint()
+    v.envelopeProc.running = false
+  }
+  v.vaultEpoch++ // onUnlockSuccess()
+  if (order.startsWith("running")) {
+    v.envelopeProc.running = false
+    v.onEnvelopeJobExited(0)
+  }
+  v.pumpEnvelopeJobs()
+  v.pumpEnvelopeJobs()
+  eq(`${order}: PIN submit marker cleared`, v.pinUnlockSubmitted, false)
+  eq(`${order}: PIN busy cleared`, v.pinBusy, false)
+  eq(`${order}: fingerprint authorization cleared`, v.fingerprintAuthorized, false)
+  eq(`${order}: held status recheck ran`, v.statusChecks, 1)
 }
 for (const invalidate of ["lock", "account switch", "epoch change"]) {
   const v = vault()
