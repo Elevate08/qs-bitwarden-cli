@@ -150,7 +150,8 @@ try {
   // --- unlocked again, then `bw lock` behind the panel's back ----------------
   shell.expect("the helper comes back", s => s.helper === "active")
   shell.q("unlock", "pw-a@x")
-  shell.expect("the vault unlocks again", s => s.status === "unlocked")
+  shell.expect("the vault unlocks again, without the old lock reason",
+    s => s.status === "unlocked" && !/vault helper stopped/.test(s.error))
   shell.expect("and the agent serves the key again", s => s.ssh.keys === 1)
   signUnderGrant("unlocked again")
   fs.rmSync(path.join(data, "fake-session"))
