@@ -88,6 +88,13 @@
   the Save button. Enter (Return or keypad Enter) in any field now saves,
   with the button's checks, except in the new-folder and custom-field label
   boxes, where it still adds the folder or field.
+- **The password generator remembers its options.** Length, character sets,
+  minimum numbers and special characters, and the passphrase options went
+  back to the defaults every time the shell restarted. They are now saved to
+  the plugin's entry in `shell.json` (`generatorOptions`) shortly after each
+  change and restored when the generator opens; a value that is missing or
+  out of range uses its default. Only the options are saved, never a
+  generated password.
 
 ### Changed
 
