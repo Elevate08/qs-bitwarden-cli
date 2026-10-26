@@ -98,6 +98,7 @@ Column {
           placeholderText: "Field label"
           text: editor.vault.formCustomFieldLabelDraft
           onTextChanged: editor.vault.formCustomFieldLabelDraft = text
+          submitsForm: false
           onAccepted: editor.vault.saveCustomFieldLabel(fieldRow.index)
         }
 
@@ -294,6 +295,7 @@ Column {
         placeholderText: "Field label"
         text: editor.vault.formNewCustomFieldName
         onTextChanged: editor.vault.formNewCustomFieldName = text
+        submitsForm: false
         onAccepted: editor.vault.addFormCustomField()
       }
 

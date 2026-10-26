@@ -45,6 +45,12 @@ FocusScope {
   // SecretField reserves the trailing eye here. The default matches the shell
   // field's own right inset.
   property real rightPadding: horizontalPadding + Border.right(_borderSpec)
+  // Return also submits the form around the field: the nearest ancestor with
+  // a submitForm() function. A form-level Shortcut cannot, because the
+  // editable TextEdit claims Return and Enter in ShortcutOverride, so the
+  // Shortcut never fires while a field has focus. A field whose own Return
+  // does something else (onAccepted) turns this off.
+  property bool submitsForm: true
 
   // Callers and the qml-kit tests read the TextInput echo values.
   readonly property int echoMode: password ? TextInput.Password : TextInput.Normal
@@ -345,6 +351,18 @@ FocusScope {
     else replaceStore(pos, stepIndex(text, pos, 1), "")
   }
 
+  function submit() {
+    if (!enabled || readOnly) return
+    accepted()
+    if (!submitsForm) return
+    for (var item = root.parent; item; item = item.parent) {
+      if (typeof item.submitForm === "function") {
+        item.submitForm()
+        return
+      }
+    }
+  }
+
   function select(start, end) {
     editor.select(start, end)
   }
@@ -439,11 +457,11 @@ FocusScope {
   // accepts the key before the document can insert a line.
   Keys.onReturnPressed: function(event) {
     event.accepted = true
-    if (root.enabled && !root.readOnly) root.accepted()
+    root.submit()
   }
   Keys.onEnterPressed: function(event) {
     event.accepted = true
-    if (root.enabled && !root.readOnly) root.accepted()
+    root.submit()
   }
   Keys.onTabPressed: function(event) {
     event.accepted = true
