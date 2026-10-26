@@ -47,5 +47,22 @@ function vault(errorMessage) {
   v.refreshStatus()
   eq("a refresh still clears an ordinary operation error", v.errorMessage, "")
 }
+{
+  // A terminal login inside its handoff window unlocks the vault on the next
+  // wake refresh; the old lock reason must not outlive that unlock.
+  const v = vault(notice)
+  for (const name of ["cancelAuthPrewarm", "abandonAuthSecrets", "storeCurrentSession",
+    "beginInitialVaultLoad", "resetAutoLockTimer", "focusAppropriateField"]) v[name] = () => {}
+  v.flashNotification = text => { v.flash = text }
+  v.epochOperationIsStale = () => false
+  v.vaultEpoch = 0
+  v.terminalLoginStartedAt = Date.now()
+  v.onSessionHandoff = new Function("scope", "with(scope){" + functionBody(service, "onSessionHandoff") +
+    "\nreturn onSessionHandoff}")(v)
+  v.onSessionHandoff("a".repeat(88))
+  eq("the handed-over session unlocks the vault", v.status, "unlocked")
+  eq("the handoff clears the helper-loss notice", v.errorMessage, "")
+  eq("so the terminal sign-in flash can show", v.flash, "Signed in from the terminal")
+}
 
 done()

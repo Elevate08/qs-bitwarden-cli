@@ -3475,6 +3475,9 @@ Item {
       vaultEpoch += 1
       storeCurrentSession()
 
+      // Unlocked now: drop any lock reason (refreshStatus() keeps the
+      // helper-loss one) so it doesn't hide the flash below.
+      errorMessage = ""
       // bw just minted this key: trust it and load now; `bw status` runs
       // alongside, only for the account email.
       status = "unlocked"
