@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Optional automatic vault synchronization in General settings. Choose a minute
+  interval (`0`, the default, disables it). Syncs run only while unlocked and
+  idle, retry offline servers at the selected interval, and defer the list
+  reload if an edit begins during the request. Background successes are quiet;
+  failures retain the local vault and report that it may be out of date.
+
 ## [1.11.8] - 2026-10-26
 
 ### Security

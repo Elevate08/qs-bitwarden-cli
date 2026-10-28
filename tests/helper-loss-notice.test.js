@@ -11,6 +11,7 @@ function vault(errorMessage) {
   const later = []
   const v = {
     Model, Qt: { callLater: f => later.push(f) },
+    autoSyncError: /readonly property string autoSyncError: "([^"]+)"/.exec(service)[1],
     errorMessage, status: "locked", logoutPending: false,
     depsChecked: true, setupGated: false, accountsLoaded: true,
     statusRefreshPending: true, statusCheckQueued: false,
@@ -63,6 +64,13 @@ function vault(errorMessage) {
   eq("the handed-over session unlocks the vault", v.status, "unlocked")
   eq("the handoff clears the helper-loss notice", v.errorMessage, "")
   eq("so the terminal sign-in flash can show", v.flash, "Signed in from the terminal")
+}
+
+{
+  const v = vault("")
+  v.errorMessage = v.autoSyncError
+  v.refreshStatus()
+  eq("opening the panel preserves a background sync failure", v.errorMessage, v.autoSyncError)
 }
 
 done()
