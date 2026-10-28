@@ -514,6 +514,26 @@ not in a separate block:
 }
 ```
 
+### Automatic synchronization
+
+In **Settings → General → Automatically sync every**, choose an interval such
+as five minutes. This is off by default. The timer checks every 30 seconds:
+a newly unlocked vault syncs when idle, then subsequent attempts wait the
+chosen interval. Manual sync also restarts that interval. There is no need to
+keep the panel open, but the plugin must be enabled and the vault unlocked.
+
+If your self-hosted server is offline, the existing local vault stays available
+and the panel reports that automatic sync failed. Attempts continue at the
+chosen interval, so the next attempt after the server returns can refresh the
+vault. There are no repeated desktop notifications. Successful recovery clears
+that sync error without clearing an unrelated error.
+
+Automatic sync waits while you are editing or another vault operation is busy.
+If you start editing during a sync, its list reload waits until you return to
+the main screen. It never unlocks the vault or extends the auto-lock deadline.
+Locking, logging out or changing accounts drops pending reloads; a late result
+from the previous session cannot repopulate the vault.
+
 ## Global hotkey
 
 To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
@@ -539,6 +559,7 @@ The following settings are read from the plugin's own entry in the
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `autoSyncMinutes` | `number` | `0` | Automatically sync while the vault is unlocked and idle (`0` disables; e.g. `5` for every five minutes). Range `0`–`1440`. Offline servers are retried at the same interval. |
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
 | `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). The clear is the copy's own lifetime (`wl-copy` under `timeout`), so it survives a shell restart and never touches something copied later. Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
