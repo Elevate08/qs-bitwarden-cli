@@ -123,6 +123,7 @@ Item {
   readonly property bool rememberSession: Model.boolSetting("rememberSession", setting("rememberSession", true))
   readonly property int autoCopyTotpSec: Model.intSetting("autoCopyTotpSec", setting("autoCopyTotpSec"))
   readonly property bool closeOnCopy: Model.boolSetting("closeOnCopy", setting("closeOnCopy", true))
+  readonly property bool autoTypeEnabled: Model.boolSetting("autoTypeEnabled", setting("autoTypeEnabled", false))
   readonly property bool colorizeIcon: Model.boolSetting("colorizeIcon", setting("colorizeIcon", false))
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
@@ -619,7 +620,13 @@ Item {
   property bool totpRestartPending: false
   property string totpCopyItemId: ""
   property string passwordCopyItemId: ""
-
+  property string passwordCopyLabel: "Password"
+  // Armed entry for the auto-type action (global shortcut / IPC). Only the
+  // identifiers needed to fetch its password are kept; the password itself
+  // is never stored, it is read on demand when auto-type runs.
+  property string autoTypeItemId: ""
+  property string autoTypeUsername: ""
+  property int autoTypeTypeCode: 1
   // Attachment downloads run one at a time from a queue. `attachmentSaved`
   // maps attachment id to saved path (for Open / Show in folder); cleared when
   // another item opens.
@@ -5355,6 +5362,7 @@ Item {
       case "lockOnSuspend": return lockOnSuspend
       case "autoCopyTotpSec": return autoCopyTotpSec
       case "closeOnCopy": return closeOnCopy
+      case "autoTypeEnabled": return autoTypeEnabled
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
@@ -6273,6 +6281,9 @@ Item {
     totpRestartPending = false
     totpCopyItemId = ""
     passwordCopyItemId = ""
+    autoTypeItemId = ""
+    autoTypeUsername = ""
+    autoTypeTypeCode = 1
     totpFollowupItem = null
     totpFollowupCode = ""
     genValue = ""
@@ -6311,7 +6322,7 @@ Item {
       statusProc, sessionHandoffProc, keyringLookupProc, pinUnlockProc, keyringLookupMasterProc,
       loginProc, unlockProc, listProc, listOrgsProc, listFoldersProc, orgCollectionsProc,
       getItemProc, getTotpProc, generateProc, listSendsProc, createSendProc,
-      copyPasswordProc,
+      copyPasswordProc, autoTypeProc,
       createItemProc, editItemProc, deleteItemProc, createFolderProc, attachmentProc,
       associationsReadProc, generateServeRequestProc
     ].concat(fidoUnlocker.secretProcesses())
@@ -7921,17 +7932,90 @@ Item {
   function onPasswordCopyFinished(exitCode, text) {
     var requested = passwordCopyItemId
     passwordCopyItemId = ""
+    var label = passwordCopyLabel || "Password"
+    passwordCopyLabel = "Password"
     // Drop the collector's plaintext copy once wl-copy has it.
     clearProcessCollectorSoon(copyPasswordProc)
     if (vaultReadIsStale("passwordCopy")) return
     var password = String(text || "")
     if (exitCode === 0 && requested && password) {
-      copyToClipboard(password, "Password")
+      copyToClipboard(password, label)
       return
     }
     errorMessage = "Could not read this password"
   }
 
+  // -------------------------------------------------------------------------
+  // Auto-type: arm an entry, then type its login + Tab + password into the
+  // currently focused window via wtype. The password is read on demand and
+  // never stored.
+  // -------------------------------------------------------------------------
+  function armAutoType(item) {
+    if (!autoTypeEnabled) return false
+    if (!item || !Model.isLoginItem(item)) return false
+    autoTypeItemId = String(item.id || "")
+    autoTypeUsername = String(item.username || item.loginUsername || "")
+    autoTypeTypeCode = item.typeCode !== undefined ? item.typeCode : 1
+    return true
+  }
+
+  // Arm + copy, gated behind the reprompt so a cancelled prompt does not leave
+  // the entry armed.
+  function copyPasswordAndArm(item, label) {
+    closeFilterGroup()
+    if (!autoTypeEnabled || !item || !Model.isLoginItem(item)) return
+    var copyLabel = label || "Password"
+    withReprompt(item, function() {
+      if (root.armAutoType(item)) {
+        root.passwordCopyLabel = copyLabel
+        root.copyPasswordNow(item, copyLabel)
+        root.flashNotification("Auto-type armed")
+      }
+    })
+  }
+
+  function requestAutoType() {
+    if (!autoTypeEnabled) {
+      errorMessage = "Auto-type is disabled in settings"
+      return
+    }
+    if (!session || !autoTypeItemId) {
+      errorMessage = "No entry armed for auto-type"
+      return
+    }
+    if (autoTypeProc.running) {
+      errorMessage = "Another auto-type is still running"
+      return
+    }
+    beginVaultRead("autoType")
+    autoTypeProc.command = Model.getPasswordCommand(autoTypeItemId, autoTypeTypeCode)
+    autoTypeProc.running = true
+  }
+
+  function onAutoTypeFinished(exitCode, text) {
+    clearProcessCollectorSoon(autoTypeProc)
+    if (vaultReadIsStale("autoType")) return
+    var password = String(text || "")
+    if (exitCode !== 0 || !password) {
+      errorMessage = "Could not read this password"
+      // Consume the arm either way.
+      autoTypeItemId = ""
+      autoTypeUsername = ""
+      autoTypeTypeCode = 1
+      return
+    }
+    var env = {}
+    env["QSBW_USER"] = String(autoTypeUsername || "")
+    env["QSBW_PASS"] = password
+    autoTypeTypeProc.environment = env
+    autoTypeTypeProc.command = ["bash", "-c", "printf '%s\\t%s' \"$QSBW_USER\" \"$QSBW_PASS\" | wtype -"]
+    autoTypeTypeProc.running = true
+    env = null
+    // Consume the arm so it cannot be replayed.
+    autoTypeItemId = ""
+    autoTypeUsername = ""
+    autoTypeTypeCode = 1
+  }
   // Enter on a row: copy a login's password (then arm the TOTP follow-up);
   // for anything without a default secret, open the item.
   function handleSmartEnter(item) {
@@ -7980,25 +8064,29 @@ Item {
     }
   }
 
-  function copyPassword(item) {
+  function copyPassword(item, label) {
     closeFilterGroup()
     if (!item || !Model.isLoginItem(item)) return
-    withReprompt(item, function() { root.copyPasswordNow(item) })
+    var copyLabel = label || "Password"
+    root.passwordCopyLabel = copyLabel
+    withReprompt(item, function() { root.copyPasswordNow(item, copyLabel) })
   }
 
-  function copyPasswordNow(item) {
+  function copyPasswordNow(item, label) {
     closeFilterGroup()
     if (!item || !Model.isLoginItem(item)) return
+    var copyLabel = label || "Password"
     learnFromPick(item)
     if (item.secretsHeld && vaultHelperActive) {
       // The helper hands the password to wl-copy; it never comes here.
       var epoch = vaultEpoch
+      root.passwordCopyLabel = copyLabel
       vaultQuery("copyPassword", { id: String(item.id), clearSec: Math.max(0, Math.floor(Number(clearClipboardSec) || 0)) },
         function(ok) {
           if (epoch !== root.vaultEpoch) return
           if (ok) {
             root.resetAutoLockTimer()
-            root.flashNotification("Password copied!")
+            root.flashNotification(copyLabel + " copied!")
           } else {
             root.errorMessage = "Could not read this password"
           }
@@ -8007,10 +8095,11 @@ Item {
     }
     var pass = (detailItem && detailItem.id === item.id && detailPassword) ? detailPassword : (item.password || "")
     if (pass) {
-      copyToClipboard(pass, "Password")
+      copyToClipboard(pass, copyLabel)
       return
     }
     if (session) {
+      root.passwordCopyLabel = copyLabel
       requestPasswordCopy(item.id, item.typeCode)
     } else {
       errorMessage = "Vault is locked or session expired. Please unlock your vault."
@@ -9212,6 +9301,30 @@ Item {
     }
   }
 
+  VaultProcess {
+    id: autoTypeProc
+    vault: root
+    environment: root.bwEnv()
+    stdout: VaultCollector { id: autoTypeStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (root.finishScrubRun(autoTypeProc)) return
+      root.onAutoTypeFinished(exitCode, autoTypeStdout.text)
+    }
+  }
+
+  Process {
+    id: autoTypeTypeProc
+    stdout: StdioCollector { id: autoTypeTypeStdout; waitForEnd: true }
+    stderr: StdioCollector { id: autoTypeTypeStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.flashNotification("Auto-typed")
+      } else {
+        root.errorMessage = "Auto-type failed (is wtype installed?)"
+      }
+    }
+  }
+
   Process {
     id: activeWindowProc
     command: Model.activeWindowCommand()
@@ -9313,7 +9426,15 @@ Item {
     }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
-    // The accounts the panel holds (emails and servers only) and which is
+    // Type the armed entry's login + Tab + password into the focused window.
+    function autoType(): string {
+      if (!root.autoTypeEnabled) return "disabled"
+      if (!root.autoTypeItemId) return "not-armed"
+      if (!root.session) return "locked"
+      if (root.autoTypeProc.running || root.autoTypeTypeProc.running) return "busy"
+      root.requestAutoType()
+      return "started"
+    }    // The accounts the panel holds (emails and servers only) and which is
     // active.
     function accounts(): string {
       var rows = root.accountRows
