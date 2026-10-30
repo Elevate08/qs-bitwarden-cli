@@ -309,6 +309,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | Shortcut | Action |
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up), or open the item when there is no password to copy -- a card, an identity, a note, an SSH key |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Arm the highlighted entry for auto-type (type it later with the global shortcut / `autoType` IPC) |
 | <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
@@ -625,6 +626,9 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli setup        # -> "setup" (de
 
 # Lock the vault immediately
 omarchy-shell io.github.elevate08.qs-bitwarden-cli lock         # -> "locked"
+
+# Auto-type the armed entry's login + Tab + password into the focused window
+omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType     # -> "disabled" | "not-armed" | "locked" | "busy" | "started"
 
 # Sync with Bitwarden
 omarchy-shell io.github.elevate08.qs-bitwarden-cli sync         # -> "syncing"

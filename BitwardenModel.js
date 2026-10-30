@@ -4558,6 +4558,11 @@ var DEPENDENCIES = [
     purpose: "Safely strips SSH private keys before the panel reads your vault."
   },
   {
+    key: "wtype", label: "wtype", binary: "wtype", pkg: "wtype", aur: false,
+    required: false,
+    purpose: "Types credentials into other windows for auto-type."
+  },
+  {
     // Set up by `omarchy setup security fingerprint` (packages, enrolment,
     // PAM), not a package install: `ready` needs an enrolled finger too.
     key: "fprintd", label: "Fingerprint unlock", binary: "fprintd-list", pkg: "fprintd", aur: false,
@@ -6647,6 +6652,8 @@ var SETTINGS_SCHEMA = [
 
   { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
+  { key: "autoTypeEnabled", group: "general", type: "bool", label: "Enable auto-type", defaultValue: false,
+    description: "DANGER: allow typing credentials into the focused window via a global shortcut. Off by default because auto-typing secrets into arbitrary windows can leak them." },
   { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
     description: "Use the active Omarchy theme accent for the primary menu-bar icon." },
   { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",

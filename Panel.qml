@@ -276,6 +276,7 @@ Panel {
   // inert standby vault.
   property var resolvedVault: null
   readonly property var vault: resolvedVault !== null ? resolvedVault : localVault
+
   // "pending" until decided, then "shared" or "private".
   property string vaultHost: "pending"
   property double vaultResolveStartedMs: 0
@@ -635,6 +636,21 @@ Panel {
 
         if (event.modifiers & Qt.AltModifier) {
           if (t && root.vault.status === "unlocked" && root.vault.runAltShortcut(t)) event.accepted = true
+          return
+        }
+
+        // Ctrl+C arms the highlighted entry for auto-type (see Service.armAutoType).
+        // Only an unmodified Ctrl+C on a login item arms; otherwise leave the
+        // keystroke for the focused field (text copy, etc.).
+        if ((event.modifiers & ~Qt.KeypadModifier) === Qt.ControlModifier && event.key === Qt.Key_C) {
+          if (root.vault.status === "unlocked" && (root.vault.currentScreen === "main" || root.vault.currentScreen === "detail")
+              && root.vault.autoTypeEnabled) {
+            var __item = (root.vault.currentScreen === "detail") ? root.vault.detailItem : root.vault.getSelectedItem()
+            if (__item && Model.isLoginItem(__item)) {
+              root.vault.copyPasswordAndArm(__item, "Password")
+              event.accepted = true
+            }
+          }
           return
         }
 
@@ -3591,13 +3607,14 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(4)
                     visible: isSelected || isHovered
+                    z: 1
 
                     PanelActionButton {
-                      visible: itemData.typeCode !== 5 && itemData.hasPassword
-                      iconText: "󰌆"
-                      tooltipText: "Copy password (Enter / y)"
+                      visible: root.vault.autoTypeEnabled && itemData.typeCode !== 5 && itemData.hasPassword
+                      iconText: ""
+                      tooltipText: "Copy password and arm auto-type"
                       fontFamily: root.fontFamily
-                      onClicked: root.smartEnter(itemData)
+                      onClicked: root.vault.copyPasswordAndArm(itemData, "Password")
                     }
 
                     PanelActionButton {
@@ -3606,6 +3623,14 @@ Panel {
                       tooltipText: "Copy username (u)"
                       fontFamily: root.fontFamily
                       onClicked: root.vault.copyUsername(itemData)
+                    }
+
+                    PanelActionButton {
+                      visible: itemData.typeCode !== 5 && itemData.hasPassword
+                      iconText: "󰌆"
+                      tooltipText: "Copy password (Enter / y)"
+                      fontFamily: root.fontFamily
+                      onClicked: root.smartEnter(itemData)
                     }
 
                     PanelActionButton {
@@ -3638,7 +3663,16 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: {
+                  propagateComposedEvents: true
+                  onClicked: function(mouse) {
+                    // Let inline action buttons handle their own clicks.
+                    var btnX = actionButtonsRow.mapToItem(rowMouseArea, 0, 0).x
+                    var btnY = actionButtonsRow.mapToItem(rowMouseArea, 0, 0).y
+                    if (mouse.x >= btnX && mouse.x <= btnX + actionButtonsRow.width
+                        && mouse.y >= btnY && mouse.y <= btnY + actionButtonsRow.height) {
+                      mouse.accepted = false
+                      return
+                    }
                     root.vault.cursorActive = true
                     root.vault.openFilterGroup = ""
                     root.vault.selectedIndex = index
