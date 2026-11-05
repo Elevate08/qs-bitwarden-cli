@@ -97,14 +97,16 @@ check("and asked again when it is turned on or off",
 
 const flowNames = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "autoTypeArmed", "disarmAutoType",
   "stopAutoType", "copyPasswordAndArm", "requestAutoType", "onAutoTypeRead", "typeHere", "onAutoTypeExited",
-  "finishAutoType", "screenLockReadingFresh"]
+  "finishAutoType", "screenLockReadingFresh", "armTotpFollowup", "copyTotpAfterAutoType", "notifyTotpCopied"]
 function makeVault() {
   const calls = []
-  const timer = name => ({ running: false, restart() { this.running = true; calls.push(name + ".restart") },
+  const timer = name => ({ running: false, interval: 0, restart() { this.running = true; calls.push(name + ".restart") },
     stop() { this.running = false } })
   const v = {
     Model, calls, autoTypeEnabled: true, status: "unlocked", session: "held", vaultEpoch: 3, closeOnCopy: true,
     autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeBusy: false, autoTypeSeq: 0, autoTypePendingText: "",
+    autoTypeTypedItemId: "", autoTypeTypedEpoch: -1, autoCopyTotpSec: 3, fetches: [],
+    totpFollowupItem: null, totpFollowupActive: false,
     opened: false, sshPrompt: null, pinentryActive: false, vaultHelperActive: true,
     // A screen-lock reading from just now.
     screenIsLocked: false, screenLockCheckedAt: Date.now(), screenLockStateProc: { running: false },
@@ -115,9 +117,12 @@ function makeVault() {
       { id: "a", typeCode: 1, name: "Bank", username: "me", hasPassword: true, secretsHeld: true, reprompt: 0 },
       { id: "r", typeCode: 1, name: "Safe", username: "me", hasPassword: true, secretsHeld: true, reprompt: 1 },
       { id: "c", typeCode: 3, name: "Card", hasPassword: false, secretsHeld: true, reprompt: 0 },
-      { id: "x", typeCode: 1, name: "Nopw", username: "me", hasPassword: false, secretsHeld: true, reprompt: 0 }
+      { id: "x", typeCode: 1, name: "Nopw", username: "me", hasPassword: false, secretsHeld: true, reprompt: 0 },
+      { id: "t", typeCode: 1, name: "Mail", username: "me", hasPassword: true, hasTotp: true, secretsHeld: true, reprompt: 0 }
     ],
     autoTypeArmTimer: timer("arm"), autoTypeWatchdog: timer("watchdog"),
+    totpFollowupTimer: timer("totpFollowup"), autoTotpTimer: timer("autoTotp"),
+    fetchTotp(id, copyWhenReady) { v.fetches.push([id, Boolean(copyWhenReady)]) },
     autoTypeProc: { running: false, stdinEnabled: false, command: [] },
     autoTypeReadProc: { running: false, command: [], itemId: "" },
     Quickshell: { execDetached(cmd) { v.notices.push(cmd) } },
@@ -176,6 +181,121 @@ const item = (v, id) => v.items.find(i => i.id === id)
   check("it lasts autoTypeArmMs, then is dropped",
     /id: autoTypeArmTimer\s*interval: Model\.autoTypeArmMs\(\)\s*repeat: false\s*onTriggered: root\.disarmAutoType\(\)/.test(service), "")
   check("turning auto-type off drops it", /onAutoTypeEnabledChanged: \{\s*if \(!autoTypeEnabled\) disarmAutoType\(\)/.test(service), "")
+}
+
+// --- the TOTP code, around a type --------------------------------------------------------
+
+const totpNotices = v => v.notices.filter(c => c[0] === "omarchy-notification-send" && c.indexOf("TOTP Code Copied") >= 0)
+const totpCopies = v => v.fetches.filter(f => f[1])
+{
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "t"))
+  check("arming a login with TOTP arms Enter's follow-up too: Enter again copies the code",
+    v.totpFollowupItem && v.totpFollowupItem.id === "t" && v.totpFollowupActive && v.calls.indexOf("totpFollowup.restart") >= 0
+      && JSON.stringify(v.fetches) === '[["t",false]]', JSON.stringify({ calls: v.calls, fetches: v.fetches }))
+  check("and schedules the autoCopyTotpSec auto-copy",
+    v.autoTotpTimer.running && v.autoTotpTimer.interval === 3000, JSON.stringify(v.autoTotpTimer))
+  const w = makeVault()
+  w.copyPasswordAndArm(item(w, "a"))
+  check("a login without TOTP arms no follow-up",
+    w.totpFollowupItem === null && !w.totpFollowupActive && !w.autoTotpTimer.running && w.fetches.length === 0, "")
+  const off = makeVault()
+  off.autoCopyTotpSec = 0
+  off.copyPasswordAndArm(item(off, "t"))
+  check("with the auto-copy off, the follow-up is armed but nothing is scheduled",
+    off.totpFollowupActive && !off.autoTotpTimer.running, "")
+  const r = makeVault()
+  item(r, "t").reprompt = 1
+  r.copyPasswordAndArm(item(r, "t"))
+  check("an item that asks for the master password arms no follow-up before the prompt is answered",
+    r.repromptPending && r.totpFollowupItem === null && r.fetches.length === 0, "")
+}
+check("Enter's copy and the arm share one follow-up, and one TOTP notice",
+  /copyPasswordNow\(item\)\s*armTotpFollowup\(item\)/.test(body("smartCopy"))
+    && /root\.copyPasswordNow\(item, [^\n]*\n[^\n]*\n\s*root\.armTotpFollowup\(item\)/.test(body("copyPasswordAndArm"))
+    && (service.match(/TOTP Code Copied/g) || []).length === 1
+    && /root\.notifyTotpCopied\(\)/.test(service.slice(service.indexOf("id: autoTotpTimer"), service.indexOf("id: autoTotpTimer") + 500)),
+  body("smartCopy"))
+{
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "t"))
+  eq("a TOTP login types", v.requestAutoType(), "started")
+  check("nothing is copied before the helper says the type worked", totpCopies(v).length === 0 && totpNotices(v).length === 0
+    && v.autoTotpTimer.running, JSON.stringify(v.fetches))
+  v.queries[0].cb(true, true)
+  check("after it, a fresh TOTP code is copied once, and the desktop notice says so",
+    JSON.stringify(totpCopies(v)) === '[["t",true]]' && totpNotices(v).length === 1 && v.flashed.indexOf("Auto-typed") >= 0,
+    JSON.stringify({ fetches: v.fetches, notices: v.notices }))
+  check("the arm's pending auto-copy is stopped, so an older code cannot land over it", !v.autoTotpTimer.running, "")
+  check("and the typed login is forgotten", v.autoTypeTypedItemId === "" && v.autoTypeTypedEpoch === -1, v.autoTypeTypedItemId)
+  v.queries[0].cb(true, true)
+  check("a repeated answer copies nothing more", totpCopies(v).length === 1, JSON.stringify(v.fetches))
+
+  const h = makeVault()
+  h.vaultHelperActive = false
+  item(h, "t").password = "hunter2"
+  h.copyPasswordAndArm(item(h, "t"))
+  h.requestAutoType()
+  h.onAutoTypeExited(0)
+  check("without the helper too, after wtype exits 0", JSON.stringify(totpCopies(h)) === '[["t",true]]' && totpNotices(h).length === 1,
+    JSON.stringify(h.fetches))
+  const hf = makeVault()
+  hf.vaultHelperActive = false
+  item(hf, "t").password = "hunter2"
+  hf.copyPasswordAndArm(item(hf, "t"))
+  hf.requestAutoType()
+  hf.onAutoTypeExited(1)
+  check("but not after wtype fails", totpCopies(hf).length === 0 && totpNotices(hf).length === 0, JSON.stringify(hf.fetches))
+
+  const off = makeVault()
+  off.autoCopyTotpSec = 0
+  off.copyPasswordAndArm(item(off, "t"))
+  off.requestAutoType()
+  off.queries[0].cb(true, true)
+  check("autoCopyTotpSec 0 turns it off after a type too", totpCopies(off).length === 0 && totpNotices(off).length === 0,
+    JSON.stringify(off.fetches))
+
+  const plain = makeVault()
+  plain.copyPasswordAndArm(item(plain, "a"))
+  plain.requestAutoType()
+  plain.queries[0].cb(true, true)
+  check("a login without TOTP copies nothing after its type", totpCopies(plain).length === 0 && totpNotices(plain).length === 0, "")
+
+  for (const reason of ["missing", "stopped", "failed"]) {
+    const f = makeVault()
+    f.copyPasswordAndArm(item(f, "t"))
+    f.requestAutoType()
+    f.queries[0].cb(false, reason)
+    check(`a type that ended "${reason}" copies no code`, totpCopies(f).length === 0 && totpNotices(f).length === 0
+      && f.autoTypeTypedItemId === "", JSON.stringify(f.fetches))
+  }
+  const late = makeVault()
+  late.copyPasswordAndArm(item(late, "t"))
+  late.requestAutoType()
+  late.autoTypeSeq += 1 // the watchdog gave up on it
+  late.finishAutoType(false, "timeout")
+  late.queries[0].cb(true, true)
+  check("nor one the watchdog gave up on, when the helper's late success comes in", totpCopies(late).length === 0
+    && totpNotices(late).length === 0, JSON.stringify(late.fetches))
+
+  const lock = makeVault()
+  lock.copyPasswordAndArm(item(lock, "t"))
+  lock.requestAutoType()
+  lock.stopAutoType() // a lock, logout or account switch (dropVaultSecrets())
+  lock.vaultEpoch += 1
+  lock.status = "locked"
+  lock.queries[0].cb(true, true)
+  check("a lock between the arm and the type's end copies nothing, and forgets the login",
+    totpCopies(lock).length === 0 && totpNotices(lock).length === 0 && lock.autoTypeTypedItemId === "", JSON.stringify(lock.fetches))
+  const gen = makeVault()
+  gen.copyPasswordAndArm(item(gen, "t"))
+  gen.requestAutoType()
+  gen.vaultEpoch += 1
+  gen.finishAutoType(true, "")
+  check("a success reported into another vault generation copies nothing", totpCopies(gen).length === 0
+    && totpNotices(gen).length === 0, JSON.stringify(gen.fetches))
+  check("the typed login is dropped with a type in flight, which a lock stops",
+    /autoTypeTypedItemId = ""/.test(body("stopAutoType")) && /stopAutoType\(\)/.test(body("dropVaultSecrets")), body("stopAutoType"))
 }
 
 // --- the IPC --------------------------------------------------------------------------
@@ -404,15 +524,96 @@ check("no secret is put in an environment or argv for wtype",
 
 const view = read("Panel.qml")
 const interceptor = view.slice(view.indexOf("id: shortcutInterceptor"), view.indexOf("PanelKeyCatcher {", view.indexOf("id: shortcutInterceptor")))
-const ctrlC = interceptor.slice(interceptor.indexOf("Qt.Key_C") - 200, interceptor.indexOf("Qt.Key_C") + 600)
-check("Ctrl+C is taken only with Control alone, with auto-type on, while the catcher has the keys",
-  /\(event\.modifiers & ~Qt\.KeypadModifier\) === Qt\.ControlModifier && event\.key === Qt\.Key_C\s*&& root\.vault\.autoTypeEnabled && !keyCatcher\.blocked/.test(ctrlC),
-  ctrlC)
-check("and accepted only when something was armed (or its prompt shown)",
-  /if \(picked && root\.vault\.copyPasswordAndArm\(picked\)\) event\.accepted = true/.test(ctrlC)
-    && (ctrlC.match(/event\.accepted = true/g) || []).length === 1, ctrlC)
-check("the search box's Ctrl+C is its own: the catcher is blocked while it has focus",
-  /blocked: repromptConfirm\.shown\s*\|\| searchField\.activeFocus/.test(view), "")
+check("the catcher's Ctrl+C arms only while the catcher has the keys, through the one Panel function",
+  /if \(!keyCatcher\.blocked && root\.armAutoTypeFromKey\(event\)\) \{\s*event\.accepted = true\s*return\s*\}/.test(interceptor)
+    && (interceptor.match(/Qt\.Key_C/g) || []).length === 0, interceptor)
+check("the catcher stays blocked while the search box (or any field) has focus",
+  /blocked: repromptConfirm\.shown\s*\|\| searchField\.activeFocus\s*\|\| emailField\.activeFocus\s*\|\| loginPassField\.activeFocus/.test(view), "")
+
+// The search box and the catcher share armAutoTypeFromKey(); its handler and
+// the function run here against a stand-in vault and field.
+const searchBox = src.slice(src.indexOf("id: searchField"), src.indexOf("id: clearSearchBtn"))
+function handlerText(block, head) {
+  const start = block.indexOf(head)
+  if (start < 0) return ""
+  let depth = 0
+  for (let i = block.indexOf("{", start); i < block.length; i++) {
+    if (block[i] === "{") depth++
+    else if (block[i] === "}" && --depth === 0) return block.slice(block.indexOf("function", start), i + 1)
+  }
+  return ""
+}
+const searchKeys = handlerText(searchBox, "Keys.onPressed: function(event)")
+const Qt = { NoModifier: 0, ShiftModifier: 0x02000000, ControlModifier: 0x04000000, AltModifier: 0x08000000,
+  KeypadModifier: 0x20000000, Key_C: 0x43, Key_V: 0x56 }
+function searchBoxWith(opts = {}) {
+  const r = {
+    autoTypeEnabled: opts.autoTypeEnabled !== false, currentScreen: opts.screen || "main", detailItem: opts.detailItem || null,
+    filteredItems: opts.items || [{ id: "top", isSuggested: true }, { id: "next" }], selectedIndex: opts.selectedIndex || 0,
+    armed: [], alt: [],
+    getSelectedItem() { return r.filteredItems[r.selectedIndex] || null },
+    copyPasswordAndArm(item) { r.armed.push(item.id); return opts.armResult !== false },
+    runAltShortcut(t) { r.alt.push(t); return true }
+  }
+  r.armAutoTypeFromKey = new Function("root", "Qt", body("armAutoTypeFromKey") + "\nreturn armAutoTypeFromKey")(r, Qt)
+  const field = { selectedText: opts.selected || "" }
+  const handler = new Function("root", "Qt", "searchField", "return " + searchKeys)(r, Qt, field)
+  r.press = (modifiers, key, text) => {
+    const event = { modifiers, key, text: text || "", accepted: false }
+    handler(event)
+    return event.accepted
+  }
+  return r
+}
+check("the search box has its own key handler, and it calls the shared function",
+  searchKeys !== "" && /searchField\.selectedText === "" && root\.armAutoTypeFromKey\(event\)/.test(searchKeys)
+    && /root\.copyPasswordAndArm\(picked\)/.test(body("armAutoTypeFromKey"))
+    && /onScreen === "main" \? root\.getSelectedItem\(\)/.test(body("armAutoTypeFromKey")), searchKeys)
+{
+  const v = searchBoxWith()
+  check("Ctrl+C in the search box, nothing selected: the highlighted row (the top suggestion) is armed",
+    v.press(Qt.ControlModifier, Qt.Key_C, "\u0003") === true && v.armed.join() === "top", v.armed.join())
+  const w = searchBoxWith({ selectedIndex: 1 })
+  check("and after moving the highlight, the row it is on",
+    w.press(Qt.ControlModifier, Qt.Key_C) === true && w.armed.join() === "next", w.armed.join())
+  const k = searchBoxWith()
+  check("the keypad modifier does not count as another key held",
+    k.press(Qt.ControlModifier | Qt.KeypadModifier, Qt.Key_C) === true && k.armed.join() === "top", k.armed.join())
+  const sel = searchBoxWith({ selected: "bank" })
+  check("with text selected it is the box's own copy: not taken, nothing armed",
+    sel.press(Qt.ControlModifier, Qt.Key_C) === false && sel.armed.length === 0, sel.armed.join())
+  for (const [what, mods, key] of [["Ctrl+Shift+C", Qt.ControlModifier | Qt.ShiftModifier, Qt.Key_C],
+      ["Ctrl+Alt+C", Qt.ControlModifier | Qt.AltModifier, Qt.Key_C], ["a plain c", Qt.NoModifier, Qt.Key_C],
+      ["Ctrl+V", Qt.ControlModifier, Qt.Key_V]]) {
+    const x = searchBoxWith()
+    // Ctrl+Alt+C is Alt+c to the box (copy username), as before.
+    const taken = x.press(mods, key, "c")
+    check(`${what} in the search box arms nothing`, x.armed.length === 0 && taken === Boolean(mods & Qt.AltModifier),
+      x.armed.join())
+  }
+  const alt = searchBoxWith()
+  check("Alt+letter still runs its shortcut from the box", alt.press(Qt.AltModifier, Qt.Key_C, "c") && alt.alt.join() === "c"
+    && alt.armed.length === 0, alt.alt.join())
+  const off = searchBoxWith({ autoTypeEnabled: false })
+  check("with auto-type off, Ctrl+C is the box's own copy", off.press(Qt.ControlModifier, Qt.Key_C) === false
+    && off.armed.length === 0, "")
+  const none = searchBoxWith({ items: [] })
+  check("an empty list arms nothing and leaves the key", none.press(Qt.ControlModifier, Qt.Key_C) === false
+    && none.armed.length === 0, "")
+  const card = searchBoxWith({ armResult: false })
+  check("a row with nothing to type leaves the key to the box", card.press(Qt.ControlModifier, Qt.Key_C) === false, "")
+  const hidden = searchBoxWith({ screen: "edit" })
+  check("a hidden search box still holding focus on another screen arms nothing",
+    hidden.press(Qt.ControlModifier, Qt.Key_C) === false && hidden.armed.length === 0, hidden.armed.join())
+  const detail = searchBoxWith({ screen: "detail", detailItem: { id: "open" } })
+  check("on the detail screen the shared function arms the open item, as the catcher's Ctrl+C did",
+    detail.press(Qt.ControlModifier, Qt.Key_C) === true && detail.armed.join() === "open", detail.armed.join())
+}
+check("LineField hands its keys to the field's own handler before the editor's copy (tests/qml/tst_search_ctrl_c.qml)",
+  /Keys\.priority: Keys\.BeforeItem\s*Keys\.forwardTo: \[root, keySink\]/.test(read("LineField.qml"))
+    && /property alias selectedText: editor\.selectedText/.test(read("LineField.qml")), "")
+check("Enter in the search box acts on the same row",
+  /Keys\.onReturnPressed: root\.smartEnter\(root\.getSelectedItem\(\)\)/.test(searchBox), "")
 const row = view.slice(view.indexOf("id: actionButtonsRow"), view.indexOf("id: rowMouseArea"))
 const armButton = row.slice(row.indexOf("arm auto-type") - 300, row.indexOf("arm auto-type") + 200)
 check("the row's button is shown only with auto-type on, says what it does, and arms after any prompt",

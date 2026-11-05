@@ -314,7 +314,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | Shortcut | Action |
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up), or open the item when there is no password to copy -- a card, an identity, a note, an SSH key |
-| <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy the highlighted login's password and arm it for 30 seconds, for the `autoType` IPC to type. Off, or with the search box focused, it is the usual copy |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy the highlighted login's password and arm it for 30 seconds, for the `autoType` IPC to type. That is the row <kbd>Enter</kbd> acts on, the first suggestion (or first item) when the panel opens, so nothing needs selecting first; it works from the search box too, unless text is selected there. Off, or over selected text, it is the usual copy |
 | <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
@@ -490,11 +490,22 @@ IPC cannot tell your keybinding from anything else that calls it. Turning it
 on in **Settings → General → Auto-type logins** asks you to press again to
 confirm.
 
-With it on, <kbd>Ctrl</kbd>+<kbd>C</kbd> on a login in the list or the detail
-inspector (or the row's second button) copies its password, after any master
-password re-prompt, and arms it for 30 seconds. With `closeOnCopy` the panel
+With it on, <kbd>Ctrl</kbd>+<kbd>C</kbd> acts on the login <kbd>Enter</kbd>
+would: the highlighted row of the list, or the item open in the detail
+inspector. When the panel opens the highlight is already on the first
+suggestion for the window you came from (or the first item), so there is
+nothing to select first, and it works from the search box as well, unless
+you have text selected there, which it copies as usual. It (or the row's
+second button) copies the login's password, after any master password
+re-prompt, and arms it for 30 seconds. With `closeOnCopy` the panel
 closes and focus goes back to the window you came from. Calling the IPC then
-types the login's username, <kbd>Tab</kbd> and password there, once.
+types the login's username, <kbd>Tab</kbd> and password there, once. For a
+login with a TOTP code, the copy arms the same follow-up as <kbd>Enter</kbd>
+(<kbd>Enter</kbd> again copies the code, and `autoCopyTotpSec` later it is
+copied anyway), and once the type has worked a fresh code is copied to the
+clipboard, with a "TOTP Code Copied" notification, ready for the site's
+two-step prompt. `autoCopyTotpSec` set to `0` turns that off too; a type that
+fails or is stopped copies nothing.
 
 It needs a key to call it. Under the setting, while auto-type is on, the
 panel shows whether one is bound ("Bound to SUPER + CTRL + BACKSLASH" or "No
@@ -645,7 +656,7 @@ The following settings are read from the plugin's own entry in the
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
 | `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor until `bw lock` and the keyring clear have finished, at most 4 seconds. Needs `gdbus` (glib2), `systemd-inhibit` and `setsid` (util-linux). The monitor and its children stop when the plugin unloads; without these tools the setting is inert. |
 | `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. Turning it off removes a stored session at once, and with it off an unload while unlocked runs `bw lock`. |
-| `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
+| `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Also whether an [auto-type](#auto-type) copies the login's TOTP code once it has typed. Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `autoTypeEnabled` | `boolean` | `false` | Let <kbd>Ctrl</kbd>+<kbd>C</kbd> in the panel arm a login, and the `autoType` IPC type its username, <kbd>Tab</kbd> and password into the focused window with `wtype`. Whatever window has focus gets the password, and while a login is armed any program running as you can trigger it -- see [Auto-type](#auto-type). The settings screen asks you to confirm before turning it on. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |

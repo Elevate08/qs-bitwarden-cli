@@ -46,7 +46,8 @@
   `autoTypeEnabled`)
   ([#119](https://github.com/Elevate08/qs-bitwarden-cli/pull/119)). With
   **Settings → General → Auto-type logins** on, <kbd>Ctrl</kbd>+<kbd>C</kbd>
-  on a login (or its row's new button) copies the password as before and
+  on the highlighted login (the first suggestion when the panel opens, from
+  the search box too) or its row's new button copies the password as before and
   arms that login for 30 seconds; the `autoType` IPC, bound to a key of your
   choosing, then types its username, <kbd>Tab</kbd> and password into the
   focused window with `wtype`, once. It is off by default because of what it
@@ -67,7 +68,10 @@
   **Register Keybinding** appends a commented `o.bind(...)` line to
   `~/.config/hypr/bindings.lua` and reloads Hyprland (**Remove Keybinding**
   takes out only that line again, and **Copy Line** is there for bindings
-  kept elsewhere). The setup screen shows the key next to `wtype`.
+  kept elsewhere). The setup screen shows the key next to `wtype`. For a
+  login with TOTP, its code is copied to the clipboard once the type has
+  worked, as Enter copies it after a password (`autoCopyTotpSec` `0` turns
+  both off).
 
 ### Security
 
