@@ -69,7 +69,7 @@ check("the bw CLI version for SSH gating comes from its own probe",
   const checked = functionBody(svc, "onDependenciesChecked")
   check("the dependency answer reuses the cached version for the same bw binary",
     /bwId\s*===\s*bwVersionId/.test(checked)
-      && /parseDependencies\(depsRaw,\s*cached\s*\?\s*bwVersionValue\s*:\s*null\)/.test(checked)
+      && /parseDependencies\(depsRaw,\s*cached\s*\?\s*bwVersionValue\s*:\s*null[,)]/.test(checked)
       && /if\s*\(!cached\b[^\n]{0,80}\)\s*probeBwVersion\(bwId\)/.test(checked),
     checked)
   const probed = functionBody(svc, "onBwVersionProbed")

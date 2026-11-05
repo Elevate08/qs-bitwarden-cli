@@ -5204,6 +5204,11 @@ Item {
   // Setup and settings
   // -------------------------------------------------------------------------
 
+  // The opt-in features whose tools the setup screen lists.
+  function dependencyFeatures() {
+    return { autoType: autoTypeEnabled }
+  }
+
   function checkDependencies() {
     if (!depsCheckProc.running) depsCheckProc.running = true
   }
@@ -5212,7 +5217,7 @@ Item {
     depsRaw = String(raw || "")
     var bwId = Model.dependencyBwId(depsRaw)
     var cached = bwVersionKnown && bwId !== "" && bwId === bwVersionId
-    dependencies = Model.parseDependencies(depsRaw, cached ? bwVersionValue : null)
+    dependencies = Model.parseDependencies(depsRaw, cached ? bwVersionValue : null, dependencyFeatures())
     // Off the status probe's path: only SSH support waits for the version.
     if (!cached && Model.dependencyInstalled(dependencies, "bw")) probeBwVersion(bwId)
     depsChecked = true
@@ -5260,7 +5265,7 @@ Item {
       if (Model.dependencyInstalled(dependencies, "bw")) probeBwVersion(latestId)
       return
     }
-    dependencies = Model.parseDependencies(depsRaw, bwVersionValue)
+    dependencies = Model.parseDependencies(depsRaw, bwVersionValue, dependencyFeatures())
   }
 
   readonly property var missingRequired: Model.missingRequired(dependencies)
@@ -5362,6 +5367,10 @@ Item {
   // rows say so.
   function settingNote(entry) {
     if (entry && entry.confirm && settingConfirmKey === entry.key) return entry.confirm
+    if (entry && entry.key === "autoTypeEnabled" && autoTypeEnabled && depsChecked
+        && !Model.dependencyInstalled(dependencies, "wtype")) {
+      return "wtype is not installed, so nothing can be typed yet: install it from Dependencies below."
+    }
     if (!entry || (entry.key !== "pinUnlock" && entry.key !== "fidoUnlock")) return ""
     if (!settingValue(entry) || !fingerprintUnlock || !fingerprintStored) return ""
     return "Fingerprint unlock is also on, so the stored password is only as protected as "
@@ -8120,6 +8129,7 @@ Item {
   // Turned off: nothing stays armed. Either way wtype's setup row follows.
   onAutoTypeEnabledChanged: {
     if (!autoTypeEnabled) disarmAutoType()
+    if (depsChecked) checkDependencies()
   }
 
   function autoTypeArmed() {

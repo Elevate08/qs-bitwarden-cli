@@ -158,6 +158,27 @@ check("install: refuses anything that is not a plain package name",
     && Model.installPackagesCommand(["../../etc/passwd"]) === null,
   "a crafted package name produced a command")
 
+// --- wtype is for auto-type, which is off by default ------------------------
+// A tool that types into other windows is not installed with the rest unless
+// auto-type has been turned on.
+const NO_WTYPE = "bw=1\nbw_version=2025.1.2\njq=1\nwtype=0\nfprintd=0\nfingerprint_ready=0\nfingerprint_hw=0\nomarchy=1"
+const wtypeRow = deps => deps.items.find(d => d.key === "wtype")
+{
+  const off = Model.parseDependencies(NO_WTYPE, null)
+  const on = Model.parseDependencies(NO_WTYPE, null, { autoType: true })
+  check("wtype: optional, and no row of its own while auto-type is off",
+    wtypeRow(off).required === false && wtypeRow(off).applicable === false
+      && Model.applicableDependencies(off).every(d => d.key !== "wtype"), JSON.stringify(wtypeRow(off)))
+  check("wtype: not installed with the rest while auto-type is off",
+    Model.missingPackages(off).indexOf("wtype") === -1 && Model.missingRequired(off).length === 0,
+    `got [${Model.missingPackages(off)}]`)
+  check("wtype: listed and installable once auto-type is on, still never required",
+    wtypeRow(on).applicable === true && Model.missingPackages(on).join(" ") === "wtype"
+      && Model.missingRequired(on).length === 0, `got [${Model.missingPackages(on)}]`)
+  check("wtype: probed like the other tools",
+    /command -v wtype/.test(Model.dependencyCheckCommand()[2]), Model.dependencyCheckCommand()[2])
+}
+
 // --- fingerprint belongs to Omarchy -----------------------------------------
 // `omarchy setup security fingerprint` does everything readiness needs (it
 // writes /etc/pam.d/omarchy-lock-fingerprint); `pkg add fprintd` does not.

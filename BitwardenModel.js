@@ -4622,7 +4622,10 @@ var DEPENDENCIES = [
   {
     key: "wtype", label: "wtype", binary: "wtype", pkg: "wtype", aur: false,
     required: false,
-    purpose: "Types credentials into other windows for auto-type."
+    // Listed, and installed with the rest, only while auto-type is on: a
+    // tool that types into other windows is not something to add unasked.
+    feature: "autoType",
+    purpose: "Types the armed login into the focused window for auto-type."
   },
   {
     // Set up by `omarchy setup security fingerprint` (packages, enrolment,
@@ -4722,8 +4725,10 @@ function parseBwVersionProbe(raw) {
 
 // `probedVersion` is the result of bwVersionCommand(); null while it has not
 // answered for this binary, which leaves SSH support "checking". A
-// `bw_version` line in `raw` itself takes precedence.
-function parseDependencies(raw, probedVersion) {
+// `bw_version` line in `raw` itself takes precedence. `features` says which
+// opt-in features are on ({ autoType: true }); a tool only one of them needs
+// is not applicable while it is off.
+function parseDependencies(raw, probedVersion, features) {
   var found = probeFields(raw)
 
   var inline = found["bw_version"] !== undefined
@@ -4762,8 +4767,10 @@ function parseDependencies(raw, probedVersion) {
       purpose: dep.purpose,
       // Offer Omarchy's setup command instead of a package install.
       setup: Boolean(dep.setup),
-      // Missing hardware is not a missing dependency.
-      applicable: dep.key === "fprintd" ? found["fingerprint_hw"] === "1" : true,
+      // Missing hardware is not a missing dependency, nor is a tool for a
+      // feature that is off.
+      applicable: dep.key === "fprintd" ? found["fingerprint_hw"] === "1"
+        : (dep.feature ? Boolean(features && features[dep.feature]) : true),
       installed: installed,
       // fprintd on PATH is not the same as a usable reader with an enrolled finger.
       ready: ready,

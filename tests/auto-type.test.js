@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Auto-type (off by default): the setting and its confirmation, arming an
-// entry, and the `autoType` IPC. The vault's own
+// Auto-type (off by default): the setting and its confirmation, the wtype
+// dependency, arming from the panel, and the `autoType` IPC. The vault's own
 // functions run here against a stand-in vault (the state they read and
 // write, and recorded calls); the wiring is checked in the source. Nothing
 // here starts wtype: the helper's typing is covered by its Rust tests,
@@ -75,6 +75,23 @@ check("both the switch and the keyboard go through the confirmation",
     && !/root\.vault\.writeSetting\(modelData\.key, !checked, "bool"\)/.test(read("Panel.qml")), "")
 check("a question left unanswered is dropped when the cursor moves or the screen opens",
   /settingConfirmKey = ""/.test(body("moveSettingsCursor")) && /settingConfirmKey = ""/.test(body("openSettings")), "")
+
+// --- wtype ---------------------------------------------------------------------------
+
+check("the dependency probe is told whether auto-type is on",
+  (service.match(/Model\.parseDependencies\([^\n]*dependencyFeatures\(\)\)/g) || []).length === 2
+    && /return \{ autoType: autoTypeEnabled \}/.test(body("dependencyFeatures")), body("dependencyFeatures"))
+check("and asked again when it is turned on or off",
+  /onAutoTypeEnabledChanged: \{[\s\S]{0,200}if \(depsChecked\) checkDependencies\(\)/.test(service), "")
+{
+  const v = bind({
+    settingConfirmKey: "", autoTypeEnabled: true, depsChecked: true, fingerprintUnlock: false, Model,
+    dependencies: Model.parseDependencies("bw=1\njq=1\nwtype=0\nomarchy=1", null, { autoType: true })
+  }, ["settingNote"])
+  check("auto-type on without wtype says so on its row", /wtype is not installed/.test(v.settingNote(entry)), "")
+  v.dependencies = Model.parseDependencies("bw=1\njq=1\nwtype=1\nomarchy=1", null, { autoType: true })
+  eq("and stops once it is installed", v.settingNote(entry), "")
+}
 
 // --- arming --------------------------------------------------------------------------
 
