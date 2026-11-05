@@ -112,6 +112,23 @@
 
 ### Fixed
 
+- **A monitor that fell back to a private vault joins the shared one once it
+  appears.** A shell slow to publish the service left each monitor with a
+  vault of its own, so a lock on one monitor was not a lock on the others.
+  A private host now keeps asking for the service, slowly; when it appears,
+  the private vault is locked, its helpers retired, and the view moves to the
+  shared vault.
+- **An automatic sync no longer shows "Syncing..." in the header** or
+  disables the sync button; only a sync you asked for does, and clicking
+  sync during an automatic one takes it over as before.
+- **The vault helper wipes the replies that carry a secret.** An item, a
+  field, a TOTP code and a run's output were serialized through `serde_json`
+  copies that were dropped unwiped; they are now built into a buffer sized
+  up front and wiped once written. The vault `bw` prints is still parsed by
+  `serde_json`, whose own buffers are not wiped (docs/vault-helper.md). The
+  SSH agent's signing gate opens when keys are published rather than on
+  `hello`, matching the key store's own check (no visible change), and the
+  helper's slot counter no longer uses a deprecated atomic call.
 - **Auto-type cannot stay "busy" without the helper.** The watchdog that
   gave up on a silent helper now covers the shell's own `bw get password`
   and `wtype` too, and kills a stuck one; its message says it timed out

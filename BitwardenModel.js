@@ -7361,6 +7361,31 @@ function vaultHostDecision(found, elapsedMs, timeoutMs) {
   return Number(elapsedMs) >= limit ? "private" : "wait"
 }
 
+// Gone private, the view keeps asking for the shared service, slowly: a
+// serviceFor() call is cheap, and a shell that was merely slow publishes it
+// soon after.
+var VAULT_HAND_OVER_POLL_MS = 1000
+
+function vaultHandOverPollMs() {
+  return VAULT_HAND_OVER_POLL_MS
+}
+
+// What a private view does on one such poll, given whether the shared service
+// was found and its private vault's state: "none" | "wait" | "lock" | "adopt".
+// `busy` (a pinentry up, an authentication running) waits rather than cut a
+// prompt or a bw run short; `held` (a session, items, an unlock under way) is
+// locked first, so nothing stays unlocked in a vault no view reaches; and
+// `locking` (that lock still running) waits for it, since retiring the vault
+// would kill the run.
+function vaultHandOverStep(found, state) {
+  if (!found) return "none"
+  var s = state || {}
+  if (s.busy === true) return "wait"
+  if (s.held === true) return "lock"
+  if (s.locking === true) return "wait"
+  return "adopt"
+}
+
 // Which view acts when the vault needs the screen (raise the popout, show an
 // SSH prompt). `views` is `{ opened, screen }` per view in attach order:
 // prefer an open popout, then the focused monitor, then the first view.

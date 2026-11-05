@@ -51,20 +51,30 @@ struct Helper {
     typing: Arc<AtomicUsize>,
     /// The process group of the `wtype` typing, for `stop_typing`.
     typing_group: Shared<Option<u32>>,
-    out: Sender<String>,
+    /// Reply lines; each is wiped once written, as any may carry a secret.
+    out: Sender<Line>,
 }
+
+/// One reply line. Those that carry a secret are built with `json_line`,
+/// not `json!`: the `Value` and `String` copies that makes are dropped
+/// unwiped.
+type Line = Zeroizing<String>;
 
 /// One of the `MAX_DETACHED` places; gives it back when dropped.
 struct Slot(Arc<AtomicUsize>);
 
 impl Slot {
     fn claim(count: &Arc<AtomicUsize>, max: usize) -> Option<Slot> {
-        count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < max).then_some(n + 1)
-            })
-            .ok()
-            .map(|_| Slot(Arc::clone(count)))
+        // By hand: `fetch_update` is deprecated and `try_update` is past the
+        // crate's MSRV.
+        let mut n = count.load(Ordering::Acquire);
+        while n < max {
+            match count.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(Slot(Arc::clone(count))),
+                Err(current) => n = current,
+            }
+        }
+        None
     }
 }
 
@@ -107,11 +117,10 @@ fn main() {
         std::process::exit(1);
     }
 
-    let (out, lines) = mpsc::channel::<String>();
+    let (out, lines) = mpsc::channel::<Line>();
     let writer = thread::spawn(move || {
         let mut stdout = std::io::stdout().lock();
         for line in lines {
-            let line = Zeroizing::new(line);
             if stdout
                 .write_all(line.as_bytes())
                 .and_then(|_| stdout.write_all(b"\n"))
@@ -223,8 +232,9 @@ fn grow(buffer: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) {
 }
 
 impl Helper {
+    /// A reply with no secret in it.
     fn send(&self, message: Value) {
-        let _ = self.out.send(message.to_string());
+        let _ = self.out.send(Zeroizing::new(message.to_string()));
     }
 
     fn result(&self, q: u64, value: Option<Value>) {
@@ -233,6 +243,16 @@ impl Helper {
                 self.send(json!({ "type": "result", "q": q, "ok": true, "value": value }))
             }
             None => self.send(json!({ "type": "result", "q": q, "ok": false })),
+        }
+    }
+
+    /// Sends a reply built with `json_line`; `None` is a failure.
+    fn secret_result(&self, q: u64, line: Option<Line>) {
+        match line {
+            Some(line) => {
+                let _ = self.out.send(line);
+            }
+            None => self.result(q, None),
         }
     }
 
@@ -272,9 +292,9 @@ impl Helper {
             Request::ForgetItem { id, .. } => self.store.lock().unwrap().forget_item(&id),
             Request::Item { q, id, .. } => {
                 let store = self.store.lock().unwrap();
-                let item = store.item(&id).map(|full| Value::String(full.to_owned()));
+                let line = store.item(&id).map(|full| secret_result_line(q, full));
                 drop(store);
-                self.result(q, item);
+                self.secret_result(q, line);
             }
             Request::CopyPassword {
                 q, id, clear_sec, ..
@@ -285,7 +305,7 @@ impl Helper {
             Request::Field { q, id, field, .. } => {
                 let value = store::SecretField::parse(&field)
                     .and_then(|field| self.store.lock().unwrap().item_secret(&id, &field));
-                self.result(q, value.map(|value| Value::String(value.to_string())));
+                self.secret_result(q, value.map(|value| secret_result_line(q, &value)));
             }
             Request::CopyField {
                 q,
@@ -305,10 +325,12 @@ impl Helper {
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                let code = key.and_then(|key| totp::generate(&key, now));
-                self.result(
+                let code = key
+                    .and_then(|key| totp::generate(&key, now))
+                    .map(|(code, period)| (Zeroizing::new(code), period));
+                self.secret_result(
                     q,
-                    code.map(|(code, period)| json!({ "code": code, "period": period })),
+                    code.map(|(code, period)| totp_result_line(q, &code, period)),
                 );
             }
             Request::Search { q, query, .. } => {
@@ -391,7 +413,7 @@ impl Helper {
                     json!({ "type": "result", "q": q, "ok": false, "value": "failed" })
                 }
             };
-            let _ = out.send(message.to_string());
+            let _ = out.send(Zeroizing::new(message.to_string()));
         });
     }
 
@@ -529,7 +551,7 @@ fn run(
     generation: u64,
     store: Shared<Store>,
     runs: Shared<HashMap<u64, u32>>,
-    out: Sender<String>,
+    out: Sender<Line>,
 ) {
     if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
         thread::spawn(move || {
@@ -585,9 +607,8 @@ fn run(
         Zeroizing::new(String::from_utf8_lossy(&stdout).into_owned())
     };
     let (forwarded, session, held) = keep(&store, generation, &capture, code, &text);
-    let err = String::from_utf8_lossy(&err).into_owned();
-    let message = json!({ "type": "exit", "id": id, "code": code, "out": forwarded.as_str(), "err": err, "session": session, "held": held });
-    let _ = out.send(message.to_string());
+    let err = Zeroizing::new(String::from_utf8_lossy(&err).into_owned());
+    let _ = out.send(exit_line(id, code, &forwarded, &err, session, held));
 }
 
 /// What the panel is told of a finished run, and whether the helper kept a
@@ -661,6 +682,123 @@ fn keep(
         }
     };
     (forwarded, session, held)
+}
+
+/// A piece of a reply line (see `json_line`).
+enum Part<'a> {
+    /// JSON text as is: punctuation, a number, a boolean.
+    Raw(&'a str),
+    /// A string value, quoted and escaped.
+    Str(&'a str),
+}
+
+/// A reply line built into a buffer sized up front: a secret in it is copied
+/// once, and no reallocation leaves an unwiped copy behind.
+fn json_line(parts: &[Part]) -> Line {
+    let len = parts
+        .iter()
+        .map(|part| match part {
+            Part::Raw(text) => text.len(),
+            Part::Str(text) => escaped_len(text) + 2,
+        })
+        .sum();
+    let mut line = Zeroizing::new(String::with_capacity(len));
+    for part in parts {
+        match part {
+            Part::Raw(text) => line.push_str(text),
+            Part::Str(text) => {
+                line.push('"');
+                escape_into(&mut line, text);
+                line.push('"');
+            }
+        }
+    }
+    debug_assert_eq!(line.len(), len);
+    line
+}
+
+/// `{"type":"result","q":<q>,"ok":true,"value":"<value>"}`: a reply whose
+/// value is a secret (an item, a field).
+fn secret_result_line(q: u64, value: &str) -> Line {
+    let q = q.to_string();
+    json_line(&[
+        Part::Raw(r#"{"type":"result","q":"#),
+        Part::Raw(&q),
+        Part::Raw(r#","ok":true,"value":"#),
+        Part::Str(value),
+        Part::Raw("}"),
+    ])
+}
+
+/// `{"type":"result","q":<q>,"ok":true,"value":{"code":"<code>","period":<period>}}`.
+fn totp_result_line(q: u64, code: &str, period: u64) -> Line {
+    let (q, period) = (q.to_string(), period.to_string());
+    json_line(&[
+        Part::Raw(r#"{"type":"result","q":"#),
+        Part::Raw(&q),
+        Part::Raw(r#","ok":true,"value":{"code":"#),
+        Part::Str(code),
+        Part::Raw(r#","period":"#),
+        Part::Raw(&period),
+        Part::Raw("}}"),
+    ])
+}
+
+/// The `exit` reply of a run: its output and errors may hold a secret.
+fn exit_line(id: u64, code: i32, out: &str, err: &str, session: bool, held: bool) -> Line {
+    let (id, code) = (id.to_string(), code.to_string());
+    let flag = |b: bool| if b { "true" } else { "false" };
+    json_line(&[
+        Part::Raw(r#"{"type":"exit","id":"#),
+        Part::Raw(&id),
+        Part::Raw(r#","code":"#),
+        Part::Raw(&code),
+        Part::Raw(r#","out":"#),
+        Part::Str(out),
+        Part::Raw(r#","err":"#),
+        Part::Str(err),
+        Part::Raw(r#","session":"#),
+        Part::Raw(flag(session)),
+        Part::Raw(r#","held":"#),
+        Part::Raw(flag(held)),
+        Part::Raw("}"),
+    ])
+}
+
+/// Bytes `escape_into` writes for `value`.
+fn escaped_len(value: &str) -> usize {
+    value
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+            c if c < ' ' => 6,
+            c => c.len_utf8(),
+        })
+        .sum()
+}
+
+/// Appends `value` as the body of a JSON string, as serde_json writes it: `"`
+/// and `\` escaped, the control characters with a short form as that, the
+/// rest as `\u00XX`, and everything else (DEL and all of UTF-8) verbatim.
+fn escape_into(out: &mut String, value: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < ' ' => {
+                out.push_str("\\u00");
+                out.push(HEX[(c as usize) >> 4] as char);
+                out.push(HEX[(c as usize) & 0xf] as char);
+            }
+            c => out.push(c),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1029,5 +1167,75 @@ mod tests {
         let fits = drain(Chunks(vec![vec![b'a'; 10]].into_iter()), 50);
         assert!(!fits.truncated);
         assert_eq!(fits.bytes.len(), 10);
+    }
+
+    /// Strings a reply may carry: quotes, backslashes, every control
+    /// character, DEL, non-ASCII, emoji, `%`, and a large value.
+    fn nasty_strings() -> Vec<String> {
+        let mut all = vec![
+            String::new(),
+            "plain".to_owned(),
+            "say \"hi\"".to_owned(),
+            "C:\\path\\to".to_owned(),
+            "\\\"\\".to_owned(),
+            "tab\there\nnew\rline\u{8}\u{c}".to_owned(),
+            "\u{7f}del\u{1b}esc\u{0}nul\u{1f}".to_owned(),
+            "j\u{f6}rg \u{e9}t\u{e9} \u{4e2d}\u{6587}".to_owned(),
+            "key \u{1f511} \u{1f1e9}\u{1f1ea}".to_owned(),
+            "100% sure %25 %0A".to_owned(),
+            "/slash and </script>".to_owned(),
+            "\u{2028}\u{2029} separators".to_owned(),
+            (0u8..0x20).map(char::from).collect(),
+        ];
+        all.push("x\"\\\n\u{1}\u{e9}\u{1f511}".repeat(10_000));
+        assert!(all.last().unwrap().len() > 100 * 1024);
+        all
+    }
+
+    #[test]
+    fn the_escaper_writes_what_serde_json_writes() {
+        for value in nasty_strings() {
+            let expected = serde_json::to_string(&value).unwrap();
+            let mut escaped = String::with_capacity(escaped_len(&value) + 2);
+            escaped.push('"');
+            escape_into(&mut escaped, &value);
+            escaped.push('"');
+            assert_eq!(escaped, expected, "{value:?}");
+            assert_eq!(escaped.len(), escaped_len(&value) + 2, "{value:?}");
+            let back: String = serde_json::from_str(&escaped).unwrap();
+            assert_eq!(back, value);
+        }
+    }
+
+    #[test]
+    fn secret_reply_lines_parse_as_the_json_macro_would_write_them() {
+        for value in nasty_strings() {
+            let line = secret_result_line(7, &value);
+            assert_eq!(line.capacity(), line.len(), "{value:?}");
+            let parsed: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(
+                parsed,
+                json!({ "type": "result", "q": 7, "ok": true, "value": value })
+            );
+
+            let line = exit_line(u64::MAX, -3, &value, &value, true, false);
+            assert_eq!(line.capacity(), line.len(), "{value:?}");
+            let parsed: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(
+                parsed,
+                json!({ "type": "exit", "id": u64::MAX, "code": -3, "out": value, "err": value, "session": true, "held": false })
+            );
+        }
+        let line = totp_result_line(1, "123456", 30);
+        assert_eq!(line.capacity(), line.len());
+        assert_eq!(
+            line.as_str(),
+            r#"{"type":"result","q":1,"ok":true,"value":{"code":"123456","period":30}}"#
+        );
+        let line = exit_line(2, 0, "", "", false, true);
+        assert_eq!(
+            line.as_str(),
+            r#"{"type":"exit","id":2,"code":0,"out":"","err":"","session":false,"held":true}"#
+        );
     }
 }

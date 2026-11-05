@@ -102,13 +102,16 @@ check("a successful server sync also reloads items before metadata",
 
 check("the empty list says when items are loading", panelSrc.includes('"Loading items..."'), "missing loading label")
 const syncButton = panelSrc.slice(panelSrc.indexOf("// Sync Vault Button"), panelSrc.indexOf("// Send Button"))
+// A user's sync only: `userSyncing` is isSyncing without backgroundSync
+// (tests/auto-sync.test.js), so an automatic sync says nothing.
 check("the compact sync control reports progress using supported PanelActionButton properties",
-  /tooltipText:\s*root\.isSyncing\s*\?\s*"Syncing\.\.\."/.test(syncButton)
-    && /enabled:\s*!root\.isSyncing/.test(syncButton)
+  /tooltipText:\s*root\.userSyncing\s*\?\s*"Syncing\.\.\."/.test(syncButton)
+    && /enabled:\s*!root\.userSyncing/.test(syncButton)
     && !/iconSpinning/.test(syncButton),
   syncButton)
 check("the panel header reports sync progress in text",
-  /if\s*\(root\.isSyncing\)\s*return\s*"Syncing\.\.\."/.test(panelSrc),
+  /if\s*\(root\.userSyncing\)\s*return\s*"Syncing\.\.\."/.test(panelSrc)
+    && /readonly property bool userSyncing: root\.isSyncing && !root\.backgroundSync/.test(panelSrc),
   "missing Syncing... header state")
 
 const listProcessStart = panelSrc.indexOf("id: listProc")
