@@ -1300,6 +1300,68 @@ function clipboardCopyCommand(clearSec) {
     + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
 }
 
+// -------------------------------------------------------------------------
+// Auto-type
+// -------------------------------------------------------------------------
+//
+// Off unless `autoTypeEnabled`. Ctrl+C or a row's button in the panel copies
+// a login's password and arms it, after any re-prompt; the `autoType` IPC
+// then types its username, Tab and password into the focused window, once,
+// within AUTO_TYPE_ARM_MS. With the vault helper the helper types it
+// (`autoType` request, vault/src/main.rs) and the shell never sees the
+// password; without it the shell writes the text to wtype's stdin. Never in
+// argv or an environment.
+
+var AUTO_TYPE_ARM_MS = 30000
+// Typing a long login takes seconds; a helper that has not answered by then
+// predates the request (it refuses it with no reply) or is stuck.
+var AUTO_TYPE_ANSWER_MS = 15000
+
+function autoTypeArmMs() { return AUTO_TYPE_ARM_MS }
+function autoTypeAnswerMs() { return AUTO_TYPE_ANSWER_MS }
+
+// The same wtype run as the helper's (WTYPE_ARGS): a pause so the shortcut is
+// let go first, a short delay between keys, the text on stdin, and a UTF-8
+// locale (under C wtype stops at the first non-ASCII character and still
+// exits 0). `exec` from bash so a missing wtype is exit 127, not a start
+// failure Process would not report.
+function autoTypeCommand() {
+  return ["bash", "-c", "LC_ALL=C.UTF-8 exec wtype -s 250 -d 12 -"]
+}
+
+// What is typed, as the helper builds it (auto_type_text()): username, Tab,
+// password, or the password alone. wtype presses Return for a newline and Tab
+// for a tab, and xkb maps backspace, delete and escape to their keys, so a
+// value with any control character is refused.
+function autoTypeText(username, password) {
+  var user = String(username || "")
+  var pass = String(password || "")
+  if (!pass) return { ok: false, reason: "empty", text: "" }
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(user + pass)) return { ok: false, reason: "unsafe", text: "" }
+  return { ok: true, reason: "", text: user ? user + "\t" + pass : pass }
+}
+
+// Why a type did not happen, from the helper's or the fallback's reason.
+function autoTypeFailureMessage(reason) {
+  switch (String(reason || "")) {
+    case "missing": return "Auto-type needs wtype, which is not installed"
+    case "unsafe": return "Not auto-typed: the username or password holds a line break, tab or other control character"
+    case "empty": return "Not auto-typed: this login has no password"
+    case "busy": return "Not auto-typed: another auto-type is still typing"
+    case "not-held": return "Not auto-typed: the vault helper does not hold this item yet; sync and arm it again"
+    case "gone": return "Not auto-typed: the armed item is no longer in the vault"
+    case "unread": return "Not auto-typed: could not read this password"
+    case "timeout": return "Auto-type got no answer from the vault helper"
+    default: return "Auto-type failed (wtype could not type into the focused window)"
+  }
+}
+
+// The panel is usually closed when auto-type runs, so a failure is a desktop
+// notification too. The text is one of the messages above: no item data.
+function autoTypeFailedNoticeCommand(message) {
+  return ["notify-send", "-a", "Bitwarden", "Auto-type", String(message || "")]
+}
+
 // Clears the clipboard only while it holds a copy marked sensitive (ours, or
 // another password manager's), so a lock or account switch never wipes what
 // the user copied themselves since.
