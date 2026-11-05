@@ -449,6 +449,18 @@ for (const [where, text] of [["manifest", manifestPin], ["settings screen", sche
   check(`the ${where} gives the offline guess time, not the old one-core figure`,
     text.includes("16 hours") && !/9 days for 6|2 hours of one CPU core|4 is the floor/.test(text), where)
 }
+// Turning fingerprint off deletes the stored password; the setting says so in
+// the same words wherever it is described, and the README under its section.
+const manifestFp = JSON.parse(read("manifest.json")).barWidget.schema.find(e => e.key === "fingerprintUnlock").description
+const schemaFp = Model.SETTINGS_SCHEMA.find(e => e.key === "fingerprintUnlock").description
+const fpDeletes = "Turning this off deletes the stored password, so PIN and security-key unlock need setting up again."
+for (const [where, text] of [["manifest", manifestFp], ["settings screen", schemaFp]]) {
+  check(`the ${where} says turning fingerprint off deletes the stored password`,
+    text.endsWith(fpDeletes) && !/removes the fingerprint's access/.test(text), text)
+}
+check("the README's fingerprint section says the same",
+  /### Fingerprint unlock[\s\S]*?Turning the setting off deletes the stored password itself[\s\S]*?PIN and FIDO2 unlock for those accounts must be set up again[\s\S]*?### FIDO2 key unlock/
+    .test(read("README.md")), "")
 for (const [pin, confirm, wantErr] of [
   ["12345",  "12345",  true],   // too short
   ["123456", "123456", false],  // the minimum is accepted

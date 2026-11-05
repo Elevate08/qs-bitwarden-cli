@@ -234,8 +234,14 @@ exit 0`)
     !fs.existsSync(path.join(store, "pin_blob")) && !fs.existsSync(path.join(store, "pin_blob@" + SLOT_B)), entries().join(","))
   eq("the stored password still opens through what is left", open(B, { kind: "fingerprint" }).out, PW_B)
   eq("a purge with nothing left to remove succeeds", purge("pin").code, 0)
+  // Fingerprint's wrap exposes the data key, so its purge deletes the envelope
+  // of every account that had the wrap, and leaves the others' alone.
   eq("fingerprint goes the same way", purge("fingerprint").code, 0)
-  check("and is gone from B", inspect(SLOT_B).fingerprint === false, JSON.stringify(inspect(SLOT_B)))
+  eq("and takes B's envelope with it", run(Model.unlockEnvelopeInspectCommand(tool, SLOT_B)).code, Model.envelopeExitCodes().absent)
+  check("while A, which never had the wrap, keeps its envelope",
+    inspect(SLOT_A).account.id === "user-a" && entries().indexOf("unlock_envelope") >= 0
+      && entries().indexOf("unlock_envelope@" + SLOT_B) < 0, entries().join(","))
+  eq("a fingerprint purge with no envelope left to delete succeeds", purge("fingerprint").code, 0)
   eq("a FIDO2 purge with no key wraps succeeds", purge("fido").code, 0)
   check("an unknown method is refused", Model.quickUnlockPurgeCommand(tool, [SLOT_A], "password")[2] === "exit 2", "")
   // Put A's PIN back for the checks below.

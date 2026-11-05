@@ -5750,17 +5750,32 @@ Item {
     })
   }
 
+  // The fingerprint wrap holds the envelope's data key in the clear, and the
+  // key is never rotated, so the envelope goes with the wrap (see "Removing a
+  // method from every account" in BitwardenModel.js): this account's PIN and
+  // FIDO2 ways in go too, and writeEnvelope()'s refresh reads their rows off.
   function forgetFingerprintUnlock() {
     requestMasterCredentialClear()
     legacyFingerprintStored = false
+    var notice = fingerprintForgottenText()
     if (envelopeSummary && envelopeSummary.fingerprint) {
-      removeQuickUnlockMethod({ kind: "remove", method: "fingerprint" })
+      removeQuickUnlockMethod({ kind: "delete" })
     }
     fingerprintStored = false
     cancelFingerprintUnlock()
     fingerprintMessage = ""
     fingerprintError = ""
-    flashNotification("Fingerprint unlock forgotten")
+    flashNotification(notice)
+  }
+
+  // Names what the deletion took with it, from the account on screen's
+  // summary; other accounts' rows read off once each is switched to.
+  function fingerprintForgottenText() {
+    var s = envelopeSummary
+    var others = Boolean(s && s.fingerprint && (s.pin || (Array.isArray(s.fido) && s.fido.length > 0)))
+    return others
+      ? "Fingerprint unlock forgotten; the stored password was deleted, so set up PIN or security-key unlock again"
+      : "Fingerprint unlock forgotten"
   }
 
   onFingerprintUnlockChanged: {
@@ -5774,11 +5789,13 @@ Item {
         forgetFingerprintUnlock()
         return
       }
-      // Every account's way in, and its legacy copy, not only this one's.
+      // Every account's envelope that has the wrap, and its legacy copy, not
+      // only this one's; the purge's completion refreshes the summary.
+      var notice = fingerprintForgottenText()
       legacyFingerprintStored = false
       fingerprintStored = false
       purgeQuickUnlockMethod("fingerprint")
-      flashNotification("Fingerprint unlock forgotten")
+      flashNotification(notice)
     } else {
       refreshFingerprintAvailability()
     }

@@ -376,8 +376,22 @@ function suite(realCreds) {
         r.code === 0 && Model.parseKeyringRepair(r.out).rejoined === 0 && stored() === good, r.out)
     }
 
-    // --- presence, and clearing ---
+    // --- presence, deleting, and clearing ---
     eq(tag + "presence is reported without the secret", run(Model.keyringHasEntryCommand(Model.KEYRING_ENVELOPE)).out.trim(), "yes")
+    // Turning fingerprint unlock off deletes the envelope: a clear of the
+    // entry, with nothing opened and no secret anywhere in it.
+    const del = Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "delete" })
+    check(tag + "deleting the envelope is a clear of its entry, opening nothing",
+      /secret-tool clear 'qs-bitwarden-cli' 'unlock_envelope'|secret-tool clear service 'qs-bitwarden-cli' account 'unlock_envelope'/.test(del[2])
+        && !/QSBW_|__load|__unseal|__store|remove|argon2|systemd-creds/.test(del[2]), del[2])
+    eq(tag + "deleting needs no secret", run(del).code, 0)
+    eq(tag + "and the keyring has it no more", stored(), null)
+    eq(tag + "deleting what is already gone is the state wanted", run(del).code, 0)
+    eq(tag + "inspect then says absent", run(Model.unlockEnvelopeInspectCommand(tool)).code, E.absent)
+    eq(tag + "a new password after it starts a fresh envelope",
+      run(Model.unlockEnvelopeCreateCommand(tool, ACCOUNT), { [SECRET]: PASSWORD }).code, 0)
+    check(tag + "with only the master wrap", (() => { const n = summary(); return n.master && !n.pin && !n.fingerprint && n.fido.length === 0 })(),
+      JSON.stringify(summary()))
     run(Model.keyringClearEntryCommand(Model.KEYRING_ENVELOPE))
     eq(tag + "clearing removes it", stored(), null)
     eq(tag + "and presence says so", run(Model.keyringHasEntryCommand(Model.KEYRING_ENVELOPE)).out.trim(), "no")
@@ -415,6 +429,7 @@ function suite(realCreds) {
     add: Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "add-pin" }),
     rotate: Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "rotate", auth: { kind: "pin" } }),
     check: Model.unlockEnvelopeCheckCommand("/t", ACCOUNT),
+    delete: Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "delete" }),
     migrate: Model.legacyPinMigrationCommand("/t", ACCOUNT)
   }
   for (const [name, argv] of Object.entries(commands)) {
@@ -468,6 +483,15 @@ check("a FIDO2 credential that is not base64 is refused",
 check("an unknown method is refused", refused(Model.unlockEnvelopeOpenCommand("/t", ACCOUNT, { kind: "face" })), "")
 check("removing the master wrap is not an operation",
   refused(Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "remove", method: "master" })), "")
+check("deleting the envelope is refused on the same bad arguments as any update",
+  refused(Model.unlockEnvelopeUpdateCommand("t", ACCOUNT, { kind: "delete" }))
+    && refused(Model.unlockEnvelopeUpdateCommand("/t", null, { kind: "delete" }))
+    && refused(Model.unlockEnvelopeUpdateCommand("/t", { id: "", server: "s" }, { kind: "delete" }))
+    && refused(Model.unlockEnvelopeUpdateCommand("/t", { id: "a", server: "s", slot: "../x" }, { kind: "delete" })), "")
+check("and names the slot's own entry",
+  Model.unlockEnvelopeUpdateCommand("/t", Object.assign({ slot: "0123456789abcdef" }, ACCOUNT), { kind: "delete" })[2]
+    .includes("'unlock_envelope@0123456789abcdef'")
+    && !Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "delete" })[2].includes("@"), "")
 check("the startup repair refuses a relative plugin directory",
   refused(Model.keyringRepairCommand("plugin", [])), "")
 check("and looks only at well-formed slots, once each",
