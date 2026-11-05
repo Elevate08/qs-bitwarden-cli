@@ -36,10 +36,11 @@ impl Helper {
         std::fs::write(dir.join("timeout"), "#!/bin/sh\nshift\nexec \"$@\"\n").unwrap();
         // A stand-in wtype that records its stdin, arguments and locale, and
         // exits with the code in `wtype-exit` (0 when there is none), a second
-        // late when `wtype-slow` exists.
+        // late when `wtype-slow` exists, writing `typed-done` once it has
+        // waited the second out.
         std::fs::write(
             dir.join("wtype"),
-            "#!/bin/sh\nd=\"$(dirname \"$0\")\"\ncat > \"$d/typed\"\necho \"$*\" > \"$d/typed-args\"\necho \"$LC_ALL\" > \"$d/typed-locale\"\n[ -f \"$d/wtype-slow\" ] && sleep 1\nexit \"$(cat \"$d/wtype-exit\" 2>/dev/null || echo 0)\"\n",
+            "#!/bin/sh\nd=\"$(dirname \"$0\")\"\ncat > \"$d/typed\"\necho \"$*\" > \"$d/typed-args\"\necho \"$LC_ALL\" > \"$d/typed-locale\"\n[ -f \"$d/wtype-slow\" ] && sleep 1 && : > \"$d/typed-done\"\nexit \"$(cat \"$d/wtype-exit\" 2>/dev/null || echo 0)\"\n",
         )
         .unwrap();
         for name in ["wl-copy", "timeout", "wtype"] {
@@ -454,6 +455,71 @@ fn auto_type_hands_the_login_to_wtype_and_not_the_panel() {
     assert_eq!(
         helper.query(26, json!({ "type": "autoType", "id": "a" }))["value"],
         "empty"
+    );
+}
+
+/// Starts a helper holding one login and a slow `wtype` typing it: the
+/// `typed` record is there, the second's sleep has a second to go.
+fn typing_slowly(q: u64) -> Helper {
+    let mut helper = Helper::start();
+    let vault = json!({ "sshCapability": "unconfirmed", "sshKeys": [], "items": [
+        { "id": "a", "type": 1, "name": "Bank", "login": { "username": "me", "password": "hunter2" } }
+    ]})
+    .to_string();
+    helper.exec(
+        1,
+        &format!("cat <<'EOF'\n{vault}\nEOF"),
+        json!({ "capture": "vault" }),
+    );
+    std::fs::write(helper.dir.join("wtype-slow"), "").unwrap();
+    helper.send(json!({ "type": "autoType", "v": 1, "q": q, "id": "a" }));
+    wait_for_file(&helper.dir.join("typed"), "wtype never ran");
+    helper
+}
+
+#[test]
+fn a_forget_stops_an_auto_type_in_progress() {
+    let mut helper = typing_slowly(30);
+    let asked = Instant::now();
+    helper.send(json!({ "type": "forget", "v": 1 }));
+    assert_eq!(
+        helper.reply("q", 30),
+        json!({ "type": "result", "q": 30, "ok": false, "value": "stopped" })
+    );
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "the reply waited for wtype: {:?}",
+        asked.elapsed()
+    );
+    // The stand-in never gets to the end of its second.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!helper.dir.join("typed-done").exists(), "wtype kept typing");
+
+    // The next auto-type is not "busy", and a forget with nothing typing is
+    // a plain forget.
+    helper.send(json!({ "type": "forget", "v": 1, "keep": [] }));
+    assert_eq!(
+        helper.query(31, json!({ "type": "autoType", "id": "a" }))["value"],
+        "empty"
+    );
+}
+
+#[test]
+fn a_shutdown_stops_an_auto_type_in_progress() {
+    let mut helper = typing_slowly(40);
+    let asked = Instant::now();
+    helper.send(json!({ "type": "shutdown", "v": 1 }));
+    let status = helper.child.wait().unwrap();
+    assert!(status.success(), "{status}");
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "the helper waited for wtype: {:?}",
+        asked.elapsed()
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !helper.dir.join("typed-done").exists(),
+        "wtype outlived the helper"
     );
 }
 
