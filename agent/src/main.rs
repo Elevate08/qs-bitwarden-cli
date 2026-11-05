@@ -348,7 +348,9 @@ async fn run() -> Result<(), ()> {
                 match message {
                     ControlMessage::Hello { .. } if !handshake_complete => {
                         handshake_complete = true;
-                        gate_open = true;
+                        // The gate stays closed until a load publishes keys
+                        // (`finish_load_if_ready`), as `KeyStore::authorize`
+                        // requires; nothing could be signed before then.
                         emit(&output_tx, Output::Ready { v: 1, socket_path: socket.clone(), fifo_path: fifo.clone(), agent_version: env!("CARGO_PKG_VERSION").to_owned() })?;
                     }
                     ControlMessage::Hello { .. } => return Err(()),
@@ -1077,4 +1079,55 @@ fn authorized_signature(
 
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qs_bitwarden_ssh_agent::peer::PeerContext;
+
+    /// A sign request from a client of the expected uid.
+    fn sign(uid: u32) -> (ClientEvent, oneshot::Receiver<Vec<u8>>) {
+        let (reply, answer) = oneshot::channel();
+        let event = ClientEvent {
+            peer: PeerContext::new(uid, 4242, 1, "/usr/bin/ssh").unwrap(),
+            forwarded: false,
+            binds: Vec::new(),
+            request: AgentRequest::Sign {
+                public_blob: vec![0; 32],
+                message: vec![1; 32],
+                flags: 0,
+            },
+            reply,
+        };
+        (event, answer)
+    }
+
+    /// Before any load, the gate is closed and the store empty: a sign
+    /// request is refused without an unlock prompt, as it would be were the
+    /// gate open, since nothing is unlocked to authorize it.
+    #[test]
+    fn a_sign_before_any_load_is_refused_without_a_prompt() {
+        for gate_open in [false, true] {
+            let store = KeyStore::new();
+            let mut approvals = ApprovalManager::new(1000);
+            let (output, mut outputs) = mpsc::channel(8);
+            let (event, mut answer) = sign(1000);
+            handle_client(
+                event,
+                gate_open,
+                &store,
+                &mut approvals,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut None,
+                true,
+                Instant::now(),
+                &output,
+            )
+            .unwrap();
+            assert_eq!(answer.try_recv().unwrap(), protocol::failure_response());
+            assert!(outputs.try_recv().is_err(), "gate open: {gate_open}");
+        }
+    }
 }

@@ -229,10 +229,12 @@ other way, such as `gcr-prompter` for `pinentry-gnome3`
 - **The Omarchy-style prompt holds what you type in strings it cannot wipe**
   until its Quickshell exits, right after it answers
   ([Which pinentry](#which-pinentry)).
-- **A reply that carries a secret is built with serde_json**, whose
-  intermediate buffers are not zeroed, so a secret can linger in the helper's
-  freed heap memory after it is sent. The process is undumpable; swap is
-  covered in [SECURITY.md](../SECURITY.md).
+- **The vault `bw` prints is parsed with serde_json**, whose own buffers are
+  not zeroed, so pieces of an item can linger in the helper's freed heap
+  memory after the parse (the parsed tree itself is wiped, and a reply that
+  carries a secret is built into a pre-sized buffer that is wiped once
+  written). The process is undumpable; swap is covered in
+  [SECURITY.md](../SECURITY.md).
 - **Code running in the shell.** The helper does not protect against it.
   Such code can ask the helper to run a command with the session key or a
   held password in its environment.

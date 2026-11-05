@@ -266,6 +266,11 @@ Panel {
   }
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // A sync the user asked for, or took over by asking during an automatic
+  // one (syncVault()). An automatic sync that succeeds says nothing, so the
+  // header stays quiet and the sync button stays usable while one runs.
+  readonly property bool userSyncing: root.vault.isSyncing && !root.vault.backgroundSync
+
   // -------------------------------------------------------------------------
   // Vault host
   // -------------------------------------------------------------------------
@@ -274,6 +279,13 @@ Panel {
   // private one when the shell does not provide it (see
   // Model.vaultHostDecision()). Never null: until resolved it is the bar's own
   // inert standby vault.
+  //
+  // A private vault may only mean the shell was slow to publish the service,
+  // and with one per monitor a lock on one monitor is not a lock on the
+  // others. So a private host keeps asking, slowly, and hands over when the
+  // service appears: the private vault is locked (nothing it held crosses
+  // over), the view moves to the shared vault, and the private one is retired
+  // (see Model.vaultHandOverStep() and handOverVault()).
   property var resolvedVault: null
   readonly property var vault: resolvedVault !== null ? resolvedVault : localVault
 
@@ -281,12 +293,17 @@ Panel {
   property string vaultHost: "pending"
   property double vaultResolveStartedMs: 0
 
+  // The shared service, or null while the shell has not published it.
+  function findSharedVault() {
+    var host = root.bar ? root.bar.shell : null
+    return host && typeof host.serviceFor === "function"
+      ? host.serviceFor(root.moduleName) : null
+  }
+
   function resolveVault() {
     if (root.resolvedVault) return
     if (root.vaultResolveStartedMs === 0) root.vaultResolveStartedMs = Date.now()
-    var host = root.bar ? root.bar.shell : null
-    var shared = host && typeof host.serviceFor === "function"
-      ? host.serviceFor(root.moduleName) : null
+    var shared = root.findSharedVault()
     var decision = Model.vaultHostDecision(!!shared,
       Date.now() - root.vaultResolveStartedMs, Model.vaultHostTimeoutMs())
     if (decision === "wait") return
@@ -303,6 +320,45 @@ Panel {
     running: root.resolvedVault === null && root.vaultHost === "pending"
     triggeredOnStart: true
     onTriggered: root.resolveVault()
+  }
+
+  // One poll of the slow lookup. Locking and adopting are two polls apart:
+  // the lock runs in the private vault's helper, which retiring would kill.
+  function handOverVault() {
+    if (root.vaultHost !== "private") return
+    var shared = root.findSharedVault()
+    var step = Model.vaultHandOverStep(!!shared, {
+      busy: localVault.pinentryActive || localVault.authAttemptInFlight(),
+      held: localVault.vaultStatePresent() || localVault.isUnlocking,
+      locking: localVault.lockRun !== null || localVault.lockQueue.length > 0
+    })
+    if (step === "wait" || step === "none") return
+    // The popout belongs to the vault being left; shown again, it is the
+    // shared vault's.
+    if (localVault.opened) localVault.close()
+    if (step === "lock") {
+      localVault.lockVault()
+      return
+    }
+    localVault.detachView(root)
+    // Detached, nothing in the private vault runs on its own, but the helpers
+    // its start launched do: stop them as an unload does, so the shared
+    // vault's SSH agent can take the runtime lock.
+    localVault.releaseVaultHelper()
+    localVault.applySshAgentEvent({ kind: "enabled", value: false, nowMs: Date.now() })
+    root.resolvedVault = shared
+    root.vaultHost = "shared"
+    // attachView() pushes root.settings first, as onSettingsChanged does.
+    shared.attachView(root)
+  }
+
+  // Stops once shared: only a private host has anything to hand over.
+  Timer {
+    id: vaultHandOverTimer
+    interval: Model.vaultHandOverPollMs()
+    repeat: true
+    running: root.vaultHost === "private"
+    onTriggered: root.handOverVault()
   }
 
   onSettingsChanged: if (root.resolvedVault) root.resolvedVault.updateSettings(root.settings)
@@ -823,7 +879,7 @@ Panel {
           title: "Bitwarden"
           meta: {
             if (root.vault.status === "unlocked") {
-              if (root.vault.isSyncing) return "Syncing..."
+              if (root.userSyncing) return "Syncing..."
               if (root.vault.isLoading && root.vault.items.length === 0) return "Loading items..."
               // `bw status` can lag the list; show the count meanwhile.
               return root.vault.userEmail || (root.vault.filteredItems.length + " items")
@@ -859,9 +915,9 @@ Panel {
             PanelActionButton {
               visible: root.vault.status === "unlocked"
               iconText: "󰑐"
-              tooltipText: root.vault.isSyncing ? "Syncing..." : "Sync vault (r)"
+              tooltipText: root.userSyncing ? "Syncing..." : "Sync vault (r)"
               fontFamily: root.fontFamily
-              enabled: !root.vault.isSyncing
+              enabled: !root.userSyncing
               onClicked: root.vault.syncVault()
             }
 

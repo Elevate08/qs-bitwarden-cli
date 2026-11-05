@@ -251,4 +251,22 @@ check("timer belongs to the shared service", /id: autoSyncTimer/.test(source)
 check("timer stops while locked and can finish a pending reload", /running: root.live && root.status === "unlocked" && root.session !== ""\s*&& \(root.autoSyncMinutes > 0 \|\| root.autoSyncReloadPending\)/.test(source), "timer guard missing")
 for (const name of ["maybeAutoSync", "syncVault", "onSyncFinished"])
   check(`${name} never extends the lock deadline`, !/resetAutoLockTimer|autoLockArmedAt\s*=/.test(functionBody(source, name)), name)
+// A background sync that succeeds says nothing: the header and the sync
+// button show only a sync the user asked for, and the button stays usable so a
+// click during a background sync can take it over (syncVault()).
+const panel = read("Panel.qml")
+check("the panel shows only a user's sync",
+  /readonly property bool userSyncing: root\.vault\.isSyncing && !root\.vault\.backgroundSync/.test(panel)
+    && /if \(root\.userSyncing\) return "Syncing\.\.\."/.test(panel)
+    && /tooltipText: root\.userSyncing \? "Syncing\.\.\." : "Sync vault \(r\)"/.test(panel)
+    && /enabled: !root\.userSyncing/.test(panel),
+  "header text, tooltip and enabled must go through userSyncing")
+check("and reaches isSyncing nowhere else",
+  (panel.match(/\bisSyncing\b/g) || []).length === 1, String((panel.match(/\bisSyncing\b/g) || []).length))
+{
+  const c = fixture(); c.autoSyncMinutes = 5; c.now += 400000; c.maybeAutoSync()
+  check("a background sync is not a user's", c.isSyncing && c.backgroundSync, "")
+  c.syncVault()
+  check("asking during it makes it one, reported like any other", c.isSyncing && !c.backgroundSync && c.syncProc.running, "")
+}
 done()
