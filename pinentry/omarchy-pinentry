@@ -1,15 +1,17 @@
 #!/usr/bin/env node
-// The Omarchy-style pinentry (setting `omarchyPinentry`): a pinentry that
-// speaks the Assuan protocol on stdin/stdout, as the panel's pinentry script
-// (Model.PINENTRY_SCRIPT) expects of any pinentry, and draws its prompt as a
-// card over the focused monitor in a short-lived Quickshell of its own
-// (PinentryPrompt.qml), in the style of the shell's polkit prompt.
+// The plugin's pinentry, and its only one: the panel's pinentry script
+// (Model.PINENTRY_SCRIPT) runs this file by absolute path from the plugin's
+// directory, with no other program to fall back to. It speaks the Assuan
+// protocol on stdin/stdout and draws its prompt as a card over the focused
+// monitor in a short-lived Quickshell of its own (PinentryPrompt.qml), in the
+// style of the shell's polkit prompt. Where `--check` fails, the panel offers
+// its own field instead, and says what that costs.
 //
-// It runs under the vault helper like pinentry-qt, so it and the Quickshell
-// it starts inherit the helper's zero core-file limit. What is typed travels
-// from the Quickshell to this process over a Unix socket in a private
-// directory (mkdtemp, 0700, under $XDG_RUNTIME_DIR), is written to stdout as
-// the Assuan `D` line the helper decodes, and the buffers holding it here are
+// It runs under the vault helper, so it and the Quickshell it starts inherit
+// the helper's zero core-file limit. What is typed travels from the
+// Quickshell to this process over a Unix socket in a private directory
+// (mkdtemp, 0700, under $XDG_RUNTIME_DIR), is written to stdout as the Assuan
+// `D` line the helper decodes, and the buffers holding it here are
 // zeroed. It is never in any argv, file or log. The prompt's text (the
 // description names the account) reaches the Quickshell in a 0600 file in
 // that directory, never in argv. The directory is removed when the prompt

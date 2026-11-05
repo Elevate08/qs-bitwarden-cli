@@ -51,8 +51,9 @@ FocusScope {
   // Shortcut never fires while a field has focus. A field whose own Return
   // does something else (onAccepted) turns this off.
   property bool submitsForm: true
-  // Off for a field drawn on a surface of its own (the Omarchy-style
-  // pinentry's card): no fill and no border, the same text and caret.
+  // Off for a field drawn on a surface of its own (the unlock prompt's card,
+  // pinentry/PinentryCard.qml): no fill and no border, the same text and
+  // caret.
   property bool framed: true
   property string fontFamily: Style.font.family
   property real fontPixelSize: Style.font.body

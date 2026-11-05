@@ -1,6 +1,9 @@
 #!/bin/bash
 # Fake pinentry: speaks enough Assuan for the panel's pinentry script. No
-# window. Each GETPIN takes the next line of $FAKE_PINENTRY_ANSWERS:
+# window. The e2e suites put it where the plugin's own frontend lives
+# (pinentry/omarchy-pinentry in a copy of the plugin: shell.js,
+# withStandInPinentry()); like that frontend, `--check` exits 0 at once.
+# Each GETPIN takes the next line of $FAKE_PINENTRY_ANSWERS:
 #   pin:<text>   answers with `D <text>` as written (percent-encoded by the test)
 #   held:<text>  the same, once the file $FAKE_PINENTRY_RELEASE exists
 #   empty        OK with no data
@@ -20,6 +23,7 @@ next_answer() {
   tail -n +2 "$f" > "$f.next" && mv "$f.next" "$f"
   printf '%s' "$first"
 }
+if [ "${1:-}" = "--check" ]; then exit 0; fi
 log start
 echo "OK Pleased to meet you"
 while IFS= read -r line; do

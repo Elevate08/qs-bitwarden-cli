@@ -148,7 +148,7 @@ TestCase {
 
   function test_a_failed_pinentry_shows_the_notice_and_the_choice() {
     hideForPinentry()
-    fakeVault.pinentryNotice = "Pinentry stopped before answering. Try again, or type it here instead."
+    fakeVault.pinentryNotice = "The unlock prompt stopped before answering. Try again, or type it here instead."
     host.visible = true
     wait(0)
     verify(shownWithText(form, fakeVault.pinentryNotice), "the notice is not shown")

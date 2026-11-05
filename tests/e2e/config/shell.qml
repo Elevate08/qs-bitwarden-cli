@@ -20,8 +20,7 @@ ShellRoot {
     property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: Quickshell.env("QSBW_E2E_REMEMBER_SESSION") !== "0",
                               autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false,
                               sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1",
-                              allowVaultWithoutHelper: Quickshell.env("QSBW_E2E_ALLOW_NO_HELPER") === "1",
-                              pinentryProgram: Quickshell.env("QSBW_E2E_PINENTRY") || "" })
+                              allowVaultWithoutHelper: Quickshell.env("QSBW_E2E_ALLOW_NO_HELPER") === "1" })
     // Set by openAsking(): the next show asks pinentry inside it, before
     // `opened` reads true, as the unlock form does when a real popout shows.
     property bool askOnShow: false
