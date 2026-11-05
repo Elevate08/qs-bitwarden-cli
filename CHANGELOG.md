@@ -17,6 +17,19 @@
   panel, without a desktop notification each time, and the next one that
   succeeds clears that notice. Off by default.
 
+### Fixed
+
+- **Pinentry gets the keyboard when you open the panel on a locked vault**
+  ([#132](https://github.com/Elevate08/qs-bitwarden-cli/issues/132)). The
+  unlock screen opens pinentry by itself as soon as it shows, and it showed
+  while the panel was still opening, before the plugin counted the panel as
+  open. The panel was then never hidden for pinentry and kept the keyboard,
+  so you had to Alt+Tab to pinentry before you could type. A panel that
+  finishes opening while pinentry is asking is now hidden for it like one
+  that was already open, and comes back once pinentry answers or is
+  cancelled. A panel that was closed when pinentry asked, as for the SSH
+  unlock popup, still stays closed.
+
 ## [1.11.8] - 2026-10-26
 
 ### Security
