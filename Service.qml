@@ -633,6 +633,11 @@ Item {
   // answered in time; `autoTypeSeq` tells a late answer it was given up on.
   property bool autoTypeBusy: false
   property int autoTypeSeq: 0
+  // The login a type in flight is for, by id and vault generation: the arm is
+  // used up as the type starts, and a successful one then copies its TOTP code
+  // (finishAutoType()). Dropped with the type (stopAutoType()).
+  property string autoTypeTypedItemId: ""
+  property int autoTypeTypedEpoch: -1
   // Without the helper: the text, from starting wtype until its stdin has it.
   property string autoTypePendingText: ""
   // Attachment downloads run one at a time from a queue. `attachmentSaved`
@@ -8375,12 +8380,15 @@ Item {
     autoTypeSeq += 1
     autoTypeBusy = false
     autoTypePendingText = ""
+    autoTypeTypedItemId = ""
+    autoTypeTypedEpoch = -1
     if (autoTypeProc.running) autoTypeProc.running = false
   }
 
   // Ctrl+C and the row's button: copy a login's password and arm it, both
-  // after any re-prompt, so a cancelled prompt arms nothing. True when the
-  // copy (or its prompt) started.
+  // after any re-prompt, so a cancelled prompt arms nothing, and arm the TOTP
+  // follow-up as Enter's copy does. True when the copy (or its prompt)
+  // started.
   function copyPasswordAndArm(item) {
     closeFilterGroup()
     if (!autoTypeEnabled || status !== "unlocked" || !item || !Model.isLoginItem(item)) return false
@@ -8394,6 +8402,7 @@ Item {
       if (!screenLockStateProc.running) screenLockStateProc.running = true
       root.copyPasswordNow(item, "Password copied; auto-type armed for "
         + Math.round(Model.autoTypeArmMs() / 1000) + " s")
+      root.armTotpFollowup(item)
       if (root.closeOnCopy) root.close()
     })
     return true
@@ -8422,6 +8431,8 @@ Item {
       finishAutoType(false, "gone")
       return "failed"
     }
+    autoTypeTypedItemId = String(item.id)
+    autoTypeTypedEpoch = vaultEpoch
     autoTypeSeq += 1
     var seq = autoTypeSeq
     autoTypeBusy = true
@@ -8498,15 +8509,33 @@ Item {
   function finishAutoType(ok, reason) {
     autoTypeWatchdog.stop()
     autoTypeBusy = false
+    var typedId = autoTypeTypedEpoch === vaultEpoch ? autoTypeTypedItemId : ""
+    autoTypeTypedItemId = ""
+    autoTypeTypedEpoch = -1
     if (ok) {
       resetAutoLockTimer()
       flashNotification("Auto-typed")
+      copyTotpAfterAutoType(typedId)
       return
     }
     if (reason === "stopped") return
     var message = Model.autoTypeFailureMessage(reason)
     errorMessage = message
     Quickshell.execDetached(Model.autoTypeFailedNoticeCommand(message))
+  }
+
+  // After a successful type, the login's TOTP code goes to the clipboard, as
+  // it does autoCopyTotpSec after Enter's password copy, and 0 turns both
+  // off. A fresh code (fetchTotp(); the helper computes it where it holds the
+  // key), and the auto-copy still pending from the arm is stopped so an older
+  // code cannot land over it. The code stays out of the notification.
+  function copyTotpAfterAutoType(itemId) {
+    if (!itemId || autoCopyTotpSec <= 0 || status !== "unlocked") return
+    var item = Model.findItemById(items, itemId)
+    if (!item || !Model.isLoginItem(item) || !item.hasTotp) return
+    if (totpFollowupItem && totpFollowupItem.id === item.id) autoTotpTimer.stop()
+    fetchTotp(item.id, true)
+    notifyTotpCopied()
   }
 
   // Enter on a row: copy a login's password (then arm the TOTP follow-up);
@@ -8536,25 +8565,33 @@ Item {
 
   // Enter's copy, once any re-prompt has passed.
   function smartCopy(item) {
-    // Step 1: Copy password
     copyPasswordNow(item)
-
-    // Step 2: If item has TOTP, arm follow-up and schedule auto-copy!
-    if (item.hasTotp) {
-      totpFollowupItem = item
-      totpFollowupActive = true
-      fetchTotp(item.id)
-      totpFollowupTimer.restart()
-
-      if (autoCopyTotpSec > 0) {
-        autoTotpTimer.interval = autoCopyTotpSec * 1000
-        autoTotpTimer.restart()
-      }
-    }
-
+    armTotpFollowup(item)
     if (closeOnCopy) {
       close()
     }
+  }
+
+  // After a login's password copy (Enter's, or the auto-type arm's), for an
+  // item with TOTP: Enter again copies the code while the follow-up lasts,
+  // and autoCopyTotpSec later it is copied anyway (autoTotpTimer). Called
+  // only once any re-prompt has passed.
+  function armTotpFollowup(item) {
+    if (!item || !item.hasTotp) return
+    totpFollowupItem = item
+    totpFollowupActive = true
+    fetchTotp(item.id)
+    totpFollowupTimer.restart()
+    if (autoCopyTotpSec > 0) {
+      autoTotpTimer.interval = autoCopyTotpSec * 1000
+      autoTotpTimer.restart()
+    }
+  }
+
+  // The desktop notice for a TOTP copy made with the panel likely closed.
+  // The code stays out of it (history, lock screen).
+  function notifyTotpCopied() {
+    Quickshell.execDetached(["omarchy-notification-send", "-g", "󰥔", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", "2FA verification code ready to paste"])
   }
 
   function copyPassword(item) {
@@ -8722,8 +8759,7 @@ Item {
       if (root.totpFollowupItem && root.totpFollowupItem.hasTotp) {
         // Armed only by a copy that passed any re-prompt.
         root.copyTotpCodeNow(root.totpFollowupItem)
-        // The code stays out of the notification (history, lock screen).
-        Quickshell.execDetached(["omarchy-notification-send", "-g", "󰥔", "--app-name", "Bitwarden", "-t", "4000", "TOTP Code Copied", "2FA verification code ready to paste"])
+        root.notifyTotpCopied()
         root.totpFollowupActive = false
       }
     }

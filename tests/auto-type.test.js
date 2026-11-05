@@ -97,14 +97,16 @@ check("and asked again when it is turned on or off",
 
 const flowNames = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "autoTypeArmed", "disarmAutoType",
   "stopAutoType", "copyPasswordAndArm", "requestAutoType", "onAutoTypeRead", "typeHere", "onAutoTypeExited",
-  "finishAutoType", "screenLockReadingFresh"]
+  "finishAutoType", "screenLockReadingFresh", "armTotpFollowup", "copyTotpAfterAutoType", "notifyTotpCopied"]
 function makeVault() {
   const calls = []
-  const timer = name => ({ running: false, restart() { this.running = true; calls.push(name + ".restart") },
+  const timer = name => ({ running: false, interval: 0, restart() { this.running = true; calls.push(name + ".restart") },
     stop() { this.running = false } })
   const v = {
     Model, calls, autoTypeEnabled: true, status: "unlocked", session: "held", vaultEpoch: 3, closeOnCopy: true,
     autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeBusy: false, autoTypeSeq: 0, autoTypePendingText: "",
+    autoTypeTypedItemId: "", autoTypeTypedEpoch: -1, autoCopyTotpSec: 3, fetches: [],
+    totpFollowupItem: null, totpFollowupActive: false,
     opened: false, sshPrompt: null, pinentryActive: false, vaultHelperActive: true,
     // A screen-lock reading from just now.
     screenIsLocked: false, screenLockCheckedAt: Date.now(), screenLockStateProc: { running: false },
@@ -115,9 +117,12 @@ function makeVault() {
       { id: "a", typeCode: 1, name: "Bank", username: "me", hasPassword: true, secretsHeld: true, reprompt: 0 },
       { id: "r", typeCode: 1, name: "Safe", username: "me", hasPassword: true, secretsHeld: true, reprompt: 1 },
       { id: "c", typeCode: 3, name: "Card", hasPassword: false, secretsHeld: true, reprompt: 0 },
-      { id: "x", typeCode: 1, name: "Nopw", username: "me", hasPassword: false, secretsHeld: true, reprompt: 0 }
+      { id: "x", typeCode: 1, name: "Nopw", username: "me", hasPassword: false, secretsHeld: true, reprompt: 0 },
+      { id: "t", typeCode: 1, name: "Mail", username: "me", hasPassword: true, hasTotp: true, secretsHeld: true, reprompt: 0 }
     ],
     autoTypeArmTimer: timer("arm"), autoTypeWatchdog: timer("watchdog"),
+    totpFollowupTimer: timer("totpFollowup"), autoTotpTimer: timer("autoTotp"),
+    fetchTotp(id, copyWhenReady) { v.fetches.push([id, Boolean(copyWhenReady)]) },
     autoTypeProc: { running: false, stdinEnabled: false, command: [] },
     autoTypeReadProc: { running: false, command: [], itemId: "" },
     Quickshell: { execDetached(cmd) { v.notices.push(cmd) } },
@@ -176,6 +181,121 @@ const item = (v, id) => v.items.find(i => i.id === id)
   check("it lasts autoTypeArmMs, then is dropped",
     /id: autoTypeArmTimer\s*interval: Model\.autoTypeArmMs\(\)\s*repeat: false\s*onTriggered: root\.disarmAutoType\(\)/.test(service), "")
   check("turning auto-type off drops it", /onAutoTypeEnabledChanged: \{\s*if \(!autoTypeEnabled\) disarmAutoType\(\)/.test(service), "")
+}
+
+// --- the TOTP code, around a type --------------------------------------------------------
+
+const totpNotices = v => v.notices.filter(c => c[0] === "omarchy-notification-send" && c.indexOf("TOTP Code Copied") >= 0)
+const totpCopies = v => v.fetches.filter(f => f[1])
+{
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "t"))
+  check("arming a login with TOTP arms Enter's follow-up too: Enter again copies the code",
+    v.totpFollowupItem && v.totpFollowupItem.id === "t" && v.totpFollowupActive && v.calls.indexOf("totpFollowup.restart") >= 0
+      && JSON.stringify(v.fetches) === '[["t",false]]', JSON.stringify({ calls: v.calls, fetches: v.fetches }))
+  check("and schedules the autoCopyTotpSec auto-copy",
+    v.autoTotpTimer.running && v.autoTotpTimer.interval === 3000, JSON.stringify(v.autoTotpTimer))
+  const w = makeVault()
+  w.copyPasswordAndArm(item(w, "a"))
+  check("a login without TOTP arms no follow-up",
+    w.totpFollowupItem === null && !w.totpFollowupActive && !w.autoTotpTimer.running && w.fetches.length === 0, "")
+  const off = makeVault()
+  off.autoCopyTotpSec = 0
+  off.copyPasswordAndArm(item(off, "t"))
+  check("with the auto-copy off, the follow-up is armed but nothing is scheduled",
+    off.totpFollowupActive && !off.autoTotpTimer.running, "")
+  const r = makeVault()
+  item(r, "t").reprompt = 1
+  r.copyPasswordAndArm(item(r, "t"))
+  check("an item that asks for the master password arms no follow-up before the prompt is answered",
+    r.repromptPending && r.totpFollowupItem === null && r.fetches.length === 0, "")
+}
+check("Enter's copy and the arm share one follow-up, and one TOTP notice",
+  /copyPasswordNow\(item\)\s*armTotpFollowup\(item\)/.test(body("smartCopy"))
+    && /root\.copyPasswordNow\(item, [^\n]*\n[^\n]*\n\s*root\.armTotpFollowup\(item\)/.test(body("copyPasswordAndArm"))
+    && (service.match(/TOTP Code Copied/g) || []).length === 1
+    && /root\.notifyTotpCopied\(\)/.test(service.slice(service.indexOf("id: autoTotpTimer"), service.indexOf("id: autoTotpTimer") + 500)),
+  body("smartCopy"))
+{
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "t"))
+  eq("a TOTP login types", v.requestAutoType(), "started")
+  check("nothing is copied before the helper says the type worked", totpCopies(v).length === 0 && totpNotices(v).length === 0
+    && v.autoTotpTimer.running, JSON.stringify(v.fetches))
+  v.queries[0].cb(true, true)
+  check("after it, a fresh TOTP code is copied once, and the desktop notice says so",
+    JSON.stringify(totpCopies(v)) === '[["t",true]]' && totpNotices(v).length === 1 && v.flashed.indexOf("Auto-typed") >= 0,
+    JSON.stringify({ fetches: v.fetches, notices: v.notices }))
+  check("the arm's pending auto-copy is stopped, so an older code cannot land over it", !v.autoTotpTimer.running, "")
+  check("and the typed login is forgotten", v.autoTypeTypedItemId === "" && v.autoTypeTypedEpoch === -1, v.autoTypeTypedItemId)
+  v.queries[0].cb(true, true)
+  check("a repeated answer copies nothing more", totpCopies(v).length === 1, JSON.stringify(v.fetches))
+
+  const h = makeVault()
+  h.vaultHelperActive = false
+  item(h, "t").password = "hunter2"
+  h.copyPasswordAndArm(item(h, "t"))
+  h.requestAutoType()
+  h.onAutoTypeExited(0)
+  check("without the helper too, after wtype exits 0", JSON.stringify(totpCopies(h)) === '[["t",true]]' && totpNotices(h).length === 1,
+    JSON.stringify(h.fetches))
+  const hf = makeVault()
+  hf.vaultHelperActive = false
+  item(hf, "t").password = "hunter2"
+  hf.copyPasswordAndArm(item(hf, "t"))
+  hf.requestAutoType()
+  hf.onAutoTypeExited(1)
+  check("but not after wtype fails", totpCopies(hf).length === 0 && totpNotices(hf).length === 0, JSON.stringify(hf.fetches))
+
+  const off = makeVault()
+  off.autoCopyTotpSec = 0
+  off.copyPasswordAndArm(item(off, "t"))
+  off.requestAutoType()
+  off.queries[0].cb(true, true)
+  check("autoCopyTotpSec 0 turns it off after a type too", totpCopies(off).length === 0 && totpNotices(off).length === 0,
+    JSON.stringify(off.fetches))
+
+  const plain = makeVault()
+  plain.copyPasswordAndArm(item(plain, "a"))
+  plain.requestAutoType()
+  plain.queries[0].cb(true, true)
+  check("a login without TOTP copies nothing after its type", totpCopies(plain).length === 0 && totpNotices(plain).length === 0, "")
+
+  for (const reason of ["missing", "stopped", "failed"]) {
+    const f = makeVault()
+    f.copyPasswordAndArm(item(f, "t"))
+    f.requestAutoType()
+    f.queries[0].cb(false, reason)
+    check(`a type that ended "${reason}" copies no code`, totpCopies(f).length === 0 && totpNotices(f).length === 0
+      && f.autoTypeTypedItemId === "", JSON.stringify(f.fetches))
+  }
+  const late = makeVault()
+  late.copyPasswordAndArm(item(late, "t"))
+  late.requestAutoType()
+  late.autoTypeSeq += 1 // the watchdog gave up on it
+  late.finishAutoType(false, "timeout")
+  late.queries[0].cb(true, true)
+  check("nor one the watchdog gave up on, when the helper's late success comes in", totpCopies(late).length === 0
+    && totpNotices(late).length === 0, JSON.stringify(late.fetches))
+
+  const lock = makeVault()
+  lock.copyPasswordAndArm(item(lock, "t"))
+  lock.requestAutoType()
+  lock.stopAutoType() // a lock, logout or account switch (dropVaultSecrets())
+  lock.vaultEpoch += 1
+  lock.status = "locked"
+  lock.queries[0].cb(true, true)
+  check("a lock between the arm and the type's end copies nothing, and forgets the login",
+    totpCopies(lock).length === 0 && totpNotices(lock).length === 0 && lock.autoTypeTypedItemId === "", JSON.stringify(lock.fetches))
+  const gen = makeVault()
+  gen.copyPasswordAndArm(item(gen, "t"))
+  gen.requestAutoType()
+  gen.vaultEpoch += 1
+  gen.finishAutoType(true, "")
+  check("a success reported into another vault generation copies nothing", totpCopies(gen).length === 0
+    && totpNotices(gen).length === 0, JSON.stringify(gen.fetches))
+  check("the typed login is dropped with a type in flight, which a lock stops",
+    /autoTypeTypedItemId = ""/.test(body("stopAutoType")) && /stopAutoType\(\)/.test(body("dropVaultSecrets")), body("stopAutoType"))
 }
 
 // --- the IPC --------------------------------------------------------------------------

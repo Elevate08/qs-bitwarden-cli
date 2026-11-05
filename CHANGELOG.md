@@ -68,7 +68,10 @@
   **Register Keybinding** appends a commented `o.bind(...)` line to
   `~/.config/hypr/bindings.lua` and reloads Hyprland (**Remove Keybinding**
   takes out only that line again, and **Copy Line** is there for bindings
-  kept elsewhere). The setup screen shows the key next to `wtype`.
+  kept elsewhere). The setup screen shows the key next to `wtype`. For a
+  login with TOTP, its code is copied to the clipboard once the type has
+  worked, as Enter copies it after a password (`autoCopyTotpSec` `0` turns
+  both off).
 
 ### Security
 
