@@ -297,4 +297,27 @@ check("the same wtype run as the helper's, from stdin, in a UTF-8 locale",
 check("no secret is put in an environment or argv for wtype",
   !/QSBW_PASS|QSBW_USER|\| wtype/.test(service), "")
 
+// --- the panel --------------------------------------------------------------------------
+
+const view = read("Panel.qml")
+const interceptor = view.slice(view.indexOf("id: shortcutInterceptor"), view.indexOf("PanelKeyCatcher {", view.indexOf("id: shortcutInterceptor")))
+const ctrlC = interceptor.slice(interceptor.indexOf("Qt.Key_C") - 200, interceptor.indexOf("Qt.Key_C") + 600)
+check("Ctrl+C is taken only with Control alone, with auto-type on, while the catcher has the keys",
+  /\(event\.modifiers & ~Qt\.KeypadModifier\) === Qt\.ControlModifier && event\.key === Qt\.Key_C\s*&& root\.vault\.autoTypeEnabled && !keyCatcher\.blocked/.test(ctrlC),
+  ctrlC)
+check("and accepted only when something was armed (or its prompt shown)",
+  /if \(picked && root\.vault\.copyPasswordAndArm\(picked\)\) event\.accepted = true/.test(ctrlC)
+    && (ctrlC.match(/event\.accepted = true/g) || []).length === 1, ctrlC)
+check("the search box's Ctrl+C is its own: the catcher is blocked while it has focus",
+  /blocked: repromptConfirm\.shown\s*\|\| searchField\.activeFocus/.test(view), "")
+const row = view.slice(view.indexOf("id: actionButtonsRow"), view.indexOf("id: rowMouseArea"))
+const armButton = row.slice(row.indexOf("arm auto-type") - 300, row.indexOf("arm auto-type") + 200)
+check("the row's button is shown only with auto-type on, says what it does, and arms after any prompt",
+  /visible: root\.vault\.autoTypeEnabled && Model\.isLoginItem\(itemRow\.itemData\) && itemRow\.itemData\.hasPassword/.test(armButton)
+    && /tooltipText: "Copy password and arm auto-type \(Ctrl\+C\)"/.test(armButton)
+    && /onClicked: root\.vault\.copyPasswordAndArm\(itemRow\.itemData\)/.test(armButton), armButton)
+check("the password button keeps its place, first in the row",
+  row.indexOf('tooltipText: "Copy password (Enter / y)"') < row.indexOf("arm auto-type")
+    && row.indexOf("arm auto-type") < row.indexOf('tooltipText: "Copy username (u)"'), "")
+
 done()

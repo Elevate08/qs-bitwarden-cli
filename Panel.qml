@@ -639,18 +639,16 @@ Panel {
           return
         }
 
-        // Ctrl+C arms the highlighted entry for auto-type (see Service.armAutoType).
-        // Only an unmodified Ctrl+C on a login item arms; otherwise leave the
-        // keystroke for the focused field (text copy, etc.).
-        if ((event.modifiers & ~Qt.KeypadModifier) === Qt.ControlModifier && event.key === Qt.Key_C) {
-          if (root.vault.status === "unlocked" && (root.vault.currentScreen === "main" || root.vault.currentScreen === "detail")
-              && root.vault.autoTypeEnabled) {
-            var __item = (root.vault.currentScreen === "detail") ? root.vault.detailItem : root.vault.getSelectedItem()
-            if (__item && Model.isLoginItem(__item)) {
-              root.vault.copyPasswordAndArm(__item, "Password")
-              event.accepted = true
-            }
-          }
+        // With auto-type on, Ctrl+C (and no other modifier) copies the
+        // highlighted login's password and arms it (copyPasswordAndArm()).
+        // Only while the catcher has the keys: in the search box or any other
+        // field it stays the field's own copy. Anything else falls through.
+        if ((event.modifiers & ~Qt.KeypadModifier) === Qt.ControlModifier && event.key === Qt.Key_C
+            && root.vault.autoTypeEnabled && !keyCatcher.blocked) {
+          var onScreen = root.vault.currentScreen
+          var picked = onScreen === "detail" ? root.vault.detailItem
+            : (onScreen === "main" ? root.vault.getSelectedItem() : null)
+          if (picked && root.vault.copyPasswordAndArm(picked)) event.accepted = true
           return
         }
 
@@ -3607,14 +3605,22 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(4)
                     visible: isSelected || isHovered
-                    z: 1
 
                     PanelActionButton {
-                      visible: root.vault.autoTypeEnabled && itemData.typeCode !== 5 && itemData.hasPassword
-                      iconText: ""
-                      tooltipText: "Copy password and arm auto-type"
+                      visible: itemData.typeCode !== 5 && itemData.hasPassword
+                      iconText: "󰌆"
+                      tooltipText: "Copy password (Enter / y)"
                       fontFamily: root.fontFamily
-                      onClicked: root.vault.copyPasswordAndArm(itemData, "Password")
+                      onClicked: root.smartEnter(itemData)
+                    }
+
+                    // Re-prompt first, inside copyPasswordAndArm().
+                    PanelActionButton {
+                      visible: root.vault.autoTypeEnabled && Model.isLoginItem(itemRow.itemData) && itemRow.itemData.hasPassword
+                      iconText: ""
+                      tooltipText: "Copy password and arm auto-type (Ctrl+C)"
+                      fontFamily: root.fontFamily
+                      onClicked: root.vault.copyPasswordAndArm(itemRow.itemData)
                     }
 
                     PanelActionButton {
@@ -3623,14 +3629,6 @@ Panel {
                       tooltipText: "Copy username (u)"
                       fontFamily: root.fontFamily
                       onClicked: root.vault.copyUsername(itemData)
-                    }
-
-                    PanelActionButton {
-                      visible: itemData.typeCode !== 5 && itemData.hasPassword
-                      iconText: "󰌆"
-                      tooltipText: "Copy password (Enter / y)"
-                      fontFamily: root.fontFamily
-                      onClicked: root.smartEnter(itemData)
                     }
 
                     PanelActionButton {
@@ -3665,7 +3663,9 @@ Panel {
                   cursorShape: Qt.PointingHandCursor
                   propagateComposedEvents: true
                   onClicked: function(mouse) {
-                    // Let inline action buttons handle their own clicks.
+                    // This area is drawn over the row, buttons included: a
+                    // click on them is passed down (propagateComposedEvents)
+                    // instead of opening the item.
                     var btnX = actionButtonsRow.mapToItem(rowMouseArea, 0, 0).x
                     var btnY = actionButtonsRow.mapToItem(rowMouseArea, 0, 0).y
                     if (mouse.x >= btnX && mouse.x <= btnX + actionButtonsRow.width
