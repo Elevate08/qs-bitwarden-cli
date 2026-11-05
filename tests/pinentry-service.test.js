@@ -27,7 +27,7 @@ function makeVault(extra) {
     get typedSecretEntry() { return Model.typedSecretEntry({ usePinentry: this.usePinentry,
       missing: this.pinentryMissing, declined: this.pinentryDeclined, helperState: this.vaultHelperState }) },
     get pinentryAvailable() { return this.typedSecretEntry === "pinentry" },
-    pinentryProgramName: "pinentry", omarchyPinentryPath: "", userEmail: "me@example.com",
+    omarchyPinentryPath: "/plugin/pinentry/omarchy-pinentry", userEmail: "me@example.com",
     pinentryActive: false, pinentryRun: null, pinentryView: null, pinentryWasOpen: false, pinentryReturning: false,
     pinentryMasterName: "", pinentryNotice: "", heldPinName: "",
     status: "locked", errorMessage: "", isUnlocking: false, masterPassword: "", pinEntry: "", pinUnlockError: "",
@@ -82,7 +82,7 @@ function finish(v, code, held, stderr) {
   const run = v.proc.starts[0]
   check("an unlock starts a pinentry run that the helper holds", run && /^pinentry:pw\d+$/.test(run.capture), JSON.stringify(run))
   check("the run is the pinentry script, asking for the account's master password",
-    run && run.command[1] === Model.pinentryCommand("pinentry", {})[1] && run.command[4] === "pinentry"
+    run && run.command[2] === Model.pinentryCommand("/x", {})[2] && run.command[4] === "/plugin/pinentry/omarchy-pinentry"
       && /me@example\.com/.test(run.environment.QSBW_PE_DESC) && run.command[6] === "Master password:"
       && run.environment.QSBW_PE_ERR === "" && run.command[7] === "0",
     JSON.stringify(run && run.command.slice(3)))
@@ -251,7 +251,7 @@ function withViews(v, count) {
   check("without the vault helper nothing is run and nothing changes", !started && !v.pinentryActive && v.opened
     && v.unlocks.length === 0, "")
   check("it is not available then", v.pinentryAvailable === false, "")
-  check("nor when turned off or not installed",
+  check("nor when turned off or unable to run here",
     makeVault({ usePinentry: false }).pinentryAvailable === false && makeVault({ pinentryMissing: true }).pinentryAvailable === false, "")
 }
 
@@ -487,7 +487,7 @@ check("no pinentry flow writes what was typed into the shell's fields",
   !/\b(masterPassword|pinEntry|loginPassword|pinSetupMaster|fpSetupMaster)\s*=[^=]/.test(flows), flows)
 check("the run asks the helper to hold the answer",
   /pinentryProc\.capture = "pinentry:" \+ name/.test(body("requestPinentry"))
-    && /Model\.pinentryCommand\(pinentryProgramName/.test(body("requestPinentry"))
+    && /Model\.pinentryCommand\(omarchyPinentryPath, ask\)/.test(body("requestPinentry"))
     && /pinentryProc\.environment = Model\.pinentryEnvironment\(/.test(body("requestPinentry")), body("requestPinentry"))
 check("the process is a VaultProcess with no session and no output collector",
   /VaultProcess \{\s*id: pinentryProc\s*vault: root\s*session: false\s*stderr: VaultCollector[^\n]*\n\s*onExited/.test(service)
@@ -572,19 +572,25 @@ check("the re-prompt question asks pinentry when it can, and shows its field onl
 
 // --- settings -----------------------------------------------------------------------------------------
 
-check("the setting defaults on and an override program is read from shell.json",
+check("the setting defaults on",
   Model.boolSetting("usePinentry", undefined) === true && Model.boolSetting("usePinentry", false) === false
-    && /Model\.pinentryProgram\(setting\("pinentryProgram", ""\)\)/.test(service), "")
-check("the Omarchy-style pinentry is off by default and found from the plugin's own directory",
-  Model.boolSetting("omarchyPinentry", undefined) === false
-    && /omarchyPinentry: Model\.boolSetting\("omarchyPinentry", setting\("omarchyPinentry", false\)\)/.test(service)
-    && /omarchyPinentryPath: Model\.omarchyPinentryPath\(sshAgentPluginDir, omarchyPinentry\)/.test(service), "")
-check("it is offered to every pinentry run and probe, which use it only with no program set",
-  /Model\.pinentryCommand\(pinentryProgramName, ask, omarchyPinentryPath\)/.test(body("requestPinentry"))
-    && /Model\.pinentryProbeCommand\(pinentryProgramName, omarchyPinentryPath\)/.test(functionBody(service, "probePinentry")), "")
-check("turning it on or off checks again which pinentry is there",
+    && /usePinentry: Model\.boolSetting\("usePinentry", setting\("usePinentry", true\)\)/.test(service), "")
+check("the plugin's own pinentry is the only one, found from the plugin's own directory",
+  /omarchyPinentryPath: Model\.omarchyPinentryPath\(sshAgentPluginDir\)/.test(service)
+    && Model.omarchyPinentryPath("/p") === "/p/pinentry/omarchy-pinentry", "")
+check("no program override and no on/off for it is read from shell.json, so a stale one is ignored",
+  !/setting\("pinentryProgram"|setting\("omarchyPinentry"|pinentryProgramName|case "omarchyPinentry"/.test(service), "")
+check("every pinentry run and probe is given it",
+  /Model\.pinentryCommand\(omarchyPinentryPath, ask\)/.test(body("requestPinentry"))
+    && /Model\.pinentryProbeCommand\(omarchyPinentryPath\)/.test(functionBody(service, "probePinentry")), "")
+check("a plugin moved to another directory checks again whether the prompt can run",
   /onOmarchyPinentryPathChanged: \{\s*resetPinentryChoice\(\)\s*probePinentry\(\)/.test(service), "")
-check("the settings screen shows its value",
-  /case "omarchyPinentry": return omarchyPinentry/.test(service), "")
+{
+  const v = makeVault({ pinentryMissing: true })
+  v.resetPinentryChoice()
+  check("a prompt that cannot run here says so, and what typing in the panel costs",
+    v.pinentryNotice === Model.pinentryMissingNotice() && /cannot open here/.test(v.pinentryNotice)
+      && /stays in the shell's memory/.test(v.pinentryNotice) && !/install|pinentry-qt/i.test(v.pinentryNotice), v.pinentryNotice)
+}
 
 done()

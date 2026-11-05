@@ -17,7 +17,9 @@ const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0,
 const which = name => spawnSync("bash", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim()
 
 // `suite`: createSuite()'s check. `options.plugin`: the plugin tree to load
-// (the checkout by default). `options.env`: extra environment.
+// (the checkout by default, whose own pinentry cannot run here: there is no
+// Wayland display, so its `--check` fails and the panel's field is used; a
+// suite that types into pinentry loads a copy with withStandInPinentry()). `options.env`: extra environment.
 // `options.coreDumps`: start the shell with core dumps allowed.
 function createShell(name, check, options = {}) {
   const missing = ["quickshell", "argon2", "jq", "node", "cmp"].filter(tool => !which(tool))
@@ -52,10 +54,7 @@ function createShell(name, check, options = {}) {
     QT_QPA_PLATFORM: "offscreen",
     FAKE_BW_LOG: bwLog,
     FAKE_KEYRING: keyring,
-    FAKE_SESSION_STORE_DELAY: "1",
-    // Left unset, the plugin prefers a real pinentry-qt from /usr/bin. Name
-    // the stand-in so every suite gets it; a suite may set its own.
-    QSBW_E2E_PINENTRY: path.join(__dirname, "bin", "pinentry")
+    FAKE_SESSION_STORE_DELAY: "1"
   }, options.env || {})
 
   let shell = null
@@ -143,10 +142,23 @@ function createShell(name, check, options = {}) {
   }
 }
 
+// The plugin's pinentry is pinentry/omarchy-pinentry in the plugin's own
+// directory, always, so a copy of the plugin gets the stand-in bin/pinentry
+// there in its place: it answers from the file the test writes, and its
+// `--check` passes without a display. Returns `into`.
+function withStandInPinentry(into) {
+  const at = path.join(into, "pinentry", "omarchy-pinentry")
+  fs.rmSync(at, { force: true })
+  fs.copyFileSync(path.join(__dirname, "bin", "pinentry"), at)
+  fs.chmodSync(at, 0o755)
+  return into
+}
+
 // A copy of the checkout whose vault helper is the one built at
 // vault/target/debug (cargo build --manifest-path vault/Cargo.toml --locked)
 // rather than the shipped binary, which may predate the checkout's protocol
-// features. Everything else, the other helpers included, is the checkout's.
+// features, and whose pinentry is the stand-in (withStandInPinentry()).
+// Everything else, the other helpers included, is the checkout's.
 function pluginWithBuiltHelper(into) {
   const built = path.join(repoRoot, "vault", "target", "debug", "qs-bitwarden-vault")
   if (!fs.existsSync(built)) {
@@ -165,7 +177,7 @@ function pluginWithBuiltHelper(into) {
   fs.mkdirSync(dev, { recursive: true })
   fs.copyFileSync(built, path.join(dev, "qs-bitwarden-vault"))
   fs.chmodSync(path.join(dev, "qs-bitwarden-vault"), 0o755)
-  return into
+  return withStandInPinentry(into)
 }
 
 // The vault helper's pid, a child of the shell `parent`; 0 if none.
@@ -181,4 +193,4 @@ function helperPid(parent) {
   return 0
 }
 
-module.exports = { createShell, sleep, pluginWithBuiltHelper, helperPid }
+module.exports = { createShell, sleep, pluginWithBuiltHelper, withStandInPinentry, helperPid }

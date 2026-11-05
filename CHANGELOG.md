@@ -4,9 +4,8 @@
 
 ### Added
 
-- **An Omarchy-style unlock prompt, as an option**
-  ([#131](https://github.com/Elevate08/qs-bitwarden-cli/issues/131)). With
-  `omarchyPinentry` on ("Omarchy-style unlock prompt" in Security), the
+- **The unlock prompt is the plugin's own, drawn like Omarchy's**
+  ([#131](https://github.com/Elevate08/qs-bitwarden-cli/issues/131)). The
   master password and PIN are typed into a card over the monitor that was
   focused when the prompt opened, drawn like the shell's own polkit prompt:
   the theme's `[polkit]` scrim over the monitor, no blur, a padlock and a
@@ -16,16 +15,21 @@
   it. Enter submits, Escape cancels, a wrong password or PIN shows the reason
   above the field, and it closes itself after two minutes as before.
 
-  It is a pinentry, not part of the panel: `pinentry/omarchy-pinentry`
-  speaks the pinentry protocol to the vault helper and starts a short-lived
-  Quickshell of its own for each prompt, so what you type still goes only to
-  the helper and never enters the shell, and both processes keep the
-  helper's zero core-file limit (with Quickshell's crash handler off). The
-  answer travels from the prompt to the frontend over a socket in a private
-  directory under `$XDG_RUNTIME_DIR`, removed when the prompt ends. It is
-  off by default; where it cannot run (no `quickshell`, `node` or Wayland
-  display), pinentry-qt or `pinentry` is used as before, and a
-  `pinentryProgram` you set always wins.
+  It is the pinentry, by default and with no other choice: the plugin runs
+  `pinentry/omarchy-pinentry` from its own directory and never another
+  program, so `pinentry-qt` is no longer used or needed, and a
+  `pinentryProgram` (or `omarchyPinentry`) left in `shell.json` is ignored.
+  It is a pinentry, not part of the panel: it speaks the pinentry protocol
+  to the vault helper and starts a short-lived Quickshell of its own for
+  each prompt, so what you type still goes only to the helper and never
+  enters the shell, and both processes keep the helper's zero core-file
+  limit (with Quickshell's crash handler off). The answer travels from the
+  prompt to the frontend over a socket in a private directory under
+  `$XDG_RUNTIME_DIR`, removed when the prompt ends. It needs `quickshell`,
+  `node` (which `bw` already needs) and a Wayland display; where its check
+  at start says it cannot run, the panel says so and offers its own field,
+  as it did for a missing pinentry. "Type secrets in pinentry" is now "Type
+  secrets in a separate prompt" (`usePinentry`, still on by default).
 - **The vault syncs itself every 15 minutes** (`autoSyncMinutes`; `0` turns it off)
   ([#124](https://github.com/Elevate08/qs-bitwarden-cli/pull/124)). A vault
   on a self-hosted server that is not always reachable stayed as it was
@@ -85,11 +89,10 @@
   the helper kills `wtype` and answers that it was stopped, and the panel
   does the same without the helper and ignores a late answer.
 - **The pinentry script drops the account text from its environment before
-  anything runs.** With the Omarchy-style prompt on, the bundled pinentry's
-  `--check` started before the description and error were cleared from the
-  environment, so that short-lived `node` carried the account email. They are
-  cleared first now, and the typed PIN is counted in characters whatever the
-  shell's locale.
+  anything runs.** The plugin's own pinentry's `--check` started before the
+  description and error were cleared from the environment, so that short-lived
+  `node` carried the account email. They are cleared first now, and the typed
+  PIN is counted in characters whatever the shell's locale.
 - **The envelope job's output is scrubbed on lock with the other secret
   readers.** Without the vault helper, a quick-unlock verification leaves a
   fresh `bw` session key in that process's buffer for one event-loop turn; it
@@ -143,7 +146,7 @@
 - **Pinentry returns to a view that still exists.** If the monitor the panel
   was hidden from is unplugged during the prompt, the panel comes back on the
   focused monitor instead of touching the destroyed view.
-- **The Omarchy-style pinentry cleans up after a SIGKILL.** A prompt directory
+- **The unlock prompt cleans up after a SIGKILL.** A prompt directory
   left under `$XDG_RUNTIME_DIR` by a kill it could not catch (its prompt.json
   names the pid that made it) is removed by the next run; a very long run of
   UTF-8 continuation bytes in an answer is split across `D` lines instead of

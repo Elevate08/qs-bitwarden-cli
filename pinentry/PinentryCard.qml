@@ -4,7 +4,7 @@ import qs.Commons as Commons
 import qs.Ui
 import ".."
 
-// The Omarchy-style pinentry's prompt (omarchy-pinentry, PinentryPrompt.qml):
+// The plugin's pinentry prompt (omarchy-pinentry, PinentryPrompt.qml):
 // the shell's polkit prompt, drawn the same way from the same theme values
 // (`[polkit]` in the theme's shell.toml, the system font, the border spec and
 // Hyprland's rounding). A translucent scrim over the whole surface, a card

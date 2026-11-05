@@ -1,4 +1,4 @@
-// pinentry/PinentryCard.qml, the Omarchy-style pinentry's prompt, with the
+// pinentry/PinentryCard.qml, the plugin's pinentry prompt, with the
 // shell kit's own BorderSurface: masked until the padlock is clicked, which
 // gives the field its focus back; Enter submits and Escape cancels, and
 // either, or opening again, masks it; a retry's error is shown above the
