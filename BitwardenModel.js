@@ -6786,7 +6786,7 @@ var SETTINGS_SCHEMA = [
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
 
   { key: "autoSyncMinutes", group: "general", type: "int", label: "Automatically sync every", unit: "minutes",
-    min: 0, max: 1440, step: 5, zeroLabel: "Off", defaultValue: 0,
+    min: 0, max: 1440, step: 5, zeroLabel: "Off", defaultValue: 15,
     description: "Sync while the vault is unlocked and idle. If the server is offline, retry at this interval." },
   { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
