@@ -13,7 +13,7 @@ const functions = ["autoSyncIdle", "maybeAutoSync", "syncVault", "onSyncFinished
 function fixture() {
   const c = {
     now: 1000000, live: true, session: "test-session", status: "unlocked",
-    currentScreen: "main", autoSyncMinutes: 5, lastSyncAttemptAt: 0,
+    opened: true, pinentryActive: false, currentScreen: "main", autoSyncMinutes: 5, lastSyncAttemptAt: 0,
     isLoading: false, isUnlocking: false, logoutPending: false,
     metadataLoadPending: false, creatingFolder: false, repromptBusy: false,
     sendBusy: false, sshTotalPendingCount: 0, isSyncing: false, syncReloadPending: false,
@@ -59,6 +59,23 @@ for (const [key, value] of [["live", false], ["session", ""], ["status", "locked
   ["sendBusy", true], ["isSyncing", true]]) {
   const c = fixture(); c[key] = value; c.maybeAutoSync()
   eq(`defer while ${key}=${value}`, c.syncProc.running, false)
+}
+for (const screen of ["detail", "edit", "settings", "generator", "sends", "accounts"]) {
+  // Closing on a copy from an item leaves the screen behind; opening an
+  // unlocked panel goes back to the list anyway.
+  const c = fixture(); c.opened = false; c.currentScreen = screen; c.maybeAutoSync()
+  eq(`a closed panel left on ${screen} still syncs`, c.syncProc.running, true)
+}
+{
+  const c = fixture(); c.opened = false; c.currentScreen = "edit"; c.pinentryActive = true
+  c.maybeAutoSync()
+  eq("defer while pinentry hides the panel, which returns to its screen", c.syncProc.running, false)
+}
+{
+  const c = fixture(); c.maybeAutoSync(); c.currentScreen = "edit"; c.finish(0)
+  eq("an open edit form defers the reload", c.loadCalls.length, 0)
+  c.opened = false; c.maybeAutoSync()
+  eq("closing the panel releases it", c.loadCalls.length, 1)
 }
 for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemProc",
   "editItemProc", "deleteItemProc", "createFolderProc", "syncProc"]) {

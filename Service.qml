@@ -7004,10 +7004,13 @@ Item {
     loadFolders(true)
   }
 
-  // A sync can finish after the user starts editing. Defer the subsequent
-  // list reload until they return to the main screen, just as we defer a start.
+  // Whether an automatic sync, or the list reload one still owes, may start.
+  // An open panel must be on the list. A closed one counts whatever screen it
+  // was left on, since opening an unlocked panel always returns to the list,
+  // except while pinentry hides it: that hands it back to the same screen.
   function autoSyncIdle() {
-    return live && session !== "" && status === "unlocked" && currentScreen === "main"
+    return live && session !== "" && status === "unlocked"
+      && (opened ? currentScreen === "main" : !pinentryActive)
       && !isLoading && !isUnlocking && !logoutPending && !authAttemptInFlight()
       && !metadataLoadPending && !creatingFolder && !repromptBusy && !sendBusy
       && !listProc.running && !listOrgsProc.running && !listFoldersProc.running
@@ -7020,7 +7023,8 @@ Item {
 
   function maybeAutoSync() {
     if (!autoSyncIdle() || isSyncing || syncProc.running) return
-    // Complete a successful sync even if the setting was disabled meanwhile.
+    // A sync that finished while the user was editing left its reload for
+    // now. Complete it even if the setting was disabled meanwhile.
     if (autoSyncReloadPending) {
       autoSyncReloadPending = false
       backgroundSync = true
