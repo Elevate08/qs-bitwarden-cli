@@ -4,11 +4,18 @@
 
 ### Added
 
-- Optional automatic vault synchronization in General settings. Choose a minute
-  interval (`0`, the default, disables it). Syncs run only while unlocked and
-  idle, retry offline servers at the selected interval, and defer the list
-  reload if an edit begins during the request. Background successes are quiet;
-  failures retain the local vault and report that it may be out of date.
+- **The vault can sync itself on a schedule** (opt-in, `autoSyncMinutes`)
+  ([#124](https://github.com/Elevate08/qs-bitwarden-cli/pull/124)). A vault
+  on a self-hosted server that is not always reachable stayed as it was
+  until you synced by hand after the server came back. **Settings → General
+  → Automatically sync every** now syncs the open vault at the interval you
+  choose, with the panel open or closed, and tries again at the same
+  interval while the server is offline. It waits while you are editing, while
+  another vault operation or an SSH approval is pending, and when the vault
+  is about to auto-lock; it never unlocks the vault and never extends the
+  auto-lock. A sync that fails keeps the vault you have and says so in the
+  panel, without a desktop notification each time, and the next one that
+  succeeds clears that notice. Off by default.
 
 ## [1.11.8] - 2026-10-26
 

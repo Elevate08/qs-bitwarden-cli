@@ -477,6 +477,27 @@ Its way in is removed when you turn the setting off or log out -- for the accoun
 Off by default. See **[docs/ssh-agent.md](docs/ssh-agent.md)** for setup, the
 provenance check, and what the agent does and does not protect.
 
+### Automatic sync
+
+Off by default. **Settings → General → Automatically sync every** (or
+`autoSyncMinutes`) syncs the open vault with the server at that interval, which
+helps when a self-hosted server is not always reachable: a sync that fails
+while it is offline is tried again at the same interval, so the vault catches
+up soon after the server returns. The panel does not need to be open. The
+first sync after an unlock runs within about 30 seconds, and a sync you start
+yourself counts as the latest one.
+
+A failed sync keeps the vault you already have and shows "Automatic sync
+failed" in the panel, with no desktop notification; the next sync that
+succeeds clears that notice and no other. One that succeeds says nothing.
+
+It waits while you edit an item, while another vault operation runs, while an
+SSH request is waiting for your approval (loading the keys again would refuse
+it), and when the vault has reached its auto-lock deadline. A sync that lands
+while you are editing reloads the list once you are back on it or the panel
+is closed. It never unlocks the vault and never moves the auto-lock deadline,
+and locking, logging out or switching accounts drops anything still pending.
+
 ---
 
 ## Bar placement
@@ -514,26 +535,6 @@ not in a separate block:
 }
 ```
 
-### Automatic synchronization
-
-In **Settings → General → Automatically sync every**, choose an interval such
-as five minutes. This is off by default. The timer checks every 30 seconds:
-a newly unlocked vault syncs when idle, then subsequent attempts wait the
-chosen interval. Manual sync also restarts that interval. There is no need to
-keep the panel open, but the plugin must be enabled and the vault unlocked.
-
-If your self-hosted server is offline, the existing local vault stays available
-and the panel reports that automatic sync failed. Attempts continue at the
-chosen interval, so the next attempt after the server returns can refresh the
-vault. There are no repeated desktop notifications. Successful recovery clears
-that sync error without clearing an unrelated error.
-
-Automatic sync waits while you are editing or another vault operation is busy.
-If you start editing during a sync, its list reload waits until you return to
-the main screen. It never unlocks the vault or extends the auto-lock deadline.
-Locking, logging out or changing accounts drops pending reloads; a late result
-from the previous session cannot repopulate the vault.
-
 ## Global hotkey
 
 To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
@@ -559,7 +560,7 @@ The following settings are read from the plugin's own entry in the
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `autoSyncMinutes` | `number` | `0` | Automatically sync while the vault is unlocked and idle (`0` disables; e.g. `5` for every five minutes). Range `0`–`1440`. Offline servers are retried at the same interval. |
+| `autoSyncMinutes` | `number` | `0` | Minutes between automatic syncs while the vault is unlocked and idle (`0` to disable); a server that is offline is tried again at the same interval. See [Automatic sync](#automatic-sync). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `0`. |
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
 | `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). The clear is the copy's own lifetime (`wl-copy` under `timeout`), so it survives a shell restart and never touches something copied later. Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
