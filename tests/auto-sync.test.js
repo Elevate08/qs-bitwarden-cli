@@ -16,7 +16,8 @@ function fixture() {
     opened: true, pinentryActive: false, currentScreen: "main", autoSyncMinutes: 5, lastSyncAttemptAt: 0,
     isLoading: false, isUnlocking: false, logoutPending: false,
     metadataLoadPending: false, creatingFolder: false, repromptBusy: false,
-    sendBusy: false, sshTotalPendingCount: 0, isSyncing: false, syncReloadPending: false,
+    sendBusy: false, sshTotalPendingCount: 0, isSyncing: false,
+    autoLockMinutes: 15, autoLockArmedAt: 1000000, suspendLockPending: false, syncReloadPending: false,
     autoSyncReloadPending: false, backgroundSync: false,
     autoSyncError: "Automatic sync failed. The local vault may be out of date.",
     errorMessage: "", vaultEpoch: 1, readEpochs: {}, itemsLoadedAt: 100,
@@ -87,6 +88,22 @@ for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemPr
   eq("defer during authentication", c.syncProc.running, false)
 }
 {
+  // Resumed with lockOnSuspend off: the watchdog locks on its next poll.
+  const c = fixture(); c.now = c.autoLockArmedAt + 15 * 60 * 1000; c.maybeAutoSync()
+  eq("no sync for a vault past its auto-lock deadline", c.syncProc.running, false)
+  c.now -= 1; c.maybeAutoSync()
+  eq("a vault inside its deadline syncs", c.syncProc.running, true)
+  eq("the sync leaves the deadline where it was", c.autoLockArmedAt, 1000000)
+}
+{
+  const c = fixture(); c.autoLockMinutes = 0; c.now += 24 * 3600 * 1000; c.maybeAutoSync()
+  eq("auto-lock off never blocks a sync", c.syncProc.running, true)
+}
+{
+  const c = fixture(); c.suspendLockPending = true; c.maybeAutoSync()
+  eq("no sync while locking for a suspend", c.syncProc.running, false)
+}
+{
   // A key load fails every signing request the SSH agent holds for approval.
   const c = fixture(); c.sshTotalPendingCount = 1; c.maybeAutoSync()
   eq("defer while an SSH request waits for approval", c.syncProc.running, false)
@@ -143,7 +160,9 @@ for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemPr
   eq("manual sync delays the next automatic attempt", c.syncProc.running, false)
 }
 {
-  const c = fixture(); c.maybeAutoSync(); c.finish(1); c.now += 3600000; c.maybeAutoSync()
+  // Auto-lock off, or an hour's suspend would have locked the vault.
+  const c = fixture(); c.autoLockMinutes = 0
+  c.maybeAutoSync(); c.finish(1); c.now += 3600000; c.maybeAutoSync()
   eq("catch up after suspend", c.syncProc.running, true)
   c.finish(1); c.now -= 7200000; c.maybeAutoSync()
   eq("a backwards clock does not freeze retries", c.syncProc.running, true)

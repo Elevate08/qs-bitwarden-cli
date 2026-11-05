@@ -7019,6 +7019,9 @@ Item {
       // A list read hands the SSH agent its keys again, and the agent fails
       // every signing request still waiting for approval when a load begins.
       && sshTotalPendingCount === 0
+      // After a resume the auto-lock watchdog may not have polled yet; a
+      // vault past its deadline, or locking for a suspend, is about to lock.
+      && !suspendLockPending && !Model.autoLockExpired(autoLockArmedAt, autoLockMinutes, Date.now())
   }
 
   function maybeAutoSync() {
