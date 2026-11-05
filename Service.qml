@@ -7013,6 +7013,9 @@ Item {
       && !listProc.running && !listOrgsProc.running && !listFoldersProc.running
       && !createItemProc.running && !editItemProc.running && !deleteItemProc.running
       && !createFolderProc.running
+      // A list read hands the SSH agent its keys again, and the agent fails
+      // every signing request still waiting for approval when a load begins.
+      && sshTotalPendingCount === 0
   }
 
   function maybeAutoSync() {

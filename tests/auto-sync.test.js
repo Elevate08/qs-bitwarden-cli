@@ -16,7 +16,7 @@ function fixture() {
     currentScreen: "main", autoSyncMinutes: 5, lastSyncAttemptAt: 0,
     isLoading: false, isUnlocking: false, logoutPending: false,
     metadataLoadPending: false, creatingFolder: false, repromptBusy: false,
-    sendBusy: false, isSyncing: false, syncReloadPending: false,
+    sendBusy: false, sshTotalPendingCount: 0, isSyncing: false, syncReloadPending: false,
     autoSyncReloadPending: false, backgroundSync: false,
     autoSyncError: "Automatic sync failed. The local vault may be out of date.",
     errorMessage: "", vaultEpoch: 1, readEpochs: {}, itemsLoadedAt: 100,
@@ -68,6 +68,15 @@ for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemPr
 {
   const c = fixture(); c.authAttemptInFlight = () => true; c.maybeAutoSync()
   eq("defer during authentication", c.syncProc.running, false)
+}
+{
+  // A key load fails every signing request the SSH agent holds for approval.
+  const c = fixture(); c.sshTotalPendingCount = 1; c.maybeAutoSync()
+  eq("defer while an SSH request waits for approval", c.syncProc.running, false)
+  c.sshTotalPendingCount = 0; c.maybeAutoSync(); c.sshTotalPendingCount = 1; c.finish(0)
+  eq("an SSH request arriving during the sync defers the list reload", c.loadCalls.length, 0)
+  c.sshTotalPendingCount = 0; c.maybeAutoSync()
+  eq("the reload runs once the request is answered", c.loadCalls.length, 1)
 }
 {
   const c = fixture(); c.maybeAutoSync()
