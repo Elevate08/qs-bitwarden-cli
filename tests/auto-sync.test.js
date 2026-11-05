@@ -8,7 +8,9 @@ const Model = loadModule()
 const source = read("Service.qml")
 const functions = ["autoSyncIdle", "maybeAutoSync", "syncVault", "onSyncFinished",
   "onListFinished", "dropVaultState", "beginVaultRead", "vaultReadIsStale",
-  "beginEpochOperation", "epochOperationIsStale"]
+  "beginEpochOperation", "epochOperationIsStale", "loadItems", "abandonSyncReload"]
+const deps = Model.parseDependencies("bw=1\njq=1\nomarchy=1", null, {})
+const noJq = Model.parseDependencies("bw=1\njq=0\nomarchy=1", null, {})
 
 function fixture() {
   const c = {
@@ -22,8 +24,10 @@ function fixture() {
     autoSyncError: "Automatic sync failed. The local vault may be out of date.",
     errorMessage: "", vaultEpoch: 1, readEpochs: {}, itemsLoadedAt: 100,
     statusRefreshAfterItems: false, loadCalls: [], flashes: [], closedFilters: 0,
+    dependencies: deps, listReadEarly: false, listReadMode: "", listReads: 0,
     Model, authAttemptInFlight: () => false,
     beginInitialVaultLoad: (spinner, metadata) => c.loadCalls.push([spinner, metadata]),
+    startVaultListRead: () => { c.listReads += 1; c.listProc.running = true },
     closeFilterGroup: () => c.closedFilters++,
     flashNotification: message => c.flashes.push(message),
     refreshDerivedFromItems() {}, maybeStartupLoad() {},
@@ -206,6 +210,41 @@ for (const code of [0, 1]) {
   c.dropVaultState()
   eq("locking drops a deferred reload", c.autoSyncReloadPending, false)
   eq("locking clears the background flag", c.backgroundSync, false)
+}
+{
+  // The list read is blocked (jq gone): the reload a sync ends with cannot
+  // run, and used to leave "syncing" set until a lock.
+  const c = fixture(); c.dependencies = noJq; c.maybeAutoSync()
+  eq("no automatic sync while the list read is blocked", c.syncProc.running, false)
+  const reloads = x => { x.beginInitialVaultLoad = spinner => x.loadItems(spinner) }
+  // The read goes blocked while a background sync runs: its reload is held
+  // (not stranded as "syncing"), and runs once the read can.
+  const d = fixture(); reloads(d); d.maybeAutoSync(); d.dependencies = noJq; d.finish(0)
+  check("a background sync finishing with the read blocked holds its reload",
+    !d.isSyncing && !d.syncReloadPending && d.autoSyncReloadPending && d.listReads === 0,
+    JSON.stringify({ isSyncing: d.isSyncing, reload: d.syncReloadPending, held: d.autoSyncReloadPending }))
+  d.dependencies = noJq; d.now += 300000; d.maybeAutoSync()
+  eq("and no new sync starts behind it meanwhile", d.syncProc.running, false)
+  d.dependencies = deps; d.maybeAutoSync()
+  check("the held reload runs once the read can", d.listReads === 1 && d.isSyncing && d.syncReloadPending, "")
+  d.onListFinished("[]")
+  check("and completes the sync", !d.isSyncing && !d.syncReloadPending && !d.backgroundSync, "")
+  // A manual sync's reload is not held back by the idle check; blocked, it
+  // used to leave "syncing" set until a lock.
+  const m = fixture(); reloads(m); m.syncVault(); m.dependencies = noJq; m.finish(0)
+  check("a manual sync whose reload is blocked is over, not stranded",
+    !m.isSyncing && !m.syncReloadPending && !m.backgroundSync && m.listReads === 0,
+    JSON.stringify({ isSyncing: m.isSyncing, reload: m.syncReloadPending }))
+  eq("and the blocked read says why", m.errorMessage, Model.vaultListBlockedMessage(noJq))
+  m.dependencies = deps; m.now += 300000; m.maybeAutoSync()
+  eq("the next automatic sync is not stuck behind it", m.syncProc.running, true)
+  const t = fixture(); t.isSyncing = true; t.syncReloadPending = true; t.session = ""; t.loadItems(false)
+  check("a reload that finds no session is over too", !t.isSyncing && !t.syncReloadPending, "")
+  const p = fixture(); p.isSyncing = true; p.dependencies = noJq; p.loadItems(true)
+  check("a plain load owes no sync and leaves one in flight alone", p.isSyncing && !p.isLoading, "")
+  check("a failed list read releases the background flag with the sync guard",
+    /isSyncing = false\s*syncReloadPending = false\s*backgroundSync = false/.test(functionBody(source, "onListProcessExited")),
+    functionBody(source, "onListProcessExited"))
 }
 check("timer belongs to the shared service", /id: autoSyncTimer/.test(source)
   && !/id: autoSyncTimer/.test(read("Panel.qml")), "one timer across monitors")

@@ -22,14 +22,14 @@ const log = path.join(dir, "log")
 
 // One run of the script against the stand-in. `answer` is the stand-in's
 // next GETPIN answer (see the stand-in's header).
-function run(answer, opts = {}, program = fake) {
+function run(answer, opts = {}, program = fake, env = {}) {
   fs.writeFileSync(answers, answer + "\n")
   fs.writeFileSync(log, "")
   const argv = Model.pinentryCommand(program, Object.assign({ title: "Bitwarden", prompt: "Master password:" }, opts))
   const r = spawnSync(argv[0], argv.slice(1), {
     encoding: "utf8", timeout: 20000,
     // The description and error travel in the environment, as the panel runs it.
-    env: Object.assign({}, process.env, Model.pinentryEnvironment(opts), { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log })
+    env: Object.assign({}, process.env, Model.pinentryEnvironment(opts), { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log }, env)
   })
   return { code: r.status, out: r.stdout, err: r.stderr, log: fs.readFileSync(log, "utf8").split("\n").filter(Boolean) }
 }
@@ -80,6 +80,12 @@ r = run("pin:1", {})
 eq("no minimum, no check", `${r.code}|${r.out}`, "0|1")
 r = run("empty", { minLength: 4 })
 eq("an empty answer is still empty, not short", r.code, exits.empty)
+// The shell may run in the C locale (a Quickshell started without LANG), where
+// bash counts bytes: "ééé" would pass a minimum of four.
+r = run("pin:ééé", { minLength: 4 }, fake, { LC_ALL: "C", LANG: "C" })
+eq("characters are counted, not bytes, whatever the shell's locale", `${r.code}|${r.out}`, `${exits.short}|`)
+r = run("pin:éééé", { minLength: 4 }, fake, { LC_ALL: "C", LANG: "C" })
+eq("and four of them pass", `${r.code}|${r.out}`, "0|éééé")
 check("short differs from the other codes",
   new Set(Object.values(exits)).size === Object.values(exits).length, JSON.stringify(exits))
 
@@ -99,6 +105,14 @@ check("an error is encoded and sent before GETPIN",
   r.log.includes("SETERROR bad %250A%0APIN") && r.log.indexOf("GETPIN") > r.log.findIndex(l => l.startsWith("SETERROR")), r.log.join("|"))
 check("the script takes its text from its input, not from its own source",
   !/forged|100%/.test(Model.pinentryCommand(fake, { description: "forged 100%" })[2]), "")
+{
+  // The bundled pinentry's `--check` is a child too (a node process); it used
+  // to run before the account text was taken out of the environment.
+  const script = Model.pinentryCommand("", {})[2]
+  const unset = script.indexOf("unset QSBW_PE_DESC QSBW_PE_ERR")
+  check("the account text leaves the environment before any child, the bundled check included, runs",
+    unset > 0 && script.indexOf("--check") > unset && script.indexOf("__bundled=") > unset, script.slice(0, 300))
+}
 {
   const opts = { description: Model.pinentryDescription("unlock", "you@example.com"), error: "Wrong, you@example.com" }
   const text = JSON.stringify(Model.pinentryCommand(fake, Object.assign({ title: "Bitwarden", prompt: "p" }, opts)))

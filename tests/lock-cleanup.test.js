@@ -101,7 +101,49 @@ check("both of them ask for the ack when they finish",
 check("the ack is written to the monitor's stdin",
   /sleepMonitorProc\.write\(Model\.sleepAckLine\(\)\)/.test(body("ackSleep")), body("ackSleep"))
 
+// --- a lock while signed out ----------------------------------------------------------
+
+// lockVault() against a stand-in: what it calls, and what it leaves the
+// status and screen as.
+function lockFixture(status) {
+  const v = { status, currentScreen: status === "unauthenticated" ? "login" : "main", sshAuthSurfaceActive: true,
+    fingerprintMessage: "stale", fingerprintError: "stale", flashed: [], calls: [] }
+  for (const name of ["closeFilterGroup", "cancelAuthPrewarm", "clearClipboard", "requestBwLock",
+    "requestSessionCredentialClear", "dropVaultState", "focusAppropriateField", "armPresenceUnlock"]) {
+    v[name] = () => v.calls.push(name)
+  }
+  v.applySshAgentLifecycle = what => v.calls.push("ssh:" + what)
+  v.flashNotification = m => v.flashed.push(m)
+  v.root = v
+  v.lockVault = new Function("root", "with (root) {\n" + body("lockVault") + "\nreturn lockVault }")(v)
+  return v
+}
+{
+  const cleanup = ["closeFilterGroup", "cancelAuthPrewarm", "clearClipboard", "ssh:lock", "requestBwLock",
+    "requestSessionCredentialClear", "dropVaultState"]
+  const v = lockFixture("unlocked")
+  v.lockVault()
+  check("an unlocked vault locks: cleanup, then the lock screen",
+    v.status === "locked" && v.currentScreen === "locked" && v.flashed.join() === "Vault locked"
+      && cleanup.every(c => v.calls.indexOf(c) >= 0) && v.calls.indexOf("focusAppropriateField") >= 0
+      && v.fingerprintMessage === "" && v.fingerprintError === "", v.calls.join())
+  const w = lockFixture("locked")
+  w.lockVault()
+  check("a locked one locks again, as before", w.status === "locked" && w.currentScreen === "locked", w.calls.join())
+  // The IPC `lock`, or a helper lost, with no account signed in.
+  const u = lockFixture("unauthenticated")
+  u.lockVault()
+  check("signed out, a lock does the cleanup but shows no unlock form for an account that is not there",
+    u.status === "unauthenticated" && u.currentScreen === "login" && u.flashed.length === 0
+      && cleanup.every(c => u.calls.indexOf(c) >= 0) && u.calls.indexOf("focusAppropriateField") === -1
+      && u.calls.indexOf("armPresenceUnlock") === -1, u.calls.join())
+}
+
 // --- what a lock drops -----------------------------------------------------------------
+
+check("the envelope queue's collector (a bw session key in the no-helper verify) is scrubbed with the other secret readers",
+  /envelopeProc/.test(body("secretProcesses")) && /finishScrubRun\(envelopeProc\)/.test(body("onEnvelopeJobExited")),
+  body("secretProcesses"))
 
 check("a lock drops the old master password held for a re-seal",
   /rotationOldPassword = ""/.test(body("dropVaultSecrets")), body("dropVaultSecrets"))

@@ -2548,10 +2548,16 @@ Item {
     noteSshCooldown()
   }
 
-  function sshAgentMayPrompt() {
-    // A stale lock reading (the poll is not running) counts as locked.
-    var fresh = root.screenLockCheckedAt > 0
+  // Whether screenIsLocked can be trusted: a reading from the last few polls.
+  // Without one (the poll is not running) the screen counts as locked, for
+  // SSH prompts and auto-type alike.
+  function screenLockReadingFresh() {
+    return root.screenLockCheckedAt > 0
       && (Date.now() - root.screenLockCheckedAt) < (Model.screenLockPollMs() * 4)
+  }
+
+  function sshAgentMayPrompt() {
+    var fresh = screenLockReadingFresh()
     if (!Model.sshAgentShouldPrompt(fresh ? { screenLocked: root.screenIsLocked } : null)) return false
     return !Model.sshAgentCooldownActive(root.sshCooldown, Date.now())
   }
@@ -5983,6 +5989,10 @@ Item {
     var view = pinentryView
     pinentryView = null
     if (!show) return
+    // Detached meanwhile (its monitor unplugged) it may be destroyed: the
+    // presenter shows instead, or nothing when no view is left.
+    if (views.indexOf(view) === -1) view = views.length > 0 ? presenter : null
+    if (!view) return
     pinentryReturning = true
     view.showPopout()
   }
@@ -6327,6 +6337,10 @@ Item {
     requestSessionCredentialClear()
 
     dropVaultState()
+    // Signed out (the IPC `lock`, a helper lost meanwhile): there is no vault
+    // to lock, and the unlock form would ask for an account that is not
+    // there. The cleanup above is all of it.
+    if (status === "unauthenticated") return
     status = "locked"
     currentScreen = "locked"
     fingerprintMessage = ""
@@ -6506,7 +6520,7 @@ Item {
     passwordCopyItemId = ""
     passwordCopyNotice = ""
     disarmAutoType()
-    autoTypePendingText = ""
+    stopAutoType()
     totpFollowupItem = null
     totpFollowupCode = ""
     genValue = ""
@@ -6545,7 +6559,7 @@ Item {
       statusProc, sessionHandoffProc, keyringLookupProc, pinUnlockProc, keyringLookupMasterProc,
       loginProc, unlockProc, listProc, listOrgsProc, listFoldersProc, orgCollectionsProc,
       getItemProc, getTotpProc, generateProc, listSendsProc, createSendProc,
-      copyPasswordProc, autoTypeReadProc,
+      copyPasswordProc, autoTypeReadProc, envelopeProc,
       createItemProc, editItemProc, deleteItemProc, createFolderProc, attachmentProc,
       associationsReadProc, generateServeRequestProc
     ].concat(fidoUnlocker.secretProcesses())
@@ -6652,7 +6666,10 @@ Item {
 
   // `showSpinner` defaults to true; background refreshes pass false.
   function loadItems(showSpinner) {
-    if (!session) return
+    if (!session) {
+      abandonSyncReload()
+      return
+    }
     if (showSpinner !== false) isLoading = true
     // The early read for this vault is still running: it serves this request.
     if (listProc.running && listReadEarly && !vaultReadIsStale("items")) return
@@ -6660,10 +6677,22 @@ Item {
     listReadMode = Model.vaultListMode(dependencies)
     if (listReadMode === "blocked") {
       isLoading = false
+      abandonSyncReload()
       if (!vaultReadIsStale("items")) errorMessage = Model.vaultListBlockedMessage(dependencies)
       return
     }
     startVaultListRead(false)
+  }
+
+  // The reload a sync ends with (onSyncFinished(), maybeAutoSync()) cannot
+  // run: the sync is over, or "syncing" would stand until a lock. A plain
+  // load owes no sync and clears nothing.
+  function abandonSyncReload() {
+    if (!syncReloadPending) return
+    isSyncing = false
+    syncReloadPending = false
+    backgroundSync = false
+    autoSyncReloadPending = false
   }
 
   // The only launcher of the item read, with or without the agent branch.
@@ -6752,6 +6781,7 @@ Item {
     isLoading = false
     isSyncing = false
     syncReloadPending = false
+    backgroundSync = false
     metadataLoadPending = false
     metadataForceRefresh = false
     if (statusRefreshAfterItems) {
@@ -7098,6 +7128,8 @@ Item {
       && !listProc.running && !listOrgsProc.running && !listFoldersProc.running
       && !createItemProc.running && !editItemProc.running && !deleteItemProc.running
       && !createFolderProc.running
+      // The reload a sync ends with needs a list read that can run.
+      && Model.vaultListMode(dependencies) !== "blocked"
       // A list read hands the SSH agent its keys again, and the agent fails
       // every signing request still waiting for approval when a load begins.
       && sshTotalPendingCount === 0
@@ -8252,6 +8284,17 @@ Item {
     autoTypeArmTimer.stop()
   }
 
+  // Ends a type in flight without a report: the helper's late answer is
+  // ignored (the sequence moves on) and wtype is killed (bash `exec`s it, so
+  // the pid is its own); its exit then finds nothing busy.
+  function stopAutoType() {
+    autoTypeWatchdog.stop()
+    autoTypeSeq += 1
+    autoTypeBusy = false
+    autoTypePendingText = ""
+    if (autoTypeProc.running) autoTypeProc.running = false
+  }
+
   // Ctrl+C and the row's button: copy a login's password and arm it, both
   // after any re-prompt, so a cancelled prompt arms nothing. True when the
   // copy (or its prompt) started.
@@ -8263,6 +8306,9 @@ Item {
       root.autoTypeItemId = String(item.id)
       root.autoTypeArmEpoch = root.vaultEpoch
       autoTypeArmTimer.restart()
+      // The poll runs while armed; a reading now is normally in before the
+      // key can be pressed, so the first type is not refused as stale.
+      if (!screenLockStateProc.running) screenLockStateProc.running = true
       root.copyPasswordNow(item, "Password copied; auto-type armed for "
         + Math.round(Model.autoTypeArmMs() / 1000) + " s")
       if (root.closeOnCopy) root.close()
@@ -8283,7 +8329,9 @@ Item {
       if (opened) errorMessage = "Close the panel first: auto-type types into the window it returns to"
       return "panel-open"
     }
-    if (screenIsLocked) return "screen-locked"
+    // A stale or missing reading counts as locked; the arm is kept for the
+    // next press, by which time the poll has one.
+    if (!screenLockReadingFresh() || screenIsLocked) return "screen-locked"
     var item = Model.findItemById(items, autoTypeItemId)
     // One type per arm, whatever comes of it.
     disarmAutoType()
@@ -8316,6 +8364,7 @@ Item {
     }
     autoTypeReadProc.itemId = String(item.id)
     beginVaultRead("autoType")
+    autoTypeWatchdog.restart()
     autoTypeReadProc.command = Model.getPasswordCommand(item.id, item.typeCode)
     autoTypeReadProc.running = true
     return "started"
@@ -8324,7 +8373,8 @@ Item {
   function onAutoTypeRead(exitCode, text, itemId) {
     // The collector's plaintext copy goes once wtype has the text.
     clearProcessCollectorSoon(autoTypeReadProc)
-    if (vaultReadIsStale("autoType")) {
+    // Or given up on already (a lock, the watchdog): nothing to report.
+    if (vaultReadIsStale("autoType") || !autoTypeBusy) {
       autoTypeBusy = false
       return
     }
@@ -8347,15 +8397,21 @@ Item {
     autoTypePendingText = typed.text
     autoTypeProc.command = Model.autoTypeCommand()
     autoTypeProc.stdinEnabled = true
+    autoTypeWatchdog.restart()
     autoTypeProc.running = true
   }
 
+  // A wtype the lock or the watchdog killed has been dealt with (nothing is
+  // busy); its exit is not a failure to report.
   function onAutoTypeExited(exitCode) {
     autoTypePendingText = ""
+    if (!autoTypeBusy) return
     finishAutoType(exitCode === 0, exitCode === 127 ? "missing" : "failed")
   }
 
-  // Success only from wtype's exit 0 (the helper answers after it).
+  // Success only from wtype's exit 0 (the helper answers after it). A type
+  // the helper had to interrupt ("stopped": the vault locked, was left or
+  // the helper shut down) ends quietly; the lock explains itself.
   function finishAutoType(ok, reason) {
     autoTypeWatchdog.stop()
     autoTypeBusy = false
@@ -8364,6 +8420,7 @@ Item {
       flashNotification("Auto-typed")
       return
     }
+    if (reason === "stopped") return
     var message = Model.autoTypeFailureMessage(reason)
     errorMessage = message
     Quickshell.execDetached(Model.autoTypeFailedNoticeCommand(message))
@@ -8681,9 +8738,11 @@ Item {
     id: screenLockPoll
     interval: Model.screenLockPollMs()
     repeat: true
-    // Only when it could matter: the setting is on and the vault unlocked, or
-    // the agent is serving (it needs a current reading for prompts).
+    // Only when it could matter: the setting is on and the vault unlocked,
+    // the agent is serving (it needs a current reading for prompts), or
+    // auto-type is armed (nothing may be typed onto the lock screen).
     running: (root.lockOnScreenLock && root.status === "unlocked") || root.sshAgentGateOpen
+      || (root.autoTypeEnabled && root.autoTypeItemId !== "")
     onTriggered: {
       if (!screenLockStateProc.running) screenLockStateProc.running = true
     }
@@ -9724,12 +9783,16 @@ Item {
     onTriggered: root.disarmAutoType()
   }
 
+  // The helper's answer, or without it the `bw get password` and wtype, is
+  // waited for this long; a stuck one is killed rather than left "busy".
   Timer {
     id: autoTypeWatchdog
     interval: Model.autoTypeAnswerMs()
     repeat: false
     onTriggered: {
       if (!root.autoTypeBusy) return
+      if (autoTypeReadProc.running) autoTypeReadProc.running = false
+      if (autoTypeProc.running) autoTypeProc.running = false
       root.autoTypeSeq += 1
       root.finishAutoType(false, "timeout")
     }

@@ -50,7 +50,8 @@ function makeVault(extra) {
     panelOpens: 0, onPanelOpened() { this.panelOpens += 1 },
     view: null,
     eachView(fn) { fn(this.view) },
-    get presenter() { return this.view }
+    get presenter() { return this.view },
+    get views() { return this.view ? [this.view] : [] }
   }
   Object.defineProperty(v, "pinentryProc", { get() { return this.proc } })
   v.view = { hidePopout() { v.opened = false }, showPopout() { v.opened = true; v.shows += 1 } }
@@ -138,6 +139,7 @@ function withViews(v, count) {
     views.push(view)
   }
   Object.defineProperty(v, "opened", { configurable: true, get() { return views.some(view => view.opened) } })
+  Object.defineProperty(v, "views", { configurable: true, get() { return views } })
   v.eachView = fn => views.slice().forEach(fn)
   Object.defineProperty(v, "presenter", { configurable: true, get() { return views.find(view => view.opened) || views[0] } })
   Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
@@ -184,6 +186,29 @@ function withViews(v, count) {
     !v.opened && a.hides === 1 && b.hides === 1 && v.pinentryView === b, "")
   finish(v, 1, false)
   check("and that view alone comes back", b.opened && !a.opened && b.shows === 2 && a.shows === 0, "")
+}
+
+{
+  // The view that opened underneath is detached before the answer (its
+  // monitor unplugged): it may be destroyed, so another view shows instead.
+  const v = makeVault()
+  const views = withViews(v, 2)
+  const [a, b] = views
+  v.unlockWithPinentry()
+  b.showPopout()
+  views.splice(views.indexOf(b), 1)
+  finish(v, 1, false)
+  check("a remembered view since detached is not touched; the presenter comes back instead",
+    a.opened && a.shows === 1 && b.shows === 1 && v.restored === 1 && !v.pinentryReturning, JSON.stringify({ a, b }))
+  // The only view gone: nothing to show, and no resume left waiting.
+  const w = makeVault()
+  const only = withViews(w, 1)
+  w.unlockWithPinentry()
+  only[0].showPopout()
+  const gone = only.splice(0, 1)[0]
+  finish(w, 1, false)
+  check("with no view left nothing is shown and no resume is owed",
+    !w.pinentryActive && !w.pinentryReturning && gone.shows === 1 && w.pinentryView === null, JSON.stringify(gone))
 }
 
 {
