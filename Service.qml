@@ -5244,6 +5244,8 @@ Item {
 
   function checkDependencies() {
     if (!depsCheckProc.running) depsCheckProc.running = true
+    // The setup screen's wtype row says whether a key runs auto-type.
+    if (autoTypeEnabled && currentScreen === "setup") inspectAutoTypeKeybind()
   }
 
   function onDependenciesChecked(raw) {
@@ -5492,6 +5494,8 @@ Item {
     uwsmConfirmPending = false
     checkDependencies()
     inspectUwsmFragment()
+    autoTypeKeybindResult = null
+    if (autoTypeEnabled) inspectAutoTypeKeybind()
     currentScreen = "settings"
     Qt.callLater(function() { eachView(function(view) { view.updateSettingsSticky() }) })
   }
@@ -6998,6 +7002,7 @@ Item {
   // Qt keeps focus on hidden items, so a field on the screen just left would
   // keep the keyboard. Re-home focus on every screen change.
   onCurrentScreenChanged: {
+    if (currentScreen === "setup" && autoTypeEnabled) inspectAutoTypeKeybind()
     // Only while its screen is up: `bw serve` answers anything that reaches
     // its socket (the account email even when locked, and /unlock), so it
     // does not idle for the whole session.
@@ -8289,6 +8294,76 @@ Item {
   onAutoTypeEnabledChanged: {
     if (!autoTypeEnabled) disarmAutoType()
     if (depsChecked) checkDependencies()
+    if (autoTypeEnabled) inspectAutoTypeKeybind()
+  }
+
+  // The key that runs the autoType IPC (see "Auto-type keybinding" in
+  // BitwardenModel.js): what bindings.lua and Hyprland have, the chord field
+  // under the setting, and the last register or remove's answer.
+  property var autoTypeKeybind: Model.autoTypeKeybindState(null)
+  // "" until the first inspection fills in a free suggestion.
+  property string autoTypeChordText: ""
+  readonly property var autoTypeChordCheck: Model.autoTypeChordCheck(autoTypeChordText, autoTypeKeybind)
+  property bool autoTypeKeybindBusy: false
+  property var autoTypeKeybindResult: null
+  property bool autoTypeKeybindRecheck: false
+
+  function inspectAutoTypeKeybind() {
+    if (autoTypeKeybindInspectProc.running) {
+      autoTypeKeybindRecheck = true
+      return
+    }
+    autoTypeKeybindInspectProc.running = true
+  }
+
+  function onAutoTypeKeybindInspected(raw) {
+    autoTypeKeybind = Model.autoTypeKeybindState(Model.parseAutoTypeKeybindInspection(raw))
+    if (autoTypeChordText === "") autoTypeChordText = Model.autoTypeChordSuggestion(autoTypeKeybind)
+    if (autoTypeKeybindRecheck) {
+      autoTypeKeybindRecheck = false
+      inspectAutoTypeKeybind()
+    }
+  }
+
+  function registerAutoTypeKeybind() {
+    if (autoTypeKeybindBusy || !autoTypeKeybind.canRegister) return
+    var check = autoTypeChordCheck
+    if (!check.ok) {
+      autoTypeKeybindResult = { ok: false, message: check.message }
+      return
+    }
+    autoTypeKeybindBusy = true
+    autoTypeKeybindResult = null
+    autoTypeKeybindActionProc.chord = check.chord
+    autoTypeKeybindActionProc.command = Model.autoTypeKeybindRegisterCommand(check.chord)
+    autoTypeKeybindActionProc.running = true
+  }
+
+  // Only the pair this plugin wrote; parseBindingsLua() says when that is.
+  function removeAutoTypeKeybind() {
+    if (autoTypeKeybindBusy || !autoTypeKeybind.removable) return
+    autoTypeKeybindBusy = true
+    autoTypeKeybindResult = null
+    autoTypeKeybindActionProc.chord = autoTypeKeybind.removableChord
+    autoTypeKeybindActionProc.command = Model.autoTypeKeybindRemoveCommand(autoTypeKeybind.removableChord)
+    autoTypeKeybindActionProc.running = true
+  }
+
+  function onAutoTypeKeybindActionFinished(exitCode, stdout) {
+    autoTypeKeybindResult = Model.parseAutoTypeKeybindResult(exitCode, stdout, autoTypeKeybindActionProc.chord)
+    autoTypeKeybindBusy = false
+    inspectAutoTypeKeybind()
+  }
+
+  // For users who keep their bindings elsewhere. Not a secret, so no
+  // sensitive mark and no timed clear.
+  function copyAutoTypeBindLine() {
+    var line = autoTypeChordCheck.line || Model.autoTypeBindLine(autoTypeKeybind.chord)
+    if (!line) return
+    var env = {}
+    env[Model.clipboardEnvVar()] = line
+    Quickshell.execDetached({ command: Model.clipboardCopyPlainCommand(), environment: env })
+    flashNotification("Keybinding line copied")
   }
 
   function autoTypeArmed() {
@@ -8895,6 +8970,24 @@ Item {
     command: Model.uwsmWriteCommand()
     stdout: StdioCollector { id: uwsmWriteStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmWriteStdout.text) }
+  }
+
+  Process {
+    id: autoTypeKeybindInspectProc
+    command: Model.autoTypeKeybindInspectCommand()
+    stdout: StdioCollector {
+      id: autoTypeKeybindInspectStdout
+      waitForEnd: true
+      onStreamFinished: root.onAutoTypeKeybindInspected(text)
+    }
+  }
+
+  Process {
+    id: autoTypeKeybindActionProc
+    // The chord the running register or remove is for, for its message.
+    property string chord: ""
+    stdout: StdioCollector { id: autoTypeKeybindActionStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onAutoTypeKeybindActionFinished(exitCode, autoTypeKeybindActionStdout.text) }
   }
 
   Process {

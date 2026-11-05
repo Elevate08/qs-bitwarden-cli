@@ -1311,6 +1311,14 @@ function clipboardCopyCommand(clearSec) {
     + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
 }
 
+// A non-secret (the auto-type keybinding line) for the user to paste
+// elsewhere: no --sensitive mark, so clipboard history keeps it and a lock
+// leaves it alone, and no timed clear. Same env-var route as a secret.
+function clipboardCopyPlainCommand() {
+  return ["bash", "-c", "exec env -u " + CLIPBOARD_ENV + " wl-copy"
+    + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
+}
+
 // -------------------------------------------------------------------------
 // Auto-type
 // -------------------------------------------------------------------------
@@ -1372,6 +1380,487 @@ function autoTypeFailureMessage(reason) {
 // notification too. The text is one of the messages above: no item data.
 function autoTypeFailedNoticeCommand(message) {
   return ["notify-send", "-a", "Bitwarden", "Auto-type", String(message || "")]
+}
+
+// -------------------------------------------------------------------------
+// Auto-type keybinding
+// -------------------------------------------------------------------------
+//
+// The `autoType` IPC does nothing until a key runs it. Omarchy 4 configures
+// Hyprland in Lua: ~/.config/hypr/hyprland.lua requires `hypr.bindings`, the
+// user's ~/.config/hypr/bindings.lua, and Hyprland reloads on save (Omarchy's
+// bootstrap drops the cached module, so a reload reads the file again). The
+// settings screen appends one o.bind() line there, after a comment line
+// saying the plugin added it, and removes only that exact pair. It never
+// rewrites or reorders anything else in the file.
+//
+// `hyprctl binds -j` reports an o.bind() as dispatcher "__lua" with an opaque
+// closure number, so the command cannot be read back from it. The binding is
+// found in bindings.lua by its command, and in hyprctl by its description, or
+// by an `exec` dispatcher whose argument is the command (a hyprland.conf
+// bind). Conflicts are checked against hyprctl, which also lists Omarchy's
+// defaults and every other file's binds; bindings.lua alone without it.
+//
+// The chord is the only text the user types. It is held to
+// [A-Za-z0-9_+ ], so it can sit inside a Lua string as is, and the line still
+// reaches the script as an argument, never spliced into it.
+
+var AUTO_TYPE_IPC_COMMAND = "omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType"
+var AUTO_TYPE_BIND_DESCRIPTION = "Bitwarden auto-type"
+var AUTO_TYPE_BIND_COMMENT = "-- Added by the qs-bitwarden-cli plugin (Settings > General > Auto-type logins)."
+var AUTO_TYPE_BINDINGS_REL = ".config/hypr/bindings.lua"
+var AUTO_TYPE_HYPRLAND_REL = ".config/hypr/hyprland.lua"
+// Free on a stock Omarchy 4, which gives SUPER + SHIFT + A to its ChatGPT web
+// app. The first goes with the README's SUPER + CTRL + SLASH for the panel.
+var AUTO_TYPE_CHORD_SUGGESTIONS = ["SUPER + CTRL + BACKSLASH", "SUPER + ALT + A", "SUPER + ALT + BACKSLASH"]
+// Hyprland's modmask bits.
+var CHORD_MODIFIER_BITS = { SUPER: 64, SHIFT: 1, CTRL: 4, ALT: 8 }
+var CHORD_MODIFIER_ORDER = ["SUPER", "SHIFT", "CTRL", "ALT"]
+var CHORD_MAX_LENGTH = 64
+// What the inspection reads of bindings.lua and of `hyprctl binds -j`.
+var AUTO_TYPE_BINDINGS_READ_BYTES = 262144
+var HYPR_BINDS_READ_BYTES = 4194304
+
+function autoTypeBindingsDisplayPath() {
+  return "~/" + AUTO_TYPE_BINDINGS_REL
+}
+
+function autoTypeChordSuggestions() { return AUTO_TYPE_CHORD_SUGGESTIONS.slice() }
+
+// The chord grammar o.bind() takes: modifiers from SUPER, SHIFT, CTRL and ALT
+// joined by " + ", then one key name. Case and spacing are forgiven and
+// normalised; anything else is refused with the reason. One of SUPER, CTRL or
+// ALT is required, so plain typing (Shift included) can never set it off.
+function autoTypeChord(raw) {
+  var text = (raw === undefined || raw === null) ? "" : String(raw)
+  function fail(message) { return { ok: false, chord: "", modmask: 0, key: "", message: message } }
+  if (text.trim() === "") return fail("Type a key combination, such as " + AUTO_TYPE_CHORD_SUGGESTIONS[0] + ".")
+  if (text.length > CHORD_MAX_LENGTH) return fail("That is too long for a key combination.")
+  if (!/^[A-Za-z0-9_+ ]+$/.test(text)) {
+    return fail("Use only letters, digits, _ and +, as in " + AUTO_TYPE_CHORD_SUGGESTIONS[0] + ".")
+  }
+  var parts = text.split("+")
+  for (var i = 0; i < parts.length; i++) {
+    parts[i] = parts[i].trim()
+    if (parts[i] === "") return fail("Put one key name between each +.")
+    if (/\s/.test(parts[i])) return fail("Join the modifiers and the key with +, as in " + AUTO_TYPE_CHORD_SUGGESTIONS[0] + ".")
+  }
+  if (parts.length < 2) return fail("Hold SUPER, CTRL or ALT with the key, as in " + AUTO_TYPE_CHORD_SUGGESTIONS[0] + ".")
+  var key = parts.pop()
+  var mods = []
+  var modmask = 0
+  for (var m = 0; m < parts.length; m++) {
+    var name = parts[m].toUpperCase()
+    if (name === "CONTROL") name = "CTRL"
+    if (!CHORD_MODIFIER_BITS.hasOwnProperty(name)) {
+      return fail("\"" + parts[m] + "\" is not a modifier; use SUPER, SHIFT, CTRL or ALT.")
+    }
+    if (modmask & CHORD_MODIFIER_BITS[name]) return fail(name + " is in there twice.")
+    modmask |= CHORD_MODIFIER_BITS[name]
+    mods.push(name)
+  }
+  var upperKey = key.toUpperCase()
+  if (CHORD_MODIFIER_BITS.hasOwnProperty(upperKey) || upperKey === "CONTROL") {
+    return fail("End with the key to press, after the modifiers.")
+  }
+  if (!(modmask & (CHORD_MODIFIER_BITS.SUPER | CHORD_MODIFIER_BITS.CTRL | CHORD_MODIFIER_BITS.ALT))) {
+    return fail("Hold SUPER, CTRL or ALT with the key, so ordinary typing never sets it off.")
+  }
+  // Hyprland looks key names up case-insensitively; XF86 names keep their
+  // usual spelling.
+  var normalKey = /^XF86/i.test(key) ? "XF86" + key.slice(4) : upperKey
+  return { ok: true, chord: mods.concat([normalKey]).join(" + "), modmask: modmask, key: normalKey, message: "" }
+}
+
+// "SUPER + SHIFT + A" from a `hyprctl binds -j` entry; "" for a keycode,
+// mouse or other bind with no key name.
+function chordFromHyprBind(bind) {
+  if (!bind || typeof bind.key !== "string" || bind.key === "") return ""
+  var mask = Number(bind.modmask) || 0
+  var names = []
+  for (var i = 0; i < CHORD_MODIFIER_ORDER.length; i++) {
+    if (mask & CHORD_MODIFIER_BITS[CHORD_MODIFIER_ORDER[i]]) names.push(CHORD_MODIFIER_ORDER[i])
+  }
+  return names.concat([bind.key]).join(" + ")
+}
+
+// Whether a hyprctl bind is pressed with this parsed chord (autoTypeChord()).
+// Only the top-level submap, and never a mouse bind.
+function hyprBindHasChord(bind, parsed) {
+  if (!bind || !parsed || !parsed.ok) return false
+  if (bind.mouse === true || (bind.submap && bind.submap !== "")) return false
+  return (Number(bind.modmask) || 0) === parsed.modmask
+    && String(bind.key || "").toUpperCase() === parsed.key.toUpperCase()
+}
+
+// `hyprctl binds -j` as a list of { modmask, key, description, dispatcher,
+// arg, submap, mouse }, or null when it is not a JSON array.
+function parseHyprBinds(raw) {
+  var text = String(raw === undefined || raw === null ? "" : raw).trim()
+  if (text === "") return null
+  var data
+  try { data = JSON.parse(text) } catch (e) { return null }
+  if (!Array.isArray(data)) return null
+  var out = []
+  for (var i = 0; i < data.length; i++) {
+    var b = data[i]
+    if (!b || typeof b !== "object") continue
+    out.push({
+      modmask: Math.floor(Number(b.modmask)) || 0,
+      key: typeof b.key === "string" ? b.key : "",
+      description: typeof b.description === "string" ? b.description : "",
+      dispatcher: typeof b.dispatcher === "string" ? b.dispatcher : "",
+      arg: typeof b.arg === "string" ? b.arg : "",
+      submap: typeof b.submap === "string" ? b.submap : "",
+      mouse: b.mouse === true
+    })
+  }
+  return out
+}
+
+function isAutoTypeCommand(text) {
+  return /io\.github\.elevate08\.qs-bitwarden-cli\s+autoType(?![A-Za-z0-9_])/.test(String(text || ""))
+}
+
+// A hyprctl bind that runs the autoType IPC: an `exec` of the command, or
+// (o.bind() shows only "__lua") the description this plugin writes.
+function hyprBindRunsAutoType(bind) {
+  if (!bind) return false
+  if (/^exec/.test(bind.dispatcher) && isAutoTypeCommand(bind.arg)) return true
+  return bind.description === AUTO_TYPE_BIND_DESCRIPTION
+}
+
+// The line the plugin appends for `chord`, or "" if the chord is not valid.
+function autoTypeBindLine(chord) {
+  var parsed = autoTypeChord(chord)
+  if (!parsed.ok) return ""
+  return "o.bind(\"" + parsed.chord + "\", \"" + AUTO_TYPE_BIND_DESCRIPTION + "\", \""
+    + AUTO_TYPE_IPC_COMMAND + "\")"
+}
+
+function autoTypeBindComment() { return AUTO_TYPE_BIND_COMMENT }
+
+// What bindings.lua holds: every o.bind() with a plain string chord and
+// command, and the line(s) that run the autoType IPC. Comment lines are
+// skipped. `removable` is the comment-and-line pair this plugin appends,
+// found exactly once and unchanged.
+function parseBindingsLua(text) {
+  var lines = String(text === undefined || text === null ? "" : text).split("\n")
+  var binds = []
+  var autoType = null
+  var autoTypeCount = 0
+  var pairs = 0
+  var pairChord = ""
+  var bindRe = /^\s*o\.bind\(\s*"([^"\\]*)"\s*,\s*(?:nil|"((?:[^"\\]|\\.)*)")\s*,\s*"((?:[^"\\]|\\.)*)"/
+  var chordRe = /^\s*(?:o|hl)\.bind\(\s*"([^"\\]*)"/
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/\r$/, "")
+    if (/^\s*--/.test(line)) continue
+    var m = line.match(bindRe)
+    if (m) binds.push({ chord: m[1], description: m[2] === undefined ? "" : m[2], command: m[3], line: i + 1 })
+    if (!isAutoTypeCommand(line)) continue
+    autoTypeCount++
+    var c = line.match(chordRe)
+    var parsed = autoTypeChord(c ? c[1] : "")
+    var ours = i > 0 && lines[i - 1].replace(/\r$/, "") === AUTO_TYPE_BIND_COMMENT
+      && parsed.ok && line === autoTypeBindLine(parsed.chord)
+    if (ours) { pairs++; pairChord = parsed.chord }
+    if (!autoType) {
+      autoType = {
+        chord: parsed.ok ? parsed.chord : (c ? c[1] : ""),
+        description: m ? (m[2] === undefined ? "" : m[2]) : "",
+        line: i + 1,
+        ours: ours
+      }
+    }
+  }
+  return {
+    binds: binds,
+    autoType: autoType,
+    autoTypeCount: autoTypeCount,
+    removable: pairs === 1,
+    removableChord: pairs === 1 ? pairChord : ""
+  }
+}
+
+// Reads the live binds (compacted to one line by jq, a required tool), whether
+// hyprland.lua loads bindings.lua, and the file itself, last, after a `---`
+// line. Read-only.
+function autoTypeKeybindInspectCommand() {
+  var filter = "if type == \"array\" then [.[] | {modmask, key, description, dispatcher, arg, submap, mouse}] else empty end"
+  var script = "test -n \"${HOME:-}\" || { echo home=0; exit 0; }; echo home=1; "
+    + "__f=\"$HOME/" + AUTO_TYPE_BINDINGS_REL + "\"; __main=\"$HOME/" + AUTO_TYPE_HYPRLAND_REL + "\"; "
+    + "if command -v hyprctl >/dev/null 2>&1 "
+    + "&& __b=$(hyprctl binds -j 2>/dev/null | head -c " + HYPR_BINDS_READ_BYTES + " | jq -c " + shellQuote(filter) + " 2>/dev/null) "
+    + "&& [ -n \"$__b\" ]; then printf 'binds=%s\\n' \"$__b\"; else echo binds=; fi; "
+    + "if " + hyprlandLoadsBindingsShell() + "; then echo requires=1; else echo requires=0; fi; "
+    + "if [ ! -e \"$__f\" ] && [ ! -L \"$__f\" ]; then echo file=absent; "
+    + "elif [ ! -f \"$__f\" ] || [ ! -r \"$__f\" ]; then echo file=unusable; "
+    + "else echo file=present; echo ---; head -c " + AUTO_TYPE_BINDINGS_READ_BYTES + " -- \"$__f\"; fi"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// Whether ~/.config/hypr/hyprland.lua requires hypr.bindings outside a
+// comment, as Omarchy 4's template does: the only case where a missing
+// bindings.lua is created.
+function hyprlandLoadsBindingsShell() {
+  return "grep -Eq " + shellQuote("^[[:space:]]*require[[:space:]]*\\(?[[:space:]]*[\"']hypr\\.bindings[\"']")
+    + " -- \"$__main\" 2>/dev/null"
+}
+
+function parseAutoTypeKeybindInspection(raw) {
+  var text = String(raw === undefined || raw === null ? "" : raw)
+  var cut = text.indexOf("\n---\n")
+  var header = cut >= 0 ? text.slice(0, cut) : text
+  var found = probeFields(header)
+  if (found["home"] === undefined) return null
+  var file = String(found["file"] || "")
+  return {
+    home: found["home"] === "1",
+    binds: parseHyprBinds(found["binds"]),
+    requires: found["requires"] === "1",
+    file: file === "present" || file === "absent" || file === "unusable" ? file : "unusable",
+    bindings: cut >= 0 ? parseBindingsLua(text.slice(cut + 5)) : parseBindingsLua("")
+  }
+}
+
+// What the keybinding row shows, from parseAutoTypeKeybindInspection().
+function autoTypeKeybindState(inspection) {
+  var where = autoTypeBindingsDisplayPath()
+  if (!inspection) {
+    return { checked: false, bound: false, chord: "", live: false, removable: false, removableChord: "",
+      hyprctl: false, binds: [], fileBinds: [], canRegister: false,
+      status: "Checking the keybinding...", detail: "", blocked: "", setupNote: "" }
+  }
+  var binds = inspection.binds || []
+  var parsed = inspection.bindings || parseBindingsLua("")
+  var state = {
+    checked: true, bound: false, chord: "", live: false, removable: false, removableChord: "",
+    hyprctl: inspection.binds !== null && inspection.binds !== undefined,
+    binds: binds, fileBinds: parsed.binds, canRegister: false,
+    status: "No keybinding yet", detail: "", blocked: "",
+    // The setup screen's line under wtype.
+    setupNote: "No keybinding yet: register one under Settings > General > Auto-type logins."
+  }
+
+  var hit = parsed.autoType
+  var live = null
+  for (var i = 0; i < binds.length; i++) {
+    if (hyprBindRunsAutoType(binds[i])) { live = binds[i]; break }
+  }
+
+  if (hit) {
+    var hitChord = autoTypeChord(hit.chord)
+    state.bound = true
+    state.chord = hit.chord
+    state.removable = parsed.removable
+    state.removableChord = parsed.removableChord
+    // An o.bind() of the command with its own description, or ours.
+    for (var j = 0; j < binds.length; j++) {
+      if (hyprBindHasChord(binds[j], hitChord)
+          && (hyprBindRunsAutoType(binds[j]) || binds[j].description === hit.description)) {
+        state.live = true
+        break
+      }
+    }
+    state.detail = (parsed.removable && parsed.autoTypeCount === 1
+      ? "Added by this plugin on line " + hit.line + " of " + where + "."
+      : "Set on line " + hit.line + " of " + where + "; change or remove it there.")
+      + (parsed.autoTypeCount > 1 ? " " + parsed.autoTypeCount + " lines there run auto-type." : "")
+    if (state.hyprctl && !state.live) {
+      state.detail += " Hyprland has not loaded it yet: save the file again or run hyprctl reload."
+    }
+  } else if (live) {
+    state.bound = true
+    state.live = true
+    state.chord = chordFromHyprBind(live)
+    state.detail = "Set outside " + where + "; change or remove it where you added it."
+  }
+  if (state.bound) {
+    state.status = state.chord ? "Bound to " + state.chord : "Bound to a key"
+    state.setupNote = "Keybinding: " + (state.chord || "set") + "."
+    return state
+  }
+
+  if (!inspection.home) {
+    state.blocked = "No HOME is set, so there is no " + where + " to add it to."
+  } else if (inspection.file === "present") {
+    state.canRegister = true
+  } else if (inspection.file === "absent" && inspection.requires) {
+    state.canRegister = true
+    state.detail = where + " does not exist yet; registering creates it, and your hyprland.lua already loads it."
+  } else if (inspection.file === "absent") {
+    state.blocked = "Your ~/" + AUTO_TYPE_HYPRLAND_REL + " does not load " + where
+      + ", so the plugin will not create it. Copy the line and add it where your bindings live."
+  } else {
+    state.blocked = where + " is not a regular file this plugin can read, so it is left alone. "
+      + "Copy the line and add it yourself."
+  }
+  return state
+}
+
+// The chord field's verdict: the normalised chord, or why it cannot be used,
+// a key already taken included (named by its description, and by its command
+// when bindings.lua has it).
+function autoTypeChordCheck(text, state) {
+  var parsed = autoTypeChord(text)
+  if (!parsed.ok) return { ok: false, chord: "", line: "", message: parsed.message, note: "" }
+  var out = { ok: true, chord: parsed.chord, line: autoTypeBindLine(parsed.chord), message: "", note: "" }
+  var fileBinds = (state && state.fileBinds) || []
+  var fileHolder = null
+  for (var f = 0; f < fileBinds.length; f++) {
+    var fc = autoTypeChord(fileBinds[f].chord)
+    if (fc.ok && fc.modmask === parsed.modmask && fc.key.toUpperCase() === parsed.key.toUpperCase()) {
+      fileHolder = fileBinds[f]
+    }
+  }
+  var holder = null
+  if (state && state.hyprctl) {
+    var binds = state.binds || []
+    for (var i = 0; i < binds.length; i++) {
+      if (hyprBindHasChord(binds[i], parsed)) { holder = binds[i]; break }
+    }
+    // A line in bindings.lua that Hyprland does not have (an unbind after it,
+    // or not loaded yet) is not a conflict.
+    if (!holder) return out
+  } else {
+    if (state && state.checked) {
+      out.note = "hyprctl is not available, so only " + autoTypeBindingsDisplayPath() + " was checked for this key."
+    }
+    if (!fileHolder) return out
+  }
+  var label = holder && holder.description ? holder.description
+    : (fileHolder && fileHolder.description ? fileHolder.description : "")
+  var command = holder && /^exec/.test(holder.dispatcher) && holder.arg ? holder.arg
+    : (fileHolder ? fileHolder.command : "")
+  if ((holder && hyprBindRunsAutoType(holder)) || isAutoTypeCommand(command)) {
+    out.ok = false
+    out.message = parsed.chord + " already runs auto-type."
+    return out
+  }
+  out.ok = false
+  out.message = parsed.chord + " is already bound"
+    + (label ? " to \"" + label + "\"" : "")
+    + (command ? " (" + command + ")" : (label ? "" : " to another command"))
+    + ". Pick another key, or unbind that one in " + autoTypeBindingsDisplayPath() + " first."
+  return out
+}
+
+// The chord the field starts with: the first suggestion nothing holds.
+function autoTypeChordSuggestion(state) {
+  for (var i = 0; i < AUTO_TYPE_CHORD_SUGGESTIONS.length; i++) {
+    if (autoTypeChordCheck(AUTO_TYPE_CHORD_SUGGESTIONS[i], state).ok) return AUTO_TYPE_CHORD_SUGGESTIONS[i]
+  }
+  return AUTO_TYPE_CHORD_SUGGESTIONS[0]
+}
+
+// Exit codes of the register and remove scripts.
+var KEYBIND_EXIT_NO_HOME = 3
+var KEYBIND_EXIT_FILE = 4
+var KEYBIND_EXIT_BOUND = 5
+var KEYBIND_EXIT_NOT_LOADED = 6
+var KEYBIND_EXIT_WRITE = 7
+var KEYBIND_EXIT_NOT_OURS = 8
+
+// After a change: reload Hyprland's config (not the monitors) and report its
+// first config errors, if any.
+function keybindApplyShell() {
+  return "if command -v hyprctl >/dev/null 2>&1; then "
+    + "if hyprctl reload config-only >/dev/null 2>&1; then echo reloaded; "
+    + "__err=$(hyprctl configerrors -j 2>/dev/null | jq -r '.[]? | strings | select(length > 0)' 2>/dev/null "
+    + "| head -n 3 | tr -d '\\000-\\010\\013-\\037' | tr '\\n' ' ' | head -c 400); "
+    + "[ -z \"$__err\" ] || printf 'errors=%s\\n' \"$__err\"; "
+    + "else echo reload-failed; fi; "
+    + "else echo no-hyprctl; fi"
+}
+
+// Appends the comment and the bind line ($2, $1) to bindings.lua, once:
+// refused if a line there already runs the IPC, or if the file is anything
+// but a regular file (a symlink to one is followed, as an editor would). A
+// missing file is created only when hyprland.lua loads it. A blank line
+// separates it from what is there; a last line with no newline gets one.
+function autoTypeKeybindRegisterCommand(chord) {
+  var line = autoTypeBindLine(chord)
+  if (!line) return []
+  var script = "test -n \"${HOME:-}\" || exit " + KEYBIND_EXIT_NO_HOME + "; "
+    + "__f=\"$HOME/" + AUTO_TYPE_BINDINGS_REL + "\"; __main=\"$HOME/" + AUTO_TYPE_HYPRLAND_REL + "\"; "
+    + "if [ -e \"$__f\" ] || [ -L \"$__f\" ]; then "
+    + "[ -f \"$__f\" ] && [ -r \"$__f\" ] && [ -w \"$__f\" ] || exit " + KEYBIND_EXIT_FILE + "; "
+    + "if grep -v '^[[:space:]]*--' -- \"$__f\" | grep -Eq "
+    + shellQuote("io\\.github\\.elevate08\\.qs-bitwarden-cli[[:space:]]+autoType([^A-Za-z0-9_]|$)")
+    + "; then exit " + KEYBIND_EXIT_BOUND + "; fi; "
+    + "else " + hyprlandLoadsBindingsShell() + " || exit " + KEYBIND_EXIT_NOT_LOADED + "; fi; "
+    + "__sep=''; if [ -s \"$__f\" ]; then __sep='\\n'; "
+    + "[ -z \"$(tail -c 1 -- \"$__f\")\" ] || __sep='\\n\\n'; fi; "
+    + "printf '%b%s\\n%s\\n' \"$__sep\" \"$2\" \"$1\" >> \"$__f\" || exit " + KEYBIND_EXIT_WRITE + "; "
+    + "echo appended; "
+    + keybindApplyShell()
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES), "qsbw-keybind", line, AUTO_TYPE_BIND_COMMENT]
+}
+
+// Removes the comment-and-line pair autoTypeKeybindRegisterCommand() wrote
+// for `chord`, and the blank line it put before them, only when that exact
+// pair is there exactly once; anything else is left for the user. The file
+// is rewritten through a temporary file beside it (the symlink's target, if
+// it is one) and renamed over it, keeping its mode.
+function autoTypeKeybindRemoveCommand(chord) {
+  var line = autoTypeBindLine(chord)
+  if (!line) return []
+  var awk = "{ a[NR] = $0 } END { n = 0; "
+    + "for (i = 1; i < NR; i++) if (a[i] == ENVIRON[\"QSBW_NOTE\"] && a[i + 1] == ENVIRON[\"QSBW_LINE\"]) { n++; at = i }; "
+    + "if (n != 1) exit 1; blank = (at > 1 && a[at - 1] == \"\") ? at - 1 : 0; "
+    + "for (i = 1; i <= NR; i++) if (i != at && i != at + 1 && i != blank) print a[i] }"
+  var script = "test -n \"${HOME:-}\" || exit " + KEYBIND_EXIT_NO_HOME + "; "
+    + "__f=\"$HOME/" + AUTO_TYPE_BINDINGS_REL + "\"; "
+    + "[ -f \"$__f\" ] && [ -r \"$__f\" ] && [ -w \"$__f\" ] || exit " + KEYBIND_EXIT_FILE + "; "
+    + "__real=$(readlink -f -- \"$__f\") && [ -n \"$__real\" ] || exit " + KEYBIND_EXIT_FILE + "; "
+    + "__tmp=$(mktemp -- \"$(dirname -- \"$__real\")/.bindings.lua.XXXXXX\") || exit " + KEYBIND_EXIT_WRITE + "; "
+    + "QSBW_LINE=\"$1\" QSBW_NOTE=\"$2\" awk " + shellQuote(awk) + " \"$__real\" > \"$__tmp\"; __awk=$?; "
+    + "if [ \"$__awk\" -eq 1 ]; then rm -f -- \"$__tmp\"; exit " + KEYBIND_EXIT_NOT_OURS + "; fi; "
+    + "if [ \"$__awk\" -ne 0 ]; then rm -f -- \"$__tmp\"; exit " + KEYBIND_EXIT_WRITE + "; fi; "
+    + "chmod --reference=\"$__real\" -- \"$__tmp\" 2>/dev/null; "
+    + "mv -f -- \"$__tmp\" \"$__real\" || { rm -f -- \"$__tmp\"; exit " + KEYBIND_EXIT_WRITE + "; }; "
+    + "echo removed; "
+    + keybindApplyShell()
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES), "qsbw-keybind", line, AUTO_TYPE_BIND_COMMENT]
+}
+
+// { ok, message } for the row, from either script.
+function parseAutoTypeKeybindResult(exitCode, stdout, chord) {
+  var where = autoTypeBindingsDisplayPath()
+  var failures = {}
+  failures[KEYBIND_EXIT_NO_HOME] = { code: "NO_HOME", message: "No HOME is set, so there is no " + where + "." }
+  failures[KEYBIND_EXIT_FILE] = { code: "FILE",
+    message: where + " is not a regular file this plugin can read and write, so it was left alone." }
+  failures[KEYBIND_EXIT_BOUND] = { code: "BOUND",
+    message: where + " already has a line that runs auto-type, so nothing was added." }
+  failures[KEYBIND_EXIT_NOT_LOADED] = { code: "NOT_LOADED",
+    message: where + " does not exist and your hyprland.lua does not load it, so it was not created. "
+      + "Copy the line and add it where your bindings live." }
+  failures[KEYBIND_EXIT_WRITE] = { code: "WRITE", message: "Could not write " + where + "." }
+  failures[KEYBIND_EXIT_NOT_OURS] = { code: "NOT_OURS",
+    message: "The line this plugin added is no longer there exactly as written, so nothing was removed. "
+      + "Edit " + where + " yourself." }
+  var shown = String(chord || "")
+  return parseExitCodeResult(exitCode, stdout, function(out) {
+    var lines = out.split("\n")
+    var action = lines[0]
+    if (action !== "appended" && action !== "removed") return null
+    var applied = lines.indexOf("reloaded") > 0
+    var errors = ""
+    for (var i = 1; i < lines.length; i++) {
+      if (lines[i].indexOf("errors=") === 0) errors = lines[i].slice(7).trim()
+    }
+    var message = action === "appended"
+      ? (applied
+        ? "Registered " + shown + ". Arm a login, then press it in the window to type into."
+        : "Added " + shown + " to " + where + ". Hyprland uses it once it reloads its config (hyprctl reload).")
+      : (applied
+        ? "Removed the keybinding this plugin added."
+        : "Removed the keybinding this plugin added. Hyprland drops it once it reloads its config (hyprctl reload).")
+    if (errors) message += " Hyprland reports a config error: " + errors
+    return { ok: true, code: action === "appended" ? "APPENDED" : "REMOVED", message: message, warning: errors !== "" }
+  }, failures, "Could not update " + where + ".")
 }
 
 // Clears the clipboard only while it holds a copy marked sensitive (ours, or

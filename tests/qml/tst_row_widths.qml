@@ -197,6 +197,7 @@ TestCase {
   readonly property var sources: [
     { file: "Panel.qml", budget: panelBudget },
     { file: "SshAgentSettings.qml", budget: panelBudget },
+    { file: "AutoTypeKeybind.qml", budget: panelBudget },
     { file: "FidoSetupScreen.qml", budget: panelBudget },
     { file: "SshApprovalScreen.qml", budget: popupBudget },
     { file: "SshUnlockScreen.qml", budget: popupBudget },

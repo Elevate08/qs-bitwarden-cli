@@ -57,7 +57,13 @@
   it is not typed, and nothing is typed while the panel, an SSH approval or
   pinentry has the keyboard, or while the screen is locked. The arm is
   dropped on lock, logout or account switch, and when the setting is turned
-  off.
+  off. The key that calls it can be set up from the settings screen: under
+  the setting, the panel shows whether one is bound, suggests a free key
+  combination and says which binding holds one that is taken, and
+  **Register Keybinding** appends a commented `o.bind(...)` line to
+  `~/.config/hypr/bindings.lua` and reloads Hyprland (**Remove Keybinding**
+  takes out only that line again, and **Copy Line** is there for bindings
+  kept elsewhere). The setup screen shows the key next to `wtype`.
 
 ### Security
 

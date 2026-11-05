@@ -22,6 +22,25 @@ check("a locked panel focuses whichever field the offered unlock method uses",
   /focusTarget:[\s\S]{0,800}unlockForm\.focusField\s*\?\s*unlockForm\.focusField\s*:\s*keyCatcher/.test(panelSrc),
   "focusTarget must follow UnlockForm.focusField, which is the PIN field when PIN unlock leads")
 
+// The wtype row says whether a key runs auto-type, from the model's text.
+check("the setup screen's wtype row carries the keybinding note",
+  /visible: depCard\.modelData\.key === "wtype" && root\.autoTypeKeybind\.setupNote !== ""\s*\n\s*width: parent\.width\s*\n\s*text: root\.autoTypeKeybind\.setupNote/.test(panelSrc),
+  "expected the wtype card to show autoTypeKeybind.setupNote")
+check("the setup screen reads the binding while auto-type is on",
+  /onCurrentScreenChanged: \{\s*\n\s*if \(currentScreen === "setup" && autoTypeEnabled\) inspectAutoTypeKeybind\(\)/.test(panelSrc)
+    && /function checkDependencies\(\)[\s\S]{0,260}if \(autoTypeEnabled && currentScreen === "setup"\) inspectAutoTypeKeybind\(\)/.test(panelSrc),
+  "expected the setup screen and its re-checks to inspect the keybinding")
+{
+  const unbound = Model.autoTypeKeybindState(Model.parseAutoTypeKeybindInspection("home=1\nbinds=[]\nrequires=1\nfile=present\n---\n"))
+  const boundState = Model.autoTypeKeybindState(Model.parseAutoTypeKeybindInspection(
+    "home=1\nbinds=\nrequires=1\nfile=present\n---\n" + Model.autoTypeBindComment() + "\n"
+      + Model.autoTypeBindLine("SUPER + ALT + A") + "\n"))
+  check("setup says to register a key, or which key it is",
+    /^No keybinding yet: register one under Settings > General > Auto-type logins\.$/.test(unbound.setupNote)
+      && boundState.setupNote === "Keybinding: SUPER + ALT + A.",
+    JSON.stringify([unbound.setupNote, boundState.setupNote]))
+}
+
 // --- everything present -----------------------------------------------------
 const all = Model.parseDependencies(
   "bw=1\nbw_version=2025.1.2\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")

@@ -2215,6 +2215,7 @@ Panel {
             model: Model.applicableDependencies(root.vault.dependencies)
 
             delegate: BorderSurface {
+              id: depCard
               required property var modelData
               width: parent.width
               implicitHeight: depRow.implicitHeight + Style.space(16)
@@ -2278,6 +2279,19 @@ Panel {
                     width: parent.width
                     text: modelData.note
                     color: root.urgent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+
+                  // Auto-type needs a key as well as wtype; registering one
+                  // is under its setting.
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: depCard.modelData.key === "wtype" && root.vault.autoTypeKeybind.setupNote !== ""
+                    width: parent.width
+                    text: root.vault.autoTypeKeybind.setupNote
+                    color: root.vault.autoTypeKeybind.bound ? root.dim : root.urgent
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WordWrap
@@ -2461,6 +2475,7 @@ Panel {
               model: root.vault.settingsEntries
 
               delegate: Column {
+                id: settingDelegate
                 required property var modelData
                 required property int index
                 width: parent.width
@@ -2621,6 +2636,16 @@ Panel {
                   color: root.urgent
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
+                }
+
+                // The key that runs auto-type, under its setting while it is
+                // on (AutoTypeKeybind.qml).
+                Loader {
+                  width: parent.width
+                  active: !settingDelegate.isGroup && settingDelegate.modelData.key === "autoTypeEnabled"
+                    && root.vault.autoTypeEnabled
+                  visible: active
+                  sourceComponent: AutoTypeKeybind { panel: root; vault: root.vault }
                 }
 
                 PanelSeparator { width: parent.width }

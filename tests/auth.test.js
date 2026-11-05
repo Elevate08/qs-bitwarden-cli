@@ -819,7 +819,7 @@ check("unlock, item-form and Send fields are re-pointed the same way as login",
   syncSensitive + "\n" + syncFromVault)
 check("no view assigns a plain value to a field's text",
   ["Panel.qml", "UnlockForm.qml", "SshUnlockScreen.qml", "SshApprovalScreen.qml",
-   "SshAgentSettings.qml", "CustomFieldsEditor.qml"]
+   "SshAgentSettings.qml", "CustomFieldsEditor.qml", "AutoTypeKeybind.qml"]
     .flatMap((file) => readPluginSource(file).split("\n")
       .map((line, i) => [file, i + 1, line]))
     .filter(([, , line]) => /\b\w+Field\.text = (?!Qt\.binding\(|"")/.test(line))
