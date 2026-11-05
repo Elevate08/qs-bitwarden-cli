@@ -22,7 +22,18 @@ ShellRoot {
                               sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1",
                               allowVaultWithoutHelper: Quickshell.env("QSBW_E2E_ALLOW_NO_HELPER") === "1",
                               pinentryProgram: Quickshell.env("QSBW_E2E_PINENTRY") || "" })
-    function showPopout() { opened = true }
+    // Set by openAsking(): the next show asks pinentry inside it, before
+    // `opened` reads true, as the unlock form does when a real popout shows.
+    property bool askOnShow: false
+    property int shows: 0
+    function showPopout() {
+      if (askOnShow) {
+        askOnShow = false
+        vault.unlockWithPinentry()
+      }
+      if (!opened) shows += 1
+      opened = true
+    }
     function hidePopout() { opened = false }
     function focusField(name) {}
     function fieldHasFocus(name) { return false }
@@ -82,6 +93,7 @@ ShellRoot {
                     // not available).
                     entry: vault.typedSecretEntry !== undefined ? vault.typedSecretEntry
                       : (vault.pinentryAvailable ? "pinentry" : "field") },
+        shows: view.shows,
         reprompt: { pending: vault.repromptPending, busy: vault.repromptBusy, error: vault.repromptError },
         // The name the pinentry in progress is held under, and checkHeld()'s answer.
         pinentryName: vault.pinentryRun ? vault.pinentryRun.name : "", held: heldCheck.result,
@@ -96,6 +108,10 @@ ShellRoot {
       })
     }
     function open(): void { vault.open() }
+    function close(): void { vault.close() }
+    // The panel opened on a locked vault, whose unlock form asks pinentry as
+    // the popout shows (#132).
+    function openAsking(): void { view.askOnShow = true; vault.open() }
     function login(email: string, pw: string): void {
       vault.loginMethod = "email"; vault.loginEmail = email; vault.loginPassword = pw; vault.submitLogin()
     }

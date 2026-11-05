@@ -13,8 +13,8 @@ const service = read("Service.qml")
 const body = name => functionBody(service, name)
 const { check, eq, done } = createSuite("pinentry-service")
 
-const names = ["requestPinentry", "onPinentryExited", "beginPinentry", "endPinentry", "cancelPinentry",
-  "resumeFromPinentry", "unlockWithPinentry", "unlockPinWithPinentry", "retryPinentryPin", "releaseHeldPin",
+const names = ["requestPinentry", "onPinentryExited", "beginPinentry", "hideForPinentry", "endPinentry", "cancelPinentry",
+  "resumeFromPinentry", "panelShown", "unlockWithPinentry", "unlockPinWithPinentry", "retryPinentryPin", "releaseHeldPin",
   "submitRepromptWithPinentry", "submitReprompt", "forgetHeldPassword", "forgetHeldAfter", "onUnlockOutput",
   "declinePinentry", "resetPinentryChoice"]
 
@@ -46,6 +46,8 @@ function makeVault(extra) {
     submitTakesIt: true,
     verifyMasterPassword(pw, cb) { this.verifies.push(pw); this.verifyDone = cb },
     prepareUnlock() {}, clearRepromptGrant() {},
+    // The startup work of a fresh open (Service.qml's own is not run here).
+    panelOpens: 0, onPanelOpened() { this.panelOpens += 1 },
     view: null,
     eachView(fn) { fn(this.view) },
     get presenter() { return this.view }
@@ -114,6 +116,104 @@ function finish(v, code, held, stderr) {
   check("a cancel starts nothing, forgets the name, says nothing and restores the panel",
     v.unlocks.length === 0 && v.forgotten.includes(second) && v.errorMessage === "" && v.opened && !v.pinentryActive
       && v.pinentryNotice === "", "")
+}
+
+// --- the panel opening while pinentry asks (#132) -----------------------------------------
+
+// Views that behave as Panel.qml's do: showing one flips `opened`, which runs
+// onOpenedChanged (panelShown()); `askOnShow` has the unlock form ask
+// pinentry inside show(), before `opened` reads true, as a real popout does.
+function withViews(v, count) {
+  const views = []
+  for (let i = 0; i < count; i++) {
+    const view = {
+      opened: false, shows: 0, hides: 0, askOnShow: false,
+      showPopout() {
+        if (this.askOnShow) { this.askOnShow = false; v.unlockWithPinentry() }
+        if (this.opened) return
+        this.opened = true; this.shows += 1; v.panelShown()
+      },
+      hidePopout() { this.hides += 1; this.opened = false }
+    }
+    views.push(view)
+  }
+  Object.defineProperty(v, "opened", { configurable: true, get() { return views.some(view => view.opened) } })
+  v.eachView = fn => views.slice().forEach(fn)
+  Object.defineProperty(v, "presenter", { configurable: true, get() { return views.find(view => view.opened) || views[0] } })
+  Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
+  return views
+}
+
+{
+  // Opened with the vault locked: the form asks pinentry as the popout shows.
+  const v = makeVault()
+  const [view] = withViews(v, 1)
+  view.askOnShow = true
+  view.showPopout()
+  check("pinentry asked while the panel was still opening: the panel opens, then is hidden for it",
+    v.pinentryActive && view.shows === 1 && !v.opened && view.hides === 1, JSON.stringify(view))
+  check("that open still did its startup work, once", v.panelOpens === 1, String(v.panelOpens))
+  check("and the view is remembered to come back", v.pinentryWasOpen && v.pinentryView === view, "")
+  finish(v, 1, false)
+  check("the answer (a cancel here) shows it again, as a resume",
+    v.opened && view.shows === 2 && !v.pinentryActive && v.panelOpens === 1 && v.restored === 1 && !v.pinentryReturning,
+    JSON.stringify({ shows: view.shows, opens: v.panelOpens, restored: v.restored }))
+
+  // The same open answered with the password: the unlock goes ahead and the
+  // panel comes back for it.
+  const w = makeVault()
+  const [wv] = withViews(w, 1)
+  wv.askOnShow = true
+  wv.showPopout()
+  const name = w.pinentryRun.name
+  finish(w, 0, true)
+  check("answered, the held name goes to the unlock and the panel is back",
+    w.unlocks.join() === Model.heldSecretRef(name) && w.opened && wv.shows === 2 && w.panelOpens === 1, w.unlocks.join())
+}
+
+{
+  // A second monitor's view opens underneath: every view is hidden, and the
+  // one that opened is the one shown again.
+  const v = makeVault()
+  const [a, b] = withViews(v, 2)
+  v.unlockWithPinentry()
+  check("asked with every panel closed, nothing is hidden or remembered",
+    v.pinentryActive && !v.pinentryWasOpen && v.pinentryView === null && a.hides === 0 && b.hides === 0, "")
+  b.showPopout()
+  check("the view that opened underneath is hidden, and every other one with it",
+    !v.opened && a.hides === 1 && b.hides === 1 && v.pinentryView === b, "")
+  finish(v, 1, false)
+  check("and that view alone comes back", b.opened && !a.opened && b.shows === 2 && a.shows === 0, "")
+}
+
+{
+  // Asked with the panel closed (the SSH approval popup's unlock), never
+  // opened meanwhile: nothing is shown after the answer.
+  const v = makeVault()
+  const [view] = withViews(v, 1)
+  v.unlockWithPinentry()
+  const name = v.pinentryRun.name
+  finish(v, 0, true)
+  check("a panel closed when pinentry asked, and never opened, stays closed",
+    !v.opened && view.shows === 0 && view.hides === 0 && !v.pinentryReturning && v.pinentryView === null
+      && v.unlocks.join() === Model.heldSecretRef(name), JSON.stringify(view))
+  v.unlockWithPinentry()
+  finish(v, 1, false)
+  check("nor after a cancel", !v.opened && view.shows === 0 && !v.pinentryReturning, "")
+}
+
+{
+  // The panel already open when pinentry asks: hidden at once, as before.
+  const v = makeVault()
+  const [view] = withViews(v, 1)
+  view.showPopout()
+  v.unlockWithPinentry()
+  check("an open panel is hidden as pinentry asks", !v.opened && view.hides === 1 && v.pinentryView === view, "")
+  // A later show of the same open does not hide it twice or lose the view.
+  v.hideForPinentry()
+  check("hiding again is a no-op", view.hides === 1 && v.pinentryView === view, "")
+  finish(v, 1, false)
+  check("and is shown again after", v.opened && view.shows === 2 && v.panelOpens === 1 && v.restored === 1, "")
 }
 
 // --- when pinentry cannot be used ---------------------------------------------------------
@@ -388,7 +488,11 @@ check("a lock, another method's unlock and the panel being asked for end a pinen
   /cancelPinentry\(\)/.test(body("dropVaultState")) && /cancelPinentry\(\)/.test(body("onUnlockSuccess"))
     && /cancelPinentry\(\)/.test(body("open")), "")
 check("hiding the panel for pinentry is not a close; coming back is a resume",
-  /else if \(!pinentryActive\) \{\s*pinentryAutoAsked = false\s*clearRepromptGrant\(\)\s*resetPinentryChoice\(\)/.test(service) && /!resumeFromPinentry\(\)/.test(service), "")
+  /else if \(!pinentryActive\) \{\s*pinentryAutoAsked = false\s*clearRepromptGrant\(\)\s*resetPinentryChoice\(\)/.test(service) && /!resumeFromPinentry\(\)/.test(body("panelShown")), "")
+check("every show of the panel goes through panelShown(), which hides it again while pinentry asks (#132)",
+  /onOpenedChanged: \{\s*if \(opened\) \{\s*panelShown\(\)\s*\} else if/.test(service)
+    && /if \(pinentryActive\) Qt\.callLater\(hideForPinentry\)/.test(body("panelShown"))
+    && /hideForPinentry\(\)/.test(body("beginPinentry")) && !/hidePopout/.test(body("beginPinentry")), body("panelShown"))
 check("the field picked after a failure lasts until the panel closes or the vault locks or unlocks",
   /resetPinentryChoice\(\)/.test(body("dropVaultState")) && /resetPinentryChoice\(\)/.test(body("onUnlockSuccess")), "")
 check("a pinentry run never runs in the shell: without the helper it is refused",
