@@ -40,7 +40,10 @@ function stubMember(src, type) {
 }
 
 function strip(src) {
-  let s = src.replace(/^import Quickshell(?:\.\w+)*[ \t]*$/gm, "")
+  // The `import Quickshell[.Io]` lines stay: the stand-in modules below
+  // supply Singleton, FileView, SplitParser and Process, so the kit's
+  // child-object declarations of them compile too.
+  let s = src
   s = s.replace(/Quickshell\.env\([^)]*\)/g, '""')
   s = s.replace(/Quickshell\.execDetached\(/g, "(function() {})(")
   s = stubMember(s, "Process")
@@ -59,6 +62,9 @@ fs.writeFileSync(path.join(ioDir, "qmldir"), [
   "depends QtQuick",
   "Process 0.0 Process.qml",
   "StdioCollector 0.0 StdioCollector.qml",
+  "SplitParser 0.0 SplitParser.qml",
+  "IpcHandler 0.0 IpcHandler.qml",
+  "FileView 0.0 FileView.qml",
   "",
 ].join("\n"))
 fs.writeFileSync(path.join(ioDir, "Process.qml"), [
@@ -67,6 +73,10 @@ fs.writeFileSync(path.join(ioDir, "Process.qml"), [
   "  property bool running: false",
   "  property int processId: 0",
   "  property var command: []",
+  "  property var environment: ({})",
+  "  property bool stdinEnabled: false",
+  "  property var stderr: null",
+  "  function write(data) {}",
   "  property var stdout: null",
   "  signal exited(int exitCode, int exitStatus)",
   "  function signal(number) { running = false }",
@@ -84,11 +94,49 @@ fs.writeFileSync(path.join(ioDir, "StdioCollector.qml"), [
   "",
 ].join("\n"))
 
+// The kit's Commons singletons also declare these as child objects
+// (`FileView { ... }`, `Process { stdout: SplitParser { ... } }`), which the
+// textual strip above does not reach, and the whole Commons module must
+// compile for any one of its types to load. Inert: nothing is ever read.
+fs.writeFileSync(path.join(ioDir, "SplitParser.qml"), [
+  "import QtQuick",
+  "QtObject {",
+  "  property string splitMarker: \"\\n\"",
+  "  signal read(string data)",
+  "}",
+  "",
+].join("\n"))
+fs.writeFileSync(path.join(ioDir, "IpcHandler.qml"), [
+  "import QtQuick",
+  "QtObject {",
+  "  property bool enabled: true",
+  "  property string target: \"\"",
+  "}",
+  "",
+].join("\n"))
+fs.writeFileSync(path.join(ioDir, "FileView.qml"), [
+  "import QtQuick",
+  "QtObject {",
+  "  property string path: \"\"",
+  "  property bool blockLoading: false",
+  "  property bool watchChanges: false",
+  "  property bool printErrors: true",
+  "  property bool preload: false",
+  "  function text() { return \"\" }",
+  "  function reload() {}",
+  "  signal loaded()",
+  "  signal loadFailed(var error)",
+  "  signal fileChanged()",
+  "}",
+  "",
+].join("\n"))
+
 // Plugin files that import Quickshell for execDetached get a recording stand-in.
 fs.writeFileSync(path.join(out, "Quickshell", "qmldir"), [
   "module Quickshell",
   "depends QtQuick",
   "singleton Quickshell 0.0 Quickshell.qml",
+  "Singleton 0.0 Singleton.qml",
   "",
 ].join("\n"))
 fs.writeFileSync(path.join(out, "Quickshell", "Quickshell.qml"), [
@@ -98,6 +146,49 @@ fs.writeFileSync(path.join(out, "Quickshell", "Quickshell.qml"), [
   "  property var detached: []",
   "  function execDetached(cmd) { detached = detached.concat([cmd]) }",
   "}",
+  "",
+].join("\n"))
+
+// Style.qml listens for Hyprland's raw events.
+const hyprDir = path.join(out, "Quickshell", "Hyprland")
+fs.mkdirSync(hyprDir, { recursive: true })
+fs.writeFileSync(path.join(hyprDir, "qmldir"), [
+  "module Quickshell.Hyprland",
+  "depends QtQuick",
+  "singleton Hyprland 0.0 Hyprland.qml",
+  "",
+].join("\n"))
+fs.writeFileSync(path.join(hyprDir, "Hyprland.qml"), [
+  "pragma Singleton",
+  "import QtQuick",
+  "QtObject {",
+  "  signal rawEvent(var event)",
+  "}",
+  "",
+].join("\n"))
+
+// UntypedInput.qml reads the default audio input; none here.
+const pwDir = path.join(out, "Quickshell", "Services", "Pipewire")
+fs.mkdirSync(pwDir, { recursive: true })
+fs.writeFileSync(path.join(pwDir, "qmldir"), [
+  "module Quickshell.Services.Pipewire",
+  "depends QtQuick",
+  "singleton Pipewire 0.0 Pipewire.qml",
+  "",
+].join("\n"))
+fs.writeFileSync(path.join(pwDir, "Pipewire.qml"), [
+  "pragma Singleton",
+  "import QtQuick",
+  "QtObject {",
+  "  property var defaultAudioSource: null",
+  "  property var defaultAudioSink: null",
+  "}",
+  "",
+].join("\n"))
+
+fs.writeFileSync(path.join(out, "Quickshell", "Singleton.qml"), [
+  "import QtQuick",
+  "Item { visible: false }",
   "",
 ].join("\n"))
 
