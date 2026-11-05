@@ -319,14 +319,17 @@ jobs:
         # The panel's JavaScript runs in QML's engine, which differs from Node.
         run: |
           # Every module named explicitly: --no-install-recommends drops
-          # QtQml.WorkerScript, which QtQuick needs.
+          # QtQml.WorkerScript, which QtQuick needs. Controls (with its
+          # Templates) is for tests that stand in a LineField-shaped TextArea.
           sudo apt-get install -y -qq --no-install-recommends \
             qt6-declarative-dev-tools \
             qml6-module-qttest \
             qml6-module-qtqml \
             qml6-module-qtqml-workerscript \
             qml6-module-qtquick \
-            qml6-module-qtquick-window
+            qml6-module-qtquick-window \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-templates
           # Log the resolved versions, so behaviour changes can be traced.
           dpkg -l qt6-declarative-dev-tools qml6-module-qttest | tail -2
           # The import paths qmltestrunner searches, for debugging.
