@@ -32,7 +32,12 @@ dump taken after you revealed something can still contain it.
 
 A password or other secret you copy goes from the helper straight to
 `wl-copy` (with the same timed clear and "sensitive" marking); it never passes
-through the shell. TOTP codes are computed in the helper, and only the code
+through the shell. Auto-type, when you turn it on, works the same way: the
+helper reads the armed login's username and password and writes them to
+`wtype`'s stdin, and tells the shell only whether `wtype` typed them. A value
+holding a control character (a newline, tab, backspace, delete or escape,
+which `wtype` would press as keys) is not typed at all. TOTP codes are
+computed in the helper, and only the code
 reaches the shell, not the key. Search runs in the helper too, so it still
 finds text in notes the shell does not have, and it stays fast on a large
 vault. Notes of an item that asks for the master password are not searched.

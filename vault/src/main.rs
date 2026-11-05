@@ -30,6 +30,10 @@ const SAVED_UNSANITIZED: &str = "__QSBW_SAVED_UNSANITIZED__";
 /// are dropped, as there is no reply to refuse them with.
 const MAX_DETACHED: usize = 8;
 const EXIT_REFUSED: i32 = 126;
+/// `wtype` waits before the first key, so the shortcut that asked for the
+/// typing is let go first, and between keys, so a page that moves focus on
+/// Tab keeps up. The text comes on stdin; `-` reads it.
+const WTYPE_ARGS: [&str; 5] = ["-s", "250", "-d", "12", "-"];
 /// Stands in for a kept session key in the output the panel gets. Shaped
 /// like a key (BitwardenModel.js SESSION_TOKEN_RE), so the panel's parsing
 /// of `bw unlock`/`bw login` output is unchanged.
@@ -43,6 +47,8 @@ struct Helper {
     runs: Shared<HashMap<u64, u32>>,
     /// Detached commands still running.
     detached: Arc<AtomicUsize>,
+    /// An auto-type in progress (at most one).
+    typing: Arc<AtomicUsize>,
     out: Sender<String>,
 }
 
@@ -119,6 +125,7 @@ fn main() {
         store: Arc::default(),
         runs: Arc::default(),
         detached: Arc::default(),
+        typing: Arc::default(),
         out,
     };
     let mut input = BufReader::new(std::io::stdin().lock());
@@ -280,6 +287,7 @@ impl Helper {
                     .and_then(|field| self.store.lock().unwrap().item_secret(&id, &field));
                 self.copy(q, value, clear_sec);
             }
+            Request::AutoType { q, id, .. } => self.auto_type(q, &id),
             Request::Totp { q, id, .. } => {
                 let key = self.field(&id, &["login", "totp"]);
                 let now = SystemTime::now()
@@ -319,6 +327,41 @@ impl Helper {
             .map(|value| copy_to_clipboard(value, clear_sec))
             .unwrap_or(false);
         self.result(q, copied.then_some(Value::Bool(true)));
+    }
+
+    /// Answers an auto-type once `wtype` has finished: `ok` only when it
+    /// typed everything; otherwise the value says why not ("busy", "empty",
+    /// "unsafe", "missing" or "failed"). Neither value is in the reply.
+    fn auto_type(&self, q: u64, id: &str) {
+        let refuse = |reason: &str| {
+            self.send(json!({ "type": "result", "q": q, "ok": false, "value": reason }))
+        };
+        let Some(slot) = Slot::claim(&self.typing, 1) else {
+            return refuse("busy");
+        };
+        let username = self.field(id, &["login", "username"]);
+        let password = self.field(id, &["login", "password"]);
+        let text = match auto_type_text(
+            username.as_ref().map(|u| u.as_str()),
+            password.as_ref().map(|p| p.as_str()),
+        ) {
+            Ok(text) => text,
+            Err(reason) => return refuse(reason),
+        };
+        let Some(child) = spawn_wtype() else {
+            return refuse("missing");
+        };
+        let out = self.out.clone();
+        thread::spawn(move || {
+            let typed = feed_and_wait(child, text);
+            drop(slot);
+            let message = if typed {
+                json!({ "type": "result", "q": q, "ok": true, "value": true })
+            } else {
+                json!({ "type": "result", "q": q, "ok": false, "value": "failed" })
+            };
+            let _ = out.send(message.to_string());
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -672,9 +715,116 @@ fn copy_to_clipboard(value: Zeroizing<String>, clear_sec: u32) -> bool {
     written
 }
 
+/// What auto-type types: the username, Tab and the password, or the password
+/// alone for a login without a username. `wtype` turns a newline into Enter
+/// and a tab into Tab, and xkb maps backspace, delete and escape to their
+/// keys, so a value holding any control character is refused rather than
+/// typed: it would submit a half-typed form or move the password into
+/// another field.
+fn auto_type_text(
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Result<Zeroizing<String>, &'static str> {
+    let password = password.filter(|p| !p.is_empty()).ok_or("empty")?;
+    let username = username.unwrap_or("");
+    if username
+        .chars()
+        .chain(password.chars())
+        .any(char::is_control)
+    {
+        return Err("unsafe");
+    }
+    // Sized up front: a growing String would leave unwiped copies behind.
+    let mut text = Zeroizing::new(String::with_capacity(username.len() + 1 + password.len()));
+    if !username.is_empty() {
+        text.push_str(username);
+        text.push('\t');
+    }
+    text.push_str(password);
+    Ok(text)
+}
+
+/// `wtype` with the text to come on stdin. In its own process group, so a
+/// run's kill never reaches it, and with a UTF-8 locale: under C, `wtype`
+/// stops at the first character outside ASCII and still exits 0.
+fn spawn_wtype() -> Option<Child> {
+    Command::new("wtype")
+        .args(WTYPE_ARGS)
+        .env("LC_ALL", "C.UTF-8")
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()
+}
+
+/// Writes the text, closes stdin and waits: true when `wtype` took it all and
+/// exited 0.
+fn feed_and_wait(mut child: Child, text: Zeroizing<String>) -> bool {
+    let written = match child.stdin.take() {
+        Some(mut pipe) => pipe.write_all(text.as_bytes()).is_ok(),
+        None => false,
+    };
+    drop(text);
+    let status = child.wait();
+    written && status.map(|s| s.success()).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_type_types_the_username_tab_and_password() {
+        assert_eq!(
+            auto_type_text(Some("me"), Some("hunter2"))
+                .unwrap()
+                .as_str(),
+            "me\thunter2"
+        );
+        assert_eq!(
+            auto_type_text(Some("j\u{f6}rg"), Some("p\u{e4}ss \u{1f511}"))
+                .unwrap()
+                .as_str(),
+            "j\u{f6}rg\tp\u{e4}ss \u{1f511}"
+        );
+        // No username: the password alone, with no Tab before it.
+        assert_eq!(
+            auto_type_text(None, Some("hunter2")).unwrap().as_str(),
+            "hunter2"
+        );
+        assert_eq!(
+            auto_type_text(Some(""), Some("hunter2")).unwrap().as_str(),
+            "hunter2"
+        );
+    }
+
+    #[test]
+    fn auto_type_refuses_what_it_cannot_type_as_written() {
+        assert_eq!(auto_type_text(Some("me"), None).unwrap_err(), "empty");
+        assert_eq!(auto_type_text(Some("me"), Some("")).unwrap_err(), "empty");
+        for bad in [
+            "a\nb", "a\tb", "a\rb", "a\u{8}b", "a\u{7f}b", "a\u{1b}b", "a\u{85}b",
+        ] {
+            assert_eq!(
+                auto_type_text(Some("me"), Some(bad)).unwrap_err(),
+                "unsafe",
+                "{bad:?}"
+            );
+            assert_eq!(
+                auto_type_text(Some(bad), Some("pw")).unwrap_err(),
+                "unsafe",
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wtype_gets_no_secret_in_its_arguments() {
+        assert_eq!(WTYPE_ARGS.last(), Some(&"-"));
+        assert_eq!(WTYPE_ARGS.iter().filter(|a| **a == "-").count(), 1);
+    }
 
     const KEY: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH";
 
