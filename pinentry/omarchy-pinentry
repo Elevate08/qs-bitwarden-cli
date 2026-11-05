@@ -12,7 +12,9 @@
 // the Assuan `D` line the helper decodes, and the buffers holding it here are
 // zeroed. It is never in any argv, file or log. The prompt's text (the
 // description names the account) reaches the Quickshell in a 0600 file in
-// that directory, never in argv. The directory is removed on every exit.
+// that directory, never in argv. The directory is removed when the prompt
+// ends and on every exit this process can see; one a SIGKILL left behind
+// (prompt.json names the pid that made it) is removed by the next run.
 //
 // Commands: OPTION, SETTITLE, SETDESC, SETPROMPT, SETERROR (shown on the next
 // GETPIN only), SETOK, SETCANCEL, SETTIMEOUT (seconds; when it runs out the
@@ -165,19 +167,24 @@ function percentDecode(bytes, start, end) {
 }
 
 // An argument of a SET command as text: Assuan's escapes decoded, NUL and the
-// other controls but a line break dropped, capped as the panel caps it.
+// other controls but a line break dropped, capped as the panel caps it. One
+// with a malformed escape is shown as written, stripped and capped the same.
 function argText(raw) {
   const bytes = Buffer.from(raw, "utf8")
   const decoded = percentDecode(bytes, 0, bytes.length)
-  if (!decoded) return raw.slice(0, TEXT_MAX)
-  return decoded.buffer.subarray(0, decoded.length).toString("utf8")
-    .replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "").slice(0, TEXT_MAX)
+  return plainText(decoded ? decoded.buffer.subarray(0, decoded.length).toString("utf8") : raw)
+}
+
+function plainText(text) {
+  return text.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "").slice(0, TEXT_MAX)
 }
 
 // `D` lines for `data`: `%`, CR, LF and every other control byte escaped, as
 // pinentry does for the first three; other bytes (UTF-8 included) as they
 // are. Split below Assuan's line limit, never inside an escape or a UTF-8
-// sequence. The caller zeroes the buffers once written.
+// sequence (at most three continuation bytes; a longer run is not UTF-8 and
+// is split rather than overrun the line). The caller zeroes the buffers once
+// written.
 function dataLines(data, length) {
   const lines = []
   let line = Buffer.alloc(D_CHUNK + 8)
@@ -195,7 +202,7 @@ function dataLines(data, length) {
     if (n === 0) {
       line[n++] = 0x44 // D
       line[n++] = 0x20
-    } else if (n >= D_CHUNK && !continuation) {
+    } else if (n >= D_CHUNK + 4 || (n >= D_CHUNK && !continuation)) {
       flush()
       line[n++] = 0x44
       line[n++] = 0x20
@@ -293,6 +300,41 @@ function uiEnvironment(dir) {
   return env
 }
 
+// Prompt directories a SIGKILL left behind: ours by uid, a real directory
+// (no symlink followed), whose prompt.json names a pid that is gone, or none.
+// One with no prompt.json yet may be another run between mkdtemp and the
+// write, so it goes only once it is old. Errors leave the directory alone.
+function sweepStale(runtime) {
+  let names
+  try { names = fs.readdirSync(runtime) } catch (e) { return }
+  for (const name of names) {
+    if (!/^qsbw-pinentry-[A-Za-z0-9]{6}$/.test(name)) continue
+    const dir = path.join(runtime, name)
+    try {
+      const st = fs.lstatSync(dir)
+      if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid())) continue
+      let pid = 0
+      try {
+        const file = path.join(dir, "prompt.json")
+        if (!fs.lstatSync(file).isFile()) continue
+        pid = JSON.parse(fs.readFileSync(file, "utf8")).pid
+      } catch (e) {
+        if (e.code !== "ENOENT" || Date.now() - st.mtimeMs < 60000) continue
+      }
+      if (pid === process.pid) continue
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, 0)
+          continue
+        } catch (e) {
+          if (e.code !== "ESRCH") continue
+        }
+      }
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch (e) { /* left alone */ }
+  }
+}
+
 function getpin() {
   if (run) {
     reply(ERR_GENERAL)
@@ -304,6 +346,7 @@ function getpin() {
     reply(ERR_GENERAL)
     return
   }
+  sweepStale(runtime)
   const r = { dir: "", server: null, child: null, socket: null, chunks: [], size: 0, timer: null,
     exitTimer: null, settled: false, exited: false }
   run = r
@@ -313,7 +356,7 @@ function getpin() {
     const ask = {
       title: settings.title, description: settings.description, prompt: settings.prompt,
       error: settings.error, ok: settings.ok, cancel: settings.cancel,
-      timeout: settings.timeout, monitor: focusedMonitor()
+      timeout: settings.timeout, monitor: focusedMonitor(), pid: process.pid
     }
     fs.writeFileSync(path.join(r.dir, "prompt.json"), JSON.stringify(ask), { mode: 0o600, flag: "wx" })
   } catch (e) {
@@ -503,6 +546,7 @@ if (reason) {
   process.exit(1)
 }
 
+sweepStale(runtimeDir())
 reply("OK Pleased to meet you")
 
 // Assuan is one request at a time: a line that arrives while a prompt is

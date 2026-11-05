@@ -49,6 +49,8 @@ struct Helper {
     detached: Arc<AtomicUsize>,
     /// An auto-type in progress (at most one).
     typing: Arc<AtomicUsize>,
+    /// The process group of the `wtype` typing, for `stop_typing`.
+    typing_group: Shared<Option<u32>>,
     out: Sender<String>,
 }
 
@@ -126,6 +128,7 @@ fn main() {
         runs: Arc::default(),
         detached: Arc::default(),
         typing: Arc::default(),
+        typing_group: Arc::default(),
         out,
     };
     let mut input = BufReader::new(std::io::stdin().lock());
@@ -148,10 +151,13 @@ fn main() {
     }
 
     // The panel is gone or asked us to stop: nothing it started should
-    // outlive it with the session key in its environment. SIGTERM first, so
-    // the scripts' traps stop the `bw` they started in their own groups.
+    // outlive it with the session key in its environment. A `wtype` still
+    // typing goes first: what it has not typed yet stays untyped. The runs
+    // get SIGTERM before SIGKILL, so the scripts' traps stop the `bw` they
+    // started in their own groups.
     // Signalled with the runs lock held: a run takes itself off the list
     // before it is reaped, so a group listed here is still ours.
+    helper.stop_typing();
     let any = {
         let runs = helper.runs.lock().unwrap();
         for group in runs.values() {
@@ -253,7 +259,12 @@ impl Helper {
                     stop_group(id, group, Arc::clone(&self.runs));
                 }
             }
-            Request::Forget { keep, .. } => self.store.lock().unwrap().forget(&keep),
+            Request::Forget { keep, .. } => {
+                // The arm is dropped with the vault: a `wtype` still typing
+                // its password stops here, however much is left.
+                self.stop_typing();
+                self.store.lock().unwrap().forget(&keep);
+            }
             Request::HoldSession { name, .. } => {
                 self.store.lock().unwrap().hold_session(name);
             }
@@ -329,9 +340,20 @@ impl Helper {
         self.result(q, copied.then_some(Value::Bool(true)));
     }
 
+    /// Ends the auto-type in progress, if there is one: SIGKILL to its
+    /// group, with the list locked and the entry taken, as `Kill` does for a
+    /// run. The typing thread sees the entry gone and answers "stopped".
+    fn stop_typing(&self) {
+        let mut typing = self.typing_group.lock().unwrap();
+        if let Some(group) = typing.take() {
+            signal_group(group, rustix::process::Signal::KILL);
+        }
+    }
+
     /// Answers an auto-type once `wtype` has finished: `ok` only when it
     /// typed everything; otherwise the value says why not ("busy", "empty",
-    /// "unsafe", "missing" or "failed"). Neither value is in the reply.
+    /// "unsafe", "missing", "failed" or "stopped"). Neither value is in the
+    /// reply.
     fn auto_type(&self, q: u64, id: &str) {
         let refuse = |reason: &str| {
             self.send(json!({ "type": "result", "q": q, "ok": false, "value": reason }))
@@ -348,17 +370,26 @@ impl Helper {
             Ok(text) => text,
             Err(reason) => return refuse(reason),
         };
-        let Some(child) = spawn_wtype() else {
-            return refuse("missing");
+        let child = match spawn_wtype("wtype") {
+            Ok(child) => child,
+            Err(error) => return refuse(spawn_failure(&error)),
         };
+        // Listed on this thread, the one that handles `forget`: no stop can
+        // fall between the spawn and the entry.
+        *self.typing_group.lock().unwrap() = Some(child.id());
+        let group = Arc::clone(&self.typing_group);
         let out = self.out.clone();
         thread::spawn(move || {
-            let typed = feed_and_wait(child, text);
+            let typed = feed_and_wait(child, text, &group);
             drop(slot);
-            let message = if typed {
-                json!({ "type": "result", "q": q, "ok": true, "value": true })
-            } else {
-                json!({ "type": "result", "q": q, "ok": false, "value": "failed" })
+            let message = match typed {
+                Typed::All => json!({ "type": "result", "q": q, "ok": true, "value": true }),
+                Typed::Stopped => {
+                    json!({ "type": "result", "q": q, "ok": false, "value": "stopped" })
+                }
+                Typed::Failed => {
+                    json!({ "type": "result", "q": q, "ok": false, "value": "failed" })
+                }
             };
             let _ = out.send(message.to_string());
         });
@@ -744,11 +775,11 @@ fn auto_type_text(
     Ok(text)
 }
 
-/// `wtype` with the text to come on stdin. In its own process group, so a
-/// run's kill never reaches it, and with a UTF-8 locale: under C, `wtype`
-/// stops at the first character outside ASCII and still exits 0.
-fn spawn_wtype() -> Option<Child> {
-    Command::new("wtype")
+/// `program` (`wtype`) with the text to come on stdin. In its own process
+/// group, so a run's kill never reaches it, and with a UTF-8 locale: under C,
+/// `wtype` stops at the first character outside ASCII and still exits 0.
+fn spawn_wtype(program: &str) -> std::io::Result<Child> {
+    Command::new(program)
         .args(WTYPE_ARGS)
         .env("LC_ALL", "C.UTF-8")
         .process_group(0)
@@ -756,19 +787,54 @@ fn spawn_wtype() -> Option<Child> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok()
 }
 
-/// Writes the text, closes stdin and waits: true when `wtype` took it all and
-/// exited 0.
-fn feed_and_wait(mut child: Child, text: Zeroizing<String>) -> bool {
+/// Why `wtype` did not start: not installed ("missing"), or anything else
+/// ("failed": not executable, out of processes).
+fn spawn_failure(error: &std::io::Error) -> &'static str {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        "missing"
+    } else {
+        "failed"
+    }
+}
+
+/// How an auto-type ended.
+enum Typed {
+    /// `wtype` took the whole text and exited 0.
+    All,
+    /// `stop_typing` ended it.
+    Stopped,
+    Failed,
+}
+
+/// Writes the text, closes stdin and waits. The group's entry is taken before
+/// the child is reaped, as a run's is: once reaped, its id can be another
+/// process's, and a stop that found the entry would signal that one.
+fn feed_and_wait(mut child: Child, text: Zeroizing<String>, group: &Shared<Option<u32>>) -> Typed {
     let written = match child.stdin.take() {
         Some(mut pipe) => pipe.write_all(text.as_bytes()).is_ok(),
         None => false,
     };
     drop(text);
+    if let Some(pid) = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::waitid(
+            rustix::process::WaitId::Pid(pid),
+            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
+        );
+    }
+    let stopped = group.lock().unwrap().take().is_none();
     let status = child.wait();
-    written && status.map(|s| s.success()).unwrap_or(false)
+    if written && status.map(|s| s.success()).unwrap_or(false) {
+        Typed::All
+    } else if stopped {
+        Typed::Stopped
+    } else {
+        Typed::Failed
+    }
 }
 
 #[cfg(test)]
@@ -824,6 +890,17 @@ mod tests {
     fn wtype_gets_no_secret_in_its_arguments() {
         assert_eq!(WTYPE_ARGS.last(), Some(&"-"));
         assert_eq!(WTYPE_ARGS.iter().filter(|a| **a == "-").count(), 1);
+    }
+
+    #[test]
+    fn a_wtype_that_is_not_installed_is_missing_and_one_that_cannot_run_failed() {
+        let absent = spawn_wtype("qsbw-no-such-wtype-for-this-test").unwrap_err();
+        assert_eq!(spawn_failure(&absent), "missing");
+        // A directory is found but cannot be executed.
+        let dir = std::env::temp_dir();
+        let unrunnable = spawn_wtype(dir.to_str().unwrap()).unwrap_err();
+        assert_ne!(unrunnable.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(spawn_failure(&unrunnable), "failed");
     }
 
     const KEY: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH";

@@ -59,7 +59,70 @@
   dropped on lock, logout or account switch, and when the setting is turned
   off.
 
+### Security
+
+- **Auto-type no longer trusts a lock-screen reading it is not taking.** The
+  check that keeps auto-type off the lock screen read a value the panel only
+  polls while "Lock when the screen locks" is on (or the SSH agent is
+  serving), so with that setting off it was never current. The lock state is
+  now polled while a login is armed, a reading that is missing or stale
+  refuses the type (the arm is kept for the next press), and a vault lock,
+  logout, account switch or helper shutdown stops a type still in progress:
+  the helper kills `wtype` and answers that it was stopped, and the panel
+  does the same without the helper and ignores a late answer.
+- **The pinentry script drops the account text from its environment before
+  anything runs.** With the Omarchy-style prompt on, the bundled pinentry's
+  `--check` started before the description and error were cleared from the
+  environment, so that short-lived `node` carried the account email. They are
+  cleared first now, and the typed PIN is counted in characters whatever the
+  shell's locale.
+- **The envelope job's output is scrubbed on lock with the other secret
+  readers.** Without the vault helper, a quick-unlock verification leaves a
+  fresh `bw` session key in that process's buffer for one event-loop turn; it
+  is now on the list a lock wipes.
+- **The quick-unlock tool fails closed on a method without its key.** A
+  `--via` or `--auth` other than fingerprint with no key is a usage error
+  instead of falling through to the fingerprint method. Nothing reaches that
+  path today; it is now impossible by construction.
+- **Documented limits.** SECURITY.md now lists what the IPC target lets any
+  program running as you do (open, close, lock, sync, switch the active
+  account, see which accounts exist, trigger an armed auto-type; never unlock,
+  read an item or change a setting), and that the quick-unlock envelope keeps
+  one data key for its life: a method turned off or a password change re-wraps
+  the same key, so a program that could already open the envelope and kept the
+  key can open later copies until every method is turned off and set up
+  again. The helper's documentation notes that replies carrying a secret go
+  through serde_json, whose buffers are not zeroed. CI's dependency gate
+  installs cargo-deny 0.20.2 by recorded checksum instead of resolving the
+  latest release.
+
 ### Fixed
+
+- **Auto-type cannot stay "busy" without the helper.** The watchdog that
+  gave up on a silent helper now covers the shell's own `bw get password`
+  and `wtype` too, and kills a stuck one; its message says it timed out
+  rather than blaming the helper.
+- **A sync whose reload cannot run no longer stays "syncing" until a lock.**
+  When the item read is blocked (`bw` or `jq` missing since the dependency
+  probe), an automatic or manual sync now ends with the blocked message
+  instead of leaving the header on "Syncing..." and refusing every later sync.
+- **Locking while signed out shows no unlock form.** The `lock` IPC and a lost
+  helper run the cleanup without switching an unauthenticated account to the
+  locked screen, which asked for a master password `bw` would refuse.
+- **Pinentry returns to a view that still exists.** If the monitor the panel
+  was hidden from is unplugged during the prompt, the panel comes back on the
+  focused monitor instead of touching the destroyed view.
+- **The Omarchy-style pinentry cleans up after a SIGKILL.** A prompt directory
+  left under `$XDG_RUNTIME_DIR` by a kill it could not catch (its prompt.json
+  names the pid that made it) is removed by the next run; a very long run of
+  UTF-8 continuation bytes in an answer is split across `D` lines instead of
+  truncated; a `SETDESC` with a malformed `%` escape is stripped of control
+  characters like any other.
+- **Clicking between an item row's buttons opens the item.** The row's click
+  area passed a click anywhere over the button group down to the buttons, so
+  a click in the gaps did nothing; only a click on a button is passed down.
+- `scripts/repair-keyring.sh` says where it put the copy of the original
+  keyring and to delete it once the keyring works again.
 
 - **The buttons on a row in the item list do what they say**
   ([#119](https://github.com/Elevate08/qs-bitwarden-cli/pull/119)). The

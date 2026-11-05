@@ -1351,7 +1351,8 @@ function autoTypeFailureMessage(reason) {
     case "not-held": return "Not auto-typed: the vault helper does not hold this item yet; sync and arm it again"
     case "gone": return "Not auto-typed: the armed item is no longer in the vault"
     case "unread": return "Not auto-typed: could not read this password"
-    case "timeout": return "Auto-type got no answer from the vault helper"
+    case "timeout": return "Auto-type timed out: the vault helper, wtype or bw did not finish in time"
+    case "stopped": return "Auto-type was stopped by the vault locking"
     default: return "Auto-type failed (wtype could not type into the focused window)"
   }
 }
@@ -1890,13 +1891,14 @@ function pinentryExitCodes() {
 // 5, 83886179; any code whose low 16 bits are 99 is read as a cancel. Its
 // timeout, GPG_ERR_TIMEOUT (62), is one too: nobody answered.
 var PINENTRY_SCRIPT = [
-  "__bundled=\"${5:-}\"",
-  PINENTRY_RESOLVE,
-  // The description and error can name the account, so they come in the
-  // environment, not argv, and are gone before pinentry starts.
   "__title=\"$2\"; __prompt=\"$3\"; __min=\"${4:-0}\"",
+  // The description and error can name the account, so they come in the
+  // environment, not argv, and are gone before any child starts: the
+  // bundled pinentry's `--check` below as much as pinentry itself.
   "__desc=\"$" + PINENTRY_DESC_ENV + "\"; __err=\"$" + PINENTRY_ERR_ENV + "\"",
   "unset " + PINENTRY_DESC_ENV + " " + PINENTRY_ERR_ENV,
+  "__bundled=\"${5:-}\"",
+  PINENTRY_RESOLVE,
   "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
   // Assuan data: only %, CR and LF need encoding.
   "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
@@ -1923,8 +1925,10 @@ var PINENTRY_SCRIPT = [
   "    OK|OK\\ *)",
   "      printf 'BYE\\n' >&\"${PE[1]}\"",
   "      [ -n \"$__d\" ] || exit " + PINENTRY_EXIT.empty,
-  // The length of what was typed: each %XX stands for one character.
-  "      __t=\"${__d//[^%]/}\"; __n=$(( ${#__d} - 2 * ${#__t} ))",
+  // The length of what was typed: each %XX stands for one character, and
+  // the rest is counted in characters, not bytes, whatever the shell's
+  // locale (pinentry keeps its own: the subshell's setting goes no further).
+  "      __n=$(LC_ALL=C.UTF-8; __t=\"${__d//[^%]/}\"; echo $(( ${#__d} - 2 * ${#__t} )))",
   "      if [[ \"$__min\" =~ ^[0-9]+$ ]] && (( __n < __min )); then exit " + PINENTRY_EXIT.short + "; fi",
   "      printf '%s' \"$__d\"; exit 0 ;;",
   "    ERR|ERR\\ *)",

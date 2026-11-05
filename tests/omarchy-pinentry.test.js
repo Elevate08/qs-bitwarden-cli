@@ -3,9 +3,10 @@
 // side, against a stand-in for its Quickshell prompt (QSBW_PINENTRY_TEST_UI)
 // that answers as the test says. No window opens. Covers the handshake, the
 // encoding of what is typed in the `D` lines, cancel and timeout, SETERROR
-// on a retry, the private directory (its modes, and that it is gone after
-// every end, a kill included), the panel's own pinentry script and the vault
-// helper in front of it, and the automatic choice of program.
+// on a retry, the private directory (its modes, that it is gone after every
+// end, a kill included, and that one a SIGKILL left is swept by the next
+// run), the panel's own pinentry script and the vault helper in front of it,
+// and the automatic choice of program.
 //
 //   node tests/omarchy-pinentry.test.js
 
@@ -137,9 +138,27 @@ eq("an empty answer is OK with no data", r.lines.slice(4, 6).join("|"), "OK|OK c
   eq("and the lines join back to it", joined.replace(/%25/g, "%"), long)
   check("no escape is split across lines", data.every(l => !/%.?$/.test(l)), "")
 }
+{
+  // Continuation bytes never split a line; a run longer than any UTF-8
+  // sequence must still be split, not written past the line's buffer.
+  r = session(ask(), "raw:D " + "%80".repeat(2000))
+  const data = []
+  let at = 0
+  for (let end; (end = r.out.indexOf(0x0a, at)) !== -1; at = end + 1) {
+    const line = r.out.subarray(at, end)
+    if (line[0] === 0x44 && line[1] === 0x20) data.push(line)
+  }
+  check("a long run of continuation bytes is split under Assuan's limit",
+    data.length > 1 && data.every(l => l.length + 1 <= 1000), data.map(l => l.length).join(","))
+  const bytes = Buffer.concat(data.map(l => l.subarray(2)))
+  eq("and every byte survives", `${bytes.length}|${bytes.every(b => b === 0x80)}`, "2000|true")
+}
 r = session(ask(), "raw:D %zz")
 check("a malformed answer from the prompt is an error, not data",
   /^ERR 83886081 /.test(r.lines[4]) && !r.lines.some(l => l.startsWith("D ")), r.lines.join("|"))
+r = session(ask(["SETDESC a%zzb\u0001c\u007fd"]), "cancel")
+eq("a description with a malformed escape is shown as written, controls dropped",
+  (uiStarts()[0] || {}).ask && uiStarts()[0].ask.description, "a%zzbcd")
 
 // --- cancel, failure, timeout -----------------------------------------------------------
 
@@ -161,6 +180,41 @@ check("so is one that closes the socket without a word", /^ERR 83886081 /.test(r
   sleep(200)
   check("the prompt is closed when it times out", start.pid && !alive(start.pid), String(start.pid))
   eq("and its directory removed", leftovers().join(","), "")
+}
+
+// --- what a SIGKILL left behind ----------------------------------------------------------
+
+{
+  // Siblings as earlier runs would leave them: one whose pid is gone, one
+  // with no pid in its prompt.json, one whose pid is alive (this test), one
+  // with no prompt.json made long ago, one made just now (another run between
+  // mkdtemp and its write), and a symlink to a directory holding a dead pid,
+  // which must not be followed.
+  const dead = spawnSync("true").pid
+  const sibling = (name, pid) => {
+    const dir = path.join(runtime, "qsbw-pinentry-" + name)
+    fs.mkdirSync(dir, { mode: 0o700 })
+    if (pid !== undefined) fs.writeFileSync(path.join(dir, "prompt.json"), JSON.stringify({ description: "x", pid }), { mode: 0o600 })
+    return dir
+  }
+  sibling("DEAD01", dead)
+  sibling("NOPID1", null)
+  const live = sibling("LIVE01", process.pid)
+  const old = sibling("OLD001")
+  fs.utimesSync(old, new Date(Date.now() - 120000), new Date(Date.now() - 120000))
+  const fresh = sibling("NEW001")
+  const target = path.join(scratch, "elsewhere")
+  fs.mkdirSync(target, { mode: 0o700 })
+  fs.writeFileSync(path.join(target, "prompt.json"), JSON.stringify({ pid: dead }))
+  fs.symlinkSync(target, path.join(runtime, "qsbw-pinentry-LINK01"))
+  r = session(ask(), "cancel")
+  eq("the next run removes what a killed one left, keeps a live run's and never follows a link",
+    leftovers().sort().join(","), "qsbw-pinentry-LINK01,qsbw-pinentry-LIVE01,qsbw-pinentry-NEW001")
+  check("the link's target is untouched", fs.existsSync(path.join(target, "prompt.json")), "")
+  check("the prompt file names its pid", /^\d+$/.test(String((uiStarts()[0] || { ask: {} }).ask.pid)), JSON.stringify(uiStarts()[0]))
+  fs.rmSync(live, { recursive: true })
+  fs.rmSync(fresh, { recursive: true })
+  fs.unlinkSync(path.join(runtime, "qsbw-pinentry-LINK01"))
 }
 
 // --- SETERROR on a retry ----------------------------------------------------------------

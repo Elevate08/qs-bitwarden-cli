@@ -189,30 +189,23 @@ jobs:
       - name: Dependency and licence policy
         # Advisories, licences, registries and duplicates for a binary that
         # holds private keys. `--config` is explicit (cargo-deny would otherwise
-        # silently use defaults from agent/). Not version-pinned: it reads a
-        # live advisory database. The published static musl binary (not `cargo
-        # install`, which took ~2 min), resolved from the `releases/latest`
-        # redirect (the API is rate-limited per shared runner address) and
-        # verified against its published digest. `shell: bash` for pipefail
-        # (a container step defaults to dash).
+        # silently use defaults from agent/). The version is the one
+        # release.yml installs, and the published static musl binary (not
+        # `cargo install`, which took ~2 min) is checked against the digest
+        # recorded here, not one fetched beside it, so a changed release
+        # stops the job rather than running. The advisory database it reads
+        # is live. `shell: bash` for pipefail (a container step defaults to
+        # dash).
         shell: bash
         run: |
           set -euo pipefail
-          latest="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-            https://github.com/EmbarkStudios/cargo-deny/releases/latest)"
-          version="${latest##*/}"
-          # A broken redirect would yield a path, not a version: check the shape.
-          case "$version" in
-            [0-9]*.[0-9]*) : ;;
-            *) echo "::error::could not resolve the latest cargo-deny release (got '$version' from '$latest')"; exit 1 ;;
-          esac
+          version=0.20.2
+          digest=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
           base="https://github.com/EmbarkStudios/cargo-deny/releases/download/$version"
           archive="cargo-deny-$version-x86_64-unknown-linux-musl.tar.gz"
           curl -fsSL -o "$archive" "$base/$archive"
-          curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
-          # Upstream publishes the bare digest, so pair it with the filename
-          # before sha256sum will read it. A mismatch stops the job here.
-          echo "$(cat "$archive.sha256")  $archive" | sha256sum -c -
+          # A mismatch stops the job here.
+          echo "$digest  $archive" | sha256sum -c -
           tar -xzf "$archive" --strip-components=1 -C /usr/local/cargo/bin \
             "cargo-deny-$version-x86_64-unknown-linux-musl/cargo-deny"
           # Say which build actually did the checking, the way the QML step

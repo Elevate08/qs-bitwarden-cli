@@ -96,7 +96,8 @@ check("and asked again when it is turned on or off",
 // --- arming --------------------------------------------------------------------------
 
 const flowNames = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "autoTypeArmed", "disarmAutoType",
-  "copyPasswordAndArm", "requestAutoType", "onAutoTypeRead", "typeHere", "onAutoTypeExited", "finishAutoType"]
+  "stopAutoType", "copyPasswordAndArm", "requestAutoType", "onAutoTypeRead", "typeHere", "onAutoTypeExited",
+  "finishAutoType", "screenLockReadingFresh"]
 function makeVault() {
   const calls = []
   const timer = name => ({ running: false, restart() { this.running = true; calls.push(name + ".restart") },
@@ -104,7 +105,9 @@ function makeVault() {
   const v = {
     Model, calls, autoTypeEnabled: true, status: "unlocked", session: "held", vaultEpoch: 3, closeOnCopy: true,
     autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeBusy: false, autoTypeSeq: 0, autoTypePendingText: "",
-    opened: false, sshPrompt: null, pinentryActive: false, screenIsLocked: false, vaultHelperActive: true,
+    opened: false, sshPrompt: null, pinentryActive: false, vaultHelperActive: true,
+    // A screen-lock reading from just now.
+    screenIsLocked: false, screenLockCheckedAt: Date.now(), screenLockStateProc: { running: false },
     errorMessage: "", flashed: [], notices: [], queries: [], reads: [],
     repromptPending: false, repromptItemId: "", repromptItemName: "", repromptError: "", repromptBusy: false,
     repromptCallback: null, repromptEpoch: -1, repromptVerifiedId: "", repromptActionId: "", detailItem: null,
@@ -167,8 +170,9 @@ const item = (v, id) => v.items.find(i => i.id === id)
   v.copyPasswordAndArm(item(v, "a"))
   v.vaultEpoch = 4
   check("an arm belongs to the vault it was made in", !v.autoTypeArmed(), "")
-  check("a lock drops it with the vault's secrets", /disarmAutoType\(\)/.test(body("dropVaultSecrets"))
-    && /autoTypePendingText = ""/.test(body("dropVaultSecrets")), body("dropVaultSecrets"))
+  check("a lock drops it with the vault's secrets, and stops a type in flight",
+    /disarmAutoType\(\)\s*stopAutoType\(\)/.test(body("dropVaultSecrets"))
+      && /autoTypePendingText = ""/.test(body("stopAutoType")), body("dropVaultSecrets"))
   check("it lasts autoTypeArmMs, then is dropped",
     /id: autoTypeArmTimer\s*interval: Model\.autoTypeArmMs\(\)\s*repeat: false\s*onTriggered: root\.disarmAutoType\(\)/.test(service), "")
   check("turning auto-type off drops it", /onAutoTypeEnabledChanged: \{\s*if \(!autoTypeEnabled\) disarmAutoType\(\)/.test(service), "")
@@ -229,6 +233,102 @@ check("the IPC answers with requestAutoType()'s result",
   check("an answer after the watchdog gave up is ignored", w.flashed.indexOf("Auto-typed") === -1, w.flashed.join())
   check("the watchdog moves the sequence on before it reports",
     /root\.autoTypeSeq \+= 1\s*root\.finishAutoType\(false, "timeout"\)/.test(service), "")
+  check("its message covers the helper and the shell's own wtype and bw alike",
+    /timed out/.test(Model.autoTypeFailureMessage("timeout")), Model.autoTypeFailureMessage("timeout"))
+}
+{
+  // The helper interrupted the type (a `forget` from a lock, logout or switch,
+  // or its shutdown): the lock explains itself, so nothing else is said.
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "a"))
+  v.requestAutoType()
+  v.queries[0].cb(false, "stopped")
+  check("a type the helper stopped ends quietly: busy released, no error, no notification",
+    !v.autoTypeBusy && !v.autoTypeWatchdog.running && v.errorMessage === "" && v.notices.length === 0
+      && v.flashed.indexOf("Auto-typed") === -1, JSON.stringify({ error: v.errorMessage, notices: v.notices }))
+  check("though the message table knows the reason",
+    /stopped/.test(Model.autoTypeFailureMessage("stopped"))
+      && Model.autoTypeFailureMessage("stopped") !== Model.autoTypeFailureMessage("other"), Model.autoTypeFailureMessage("stopped"))
+}
+
+// --- the screen-lock reading ----------------------------------------------------------
+
+{
+  // Only the poll refreshes screenIsLocked, and with lockOnScreenLock off it
+  // used to run only for the SSH agent: a stale false let a type land on the
+  // lock screen. A reading older than a few polls, or none, counts as locked.
+  const stale = Date.now() - Model.screenLockPollMs() * 4 - 1
+  for (const [what, at] of [["stale", stale], ["absent", 0]]) {
+    const v = makeVault()
+    v.copyPasswordAndArm(item(v, "a"))
+    v.screenLockCheckedAt = at
+    check(`a ${what} reading is refused as the screen locked, and the arm kept for the next press`,
+      v.requestAutoType() === "screen-locked" && v.autoTypeArmed() && !v.autoTypeBusy && v.queries.length === 0,
+      JSON.stringify({ armed: v.autoTypeArmed(), busy: v.autoTypeBusy }))
+  }
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "a"))
+  v.screenLockCheckedAt = Date.now() - Model.screenLockPollMs() * 4 + 500
+  eq("a fresh reading of an unlocked screen types", v.requestAutoType(), "started")
+  const w = makeVault()
+  w.copyPasswordAndArm(item(w, "a"))
+  check("arming takes a reading at once, so the first press is not refused as stale",
+    w.screenLockStateProc.running === true, "")
+  check("the poll runs while an arm is live, whatever the lock-on-screen-lock setting",
+    /id: screenLockPoll[\s\S]{0,600}running: \(root\.lockOnScreenLock && root\.status === "unlocked"\) \|\| root\.sshAgentGateOpen\s*\|\| \(root\.autoTypeEnabled && root\.autoTypeItemId !== ""\)/.test(service), "")
+  check("the SSH agent's prompts and auto-type share the one freshness rule",
+    /screenLockReadingFresh\(\)/.test(body("sshAgentMayPrompt")) && /screenLockReadingFresh\(\)/.test(body("requestAutoType"))
+      && !/screenLockCheckedAt/.test(body("sshAgentMayPrompt")), body("sshAgentMayPrompt"))
+}
+
+// --- a lock during a type ---------------------------------------------------------------
+
+{
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "a"))
+  v.requestAutoType()
+  v.stopAutoType()
+  check("a lock ends a type the helper is doing: busy released, watchdog stopped",
+    !v.autoTypeBusy && !v.autoTypeWatchdog.running, "")
+  v.queries[0].cb(true, true)
+  check("and the helper's late answer is ignored", v.flashed.indexOf("Auto-typed") === -1 && v.errorMessage === "", v.flashed.join())
+  const w = makeVault()
+  w.vaultHelperActive = false
+  item(w, "a").password = "hunter2"
+  w.copyPasswordAndArm(item(w, "a"))
+  w.requestAutoType()
+  w.stopAutoType()
+  check("without the helper, wtype is killed and the text it was owed dropped",
+    w.autoTypeProc.running === false && w.autoTypePendingText === "" && !w.autoTypeBusy, JSON.stringify(w.autoTypeProc))
+  w.onAutoTypeExited(143)
+  check("the killed wtype's exit is not reported as a failure",
+    w.errorMessage === "" && w.notices.length === 0, w.errorMessage)
+}
+
+// --- the watchdog without the helper -----------------------------------------------------
+
+{
+  const v = makeVault()
+  v.vaultHelperActive = false
+  item(v, "a").password = "hunter2"
+  v.copyPasswordAndArm(item(v, "a"))
+  v.requestAutoType()
+  check("wtype from the shell runs under the watchdog too", v.calls.indexOf("watchdog.restart") >= 0, v.calls.join())
+  const w = makeVault()
+  w.vaultHelperActive = false
+  w.copyPasswordAndArm(item(w, "a"))
+  w.requestAutoType()
+  check("and so does the bw get password before it", w.calls.indexOf("watchdog.restart") >= 0 && w.autoTypeReadProc.running, w.calls.join())
+  check("the watchdog kills a stuck read or wtype rather than leaving the type busy",
+    /if \(autoTypeReadProc\.running\) autoTypeReadProc\.running = false\s*if \(autoTypeProc\.running\) autoTypeProc\.running = false\s*root\.autoTypeSeq \+= 1\s*root\.finishAutoType\(false, "timeout"\)/.test(service), "")
+  // As the watchdog does, then the killed processes exit.
+  w.autoTypeSeq += 1
+  w.finishAutoType(false, "timeout")
+  const reported = w.notices.length
+  w.onAutoTypeRead(137, "", "a")
+  w.onAutoTypeExited(143)
+  check("the exits of what it killed add no second report",
+    w.notices.length === reported && reported === 1 && !w.autoTypeBusy && w.calls.indexOf("scrub") >= 0, JSON.stringify(w.notices))
 }
 {
   const v = makeVault()
@@ -276,8 +376,11 @@ check("the IPC answers with requestAutoType()'s result",
   x.requestAutoType()
   x.onAutoTypeRead(0, "two\nlines", "a")
   check("a value wtype would press as keys is refused", !x.autoTypeProc.running && /control character/.test(x.errorMessage), x.errorMessage)
+  x.copyPasswordAndArm(item(x, "a"))
+  x.requestAutoType()
+  x.onAutoTypeRead(0, "hunter2", "a")
   x.onAutoTypeExited(127)
-  check("exit 127 is a missing wtype", /not installed/.test(x.errorMessage), x.errorMessage)
+  check("exit 127 is a missing wtype", x.autoTypeProc.running && /not installed/.test(x.errorMessage), x.errorMessage)
 }
 check("the read's collector is scrubbed on lock with the other secret readers",
   /copyPasswordProc, autoTypeReadProc,/.test(body("secretProcesses")), body("secretProcesses"))
