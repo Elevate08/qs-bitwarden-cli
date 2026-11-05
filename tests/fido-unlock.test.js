@@ -274,6 +274,14 @@ check("and after every answer",
 check("the password it prints stays in the vault helper",
   /assertProc\.capture = "secret:" \+ vault\.newHeldName\(\)/.test(controllerSrc)
     && /VaultProcess \{\s*id: assertProc/.test(controllerSrc), "")
+// The harness cannot see a process environment, so this pins the source: the
+// tool's open/add exit 2 without QSBW_ACCOUNT_ID/QSBW_SERVER, and this run is
+// outside the envelope queue that sets them for the others.
+check("the assert run gets the active account's environment",
+  /assertProc\.environment = Model\.envelopeAccountEnv\(account\)\s*\n\s*assertProc\.command = /.test(controllerSrc)
+    && /var account = vault\.envelopeAccount\(\)[\s\S]{0,400}?assertProc\.environment/.test(controllerSrc)
+    && Model.envelopeAccountEnv({ id: "acct-1", server: "https://v.example" }).QSBW_ACCOUNT_ID === "acct-1"
+    && Model.envelopeAccountEnv({ id: "acct-1", server: "https://v.example" }).QSBW_SERVER === "https://v.example", "")
 check("its command is set fresh before every run, never left to the scrub's leftover",
   /assertProc\.command = target\.mode === "envelope"[\s\S]{0,400}?assertProc\.running = true/.test(controllerSrc)
     && !/if \(!assertProc\.running\) assertProc\.running = true/.test(controllerSrc), "")

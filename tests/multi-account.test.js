@@ -181,6 +181,8 @@ exit 0`)
     const r = spawnSync(cmd[0], cmd.slice(1), { env: Object.assign({}, baseEnv, extra || {}), encoding: "utf8", timeout: 120000 })
     return { code: r.status, out: r.stdout, err: r.stderr }
   }
+  // The tool reads the account from the environment (Model.envelopeAccountEnv()).
+  const runAs = (acct, cmd, extra) => run(cmd, Object.assign({}, Model.envelopeAccountEnv(acct), extra || {}))
   const entries = () => fs.readdirSync(store).sort()
   const SECRET = Model.keyringSecretEnvVar()
   const PIN = Model.pinEnvVar()
@@ -190,14 +192,14 @@ exit 0`)
   const PW_A = "password of account A"
   const PW_B = "password of 'account' B $x"
 
-  eq("account A's envelope is created", run(Model.unlockEnvelopeCreateCommand(tool, A), { [SECRET]: PW_A }).code, 0)
-  eq("account B's envelope is created beside it", run(Model.unlockEnvelopeCreateCommand(tool, B), { [SECRET]: PW_B }).code, 0)
+  eq("account A's envelope is created", runAs(A, Model.unlockEnvelopeCreateCommand(tool, A), { [SECRET]: PW_A }).code, 0)
+  eq("account B's envelope is created beside it", runAs(B, Model.unlockEnvelopeCreateCommand(tool, B), { [SECRET]: PW_B }).code, 0)
   eq("both are in the keyring under their own names", entries().join(","), "unlock_envelope,unlock_envelope@" + SLOT_B)
-  eq("A gets a PIN", run(Model.unlockEnvelopeUpdateCommand(tool, A, { kind: "add-pin" }), { [SECRET]: PW_A, [PIN]: "111111" }).code, 0)
-  eq("B gets another", run(Model.unlockEnvelopeUpdateCommand(tool, B, { kind: "add-pin" }), { [SECRET]: PW_B, [PIN]: "222222" }).code, 0)
-  eq("B gets fingerprint too", run(Model.unlockEnvelopeUpdateCommand(tool, B, { kind: "add-fingerprint" }), { [SECRET]: PW_B }).code, 0)
+  eq("A gets a PIN", runAs(A, Model.unlockEnvelopeUpdateCommand(tool, A, { kind: "add-pin" }), { [SECRET]: PW_A, [PIN]: "111111" }).code, 0)
+  eq("B gets another", runAs(B, Model.unlockEnvelopeUpdateCommand(tool, B, { kind: "add-pin" }), { [SECRET]: PW_B, [PIN]: "222222" }).code, 0)
+  eq("B gets fingerprint too", runAs(B, Model.unlockEnvelopeUpdateCommand(tool, B, { kind: "add-fingerprint" }), { [SECRET]: PW_B }).code, 0)
 
-  const open = (acct, via, env) => run(Model.unlockEnvelopeOpenCommand(tool, acct, via), env)
+  const open = (acct, via, env) => runAs(acct, Model.unlockEnvelopeOpenCommand(tool, acct, via), env)
   eq("A's PIN opens A", open(A, { kind: "pin" }, { [PIN]: "111111" }).out, PW_A)
   eq("B's PIN opens B", open(B, { kind: "pin" }, { [PIN]: "222222" }).out, PW_B)
   eq("A's PIN does not open B", open(B, { kind: "pin" }, { [PIN]: "111111" }).code, 3)
@@ -237,10 +239,10 @@ exit 0`)
   eq("a FIDO2 purge with no key wraps succeeds", purge("fido").code, 0)
   check("an unknown method is refused", Model.quickUnlockPurgeCommand(tool, [SLOT_A], "password")[2] === "exit 2", "")
   // Put A's PIN back for the checks below.
-  eq("A's PIN is set again", run(Model.unlockEnvelopeUpdateCommand(tool, A, { kind: "add-pin" }), { [SECRET]: PW_A, [PIN]: "111111" }).code, 0)
+  eq("A's PIN is set again", runAs(A, Model.unlockEnvelopeUpdateCommand(tool, A, { kind: "add-pin" }), { [SECRET]: PW_A, [PIN]: "111111" }).code, 0)
 
   // The re-prompt check prints nothing and answers by exit status.
-  const checkPw = (acct, pw) => run(Model.unlockEnvelopeCheckCommand(tool, acct), { [SECRET]: pw })
+  const checkPw = (acct, pw) => runAs(acct, Model.unlockEnvelopeCheckCommand(tool, acct), { [SECRET]: pw })
   const right = checkPw(A, PW_A)
   eq("the right master password checks out", right.code, 0)
   eq("and nothing is printed", right.out, "")
@@ -295,7 +297,7 @@ exit 0`)
   check("and nothing of it is deleted", fs.existsSync(own) && fs.existsSync(regFile), "")
 
   // Retiring a slot (replaced by a new sign-in) also clears its keyring.
-  run(Model.unlockEnvelopeCreateCommand(tool, B), { [SECRET]: PW_B })
+  runAs(B, Model.unlockEnvelopeCreateCommand(tool, B), { [SECRET]: PW_B })
   eq("retiring B succeeds", run(Model.accountSlotRetireCommand(SLOT_B)).code, 0)
   eq("its envelope went with it, A's did not", entries().join(","), "session,unlock_envelope")
 } finally {

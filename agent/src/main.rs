@@ -174,7 +174,9 @@ struct HeldSign {
 struct HeldIdentities {
     request_id: RequestId,
     deadline_ms: u64,
-    waiting: Vec<oneshot::Sender<Vec<u8>>>,
+    /// Each waiting reply with whether its connection is forwarded, which
+    /// decides whether the answer carries item names.
+    waiting: Vec<(oneshot::Sender<Vec<u8>>, bool)>,
 }
 
 /// How long a held request waits for an unlock (same as approvals).
@@ -495,7 +497,7 @@ async fn run() -> Result<(), ()> {
                     emit(&output_tx, Output::RequestCancelled { v: 1, request_id: id, reason: "withdrawn" })?;
                 }
                 if held_identities.as_ref().is_some_and(|w| {
-                    w.deadline_ms <= now || w.waiting.iter().all(|reply| reply.is_closed())
+                    w.deadline_ms <= now || w.waiting.iter().all(|(reply, _)| reply.is_closed())
                 }) {
                     release_held_identities(&mut held_identities, &store, &output_tx, "withdrawn")?;
                 }
@@ -545,7 +547,7 @@ fn handle_client(
                 && approvals.expects_uid(event.peer.uid)
             {
                 if let Some(waiters) = held_identities.as_mut() {
-                    waiters.waiting.push(event.reply);
+                    waiters.waiting.push((event.reply, event.forwarded));
                     return Ok(());
                 }
                 if let Ok(id) = approvals.reserve_request_id() {
@@ -571,17 +573,12 @@ fn handle_client(
                     *held_identities = Some(HeldIdentities {
                         request_id: id,
                         deadline_ms: elapsed_ms(started).saturating_add(HELD_LIFETIME_MS),
-                        waiting: vec![event.reply],
+                        waiting: vec![(event.reply, event.forwarded)],
                     });
                     return Ok(());
                 }
             }
-            let identities: Vec<_> = store
-                .public_identities()
-                .iter()
-                .map(|key| (key.public_blob(), key.name.as_str()))
-                .collect();
-            let _ = event.reply.send(protocol::identities_response(&identities));
+            let _ = event.reply.send(identities_for(store, event.forwarded));
         }
         AgentRequest::Sign {
             public_blob,
@@ -848,6 +845,21 @@ fn settle_granted(
     Ok(())
 }
 
+/// The identities answer for one connection. A forwarded connection carries a
+/// remote host's requests, so any process there could read vault item names
+/// with `ssh-add -l`; it gets empty comments instead.
+fn identities_for(store: &KeyStore, forwarded: bool) -> Vec<u8> {
+    let identities: Vec<_> = store
+        .public_identities()
+        .iter()
+        .map(|key| {
+            let comment = if forwarded { "" } else { key.name.as_str() };
+            (key.public_blob(), comment)
+        })
+        .collect();
+    protocol::identities_response(&identities)
+}
+
 /// Answer identity listings held for an unlock: the real cache on success,
 /// otherwise the empty list a locked companion returns anyway.
 fn release_held_identities(
@@ -859,14 +871,11 @@ fn release_held_identities(
     let Some(waiters) = held_identities.take() else {
         return Ok(());
     };
-    let identities: Vec<_> = store
-        .public_identities()
-        .iter()
-        .map(|key| (key.public_blob(), key.name.as_str()))
-        .collect();
-    let response = protocol::identities_response(&identities);
-    for reply in waiters.waiting {
-        let _ = reply.send(response.clone());
+    // Waiters differ only in forwarding, so build each answer at most once.
+    let local = identities_for(store, false);
+    let forwarded = identities_for(store, true);
+    for (reply, is_forwarded) in waiters.waiting {
+        let _ = reply.send(if is_forwarded { &forwarded } else { &local }.clone());
     }
     emit(
         output,

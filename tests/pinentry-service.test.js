@@ -37,7 +37,7 @@ function makeVault(extra) {
     repromptPending: false, repromptBusy: false, repromptError: "", repromptItemId: "", repromptEpoch: 1,
     vaultEpoch: 1, repromptCallback: null, repromptVerifiedId: "", repromptActionId: "", detailItem: null,
     opened: true, seq: 0, forgotten: [], unlocks: [], pinSubmits: [], shows: 0, verifies: [],
-    proc: { running: false, runId: 0, command: null, capture: "", starts: [] },
+    proc: { running: false, runId: 0, command: null, environment: {}, capture: "", starts: [] },
     newHeldName() { this.seq += 1; return "pw" + this.seq },
     forgetVaultSecret(name) { this.forgotten.push(name) },
     restoreScreenFocus() { this.restored += 1 },
@@ -73,15 +73,18 @@ function finish(v, code, held, stderr) {
   // `proc.running = true` is the start: record the command it was given.
   Object.defineProperty(v.proc, "running", {
     configurable: true, get() { return this._r === true },
-    set(value) { if (value) this.starts.push({ command: this.command, capture: this.capture }); this._r = value }
+    set(value) { if (value) this.starts.push({ command: this.command, environment: this.environment, capture: this.capture }); this._r = value }
   })
   v.unlockWithPinentry()
   const run = v.proc.starts[0]
   check("an unlock starts a pinentry run that the helper holds", run && /^pinentry:pw\d+$/.test(run.capture), JSON.stringify(run))
   check("the run is the pinentry script, asking for the account's master password",
     run && run.command[1] === Model.pinentryCommand("pinentry", {})[1] && run.command[4] === "pinentry"
-      && /me@example\.com/.test(run.command[6]) && run.command[7] === "Master password:" && run.command[8] === "",
+      && /me@example\.com/.test(run.environment.QSBW_PE_DESC) && run.command[6] === "Master password:"
+      && run.environment.QSBW_PE_ERR === "" && run.command[7] === "0",
     JSON.stringify(run && run.command.slice(3)))
+  check("the account is not in the argv, only in the environment",
+    !JSON.stringify(run.command).includes("me@example.com"), JSON.stringify(run.command.slice(3)))
   check("the panel is hidden meanwhile and the unlock is not yet started",
     v.pinentryActive && !v.opened && v.unlocks.length === 0, "")
   const name = run.capture.slice("pinentry:".length)
@@ -100,7 +103,7 @@ function finish(v, code, held, stderr) {
   v.onUnlockOutput("", "Invalid master password.", 1)
   check("a refused password is forgotten", v.forgotten.includes(name) && v.pendingUnlockPassword === "", v.forgotten.join())
   check("and pinentry asks again with an error, in a new run",
-    v.proc.starts.length === 1 && v.proc.starts[0].command[8] === "That is not your master password."
+    v.proc.starts.length === 1 && v.proc.starts[0].environment.QSBW_PE_ERR === "That is not your master password."
       && v.proc.starts[0].capture !== run.capture, JSON.stringify(v.proc.starts))
   check("no error is shown in the panel for it", v.errorMessage === "" || /not logged in/.test(v.errorMessage), v.errorMessage)
 
@@ -207,7 +210,7 @@ function finish(v, code, held, stderr) {
   g.onUnlockOutput("", "ERROR bitwarden_core::x: noise\nThe vault is broken.", 1)
   eq("another failure is shown without the log lines", g.errorMessage, "The vault is broken.")
   check("bw 2026.2's wrong password reopens pinentry with the reason",
-    w.pinentryActive && /That is not your master password\./.test(w.proc.command[8]), JSON.stringify(w.proc.command && w.proc.command[8]))
+    w.pinentryActive && /That is not your master password\./.test(w.proc.environment.QSBW_PE_ERR), JSON.stringify(w.proc.command && w.proc.environment.QSBW_PE_ERR))
 }
 
 // --- a run in the way, and being cancelled --------------------------------------------------
@@ -275,7 +278,7 @@ function finish(v, code, held, stderr) {
   Object.defineProperty(v.proc, "running", { configurable: true, get() { return this._r === true }, set(x) { this._r = x } })
   v.unlockPinWithPinentry()
   check("the PIN is asked for by pinentry, with the PIN prompt",
-    v.proc.command[7] === "PIN:" && /PIN/.test(v.proc.command[6]) && /^pinentry:pw\d+$/.test(v.proc.capture), JSON.stringify(v.proc.command.slice(5)))
+    v.proc.command[6] === "PIN:" && /PIN/.test(v.proc.environment.QSBW_PE_DESC) && /^pinentry:pw\d+$/.test(v.proc.capture), JSON.stringify(v.proc.command.slice(5)))
   const name = v.proc.capture.slice("pinentry:".length)
   finish(v, 0, true)
   eq("the PIN's name goes to the PIN unlock", v.pinSubmits.join(), Model.heldSecretRef(name))
@@ -286,21 +289,21 @@ function finish(v, code, held, stderr) {
   // and no attempt counted.
   const s = makeVault({ pinAttempts: 0, wrong: 0, countWrongPin() { this.wrong += 1 } })
   Object.defineProperty(s.proc, "running", { configurable: true, get() { return this._r === true }, set(x) {
-    if (x) s.proc.starts.push({ command: s.proc.command, capture: s.proc.capture }); this._r = x } })
+    if (x) s.proc.starts.push({ command: s.proc.command, environment: s.proc.environment, capture: s.proc.capture }); this._r = x } })
   s.unlockPinWithPinentry()
-  check("the PIN run carries the unlock minimum", s.proc.starts[0].command[9] === String(Model.pinUnlockMinLength()),
+  check("the PIN run carries the unlock minimum", s.proc.starts[0].command[7] === String(Model.pinUnlockMinLength()),
     JSON.stringify(s.proc.starts[0].command.slice(5)))
   finish(s, Model.pinentryExitCodes().short, false)
   check("a short PIN is not submitted and not counted",
     s.pinSubmits.length === 0 && s.wrong === 0 && s.pinAttempts === 0, "")
   check("it asks again with the field's message",
     s.proc.starts.length === 2 && s.pinUnlockError === "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
-      && s.proc.starts[1].command[8] === s.pinUnlockError, JSON.stringify(s.proc.starts[1]))
+      && s.proc.starts[1].environment.QSBW_PE_ERR === s.pinUnlockError, JSON.stringify(s.proc.starts[1]))
   check("a master password run has no minimum", makeVault().proc && (() => {
     const m = makeVault()
     Object.defineProperty(m.proc, "running", { configurable: true, get() { return false }, set() {} })
     m.unlockWithPinentry()
-    return m.proc.command[9] === "0"
+    return m.proc.command[7] === "0"
   })(), "")
 
   // The unlock was not taken up: nothing else would forget it.
@@ -325,13 +328,13 @@ function finish(v, code, held, stderr) {
   v.submitRepromptWithPinentry()
   const first = v.proc.capture.slice("pinentry:".length)
   check("the confirmation runs pinentry for the master password",
-    /^pinentry:pw\d+$/.test(v.proc.capture) && /master password/i.test(v.proc.command[6]) && v.repromptBusy, JSON.stringify(v.proc.command.slice(5)))
+    /^pinentry:pw\d+$/.test(v.proc.capture) && /master password/i.test(v.proc.environment.QSBW_PE_DESC) && v.repromptBusy, JSON.stringify(v.proc.command.slice(5)))
   finish(v, 0, true)
   eq("the held name is what is verified", v.verifies.join(), Model.heldSecretRef(first))
   v.proc.capture = ""
   v.verifyDone(false)
   check("a wrong password is forgotten and pinentry asks again with the reason",
-    v.forgotten.includes(first) && /^pinentry:/.test(v.proc.capture) && v.proc.command[8] === "That is not your master password."
+    v.forgotten.includes(first) && /^pinentry:/.test(v.proc.capture) && v.proc.environment.QSBW_PE_ERR === "That is not your master password."
       && !acted, v.proc.capture)
   const second = v.proc.capture.slice("pinentry:".length)
   finish(v, 0, true)
@@ -359,7 +362,8 @@ check("no pinentry flow writes what was typed into the shell's fields",
   !/\b(masterPassword|pinEntry|loginPassword|pinSetupMaster|fpSetupMaster)\s*=[^=]/.test(flows), flows)
 check("the run asks the helper to hold the answer",
   /pinentryProc\.capture = "pinentry:" \+ name/.test(body("requestPinentry"))
-    && /Model\.pinentryCommand\(pinentryProgramName/.test(body("requestPinentry")), body("requestPinentry"))
+    && /Model\.pinentryCommand\(pinentryProgramName/.test(body("requestPinentry"))
+    && /pinentryProc\.environment = Model\.pinentryEnvironment\(/.test(body("requestPinentry")), body("requestPinentry"))
 check("the process is a VaultProcess with no session and no output collector",
   /VaultProcess \{\s*id: pinentryProc\s*vault: root\s*session: false\s*stderr: VaultCollector[^\n]*\n\s*onExited/.test(service)
     && !/id: pinentryProc[\s\S]{0,200}stdout:/.test(service), "")

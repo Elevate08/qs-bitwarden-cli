@@ -28,7 +28,8 @@ function run(answer, opts = {}, program = fake) {
   const argv = Model.pinentryCommand(program, Object.assign({ title: "Bitwarden", prompt: "Master password:" }, opts))
   const r = spawnSync(argv[0], argv.slice(1), {
     encoding: "utf8", timeout: 20000,
-    env: Object.assign({}, process.env, { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log })
+    // The description and error travel in the environment, as the panel runs it.
+    env: Object.assign({}, process.env, Model.pinentryEnvironment(opts), { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log })
   })
   return { code: r.status, out: r.stdout, err: r.stderr, log: fs.readFileSync(log, "utf8").split("\n").filter(Boolean) }
 }
@@ -96,8 +97,15 @@ check("a line break in the description cannot start another command",
     && r.log.filter(l => l.startsWith("SETERROR")).length === 1, r.log.join("|"))
 check("an error is encoded and sent before GETPIN",
   r.log.includes("SETERROR bad %250A%0APIN") && r.log.indexOf("GETPIN") > r.log.findIndex(l => l.startsWith("SETERROR")), r.log.join("|"))
-check("the script takes its text from arguments, not from its own source",
+check("the script takes its text from its input, not from its own source",
   !/forged|100%/.test(Model.pinentryCommand(fake, { description: "forged 100%" })[2]), "")
+{
+  const opts = { description: Model.pinentryDescription("unlock", "you@example.com"), error: "Wrong, you@example.com" }
+  const text = JSON.stringify(Model.pinentryCommand(fake, Object.assign({ title: "Bitwarden", prompt: "p" }, opts)))
+  check("the account and error text are in no argv", !/you@example|Unlock Bitwarden|Wrong/.test(text), text)
+  eq("they are in the environment instead", JSON.stringify(Model.pinentryEnvironment(opts)),
+    JSON.stringify({ QSBW_PE_DESC: opts.description, QSBW_PE_ERR: opts.error }))
+}
 
 // --- the descriptions ----------------------------------------------------------
 

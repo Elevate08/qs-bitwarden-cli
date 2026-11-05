@@ -638,6 +638,88 @@ fn concurrent_identity_listings_coalesce_into_one_unlock() {
     agent.shutdown();
 }
 
+/// A session-bind frame as OpenSSH sends it; the agent does not verify the
+/// signature, so placeholders do.
+fn session_bind_frame(forwarding: u8) -> Vec<u8> {
+    let mut payload = vec![27_u8];
+    for field in [
+        b"session-bind@openssh.com".as_slice(),
+        b"host key blob",
+        b"session identifier",
+        b"host signature",
+    ] {
+        field.encode(&mut payload).unwrap();
+    }
+    payload.push(forwarding);
+    let mut frame = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+    frame.extend(payload);
+    frame
+}
+
+/// The comments of an identities answer, in order.
+fn identity_comments(frame: &[u8]) -> Vec<String> {
+    assert_eq!(frame[4], 12, "expected an identities answer");
+    let mut body = &frame[5..];
+    let count = u32::decode(&mut body).unwrap();
+    (0..count)
+        .map(|_| {
+            Vec::<u8>::decode(&mut body).unwrap();
+            String::from_utf8(Vec::<u8>::decode(&mut body).unwrap()).unwrap()
+        })
+        .collect()
+}
+
+/// `ssh-add -l` on a forwarded connection must not read vault item names.
+#[test]
+fn a_forwarded_connection_lists_keys_without_their_item_names() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+    let list = |bind: Option<u8>| {
+        let mut stream = UnixStream::connect(&agent.socket).unwrap();
+        if let Some(forwarding) = bind {
+            stream.write_all(&session_bind_frame(forwarding)).unwrap();
+            assert_eq!(read_agent_frame(&mut stream)[4], 6, "bind accepted");
+        }
+        stream.write_all(&[0_u8, 0, 0, 1, 11]).unwrap();
+        identity_comments(&read_agent_frame(&mut stream))
+    };
+    assert_eq!(list(None), ["Disposable test key 0"]);
+    assert_eq!(list(Some(0)), ["Disposable test key 0"]);
+    assert_eq!(list(Some(1)), [""]);
+    agent.shutdown();
+}
+
+/// Held listings are answered per waiter: the forwarded one gets no names even
+/// when a local one shares its unlock prompt.
+#[test]
+fn held_listings_answer_each_waiter_by_its_own_forwarding() {
+    let mut agent = TestAgent::start();
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    agent.send("{\"v\":1,\"type\":\"options\",\"unlockOnDemand\":true}");
+    agent.drain_control();
+
+    let mut clients = Vec::new();
+    for forwarding in [0_u8, 1] {
+        let socket = agent.socket.clone();
+        clients.push(std::thread::spawn(move || {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream.write_all(&session_bind_frame(forwarding)).unwrap();
+            read_agent_frame(&mut stream);
+            stream.write_all(&[0_u8, 0, 0, 1, 11]).unwrap();
+            identity_comments(&read_agent_frame(&mut stream))
+        }));
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
+
+    assert_eq!(agent.read()["type"], "unlock_required");
+    agent.load_key(&key, 1, "0123456789abcdef0123456789abcdef");
+    let answers: Vec<_> = clients.into_iter().map(|c| c.join().unwrap()).collect();
+    assert_eq!(answers[0], ["Disposable test key 0"]);
+    assert_eq!(answers[1], [""]);
+    agent.shutdown();
+}
+
 /// More keys than the old 16-slot channel must still finish loading: the
 /// try_send'd messages cannot drain until the emit loop returns.
 #[test]

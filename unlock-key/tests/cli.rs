@@ -7,11 +7,10 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_qs-bitwarden-unlock-key");
-const ACCOUNT: [&str; 4] = [
-    "--account-id",
-    "user-1",
-    "--server",
-    "https://vault.bitwarden.com",
+/// The account reaches the tool in the environment, never as arguments.
+const ACCOUNT_ENV: [(&str, &str); 2] = [
+    ("QSBW_ACCOUNT_ID", "user-1"),
+    ("QSBW_SERVER", "https://vault.bitwarden.com"),
 ];
 const MASTER_KDF: [&str; 8] = [
     "--salt",
@@ -52,6 +51,7 @@ fn run(args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> Output {
     let mut child = Command::new(BIN)
         .args(args)
         .env_clear()
+        .envs(ACCOUNT_ENV)
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -91,7 +91,7 @@ fn refs(args: &[String]) -> Vec<&str> {
 }
 
 fn created() -> Vec<u8> {
-    let args = with(&[&["create"], &ACCOUNT, &MASTER_KDF]);
+    let args = with(&[&["create"], &MASTER_KDF]);
     ok(
         &refs(&args),
         &[
@@ -105,12 +105,7 @@ fn created() -> Vec<u8> {
 fn with_all_methods() -> Vec<u8> {
     let master = hex(1);
     let envelope = created();
-    let args = with(&[
-        &["add"],
-        &ACCOUNT,
-        &["--auth", "master", "--method", "pin"],
-        &PIN_KDF,
-    ]);
+    let args = with(&[&["add"], &["--auth", "master", "--method", "pin"], &PIN_KDF]);
     let envelope = ok(
         &refs(&args),
         &[
@@ -119,15 +114,10 @@ fn with_all_methods() -> Vec<u8> {
         ],
         &envelope,
     );
-    let args = with(&[
-        &["add"],
-        &ACCOUNT,
-        &["--auth", "master", "--method", "fingerprint"],
-    ]);
+    let args = with(&[&["add"], &["--auth", "master", "--method", "fingerprint"]]);
     let envelope = ok(&refs(&args), &[("QSBW_UNLOCK_KEY", &master)], &envelope);
     let args = with(&[
         &["add"],
-        &ACCOUNT,
         &["--auth", "master", "--method", "fido"],
         &[
             "--cred",
@@ -149,7 +139,7 @@ fn with_all_methods() -> Vec<u8> {
 }
 
 fn open(envelope: &[u8], via: &[&str], key: Option<&str>) -> Output {
-    let args = with(&[&["open"], &ACCOUNT, via]);
+    let args = with(&[&["open"], via]);
     let env: Vec<(&str, &str)> = key.map(|k| ("QSBW_UNLOCK_KEY", k)).into_iter().collect();
     run(&refs(&args), &env, envelope)
 }
@@ -237,7 +227,6 @@ fn exit_codes_say_what_went_wrong() {
     // 5: outside the limits.
     let weak = with(&[
         &["create"],
-        &ACCOUNT,
         &[
             "--salt",
             "bWFzdGVyLXNhbHQtMDAwMDA=",
@@ -261,16 +250,13 @@ fn exit_codes_say_what_went_wrong() {
         5
     );
     // 6: another account.
-    let other = [
-        "open",
-        "--account-id",
-        "user-2",
-        "--server",
-        "https://vault.bitwarden.com",
-        "--via",
-        "master",
+    let other = ["open", "--via", "master"];
+    let key = hex(1);
+    let env = [
+        ("QSBW_UNLOCK_KEY", key.as_str()),
+        ("QSBW_ACCOUNT_ID", "user-2"),
     ];
-    assert_eq!(code(&other, &[("QSBW_UNLOCK_KEY", &hex(1))], &envelope), 6);
+    assert_eq!(code(&other, &env, &envelope), 6);
     // 7: a method that is not there.
     let bare = created();
     assert_eq!(
@@ -286,7 +272,17 @@ fn usage_errors_are_refused_before_anything_runs() {
     for args in [
         vec!["frobnicate"],
         vec!["inspect", "--unexpected", "1"],
-        vec!["open", "--account-id", "user-1", "--account-id", "user-1"],
+        vec!["open", "--via", "master", "--via", "master"],
+        // The account is not an option either: argv is world-readable.
+        vec![
+            "open",
+            "--account-id",
+            "user-1",
+            "--server",
+            "x",
+            "--via",
+            "master",
+        ],
         vec!["open", "--via"],
         vec!["remove", "--method", "master"],
         // A secret offered as an argument is not an option this binary has.
@@ -295,12 +291,38 @@ fn usage_errors_are_refused_before_anything_runs() {
         assert_eq!(code(&args, &[], &envelope), 2, "{args:?}");
     }
     // A required secret missing from the environment.
-    let args = with(&[&["create"], &ACCOUNT, &MASTER_KDF]);
+    let args = with(&[&["create"], &MASTER_KDF]);
     assert_eq!(
         code(&refs(&args), &[("QSBW_UNLOCK_NEW_KEY", &hex(1))], b""),
         2
     );
     assert_eq!(code(&[], &[], b""), 2);
+}
+
+#[test]
+fn the_account_is_required_in_the_environment() {
+    let envelope = created();
+    let key = hex(1);
+    for missing in ["QSBW_ACCOUNT_ID", "QSBW_SERVER"] {
+        let env: Vec<(&str, &str)> = ACCOUNT_ENV
+            .iter()
+            .copied()
+            .filter(|(name, _)| *name != missing)
+            .chain([("QSBW_UNLOCK_KEY", key.as_str())])
+            .collect();
+        let mut child = Command::new(BIN)
+            .args(["open", "--via", "master"])
+            .env_clear()
+            .envs(env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _ = child.stdin.take().unwrap().write_all(&envelope);
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{missing} missing");
+    }
 }
 
 #[test]
@@ -312,7 +334,7 @@ fn a_changed_password_rotates_without_losing_a_method() {
     assert_eq!(summary["stale"], true);
 
     // The PIN reached the DEK; the new password came from the user.
-    let args = with(&[&["rotate"], &ACCOUNT, &["--auth", "pin"], &MASTER_KDF]);
+    let args = with(&[&["rotate"], &["--auth", "pin"], &MASTER_KDF]);
     let rotated = ok(
         &refs(&args),
         &[
@@ -367,11 +389,7 @@ fn removing_every_method_keeps_the_master_wrap() {
 #[test]
 fn a_wrong_password_cannot_authorize_a_new_method() {
     let envelope = created();
-    let args = with(&[
-        &["add"],
-        &ACCOUNT,
-        &["--auth", "master", "--method", "fingerprint"],
-    ]);
+    let args = with(&[&["add"], &["--auth", "master", "--method", "fingerprint"]]);
     let output = run(&refs(&args), &[("QSBW_UNLOCK_KEY", &hex(9))], &envelope);
     assert_eq!(output.status.code(), Some(3));
     assert!(
@@ -386,6 +404,10 @@ fn version_and_self_test_answer_without_input() {
     assert!(String::from_utf8(version)
         .unwrap()
         .starts_with("qs-bitwarden-unlock-key "));
+    // The panel refuses a tool that does not report this contract version.
+    assert!(String::from_utf8(ok(&["--version"], &[], b""))
+        .unwrap()
+        .contains("(cli v2)"));
     let output = run(&["--self-test"], &[], b"");
     assert_eq!(
         output.status.code(),
@@ -403,7 +425,6 @@ fn a_pin_wrap_cheaper_than_the_panels_cost_is_refused() {
     // Bitwarden's default: enough for the master wrap, too little for a PIN.
     let args = with(&[
         &["add"],
-        &ACCOUNT,
         &["--auth", "master", "--method", "pin"],
         &MASTER_KDF,
     ]);

@@ -138,7 +138,7 @@ function suite(realCreds) {
         ARGV_LOG: argvLog,
         HMAC_LOG: hmacLog,
         FAKE_FIDO_CREDS: [FIDO_CRED_A, FIDO_CRED_B].join(",")
-      }, realCreds ? {
+      }, Model.envelopeAccountEnv(ACCOUNT), realCreds ? {
         XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || "",
         DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || ""
       } : {}, secrets || {}, extra || {})
@@ -180,7 +180,7 @@ function suite(realCreds) {
       open({ kind: "master" }, { [SECRET]: "not it" }).code, 3)
     eq(tag + "another account is refused",
       run(Model.unlockEnvelopeOpenCommand(tool, { id: "user-9999", server: ACCOUNT.server }, { kind: "master" }),
-        { [SECRET]: PASSWORD }).code, 6)
+        { [SECRET]: PASSWORD }, Model.envelopeAccountEnv({ id: "user-9999", server: ACCOUNT.server })).code, 6)
 
     // --- adding methods needs the master password, and stores nothing typed ---
     let before = stored()
@@ -392,6 +392,9 @@ function suite(realCreds) {
     const keySecrets = fs.existsSync(hmacLog) ? fs.readFileSync(hmacLog, "utf8").trim().split("\n").filter(Boolean) : []
     check(tag + "no secret a key handed out ever appeared in an argv",
       keySecrets.length > 0 && keySecrets.every(k => !argv.includes(k)), "found in the argv log")
+    check(tag + "the account id and server never appeared in an argv",
+      !argv.includes(ACCOUNT.id) && !argv.includes("bitwarden.com") && !argv.includes("user-9999"),
+      "found in the argv log")
     check(tag + "no derived key appeared in an argv either",
       !/[0-9a-f]{64}/.test(argv), (argv.match(/[0-9a-f]{64}/) || [""])[0])
     check(tag + "the argv log actually recorded the tools",
@@ -401,6 +404,26 @@ function suite(realCreds) {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+}
+
+// The account is in the environment, so it is in no command (argv) at all:
+// not as flags, and not in the script text that bash -c carries.
+{
+  const commands = {
+    open: Model.unlockEnvelopeOpenCommand("/t", ACCOUNT, { kind: "master" }),
+    create: Model.unlockEnvelopeCreateCommand("/t", ACCOUNT),
+    add: Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "add-pin" }),
+    rotate: Model.unlockEnvelopeUpdateCommand("/t", ACCOUNT, { kind: "rotate", auth: { kind: "pin" } }),
+    check: Model.unlockEnvelopeCheckCommand("/t", ACCOUNT),
+    migrate: Model.legacyPinMigrationCommand("/t", ACCOUNT)
+  }
+  for (const [name, argv] of Object.entries(commands)) {
+    const text = JSON.stringify(argv)
+    check(`${name}: no account id, server or flag for them in the argv`,
+      !text.includes(ACCOUNT.id) && !text.includes(ACCOUNT.server) && !/--account-id|--server/.test(text), text.slice(0, 200))
+  }
+  eq("the account travels in the environment", JSON.stringify(Model.envelopeAccountEnv(ACCOUNT)),
+    JSON.stringify({ QSBW_ACCOUNT_ID: ACCOUNT.id, QSBW_SERVER: ACCOUNT.server }))
 }
 
 suite(false)

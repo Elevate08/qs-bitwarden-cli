@@ -101,7 +101,7 @@ check("a branch build and a release cannot cancel each other",
     && /cancel-in-progress: \$\{\{ github\.workflow != 'release' \}\}/.test(build),
   "the called workflow's concurrency group does not distinguish its callers")
 check("nothing publishes before those gates pass",
-  /needs: gates/.test(jobs.get("verify") || "") && /needs: verify/.test(jobs.get("release") || ""),
+  /needs: gates/.test(jobs.get("verify") || "") && /needs: \[?verify\b/.test(jobs.get("release") || ""),
   "the publishing job does not depend on verification")
 
 // -------------------------------------------------------------------------
@@ -126,9 +126,19 @@ check("the container job declares bash rather than taking the image's sh",
   "a bashism in a container step fails at the end of a long job")
 
 const releaseJob = jobs.get("release") || ""
-check("the release job runs the bytes outside the build container",
-  !/container:/.test(releaseJob) && /--self-test/.test(releaseJob),
+// The shipped bytes run in host-run: a plain runner, no container, no write
+// token, so nothing a helper does can reach the release token.
+const hostRunJob = jobs.get("host-run") || ""
+check("the shipped bytes run on a plain runner outside the build container",
+  !/container:/.test(hostRunJob) && /--self-test/.test(hostRunJob) && /needs: verify/.test(hostRunJob),
   "a binary that only works inside its own build image would still be published")
+check("the job that runs the shipped bytes holds no write token",
+  !/contents: write|id-token: write|attestations: write/.test(hostRunJob)
+    && /persist-credentials: false/.test(hostRunJob),
+  "a helper executed beside a write token could steal it")
+check("the publishing job does not execute the bytes it attests",
+  !/--self-test/.test(releaseJob),
+  "the release token would sit beside code the helpers run")
 // Every shipped binary is a subject. An attestation that covers one of two
 // leaves the other with no provenance behind it -- and the README tells users
 // to verify both.

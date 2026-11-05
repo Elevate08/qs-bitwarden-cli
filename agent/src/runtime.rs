@@ -234,7 +234,10 @@ pub async fn read_payload_async(
     timeout: Duration,
     filter: PayloadFilter,
 ) -> Result<Zeroizing<Vec<u8>>, RuntimeError> {
-    let fifo = tokio::io::unix::AsyncFd::new(fifo).map_err(|_| RuntimeError::Io)?;
+    // SAFETY: `AsyncFd` takes ownership of the `File`, which nothing else can
+    // close or replace, so its descriptor stays open and unchanged until the
+    // `AsyncFd` drops (deregistering before the `File` closes it).
+    let fifo = unsafe { tokio::io::unix::AsyncFd::register(fifo) }.map_err(|_| RuntimeError::Io)?;
     tokio::time::timeout(timeout, async {
         let mut accumulator = PayloadAccumulator::new(filter);
         let mut chunk = Zeroizing::new([0_u8; CHUNK_BYTES]);
