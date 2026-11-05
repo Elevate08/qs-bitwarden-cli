@@ -4,6 +4,28 @@
 
 ### Added
 
+- **An Omarchy-style unlock prompt, as an option**
+  ([#131](https://github.com/Elevate08/qs-bitwarden-cli/issues/131)). With
+  `omarchyPinentry` on ("Omarchy-style unlock prompt" in Security), the
+  master password and PIN are typed into a card over the monitor that was
+  focused when the prompt opened, drawn like the shell's own polkit prompt:
+  the theme's `[polkit]` scrim over the monitor, no blur, a padlock and a
+  masked field in the system font, the theme's colours, border and rounding,
+  and a theme applied while it is open. Clicking the padlock shows what is
+  typed and hides it again; submitting, cancelling or opening it again masks
+  it. Enter submits, Escape cancels, a wrong password or PIN shows the reason
+  above the field, and it closes itself after two minutes as before.
+
+  It is a pinentry, not part of the panel: `pinentry/omarchy-pinentry`
+  speaks the pinentry protocol to the vault helper and starts a short-lived
+  Quickshell of its own for each prompt, so what you type still goes only to
+  the helper and never enters the shell, and both processes keep the
+  helper's zero core-file limit (with Quickshell's crash handler off). The
+  answer travels from the prompt to the frontend over a socket in a private
+  directory under `$XDG_RUNTIME_DIR`, removed when the prompt ends. It is
+  off by default; where it cannot run (no `quickshell`, `node` or Wayland
+  display), pinentry-qt or `pinentry` is used as before, and a
+  `pinentryProgram` you set always wins.
 - **The vault can sync itself on a schedule** (opt-in, `autoSyncMinutes`)
   ([#124](https://github.com/Elevate08/qs-bitwarden-cli/pull/124)). A vault
   on a self-hosted server that is not always reachable stayed as it was

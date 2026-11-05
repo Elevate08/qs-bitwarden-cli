@@ -88,8 +88,10 @@ reason.
 Pinentry closes itself after two minutes without an answer, which counts as
 a cancel.
 
-The pinentry used is `pinentry-qt` when it is runnable, else `pinentry` from
-`PATH`, chosen each time it is needed; `pinentryProgram` in `shell.json`
+The pinentry used is the plugin's Omarchy-style prompt when the setting
+"Omarchy-style unlock prompt" (`omarchyPinentry`) is on and the prompt can run
+here, else `pinentry-qt` when it is runnable, else `pinentry` from `PATH`,
+chosen each time it is needed; `pinentryProgram` in `shell.json`
 names another (used exactly as given, so `pinentry` means `pinentry` even with
 `pinentry-qt` installed), and the setting "Type secrets in pinentry" turns
 this off. The panel's own field is used instead only when pinentry is turned
@@ -149,6 +151,41 @@ what `pinentry` on your `PATH` runs; on some systems (Arch among them) it is a
 script that picks `pinentry-gnome3`. Set `pinentryProgram` to name a pinentry
 yourself.
 
+The Omarchy-style prompt (`pinentry/omarchy-pinentry`, off by default) draws
+its own prompt too, as a card over the focused monitor styled like the shell's
+polkit prompt. It is a Node program that speaks the pinentry protocol to the
+helper, and for each `GETPIN` it starts a Quickshell of its own, separate from
+the shell, that shows the card and quits once it has answered. Both are
+children of the helper and have its zero core-file limit; Quickshell's crash
+handler, which would write a dump and its log under `~/.cache/quickshell`, is
+turned off for that process. When it cannot run (no Wayland display, no
+`quickshell`, no Omarchy shell kit, no `XDG_RUNTIME_DIR`) `pinentry-qt` or
+`pinentry` is used as before.
+
+What it is told and what you type travel apart from any command line. For
+each prompt it makes a private directory (mode 0700) under
+`$XDG_RUNTIME_DIR`: the title, description, prompt and error the helper set
+are written there to `prompt.json` (mode 0600), and the answer comes back over
+a Unix socket in the same directory. The directory is removed when the prompt
+answers, is cancelled, times out or fails, and when the frontend is ended by a
+signal; only a frontend killed outright (`SIGKILL`) leaves it behind, and it
+never holds what you typed. A second directory,
+`$XDG_RUNTIME_DIR/qsbw-pinentry-ui-<id>`, holds only the links and the small
+`shell.qml` the prompt's Quickshell loads. Quickshell writes a log for every
+run under `$XDG_RUNTIME_DIR/quickshell/by-id`; nothing typed is logged.
+
+Where what you type lives, and what is wiped: in the prompt's Quickshell it is
+a JavaScript string (the field's value and the encoded line it sends), which
+cannot be wiped; the field is emptied as the answer is sent and the process
+exits straight after. The frontend assembles the answer in buffers that it
+zeroes once it has written the `D` line to the helper; the socket's own read
+buffers inside Node are not zeroed, and the frontend exits when the helper
+says `BYE`. Neither process is made non-dumpable, so a program running as you
+can read their memory while a prompt is open, as it can the shell's
+([Limits](#limits)). The field is the panel's own `LineField`, so a clipboard
+change while the prompt is open does not pull the clipboard (perhaps a
+password the panel copied) into the prompt.
+
 The email login, the setup of PIN, fingerprint and FIDO2 unlock (the master
 password and the new PIN) and the item forms are not covered.
 
@@ -165,7 +202,8 @@ than unwinding.
 
 The commands it runs inherit the zero core limit, so a `bw` that crashes
 while holding your decrypted vault does not leave a core either. So does a
-pinentry that draws its own prompt, but not a program a command reaches some
+pinentry that draws its own prompt, including the Omarchy-style prompt and
+the Quickshell it starts, but not a program a command reaches some
 other way, such as `gcr-prompter` for `pinentry-gnome3`
 ([Which pinentry](#which-pinentry)).
 
@@ -187,6 +225,9 @@ other way, such as `gcr-prompter` for `pinentry-gnome3`
   keeps secrets out of the shell instead.
 - **`pinentry-gnome3` types into `gcr-prompter`**, which D-Bus starts outside
   the helper, so the zero core limit does not cover what you type there
+  ([Which pinentry](#which-pinentry)).
+- **The Omarchy-style prompt holds what you type in strings it cannot wipe**
+  until its Quickshell exits, right after it answers
   ([Which pinentry](#which-pinentry)).
 - **Code running in the shell.** The helper does not protect against it.
   Such code can ask the helper to run a command with the session key or a

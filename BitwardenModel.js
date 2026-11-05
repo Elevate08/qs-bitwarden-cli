@@ -1848,15 +1848,26 @@ function pinUnlockCommand(slot) {
 // is told nothing of it. Everything the user can influence (account email,
 // error text) is an argument, encoded for Assuan, never part of the script.
 
-// Left unset, the program is chosen when the script runs: `pinentry-qt` if it
-// is runnable, else `pinentry`. (`pinentry` on some systems is a wrapper that
-// picks pinentry-gnome3, which has no show/hide control and types into
-// gcr-prompter.) pinentryProgram() gives "" for that automatic choice.
+// Left unset, the program is chosen when the script runs: the plugin's own
+// Omarchy-style pinentry when `omarchyPinentry` is on and it can show a
+// prompt here, else `pinentry-qt` if it is runnable, else `pinentry`.
+// (`pinentry` on some systems is a wrapper that picks pinentry-gnome3, which
+// has no show/hide control and types into gcr-prompter.) pinentryProgram()
+// gives "" for that automatic choice.
 var PINENTRY_PREFERRED_PROGRAM = "pinentry-qt"
 var PINENTRY_DEFAULT_PROGRAM = "pinentry"
-// Shell that sets __prog from "$1": the given program, or for "" the automatic choice.
-var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ]; then if command -v -- " + PINENTRY_PREFERRED_PROGRAM
-  + " >/dev/null 2>&1; then __prog=" + PINENTRY_PREFERRED_PROGRAM + "; else __prog=" + PINENTRY_DEFAULT_PROGRAM + "; fi; fi"
+// The Omarchy-style pinentry, relative to the plugin's directory: a Node
+// Assuan server that draws its prompt in a Quickshell of its own. Its
+// `--check` says whether it can (quickshell, the shell kit and a Wayland
+// display); node missing fails it too.
+var OMARCHY_PINENTRY_FILE = "pinentry/omarchy-pinentry"
+// Shell that sets __prog from "$1": the given program, or for "" the
+// automatic choice. $__bundled is the Omarchy-style pinentry's path, or ""
+// while the setting is off.
+var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ]; then"
+  + " if [ -n \"$__bundled\" ] && [ -x \"$__bundled\" ] && \"$__bundled\" --check >/dev/null 2>&1; then __prog=\"$__bundled\";"
+  + " elif command -v -- " + PINENTRY_PREFERRED_PROGRAM + " >/dev/null 2>&1; then __prog=" + PINENTRY_PREFERRED_PROGRAM + ";"
+  + " else __prog=" + PINENTRY_DEFAULT_PROGRAM + "; fi; fi"
 var PINENTRY_TEXT_MAX = 400
 var PINENTRY_DESC_ENV = "QSBW_PE_DESC"
 var PINENTRY_ERR_ENV = "QSBW_PE_ERR"
@@ -1879,6 +1890,7 @@ function pinentryExitCodes() {
 // 5, 83886179; any code whose low 16 bits are 99 is read as a cancel. Its
 // timeout, GPG_ERR_TIMEOUT (62), is one too: nobody answered.
 var PINENTRY_SCRIPT = [
+  "__bundled=\"${5:-}\"",
   PINENTRY_RESOLVE,
   // The description and error can name the account, so they come in the
   // environment, not argv, and are gone before pinentry starts.
@@ -1958,21 +1970,35 @@ function pinentryText(value) {
 
 // The program to run: a setting that names one, used exactly as given (even
 // "pinentry"), else "" for the automatic choice made by the scripts
-// (pinentry-qt, else `pinentry` from PATH). Never an option: it is the first
-// word of the command.
+// (the Omarchy-style pinentry when on, pinentry-qt, else `pinentry` from
+// PATH). Never an option: it is the first word of the command.
 function pinentryProgram(configured) {
   var name = typeof configured === "string" ? configured.trim() : ""
   if (!name || name.charAt(0) === "-" || name.indexOf("\u0000") !== -1) return ""
   return name
 }
 
+// The Omarchy-style pinentry's absolute path in the plugin at `pluginDir`,
+// or "" while `enabled` is off (or the directory is not a clean absolute
+// path). Passed to the scripts as an argument value, never as script text.
+function omarchyPinentryPath(pluginDir, enabled) {
+  if (enabled !== true) return ""
+  var dir = cleanAbsoluteDir(pluginDir)
+  return dir ? (dir === "/" ? "" : dir) + "/" + OMARCHY_PINENTRY_FILE : ""
+}
+
+function bundledPinentry(path) {
+  return typeof path === "string" && path.charAt(0) === "/" && path.indexOf("\u0000") === -1 ? path : ""
+}
+
 // `opts`: { title, description, prompt, error } as plain text, and
 // `minLength`: an answer of fewer characters exits short (nothing is held).
-function pinentryCommand(program, opts) {
+// `bundled`: omarchyPinentryPath(), used only when `program` is unset.
+function pinentryCommand(program, opts, bundled) {
   var o = opts || {}
   return ["bash", "-c", PINENTRY_SCRIPT, "_", pinentryProgram(program),
     pinentryText(o.title), pinentryText(o.prompt),
-    String(Math.max(0, Math.floor(Number(o.minLength) || 0)))]
+    String(Math.max(0, Math.floor(Number(o.minLength) || 0))), bundledPinentry(bundled)]
 }
 
 // The environment pinentryCommand() reads its description and error from
@@ -1985,10 +2011,12 @@ function pinentryEnvironment(opts) {
   return env
 }
 
-// Prints "found" or "missing": whether `program` names something runnable.
-function pinentryProbeCommand(program) {
-  return ["bash", "-c", PINENTRY_RESOLVE + "; command -v -- \"$__prog\" >/dev/null 2>&1 && echo found || echo missing", "_",
-    pinentryProgram(program)]
+// Prints "found" or "missing": whether `program` (or, unset, the automatic
+// choice with `bundled` as for pinentryCommand()) names something runnable.
+function pinentryProbeCommand(program, bundled) {
+  return ["bash", "-c", "__bundled=\"${2:-}\"; " + PINENTRY_RESOLVE
+    + "; command -v -- \"$__prog\" >/dev/null 2>&1 && echo found || echo missing", "_",
+    pinentryProgram(program), bundledPinentry(bundled)]
 }
 
 // Whether a probe run says the program is missing. Only the probe's own
@@ -6708,6 +6736,8 @@ var SETTINGS_SCHEMA = [
     description: "A PIN of 6 digits or more opens your master password, stored once, encrypted and sealed to this machine. A program running as you can copy it and try every 6-digit PIN in about 16 hours, so use 8 or more (about 2 months)." },
   { key: "usePinentry", group: "security", type: "bool", label: "Type secrets in pinentry", defaultValue: true,
     description: "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field." },
+  { key: "omarchyPinentry", group: "security", type: "bool", label: "Omarchy-style unlock prompt", defaultValue: false,
+    description: "With pinentry on, type into a card over the focused monitor styled like the shell's own password prompt instead of pinentry-qt's window. It is still a separate, short-lived process, not the panel; pinentry-qt or pinentry is used where it cannot run, and a pinentryProgram you set always wins." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },

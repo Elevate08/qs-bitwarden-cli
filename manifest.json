@@ -36,6 +36,7 @@
       "fidoUnlock": false,
       "pinUnlock": false,
       "usePinentry": true,
+      "omarchyPinentry": false,
       "sshAgentEnabled": false,
       "sshAgentUnlockOnDemand": false,
       "sshAgentApprovalPopup": true,
@@ -158,6 +159,13 @@
         "label": "Type secrets in pinentry",
         "description": "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field.",
         "defaultValue": true
+      },
+      {
+        "key": "omarchyPinentry",
+        "type": "boolean",
+        "label": "Omarchy-style unlock prompt",
+        "description": "With pinentry on, type the master password and PIN into a card over the focused monitor, styled like the shell's own password prompt (theme colours, scrim, font, border and rounding), instead of pinentry-qt's window. It is the plugin's own pinentry: a separate, short-lived process started for each prompt, never the panel, so what you type still goes only to the vault helper. Needs quickshell and node; where it cannot run, pinentry-qt or pinentry is used, and a pinentryProgram you set always wins.",
+        "defaultValue": false
       },
       {
         "key": "sshAgentEnabled",
