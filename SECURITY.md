@@ -43,12 +43,20 @@ you to it.
   checksums, attestations or SBOM do not match it.
 - Anything reachable through the IPC target or the agent socket by a program
   that should not have that power.
+- Auto-type typing while it is off, without an armed login, more than once
+  for one arm, after the arm has expired or been dropped, or anything other
+  than the armed login's username and password.
 - Damage to the OS keyring or to other apps' secrets in it.
 
 ## Out of scope
 
 - Limits the README already documents: with fingerprint unlock on, a program
   running as you can open the stored password; root can read anything.
+- What auto-type, when you turn it on, documents it gives away: the focused
+  window gets the password; while a login is armed any program running as
+  you can make it type, since the IPC cannot tell who calls it; and `wtype`'s
+  keymap, which a program running as you can read while it types, lists the
+  characters it is typing.
 - Helper memory reaching swap. Neither helper locks its memory (`mlockall` would
   hit the default 8 MiB `RLIMIT_MEMLOCK`), so the kernel may write a page
   holding a decrypted key or the session key to swap. Use encrypted swap, or

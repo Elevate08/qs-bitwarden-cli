@@ -309,7 +309,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | Shortcut | Action |
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up), or open the item when there is no password to copy -- a card, an identity, a note, an SSH key |
-| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Arm the highlighted entry for auto-type (type it later with the global shortcut / `autoType` IPC) |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy the highlighted login's password and arm it for 30 seconds, for the `autoType` IPC to type. Off, or with the search box focused, it is the usual copy |
 | <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
@@ -343,6 +343,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>n</kbd> | Copy a card's **n**umber |
 | <kbd>k</kbd> | Copy a card's security code |
 | <kbd>m</kbd> | Copy TOTP code |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy a login's password and arm it for 30 seconds |
 | <kbd>v</kbd> | Toggle re**v**eal on the item's principal secret -- the password on a login, the number on a card. Every other masked field has its own eye, and each reveals independently |
 | <kbd>a</kbd> | Save every **a**ttachment on this item |
 | <kbd>e</kbd> | Edit this item |
@@ -473,6 +474,40 @@ Registrations made with `+pin` or `+verification` (a key PIN at every system pro
 
 Its way in is removed when you turn the setting off or log out -- for the account on screen; other accounts keep theirs. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
 
+### Auto-type
+
+Off by default, and worth thinking about before you turn it on: **whatever
+window has focus when it types gets your password**, and **while a login is
+armed, any program running as you can make it type**, because the `autoType`
+IPC cannot tell your keybinding from anything else that calls it. Turning it
+on in **Settings → General → Auto-type logins** asks you to press again to
+confirm.
+
+With it on, <kbd>Ctrl</kbd>+<kbd>C</kbd> on a login in the list or the detail
+inspector (or the row's second button) copies its password, after any master
+password re-prompt, and arms it for 30 seconds. With `closeOnCopy` the panel
+closes and focus goes back to the window you came from. Calling the IPC then
+types the login's username, <kbd>Tab</kbd> and password there, once. Bind it
+to a key next to your [global hotkey](#global-hotkey), for example:
+
+```lua
+o.bind("SUPER + CTRL + BACKSLASH", "Bitwarden auto-type", "omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType")
+```
+
+- It types with [`wtype`](https://github.com/atx/wtype). The setup screen
+  lists it, and offers to install it, only while auto-type is on.
+- The vault helper reads the armed login and writes it to `wtype`'s stdin, so
+  the password never reaches the shell; without the helper the shell does the
+  same. It is never an argument or an environment variable.
+- It does not type while the panel, an SSH approval or pinentry has the
+  keyboard, since the text would land there, nor while the screen is locked.
+  A username or password with a line break, tab or other control character in
+  it is not typed at all, since `wtype` would press it as a key.
+- The arm is used up by the type it starts, and dropped after 30 seconds, on
+  lock, logout or account switch, and when auto-type is turned off.
+- It waits a quarter of a second before typing, to give you time to let go
+  of your shortcut's keys.
+
 ### SSH agent
 
 Off by default. See **[docs/ssh-agent.md](docs/ssh-agent.md)** for setup, the
@@ -572,6 +607,7 @@ The following settings are read from the plugin's own entry in the
 | `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. Turning it off removes a stored session at once, and with it off an unload while unlocked runs `bw lock`. |
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
+| `autoTypeEnabled` | `boolean` | `false` | Let <kbd>Ctrl</kbd>+<kbd>C</kbd> in the panel arm a login, and the `autoType` IPC type its username, <kbd>Tab</kbd> and password into the focused window with `wtype`. Whatever window has focus gets the password, and while a login is armed any program running as you can trigger it -- see [Auto-type](#auto-type). The settings screen asks you to confirm before turning it on. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. |
 | `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |
@@ -652,8 +688,8 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli setup        # -> "setup" (de
 # Lock the vault immediately
 omarchy-shell io.github.elevate08.qs-bitwarden-cli lock         # -> "locked"
 
-# Auto-type the armed entry's login + Tab + password into the focused window
-omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType     # -> "disabled" | "not-armed" | "locked" | "busy" | "started"
+# Type the armed login's username, Tab and password into the focused window (see Auto-type)
+omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType     # -> "started" | "disabled" | "locked" | "not-armed" | "busy" | "panel-open" | "screen-locked" | "failed"
 
 # Sync with Bitwarden
 omarchy-shell io.github.elevate08.qs-bitwarden-cli sync         # -> "syncing"
@@ -671,6 +707,9 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli switchAccount work@example.co
 ```
 
 `open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
+`autoType` answers whether typing started, not whether it worked: `wtype` is
+still typing when it returns, and a failure is shown in the panel, or as a
+desktop notification when the panel is closed.
 
 Omarchy's shell-level dispatcher also toggles any plugin, and works equally well for a keybinding:
 
