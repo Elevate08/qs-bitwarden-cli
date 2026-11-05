@@ -136,7 +136,7 @@
         "key": "fingerprintUnlock",
         "type": "boolean",
         "label": "Unlock with fingerprint",
-        "description": "Use an enrolled fingerprint to unlock the vault. Requires 'omarchy setup security fingerprint'. Your master password is stored once, encrypted and sealed to this machine; this lets a verified fingerprint open it. A fingerprint releases no secret, so a program running as you could open it too -- the same trade-off as Bitwarden desktop biometrics. Turning this off removes the fingerprint's access.",
+        "description": "Use an enrolled fingerprint to unlock the vault. Requires 'omarchy setup security fingerprint'. Your master password is stored once, encrypted and sealed to this machine; this lets a verified fingerprint open it. A fingerprint releases no secret, so a program running as you could open it too -- the same trade-off as Bitwarden desktop biometrics. Turning this off deletes the stored password, so PIN and security-key unlock need setting up again.",
         "defaultValue": false
       },
       {

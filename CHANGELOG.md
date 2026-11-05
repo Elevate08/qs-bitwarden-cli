@@ -61,6 +61,20 @@
 
 ### Security
 
+- **Turning fingerprint unlock off now deletes the stored password.** The
+  fingerprint's way in holds the stored password's encryption key in the
+  clear (a fingerprint releases no secret), and that key was never changed:
+  removing the way in left the same key sealing every later copy, so a
+  program running as you that had read it while fingerprint unlock was on
+  could still open the stored password after you turned it off, and after a
+  password change. Turning fingerprint unlock off now deletes the stored
+  password of every account whose copy had a fingerprint way in, so PIN and
+  FIDO2 unlock for those accounts must be set up again; the next unlock with
+  your master password stores it under a new key. Accounts without a
+  fingerprint way in are left alone, and the settings screen, README and
+  SECURITY.md say so. A key recovered by guessing the PIN from a copy still
+  outlives a password change until the stored password is deleted (logging
+  out does that too).
 - **Auto-type no longer trusts a lock-screen reading it is not taking.** The
   check that keeps auto-type off the lock screen read a value the panel only
   polls while "Lock when the screen locks" is on (or the SSH agent is

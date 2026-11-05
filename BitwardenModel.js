@@ -62,6 +62,17 @@ function keyringClearEntryCommand(account) {
   return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", account]
 }
 
+// The same as a script step that succeeds once the entry is gone. libsecret's
+// clear returns 1 without stderr when no matching item exists; service
+// failures also return 1, with an error on stderr. The clear's stderr is
+// captured (a trailing '.' keeps a newline-only error from being dropped) and
+// read: absent is success, anything else is not.
+function keyringClearEntryScript(account) {
+  return "__clear_error=$(secret-tool clear" + keyringAttributes(account)
+    + " 2>&1 >/dev/null; __status=$?; printf '.'; exit \"$__status\"); __clear_rc=$?; __clear_error=\"${__clear_error%.}\"; "
+    + "[ \"$__clear_rc\" -eq 0 ] || { [ \"$__clear_rc\" -eq 1 ] && [ -z \"$__clear_error\" ]; }"
+}
+
 function keyringHasEntryCommand(account) {
   var script = "if secret-tool lookup" + keyringAttributes(account)
     + " >/dev/null 2>&1; then echo yes; else echo no; fi"
@@ -2257,14 +2268,21 @@ function unlockEnvelopeCreateCommand(tool, account) {
 //   { kind: "add-fido", cred, rp, salt }      password in KEYRING_SECRET_ENV,
 //                                             hmac-secret for `salt` in FIDO_HMAC_ENV
 //   { kind: "remove", method, cred }          no secret
+//   { kind: "delete" }                        no secret: the envelope entry itself goes
 //   { kind: "mark-stale" }                    no secret
 //   { kind: "rotate", auth }                  new password in NEW_SECRET_ENV; `auth` is a
 //                                             `via` as for opening, with its secret where
 //                                             unlockEnvelopeOpenCommand expects it
 // Adds are authorized by the typed master password opening the `master`
-// wrap; nothing typed is stored.
+// wrap; nothing typed is stored. `delete` opens nothing: it clears the slot's
+// entry, and an entry already gone is the state it wanted (exit 1 only for a
+// keyring error; see keyringClearEntryScript()).
 function unlockEnvelopeUpdateCommand(tool, account, op) {
   if (!envelopeArgsOk(tool, account) || !op) return envelopeRefused()
+  if (op.kind === "delete") {
+    return ["bash", "-c", cappedScript(keyringClearEntryScript(keyringEntryName(KEYRING_ENVELOPE, account.slot))
+      + " || exit 1", MAX_STDERR_BYTES)]
+  }
   var masterKey = "__mk=\"$(__wrap_key '.master' \"$" + KEYRING_SECRET_ENV + "\")\" || exit $?; "
   var transform = ""
   var verifyOpen = ""
@@ -2401,15 +2419,27 @@ function repairedKeyringNoticeCommand() {
 // invisible, since the settings row then reads "off"). This removes one
 // method from each listed slot's envelope, and that slot's legacy entry for
 // the method, in one process queued like any envelope write.
+//
+// Fingerprint is the exception: its wrap holds the data key in the clear
+// (a fingerprint releases no secret), and the key is the envelope's for as
+// long as it exists, so a program that read it while fingerprint unlock was
+// on could open every later copy of the envelope after the wrap is gone (see
+// "How quick unlock stores your password" in the README). So turning
+// fingerprint off deletes the envelope of every account that has the wrap,
+// PIN and FIDO2 ways in included; the next unlock with the master password
+// stores the password again under a new key. An envelope without the wrap is
+// left alone, and a wrap removed for any other reason (a setup that was
+// cancelled as its wrap landed) is a plain `remove`.
 
 // The legacy keyring entry each method used before the envelope.
 var LEGACY_ENTRY_FOR_METHOD = { pin: KEYRING_PIN, fingerprint: KEYRING_MASTER, fido: KEYRING_FIDO }
 // One wrap per method, except FIDO2 (one per key, at most 16 in the tool).
 var MAX_PURGE_ROUNDS = 17
 
-// One slot: remove `method` until none is left. Exits 0 when there is no
-// envelope or nothing to remove; the account the envelope names is checked
-// against itself after each write (remove needs no account arguments).
+// One slot: remove `method` until none is left (fingerprint: delete the
+// envelope). Exits 0 when there is no envelope or nothing to remove; the
+// account the envelope names is checked against itself after each write
+// (remove needs no account arguments).
 function envelopeMethodPurgeScript(tool, slot, method) {
   var present = method === "pin" ? ".pin != null"
     : (method === "fingerprint" ? ".fingerprint == true" : "(.fido | length) > 0")
@@ -2430,17 +2460,22 @@ function envelopeMethodPurgeScript(tool, slot, method) {
     + "__summary=\"$(__unseal \"$__sealed\" | \"$__tool\" inspect)\" || exit " + ENVELOPE_EXIT.unseal + "; "
     + "printf '%s' \"$__summary\" | jq -e " + shellQuote(present) + " >/dev/null; __present_rc=$?; "
     + "case \"$__present_rc\" in 0) ;; 1) exit 0 ;; *) exit 1 ;; esac; "
-    + "__id=\"$(printf '%s' \"$__summary\" | jq -r '.account.id')\"; "
-    + "__server=\"$(printf '%s' \"$__summary\" | jq -r '.account.server')\"; "
-  if (method === "fido") {
-    script += "__c=\"$(printf '%s' \"$__summary\" | jq -r '.fido[0].cred // empty')\"; "
-      + "case \"$__c\" in ''|*[!A-Za-z0-9+/=]*) exit 4 ;; esac; "
-      + "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method fido --cred \"$__c\" | __seal)\" || exit $?; "
+  if (method === "fingerprint") {
+    // The data key is in this wrap in the clear: the whole envelope goes.
+    script += keyringClearEntryScript(keyringEntryName(KEYRING_ENVELOPE, slot)) + " || exit 1; exit 0; "
   } else {
-    script += "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method " + method + " | __seal)\" || exit $?; "
+    script += "__id=\"$(printf '%s' \"$__summary\" | jq -r '.account.id')\"; "
+      + "__server=\"$(printf '%s' \"$__summary\" | jq -r '.account.server')\"; "
+    if (method === "fido") {
+      script += "__c=\"$(printf '%s' \"$__summary\" | jq -r '.fido[0].cred // empty')\"; "
+        + "case \"$__c\" in ''|*[!A-Za-z0-9+/=]*) exit 4 ;; esac; "
+        + "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method fido --cred \"$__c\" | __seal)\" || exit $?; "
+    } else {
+      script += "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method " + method + " | __seal)\" || exit $?; "
+    }
+    script += "__verify_account \"$__id\" \"$__server\"; __store; "
   }
-  script += "__verify_account \"$__id\" \"$__server\"; __store; "
-    + "done; exit 8"
+  script += "done; exit 8"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
@@ -2461,11 +2496,8 @@ function quickUnlockPurgeCommand(tool, slots, method) {
   var script = "rc=0; "
   for (var j = 0; j < list.length; j++) {
     script += nestedScript(envelopeMethodPurgeScript(tool, list[j], method)) + " || rc=1; "
-      // libsecret's clear returns 1 without stderr when no matching item
-      // exists; service failures also return 1, with an error on stderr.
-      + "__clear_error=$(secret-tool clear" + keyringAttributes(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j]))
-      + " 2>&1 >/dev/null; __status=$?; printf '.'; exit \"$__status\"); __clear_rc=$?; __clear_error=\"${__clear_error%.}\"; "
-      + "if [ \"$__clear_rc\" -ne 0 ] && { [ \"$__clear_rc\" -ne 1 ] || [ -n \"$__clear_error\" ]; }; then rc=1; fi; "
+      // Absent counts as cleared (keyringClearEntryScript()).
+      + keyringClearEntryScript(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j])) + " || rc=1; "
   }
   script += "exit \"$rc\""
   return ["bash", "-c", script]
@@ -6731,7 +6763,7 @@ var SETTINGS_SCHEMA = [
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint", defaultValue: false,
     requires: "fprintd", action: "fingerprint",
-    description: "A verified fingerprint opens your master password, stored once, encrypted and sealed to this machine." },
+    description: "A verified fingerprint opens your master password, stored once, encrypted and sealed to this machine. Turning this off deletes the stored password, so PIN and security-key unlock need setting up again." },
   { key: "fidoUnlock", group: "security", type: "bool", label: "Unlock with FIDO2 key", defaultValue: false,
     action: "fido",
     description: "A FIDO2 key touch opens your master password, stored once, encrypted and sealed to this machine. Requires 'omarchy setup security fido2'; the same registration also serves the system's own authentication prompts." },

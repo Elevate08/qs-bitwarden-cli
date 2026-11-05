@@ -52,10 +52,12 @@ you to it.
 
 - Limits the README already documents: with fingerprint unlock on, a program
   running as you can open the stored password; root can read anything.
-- The quick-unlock envelope's data key kept by a program that could already
-  open the envelope. Turning a method off or changing the master password
-  re-wraps the same key, so that program can open the later copies too until
-  every method is turned off, which deletes the envelope, and set up again.
+- The quick-unlock envelope's data key kept by a program that recovered it
+  by guessing the PIN from a copy, or read it while fingerprint unlock was on
+  and before it was turned off. Changing the master password re-wraps the
+  same key, so that program can open the later copies too until the envelope
+  is deleted: turning fingerprint unlock off deletes it, and so does logging
+  out of the account; the methods are then set up again under a new key.
 - What the IPC target lets any program running as you do: open, close and
   toggle the panel, lock, sync, switch the active account, read which accounts
   exist (their emails and servers) and, with auto-type on, trigger an armed
