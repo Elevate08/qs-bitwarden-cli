@@ -38,9 +38,34 @@
   auto-lock. A sync that fails keeps the vault you have and says so in the
   panel, without a desktop notification each time, and the next one that
   succeeds clears that notice. Off by default.
+- **The panel can type a login into another window for you** (opt-in,
+  `autoTypeEnabled`)
+  ([#119](https://github.com/Elevate08/qs-bitwarden-cli/pull/119)). With
+  **Settings → General → Auto-type logins** on, <kbd>Ctrl</kbd>+<kbd>C</kbd>
+  on a login (or its row's new button) copies the password as before and
+  arms that login for 30 seconds; the `autoType` IPC, bound to a key of your
+  choosing, then types its username, <kbd>Tab</kbd> and password into the
+  focused window with `wtype`, once. It is off by default because of what it
+  trades away: whatever window has focus when it types gets your password,
+  and while a login is armed any program running as you can make it type,
+  since the IPC cannot tell your keybinding from anything else that calls it.
+  Turning it on asks you to confirm, and `wtype` is listed and installed only
+  once it is on. The vault helper types the login itself, so the password
+  never passes through the shell (without the helper it goes to `wtype` on
+  its stdin), and it is never in an argument or environment variable. A
+  username or password with a line break, tab or other control character in
+  it is not typed, and nothing is typed while the panel, an SSH approval or
+  pinentry has the keyboard, or while the screen is locked. The arm is
+  dropped on lock, logout or account switch, and when the setting is turned
+  off.
 
 ### Fixed
 
+- **The buttons on a row in the item list do what they say**
+  ([#119](https://github.com/Elevate08/qs-bitwarden-cli/pull/119)). The
+  row's own click area was drawn over its copy buttons, so clicking one
+  opened the item instead of copying. A click on the buttons now reaches
+  them, and a click anywhere else on the row still opens the item.
 - **Pinentry gets the keyboard when you open the panel on a locked vault**
   ([#132](https://github.com/Elevate08/qs-bitwarden-cli/issues/132)). The
   unlock screen opens pinentry by itself as soon as it shows, and it showed

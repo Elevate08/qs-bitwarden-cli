@@ -94,6 +94,14 @@ pub enum Request {
         #[serde(rename = "clearSec")]
         clear_sec: u32,
     },
+    /// Type a login's username, Tab and password into the focused window
+    /// with `wtype`, without either reaching the panel. Answered once `wtype`
+    /// has finished, so success means it typed everything.
+    AutoType {
+        v: u8,
+        q: u64,
+        id: String,
+    },
     Totp {
         v: u8,
         q: u64,
@@ -123,6 +131,7 @@ impl Request {
             | Self::CopyPassword { v, .. }
             | Self::Field { v, .. }
             | Self::CopyField { v, .. }
+            | Self::AutoType { v, .. }
             | Self::Totp { v, .. }
             | Self::Search { v, .. }
             | Self::Shutdown { v } => *v,
@@ -263,6 +272,18 @@ mod tests {
             r#"{"type":"copyField","v":3,"q":5,"id":"a","field":"cardCode","clearSec":30}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn auto_type_requests_are_strict() {
+        assert!(matches!(
+            parse(r#"{"type":"autoType","v":1,"q":7,"id":"a"}"#),
+            Ok(Request::AutoType { q: 7, .. })
+        ));
+        assert!(parse(r#"{"type":"autoType","v":1,"q":7}"#).is_err());
+        // Nothing to type but what the helper holds: no text of the panel's.
+        assert!(parse(r#"{"type":"autoType","v":1,"q":7,"id":"a","text":"x"}"#).is_err());
+        assert!(parse(r#"{"type":"autoType","v":2,"q":7,"id":"a"}"#).is_err());
     }
 
     #[test]

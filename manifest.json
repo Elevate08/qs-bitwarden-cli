@@ -29,6 +29,7 @@
       "rememberSession": true,
       "autoCopyTotpSec": 3,
       "closeOnCopy": true,
+      "autoTypeEnabled": false,
       "colorizeIcon": false,
       "suggestOnOpen": true,
       "fingerprintUnlock": false,
@@ -109,6 +110,13 @@
         "label": "Close panel on Enter copy",
         "description": "Automatically close panel after selecting an item with Enter",
         "defaultValue": true
+      },
+      {
+        "key": "autoTypeEnabled",
+        "type": "boolean",
+        "label": "Auto-type logins",
+        "description": "Off by default: whatever window has focus when it types gets your password, and while an entry is armed any program running as you can make it type. With it on, Ctrl+C in the panel copies the highlighted login's password and arms it for 30 seconds; the autoType command, bound to a key, then types its username, Tab and password into the focused window, once. Needs wtype.",
+        "defaultValue": false
       },
       {
         "key": "colorizeIcon",
