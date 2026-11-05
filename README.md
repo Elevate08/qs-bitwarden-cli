@@ -497,6 +497,9 @@ it), and when the vault has reached its auto-lock deadline. A sync that lands
 while you are editing reloads the list once you are back on it or the panel
 is closed. It never unlocks the vault and never moves the auto-lock deadline,
 and locking, logging out or switching accounts drops anything still pending.
+With the SSH agent on, each sync's reload hands the agent its keys again,
+which ends any signing approval still in its window, so a long approval
+window and a short sync interval do not go together.
 
 ---
 
