@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The vault can sync itself on a schedule** (opt-in, `autoSyncMinutes`)
+  ([#124](https://github.com/Elevate08/qs-bitwarden-cli/pull/124)). A vault
+  on a self-hosted server that is not always reachable stayed as it was
+  until you synced by hand after the server came back. **Settings → General
+  → Automatically sync every** now syncs the open vault at the interval you
+  choose, with the panel open or closed, and tries again at the same
+  interval while the server is offline. It waits while you are editing, while
+  another vault operation or an SSH approval is pending, and when the vault
+  is about to auto-lock; it never unlocks the vault and never extends the
+  auto-lock. A sync that fails keeps the vault you have and says so in the
+  panel, without a desktop notification each time, and the next one that
+  succeeds clears that notice. Off by default.
+
+### Fixed
+
+- **Pinentry gets the keyboard when you open the panel on a locked vault**
+  ([#132](https://github.com/Elevate08/qs-bitwarden-cli/issues/132)). The
+  unlock screen opens pinentry by itself as soon as it shows, and it showed
+  while the panel was still opening, before the plugin counted the panel as
+  open. The panel was then never hidden for pinentry and kept the keyboard,
+  so you had to Alt+Tab to pinentry before you could type. A panel that
+  finishes opening while pinentry is asking is now hidden for it like one
+  that was already open, and comes back once pinentry answers or is
+  cancelled. A panel that was closed when pinentry asked, as for the SSH
+  unlock popup, still stays closed.
+
 ## [1.11.8] - 2026-10-26
 
 ### Security

@@ -12,13 +12,15 @@
 // - What the shell holds of it: nothing typed in its fields.
 // - Without the vault helper pinentry is not offered and the typed unlock
 //   still works.
+// - The panel opening as pinentry asks: hidden for it, back after; a panel
+//   closed throughout stays closed.
 // - Pinentry ended from the panel's side (the panel asked for, the vault
 //   locked, the helper killed): the question that asked is freed, and an
 //   answer that arrives after the cancel is not left with the helper.
 //
 // Needs the built vault helper (cargo build --manifest-path vault/Cargo.toml
 // --locked) and what shell.js needs. Name scenarios (helper, pin, fallback,
-// cancel, late, probe, missing) to run only those.
+// cancel, late, opening, probe, missing) to run only those.
 //
 //   node tests/e2e/pinentry.e2e.js [scenario ...]
 
@@ -284,6 +286,56 @@ function runCancels(plugin) {
   }
 }
 
+// The panel opened on a locked vault: its unlock form asks pinentry while the
+// popout is still showing, before `opened` reads true (#132). The panel is
+// hidden for pinentry all the same and comes back after the answer; one closed
+// when pinentry asked, and never opened, stays closed.
+function runOpening(plugin) {
+  const release = path.join(scratch, "opening-release")
+  const shell = createShell("e2e-pinentry", check, {
+    plugin, env: { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log, FAKE_PINENTRY_RELEASE: release }
+  })
+  const { q, expect } = shell
+  let failed = null
+  try {
+    fs.rmSync(release, { force: true })
+    shell.start()
+    q("open")
+    q("login", "a@x", "pw-a@x")
+    expect("opening: signs in", s => s.status === "unlocked")
+    q("lock")
+    q("close")
+    expect("opening: locked, the panel closed", s => s.status === "locked" && !s.opened && s.pinentry.available)
+
+    reset()
+    answer("held:pw-a@x")
+    const before = shell.state().shows
+    q("openAsking")
+    expect("opening: pinentry asks and the panel that opened under it is hidden",
+      s => s.pinentry.active && !s.opened && s.shows === before + 1)
+    fs.writeFileSync(release, "")
+    expect("opening: the answer unlocks and the panel comes back",
+      s => s.status === "unlocked" && !s.pinentry.active && s.opened && s.shows === before + 2)
+
+    q("lock")
+    q("close")
+    expect("closed: locked, the panel closed", s => s.status === "locked" && !s.opened)
+    reset()
+    answer("pin:pw-a@x")
+    const closedShows = shell.state().shows
+    q("unlockPinentry")
+    expect("closed: pinentry asked with the panel closed unlocks", s => s.status === "unlocked" && !s.pinentry.active)
+    const after = shell.state()
+    check("closed: and the panel stays closed", !after.opened && after.shows === closedShows, JSON.stringify(after.shows))
+  } catch (e) {
+    failed = e
+    check("opening: ran to the end", false, String(e && e.message))
+  } finally {
+    if (failed || failures.length) console.error("--- opening shell log (tail) ---\n" + shell.logTail())
+    shell.cleanup()
+  }
+}
+
 // A `bash` first in PATH that runs the panel's pinentry script with SIGTERM
 // ignored (and so its pinentry too): a cancel's kill then lands too late, as
 // when pinentry was already answering. Everything else is the real bash.
@@ -440,6 +492,7 @@ try {
   if (wanted("cancel")) runCancels(pluginWithBuiltHelper(path.join(scratch, "plugin-cancel")))
   if (wanted("late")) runLate(pluginWithBuiltHelper(path.join(scratch, "plugin-late")))
   if (wanted("probe")) runProbeKilled(pluginWithBuiltHelper(path.join(scratch, "plugin-probe")))
+  if (wanted("opening")) runOpening(pluginWithBuiltHelper(path.join(scratch, "plugin-opening")))
   if (wanted("missing")) runMissing(pluginWithBuiltHelper(path.join(scratch, "plugin-missing")))
 } finally {
   fs.rmSync(scratch, { recursive: true, force: true })
