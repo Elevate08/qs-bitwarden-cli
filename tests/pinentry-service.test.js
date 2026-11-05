@@ -27,7 +27,7 @@ function makeVault(extra) {
     get typedSecretEntry() { return Model.typedSecretEntry({ usePinentry: this.usePinentry,
       missing: this.pinentryMissing, declined: this.pinentryDeclined, helperState: this.vaultHelperState }) },
     get pinentryAvailable() { return this.typedSecretEntry === "pinentry" },
-    pinentryProgramName: "pinentry", userEmail: "me@example.com",
+    pinentryProgramName: "pinentry", omarchyPinentryPath: "", userEmail: "me@example.com",
     pinentryActive: false, pinentryRun: null, pinentryView: null, pinentryWasOpen: false, pinentryReturning: false,
     pinentryMasterName: "", pinentryNotice: "", heldPinName: "",
     status: "locked", errorMessage: "", isUnlocking: false, masterPassword: "", pinEntry: "", pinUnlockError: "",
@@ -446,5 +446,16 @@ check("the re-prompt question asks pinentry when it can, and shows its field onl
 check("the setting defaults on and an override program is read from shell.json",
   Model.boolSetting("usePinentry", undefined) === true && Model.boolSetting("usePinentry", false) === false
     && /Model\.pinentryProgram\(setting\("pinentryProgram", ""\)\)/.test(service), "")
+check("the Omarchy-style pinentry is off by default and found from the plugin's own directory",
+  Model.boolSetting("omarchyPinentry", undefined) === false
+    && /omarchyPinentry: Model\.boolSetting\("omarchyPinentry", setting\("omarchyPinentry", false\)\)/.test(service)
+    && /omarchyPinentryPath: Model\.omarchyPinentryPath\(sshAgentPluginDir, omarchyPinentry\)/.test(service), "")
+check("it is offered to every pinentry run and probe, which use it only with no program set",
+  /Model\.pinentryCommand\(pinentryProgramName, ask, omarchyPinentryPath\)/.test(body("requestPinentry"))
+    && /Model\.pinentryProbeCommand\(pinentryProgramName, omarchyPinentryPath\)/.test(functionBody(service, "probePinentry")), "")
+check("turning it on or off checks again which pinentry is there",
+  /onOmarchyPinentryPathChanged: \{\s*resetPinentryChoice\(\)\s*probePinentry\(\)/.test(service), "")
+check("the settings screen shows its value",
+  /case "omarchyPinentry": return omarchyPinentry/.test(service), "")
 
 done()
