@@ -6611,9 +6611,6 @@ var SETTINGS_GROUPS = [
 ]
 
 var SETTINGS_SCHEMA = [
-  { key: "autoSyncMinutes", group: "general", type: "int", label: "Automatically sync every", unit: "minutes",
-    min: 0, max: 1440, step: 5, zeroLabel: "Off", defaultValue: 0,
-    description: "Sync while the vault is unlocked and idle. If the server is offline, retry at this interval." },
   { key: "autoLockMinutes", group: "security", type: "int", label: "Auto-lock after", unit: "minutes",
     min: 0, max: 1440, step: 5, zeroLabel: "Never", defaultValue: 15,
     description: "Lock the vault after this long without activity." },
@@ -6648,6 +6645,9 @@ var SETTINGS_SCHEMA = [
     min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
 
+  { key: "autoSyncMinutes", group: "general", type: "int", label: "Automatically sync every", unit: "minutes",
+    min: 0, max: 1440, step: 5, zeroLabel: "Off", defaultValue: 0,
+    description: "Sync while the vault is unlocked and idle. If the server is offline, retry at this interval." },
   { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
   { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
