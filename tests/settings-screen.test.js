@@ -227,6 +227,41 @@ check("bindings that also run for heading rows tolerate the missing fields",
     && /\(modelData\.zeroLabel \|\| ""\)/.test(panelSrc),
   "undefined reaching a QString property is a warning on every frame")
 
+// --- the auto-type keybinding row -----------------------------------------------
+
+const keybindRow = readPluginSource("AutoTypeKeybind.qml")
+check("the keybinding row loads under the auto-type setting, and only while it is on",
+  /Loader \{[\s\S]{0,120}active: !settingDelegate\.isGroup && settingDelegate\.modelData\.key === "autoTypeEnabled"\s*&& root\.autoTypeEnabled[\s\S]{0,80}sourceComponent: AutoTypeKeybind \{ panel: root; vault: root\.vault \}/.test(screen)
+    && (panelSrc.match(/AutoTypeKeybind \{/g) || []).length === 1,
+  "expected one AutoTypeKeybind, loaded off the autoTypeEnabled row")
+check("it sits above that row's separator, inside the same delegate",
+  screen.indexOf("sourceComponent: AutoTypeKeybind") < screen.indexOf("sourceComponent: SshAgentSettings")
+    && /sourceComponent: AutoTypeKeybind[^\n]*\n\s*\}\s*\n\s*PanelSeparator \{ width: parent\.width \}/.test(screen),
+  "expected the row directly under its setting")
+check("the chord field, Register Keybinding and Copy Line show only while no key is bound",
+  /readonly property bool choosing: section\.keybind\.checked && !section\.keybind\.bound/.test(keybindRow)
+    && /LineField \{[\s\S]{0,120}visible: section\.choosing/.test(keybindRow)
+    && /visible: section\.choosing && section\.keybind\.canRegister\s*\n\s*text: "Register Keybinding"/.test(keybindRow)
+    && /visible: section\.choosing\s*\n\s*text: "Copy Line"/.test(keybindRow),
+  "expected the choosing gate on the field and both buttons")
+check("Remove Keybinding shows only for the plugin's own pair",
+  /visible: section\.keybind\.bound && section\.keybind\.removable === true\s*\n\s*text: "Remove Keybinding"/.test(keybindRow),
+  "expected the removable gate")
+{
+  const before = keybindRow.slice(0, keybindRow.indexOf('text: "Register Keybinding"'))
+  check("its buttons wrap rather than run off the panel",
+    before.lastIndexOf("Flow {") > before.lastIndexOf("Row {")
+      && keybindRow.indexOf('text: "Remove Keybinding"') > keybindRow.indexOf("Flow {"),
+    "expected the three buttons in one Flow")
+}
+check("Return in the chord field registers, and Escape leaves it",
+  /submitsForm: false\s*\n\s*onAccepted: section\.panel\.registerAutoTypeKeybind\(\)/.test(keybindRow)
+    && /Keys\.onEscapePressed:[\s\S]{0,80}section\.panel\.restoreScreenFocus\(\)/.test(keybindRow),
+  "expected Return to register and Escape to hand focus back")
+check("opening settings with auto-type on reads the binding again",
+  /function openSettings\(\)[\s\S]*?if \(autoTypeEnabled\) inspectAutoTypeKeybind\(\)[\s\S]*?currentScreen = "settings"/.test(panelSrc),
+  "expected openSettings to inspect")
+
 // --- the danger zone ----------------------------------------------------------
 
 check("destructive actions are separated from maintenance ones",

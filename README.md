@@ -494,12 +494,15 @@ With it on, <kbd>Ctrl</kbd>+<kbd>C</kbd> on a login in the list or the detail
 inspector (or the row's second button) copies its password, after any master
 password re-prompt, and arms it for 30 seconds. With `closeOnCopy` the panel
 closes and focus goes back to the window you came from. Calling the IPC then
-types the login's username, <kbd>Tab</kbd> and password there, once. Bind it
-to a key next to your [global hotkey](#global-hotkey), for example:
+types the login's username, <kbd>Tab</kbd> and password there, once.
 
-```lua
-o.bind("SUPER + CTRL + BACKSLASH", "Bitwarden auto-type", "omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType")
-```
+It needs a key to call it. Under the setting, while auto-type is on, the
+panel shows whether one is bound ("Bound to SUPER + CTRL + BACKSLASH" or "No
+keybinding yet") and offers a key combination that nothing else on your
+desktop uses. **Register Keybinding** adds it to `~/.config/hypr/bindings.lua`
+and reloads Hyprland, so the key works straight away; see
+[Global hotkey](#global-hotkey) for exactly what it writes, and for doing it
+by hand.
 
 - It types with [`wtype`](https://github.com/atx/wtype). The setup screen
   lists it, and offers to install it, only while auto-type is on.
@@ -586,17 +589,44 @@ not in a separate block:
 
 ## Global hotkey
 
-To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
+Two IPC calls are worth a key: `toggle`, which opens and closes the panel, and
+`autoType`, which types an armed login (with [auto-type](#auto-type) on).
+Omarchy keeps your own keybindings in `~/.config/hypr/bindings.lua`, and
+Hyprland reloads its config when that file is saved (`hyprctl reload` forces
+it); the shell does not need restarting.
+
+**The auto-type key, from the panel.** With auto-type on, **Settings → General
+→ Auto-type logins** has a key combination field under it, filled in with one
+that is free: modifiers from `SUPER`, `SHIFT`, `CTRL` and `ALT` joined by
+` + `, then one key name, and at least one of `SUPER`, `CTRL` or `ALT`. It
+says which binding already holds a key you type. **Register Keybinding**
+appends two lines to the end of `bindings.lua`, a comment saying the plugin
+added them and the binding:
+
+```lua
+-- Added by the qs-bitwarden-cli plugin (Settings > General > Auto-type logins).
+o.bind("SUPER + CTRL + BACKSLASH", "Bitwarden auto-type", "omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType")
+```
+
+then runs `hyprctl reload config-only` and shows the result, or any config
+error Hyprland reports. Nothing else in the file is touched. It refuses when
+`bindings.lua` already has a line that runs `autoType`, and creates the file
+only when it is missing and your `~/.config/hypr/hyprland.lua` loads it, as
+Omarchy's does. **Remove Keybinding** takes out those two lines again, and
+only while they are exactly as the plugin wrote them; a binding you wrote or
+changed yourself is shown with its line number, for you to edit there.
+
+**By hand.** If you keep your bindings somewhere else, **Copy Line** puts the
+`o.bind(...)` line on the clipboard (it is not a secret, so it is not cleared).
+Either way, the panel's own toggle is a line of the same kind, for example on
+`SUPER + CTRL + /`:
 
 ```lua
 o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle")
 ```
 
-Apply changes by restarting the shell:
-
-```bash
-omarchy restart shell
-```
+If the key is one of Omarchy's defaults (`omarchy menu keybindings --print`
+lists them), add `hl.unbind("SUPER + CTRL + SLASH")` on the line before it.
 
 ---
 
