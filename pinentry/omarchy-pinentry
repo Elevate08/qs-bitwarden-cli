@@ -396,8 +396,10 @@ function answered() {
   }
 }
 
-// Ends the run: the answer's `D` lines and OK, or `error`. Then the prompt is
-// closed and its directory removed.
+// Ends the run: the prompt is closed and its directory removed, then the
+// answer's `D` lines and OK, or `error`, are written. The directory goes
+// first: the script reading the answer may exit, and kill this process, as
+// soon as the line is out, so nothing may be left to do after it.
 function settle(error, lines) {
   const r = run
   if (!r || r.settled) {
@@ -405,6 +407,7 @@ function settle(error, lines) {
     return
   }
   r.settled = true
+  endRun()
   if (lines) {
     for (const line of lines) {
       writeOut(line)
@@ -414,7 +417,6 @@ function settle(error, lines) {
   } else {
     reply(error || ERR_GENERAL)
   }
-  endRun()
   // Anything sent meanwhile is answered now, in order.
   setImmediate(drain)
 }
