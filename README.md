@@ -520,11 +520,11 @@ provenance check, and what the agent does and does not protect.
 
 ### Automatic sync
 
-Off by default. **Settings → General → Automatically sync every** (or
-`autoSyncMinutes`) syncs the open vault with the server at that interval, which
-helps when a self-hosted server is not always reachable: a sync that fails
-while it is offline is tried again at the same interval, so the vault catches
-up soon after the server returns. The panel does not need to be open. The
+Every 15 minutes by default. **Settings → General → Automatically sync every**
+(or `autoSyncMinutes`; `0` turns it off) syncs the open vault with the server at
+that interval, which helps when a self-hosted server is not always reachable:
+a sync that fails while it is offline is tried again at the same interval, so
+the vault catches up soon after the server returns. The panel does not need to be open. The
 first sync after an unlock runs within about 30 seconds, and a sync you start
 yourself counts as the latest one.
 
@@ -604,7 +604,7 @@ The following settings are read from the plugin's own entry in the
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `autoSyncMinutes` | `number` | `0` | Minutes between automatic syncs while the vault is unlocked and idle (`0` to disable); a server that is offline is tried again at the same interval. See [Automatic sync](#automatic-sync). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `0`. |
+| `autoSyncMinutes` | `number` | `15` | Minutes between automatic syncs while the vault is unlocked and idle (`0` to disable); a server that is offline is tried again at the same interval. See [Automatic sync](#automatic-sync). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
 | `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). The clear is the copy's own lifetime (`wl-copy` under `timeout`), so it survives a shell restart and never touches something copied later. Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |

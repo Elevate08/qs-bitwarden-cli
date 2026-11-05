@@ -47,10 +47,10 @@ function fixture() {
 }
 
 const schema = Model.settingSchemaEntry("autoSyncMinutes")
-eq("automatic sync is opt-in", Model.intSetting("autoSyncMinutes", undefined), 0)
+eq("automatic sync defaults to every 15 minutes", Model.intSetting("autoSyncMinutes", undefined), 15)
 eq("schema exposes General setting", schema.group, "general")
 for (const value of [null, false, "invalid", -1, Infinity])
-  eq(`invalid interval ${value} disables scheduling`, Model.intSetting("autoSyncMinutes", value), 0)
+  eq(`invalid interval ${value} falls back to the default`, Model.intSetting("autoSyncMinutes", value), 15)
 eq("large interval is bounded", Model.intSetting("autoSyncMinutes", 1e12), 1440)
 eq("a one-minute interval is supported", Model.intSetting("autoSyncMinutes", 1), 1)
 {

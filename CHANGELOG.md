@@ -26,7 +26,7 @@
   off by default; where it cannot run (no `quickshell`, `node` or Wayland
   display), pinentry-qt or `pinentry` is used as before, and a
   `pinentryProgram` you set always wins.
-- **The vault can sync itself on a schedule** (opt-in, `autoSyncMinutes`)
+- **The vault syncs itself every 15 minutes** (`autoSyncMinutes`; `0` turns it off)
   ([#124](https://github.com/Elevate08/qs-bitwarden-cli/pull/124)). A vault
   on a self-hosted server that is not always reachable stayed as it was
   until you synced by hand after the server came back. **Settings → General
@@ -37,7 +37,7 @@
   is about to auto-lock; it never unlocks the vault and never extends the
   auto-lock. A sync that fails keeps the vault you have and says so in the
   panel, without a desktop notification each time, and the next one that
-  succeeds clears that notice. Off by default.
+  succeeds clears that notice. On by default, every 15 minutes.
 - **The panel can type a login into another window for you** (opt-in,
   `autoTypeEnabled`)
   ([#119](https://github.com/Elevate08/qs-bitwarden-cli/pull/119)). With

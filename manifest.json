@@ -21,7 +21,7 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "autoSyncMinutes": 0,
+      "autoSyncMinutes": 15,
       "autoLockMinutes": 15,
       "lockOnScreenLock": true,
       "lockOnSuspend": true,
@@ -51,7 +51,7 @@
         "min": 0,
         "max": 1440,
         "step": 5,
-        "defaultValue": 0
+        "defaultValue": 15
       },
       {
         "key": "autoLockMinutes",
