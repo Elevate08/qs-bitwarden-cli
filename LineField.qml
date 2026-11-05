@@ -51,6 +51,11 @@ FocusScope {
   // Shortcut never fires while a field has focus. A field whose own Return
   // does something else (onAccepted) turns this off.
   property bool submitsForm: true
+  // Off for a field drawn on a surface of its own (the Omarchy-style
+  // pinentry's card): no fill and no border, the same text and caret.
+  property bool framed: true
+  property string fontFamily: Style.font.family
+  property real fontPixelSize: Style.font.body
 
   // Callers and the qml-kit tests read the TextInput echo values.
   readonly property int echoMode: password ? TextInput.Password : TextInput.Normal
@@ -513,8 +518,8 @@ FocusScope {
     clip: true
     implicitHeight: Math.ceil(font.pixelSize + topPadding + bottomPadding)
 
-    font.family: Style.font.family
-    font.pixelSize: Style.font.body
+    font.family: root.fontFamily
+    font.pixelSize: root.fontPixelSize
     color: root.foreground
     selectionColor: root.password ? "transparent" : root.selectionTint
     selectedTextColor: root.password ? "transparent" : root.foreground
@@ -571,6 +576,7 @@ FocusScope {
     }
 
     background: BorderSurface {
+      visible: root.framed
       color: Style.controlFill(root._focused, root._hot, root.foreground, root.accent)
       borderSpec: root._borderSpec
       radius: Style.cornerRadius
