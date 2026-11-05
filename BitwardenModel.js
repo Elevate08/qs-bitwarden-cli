@@ -6714,8 +6714,10 @@ var SETTINGS_SCHEMA = [
 
   { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
-  { key: "autoTypeEnabled", group: "general", type: "bool", label: "Enable auto-type", defaultValue: false,
-    description: "DANGER: allow typing credentials into the focused window via a global shortcut. Off by default because auto-typing secrets into arbitrary windows can leak them." },
+  // Asks once more before it goes on (`confirm`, toggleBoolSetting()).
+  { key: "autoTypeEnabled", group: "general", type: "bool", label: "Auto-type logins", defaultValue: false,
+    confirm: "Auto-type types your password into whatever window has focus, and any program running as you can trigger it while an entry is armed. Press again to turn it on.",
+    description: "Off by default: whatever window has focus when it types gets your password, and while an entry is armed any program running as you can make it type. With it on, Ctrl+C in the panel copies the highlighted login's password and arms it for 30 seconds; the autoType command, bound to a key, then types its username, Tab and password into the focused window, once. Needs wtype." },
   { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
     description: "Use the active Omarchy theme accent for the primary menu-bar icon." },
   { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",

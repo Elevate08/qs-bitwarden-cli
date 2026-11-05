@@ -5342,10 +5342,26 @@ Item {
     return !settingValue(entry)
   }
 
+  // A setting whose schema entry has `confirm` (auto-type) asks once more
+  // before it is turned on; until then the question is the row's note.
+  property string settingConfirmKey: ""
+
+  function toggleBoolSetting(entry) {
+    if (!entry || entry.type !== "bool") return
+    var on = Boolean(settingValue(entry))
+    if (!on && entry.confirm && settingConfirmKey !== entry.key) {
+      settingConfirmKey = entry.key
+      return
+    }
+    settingConfirmKey = ""
+    writeSetting(entry.key, !on, "bool")
+  }
+
   // The stored password is only as protected as the weakest way in; with
   // fingerprint on (no secret involved) a PIN or key adds nothing, and those
   // rows say so.
   function settingNote(entry) {
+    if (entry && entry.confirm && settingConfirmKey === entry.key) return entry.confirm
     if (!entry || (entry.key !== "pinUnlock" && entry.key !== "fidoUnlock")) return ""
     if (!settingValue(entry) || !fingerprintUnlock || !fingerprintStored) return ""
     return "Fingerprint unlock is also on, so the stored password is only as protected as "
@@ -5372,6 +5388,7 @@ Item {
     // Only a heading beyond: stay put.
     if (i < 0 || i >= n) return
     settingsIndex = i
+    settingConfirmKey = ""
   }
 
   function firstSettingIndex() {
@@ -5420,13 +5437,14 @@ Item {
       else beginFidoSetup()
       return
     }
-    if (e.type === "bool") writeSetting(e.key, !settingValue(e), "bool")
+    if (e.type === "bool") toggleBoolSetting(e)
   }
 
   function openSettings() {
     closeFilterGroup()
     if (currentScreen !== "settings") screenBeforeSettings = currentScreen
     settingsFlash = ""
+    settingConfirmKey = ""
     settingsIndex = firstSettingIndex()
     uwsmFlash = ""
     uwsmConfirmPending = false

@@ -2531,7 +2531,7 @@ Panel {
                           else root.vault.beginFidoSetup()
                           return
                         }
-                        root.vault.writeSetting(modelData.key, !checked, "bool")
+                        root.vault.toggleBoolSetting(modelData)
                       }
                     }
 

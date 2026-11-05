@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Auto-type (off by default): arming an entry and the `autoType` IPC. The vault's own
+// Auto-type (off by default): the setting and its confirmation, arming an
+// entry, and the `autoType` IPC. The vault's own
 // functions run here against a stand-in vault (the state they read and
 // write, and recorded calls); the wiring is checked in the source. Nothing
 // here starts wtype: the helper's typing is covered by its Rust tests,
@@ -23,6 +24,57 @@ function bind(v, names) {
   Object.assign(v, make(v))
   return v
 }
+
+// --- the setting -------------------------------------------------------------------
+
+const entry = Model.settingSchemaEntry("autoTypeEnabled")
+const manifest = JSON.parse(read("manifest.json")).barWidget
+const listed = manifest.schema.find(e => e.key === "autoTypeEnabled")
+check("auto-type is off by default, in the settings screen and the manifest",
+  entry && entry.defaultValue === false && entry.type === "bool"
+    && listed && listed.defaultValue === false && listed.type === "boolean"
+    && manifest.defaults.autoTypeEnabled === false,
+  JSON.stringify({ entry, listed, defaults: manifest.defaults.autoTypeEnabled }))
+check("the service reads it false-safe",
+  /readonly property bool autoTypeEnabled: Model\.boolSetting\("autoTypeEnabled", setting\("autoTypeEnabled", false\)\)/
+    .test(service), "")
+for (const [where, text] of [["settings screen", entry.description], ["manifest", listed.description]]) {
+  check(`the ${where} says what it risks and what it needs`,
+    /Off by default/.test(text) && /whatever window has focus/.test(text) && /any program running as you/.test(text)
+      && /Needs wtype/.test(text) && text.indexOf(Model.autoTypeArmMs() / 1000 + " seconds") >= 0, text)
+}
+eq("the manifest and the settings screen describe it alike", listed.description, entry.description)
+check("turning it on asks once more", /Press again to turn it on/.test(entry.confirm || ""), String(entry.confirm))
+
+{
+  const names = ["toggleBoolSetting", "settingNote"]
+  const v = bind({
+    settingConfirmKey: "", writes: [], values: {}, fingerprintUnlock: false, fingerprintStored: false,
+    autoTypeEnabled: false, depsChecked: false, dependencies: { items: [] }, Model,
+    settingValue(e) { return Boolean(v.values[e.key]) },
+    writeSetting(key, value, type) { v.writes.push([key, value, type]) }
+  }, names)
+  v.toggleBoolSetting(entry)
+  check("the first press only asks, and the row says why",
+    v.writes.length === 0 && v.settingNote(entry) === entry.confirm, JSON.stringify(v.writes))
+  v.toggleBoolSetting(entry)
+  eq("the second turns it on", JSON.stringify(v.writes), JSON.stringify([["autoTypeEnabled", true, "bool"]]))
+  check("and the question is gone", v.settingNote(entry) === "", v.settingNote(entry))
+  v.values.autoTypeEnabled = true
+  v.writes = []
+  v.toggleBoolSetting(entry)
+  eq("turning it off asks nothing", JSON.stringify(v.writes), JSON.stringify([["autoTypeEnabled", false, "bool"]]))
+  const plain = Model.settingSchemaEntry("closeOnCopy")
+  v.writes = []
+  v.toggleBoolSetting(plain)
+  eq("other switches flip at once", JSON.stringify(v.writes), JSON.stringify([["closeOnCopy", true, "bool"]]))
+}
+check("both the switch and the keyboard go through the confirmation",
+  /if \(e\.type === "bool"\) toggleBoolSetting\(e\)/.test(body("activateSettingRow"))
+    && /root\.vault\.toggleBoolSetting\(modelData\)/.test(read("Panel.qml"))
+    && !/root\.vault\.writeSetting\(modelData\.key, !checked, "bool"\)/.test(read("Panel.qml")), "")
+check("a question left unanswered is dropped when the cursor moves or the screen opens",
+  /settingConfirmKey = ""/.test(body("moveSettingsCursor")) && /settingConfirmKey = ""/.test(body("openSettings")), "")
 
 // --- arming --------------------------------------------------------------------------
 
