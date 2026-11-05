@@ -46,7 +46,8 @@
   `autoTypeEnabled`)
   ([#119](https://github.com/Elevate08/qs-bitwarden-cli/pull/119)). With
   **Settings → General → Auto-type logins** on, <kbd>Ctrl</kbd>+<kbd>C</kbd>
-  on a login (or its row's new button) copies the password as before and
+  on the highlighted login (the first suggestion when the panel opens, from
+  the search box too) or its row's new button copies the password as before and
   arms that login for 30 seconds; the `autoType` IPC, bound to a key of your
   choosing, then types its username, <kbd>Tab</kbd> and password into the
   focused window with `wtype`, once. It is off by default because of what it

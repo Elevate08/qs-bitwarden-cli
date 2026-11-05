@@ -404,15 +404,96 @@ check("no secret is put in an environment or argv for wtype",
 
 const view = read("Panel.qml")
 const interceptor = view.slice(view.indexOf("id: shortcutInterceptor"), view.indexOf("PanelKeyCatcher {", view.indexOf("id: shortcutInterceptor")))
-const ctrlC = interceptor.slice(interceptor.indexOf("Qt.Key_C") - 200, interceptor.indexOf("Qt.Key_C") + 600)
-check("Ctrl+C is taken only with Control alone, with auto-type on, while the catcher has the keys",
-  /\(event\.modifiers & ~Qt\.KeypadModifier\) === Qt\.ControlModifier && event\.key === Qt\.Key_C\s*&& root\.vault\.autoTypeEnabled && !keyCatcher\.blocked/.test(ctrlC),
-  ctrlC)
-check("and accepted only when something was armed (or its prompt shown)",
-  /if \(picked && root\.vault\.copyPasswordAndArm\(picked\)\) event\.accepted = true/.test(ctrlC)
-    && (ctrlC.match(/event\.accepted = true/g) || []).length === 1, ctrlC)
-check("the search box's Ctrl+C is its own: the catcher is blocked while it has focus",
-  /blocked: repromptConfirm\.shown\s*\|\| searchField\.activeFocus/.test(view), "")
+check("the catcher's Ctrl+C arms only while the catcher has the keys, through the one Panel function",
+  /if \(!keyCatcher\.blocked && root\.armAutoTypeFromKey\(event\)\) \{\s*event\.accepted = true\s*return\s*\}/.test(interceptor)
+    && (interceptor.match(/Qt\.Key_C/g) || []).length === 0, interceptor)
+check("the catcher stays blocked while the search box (or any field) has focus",
+  /blocked: repromptConfirm\.shown\s*\|\| searchField\.activeFocus\s*\|\| emailField\.activeFocus\s*\|\| loginPassField\.activeFocus/.test(view), "")
+
+// The search box and the catcher share armAutoTypeFromKey(); its handler and
+// the function run here against a stand-in vault and field.
+const searchBox = src.slice(src.indexOf("id: searchField"), src.indexOf("id: clearSearchBtn"))
+function handlerText(block, head) {
+  const start = block.indexOf(head)
+  if (start < 0) return ""
+  let depth = 0
+  for (let i = block.indexOf("{", start); i < block.length; i++) {
+    if (block[i] === "{") depth++
+    else if (block[i] === "}" && --depth === 0) return block.slice(block.indexOf("function", start), i + 1)
+  }
+  return ""
+}
+const searchKeys = handlerText(searchBox, "Keys.onPressed: function(event)")
+const Qt = { NoModifier: 0, ShiftModifier: 0x02000000, ControlModifier: 0x04000000, AltModifier: 0x08000000,
+  KeypadModifier: 0x20000000, Key_C: 0x43, Key_V: 0x56 }
+function searchBoxWith(opts = {}) {
+  const r = {
+    autoTypeEnabled: opts.autoTypeEnabled !== false, currentScreen: opts.screen || "main", detailItem: opts.detailItem || null,
+    filteredItems: opts.items || [{ id: "top", isSuggested: true }, { id: "next" }], selectedIndex: opts.selectedIndex || 0,
+    armed: [], alt: [],
+    getSelectedItem() { return r.filteredItems[r.selectedIndex] || null },
+    copyPasswordAndArm(item) { r.armed.push(item.id); return opts.armResult !== false },
+    runAltShortcut(t) { r.alt.push(t); return true }
+  }
+  r.armAutoTypeFromKey = new Function("root", "Qt", body("armAutoTypeFromKey") + "\nreturn armAutoTypeFromKey")(r, Qt)
+  const field = { selectedText: opts.selected || "" }
+  const handler = new Function("root", "Qt", "searchField", "return " + searchKeys)(r, Qt, field)
+  r.press = (modifiers, key, text) => {
+    const event = { modifiers, key, text: text || "", accepted: false }
+    handler(event)
+    return event.accepted
+  }
+  return r
+}
+check("the search box has its own key handler, and it calls the shared function",
+  searchKeys !== "" && /searchField\.selectedText === "" && root\.armAutoTypeFromKey\(event\)/.test(searchKeys)
+    && /root\.copyPasswordAndArm\(picked\)/.test(body("armAutoTypeFromKey"))
+    && /onScreen === "main" \? root\.getSelectedItem\(\)/.test(body("armAutoTypeFromKey")), searchKeys)
+{
+  const v = searchBoxWith()
+  check("Ctrl+C in the search box, nothing selected: the highlighted row (the top suggestion) is armed",
+    v.press(Qt.ControlModifier, Qt.Key_C, "\u0003") === true && v.armed.join() === "top", v.armed.join())
+  const w = searchBoxWith({ selectedIndex: 1 })
+  check("and after moving the highlight, the row it is on",
+    w.press(Qt.ControlModifier, Qt.Key_C) === true && w.armed.join() === "next", w.armed.join())
+  const k = searchBoxWith()
+  check("the keypad modifier does not count as another key held",
+    k.press(Qt.ControlModifier | Qt.KeypadModifier, Qt.Key_C) === true && k.armed.join() === "top", k.armed.join())
+  const sel = searchBoxWith({ selected: "bank" })
+  check("with text selected it is the box's own copy: not taken, nothing armed",
+    sel.press(Qt.ControlModifier, Qt.Key_C) === false && sel.armed.length === 0, sel.armed.join())
+  for (const [what, mods, key] of [["Ctrl+Shift+C", Qt.ControlModifier | Qt.ShiftModifier, Qt.Key_C],
+      ["Ctrl+Alt+C", Qt.ControlModifier | Qt.AltModifier, Qt.Key_C], ["a plain c", Qt.NoModifier, Qt.Key_C],
+      ["Ctrl+V", Qt.ControlModifier, Qt.Key_V]]) {
+    const x = searchBoxWith()
+    // Ctrl+Alt+C is Alt+c to the box (copy username), as before.
+    const taken = x.press(mods, key, "c")
+    check(`${what} in the search box arms nothing`, x.armed.length === 0 && taken === Boolean(mods & Qt.AltModifier),
+      x.armed.join())
+  }
+  const alt = searchBoxWith()
+  check("Alt+letter still runs its shortcut from the box", alt.press(Qt.AltModifier, Qt.Key_C, "c") && alt.alt.join() === "c"
+    && alt.armed.length === 0, alt.alt.join())
+  const off = searchBoxWith({ autoTypeEnabled: false })
+  check("with auto-type off, Ctrl+C is the box's own copy", off.press(Qt.ControlModifier, Qt.Key_C) === false
+    && off.armed.length === 0, "")
+  const none = searchBoxWith({ items: [] })
+  check("an empty list arms nothing and leaves the key", none.press(Qt.ControlModifier, Qt.Key_C) === false
+    && none.armed.length === 0, "")
+  const card = searchBoxWith({ armResult: false })
+  check("a row with nothing to type leaves the key to the box", card.press(Qt.ControlModifier, Qt.Key_C) === false, "")
+  const hidden = searchBoxWith({ screen: "edit" })
+  check("a hidden search box still holding focus on another screen arms nothing",
+    hidden.press(Qt.ControlModifier, Qt.Key_C) === false && hidden.armed.length === 0, hidden.armed.join())
+  const detail = searchBoxWith({ screen: "detail", detailItem: { id: "open" } })
+  check("on the detail screen the shared function arms the open item, as the catcher's Ctrl+C did",
+    detail.press(Qt.ControlModifier, Qt.Key_C) === true && detail.armed.join() === "open", detail.armed.join())
+}
+check("LineField hands its keys to the field's own handler before the editor's copy (tests/qml/tst_search_ctrl_c.qml)",
+  /Keys\.priority: Keys\.BeforeItem\s*Keys\.forwardTo: \[root, keySink\]/.test(read("LineField.qml"))
+    && /property alias selectedText: editor\.selectedText/.test(read("LineField.qml")), "")
+check("Enter in the search box acts on the same row",
+  /Keys\.onReturnPressed: root\.smartEnter\(root\.getSelectedItem\(\)\)/.test(searchBox), "")
 const row = view.slice(view.indexOf("id: actionButtonsRow"), view.indexOf("id: rowMouseArea"))
 const armButton = row.slice(row.indexOf("arm auto-type") - 300, row.indexOf("arm auto-type") + 200)
 check("the row's button is shown only with auto-type on, says what it does, and arms after any prompt",

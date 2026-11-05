@@ -314,7 +314,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | Shortcut | Action |
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up), or open the item when there is no password to copy -- a card, an identity, a note, an SSH key |
-| <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy the highlighted login's password and arm it for 30 seconds, for the `autoType` IPC to type. Off, or with the search box focused, it is the usual copy |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy the highlighted login's password and arm it for 30 seconds, for the `autoType` IPC to type. That is the row <kbd>Enter</kbd> acts on, the first suggestion (or first item) when the panel opens, so nothing needs selecting first; it works from the search box too, unless text is selected there. Off, or over selected text, it is the usual copy |
 | <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
@@ -490,9 +490,14 @@ IPC cannot tell your keybinding from anything else that calls it. Turning it
 on in **Settings → General → Auto-type logins** asks you to press again to
 confirm.
 
-With it on, <kbd>Ctrl</kbd>+<kbd>C</kbd> on a login in the list or the detail
-inspector (or the row's second button) copies its password, after any master
-password re-prompt, and arms it for 30 seconds. With `closeOnCopy` the panel
+With it on, <kbd>Ctrl</kbd>+<kbd>C</kbd> acts on the login <kbd>Enter</kbd>
+would: the highlighted row of the list, or the item open in the detail
+inspector. When the panel opens the highlight is already on the first
+suggestion for the window you came from (or the first item), so there is
+nothing to select first, and it works from the search box as well, unless
+you have text selected there, which it copies as usual. It (or the row's
+second button) copies the login's password, after any master password
+re-prompt, and arms it for 30 seconds. With `closeOnCopy` the panel
 closes and focus goes back to the window you came from. Calling the IPC then
 types the login's username, <kbd>Tab</kbd> and password there, once.
 

@@ -241,6 +241,21 @@ Panel {
     }
   }
 
+  // Ctrl+C (Control alone) with auto-type on: copy and arm the login Enter
+  // acts on -- the open item on the detail screen, the highlighted row of the
+  // list, which is the top suggestion (or the first item) when the panel
+  // opens. Through copyPasswordAndArm(), so after any re-prompt. True when it
+  // took the key: something was armed, or its prompt shown. The callers say
+  // where it may run (the catcher unblocked, a search box with no selection).
+  function armAutoTypeFromKey(event) {
+    if ((event.modifiers & ~Qt.KeypadModifier) !== Qt.ControlModifier || event.key !== Qt.Key_C) return false
+    if (!root.vault.autoTypeEnabled) return false
+    var onScreen = root.vault.currentScreen
+    var picked = onScreen === "detail" ? root.vault.detailItem
+      : (onScreen === "main" ? root.vault.getSelectedItem() : null)
+    return Boolean(picked) && root.vault.copyPasswordAndArm(picked)
+  }
+
   // The same guarantee for the unlock, item-form and Send secrets.
   function syncSensitiveFields() {
     syncLoginFields()
@@ -695,16 +710,12 @@ Panel {
           return
         }
 
-        // With auto-type on, Ctrl+C (and no other modifier) copies the
-        // highlighted login's password and arms it (copyPasswordAndArm()).
-        // Only while the catcher has the keys: in the search box or any other
-        // field it stays the field's own copy. Anything else falls through.
-        if ((event.modifiers & ~Qt.KeypadModifier) === Qt.ControlModifier && event.key === Qt.Key_C
-            && root.vault.autoTypeEnabled && !keyCatcher.blocked) {
-          var onScreen = root.vault.currentScreen
-          var picked = onScreen === "detail" ? root.vault.detailItem
-            : (onScreen === "main" ? root.vault.getSelectedItem() : null)
-          if (picked && root.vault.copyPasswordAndArm(picked)) event.accepted = true
+        // With auto-type on, Ctrl+C arms the highlighted login
+        // (armAutoTypeFromKey()). Only while the catcher has the keys: in a
+        // field it stays the field's own copy, except in the search box,
+        // which arms from its own handler. Anything else falls through.
+        if (!keyCatcher.blocked && root.armAutoTypeFromKey(event)) {
+          event.accepted = true
           return
         }
 
@@ -3410,8 +3421,16 @@ Panel {
                 root.vault.closeFilterGroup()
                 root.vault.scheduleFilterRebuild()
               }
-              // Alt+letter runs the same shortcuts without leaving the box.
               Keys.onPressed: function(event) {
+                // Ctrl+C arms the highlighted login from here, as Enter copies
+                // it: the box has focus when the panel opens, and the catcher's
+                // Ctrl+C never sees a key while it does. Only with nothing
+                // selected; a selection's Ctrl+C is the box's own copy.
+                if (searchField.selectedText === "" && root.armAutoTypeFromKey(event)) {
+                  event.accepted = true
+                  return
+                }
+                // Alt+letter runs the same shortcuts without leaving the box.
                 if (!(event.modifiers & Qt.AltModifier)) return
                 if (!event.text) return
                 if (root.vault.runAltShortcut(String(event.text).toLowerCase())) {
