@@ -3664,12 +3664,12 @@ Panel {
                   propagateComposedEvents: true
                   onClicked: function(mouse) {
                     // This area is drawn over the row, buttons included: a
-                    // click on them is passed down (propagateComposedEvents)
-                    // instead of opening the item.
-                    var btnX = actionButtonsRow.mapToItem(rowMouseArea, 0, 0).x
-                    var btnY = actionButtonsRow.mapToItem(rowMouseArea, 0, 0).y
-                    if (mouse.x >= btnX && mouse.x <= btnX + actionButtonsRow.width
-                        && mouse.y >= btnY && mouse.y <= btnY + actionButtonsRow.height) {
+                    // click on a button is passed down (propagateComposedEvents)
+                    // instead of opening the item. One in the gaps between
+                    // them opens it, like the rest of the row.
+                    var at = rowMouseArea.mapToItem(actionButtonsRow, mouse.x, mouse.y)
+                    var hit = actionButtonsRow.childAt(at.x, at.y)
+                    if (hit && hit.visible) {
                       mouse.accepted = false
                       return
                     }
