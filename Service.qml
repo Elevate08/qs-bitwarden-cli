@@ -116,6 +116,7 @@ Item {
 
   // Settings, validated on the way in (nothing validates shell.json); see
   // intSetting() in BitwardenModel.js.
+  readonly property int autoSyncMinutes: Model.intSetting("autoSyncMinutes", setting("autoSyncMinutes"))
   readonly property int autoLockMinutes: Model.intSetting("autoLockMinutes", setting("autoLockMinutes"))
   readonly property int clearClipboardSec: Model.intSetting("clearClipboardSec", setting("clearClipboardSec"))
   readonly property bool lockOnScreenLock: Model.boolSetting("lockOnScreenLock", setting("lockOnScreenLock", true))
@@ -713,6 +714,10 @@ Item {
   // This session already tried to repair an unsynced vault (onStatusFinished()).
   property bool initialSyncAttempted: false
   property bool syncReloadPending: false
+  property double lastSyncAttemptAt: 0
+  property bool backgroundSync: false
+  property bool autoSyncReloadPending: false
+  readonly property string autoSyncError: "Automatic sync failed. The local vault may be out of date."
   property string errorMessage: ""
   // Why a lock happened without the user asking. Outlives the SSH popup's
   // cleanup, which would otherwise wipe it when a request from before the
@@ -3418,8 +3423,9 @@ Item {
   // -------------------------------------------------------------------------
 
   function refreshStatus() {
-    // A delayed probe or wake-up refresh must not erase why the vault locked.
-    if (errorMessage !== vaultHelperLostMessage) errorMessage = ""
+    // A delayed probe or wake-up refresh must not erase why the vault locked
+    // or that its last automatic synchronization failed.
+    if (errorMessage !== vaultHelperLostMessage && errorMessage !== autoSyncError) errorMessage = ""
     if (logoutPending) return
     // Wait for the dependency probe, which owns the first status transition.
     if (!depsChecked) {
@@ -5482,6 +5488,7 @@ Item {
   function settingValue(entry) {
     if (!entry) return 0
     switch (entry.key) {
+      case "autoSyncMinutes": return autoSyncMinutes
       case "autoLockMinutes": return autoLockMinutes
       case "clearClipboardSec": return clearClipboardSec
       case "lockOnScreenLock": return lockOnScreenLock
@@ -6377,6 +6384,10 @@ Item {
   // The local purge for every way an open vault becomes unusable, separate
   // from `bw lock` and the keyring so a failed status can fail closed.
   function dropVaultState() {
+    if (errorMessage === autoSyncError) errorMessage = ""
+    lastSyncAttemptAt = 0
+    backgroundSync = false
+    autoSyncReloadPending = false
     initialSyncAttempted = false
     pinUnlockSubmitted = false
     cancelEnvelopeUnlockJobs()
@@ -6644,7 +6655,8 @@ Item {
     if (syncReloadPending) {
       syncReloadPending = false
       isSyncing = false
-      flashNotification("Vault synced with Bitwarden")
+      if (!backgroundSync) flashNotification("Vault synced with Bitwarden")
+      backgroundSync = false
     }
     if (metadataLoadPending || statusRefreshAfterItems) deferredMetadataTimer.restart()
     // The first read usually beat the handshake; see whether a load is owed.
@@ -7019,9 +7031,61 @@ Item {
     loadFolders(true)
   }
 
-  function syncVault() {
-    closeFilterGroup()
+  // Whether an automatic sync, or the list reload one still owes, may start.
+  // An open panel must be on the list. A closed one counts whatever screen it
+  // was left on, since opening an unlocked panel always returns to the list,
+  // except while pinentry hides it: that hands it back to the same screen.
+  function autoSyncIdle() {
+    return live && session !== "" && status === "unlocked"
+      && (opened ? currentScreen === "main" : !pinentryActive)
+      && !isLoading && !isUnlocking && !logoutPending && !authAttemptInFlight()
+      && !metadataLoadPending && !creatingFolder && !repromptBusy && !sendBusy
+      && !listProc.running && !listOrgsProc.running && !listFoldersProc.running
+      && !createItemProc.running && !editItemProc.running && !deleteItemProc.running
+      && !createFolderProc.running
+      // A list read hands the SSH agent its keys again, and the agent fails
+      // every signing request still waiting for approval when a load begins.
+      && sshTotalPendingCount === 0
+      // After a resume the auto-lock watchdog may not have polled yet; a
+      // vault past its deadline, or locking for a suspend, is about to lock.
+      && !suspendLockPending && !Model.autoLockExpired(autoLockArmedAt, autoLockMinutes, Date.now())
+  }
+
+  function maybeAutoSync() {
+    if (!autoSyncIdle() || isSyncing || syncProc.running) return
+    // A sync that finished while the user was editing left its reload for
+    // now. Complete it even if the setting was disabled meanwhile.
+    if (autoSyncReloadPending) {
+      autoSyncReloadPending = false
+      backgroundSync = true
+      isSyncing = true
+      syncReloadPending = true
+      beginInitialVaultLoad(false, true)
+      return
+    }
+    if (autoSyncMinutes <= 0) return
+    var now = Date.now()
+    // Wall-clock time catches up after suspend; a backward clock adjustment
+    // makes one attempt due rather than postponing retries indefinitely.
+    if (lastSyncAttemptAt > 0 && now >= lastSyncAttemptAt
+        && now - lastSyncAttemptAt < autoSyncMinutes * 60 * 1000) return
+    syncVault(true)
+  }
+
+  function syncVault(background) {
     if (!session) return
+    // Asked for while an automatic sync runs: that one becomes this request,
+    // reported like any sync the user asked for.
+    if (background !== true && backgroundSync && isSyncing) {
+      backgroundSync = false
+      closeFilterGroup()
+      return
+    }
+    if (isSyncing || syncProc.running) return
+    backgroundSync = background === true
+    autoSyncReloadPending = false
+    lastSyncAttemptAt = Date.now()
+    if (!backgroundSync) closeFilterGroup()
     isSyncing = true
     beginVaultRead("sync")
     syncProc.command = Model.syncCommand()
@@ -7031,13 +7095,22 @@ Item {
   function onSyncFinished(exitCode) {
     if (vaultReadIsStale("sync")) return
     if (exitCode === 0) {
+      if (errorMessage === autoSyncError) errorMessage = ""
       itemsLoadedAt = 0
-      syncReloadPending = true
-      beginInitialVaultLoad(true, true)
+      if (backgroundSync) {
+        isSyncing = false
+        autoSyncReloadPending = true
+        maybeAutoSync()
+      } else {
+        syncReloadPending = true
+        beginInitialVaultLoad(true, true)
+      }
     } else {
       isSyncing = false
       syncReloadPending = false
-      errorMessage = "Sync failed"
+      if (!backgroundSync) errorMessage = "Sync failed"
+      else if (!errorMessage || errorMessage === autoSyncError) errorMessage = autoSyncError
+      backgroundSync = false
     }
   }
 
@@ -8257,6 +8330,17 @@ Item {
   // -------------------------------------------------------------------------
   // Timers
   // -------------------------------------------------------------------------
+
+  // One service owns this timer, including on multi-monitor setups. Never
+  // unlocks the vault or refreshes the idle-lock deadline to do network work.
+  Timer {
+    id: autoSyncTimer
+    interval: 30000
+    repeat: true
+    running: root.live && root.status === "unlocked" && root.session !== ""
+      && (root.autoSyncMinutes > 0 || root.autoSyncReloadPending)
+    onTriggered: root.maybeAutoSync()
+  }
 
   Timer {
     id: searchDebounceTimer

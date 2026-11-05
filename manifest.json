@@ -21,6 +21,7 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
+      "autoSyncMinutes": 0,
       "autoLockMinutes": 15,
       "lockOnScreenLock": true,
       "lockOnSuspend": true,
@@ -40,6 +41,16 @@
       "sshAgentApprovalWindowSec": 120
     },
     "schema": [
+      {
+        "key": "autoSyncMinutes",
+        "type": "integer",
+        "label": "Automatic sync interval (minutes)",
+        "description": "Sync while unlocked and idle; retry offline servers at this interval (0 to disable).",
+        "min": 0,
+        "max": 1440,
+        "step": 5,
+        "defaultValue": 0
+      },
       {
         "key": "autoLockMinutes",
         "type": "integer",
