@@ -3351,7 +3351,7 @@ Item {
   // The panel hidden so pinentry can take the keyboard is not a close.
   onOpenedChanged: {
     if (opened) {
-      if (!resumeFromPinentry()) onPanelOpened()
+      panelShown()
     } else if (!pinentryActive) {
       pinentryAutoAsked = false
       clearRepromptGrant()
@@ -3366,6 +3366,23 @@ Item {
       // count as "already typing here" and skip the field the screen opens on.
       presenter.focusField("keyCatcher")
     }
+  }
+
+  // The panel showing: a fresh open, or the way back from pinentry.
+  //
+  // It can also open underneath a pinentry that is already asking: showing
+  // the popout makes the unlock form visible inside show(), before `opened`
+  // reads true here, and the form asks pinentry on its own (UnlockForm.qml,
+  // armOfferedMethod()). beginPinentry() then saw a closed panel and hid
+  // nothing, and the panel kept the keyboard while pinentry waited for it
+  // (#132). Such an open is still the user's: its startup work runs now, as
+  // for a panel already open when pinentry was asked, and hideForPinentry()
+  // then hides it and has it shown again, as a resume, once pinentry answers.
+  // Deferred, so the hide neither runs inside the notification that is
+  // showing the popout nor reads a `presenter` not yet re-evaluated.
+  function panelShown() {
+    if (!resumeFromPinentry()) onPanelOpened()
+    if (pinentryActive) Qt.callLater(hideForPinentry)
   }
 
   function onPanelOpened() {
@@ -5883,8 +5900,18 @@ Item {
   function beginPinentry() {
     if (pinentryActive) return
     pinentryActive = true
-    pinentryWasOpen = opened
-    if (!opened) return
+    pinentryWasOpen = false
+    pinentryView = null
+    hideForPinentry()
+  }
+
+  // Hides every view's popout while pinentry asks, and remembers the one to
+  // show again after. A panel closed now is left alone, and is shown again
+  // only if it opens before the answer (panelShown()): one that never opened,
+  // as for the SSH approval popup's unlock, stays closed.
+  function hideForPinentry() {
+    if (!pinentryActive || pinentryWasOpen || !opened) return
+    pinentryWasOpen = true
     pinentryView = presenter
     eachView(function(view) { view.hidePopout() })
   }
