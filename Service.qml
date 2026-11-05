@@ -131,10 +131,14 @@ Item {
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
   // Type the master password and PIN into pinentry, a separate process,
   // rather than the panel. `pinentryProgram` (not in the settings screen)
-  // names a different program; unset, "" lets the scripts pick pinentry-qt
-  // when runnable, else `pinentry` from PATH.
+  // names a different program; unset, "" lets the scripts pick the
+  // Omarchy-style pinentry (omarchyPinentry) when it can run, else
+  // pinentry-qt when runnable, else `pinentry` from PATH.
   readonly property bool usePinentry: Model.boolSetting("usePinentry", setting("usePinentry", true))
   readonly property string pinentryProgramName: Model.pinentryProgram(setting("pinentryProgram", ""))
+  readonly property bool omarchyPinentry: Model.boolSetting("omarchyPinentry", setting("omarchyPinentry", false))
+  // By absolute path from this file's directory, or "" while off.
+  readonly property string omarchyPinentryPath: Model.omarchyPinentryPath(sshAgentPluginDir, omarchyPinentry)
   // Opt-in: nothing starts, binds or opens a FIFO while false.
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
@@ -5497,6 +5501,7 @@ Item {
       case "closeOnCopy": return closeOnCopy
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
+      case "omarchyPinentry": return omarchyPinentry
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
       // The toggle reflects a PIN actually being set, not just the flag.
@@ -5826,6 +5831,11 @@ Item {
     probePinentry()
   }
 
+  onOmarchyPinentryPathChanged: {
+    resetPinentryChoice()
+    probePinentry()
+  }
+
   onUsePinentryChanged: resetPinentryChoice()
 
   // Pinentry again for the next secret, with no notice.
@@ -5844,7 +5854,7 @@ Item {
 
   function probePinentry() {
     if (pinentryProbeProc.running) pinentryProbeProc.running = false
-    pinentryProbeProc.command = Model.pinentryProbeCommand(pinentryProgramName)
+    pinentryProbeProc.command = Model.pinentryProbeCommand(pinentryProgramName, omarchyPinentryPath)
     pinentryProbeProc.running = true
   }
 
@@ -5871,7 +5881,7 @@ Item {
       // again, not counted as a wrong attempt.
       minLength: purpose === "pin" ? Model.pinUnlockMinLength() : 0
     }
-    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, ask)
+    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, ask, omarchyPinentryPath)
     // The description names the account: environment, not argv.
     pinentryProc.environment = Model.pinentryEnvironment(ask)
     pinentryProc.capture = "pinentry:" + name
