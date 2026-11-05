@@ -160,6 +160,29 @@ for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemPr
   eq("manual sync delays the next automatic attempt", c.syncProc.running, false)
 }
 {
+  // The user asks while an automatic sync is in flight: it is theirs now.
+  const c = fixture(); c.maybeAutoSync(); c.syncVault()
+  eq("a manual request does not start a second sync", c.lastSyncAttemptAt, c.now)
+  eq("it closes the filter drawer like a manual sync", c.closedFilters, 1)
+  c.finish(0)
+  eq("its reload shows the spinner", JSON.stringify(c.loadCalls), "[[true,true]]")
+  c.beginVaultRead("items"); c.onListFinished("[]")
+  eq("and reports success", JSON.stringify(c.flashes), JSON.stringify(["Vault synced with Bitwarden"]))
+}
+{
+  const c = fixture(); c.errorMessage = "An unrelated edit failed"
+  c.maybeAutoSync(); c.syncVault(); c.finish(1)
+  eq("a taken-over failure says so like a manual one", c.errorMessage, "Sync failed")
+}
+{
+  // Asked for during the reload an automatic sync owed.
+  const c = fixture(); c.maybeAutoSync(); c.currentScreen = "edit"; c.finish(0)
+  c.currentScreen = "main"; c.maybeAutoSync(); c.syncVault()
+  eq("no second sync during the reload", c.syncProc.running, false)
+  c.beginVaultRead("items"); c.onListFinished("[]")
+  eq("the reload reports success", c.flashes.length, 1)
+}
+{
   // Auto-lock off, or an hour's suspend would have locked the vault.
   const c = fixture(); c.autoLockMinutes = 0
   c.maybeAutoSync(); c.finish(1); c.now += 3600000; c.maybeAutoSync()

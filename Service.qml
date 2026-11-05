@@ -7046,7 +7046,15 @@ Item {
   }
 
   function syncVault(background) {
-    if (!session || isSyncing || syncProc.running) return
+    if (!session) return
+    // Asked for while an automatic sync runs: that one becomes this request,
+    // reported like any sync the user asked for.
+    if (background !== true && backgroundSync && isSyncing) {
+      backgroundSync = false
+      closeFilterGroup()
+      return
+    }
+    if (isSyncing || syncProc.running) return
     backgroundSync = background === true
     autoSyncReloadPending = false
     lastSyncAttemptAt = Date.now()
