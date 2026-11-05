@@ -424,6 +424,8 @@ Upgrading from 1.10.0 or earlier needs nothing from you. The old entries -- a pl
 
 **The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. The seal ties the stored item to this machine and this user, so a copy taken elsewhere is useless -- but a program running as you can unseal it here (`systemd-creds --user decrypt`). With fingerprint unlock on, that is all it needs: a fingerprint releases no secret to encrypt with. With a PIN, it can then guess the PIN offline, at its own pace and on every core (see [PIN unlock](#pin-unlock)). A FIDO2 key cannot be bypassed that way, because the key itself produces the secret; root, as always, can read anything.
 
+The item keeps one encryption key for as long as it exists: turning a method off removes only that method's way to it, and a master password changed elsewhere is re-sealed under the same key. So a program that opened the item while fingerprint unlock was on, and kept the key, can open every later copy of it as well, after fingerprint unlock is turned off and after a password change. To get a fresh key, turn every quick-unlock method off, which deletes the item, and set them up again.
+
 ### PIN unlock
 
 Turn on **Unlock with PIN** in the settings screen. Confirm your master password and choose a PIN of **at least 6 digits; 8 or more is the recommendation**. Six and seven are accepted but shown with the real cost of guessing them, so a weak PIN is a decision rather than an accident. (A PIN set with an older version, when 4 was the floor, still unlocks; set a new one to get the longer PIN.)
@@ -501,8 +503,11 @@ o.bind("SUPER + CTRL + BACKSLASH", "Bitwarden auto-type", "omarchy-shell io.gith
   same. It is never an argument or an environment variable.
 - It does not type while the panel, an SSH approval or pinentry has the
   keyboard, since the text would land there, nor while the screen is locked.
-  A username or password with a line break, tab or other control character in
-  it is not typed at all, since `wtype` would press it as a key.
+  The panel polls the lock state while a login is armed, and a reading that
+  is missing or stale refuses too, rather than guess. A vault lock while it
+  is typing stops it there. A username or password with a line break, tab or
+  other control character in it is not typed at all, since `wtype` would
+  press it as a key.
 - The arm is used up by the type it starts, and dropped after 30 seconds, on
   lock, logout or account switch, and when auto-type is turned off.
 - It waits a quarter of a second before typing, to give you time to let go

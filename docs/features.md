@@ -28,6 +28,7 @@ Every feature the plugin has, and why each one works the way it does. The
   - The master password is kept once, in one keyring item: encrypted under a random key (XChaCha20-Poly1305) and sealed to this machine and user with `systemd-creds --user`. It is written the first time `bw` accepts a password you typed, and each quick-unlock method only adds a way into it. See [How quick unlock stores your password](../README.md#how-quick-unlock-stores-your-password).
   - Turning a method on asks for your master password as a check against the stored one -- a wrong one is refused, and nothing typed there is stored.
   - A master password changed elsewhere is picked up at the next unlock with the new one; every method keeps working.
+  - The random key is the item's for life: a method turned off and a password change re-wrap the same key, so a program that could already open the item and kept the key can open its later copies too. Turning every method off deletes the item; setting them up again makes a new key.
   - Turning a method off removes it from every account (the setting is shared), and a method turned off in `shell.json` while the shell was not running is removed at the next start.
   - Upgrading moves the old per-method entries in as each method is next used, and deletes them once the new copy opens.
 
