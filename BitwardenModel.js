@@ -2341,34 +2341,26 @@ function pinUnlockCommand(slot) {
 // Typed secrets in a pinentry
 // -------------------------------------------------------------------------
 //
-// The master password and the PIN are typed into `pinentry`, a separate
-// process, instead of the panel: a string typed into the shell stays in its
-// heap after it is cleared. The script below is the Assuan client. It runs
-// through the vault helper with capture "pinentry:<name>", so what it prints
-// (the answer, still percent-encoded) is decoded and held there and the shell
-// is told nothing of it. Everything the user can influence (account email,
+// The master password and the PIN are typed into the plugin's own pinentry,
+// a separate process, instead of the panel: a string typed into the shell
+// stays in its heap after it is cleared. The script below is the Assuan
+// client. It runs through the vault helper with capture "pinentry:<name>", so
+// what it prints (the answer, still percent-encoded) is decoded and held there
+// and the shell is told nothing of it. Everything the user can influence (account email,
 // error text) is an argument, encoded for Assuan, never part of the script.
 
-// Left unset, the program is chosen when the script runs: the plugin's own
-// Omarchy-style pinentry when `omarchyPinentry` is on and it can show a
-// prompt here, else `pinentry-qt` if it is runnable, else `pinentry`.
-// (`pinentry` on some systems is a wrapper that picks pinentry-gnome3, which
-// has no show/hide control and types into gcr-prompter.) pinentryProgram()
-// gives "" for that automatic choice.
-var PINENTRY_PREFERRED_PROGRAM = "pinentry-qt"
-var PINENTRY_DEFAULT_PROGRAM = "pinentry"
-// The Omarchy-style pinentry, relative to the plugin's directory: a Node
-// Assuan server that draws its prompt in a Quickshell of its own. Its
-// `--check` says whether it can (quickshell, the shell kit and a Wayland
-// display); node missing fails it too.
+// The pinentry is the plugin's own and nothing else: pinentry/omarchy-pinentry,
+// a Node Assuan server that draws its prompt as a card in a Quickshell of its
+// own, run by absolute path from the plugin's directory. Its `--check` says
+// whether it can show a prompt here (quickshell, the shell kit, a Wayland
+// display and a runtime dir); node missing fails it too. There is no other
+// program to fall back to: where it cannot run, the panel says so and offers
+// its own field (typedSecretEntry()).
 var OMARCHY_PINENTRY_FILE = "pinentry/omarchy-pinentry"
-// Shell that sets __prog from "$1": the given program, or for "" the
-// automatic choice. $__bundled is the Omarchy-style pinentry's path, or ""
-// while the setting is off.
-var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ]; then"
-  + " if [ -n \"$__bundled\" ] && [ -x \"$__bundled\" ] && \"$__bundled\" --check >/dev/null 2>&1; then __prog=\"$__bundled\";"
-  + " elif command -v -- " + PINENTRY_PREFERRED_PROGRAM + " >/dev/null 2>&1; then __prog=" + PINENTRY_PREFERRED_PROGRAM + ";"
-  + " else __prog=" + PINENTRY_DEFAULT_PROGRAM + "; fi; fi"
+// Shell that sets __prog from "$1", the frontend's absolute path, when it is
+// executable and its `--check` passes, else to "".
+var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ] || [ ! -x \"$__prog\" ]"
+  + " || ! \"$__prog\" --check >/dev/null 2>&1; then __prog=\"\"; fi"
 var PINENTRY_TEXT_MAX = 400
 var PINENTRY_DESC_ENV = "QSBW_PE_DESC"
 var PINENTRY_ERR_ENV = "QSBW_PE_ERR"
@@ -2394,12 +2386,11 @@ var PINENTRY_SCRIPT = [
   "__title=\"$2\"; __prompt=\"$3\"; __min=\"${4:-0}\"",
   // The description and error can name the account, so they come in the
   // environment, not argv, and are gone before any child starts: the
-  // bundled pinentry's `--check` below as much as pinentry itself.
+  // frontend's `--check` below as much as the prompt itself.
   "__desc=\"$" + PINENTRY_DESC_ENV + "\"; __err=\"$" + PINENTRY_ERR_ENV + "\"",
   "unset " + PINENTRY_DESC_ENV + " " + PINENTRY_ERR_ENV,
-  "__bundled=\"${5:-}\"",
   PINENTRY_RESOLVE,
-  "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
+  "[ -n \"$__prog\" ] || exit " + PINENTRY_EXIT.missing,
   // Assuan data: only %, CR and LF need encoding.
   "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
   "coproc PE { exec \"$__prog\" 2>/dev/null; }",
@@ -2441,9 +2432,15 @@ var PINENTRY_SCRIPT = [
 ].join("\n")
 
 // The notice after a run that failed. Not remembered: the next attempt
-// opens pinentry again, and the field is used only when picked.
+// opens the prompt again, and the field is used only when picked.
 function pinentryFailedNotice() {
-  return "Pinentry stopped before answering. Try again, or type it here instead."
+  return "The unlock prompt stopped before answering. Try again, or type it here instead."
+}
+
+// The notice while the probe says the prompt cannot run here.
+function pinentryMissingNotice() {
+  return "The unlock prompt cannot open here (it needs quickshell, node and a Wayland display)."
+    + " Typed here, it stays in the shell's memory until the shell restarts."
 }
 
 // `bw unlock` refusing the password itself, as opposed to any other failure
@@ -2472,21 +2469,10 @@ function pinentryText(value) {
     .replace(/\u0000/g, "").slice(0, PINENTRY_TEXT_MAX)
 }
 
-// The program to run: a setting that names one, used exactly as given (even
-// "pinentry"), else "" for the automatic choice made by the scripts
-// (the Omarchy-style pinentry when on, pinentry-qt, else `pinentry` from
-// PATH). Never an option: it is the first word of the command.
-function pinentryProgram(configured) {
-  var name = typeof configured === "string" ? configured.trim() : ""
-  if (!name || name.charAt(0) === "-" || name.indexOf("\u0000") !== -1) return ""
-  return name
-}
-
-// The Omarchy-style pinentry's absolute path in the plugin at `pluginDir`,
-// or "" while `enabled` is off (or the directory is not a clean absolute
-// path). Passed to the scripts as an argument value, never as script text.
-function omarchyPinentryPath(pluginDir, enabled) {
-  if (enabled !== true) return ""
+// The frontend's absolute path in the plugin at `pluginDir`, or "" for a
+// directory that is not a clean absolute path. Passed to the scripts as an
+// argument value, never as script text.
+function omarchyPinentryPath(pluginDir) {
   var dir = cleanAbsoluteDir(pluginDir)
   return dir ? (dir === "/" ? "" : dir) + "/" + OMARCHY_PINENTRY_FILE : ""
 }
@@ -2495,14 +2481,14 @@ function bundledPinentry(path) {
   return typeof path === "string" && path.charAt(0) === "/" && path.indexOf("\u0000") === -1 ? path : ""
 }
 
-// `opts`: { title, description, prompt, error } as plain text, and
-// `minLength`: an answer of fewer characters exits short (nothing is held).
-// `bundled`: omarchyPinentryPath(), used only when `program` is unset.
-function pinentryCommand(program, opts, bundled) {
+// `frontend`: omarchyPinentryPath(). `opts`: { title, description, prompt,
+// error } as plain text, and `minLength`: an answer of fewer characters exits
+// short (nothing is held).
+function pinentryCommand(frontend, opts) {
   var o = opts || {}
-  return ["bash", "-c", PINENTRY_SCRIPT, "_", pinentryProgram(program),
+  return ["bash", "-c", PINENTRY_SCRIPT, "_", bundledPinentry(frontend),
     pinentryText(o.title), pinentryText(o.prompt),
-    String(Math.max(0, Math.floor(Number(o.minLength) || 0))), bundledPinentry(bundled)]
+    String(Math.max(0, Math.floor(Number(o.minLength) || 0)))]
 }
 
 // The environment pinentryCommand() reads its description and error from
@@ -2515,18 +2501,17 @@ function pinentryEnvironment(opts) {
   return env
 }
 
-// Prints "found" or "missing": whether `program` (or, unset, the automatic
-// choice with `bundled` as for pinentryCommand()) names something runnable.
-function pinentryProbeCommand(program, bundled) {
-  return ["bash", "-c", "__bundled=\"${2:-}\"; " + PINENTRY_RESOLVE
-    + "; command -v -- \"$__prog\" >/dev/null 2>&1 && echo found || echo missing", "_",
-    pinentryProgram(program), bundledPinentry(bundled)]
+// Prints "found" or "missing": whether the frontend at `frontend` (as for
+// pinentryCommand()) is there and its `--check` passes.
+function pinentryProbeCommand(frontend) {
+  return ["bash", "-c", PINENTRY_RESOLVE + "; [ -n \"$__prog\" ] && echo found || echo missing", "_",
+    bundledPinentry(frontend)]
 }
 
 // Whether a probe run says the program is missing. Only the probe's own
 // answer counts: one that was killed (any program running as you can) or
-// stopped early says nothing, and pinentry is still tried; a pinentry that
-// is really missing then fails, and the panel offers its field when picked.
+// stopped early says nothing, and the prompt is still tried; one that really
+// cannot run then fails, and the panel offers its field when picked.
 function pinentryProbeMissing(exitCode, stdoutText) {
   return exitCode === 0 && String(stdoutText || "").trim() === "missing"
 }
@@ -2537,8 +2522,9 @@ function pinentryProbeMissing(exitCode, stdoutText) {
 // up the panel waits for it: offering the field instead would put what is
 // typed into the shell whenever the helper is starting, restarting or was
 // left stopped (which a program running as you can cause by killing it). The
-// field is used only when pinentry is off, reported missing or declined, or
-// when the vault is held in the shell as allowVaultWithoutHelper allows.
+// field is used only when pinentry is off, reported unable to run here or
+// declined, or when the vault is held in the shell as allowVaultWithoutHelper
+// allows.
 function typedSecretEntry(o) {
   if (!o.usePinentry || o.missing || o.declined) return "field"
   if (o.helperState === "active") return "pinentry"
@@ -7259,10 +7245,8 @@ var SETTINGS_SCHEMA = [
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "A PIN of 6 digits or more opens your master password, stored once, encrypted and sealed to this machine. A program running as you can copy it and try every 6-digit PIN in about 16 hours, so use 8 or more (about 2 months)." },
-  { key: "usePinentry", group: "security", type: "bool", label: "Type secrets in pinentry", defaultValue: true,
-    description: "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field." },
-  { key: "omarchyPinentry", group: "security", type: "bool", label: "Omarchy-style unlock prompt", defaultValue: false,
-    description: "With pinentry on, type into a card over the focused monitor styled like the shell's own password prompt instead of pinentry-qt's window. It is still a separate, short-lived process, not the panel; pinentry-qt or pinentry is used where it cannot run, and a pinentryProgram you set always wins." },
+  { key: "usePinentry", group: "security", type: "bool", label: "Type secrets in a separate prompt", defaultValue: true,
+    description: "Type your master password and PIN into the plugin's own unlock prompt, a card over the focused monitor drawn like the shell's password prompt, instead of the panel, so they never enter the shell. It is a separate, short-lived process under the vault helper and needs quickshell, node and a Wayland display; while the helper is not running, the panel waits for it instead of offering its own field." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },

@@ -74,9 +74,9 @@ output is handed back as it is, except:
 
 A string typed into the panel stays in the shell's memory after the field is
 cleared, so a shell core dump could hold it. The master password for
-unlocking and for a re-prompt, and the PIN, are therefore typed into
-`pinentry`, a separate process. The panel hides while it runs so it can take
-the keyboard, and shows again after.
+unlocking and for a re-prompt, and the PIN, are therefore typed into the
+plugin's own pinentry, a separate process ([the prompt](#the-prompt)). The
+panel hides while it runs so it can take the keyboard, and shows again after.
 
 The helper runs a small script that speaks the pinentry protocol, and keeps
 what it prints, decoded, under a name; the shell only learns whether you
@@ -85,20 +85,20 @@ quick-unlock check or the re-prompt check by name, and is forgotten as soon as
 that has finished. A wrong password or PIN opens pinentry again with the
 reason.
 
-Pinentry closes itself after two minutes without an answer, which counts as
+The prompt closes itself after two minutes without an answer, which counts as
 a cancel.
 
-The pinentry used is the plugin's Omarchy-style prompt when the setting
-"Omarchy-style unlock prompt" (`omarchyPinentry`) is on and the prompt can run
-here, else `pinentry-qt` when it is runnable, else `pinentry` from `PATH`,
-chosen each time it is needed; `pinentryProgram` in `shell.json`
-names another (used exactly as given, so `pinentry` means `pinentry` even with
-`pinentry-qt` installed), and the setting "Type secrets in pinentry" turns
-this off. The panel's own field is used instead only when pinentry is turned
-off or not installed, or when the vault is held in the shell because
-`allowVaultWithoutHelper` allows it (below). "Not installed" is what a check
-at start says when it runs to its end; a check that was killed says nothing,
-and pinentry is still used.
+The pinentry is always the plugin's own, `pinentry/omarchy-pinentry`, run by
+absolute path from the plugin's directory; no other program is ever run in
+its place, and a `pinentryProgram` or `omarchyPinentry` left in `shell.json`
+is ignored. The setting "Type secrets in a separate prompt" (`usePinentry`)
+turns it off. The panel's own field is used instead only when that setting is
+off, when the prompt cannot run here, or when the vault is held in the shell
+because `allowVaultWithoutHelper` allows it (below). "Cannot run here" is what
+the prompt's own `--check`, run at start, says when it runs to its end: no
+Wayland display, no `quickshell`, no `node`, no Omarchy shell kit or no
+`XDG_RUNTIME_DIR`; the panel then says so. A check that was killed says
+nothing, and the prompt is still used.
 
 Pinentry runs under the helper, so while the helper is starting, restarting
 or left stopped the unlock screen and the re-prompt wait for it ("Waiting for
@@ -110,8 +110,8 @@ A helper that does not answer `hello` within ten seconds is stopped with a
 retry banner. A retry waits for the old process to exit before checking and
 starting another helper; a late `ready` cannot activate the stopped process.
 
-When pinentry fails to run or stops before answering, the panel says so and
-the next attempt opens pinentry again. The panel's field is used only when you
+When the prompt fails to run or stops before answering, the panel says so
+and the next attempt opens it again. The panel's field is used only when you
 pick "Type it here instead", and only until the panel closes or the vault
 locks or unlocks. A failure is never remembered: any program running as you
 can kill pinentry, and it must not be able to turn pinentry off that way and
@@ -134,33 +134,24 @@ so those cannot remove a newly stored wrap or mark it already removed.
 Envelope lookup errors, including killed lookups, fail cleanup; only a
 missing entry (exit 1 with no stderr) counts as already removed.
 
-### Which pinentry
+### The prompt
 
-A pinentry that draws its own prompt (`pinentry-qt`, `pinentry-gtk`,
-`pinentry-curses`, `pinentry-tty`) is a child of the helper: what you type is
-in its memory and the helper's, and both have the helper's zero core-file
-limit. `pinentry-gnome3` is different: it hands the prompt to `gcr-prompter`
-over D-Bus, which the session bus starts, not the helper. `gcr-prompter` does
-not have the helper's limit, and what you type passes through it, so if it
-crashes its core dump can contain your master password or PIN. The plugin
-does not lower any other process's limit (see "Limits" below). Left unset,
-the plugin therefore prefers `pinentry-qt`, which draws its own prompt and
-always has a show/hide button, and falls back to `pinentry` from `PATH` only
-when `pinentry-qt` is not runnable. Without `pinentry-qt`, check
-what `pinentry` on your `PATH` runs; on some systems (Arch among them) it is a
-script that picks `pinentry-gnome3`. Set `pinentryProgram` to name a pinentry
-yourself.
-
-The Omarchy-style prompt (`pinentry/omarchy-pinentry`, off by default) draws
-its own prompt too, as a card over the focused monitor styled like the shell's
-polkit prompt. It is a Node program that speaks the pinentry protocol to the
-helper, and for each `GETPIN` it starts a Quickshell of its own, separate from
-the shell, that shows the card and quits once it has answered. Both are
+`pinentry/omarchy-pinentry` is a Node program that speaks the pinentry
+protocol to the helper, and for each `GETPIN` it starts a Quickshell of its
+own, separate from the shell, that shows a card over the monitor that was
+focused when the prompt opened, drawn like the shell's polkit prompt: the
+theme's `[polkit]` scrim, a padlock and a masked field in the system font, the
+theme's colours, border and rounding. It quits once it has answered. Both are
 children of the helper and have its zero core-file limit; Quickshell's crash
 handler, which would write a dump and its log under `~/.cache/quickshell`, is
-turned off for that process. When it cannot run (no Wayland display, no
-`quickshell`, no Omarchy shell kit, no `XDG_RUNTIME_DIR`) `pinentry-qt` or
-`pinentry` is used as before.
+turned off for that process. It needs `quickshell`, `node` (which `bw` needs
+anyway), the Omarchy shell kit and a Wayland display, and is not installed
+separately: it ships in the plugin.
+
+Before 1.12.0 the plugin ran `pinentry-qt` or `pinentry` from `PATH`, and on
+some systems `pinentry` picks `pinentry-gnome3`, which hands the prompt to
+`gcr-prompter` outside the helper's core-dump protection. None of them is
+used any more, and none needs to be installed.
 
 What it is told and what you type travel apart from any command line. For
 each prompt it makes a private directory (mode 0700) under
@@ -201,11 +192,9 @@ or zram with no disk swap, avoids that. Release builds abort on panic rather
 than unwinding.
 
 The commands it runs inherit the zero core limit, so a `bw` that crashes
-while holding your decrypted vault does not leave a core either. So does a
-pinentry that draws its own prompt, including the Omarchy-style prompt and
-the Quickshell it starts, but not a program a command reaches some
-other way, such as `gcr-prompter` for `pinentry-gnome3`
-([Which pinentry](#which-pinentry)).
+while holding your decrypted vault does not leave a core either. So does the
+unlock prompt and the Quickshell it starts ([the prompt](#the-prompt)), but
+not a program a command reaches some other way, over D-Bus for instance.
 
 ## Limits
 
@@ -216,19 +205,17 @@ other way, such as `gcr-prompter` for `pinentry-gnome3`
   everywhere; see [SECURITY.md](../SECURITY.md) for what is in scope.
 - **What is on screen, and what you type, is in the shell.** That is what you
   type into the panel's own fields (the email login, item fields, quick-unlock
-  setup, and the master password or PIN when pinentry is not used). Clearing it does not wipe
-  it, so it can stay in the shell's memory and be in a shell core dump.
+  setup, and the master password or PIN when the unlock prompt is not used).
+  Clearing it does not wipe it, so it can stay in the shell's memory and be in
+  a shell core dump.
 - **The shell's core dumps are left on.** The plugin does not lower the
   shell's core-file limit. The limit is per process and inherited, so it would
   also turn off core dumps for every other plugin in the shell and for every
   app started from the shell's launcher, until the shell restarts. The plugin
   keeps secrets out of the shell instead.
-- **`pinentry-gnome3` types into `gcr-prompter`**, which D-Bus starts outside
-  the helper, so the zero core limit does not cover what you type there
-  ([Which pinentry](#which-pinentry)).
-- **The Omarchy-style prompt holds what you type in strings it cannot wipe**
+- **The unlock prompt holds what you type in strings it cannot wipe**
   until its Quickshell exits, right after it answers
-  ([Which pinentry](#which-pinentry)).
+  ([the prompt](#the-prompt)).
 - **The vault `bw` prints is parsed with serde_json**, whose own buffers are
   not zeroed, so pieces of an item can linger in the helper's freed heap
   memory after the parse (the parsed tree itself is wiped, and a reply that

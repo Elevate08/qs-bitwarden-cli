@@ -55,6 +55,11 @@ a two-step code with Bitwarden's standalone `bw` binary: the panel hands the cod
 to `bw` through a Node preload, which the standalone build does not load, so it
 asks you to finish in the terminal rather than put the code on a command line.
 
+Unlocking later asks for your master password, or your PIN, in the plugin's
+own prompt: a card over the focused monitor drawn like Omarchy's polkit
+prompt, in a short-lived process of its own, so what you type never enters
+the shell. A wrong one asks again with the reason; Escape cancels.
+
 <br clear="all">
 
 ---
@@ -504,12 +509,12 @@ by hand.
 - The vault helper reads the armed login and writes it to `wtype`'s stdin, so
   the password never reaches the shell; without the helper the shell does the
   same. It is never an argument or an environment variable.
-- It does not type while the panel, an SSH approval or pinentry has the
-  keyboard, since the text would land there, nor while the screen is locked.
-  The panel polls the lock state while a login is armed, and a reading that
-  is missing or stale refuses too, rather than guess. A vault lock while it
-  is typing stops it there. A username or password with a line break, tab or
-  other control character in it is not typed at all, since `wtype` would
+- It does not type while the panel, an SSH approval or the unlock prompt has
+  the keyboard, since the text would land there, nor while the screen is
+  locked. The panel polls the lock state while a login is armed, and a reading
+  that is missing or stale refuses too, rather than guess. A vault lock while
+  it is typing stops it there. A username or password with a line break, tab
+  or other control character in it is not typed at all, since `wtype` would
   press it as a key.
 - The arm is used up by the type it starts, and dropped after 30 seconds, on
   lock, logout or account switch, and when auto-type is turned off.
@@ -647,9 +652,7 @@ The following settings are read from the plugin's own entry in the
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. Turning it off deletes the stored password, so PIN and FIDO2 unlock must be set up again. |
 | `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |
 | `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN of at least 6 digits, through Argon2id -- see [PIN unlock](#pin-unlock). |
-| `usePinentry` | `boolean` | `true` | Type the master password and PIN into `pinentry`, a separate window, instead of the panel, so they never enter the shell. Needs `pinentry` and the vault helper: while the helper is not running the panel waits for it, and its own field is used only without `pinentry`, with this off, or with `allowVaultWithoutHelper` -- see [docs/vault-helper.md](docs/vault-helper.md#typing-into-pinentry). |
-| `omarchyPinentry` | `boolean` | `false` | With `usePinentry` on, type the master password and PIN into a card over the focused monitor styled like Omarchy's own polkit prompt (the theme's `[polkit]` scrim, colours, font, border and rounding; the padlock shows or hides what is typed) instead of pinentry-qt's window. It is the plugin's own pinentry, `pinentry/omarchy-pinentry`: a separate process the vault helper starts for each prompt, drawing in a short-lived Quickshell of its own, so what you type still never enters the shell. Needs `quickshell`, `node` and a Wayland session; without them the automatic choice below is used. A `pinentryProgram` you set wins -- see [which pinentry](docs/vault-helper.md#which-pinentry). |
-| `pinentryProgram` | `string` | automatic | The program to run. Unset or blank, the plugin uses its Omarchy-style prompt when `omarchyPinentry` is on and it can run, else `pinentry-qt` when it is runnable, else `pinentry` from `PATH`; the choice is made each time, so installing `pinentry-qt` later takes effect without a restart. A value you set is used exactly as given, including `pinentry`, e.g. `/usr/bin/pinentry-gnome3`. `pinentry-qt` draws its own prompt with a show/hide button; `pinentry-gnome3` types into `gcr-prompter`, outside the helper's core-dump protection ([which pinentry](docs/vault-helper.md#which-pinentry)). Edit `shell.json`; it is not in the settings screen. |
+| `usePinentry` | `boolean` | `true` | Type the master password and PIN into the plugin's own unlock prompt instead of the panel, so they never enter the shell. The prompt, `pinentry/omarchy-pinentry`, is a card over the focused monitor drawn like Omarchy's polkit prompt (the theme's `[polkit]` scrim, colours, font, border and rounding; the padlock shows or hides what is typed), in a separate, short-lived process the vault helper starts for each prompt. It is the only pinentry the plugin runs: `pinentry-qt` is neither used nor needed, and a `pinentryProgram` or `omarchyPinentry` left in `shell.json` is ignored. Needs `quickshell`, `node` and a Wayland session, and the vault helper: while the helper is not running the panel waits for it, and its own field is used only where the prompt cannot run, with this off, or with `allowVaultWithoutHelper` -- see [docs/vault-helper.md](docs/vault-helper.md#typing-into-pinentry). |
 | `allowVaultWithoutHelper` | `boolean` | `false` | When the vault helper cannot be used at start (missing, failing its check, or a platform it is not built for), hold the vault in the shell instead of leaving it locked. A shell crash can then write the session key and items to a core dump. Edit `shell.json`; it is not in the settings screen, and only `true` turns it on. A helper that keeps stopping leaves the vault locked even with this set -- see [docs/vault-helper.md](docs/vault-helper.md#if-the-helper-is-missing-or-fails). |
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](docs/ssh-agent.md). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |

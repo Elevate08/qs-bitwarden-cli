@@ -6,7 +6,7 @@ import Quickshell.Hyprland
 import qs.Commons
 import qs.Commons as Commons
 
-// The window of the Omarchy-style pinentry: one prompt, in a Quickshell of
+// The window of the plugin's pinentry: one prompt, in a Quickshell of
 // its own that omarchy-pinentry starts for a GETPIN and that quits once it
 // has answered. Never loaded by the shell itself.
 //

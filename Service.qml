@@ -130,16 +130,12 @@ Item {
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
-  // Type the master password and PIN into pinentry, a separate process,
-  // rather than the panel. `pinentryProgram` (not in the settings screen)
-  // names a different program; unset, "" lets the scripts pick the
-  // Omarchy-style pinentry (omarchyPinentry) when it can run, else
-  // pinentry-qt when runnable, else `pinentry` from PATH.
+  // Type the master password and PIN into the plugin's own pinentry, a
+  // separate process, rather than the panel. It is the only one: a
+  // `pinentryProgram` or `omarchyPinentry` left in shell.json is ignored.
   readonly property bool usePinentry: Model.boolSetting("usePinentry", setting("usePinentry", true))
-  readonly property string pinentryProgramName: Model.pinentryProgram(setting("pinentryProgram", ""))
-  readonly property bool omarchyPinentry: Model.boolSetting("omarchyPinentry", setting("omarchyPinentry", false))
-  // By absolute path from this file's directory, or "" while off.
-  readonly property string omarchyPinentryPath: Model.omarchyPinentryPath(sshAgentPluginDir, omarchyPinentry)
+  // pinentry/omarchy-pinentry by absolute path from this file's directory.
+  readonly property string omarchyPinentryPath: Model.omarchyPinentryPath(sshAgentPluginDir)
   // Opt-in: nothing starts, binds or opens a FIFO while false.
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
@@ -5553,7 +5549,6 @@ Item {
       case "autoTypeEnabled": return autoTypeEnabled
       case "suggestOnOpen": return suggestOnOpen
       case "rememberSession": return rememberSession
-      case "omarchyPinentry": return omarchyPinentry
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
       // The toggle reflects a PIN actually being set, not just the flag.
@@ -5842,26 +5837,28 @@ Item {
   // Typed secrets in pinentry
   // -------------------------------------------------------------------------
   //
-  // The master password (unlock, re-prompt) and the PIN are typed into
-  // `pinentry`, a separate process, not into the panel: a string typed into
-  // the shell stays in its heap after it is cleared and lands in a shell core
-  // dump. The pinentry runs through the vault helper (Model.pinentryCommand()),
+  // The master password (unlock, re-prompt) and the PIN are typed into the
+  // plugin's own pinentry (pinentry/omarchy-pinentry), a separate process,
+  // not into the panel: a string typed into the shell stays in its heap after
+  // it is cleared and lands in a shell core dump. The pinentry runs through the vault helper (Model.pinentryCommand()),
   // which holds what was typed under a name; the shell sees only that name,
   // and uses it like the password a quick-unlock method produced
   // (Model.heldSecretRef()). Not available without the helper: while it is
   // starting, restarting or left stopped the panel waits for it rather than
   // offer its own field, which is used only where Model.typedSecretEntry()
-  // says (pinentry off, missing or declined, or the vault held in the shell
-  // as allowVaultWithoutHelper allows). Email login and the item forms are
-  // not covered.
+  // says (pinentry off, unable to run here or declined, or the vault held in
+  // the shell as allowVaultWithoutHelper allows). Email login and the item
+  // forms are not covered.
   //
-  // Set only by a probe that ran to its end and found no such program
-  // (Model.pinentryProbeMissing()): a probe killed or still running leaves
+  // Set only by a probe that ran to its end and found the prompt unable to
+  // run here (no frontend, or its `--check` failed: no quickshell, node,
+  // Wayland display or shell kit) (Model.pinentryProbeMissing()): a probe
+  // killed or still running leaves
   // pinentry offered, for the same reason as below.
   property bool pinentryMissing: false
   onPinentryMissingChanged: resetPinentryChoice()
-  // A run that failed (no display, a pinentry that needs a terminal, a helper
-  // that predates the capture, or a pinentry another program killed) is not
+  // A run that failed (a prompt that could not start, a helper that predates
+  // the capture, or a prompt another program killed) is not
   // remembered: the next attempt opens pinentry again, and the notice offers
   // the panel's field. That field is used only once the user picks it
   // (declinePinentry()), and only until the panel closes or the vault locks
@@ -5895,11 +5892,6 @@ Item {
   property string pinentryMasterName: ""
   property string heldPinName: ""
 
-  onPinentryProgramNameChanged: {
-    resetPinentryChoice()
-    probePinentry()
-  }
-
   onOmarchyPinentryPathChanged: {
     resetPinentryChoice()
     probePinentry()
@@ -5910,8 +5902,7 @@ Item {
   // Pinentry again for the next secret, with no notice.
   function resetPinentryChoice() {
     pinentryDeclined = false
-    pinentryNotice = usePinentry && pinentryMissing
-      ? "Pinentry is not installed. Typed here, it stays in the shell's memory until the shell restarts." : ""
+    pinentryNotice = usePinentry && pinentryMissing ? Model.pinentryMissingNotice() : ""
   }
 
   // The user picked the panel's field after pinentry failed.
@@ -5923,7 +5914,7 @@ Item {
 
   function probePinentry() {
     if (pinentryProbeProc.running) pinentryProbeProc.running = false
-    pinentryProbeProc.command = Model.pinentryProbeCommand(pinentryProgramName, omarchyPinentryPath)
+    pinentryProbeProc.command = Model.pinentryProbeCommand(omarchyPinentryPath)
     pinentryProbeProc.running = true
   }
 
@@ -5950,7 +5941,7 @@ Item {
       // again, not counted as a wrong attempt.
       minLength: purpose === "pin" ? Model.pinUnlockMinLength() : 0
     }
-    pinentryProc.command = Model.pinentryCommand(pinentryProgramName, ask, omarchyPinentryPath)
+    pinentryProc.command = Model.pinentryCommand(omarchyPinentryPath, ask)
     // The description names the account: environment, not argv.
     pinentryProc.environment = Model.pinentryEnvironment(ask)
     pinentryProc.capture = "pinentry:" + name

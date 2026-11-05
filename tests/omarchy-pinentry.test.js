@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// The Omarchy-style pinentry (pinentry/omarchy-pinentry): the Assuan server
+// The plugin's pinentry (pinentry/omarchy-pinentry): the Assuan server
 // side, against a stand-in for its Quickshell prompt (QSBW_PINENTRY_TEST_UI)
 // that answers as the test says. No window opens. Covers the handshake, the
 // encoding of what is typed in the `D` lines, cancel and timeout, SETERROR
 // on a retry, the private directory (its modes, that it is gone after every
 // end, a kill included, and that one a SIGKILL left is swept by the next
 // run), the panel's own pinentry script and the vault helper in front of it,
-// and the automatic choice of program.
+// and that the frontend is the only program: found from the plugin's
+// directory, checked with its own `--check`, and never replaced by another
+// pinentry when it cannot run.
 //
 //   node tests/omarchy-pinentry.test.js
 
@@ -292,10 +294,10 @@ function checks() {
 // --- through the panel's pinentry script -------------------------------------------------------
 
 const exits = Model.pinentryExitCodes()
-function script(answer, opts = {}, program = frontend, bundled) {
+function script(answer, opts = {}, program = frontend) {
   fs.writeFileSync(answerFile, answer)
   fs.writeFileSync(uiLog, "")
-  const argv = Model.pinentryCommand(program, Object.assign({ title: "Bitwarden", prompt: "PIN:" }, opts), bundled)
+  const argv = Model.pinentryCommand(program, Object.assign({ title: "Bitwarden", prompt: "PIN:" }, opts))
   const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", timeout: 20000,
     env: Object.assign({}, baseEnv, Model.pinentryEnvironment(opts)) })
   return { code: r.status, out: r.stdout, starts: uiStarts() }
@@ -303,7 +305,7 @@ function script(answer, opts = {}, program = frontend, bundled) {
 
 function throughScript() {
   let s = script("answer:p%w\nd")
-  eq("the panel's script takes the answer as pinentry-qt's", `${s.code}|${s.out}`, "0|p%25w%0Ad")
+  eq("the panel's script takes the frontend's answer", `${s.code}|${s.out}`, "0|p%25w%0Ad")
   s = script("cancel")
   eq("a cancel is the script's cancel", `${s.code}|${s.out}`, `${exits.cancelled}|`)
   s = script("crash")
@@ -320,26 +322,28 @@ function throughScript() {
   // The script asks SETTIMEOUT 120 itself; the stand-in prompt here hangs, so
   // the frontend's own timeout must be what ends it: shorten it by wrapping.
   const wrapped = path.join(scratch, "short-timeout")
-  fs.writeFileSync(wrapped, `#!/usr/bin/bash\n# SETTIMEOUT 120 becomes 1.\nexec "${frontend}" < <(sed -u 's/^SETTIMEOUT 120$/SETTIMEOUT 1/')\n`, { mode: 0o755 })
+  // Its arguments go through, so the script's `--check` reaches the frontend.
+  fs.writeFileSync(wrapped, `#!/usr/bin/bash\n# SETTIMEOUT 120 becomes 1.\nexec "${frontend}" "$@" < <(sed -u 's/^SETTIMEOUT 120$/SETTIMEOUT 1/')\n`, { mode: 0o755 })
   s = script("hang", {}, wrapped)
   eq("a prompt left open times out as the script's cancel", `${s.code}|${s.out}`, `${exits.cancelled}|`)
   eq("no private directory survives the script", leftovers().join(","), "")
 }
 
-// --- the automatic choice ---------------------------------------------------------------------
+// --- the only program -------------------------------------------------------------------------
 
-function choice() {
-  const bundled = Model.omarchyPinentryPath(repoRoot, true)
+function only() {
+  const bundled = Model.omarchyPinentryPath(repoRoot)
   eq("the frontend's path is derived from the plugin's directory", bundled, frontend)
-  eq("and is empty while the setting is off", Model.omarchyPinentryPath(repoRoot, false), "")
-  eq("or for a plugin dir that is not a clean absolute path", Model.omarchyPinentryPath("plugins/x", true), "")
+  eq("whatever else is passed", Model.omarchyPinentryPath(repoRoot, false), frontend)
+  eq("and is empty for a plugin dir that is not a clean absolute path", Model.omarchyPinentryPath("plugins/x"), "")
+  eq("or one with a parent step in it", Model.omarchyPinentryPath(repoRoot + "/../x"), "")
   check("it travels as an argument, never as script text",
-    Model.pinentryCommand("", {}, bundled)[8] === bundled && !Model.pinentryCommand("", {}, bundled)[2].includes(bundled)
-      && Model.pinentryProbeCommand("", bundled)[5] === bundled, "")
-  eq("a path that is not absolute is not passed", Model.pinentryCommand("", {}, "-x")[8], "")
+    Model.pinentryCommand(bundled, {})[4] === bundled && !Model.pinentryCommand(bundled, {})[2].includes(bundled)
+      && Model.pinentryProbeCommand(bundled)[4] === bundled && !Model.pinentryProbeCommand(bundled)[2].includes(bundled), "")
+  eq("a path that is not absolute is not passed", Model.pinentryCommand("-x", {})[4], "")
 
   // A PATH with stand-ins for pinentry-qt and pinentry that record their
-  // name, then act as the bundled frontend would not: as the e2e stand-in.
+  // name, then act as the e2e stand-in: the script must never run them.
   const marker = path.join(scratch, "ran")
   const fake = path.join(repoRoot, "tests", "e2e", "bin", "pinentry")
   const bin = fs.mkdtempSync(path.join(scratch, "bin-"))
@@ -351,32 +355,40 @@ function choice() {
     if (where) fs.symlinkSync(where, path.join(bin, t))
   }
   const fakeAnswers = path.join(scratch, "fake-answers")
-  const ran = (program, setting, extraEnv) => {
+  const ran = (extraEnv, where = bundled) => {
     fs.writeFileSync(marker, "")
     fs.writeFileSync(fakeAnswers, "pin:x\n")
     fs.writeFileSync(answerFile, "answer:y")
     fs.writeFileSync(uiLog, "")
     const env = Object.assign({}, baseEnv, { PATH: bin, FAKE_PINENTRY_ANSWERS: fakeAnswers }, extraEnv || {})
-    const path_ = Model.omarchyPinentryPath(repoRoot, setting)
-    const argv = Model.pinentryCommand(program, { title: "t", prompt: "p" }, path_)
+    const argv = Model.pinentryCommand(where, { title: "t", prompt: "p" })
     const r = spawnSync("/usr/bin/bash", argv.slice(1), { encoding: "utf8", timeout: 20000, env })
-    const pr = Model.pinentryProbeCommand(program, path_)
+    const pr = Model.pinentryProbeCommand(where)
     const pb = spawnSync("/usr/bin/bash", pr.slice(1), { encoding: "utf8", timeout: 5000, env })
     return `${r.status}|${r.stdout}|${fs.readFileSync(marker, "utf8").trim()}|${uiStarts().length}|${pb.stdout.trim()}`
   }
-  eq("setting on and no program: the bundled frontend", ran("", true), "0|y||1|found")
-  eq("setting off: pinentry-qt as before", ran("", false), "0|x|pinentry-qt|0|found")
-  eq("an explicit program wins over the setting", ran("pinentry", true), "0|x|pinentry|0|found")
-  eq("an explicit path wins too", ran(fake, true), "0|x||0|found")
-  eq("the bundled frontend unable to run (no runtime dir): pinentry-qt",
-    ran("", true, { XDG_RUNTIME_DIR: "" }), "0|x|pinentry-qt|0|found")
-  eq("unable to run (no display, no kit): pinentry-qt",
-    ran("", true, { QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "", OMARCHY_SHELL_DIR: path.join(scratch, "nokit") }),
-    "0|x|pinentry-qt|0|found")
+  const missing = `${exits.missing}|||0|missing`
+  eq("the frontend runs and answers, the probe finds it", ran(), "0|y||1|found")
+  eq("unable to run (no runtime dir): missing, and no other pinentry runs",
+    ran({ XDG_RUNTIME_DIR: "" }), missing)
+  eq("unable to run (no display, no kit): missing, and no other pinentry runs",
+    ran({ QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "", OMARCHY_SHELL_DIR: path.join(scratch, "nokit") }), missing)
+  eq("no display alone: missing", ran({ QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "" }), missing)
+  {
+    // quickshell missing: a display and the kit are not enough.
+    const kit = path.join(scratch, "kit")
+    for (const d of ["Commons", "Ui"]) {
+      fs.mkdirSync(path.join(kit, d), { recursive: true })
+      fs.writeFileSync(path.join(kit, d, "qmldir"), "")
+    }
+    eq("no quickshell: missing",
+      ran({ QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "wayland-test", OMARCHY_SHELL_DIR: kit }), missing)
+  }
   // node missing: `env node` fails, so --check does.
   const noNode = fs.mkdtempSync(path.join(scratch, "bin-"))
   for (const n of fs.readdirSync(bin)) if (n !== "node") fs.symlinkSync(fs.realpathSync(path.join(bin, n)), path.join(noNode, n))
-  eq("without node: pinentry-qt", ran("", true, { PATH: noNode }), "0|x|pinentry-qt|0|found")
+  eq("without node: missing, and no other pinentry runs", ran({ PATH: noNode }), missing)
+  eq("a plugin dir that gives no path: missing", ran({}, Model.omarchyPinentryPath("plugins/x")), missing)
 }
 
 // --- through the vault helper ---------------------------------------------------------------
@@ -387,7 +399,7 @@ function throughHelper() {
   return new Promise(resolve => {
     fs.writeFileSync(answerFile, "answer:p%w\nd+é")
     const request = (id, argv, extra) => JSON.stringify(Object.assign({ type: "exec", v: 1, id, argv, env: {}, inject: {} }, extra))
-    const askCmd = Model.pinentryCommand("", { title: "Bitwarden", prompt: "PIN:" }, Model.omarchyPinentryPath(repoRoot, true))
+    const askCmd = Model.pinentryCommand(Model.omarchyPinentryPath(repoRoot), { title: "Bitwarden", prompt: "PIN:" })
     const show = ["bash", "-c", "printf '%s' \"$PW\""]
     const child = spawn(helper, [], { stdio: ["pipe", "pipe", "ignore"], env: baseEnv })
     const requests = [request(1, askCmd, { capture: "pinentry:pin" }), request(2, show, { inject: { PW: "secret:pin" } })]
@@ -422,7 +434,7 @@ async function main() {
   await lifetimes()
   checks()
   throughScript()
-  choice()
+  only()
   if (fs.existsSync(helper)) await throughHelper()
   else console.log("omarchy-pinentry: skipping the helper checks, the helper is not built (cargo build --manifest-path vault/Cargo.toml --locked)")
   eq("nothing is left in the runtime dir", leftovers().join(","), "")
