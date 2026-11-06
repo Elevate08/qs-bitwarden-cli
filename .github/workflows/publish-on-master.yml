@@ -129,15 +129,24 @@ jobs:
               echo "::warning::$tag is at $tagged but master is at $head; file the [Verify] issue by hand"
               continue
             fi
-            # One open request at a time: the marketplace asks for edits to
-            # the existing issue rather than a duplicate.
+            # One request at a time. The marketplace asks for the open issue
+            # to be edited rather than duplicated, and re-validates a
+            # "[Verify]" issue whenever it is edited, so an open request is
+            # moved to the new commit. One a maintainer has already approved
+            # is mid-publication and is left alone.
             open="$(gh issue list -R "$MARKETPLACE" --state open --author '@me' \
-                     --search "in:title $plugin_id" --json number,title \
-                     --jq '.[] | select(.title | startswith("[Verify]: '"$plugin_id"'")) | .number' | head -1)"
-            if [ -n "$open" ]; then
-              echo "::warning::marketplace issue #$open for $plugin_id is still open; not filing another for $tag"
+                     --search "$plugin_id in:body" --json number,title,body,labels \
+                     --jq '.[] | select((.title | startswith("[Verify]:"))
+                                        and (.body | contains("'"$plugin_id"'")))
+                                | "\(.number) \([.labels[].name] | join(","))"' | head -1)"
+            number="${open%% *}"
+            labels="${open#* }"
+            if [ -n "$number" ] && [ "$labels" != "$open" ] \
+               && [ -n "$(printf '%s\n' "${labels//,/$'\n'}" | grep -x 'approved-and-verified')" ]; then
+              echo "::warning::marketplace issue #$number is approved and publishing; not moving it to $tag"
               continue
             fi
+            title="[Verify]: $plugin_id $tag"
             body="$(cat <<EOF
           ### Verification action
 
@@ -164,7 +173,13 @@ jobs:
           - [x] I confirm that this listed root plugin supports the standard Omarchy installation path and does not require manual setup.
           EOF
           )"
-            url="$(gh issue create -R "$MARKETPLACE" --title "[Verify]: $plugin_id $tag" --body "$body")"
-            echo "::notice::asked the marketplace to verify $name $tag at $tagged: $url"
+            if [ -n "$number" ]; then
+              gh issue edit -R "$MARKETPLACE" "$number" --title "$title" --body "$body" >/dev/null
+              url="$(gh issue view -R "$MARKETPLACE" "$number" --json url --jq .url)"
+              echo "::notice::moved marketplace issue #$number to $name $tag at $tagged: $url"
+            else
+              url="$(gh issue create -R "$MARKETPLACE" --title "$title" --body "$body")"
+              echo "::notice::asked the marketplace to verify $name $tag at $tagged: $url"
+            fi
             echo "- [$name $tag → marketplace]($url)" >> "$GITHUB_STEP_SUMMARY"
           done

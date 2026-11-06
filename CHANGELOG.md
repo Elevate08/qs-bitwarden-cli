@@ -12,8 +12,10 @@
   token with the `public_repo` scope, the least that can open an issue on a
   public repository one does not own); without it the job says so and the
   issue is filed by hand as before. Prereleases are not sent, a tag that is
-  no longer master's head is left to a human, and an open request for the
-  plugin is not duplicated. The step runs no repository code.
+  no longer master's head is left to a human, and a request still open from
+  an earlier release is moved to the new commit (the marketplace re-validates
+  an edited issue) rather than duplicated, unless a maintainer has already
+  approved it. The step runs no repository code.
 
 ## [1.12.0] - 2026-11-05
 
