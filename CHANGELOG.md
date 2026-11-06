@@ -73,6 +73,21 @@
   worked, as Enter copies it after a password (`autoCopyTotpSec` `0` turns
   both off).
 
+### Changed
+
+- **A release asks the Omarchy plugin marketplace to verify itself.** Once
+  `publish-on-master.yml` takes a release out of draft, it opens the
+  marketplace's "[Verify]: verify and publish a newer upstream commit" issue
+  for the tagged commit, which until now was filed by hand after each
+  release. It needs a `MARKETPLACE_ISSUE_TOKEN` repository secret (a classic
+  token with the `public_repo` scope, the least that can open an issue on a
+  public repository one does not own); without it the job says so and the
+  issue is filed by hand as before. Prereleases are not sent, a tag that is
+  no longer master's head is left to a human, and a request still open from
+  an earlier release is moved to the new commit (the marketplace re-validates
+  an edited issue) rather than duplicated, unless a maintainer has already
+  approved it. The step runs no repository code.
+
 ### Security
 
 - **Turning fingerprint unlock off now deletes the stored password.** The

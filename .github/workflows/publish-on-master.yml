@@ -1,6 +1,7 @@
-# Publishes the draft release once its tagged commit reaches master. Nothing
-# is rebuilt or re-verified: release.yml already did that for this exact
-# commit on the release branch. No other workflow runs on master.
+# Publishes the draft release once its tagged commit reaches master, then asks
+# the Omarchy plugin marketplace to verify that commit. Nothing is rebuilt or
+# re-verified: release.yml already did that for this exact commit on the
+# release branch. No other workflow runs on master.
 
 name: publish on master
 
@@ -10,7 +11,8 @@ on:
   # Idempotent (published releases are left alone), so safe to re-run by hand.
   workflow_dispatch:
 
-# The only write CI does: releases, never branches, tags or files.
+# The only write CI does to this repository: releases, never branches, tags
+# or files. The marketplace issue is written with its own token (below).
 permissions:
   contents: write
 
@@ -33,6 +35,7 @@ jobs:
           fetch-tags: true
 
       - name: Publish the release this merge brought in
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event.before }}
@@ -63,6 +66,7 @@ jobs:
           echo "tags newly on master: $(echo $arrived)"
 
           published=0
+          published_tags=""
           for tag in $arrived; do
             if ! gh release view "$tag" >/dev/null 2>&1; then
               # A tag without a release (old or hand-pushed) is skipped, never
@@ -82,5 +86,100 @@ jobs:
             gh release edit "$tag" --draft=false
             gh release view "$tag" --json isDraft,url --jq '"published \(.url) (isDraft=\(.isDraft))"'
             published=$((published + 1))
+            published_tags="${published_tags:-} $tag"
           done
           echo "::notice::published $published release(s)"
+          echo "tags=${published_tags# }" >> "$GITHUB_OUTPUT"
+
+      # The marketplace (omacom/omarchy-plugin-marketplace) lists one exact
+      # commit per plugin and only moves on a "[Verify]" issue naming the
+      # repository's current HEAD. GITHUB_TOKEN cannot write to another
+      # repository, so this uses MARKETPLACE_ISSUE_TOKEN: a classic PAT with
+      # the `public_repo` scope, which is the least that can open an issue on
+      # a public repository one does not own. Without the secret the step
+      # says so and the issue is filed by hand, as before. The step runs no
+      # repository code: it reads manifest.json with jq and calls gh.
+      - name: Ask the marketplace to verify the published commit
+        if: steps.publish.outputs.tags != ''
+        env:
+          GH_TOKEN: ${{ secrets.MARKETPLACE_ISSUE_TOKEN }}
+          TAGS: ${{ steps.publish.outputs.tags }}
+          MARKETPLACE: omacom/omarchy-plugin-marketplace
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::MARKETPLACE_ISSUE_TOKEN is not set; file the marketplace [Verify] issue by hand"
+            exit 0
+          fi
+          head="$(git rev-parse HEAD)"
+          plugin_id="$(jq -r .id manifest.json)"
+          name="$(jq -r .name manifest.json)"
+          for tag in $TAGS; do
+            case "$tag" in *-*)
+              echo "::notice::$tag is a prerelease; the marketplace tracks releases only, skipping"
+              continue ;;
+            esac
+            # The form wants the repository's current HEAD. Our release flow
+            # tags master's merge commit, so the two agree; if master has
+            # moved on since, the tagged commit is no longer what the
+            # marketplace would validate, and a human decides which to send.
+            tagged="$(git rev-parse "$tag^{commit}")"
+            if [ "$tagged" != "$head" ]; then
+              echo "::warning::$tag is at $tagged but master is at $head; file the [Verify] issue by hand"
+              continue
+            fi
+            # One request at a time. The marketplace asks for the open issue
+            # to be edited rather than duplicated, and re-validates a
+            # "[Verify]" issue whenever it is edited, so an open request is
+            # moved to the new commit. One a maintainer has already approved
+            # is mid-publication and is left alone.
+            open="$(gh issue list -R "$MARKETPLACE" --state open --author '@me' \
+                     --search "$plugin_id in:body" --json number,title,body,labels \
+                     --jq '.[] | select((.title | startswith("[Verify]:"))
+                                        and (.body | contains("'"$plugin_id"'")))
+                                | "\(.number) \([.labels[].name] | join(","))"' | head -1)"
+            number="${open%% *}"
+            labels="${open#* }"
+            if [ -n "$number" ] && [ "$labels" != "$open" ] \
+               && [ -n "$(printf '%s\n' "${labels//,/$'\n'}" | grep -x 'approved-and-verified')" ]; then
+              echo "::warning::marketplace issue #$number is approved and publishing; not moving it to $tag"
+              continue
+            fi
+            title="[Verify]: $plugin_id $tag"
+            body="$(cat <<EOF
+          ### Verification action
+
+          Verify and publish a newer upstream commit
+
+          ### Plugin ID
+
+          $plugin_id
+
+          ### Repository URL
+
+          $REPO_URL
+
+          ### Target commit
+
+          $tagged
+
+          ### Verification acknowledgment
+
+          - [x] I understand that only the exact target commit can become a verified marketplace snapshot and that verification is not a security audit.
+
+          ### Standard installation acknowledgment
+
+          - [x] I confirm that this listed root plugin supports the standard Omarchy installation path and does not require manual setup.
+          EOF
+          )"
+            if [ -n "$number" ]; then
+              gh issue edit -R "$MARKETPLACE" "$number" --title "$title" --body "$body" >/dev/null
+              url="$(gh issue view -R "$MARKETPLACE" "$number" --json url --jq .url)"
+              echo "::notice::moved marketplace issue #$number to $name $tag at $tagged: $url"
+            else
+              url="$(gh issue create -R "$MARKETPLACE" --title "$title" --body "$body")"
+              echo "::notice::asked the marketplace to verify $name $tag at $tagged: $url"
+            fi
+            echo "- [$name $tag → marketplace]($url)" >> "$GITHUB_STEP_SUMMARY"
+          done
