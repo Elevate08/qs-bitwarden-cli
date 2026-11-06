@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **A release asks the Omarchy plugin marketplace to verify itself.** Once
+  `publish-on-master.yml` takes a release out of draft, it opens the
+  marketplace's "[Verify]: verify and publish a newer upstream commit" issue
+  for the tagged commit, which until now was filed by hand after each
+  release. It needs a `MARKETPLACE_ISSUE_TOKEN` repository secret (a classic
+  token with the `public_repo` scope, the least that can open an issue on a
+  public repository one does not own); without it the job says so and the
+  issue is filed by hand as before. Prereleases are not sent, a tag that is
+  no longer master's head is left to a human, and an open request for the
+  plugin is not duplicated. The step runs no repository code.
+
 ## [1.12.0] - 2026-11-05
 
 ### Added
