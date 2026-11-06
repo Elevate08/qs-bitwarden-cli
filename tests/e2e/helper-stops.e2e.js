@@ -18,7 +18,7 @@
 //   node tests/e2e/helper-stops.e2e.js [--settle]
 
 const { createSuite, repoRoot } = require("../harness")
-const { createShell, sleep, helperPid } = require("./shell")
+const { createShell, sleep, helperPid, withStandInPinentry } = require("./shell")
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
@@ -37,21 +37,24 @@ const bwCalls = shell => {
 }
 
 // The plugin with the helper built in vault/target/debug in place of the
-// shipped one, which may predate the checkout; the checkout as it is when
-// nothing is built.
+// shipped one, which may predate the checkout; with the shipped one when
+// nothing is built. Always a copy, so that its pinentry can be the stand-in
+// (shell.js, withStandInPinentry()): the checkout's own cannot run without a
+// display.
 function pluginWithBuiltHelper(into) {
   const built = "vault/target/debug/qs-bitwarden-vault"
-  if (!fs.existsSync(path.join(repoRoot, built))) return repoRoot
+  const useBuilt = fs.existsSync(path.join(repoRoot, built))
   fs.cpSync(repoRoot, into, {
     recursive: true,
     filter: src => {
       const rel = path.relative(repoRoot, src)
-      if (/^\.git(\/|$)/.test(rel) || rel === "bin/x86_64-linux/qs-bitwarden-vault") return false
-      if (/(^|\/)target(\/|$)/.test(rel)) return ["vault/target", "vault/target/debug", built].includes(rel)
+      if (/^\.git(\/|$)/.test(rel)) return false
+      if (useBuilt && rel === "bin/x86_64-linux/qs-bitwarden-vault") return false
+      if (/(^|\/)target(\/|$)/.test(rel)) return useBuilt && ["vault/target", "vault/target/debug", built].includes(rel)
       return true
     }
   })
-  return into
+  return withStandInPinentry(into)
 }
 
 function withoutHelper(into) {
@@ -63,7 +66,7 @@ function withoutHelper(into) {
         && rel !== "bin/x86_64-linux/qs-bitwarden-vault"
     }
   })
-  return into
+  return withStandInPinentry(into)
 }
 
 function guarded(label, shell, body) {

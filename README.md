@@ -55,6 +55,11 @@ a two-step code with Bitwarden's standalone `bw` binary: the panel hands the cod
 to `bw` through a Node preload, which the standalone build does not load, so it
 asks you to finish in the terminal rather than put the code on a command line.
 
+Unlocking later asks for your master password, or your PIN, in the plugin's
+own prompt: a card over the focused monitor drawn like Omarchy's polkit
+prompt, in a short-lived process of its own, so what you type never enters
+the shell. A wrong one asks again with the reason; Escape cancels.
+
 <br clear="all">
 
 ---
@@ -309,6 +314,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | Shortcut | Action |
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up), or open the item when there is no password to copy -- a card, an identity, a note, an SSH key |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy the highlighted login's password and arm it for 30 seconds, for the `autoType` IPC to type. That is the row <kbd>Enter</kbd> acts on, the first suggestion (or first item) when the panel opens, so nothing needs selecting first; it works from the search box too, unless text is selected there. Off, or over selected text, it is the usual copy |
 | <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
@@ -342,6 +348,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>n</kbd> | Copy a card's **n**umber |
 | <kbd>k</kbd> | Copy a card's security code |
 | <kbd>m</kbd> | Copy TOTP code |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy a login's password and arm it for 30 seconds |
 | <kbd>v</kbd> | Toggle re**v**eal on the item's principal secret -- the password on a login, the number on a card. Every other masked field has its own eye, and each reveals independently |
 | <kbd>a</kbd> | Save every **a**ttachment on this item |
 | <kbd>e</kbd> | Edit this item |
@@ -409,7 +416,7 @@ It ships and is verified like the other helpers. If it is missing or fails its c
 PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unlock` accepts nothing else. The plugin keeps it **once** per account, in a single keyring item (`service=qs-bitwarden-cli, account=unlock_envelope`, or `unlock_envelope@<slot>` for an account added beside the first):
 
 - The first time `bw` accepts a password you typed -- a login, or unlocking with your master password -- it is encrypted under a random key with XChaCha20-Poly1305, and the whole item is sealed to this machine and your user with `systemd-creds --user`. A copy taken off this machine is useless.
-- Each unlock method you turn on adds its own way to that one key, and none of them stores the password again. Turning a method off in settings removes only its way in -- from every account, since the switch is shared -- and one turned off in `shell.json` while the shell was not running is removed at the next start.
+- Each unlock method you turn on adds its own way to that one key, and none of them stores the password again. Turning a method off in settings removes its way in -- from every account, since the switch is shared -- and one turned off in `shell.json` while the shell was not running is removed at the next start. Turning fingerprint unlock off deletes the stored password itself, for every account that had a fingerprint way in (see below).
 - The master password you are asked for when turning a method on is a **check** against the stored one, not a new copy: a wrong one is refused, and nothing you type there is stored.
 - If you change your master password elsewhere, the next unlock with the new one re-seals the stored copy and keeps every method.
 - Logging out of an account deletes its copy; other accounts keep theirs.
@@ -421,6 +428,8 @@ An earlier build could store this item across several lines, which makes gnome-k
 Upgrading from 1.10.0 or earlier needs nothing from you. The old entries -- a plaintext copy for fingerprint and for FIDO2, an encrypted one for the PIN -- are moved in as each method is next used, and deleted once the new copy opens.
 
 **The honest limit.** The stored password is only as protected as the weakest method you have turned on, and the settings screen says so. The seal ties the stored item to this machine and this user, so a copy taken elsewhere is useless -- but a program running as you can unseal it here (`systemd-creds --user decrypt`). With fingerprint unlock on, that is all it needs: a fingerprint releases no secret to encrypt with. With a PIN, it can then guess the PIN offline, at its own pace and on every core (see [PIN unlock](#pin-unlock)). A FIDO2 key cannot be bypassed that way, because the key itself produces the secret; root, as always, can read anything.
+
+The item keeps one encryption key for as long as it exists: turning the PIN or a key off removes only that method's way to it, and a master password changed elsewhere is re-sealed under the same key. Turning fingerprint unlock off is different: it deletes the item for every account whose item had a fingerprint way in, so a key that a program read while fingerprint unlock was on dies with it; the next unlock with your master password stores it again under a new key, and PIN and FIDO2 unlock for those accounts must be set up again. A key recovered another way, by guessing the PIN from a copy of the item, lasts until the item is deleted, a password change included. To get a fresh key then, log out of the account and sign in again (logging out deletes its stored password) and set the methods up again.
 
 ### PIN unlock
 
@@ -448,7 +457,7 @@ Set `fingerprintUnlock` to `true` to unlock the vault with a finger instead of y
 
 PAM can prove that you are present, but a fingerprint releases no secret, so it cannot encrypt anything by itself. Fingerprint unlock is the one method whose way in is protected only by the machine seal, which means **a program running as you while you are logged in can open the stored password without your finger**. This is the same trade the official Bitwarden desktop client makes for its own biometric unlock. It is off by default and worth leaving off on a shared or unattended machine -- and with it on, a PIN or a key does not make the stored password any safer.
 
-Its way in is removed when you turn the setting off or log out -- for the account on screen; other accounts keep theirs.
+Turning the setting off deletes the stored password itself, for every account whose stored password had a fingerprint way in, since the fingerprint's way in exposes the item's encryption key; the next unlock with your master password stores it again under a new key, and PIN and FIDO2 unlock for those accounts must be set up again. Logging out deletes the account on screen's copy only.
 
 **A closed lid takes the option off the screen.** The reader is on the laptop body, so with the lid shut -- clamshell mode, or simply closed on a docked machine -- there is nothing to touch. While it is down, the locked screen hides **Unlock with Fingerprint**, the SSH prompt does the same, and the reader is not armed on open. Omarchy's own detector (`omarchy-hw-laptop-closed`) decides, and a machine with no lid never reports one. Nothing is forgotten: the settings toggle is unchanged, and the option is back the moment the lid opens. A FIDO2 key on a cable is unaffected.
 
@@ -472,10 +481,85 @@ Registrations made with `+pin` or `+verification` (a key PIN at every system pro
 
 Its way in is removed when you turn the setting off or log out -- for the account on screen; other accounts keep theirs. `omarchy remove security fido2` unregisters the key for the system's own authentication prompts as well, which is why the plugin points at Omarchy's setup rather than registering the key itself.
 
+### Auto-type
+
+Off by default, and worth thinking about before you turn it on: **whatever
+window has focus when it types gets your password**, and **while a login is
+armed, any program running as you can make it type**, because the `autoType`
+IPC cannot tell your keybinding from anything else that calls it. Turning it
+on in **Settings → General → Auto-type logins** asks you to press again to
+confirm.
+
+With it on, <kbd>Ctrl</kbd>+<kbd>C</kbd> acts on the login <kbd>Enter</kbd>
+would: the highlighted row of the list, or the item open in the detail
+inspector. When the panel opens the highlight is already on the first
+suggestion for the window you came from (or the first item), so there is
+nothing to select first, and it works from the search box as well, unless
+you have text selected there, which it copies as usual. It (or the row's
+second button) copies the login's password, after any master password
+re-prompt, and arms it for 30 seconds. With `closeOnCopy` the panel
+closes and focus goes back to the window you came from. Calling the IPC then
+types the login's username, <kbd>Tab</kbd> and password there, once. For a
+login with a TOTP code, the copy arms the same follow-up as <kbd>Enter</kbd>
+(<kbd>Enter</kbd> again copies the code, and `autoCopyTotpSec` later it is
+copied anyway), and once the type has worked a fresh code is copied to the
+clipboard, with a "TOTP Code Copied" notification, ready for the site's
+two-step prompt. `autoCopyTotpSec` set to `0` turns that off too; a type that
+fails or is stopped copies nothing.
+
+It needs a key to call it. Under the setting, while auto-type is on, the
+panel shows whether one is bound ("Bound to SUPER + CTRL + BACKSLASH" or "No
+keybinding yet") and offers a key combination that nothing else on your
+desktop uses. **Register Keybinding** adds it to `~/.config/hypr/bindings.lua`
+and reloads Hyprland, so the key works straight away; see
+[Global hotkey](#global-hotkey) for exactly what it writes, and for doing it
+by hand.
+
+- It types with [`wtype`](https://github.com/atx/wtype). The setup screen
+  lists it, and offers to install it, only while auto-type is on.
+- The vault helper reads the armed login and writes it to `wtype`'s stdin, so
+  the password never reaches the shell; without the helper the shell does the
+  same. It is never an argument or an environment variable.
+- It does not type while the panel, an SSH approval or the unlock prompt has
+  the keyboard, since the text would land there, nor while the screen is
+  locked. The panel polls the lock state while a login is armed, and a reading
+  that is missing or stale refuses too, rather than guess. A vault lock while
+  it is typing stops it there. A username or password with a line break, tab
+  or other control character in it is not typed at all, since `wtype` would
+  press it as a key.
+- The arm is used up by the type it starts, and dropped after 30 seconds, on
+  lock, logout or account switch, and when auto-type is turned off.
+- It waits a quarter of a second before typing, to give you time to let go
+  of your shortcut's keys.
+
 ### SSH agent
 
 Off by default. See **[docs/ssh-agent.md](docs/ssh-agent.md)** for setup, the
 provenance check, and what the agent does and does not protect.
+
+### Automatic sync
+
+Every 15 minutes by default. **Settings → General → Automatically sync every**
+(or `autoSyncMinutes`; `0` turns it off) syncs the open vault with the server at
+that interval, which helps when a self-hosted server is not always reachable:
+a sync that fails while it is offline is tried again at the same interval, so
+the vault catches up soon after the server returns. The panel does not need to be open. The
+first sync after an unlock runs within about 30 seconds, and a sync you start
+yourself counts as the latest one.
+
+A failed sync keeps the vault you already have and shows "Automatic sync
+failed" in the panel, with no desktop notification; the next sync that
+succeeds clears that notice and no other. One that succeeds says nothing.
+
+It waits while you edit an item, while another vault operation runs, while an
+SSH request is waiting for your approval (loading the keys again would refuse
+it), and when the vault has reached its auto-lock deadline. A sync that lands
+while you are editing reloads the list once you are back on it or the panel
+is closed. It never unlocks the vault and never moves the auto-lock deadline,
+and locking, logging out or switching accounts drops anything still pending.
+With the SSH agent on, each sync's reload hands the agent its keys again,
+which ends any signing approval still in its window, so a long approval
+window and a short sync interval do not go together.
 
 ---
 
@@ -516,17 +600,44 @@ not in a separate block:
 
 ## Global hotkey
 
-To toggle the Bitwarden panel with a keyboard shortcut (e.g. `SUPER + CTRL + /`), add the binding to `~/.config/hypr/bindings.lua`:
+Two IPC calls are worth a key: `toggle`, which opens and closes the panel, and
+`autoType`, which types an armed login (with [auto-type](#auto-type) on).
+Omarchy keeps your own keybindings in `~/.config/hypr/bindings.lua`, and
+Hyprland reloads its config when that file is saved (`hyprctl reload` forces
+it); the shell does not need restarting.
+
+**The auto-type key, from the panel.** With auto-type on, **Settings → General
+→ Auto-type logins** has a key combination field under it, filled in with one
+that is free: modifiers from `SUPER`, `SHIFT`, `CTRL` and `ALT` joined by
+` + `, then one key name, and at least one of `SUPER`, `CTRL` or `ALT`. It
+says which binding already holds a key you type. **Register Keybinding**
+appends two lines to the end of `bindings.lua`, a comment saying the plugin
+added them and the binding:
+
+```lua
+-- Added by the qs-bitwarden-cli plugin (Settings > General > Auto-type logins).
+o.bind("SUPER + CTRL + BACKSLASH", "Bitwarden auto-type", "omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType")
+```
+
+then runs `hyprctl reload config-only` and shows the result, or any config
+error Hyprland reports. Nothing else in the file is touched. It refuses when
+`bindings.lua` already has a line that runs `autoType`, and creates the file
+only when it is missing and your `~/.config/hypr/hyprland.lua` loads it, as
+Omarchy's does. **Remove Keybinding** takes out those two lines again, and
+only while they are exactly as the plugin wrote them; a binding you wrote or
+changed yourself is shown with its line number, for you to edit there.
+
+**By hand.** If you keep your bindings somewhere else, **Copy Line** puts the
+`o.bind(...)` line on the clipboard (it is not a secret, so it is not cleared).
+Either way, the panel's own toggle is a line of the same kind, for example on
+`SUPER + CTRL + /`:
 
 ```lua
 o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle")
 ```
 
-Apply changes by restarting the shell:
-
-```bash
-omarchy restart shell
-```
+If the key is one of Omarchy's defaults (`omarchy menu keybindings --print`
+lists them), add `hl.unbind("SUPER + CTRL + SLASH")` on the line before it.
 
 ---
 
@@ -539,19 +650,20 @@ The following settings are read from the plugin's own entry in the
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `autoSyncMinutes` | `number` | `15` | Minutes between automatic syncs while the vault is unlocked and idle (`0` to disable); a server that is offline is tried again at the same interval. See [Automatic sync](#automatic-sync). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
 | `autoLockMinutes` | `number` | `15` | Minutes of inactivity before automatically locking the vault (`0` to disable). Range `0`-`1440`; out of range is clamped and an unreadable value falls back to `15`. |
 | `clearClipboardSec` | `number` | `30` | Seconds before automatically clearing copied secrets from the clipboard (`0` to disable). The clear is the copy's own lifetime (`wl-copy` under `timeout`), so it survives a shell restart and never touches something copied later. Range `0`-`300`; out of range is clamped and an unreadable value falls back to `30`. |
 | `lockOnScreenLock` | `boolean` | `true` | Lock the vault as soon as the screen locks, rather than waiting out `autoLockMinutes`. Reads the Omarchy lock screen's own state, so it follows a manual lock and an idle lock alike. A shell without the lock plugin simply never reports a lock; it is never read as one. |
 | `lockOnSuspend` | `boolean` | `true` | Lock the vault when the machine is going to sleep, so no unlocked session key is left in the suspended machine's memory. Holds a `delay` sleep inhibitor until `bw lock` and the keyring clear have finished, at most 4 seconds. Needs `gdbus` (glib2), `systemd-inhibit` and `setsid` (util-linux). The monitor and its children stop when the plugin unloads; without these tools the setting is inert. |
 | `rememberSession` | `boolean` | `true` | Persist session token in OS keyring (`secret-tool`) while unlocked. Survives a shell restart, never a reboot -- see the note above. Turning it off removes a stored session at once, and with it off an unload while unlocked runs `bw lock`. |
-| `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
+| `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Also whether an [auto-type](#auto-type) copies the login's TOTP code once it has typed. Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
+| `autoTypeEnabled` | `boolean` | `false` | Let <kbd>Ctrl</kbd>+<kbd>C</kbd> in the panel arm a login, and the `autoType` IPC type its username, <kbd>Tab</kbd> and password into the focused window with `wtype`. Whatever window has focus gets the password, and while a login is armed any program running as you can trigger it -- see [Auto-type](#auto-type). The settings screen asks you to confirm before turning it on. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
-| `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. |
+| `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. Turning it off deletes the stored password, so PIN and FIDO2 unlock must be set up again. |
 | `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |
 | `pinUnlock` | `boolean` | `false` | Unlock with a numeric PIN of at least 6 digits, through Argon2id -- see [PIN unlock](#pin-unlock). |
-| `usePinentry` | `boolean` | `true` | Type the master password and PIN into `pinentry`, a separate window, instead of the panel, so they never enter the shell. Needs `pinentry` and the vault helper: while the helper is not running the panel waits for it, and its own field is used only without `pinentry`, with this off, or with `allowVaultWithoutHelper` -- see [docs/vault-helper.md](docs/vault-helper.md#typing-into-pinentry). |
-| `pinentryProgram` | `string` | automatic | The program to run. Unset or blank, the plugin uses `pinentry-qt` when it is runnable, else `pinentry` from `PATH`; the choice is made each time, so installing `pinentry-qt` later takes effect without a restart. A value you set is used exactly as given, including `pinentry`, e.g. `/usr/bin/pinentry-gnome3`. `pinentry-qt` draws its own prompt with a show/hide button; `pinentry-gnome3` types into `gcr-prompter`, outside the helper's core-dump protection ([which pinentry](docs/vault-helper.md#which-pinentry)). Edit `shell.json`; it is not in the settings screen. |
+| `usePinentry` | `boolean` | `true` | Type the master password and PIN into the plugin's own unlock prompt instead of the panel, so they never enter the shell. The prompt, `pinentry/omarchy-pinentry`, is a card over the focused monitor drawn like Omarchy's polkit prompt (the theme's `[polkit]` scrim, colours, font, border and rounding; the padlock shows or hides what is typed), in a separate, short-lived process the vault helper starts for each prompt. It is the only pinentry the plugin runs: `pinentry-qt` is neither used nor needed, and a `pinentryProgram` or `omarchyPinentry` left in `shell.json` is ignored. Needs `quickshell`, `node` and a Wayland session, and the vault helper: while the helper is not running the panel waits for it, and its own field is used only where the prompt cannot run, with this off, or with `allowVaultWithoutHelper` -- see [docs/vault-helper.md](docs/vault-helper.md#typing-into-pinentry). |
 | `allowVaultWithoutHelper` | `boolean` | `false` | When the vault helper cannot be used at start (missing, failing its check, or a platform it is not built for), hold the vault in the shell instead of leaving it locked. A shell crash can then write the session key and items to a core dump. Edit `shell.json`; it is not in the settings screen, and only `true` turns it on. A helper that keeps stopping leaves the vault locked even with this set -- see [docs/vault-helper.md](docs/vault-helper.md#if-the-helper-is-missing-or-fails). |
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](docs/ssh-agent.md). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
@@ -626,6 +738,9 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli setup        # -> "setup" (de
 # Lock the vault immediately
 omarchy-shell io.github.elevate08.qs-bitwarden-cli lock         # -> "locked"
 
+# Type the armed login's username, Tab and password into the focused window (see Auto-type)
+omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType     # -> "started" | "disabled" | "locked" | "not-armed" | "busy" | "panel-open" | "screen-locked" | "failed"
+
 # Sync with Bitwarden
 omarchy-shell io.github.elevate08.qs-bitwarden-cli sync         # -> "syncing"
 
@@ -642,6 +757,9 @@ omarchy-shell io.github.elevate08.qs-bitwarden-cli switchAccount work@example.co
 ```
 
 `open`, `close` and `toggle` return nothing; the rest echo the state they moved to.
+`autoType` answers whether typing started, not whether it worked: `wtype` is
+still typing when it returns, and a failure is shown in the panel, or as a
+desktop notification when the panel is closed.
 
 Omarchy's shell-level dispatcher also toggles any plugin, and works equally well for a keybinding:
 

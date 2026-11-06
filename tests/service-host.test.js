@@ -6,7 +6,7 @@
 //
 //   node tests/service-host.test.js
 
-const { createSuite, loadModule, read, repoRoot } = require("./harness")
+const { createSuite, functionBody, loadModule, read, repoRoot } = require("./harness")
 const fs = require("fs")
 const path = require("path")
 
@@ -76,6 +76,63 @@ check("the widget's open, close and toggle forward to the vault, naming the view
     && /function close\(\) \{ root\.vault\.close\(\) \}/.test(panel)
     && /function toggle\(\) \{ root\.vault\.toggle\(root\) \}/.test(panel),
   "open/close/toggle wrappers missing")
+
+// --- a late shared service ---------------------------------------------------
+//
+//
+// Private was decided because the service was not published by the timeout;
+// a slow shell publishes it later, and a private vault per monitor would make
+// a lock on one monitor local to it.
+
+const S = Model.vaultHandOverStep
+const poll = Model.vaultHandOverPollMs()
+check("the private host keeps asking, slower than the first lookup",
+  poll >= 500 && poll <= 5000, String(poll))
+check("no shared service is nothing to do",
+  S(false, {}) === "none" && S(false, { held: true }) === "none", "expected none")
+check("a found service is adopted by an empty private vault",
+  S(true, {}) === "adopt" && S(true, { busy: false, held: false, locking: false }) === "adopt", "expected adopt")
+check("an unlocked private vault is locked before the hand-over",
+  S(true, { held: true }) === "lock", "expected lock")
+check("a pinentry or authentication in flight is not cut short",
+  S(true, { busy: true }) === "wait" && S(true, { busy: true, held: true }) === "wait", "expected wait")
+check("the lock's own run is waited for before the vault is retired",
+  S(true, { locking: true }) === "wait", "expected wait")
+check("only a real true counts",
+  S(true, { busy: "yes", held: 1, locking: "x" }) === "adopt", "expected adopt")
+
+const handOver = functionBody(panel, "handOverVault")
+check("the private host polls for the service and stops once shared",
+  /id:\s*vaultHandOverTimer[\s\S]{0,200}running:\s*root\.vaultHost === "private"/.test(panel)
+    && /interval: Model\.vaultHandOverPollMs\(\)/.test(panel)
+    && /^\s*if \(root\.vaultHost !== "private"\) return/m.test(handOver),
+  "vaultHandOverTimer must run only while private")
+check("the first lookup is untouched by it",
+  /function resolveVault\(\) \{\s*if \(root\.resolvedVault\) return/.test(panel)
+    && /interval: 50\s*repeat: true\s*running: root\.resolvedVault === null && root\.vaultHost === "pending"/.test(panel),
+  "resolveVault and vaultResolveTimer must keep their first-resolution behaviour")
+check("the poll asks the model with the private vault's state",
+  /Model\.vaultHandOverStep\(!!shared, \{\s*busy: localVault\.pinentryActive \|\| localVault\.authAttemptInFlight\(\),\s*held: localVault\.vaultStatePresent\(\) \|\| localVault\.isUnlocking,\s*locking: localVault\.lockRun !== null \|\| localVault\.lockQueue\.length > 0/.test(handOver),
+  "busy, held and locking must come from the private vault")
+check("a held private vault is locked, with its popout closed, and nothing else happens that poll",
+  /if \(localVault\.opened\) localVault\.close\(\)\s*if \(step === "lock"\) \{\s*localVault\.lockVault\(\)\s*return\s*\}/.test(handOver),
+  "lock step must close, lock and return")
+const detachAt = handOver.indexOf("localVault.detachView(root)")
+const attachAt = handOver.indexOf("shared.attachView(root)")
+check("the view leaves the private vault before it joins the shared one",
+  detachAt !== -1 && attachAt !== -1 && detachAt < attachAt, `detach at ${detachAt}, attach at ${attachAt}`)
+check("and the shared vault becomes `vault` for the view",
+  /root\.resolvedVault = shared\s*root\.vaultHost = "shared"\s*shared\.attachView\(root\)/.test(handOver.replace(/\/\/[^\n]*\n\s*/g, "")),
+  "resolvedVault and vaultHost must switch to shared before attaching")
+check("the retired private vault's helpers are stopped, after the detach",
+  handOver.indexOf("localVault.releaseVaultHelper()") > detachAt
+    && handOver.indexOf('localVault.applySshAgentEvent({ kind: "enabled", value: false') > detachAt,
+  "releaseVaultHelper and the SSH agent disable must follow detachView")
+for (const name of ["pinentryActive", "authAttemptInFlight", "vaultStatePresent", "isUnlocking", "lockRun",
+    "lockQueue", "opened", "close", "lockVault", "detachView", "releaseVaultHelper", "applySshAgentEvent"]) {
+  check(`the private vault has ${name}`,
+    new RegExp(`^  (?:readonly )?(?:property \\S+ ${name}\\b|function ${name}\\()`, "m").test(service), `${name} missing from Service.qml`)
+}
 
 // --- the service's view registry --------------------------------------------
 
@@ -203,7 +260,7 @@ const unqualified = [...vaultMembers].filter(n => !shared.has(n)
 check("Panel.qml reaches every vault member through root.vault",
   unqualified.length === 0, "reached another way: " + unqualified.join(", "))
 
-for (const file of ["CustomFieldsEditor.qml", "SshAgentSettings.qml", "SshApprovalPopup.qml",
+for (const file of ["AutoTypeKeybind.qml", "CustomFieldsEditor.qml", "SshAgentSettings.qml", "SshApprovalPopup.qml",
                     "SshApprovalScreen.qml", "SshUnlockScreen.qml", "UnlockForm.qml", "RepromptConfirm.qml"]) {
   const src = code(read(file))
   const viaPanel = [...src.matchAll(/\bpanel\.([A-Za-z_]\w*)/g)].map(m => m[1])
@@ -216,7 +273,8 @@ for (const file of ["CustomFieldsEditor.qml", "SshAgentSettings.qml", "SshApprov
 // A Connections block listening for a vault member's change signal has to
 // target the vault; aimed at the view it silently never fires.
 const handlerTargets = []
-for (const [file, src, vaultRef] of [["Panel.qml", panel, "root.vault"], ["CustomFieldsEditor.qml", read("CustomFieldsEditor.qml"), null],
+for (const [file, src, vaultRef] of [["Panel.qml", panel, "root.vault"], ["AutoTypeKeybind.qml", read("AutoTypeKeybind.qml"), null],
+    ["CustomFieldsEditor.qml", read("CustomFieldsEditor.qml"), null],
     ["SshAgentSettings.qml", read("SshAgentSettings.qml"), null], ["SshApprovalPopup.qml", read("SshApprovalPopup.qml"), null],
     ["SshApprovalScreen.qml", read("SshApprovalScreen.qml"), null], ["SshUnlockScreen.qml", read("SshUnlockScreen.qml"), null],
     ["UnlockForm.qml", read("UnlockForm.qml"), null], ["RepromptConfirm.qml", read("RepromptConfirm.qml"), null]]) {
@@ -254,7 +312,8 @@ const vaultApi = new Set([
   "visible", "enabled", "parent", "objectName", "destroy",
 ])
 const unreachable = []
-for (const [file, src] of [["Panel.qml", panel], ["CustomFieldsEditor.qml", read("CustomFieldsEditor.qml")],
+for (const [file, src] of [["Panel.qml", panel], ["AutoTypeKeybind.qml", read("AutoTypeKeybind.qml")],
+    ["CustomFieldsEditor.qml", read("CustomFieldsEditor.qml")],
     ["SshAgentSettings.qml", read("SshAgentSettings.qml")], ["SshApprovalPopup.qml", read("SshApprovalPopup.qml")],
     ["SshApprovalScreen.qml", read("SshApprovalScreen.qml")], ["SshUnlockScreen.qml", read("SshUnlockScreen.qml")],
     ["UnlockForm.qml", read("UnlockForm.qml")], ["RepromptConfirm.qml", read("RepromptConfirm.qml")]]) {

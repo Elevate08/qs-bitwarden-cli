@@ -241,6 +241,21 @@ Panel {
     }
   }
 
+  // Ctrl+C (Control alone) with auto-type on: copy and arm the login Enter
+  // acts on -- the open item on the detail screen, the highlighted row of the
+  // list, which is the top suggestion (or the first item) when the panel
+  // opens. Through copyPasswordAndArm(), so after any re-prompt. True when it
+  // took the key: something was armed, or its prompt shown. The callers say
+  // where it may run (the catcher unblocked, a search box with no selection).
+  function armAutoTypeFromKey(event) {
+    if ((event.modifiers & ~Qt.KeypadModifier) !== Qt.ControlModifier || event.key !== Qt.Key_C) return false
+    if (!root.vault.autoTypeEnabled) return false
+    var onScreen = root.vault.currentScreen
+    var picked = onScreen === "detail" ? root.vault.detailItem
+      : (onScreen === "main" ? root.vault.getSelectedItem() : null)
+    return Boolean(picked) && root.vault.copyPasswordAndArm(picked)
+  }
+
   // The same guarantee for the unlock, item-form and Send secrets.
   function syncSensitiveFields() {
     syncLoginFields()
@@ -266,6 +281,11 @@ Panel {
   }
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // A sync the user asked for, or took over by asking during an automatic
+  // one (syncVault()). An automatic sync that succeeds says nothing, so the
+  // header stays quiet and the sync button stays usable while one runs.
+  readonly property bool userSyncing: root.vault.isSyncing && !root.vault.backgroundSync
+
   // -------------------------------------------------------------------------
   // Vault host
   // -------------------------------------------------------------------------
@@ -274,18 +294,31 @@ Panel {
   // private one when the shell does not provide it (see
   // Model.vaultHostDecision()). Never null: until resolved it is the bar's own
   // inert standby vault.
+  //
+  // A private vault may only mean the shell was slow to publish the service,
+  // and with one per monitor a lock on one monitor is not a lock on the
+  // others. So a private host keeps asking, slowly, and hands over when the
+  // service appears: the private vault is locked (nothing it held crosses
+  // over), the view moves to the shared vault, and the private one is retired
+  // (see Model.vaultHandOverStep() and handOverVault()).
   property var resolvedVault: null
   readonly property var vault: resolvedVault !== null ? resolvedVault : localVault
+
   // "pending" until decided, then "shared" or "private".
   property string vaultHost: "pending"
   property double vaultResolveStartedMs: 0
 
+  // The shared service, or null while the shell has not published it.
+  function findSharedVault() {
+    var host = root.bar ? root.bar.shell : null
+    return host && typeof host.serviceFor === "function"
+      ? host.serviceFor(root.moduleName) : null
+  }
+
   function resolveVault() {
     if (root.resolvedVault) return
     if (root.vaultResolveStartedMs === 0) root.vaultResolveStartedMs = Date.now()
-    var host = root.bar ? root.bar.shell : null
-    var shared = host && typeof host.serviceFor === "function"
-      ? host.serviceFor(root.moduleName) : null
+    var shared = root.findSharedVault()
     var decision = Model.vaultHostDecision(!!shared,
       Date.now() - root.vaultResolveStartedMs, Model.vaultHostTimeoutMs())
     if (decision === "wait") return
@@ -302,6 +335,45 @@ Panel {
     running: root.resolvedVault === null && root.vaultHost === "pending"
     triggeredOnStart: true
     onTriggered: root.resolveVault()
+  }
+
+  // One poll of the slow lookup. Locking and adopting are two polls apart:
+  // the lock runs in the private vault's helper, which retiring would kill.
+  function handOverVault() {
+    if (root.vaultHost !== "private") return
+    var shared = root.findSharedVault()
+    var step = Model.vaultHandOverStep(!!shared, {
+      busy: localVault.pinentryActive || localVault.authAttemptInFlight(),
+      held: localVault.vaultStatePresent() || localVault.isUnlocking,
+      locking: localVault.lockRun !== null || localVault.lockQueue.length > 0
+    })
+    if (step === "wait" || step === "none") return
+    // The popout belongs to the vault being left; shown again, it is the
+    // shared vault's.
+    if (localVault.opened) localVault.close()
+    if (step === "lock") {
+      localVault.lockVault()
+      return
+    }
+    localVault.detachView(root)
+    // Detached, nothing in the private vault runs on its own, but the helpers
+    // its start launched do: stop them as an unload does, so the shared
+    // vault's SSH agent can take the runtime lock.
+    localVault.releaseVaultHelper()
+    localVault.applySshAgentEvent({ kind: "enabled", value: false, nowMs: Date.now() })
+    root.resolvedVault = shared
+    root.vaultHost = "shared"
+    // attachView() pushes root.settings first, as onSettingsChanged does.
+    shared.attachView(root)
+  }
+
+  // Stops once shared: only a private host has anything to hand over.
+  Timer {
+    id: vaultHandOverTimer
+    interval: Model.vaultHandOverPollMs()
+    repeat: true
+    running: root.vaultHost === "private"
+    onTriggered: root.handOverVault()
   }
 
   onSettingsChanged: if (root.resolvedVault) root.resolvedVault.updateSettings(root.settings)
@@ -638,6 +710,15 @@ Panel {
           return
         }
 
+        // With auto-type on, Ctrl+C arms the highlighted login
+        // (armAutoTypeFromKey()). Only while the catcher has the keys: in a
+        // field it stays the field's own copy, except in the search box,
+        // which arms from its own handler. Anything else falls through.
+        if (!keyCatcher.blocked && root.armAutoTypeFromKey(event)) {
+          event.accepted = true
+          return
+        }
+
         if (event.modifiers & ~Qt.KeypadModifier) return
         if (!t || root.vault.currentScreen !== "main") return
         if (root.vault.openFilterGroup !== "") return
@@ -809,7 +890,7 @@ Panel {
           title: "Bitwarden"
           meta: {
             if (root.vault.status === "unlocked") {
-              if (root.vault.isSyncing) return "Syncing..."
+              if (root.userSyncing) return "Syncing..."
               if (root.vault.isLoading && root.vault.items.length === 0) return "Loading items..."
               // `bw status` can lag the list; show the count meanwhile.
               return root.vault.userEmail || (root.vault.filteredItems.length + " items")
@@ -845,9 +926,9 @@ Panel {
             PanelActionButton {
               visible: root.vault.status === "unlocked"
               iconText: "󰑐"
-              tooltipText: root.vault.isSyncing ? "Syncing..." : "Sync vault (r)"
+              tooltipText: root.userSyncing ? "Syncing..." : "Sync vault (r)"
               fontFamily: root.fontFamily
-              enabled: !root.vault.isSyncing
+              enabled: !root.userSyncing
               onClicked: root.vault.syncVault()
             }
 
@@ -2145,6 +2226,7 @@ Panel {
             model: Model.applicableDependencies(root.vault.dependencies)
 
             delegate: BorderSurface {
+              id: depCard
               required property var modelData
               width: parent.width
               implicitHeight: depRow.implicitHeight + Style.space(16)
@@ -2208,6 +2290,19 @@ Panel {
                     width: parent.width
                     text: modelData.note
                     color: root.urgent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+
+                  // Auto-type needs a key as well as wtype; registering one
+                  // is under its setting.
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: depCard.modelData.key === "wtype" && root.vault.autoTypeKeybind.setupNote !== ""
+                    width: parent.width
+                    text: root.vault.autoTypeKeybind.setupNote
+                    color: root.vault.autoTypeKeybind.bound ? root.dim : root.urgent
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WordWrap
@@ -2391,6 +2486,7 @@ Panel {
               model: root.vault.settingsEntries
 
               delegate: Column {
+                id: settingDelegate
                 required property var modelData
                 required property int index
                 width: parent.width
@@ -2515,7 +2611,7 @@ Panel {
                           else root.vault.beginFidoSetup()
                           return
                         }
-                        root.vault.writeSetting(modelData.key, !checked, "bool")
+                        root.vault.toggleBoolSetting(modelData)
                       }
                     }
 
@@ -2551,6 +2647,16 @@ Panel {
                   color: root.urgent
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
+                }
+
+                // The key that runs auto-type, under its setting while it is
+                // on (AutoTypeKeybind.qml).
+                Loader {
+                  width: parent.width
+                  active: !settingDelegate.isGroup && settingDelegate.modelData.key === "autoTypeEnabled"
+                    && root.vault.autoTypeEnabled
+                  visible: active
+                  sourceComponent: AutoTypeKeybind { panel: root; vault: root.vault }
                 }
 
                 PanelSeparator { width: parent.width }
@@ -3315,8 +3421,16 @@ Panel {
                 root.vault.closeFilterGroup()
                 root.vault.scheduleFilterRebuild()
               }
-              // Alt+letter runs the same shortcuts without leaving the box.
               Keys.onPressed: function(event) {
+                // Ctrl+C arms the highlighted login from here, as Enter copies
+                // it: the box has focus when the panel opens, and the catcher's
+                // Ctrl+C never sees a key while it does. Only with nothing
+                // selected; a selection's Ctrl+C is the box's own copy.
+                if (searchField.selectedText === "" && root.armAutoTypeFromKey(event)) {
+                  event.accepted = true
+                  return
+                }
+                // Alt+letter runs the same shortcuts without leaving the box.
                 if (!(event.modifiers & Qt.AltModifier)) return
                 if (!event.text) return
                 if (root.vault.runAltShortcut(String(event.text).toLowerCase())) {
@@ -3600,6 +3714,15 @@ Panel {
                       onClicked: root.smartEnter(itemData)
                     }
 
+                    // Re-prompt first, inside copyPasswordAndArm().
+                    PanelActionButton {
+                      visible: root.vault.autoTypeEnabled && Model.isLoginItem(itemRow.itemData) && itemRow.itemData.hasPassword
+                      iconText: ""
+                      tooltipText: "Copy password and arm auto-type (Ctrl+C)"
+                      fontFamily: root.fontFamily
+                      onClicked: root.vault.copyPasswordAndArm(itemRow.itemData)
+                    }
+
                     PanelActionButton {
                       visible: itemData.typeCode !== 5 && itemData.username !== ""
                       iconText: ""
@@ -3638,7 +3761,18 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: {
+                  propagateComposedEvents: true
+                  onClicked: function(mouse) {
+                    // This area is drawn over the row, buttons included: a
+                    // click on a button is passed down (propagateComposedEvents)
+                    // instead of opening the item. One in the gaps between
+                    // them opens it, like the rest of the row.
+                    var at = rowMouseArea.mapToItem(actionButtonsRow, mouse.x, mouse.y)
+                    var hit = actionButtonsRow.childAt(at.x, at.y)
+                    if (hit && hit.visible) {
+                      mouse.accepted = false
+                      return
+                    }
                     root.vault.cursorActive = true
                     root.vault.openFilterGroup = ""
                     root.vault.selectedIndex = index

@@ -24,7 +24,7 @@
 // the shell's environment: a core includes the environment.
 
 const { createSuite, repoRoot } = require("../harness")
-const { createShell, sleep } = require("./shell")
+const { createShell, sleep, withStandInPinentry } = require("./shell")
 const fs = require("fs")
 const path = require("path")
 const os = require("os")
@@ -118,7 +118,8 @@ function pluginWithLocalHelper(into) {
       return true
     }
   })
-  return into
+  // Its pinentry is the stand-in (shell.js), in the frontend's place.
+  return withStandInPinentry(into)
 }
 
 // `pinentry`: also unlock once through pinentry and once through the field.

@@ -33,11 +33,14 @@ TestCase {
   // qs.Ui.Button cannot load here (it needs the Quickshell runtime), so its
   // geometry is restated from Ui/Button.qml:
   //
-  //   implicitWidth: row.implicitWidth + horizontalPadding * 2
+  //   implicitWidth: _contentNaturalWidth + horizontalPadding * 2
   //                  + _reservedBorderLeft + _reservedBorderRight
   //
-  // with row = icon + Style.spacing.controlGap + label, padding
-  // Style.spacing.controlPaddingX, and a 1px border per side.
+  // with _contentNaturalWidth = _iconRoom + label, _iconRoom = icon +
+  // Style.spacing.controlGap (only when there is label text), padding
+  // Style.spacing.controlPaddingX, and a 1px border per side. That is the
+  // same icon + gap + label sum the old row.implicitWidth gave, measured
+  // from the label's natural width so a narrowed button does not shrink it.
   // `test_button_geometry_is_still_the_kits` fails if that changes.
   readonly property int controlGap: 8
   readonly property int controlPaddingX: 10
@@ -197,6 +200,7 @@ TestCase {
   readonly property var sources: [
     { file: "Panel.qml", budget: panelBudget },
     { file: "SshAgentSettings.qml", budget: panelBudget },
+    { file: "AutoTypeKeybind.qml", budget: panelBudget },
     { file: "FidoSetupScreen.qml", budget: panelBudget },
     { file: "SshApprovalScreen.qml", budget: popupBudget },
     { file: "SshUnlockScreen.qml", budget: popupBudget },
@@ -431,9 +435,15 @@ TestCase {
     var source = xhr.responseText || ""
     if (source.length === 0) return // kit not installed here; nothing to check
     verify(source.indexOf(
-      "implicitWidth: row.implicitWidth + horizontalPadding * 2 "
+      "implicitWidth: _contentNaturalWidth + horizontalPadding * 2 "
       + "+ _reservedBorderLeft + _reservedBorderRight") >= 0,
       "Ui/Button.qml no longer sizes itself the way this test assumes")
+    verify(source.indexOf(
+      "_iconRoom: root.iconText !== \"\" ? iconGlyph.implicitWidth "
+      + "+ (root.text !== \"\" ? row.spacing : 0) : 0") >= 0
+      && source.indexOf(
+      "_contentNaturalWidth: _iconRoom + (root.text !== \"\" ? label.implicitWidth : 0)") >= 0,
+      "Ui/Button.qml no longer builds its natural width from icon room and label")
     verify(/spacing:\s*Style\.spacing\.controlGap/.test(source),
       "Ui/Button.qml no longer gaps its icon and label by controlGap")
   }

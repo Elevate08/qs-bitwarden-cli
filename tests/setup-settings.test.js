@@ -22,6 +22,25 @@ check("a locked panel focuses whichever field the offered unlock method uses",
   /focusTarget:[\s\S]{0,800}unlockForm\.focusField\s*\?\s*unlockForm\.focusField\s*:\s*keyCatcher/.test(panelSrc),
   "focusTarget must follow UnlockForm.focusField, which is the PIN field when PIN unlock leads")
 
+// The wtype row says whether a key runs auto-type, from the model's text.
+check("the setup screen's wtype row carries the keybinding note",
+  /visible: depCard\.modelData\.key === "wtype" && root\.autoTypeKeybind\.setupNote !== ""\s*\n\s*width: parent\.width\s*\n\s*text: root\.autoTypeKeybind\.setupNote/.test(panelSrc),
+  "expected the wtype card to show autoTypeKeybind.setupNote")
+check("the setup screen reads the binding while auto-type is on",
+  /onCurrentScreenChanged: \{\s*\n\s*if \(currentScreen === "setup" && autoTypeEnabled\) inspectAutoTypeKeybind\(\)/.test(panelSrc)
+    && /function checkDependencies\(\)[\s\S]{0,260}if \(autoTypeEnabled && currentScreen === "setup"\) inspectAutoTypeKeybind\(\)/.test(panelSrc),
+  "expected the setup screen and its re-checks to inspect the keybinding")
+{
+  const unbound = Model.autoTypeKeybindState(Model.parseAutoTypeKeybindInspection("home=1\nbinds=[]\nrequires=1\nfile=present\n---\n"))
+  const boundState = Model.autoTypeKeybindState(Model.parseAutoTypeKeybindInspection(
+    "home=1\nbinds=\nrequires=1\nfile=present\n---\n" + Model.autoTypeBindComment() + "\n"
+      + Model.autoTypeBindLine("SUPER + ALT + A") + "\n"))
+  check("setup says to register a key, or which key it is",
+    /^No keybinding yet: register one under Settings > General > Auto-type logins\.$/.test(unbound.setupNote)
+      && boundState.setupNote === "Keybinding: SUPER + ALT + A.",
+    JSON.stringify([unbound.setupNote, boundState.setupNote]))
+}
+
 // --- everything present -----------------------------------------------------
 const all = Model.parseDependencies(
   "bw=1\nbw_version=2025.1.2\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
@@ -69,7 +88,7 @@ check("the bw CLI version for SSH gating comes from its own probe",
   const checked = functionBody(svc, "onDependenciesChecked")
   check("the dependency answer reuses the cached version for the same bw binary",
     /bwId\s*===\s*bwVersionId/.test(checked)
-      && /parseDependencies\(depsRaw,\s*cached\s*\?\s*bwVersionValue\s*:\s*null\)/.test(checked)
+      && /parseDependencies\(depsRaw,\s*cached\s*\?\s*bwVersionValue\s*:\s*null[,)]/.test(checked)
       && /if\s*\(!cached\b[^\n]{0,80}\)\s*probeBwVersion\(bwId\)/.test(checked),
     checked)
   const probed = functionBody(svc, "onBwVersionProbed")
@@ -449,6 +468,18 @@ for (const [where, text] of [["manifest", manifestPin], ["settings screen", sche
   check(`the ${where} gives the offline guess time, not the old one-core figure`,
     text.includes("16 hours") && !/9 days for 6|2 hours of one CPU core|4 is the floor/.test(text), where)
 }
+// Turning fingerprint off deletes the stored password; the setting says so in
+// the same words wherever it is described, and the README under its section.
+const manifestFp = JSON.parse(read("manifest.json")).barWidget.schema.find(e => e.key === "fingerprintUnlock").description
+const schemaFp = Model.SETTINGS_SCHEMA.find(e => e.key === "fingerprintUnlock").description
+const fpDeletes = "Turning this off deletes the stored password, so PIN and security-key unlock need setting up again."
+for (const [where, text] of [["manifest", manifestFp], ["settings screen", schemaFp]]) {
+  check(`the ${where} says turning fingerprint off deletes the stored password`,
+    text.endsWith(fpDeletes) && !/removes the fingerprint's access/.test(text), text)
+}
+check("the README's fingerprint section says the same",
+  /### Fingerprint unlock[\s\S]*?Turning the setting off deletes the stored password itself[\s\S]*?PIN and FIDO2 unlock for those accounts must be set up again[\s\S]*?### FIDO2 key unlock/
+    .test(read("README.md")), "")
 for (const [pin, confirm, wantErr] of [
   ["12345",  "12345",  true],   // too short
   ["123456", "123456", false],  // the minimum is accepted

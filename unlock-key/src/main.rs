@@ -156,7 +156,7 @@ fn open(flags: &Flags) -> Outcome {
     flags.only(&["via", "cred"])?;
     let envelope = read_envelope(Some(&flags.account()?))?;
     let key = ViaKey::from_env(flags.required("via")?, flags.optional("cred"))?;
-    Ok(envelope.open(&key.via())?)
+    Ok(envelope.open(&key.via()?)?)
 }
 
 fn add(flags: &Flags) -> Outcome {
@@ -177,13 +177,13 @@ fn add(flags: &Flags) -> Outcome {
     match flags.required("method")? {
         "pin" => {
             let pin_key = hex_env(NEW_KEY_ENV)?;
-            envelope.add_pin(&auth.via(), flags.argon2()?, &pin_key)?;
+            envelope.add_pin(&auth.via()?, flags.argon2()?, &pin_key)?;
         }
-        "fingerprint" => envelope.add_fingerprint(&auth.via())?,
+        "fingerprint" => envelope.add_fingerprint(&auth.via()?)?,
         "fido" => {
             let hmac = base64_env(NEW_KEY_ENV)?;
             envelope.add_fido(
-                &auth.via(),
+                &auth.via()?,
                 flags.required("cred")?,
                 flags.required("rp")?,
                 flags.required("fido-salt")?,
@@ -216,7 +216,7 @@ fn rotate(flags: &Flags) -> Outcome {
     let auth = ViaKey::from_env(flags.required("auth")?, flags.optional("auth-cred"))?;
     let password = secret_env(PASSWORD_ENV)?;
     let master_key = hex_env(NEW_KEY_ENV)?;
-    envelope.rotate(&auth.via(), &password, flags.argon2()?, &master_key)?;
+    envelope.rotate(&auth.via()?, &password, flags.argon2()?, &master_key)?;
     Ok(envelope.to_json()?)
 }
 
@@ -265,15 +265,18 @@ impl<'a> ViaKey<'a> {
         })
     }
 
-    fn via(&self) -> Via<'_> {
+    /// Fingerprint is the one method without a key; any other without one is
+    /// a usage error, never a fall-through to the keyless method.
+    fn via(&self) -> Result<Via<'_>, Failure> {
         match (self.kind, self.key.as_deref(), self.credential) {
-            ("master", Some(key), _) => Via::Master(key),
-            ("pin", Some(key), _) => Via::Pin(key),
-            ("fido", Some(key), Some(credential)) => Via::Fido {
+            ("master", Some(key), _) => Ok(Via::Master(key)),
+            ("pin", Some(key), _) => Ok(Via::Pin(key)),
+            ("fido", Some(key), Some(credential)) => Ok(Via::Fido {
                 credential,
                 hmac: key,
-            },
-            _ => Via::Fingerprint,
+            }),
+            ("fingerprint", None, _) => Ok(Via::Fingerprint),
+            _ => Err(Failure::Usage("the method has no key to open with")),
         }
     }
 }
@@ -519,4 +522,60 @@ rotate) come only from the environment; the envelope comes on stdin.
   inspect
   --version | --self-test | --help"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn via_key<'a>(kind: &'a str, credential: Option<&'a str>, key: bool) -> ViaKey<'a> {
+        ViaKey {
+            kind,
+            credential,
+            key: key.then(|| Zeroizing::new([7; KEY_LEN])),
+        }
+    }
+
+    #[test]
+    fn a_method_without_its_key_is_a_usage_error_not_fingerprint() {
+        for (kind, credential) in [
+            ("master", None),
+            ("pin", None),
+            ("fido", Some("cred")),
+            ("fido", None),
+            ("other", None),
+        ] {
+            let keyless = via_key(kind, credential, false);
+            assert!(
+                matches!(keyless.via(), Err(Failure::Usage(_))),
+                "{kind} without a key"
+            );
+        }
+        // A fido key without its credential is no better.
+        assert!(matches!(
+            via_key("fido", None, true).via(),
+            Err(Failure::Usage(_))
+        ));
+        // An unknown method with a key is refused too.
+        assert!(matches!(
+            via_key("other", None, true).via(),
+            Err(Failure::Usage(_))
+        ));
+        assert!(matches!(
+            via_key("fingerprint", None, false).via(),
+            Ok(Via::Fingerprint)
+        ));
+        assert!(matches!(
+            via_key("master", None, true).via(),
+            Ok(Via::Master(_))
+        ));
+        assert!(matches!(via_key("pin", None, true).via(), Ok(Via::Pin(_))));
+        assert!(matches!(
+            via_key("fido", Some("cred"), true).via(),
+            Ok(Via::Fido {
+                credential: "cred",
+                ..
+            })
+        ));
+    }
 }

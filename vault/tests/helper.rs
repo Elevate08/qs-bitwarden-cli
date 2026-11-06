@@ -17,6 +17,13 @@ struct Helper {
 
 impl Helper {
     fn start() -> Self {
+        Self::start_with(true)
+    }
+
+    /// `wtype`: whether a stand-in is on PATH. Without one PATH holds only
+    /// the stand-ins and `sh` and `cat`, so the real `wtype` cannot be found
+    /// either: no test ever types into a real window.
+    fn start_with(wtype: bool) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "qsbw-vault-test-{}-{}",
             std::process::id(),
@@ -27,20 +34,46 @@ impl Helper {
         let fake = dir.join("wl-copy");
         std::fs::write(&fake, "#!/bin/sh\ncat > \"$(dirname \"$0\")/clipboard\"\necho \"$*\" > \"$(dirname \"$0\")/clipboard-args\"\n").unwrap();
         std::fs::write(dir.join("timeout"), "#!/bin/sh\nshift\nexec \"$@\"\n").unwrap();
-        for name in ["wl-copy", "timeout"] {
+        // A stand-in wtype that records its stdin, arguments and locale, and
+        // exits with the code in `wtype-exit` (0 when there is none), a second
+        // late when `wtype-slow` exists, writing `typed-done` once it has
+        // waited the second out.
+        std::fs::write(
+            dir.join("wtype"),
+            "#!/bin/sh\nd=\"$(dirname \"$0\")\"\ncat > \"$d/typed\"\necho \"$*\" > \"$d/typed-args\"\necho \"$LC_ALL\" > \"$d/typed-locale\"\n[ -f \"$d/wtype-slow\" ] && sleep 1 && : > \"$d/typed-done\"\nexit \"$(cat \"$d/wtype-exit\" 2>/dev/null || echo 0)\"\n",
+        )
+        .unwrap();
+        for name in ["wl-copy", "timeout", "wtype"] {
             Command::new("chmod")
                 .arg("+x")
                 .arg(dir.join(name))
                 .status()
                 .unwrap();
         }
-        let path = format!(
-            "{}:{}",
-            dir.display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
+        let path = if wtype {
+            format!(
+                "{}:{}",
+                dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            )
+        } else {
+            std::fs::remove_file(dir.join("wtype")).unwrap();
+            let tools = dir.join("tools");
+            std::fs::create_dir_all(&tools).unwrap();
+            for tool in ["sh", "cat", "dirname"] {
+                let found = Command::new("sh")
+                    .args(["-c", &format!("command -v {tool}")])
+                    .output()
+                    .unwrap();
+                let found = String::from_utf8(found.stdout).unwrap();
+                std::os::unix::fs::symlink(found.trim(), tools.join(tool)).unwrap();
+            }
+            format!("{}:{}", dir.display(), tools.display())
+        };
         let mut child = Command::new(env!("CARGO_BIN_EXE_qs-bitwarden-vault"))
             .env("PATH", path)
+            // Should a real wtype ever run, it has no display to type into.
+            .env("WAYLAND_DISPLAY", "qsbw-test-no-display")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -321,6 +354,191 @@ fn a_vault_read_reaches_the_panel_without_secrets() {
             json!({ "capture": "vaultMerge" })
         )["out"],
         "__QSBW_SAVED_UNSANITIZED__"
+    );
+}
+
+fn wait_for_file(path: &std::path::Path, what: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            return text;
+        }
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn auto_type_hands_the_login_to_wtype_and_not_the_panel() {
+    let mut helper = Helper::start();
+    let vault = json!({ "sshCapability": "unconfirmed", "sshKeys": [], "items": [
+        { "id": "a", "type": 1, "name": "Bank", "login": { "username": "me", "password": "hunter2" } },
+        { "id": "p", "type": 1, "name": "PIN only", "login": { "password": "4242" } },
+        { "id": "n", "type": 1, "name": "Broken", "login": { "username": "me", "password": "two\nlines" } },
+        { "id": "e", "type": 1, "name": "Empty", "login": { "username": "me" } }
+    ]})
+    .to_string();
+    helper.exec(
+        1,
+        &format!("cat <<'EOF'\n{vault}\nEOF"),
+        json!({ "capture": "vault" }),
+    );
+
+    let typed = helper.query(20, json!({ "type": "autoType", "id": "a" }));
+    assert_eq!(
+        typed,
+        json!({ "type": "result", "q": 20, "ok": true, "value": true })
+    );
+    // The reply comes after wtype has exited, so its record is complete.
+    assert_eq!(
+        std::fs::read_to_string(helper.dir.join("typed")).unwrap(),
+        "me\thunter2"
+    );
+    assert_eq!(
+        std::fs::read_to_string(helper.dir.join("typed-args"))
+            .unwrap()
+            .trim(),
+        "-s 250 -d 12 -"
+    );
+    assert_eq!(
+        std::fs::read_to_string(helper.dir.join("typed-locale"))
+            .unwrap()
+            .trim(),
+        "C.UTF-8"
+    );
+
+    // No username: the password alone.
+    assert_eq!(
+        helper.query(21, json!({ "type": "autoType", "id": "p" }))["ok"],
+        true
+    );
+    assert_eq!(
+        std::fs::read_to_string(helper.dir.join("typed")).unwrap(),
+        "4242"
+    );
+
+    // Refused before wtype starts: nothing new is typed.
+    std::fs::remove_file(helper.dir.join("typed")).unwrap();
+    for (q, id, reason) in [
+        (22, "n", "unsafe"),
+        (23, "e", "empty"),
+        (24, "nope", "empty"),
+    ] {
+        assert_eq!(
+            helper.query(q, json!({ "type": "autoType", "id": id })),
+            json!({ "type": "result", "q": q, "ok": false, "value": reason })
+        );
+    }
+    assert!(!helper.dir.join("typed").exists());
+
+    // One at a time: a second request while wtype runs is refused.
+    std::fs::write(helper.dir.join("wtype-slow"), "").unwrap();
+    helper.send(json!({ "type": "autoType", "v": 1, "q": 30, "id": "a" }));
+    wait_for_file(&helper.dir.join("typed"), "wtype never ran");
+    assert_eq!(
+        helper.query(31, json!({ "type": "autoType", "id": "a" })),
+        json!({ "type": "result", "q": 31, "ok": false, "value": "busy" })
+    );
+    assert_eq!(helper.reply("q", 30)["ok"], true);
+    std::fs::remove_file(helper.dir.join("wtype-slow")).unwrap();
+
+    // wtype failing (no virtual keyboard, say) is a failure, not a success.
+    std::fs::write(helper.dir.join("wtype-exit"), "1").unwrap();
+    assert_eq!(
+        helper.query(25, json!({ "type": "autoType", "id": "a" })),
+        json!({ "type": "result", "q": 25, "ok": false, "value": "failed" })
+    );
+    wait_for_file(&helper.dir.join("typed"), "wtype never ran");
+
+    // A forget takes the item, and with it anything to type.
+    helper.send(json!({ "type": "forget", "v": 1 }));
+    assert_eq!(
+        helper.query(26, json!({ "type": "autoType", "id": "a" }))["value"],
+        "empty"
+    );
+}
+
+/// Starts a helper holding one login and a slow `wtype` typing it: the
+/// `typed` record is there, the second's sleep has a second to go.
+fn typing_slowly(q: u64) -> Helper {
+    let mut helper = Helper::start();
+    let vault = json!({ "sshCapability": "unconfirmed", "sshKeys": [], "items": [
+        { "id": "a", "type": 1, "name": "Bank", "login": { "username": "me", "password": "hunter2" } }
+    ]})
+    .to_string();
+    helper.exec(
+        1,
+        &format!("cat <<'EOF'\n{vault}\nEOF"),
+        json!({ "capture": "vault" }),
+    );
+    std::fs::write(helper.dir.join("wtype-slow"), "").unwrap();
+    helper.send(json!({ "type": "autoType", "v": 1, "q": q, "id": "a" }));
+    wait_for_file(&helper.dir.join("typed"), "wtype never ran");
+    helper
+}
+
+#[test]
+fn a_forget_stops_an_auto_type_in_progress() {
+    let mut helper = typing_slowly(30);
+    let asked = Instant::now();
+    helper.send(json!({ "type": "forget", "v": 1 }));
+    assert_eq!(
+        helper.reply("q", 30),
+        json!({ "type": "result", "q": 30, "ok": false, "value": "stopped" })
+    );
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "the reply waited for wtype: {:?}",
+        asked.elapsed()
+    );
+    // The stand-in never gets to the end of its second.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!helper.dir.join("typed-done").exists(), "wtype kept typing");
+
+    // The next auto-type is not "busy", and a forget with nothing typing is
+    // a plain forget.
+    helper.send(json!({ "type": "forget", "v": 1, "keep": [] }));
+    assert_eq!(
+        helper.query(31, json!({ "type": "autoType", "id": "a" }))["value"],
+        "empty"
+    );
+}
+
+#[test]
+fn a_shutdown_stops_an_auto_type_in_progress() {
+    let mut helper = typing_slowly(40);
+    let asked = Instant::now();
+    helper.send(json!({ "type": "shutdown", "v": 1 }));
+    let status = helper.child.wait().unwrap();
+    assert!(status.success(), "{status}");
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "the helper waited for wtype: {:?}",
+        asked.elapsed()
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !helper.dir.join("typed-done").exists(),
+        "wtype outlived the helper"
+    );
+}
+
+#[test]
+fn auto_type_without_wtype_says_so() {
+    let mut helper = Helper::start_with(false);
+    let vault = json!({ "sshCapability": "unconfirmed", "sshKeys": [], "items": [
+        { "id": "a", "type": 1, "name": "Bank", "login": { "username": "me", "password": "hunter2" } }
+    ]})
+    .to_string();
+    let read = helper.exec(
+        1,
+        &format!("cat <<'EOF'\n{vault}\nEOF"),
+        json!({ "capture": "vault" }),
+    );
+    assert_eq!(read["code"], 0, "{read}");
+    assert_eq!(
+        helper.query(20, json!({ "type": "autoType", "id": "a" })),
+        json!({ "type": "result", "q": 20, "ok": false, "value": "missing" })
     );
 }
 

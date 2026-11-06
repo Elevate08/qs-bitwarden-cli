@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.elevate08.qs-bitwarden-cli",
   "name": "Bitwarden",
-  "version": "1.11.8",
+  "version": "1.12.0",
   "author": "David Spencer",
   "license": "MIT",
   "description": "Bitwarden password manager integration for the Omarchy status bar and quick access panel.",
@@ -21,6 +21,7 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
+      "autoSyncMinutes": 15,
       "autoLockMinutes": 15,
       "lockOnScreenLock": true,
       "lockOnSuspend": true,
@@ -28,6 +29,7 @@
       "rememberSession": true,
       "autoCopyTotpSec": 3,
       "closeOnCopy": true,
+      "autoTypeEnabled": false,
       "colorizeIcon": false,
       "suggestOnOpen": true,
       "fingerprintUnlock": false,
@@ -40,6 +42,16 @@
       "sshAgentApprovalWindowSec": 120
     },
     "schema": [
+      {
+        "key": "autoSyncMinutes",
+        "type": "integer",
+        "label": "Automatic sync interval (minutes)",
+        "description": "Sync while unlocked and idle; retry offline servers at this interval (0 to disable).",
+        "min": 0,
+        "max": 1440,
+        "step": 5,
+        "defaultValue": 15
+      },
       {
         "key": "autoLockMinutes",
         "type": "integer",
@@ -99,6 +111,13 @@
         "defaultValue": true
       },
       {
+        "key": "autoTypeEnabled",
+        "type": "boolean",
+        "label": "Auto-type logins",
+        "description": "Off by default: whatever window has focus when it types gets your password, and while an entry is armed any program running as you can make it type. With it on, Ctrl+C in the panel copies the highlighted login's password and arms it for 30 seconds; the autoType command, bound to a key, then types its username, Tab and password into the focused window, once. Needs wtype.",
+        "defaultValue": false
+      },
+      {
         "key": "colorizeIcon",
         "type": "boolean",
         "label": "Colorize menu-bar icon",
@@ -116,7 +135,7 @@
         "key": "fingerprintUnlock",
         "type": "boolean",
         "label": "Unlock with fingerprint",
-        "description": "Use an enrolled fingerprint to unlock the vault. Requires 'omarchy setup security fingerprint'. Your master password is stored once, encrypted and sealed to this machine; this lets a verified fingerprint open it. A fingerprint releases no secret, so a program running as you could open it too -- the same trade-off as Bitwarden desktop biometrics. Turning this off removes the fingerprint's access.",
+        "description": "Use an enrolled fingerprint to unlock the vault. Requires 'omarchy setup security fingerprint'. Your master password is stored once, encrypted and sealed to this machine; this lets a verified fingerprint open it. A fingerprint releases no secret, so a program running as you could open it too -- the same trade-off as Bitwarden desktop biometrics. Turning this off deletes the stored password, so PIN and security-key unlock need setting up again.",
         "defaultValue": false
       },
       {
@@ -136,8 +155,8 @@
       {
         "key": "usePinentry",
         "type": "boolean",
-        "label": "Type secrets in pinentry",
-        "description": "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field.",
+        "label": "Type secrets in a separate prompt",
+        "description": "Type your master password and PIN into the plugin's own unlock prompt, a card over the focused monitor drawn like the shell's password prompt, instead of the panel, so they never enter the shell. It is a separate, short-lived process under the vault helper and needs quickshell, node and a Wayland display; while the helper is not running, the panel waits for it instead of offering its own field.",
         "defaultValue": true
       },
       {

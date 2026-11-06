@@ -1,6 +1,188 @@
 # Changelog
 
-## [Unreleased]
+## [1.12.0] - 2026-11-05
+
+### Added
+
+- **The unlock prompt is the plugin's own, drawn like Omarchy's**
+  ([#131](https://github.com/Elevate08/qs-bitwarden-cli/issues/131)). The
+  master password and PIN are typed into a card over the monitor that was
+  focused when the prompt opened, drawn like the shell's own polkit prompt:
+  the theme's `[polkit]` scrim over the monitor, no blur, a padlock and a
+  masked field in the system font, the theme's colours, border and rounding,
+  and a theme applied while it is open. Clicking the padlock shows what is
+  typed and hides it again; submitting, cancelling or opening it again masks
+  it. Enter submits, Escape cancels, a wrong password or PIN shows the reason
+  above the field, and it closes itself after two minutes as before.
+
+  It is the pinentry, by default and with no other choice: the plugin runs
+  `pinentry/omarchy-pinentry` from its own directory and never another
+  program, so `pinentry-qt` is no longer used or needed, and a
+  `pinentryProgram` (or `omarchyPinentry`) left in `shell.json` is ignored.
+  It is a pinentry, not part of the panel: it speaks the pinentry protocol
+  to the vault helper and starts a short-lived Quickshell of its own for
+  each prompt, so what you type still goes only to the helper and never
+  enters the shell, and both processes keep the helper's zero core-file
+  limit (with Quickshell's crash handler off). The answer travels from the
+  prompt to the frontend over a socket in a private directory under
+  `$XDG_RUNTIME_DIR`, removed when the prompt ends. It needs `quickshell`,
+  `node` (which `bw` already needs) and a Wayland display; where its check
+  at start says it cannot run, the panel says so and offers its own field,
+  as it did for a missing pinentry. "Type secrets in pinentry" is now "Type
+  secrets in a separate prompt" (`usePinentry`, still on by default).
+- **The vault syncs itself every 15 minutes** (`autoSyncMinutes`; `0` turns it off)
+  ([#124](https://github.com/Elevate08/qs-bitwarden-cli/pull/124)). A vault
+  on a self-hosted server that is not always reachable stayed as it was
+  until you synced by hand after the server came back. **Settings → General
+  → Automatically sync every** now syncs the open vault at the interval you
+  choose, with the panel open or closed, and tries again at the same
+  interval while the server is offline. It waits while you are editing, while
+  another vault operation or an SSH approval is pending, and when the vault
+  is about to auto-lock; it never unlocks the vault and never extends the
+  auto-lock. A sync that fails keeps the vault you have and says so in the
+  panel, without a desktop notification each time, and the next one that
+  succeeds clears that notice. On by default, every 15 minutes.
+- **The panel can type a login into another window for you** (opt-in,
+  `autoTypeEnabled`)
+  ([#119](https://github.com/Elevate08/qs-bitwarden-cli/pull/119)). With
+  **Settings → General → Auto-type logins** on, <kbd>Ctrl</kbd>+<kbd>C</kbd>
+  on the highlighted login (the first suggestion when the panel opens, from
+  the search box too) or its row's new button copies the password as before and
+  arms that login for 30 seconds; the `autoType` IPC, bound to a key of your
+  choosing, then types its username, <kbd>Tab</kbd> and password into the
+  focused window with `wtype`, once. It is off by default because of what it
+  trades away: whatever window has focus when it types gets your password,
+  and while a login is armed any program running as you can make it type,
+  since the IPC cannot tell your keybinding from anything else that calls it.
+  Turning it on asks you to confirm, and `wtype` is listed and installed only
+  once it is on. The vault helper types the login itself, so the password
+  never passes through the shell (without the helper it goes to `wtype` on
+  its stdin), and it is never in an argument or environment variable. A
+  username or password with a line break, tab or other control character in
+  it is not typed, and nothing is typed while the panel, an SSH approval or
+  pinentry has the keyboard, or while the screen is locked. The arm is
+  dropped on lock, logout or account switch, and when the setting is turned
+  off. The key that calls it can be set up from the settings screen: under
+  the setting, the panel shows whether one is bound, suggests a free key
+  combination and says which binding holds one that is taken, and
+  **Register Keybinding** appends a commented `o.bind(...)` line to
+  `~/.config/hypr/bindings.lua` and reloads Hyprland (**Remove Keybinding**
+  takes out only that line again, and **Copy Line** is there for bindings
+  kept elsewhere). The setup screen shows the key next to `wtype`. For a
+  login with TOTP, its code is copied to the clipboard once the type has
+  worked, as Enter copies it after a password (`autoCopyTotpSec` `0` turns
+  both off).
+
+### Security
+
+- **Turning fingerprint unlock off now deletes the stored password.** The
+  fingerprint's way in holds the stored password's encryption key in the
+  clear (a fingerprint releases no secret), and that key was never changed:
+  removing the way in left the same key sealing every later copy, so a
+  program running as you that had read it while fingerprint unlock was on
+  could still open the stored password after you turned it off, and after a
+  password change. Turning fingerprint unlock off now deletes the stored
+  password of every account whose copy had a fingerprint way in, so PIN and
+  FIDO2 unlock for those accounts must be set up again; the next unlock with
+  your master password stores it under a new key. Accounts without a
+  fingerprint way in are left alone, and the settings screen, README and
+  SECURITY.md say so. A key recovered by guessing the PIN from a copy still
+  outlives a password change until the stored password is deleted (logging
+  out does that too).
+- **Auto-type no longer trusts a lock-screen reading it is not taking.** The
+  check that keeps auto-type off the lock screen read a value the panel only
+  polls while "Lock when the screen locks" is on (or the SSH agent is
+  serving), so with that setting off it was never current. The lock state is
+  now polled while a login is armed, a reading that is missing or stale
+  refuses the type (the arm is kept for the next press), and a vault lock,
+  logout, account switch or helper shutdown stops a type still in progress:
+  the helper kills `wtype` and answers that it was stopped, and the panel
+  does the same without the helper and ignores a late answer.
+- **The pinentry script drops the account text from its environment before
+  anything runs.** The plugin's own pinentry's `--check` started before the
+  description and error were cleared from the environment, so that short-lived
+  `node` carried the account email. They are cleared first now, and the typed
+  PIN is counted in characters whatever the shell's locale.
+- **The envelope job's output is scrubbed on lock with the other secret
+  readers.** Without the vault helper, a quick-unlock verification leaves a
+  fresh `bw` session key in that process's buffer for one event-loop turn; it
+  is now on the list a lock wipes.
+- **The quick-unlock tool fails closed on a method without its key.** A
+  `--via` or `--auth` other than fingerprint with no key is a usage error
+  instead of falling through to the fingerprint method. Nothing reaches that
+  path today; it is now impossible by construction.
+- **Documented limits.** SECURITY.md now lists what the IPC target lets any
+  program running as you do (open, close, lock, sync, switch the active
+  account, see which accounts exist, trigger an armed auto-type; never unlock,
+  read an item or change a setting), and that the quick-unlock envelope keeps
+  one data key for its life: a method turned off or a password change re-wraps
+  the same key, so a program that could already open the envelope and kept the
+  key can open later copies until every method is turned off and set up
+  again. The helper's documentation notes that replies carrying a secret go
+  through serde_json, whose buffers are not zeroed. CI's dependency gate
+  installs cargo-deny 0.20.2 by recorded checksum instead of resolving the
+  latest release.
+
+### Fixed
+
+- **A monitor that fell back to a private vault joins the shared one once it
+  appears.** A shell slow to publish the service left each monitor with a
+  vault of its own, so a lock on one monitor was not a lock on the others.
+  A private host now keeps asking for the service, slowly; when it appears,
+  the private vault is locked, its helpers retired, and the view moves to the
+  shared vault.
+- **An automatic sync no longer shows "Syncing..." in the header** or
+  disables the sync button; only a sync you asked for does, and clicking
+  sync during an automatic one takes it over as before.
+- **The vault helper wipes the replies that carry a secret.** An item, a
+  field, a TOTP code and a run's output were serialized through `serde_json`
+  copies that were dropped unwiped; they are now built into a buffer sized
+  up front and wiped once written. The vault `bw` prints is still parsed by
+  `serde_json`, whose own buffers are not wiped (docs/vault-helper.md). The
+  SSH agent's signing gate opens when keys are published rather than on
+  `hello`, matching the key store's own check (no visible change), and the
+  helper's slot counter no longer uses a deprecated atomic call.
+- **Auto-type cannot stay "busy" without the helper.** The watchdog that
+  gave up on a silent helper now covers the shell's own `bw get password`
+  and `wtype` too, and kills a stuck one; its message says it timed out
+  rather than blaming the helper.
+- **A sync whose reload cannot run no longer stays "syncing" until a lock.**
+  When the item read is blocked (`bw` or `jq` missing since the dependency
+  probe), an automatic or manual sync now ends with the blocked message
+  instead of leaving the header on "Syncing..." and refusing every later sync.
+- **Locking while signed out shows no unlock form.** The `lock` IPC and a lost
+  helper run the cleanup without switching an unauthenticated account to the
+  locked screen, which asked for a master password `bw` would refuse.
+- **Pinentry returns to a view that still exists.** If the monitor the panel
+  was hidden from is unplugged during the prompt, the panel comes back on the
+  focused monitor instead of touching the destroyed view.
+- **The unlock prompt cleans up after a SIGKILL.** A prompt directory
+  left under `$XDG_RUNTIME_DIR` by a kill it could not catch (its prompt.json
+  names the pid that made it) is removed by the next run; a very long run of
+  UTF-8 continuation bytes in an answer is split across `D` lines instead of
+  truncated; a `SETDESC` with a malformed `%` escape is stripped of control
+  characters like any other.
+- **Clicking between an item row's buttons opens the item.** The row's click
+  area passed a click anywhere over the button group down to the buttons, so
+  a click in the gaps did nothing; only a click on a button is passed down.
+- `scripts/repair-keyring.sh` says where it put the copy of the original
+  keyring and to delete it once the keyring works again.
+
+- **The buttons on a row in the item list do what they say**
+  ([#119](https://github.com/Elevate08/qs-bitwarden-cli/pull/119)). The
+  row's own click area was drawn over its copy buttons, so clicking one
+  opened the item instead of copying. A click on the buttons now reaches
+  them, and a click anywhere else on the row still opens the item.
+- **Pinentry gets the keyboard when you open the panel on a locked vault**
+  ([#132](https://github.com/Elevate08/qs-bitwarden-cli/issues/132)). The
+  unlock screen opens pinentry by itself as soon as it shows, and it showed
+  while the panel was still opening, before the plugin counted the panel as
+  open. The panel was then never hidden for pinentry and kept the keyboard,
+  so you had to Alt+Tab to pinentry before you could type. A panel that
+  finishes opening while pinentry is asking is now hidden for it like one
+  that was already open, and comes back once pinentry answers or is
+  cancelled. A panel that was closed when pinentry asked, as for the SSH
+  unlock popup, still stays closed.
 
 ## [1.11.8] - 2026-10-26
 

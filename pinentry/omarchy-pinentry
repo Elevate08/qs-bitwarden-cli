@@ -1,0 +1,585 @@
+#!/usr/bin/env node
+// The plugin's pinentry, and its only one: the panel's pinentry script
+// (Model.PINENTRY_SCRIPT) runs this file by absolute path from the plugin's
+// directory, with no other program to fall back to. It speaks the Assuan
+// protocol on stdin/stdout and draws its prompt as a card over the focused
+// monitor in a short-lived Quickshell of its own (PinentryPrompt.qml), in the
+// style of the shell's polkit prompt. Where `--check` fails, the panel offers
+// its own field instead, and says what that costs.
+//
+// It runs under the vault helper, so it and the Quickshell it starts inherit
+// the helper's zero core-file limit. What is typed travels from the
+// Quickshell to this process over a Unix socket in a private directory
+// (mkdtemp, 0700, under $XDG_RUNTIME_DIR), is written to stdout as the Assuan
+// `D` line the helper decodes, and the buffers holding it here are
+// zeroed. It is never in any argv, file or log. The prompt's text (the
+// description names the account) reaches the Quickshell in a 0600 file in
+// that directory, never in argv. The directory is removed when the prompt
+// ends and on every exit this process can see; one a SIGKILL left behind
+// (prompt.json names the pid that made it) is removed by the next run.
+//
+// Commands: OPTION, SETTITLE, SETDESC, SETPROMPT, SETERROR (shown on the next
+// GETPIN only), SETOK, SETCANCEL, SETTIMEOUT (seconds; when it runs out the
+// answer is pinentry's own timeout error), the other SET* commands
+// (accepted and ignored), GETINFO, RESET, NOP, BYE, GETPIN, MESSAGE
+// (acknowledged, nothing shown) and CONFIRM (answered as a cancel: nothing is
+// confirmed that nobody saw).
+//
+//   omarchy-pinentry           speak Assuan on stdin/stdout
+//   omarchy-pinentry --check   exit 0 if a prompt can be shown here, else 1
+//
+// Test only: QSBW_PINENTRY_TEST_UI names a program run in place of
+// `quickshell -p <dir>`, with the same environment, so the tests can answer
+// without a display. OMARCHY_SHELL_DIR names the shell kit (Commons, Ui),
+// otherwise $OMARCHY_PATH/shell or /usr/share/omarchy/shell.
+
+"use strict"
+
+const fs = require("fs")
+const net = require("net")
+const path = require("path")
+const crypto = require("crypto")
+const { spawn, spawnSync } = require("child_process")
+
+// libgpg-error codes from source 5 (pinentry), as pinentry itself sends them.
+const ERR_CANCELED = "ERR 83886179 Operation cancelled <Pinentry>" // GPG_ERR_CANCELED, 99
+const ERR_TIMEOUT = "ERR 83886142 Timeout <Pinentry>" // GPG_ERR_TIMEOUT, 62
+const ERR_GENERAL = "ERR 83886081 General error <Pinentry>" // GPG_ERR_GENERAL, 1
+const ERR_UNKNOWN_CMD = "ERR 83886355 Unknown IPC command <Pinentry>" // GPG_ERR_ASS_UNKNOWN_CMD, 275
+const ERR_PARAMETER = "ERR 83886360 IPC parameter error <Pinentry>" // GPG_ERR_ASS_PARAMETER, 280
+
+const VERSION = "1.0.0"
+// An Assuan line is at most 1000 bytes; `D ` and the newline included.
+const D_CHUNK = 900
+// What the prompt may send back: an answer, percent-encoded, up to this long.
+const ANSWER_MAX = 64 * 1024
+// Text shown in the prompt, as the panel's script caps it.
+const TEXT_MAX = 400
+// Waiting for the prompt to say anything once it has exited.
+const EXIT_GRACE_MS = 300
+
+const here = __dirname
+const testUi = process.env.QSBW_PINENTRY_TEST_UI || ""
+
+function kitDir() {
+  const candidates = []
+  if (process.env.OMARCHY_SHELL_DIR) candidates.push(process.env.OMARCHY_SHELL_DIR)
+  else {
+    if (process.env.OMARCHY_PATH) candidates.push(path.join(process.env.OMARCHY_PATH, "shell"))
+    candidates.push("/usr/share/omarchy/shell")
+  }
+  for (const dir of candidates) {
+    if (path.isAbsolute(dir) && fs.existsSync(path.join(dir, "Commons", "qmldir"))
+        && fs.existsSync(path.join(dir, "Ui", "qmldir"))) return dir
+  }
+  return ""
+}
+
+function onPath(name) {
+  return (process.env.PATH || "").split(":").some(dir => {
+    if (!dir) return false
+    try {
+      fs.accessSync(path.join(dir, name), fs.constants.X_OK)
+      return true
+    } catch (e) {
+      return false
+    }
+  })
+}
+
+function runtimeDir() {
+  const dir = process.env.XDG_RUNTIME_DIR || ""
+  if (!path.isAbsolute(dir)) return ""
+  try {
+    return fs.statSync(dir).isDirectory() ? dir : ""
+  } catch (e) {
+    return ""
+  }
+}
+
+// Why a prompt cannot be shown here, or "".
+function unusableReason() {
+  if (!runtimeDir()) return "XDG_RUNTIME_DIR is not set"
+  if (testUi) return ""
+  if (!process.env.WAYLAND_DISPLAY) return "no Wayland display"
+  if (!onPath("quickshell")) return "quickshell is not installed"
+  if (!kitDir()) return "the Omarchy shell kit is not installed"
+  if (!fs.existsSync(path.join(here, "PinentryPrompt.qml"))) return "PinentryPrompt.qml is missing"
+  if (!fs.existsSync(path.join(path.dirname(here), "LineField.qml"))) return "LineField.qml is missing"
+  return ""
+}
+
+if (process.argv.includes("--check")) {
+  const reason = unusableReason()
+  if (reason) process.stderr.write("omarchy-pinentry: " + reason + "\n")
+  process.exit(reason ? 1 : 0)
+}
+
+// --- output ---------------------------------------------------------------------
+
+let closed = false
+
+// Synchronous, so a buffer can be zeroed as soon as this returns.
+function writeOut(buffer) {
+  let at = 0
+  while (at < buffer.length) {
+    try {
+      at += fs.writeSync(1, buffer, at, buffer.length - at)
+    } catch (e) {
+      if (e.code === "EAGAIN") continue
+      // EPIPE: the script is gone.
+      shutdown(0)
+      return
+    }
+  }
+}
+
+function reply(line) {
+  writeOut(Buffer.from(line + "\n", "utf8"))
+}
+
+// --- Assuan text ------------------------------------------------------------------
+
+function hexValue(byte) {
+  if (byte >= 0x30 && byte <= 0x39) return byte - 0x30
+  if (byte >= 0x41 && byte <= 0x46) return byte - 0x37
+  if (byte >= 0x61 && byte <= 0x66) return byte - 0x57
+  return -1
+}
+
+// %XX escapes decoded into bytes; null for a `%` without two hex digits.
+function percentDecode(bytes, start, end) {
+  const out = Buffer.alloc(end - start)
+  let n = 0
+  for (let i = start; i < end; i++) {
+    if (bytes[i] === 0x25) {
+      const hi = i + 2 < end ? hexValue(bytes[i + 1]) : -1
+      const lo = hi >= 0 ? hexValue(bytes[i + 2]) : -1
+      if (lo < 0) {
+        out.fill(0)
+        return null
+      }
+      out[n++] = hi * 16 + lo
+      i += 2
+    } else {
+      out[n++] = bytes[i]
+    }
+  }
+  return { buffer: out, length: n }
+}
+
+// An argument of a SET command as text: Assuan's escapes decoded, NUL and the
+// other controls but a line break dropped, capped as the panel caps it. One
+// with a malformed escape is shown as written, stripped and capped the same.
+function argText(raw) {
+  const bytes = Buffer.from(raw, "utf8")
+  const decoded = percentDecode(bytes, 0, bytes.length)
+  return plainText(decoded ? decoded.buffer.subarray(0, decoded.length).toString("utf8") : raw)
+}
+
+function plainText(text) {
+  return text.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "").slice(0, TEXT_MAX)
+}
+
+// `D` lines for `data`: `%`, CR, LF and every other control byte escaped, as
+// pinentry does for the first three; other bytes (UTF-8 included) as they
+// are. Split below Assuan's line limit, never inside an escape or a UTF-8
+// sequence (at most three continuation bytes; a longer run is not UTF-8 and
+// is split rather than overrun the line). The caller zeroes the buffers once
+// written.
+function dataLines(data, length) {
+  const lines = []
+  let line = Buffer.alloc(D_CHUNK + 8)
+  let n = 0
+  const flush = () => {
+    line[n++] = 0x0a
+    lines.push(line.subarray(0, n))
+    line = Buffer.alloc(D_CHUNK + 8)
+    n = 0
+  }
+  const HEX = "0123456789ABCDEF"
+  for (let i = 0; i < length; i++) {
+    const byte = data[i]
+    const continuation = byte >= 0x80 && byte <= 0xbf
+    if (n === 0) {
+      line[n++] = 0x44 // D
+      line[n++] = 0x20
+    } else if (n >= D_CHUNK + 4 || (n >= D_CHUNK && !continuation)) {
+      flush()
+      line[n++] = 0x44
+      line[n++] = 0x20
+    }
+    if (byte < 0x20 || byte === 0x25 || byte === 0x7f) {
+      line[n++] = 0x25
+      line[n++] = HEX.charCodeAt(byte >> 4)
+      line[n++] = HEX.charCodeAt(byte & 15)
+    } else {
+      line[n++] = byte
+    }
+  }
+  if (n > 0) flush()
+  else line.fill(0)
+  return lines
+}
+
+// --- the prompt -------------------------------------------------------------------
+
+const settings = { title: "", description: "", prompt: "", error: "", ok: "", cancel: "", timeout: 0 }
+
+function resetSettings() {
+  Object.assign(settings, { title: "", description: "", prompt: "", error: "", ok: "", cancel: "", timeout: 0 })
+}
+
+// The run in progress: { dir, server, child, socket, chunks, timer, settled }.
+let run = null
+
+// The monitor Hyprland has focused now, by name, or "".
+function focusedMonitor() {
+  if (testUi) return process.env.QSBW_PINENTRY_TEST_MONITOR || ""
+  try {
+    const r = spawnSync("hyprctl", ["-j", "monitors"], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] })
+    const monitors = JSON.parse(r.stdout || "[]")
+    const focused = Array.isArray(monitors) ? monitors.find(m => m && m.focused) : null
+    return focused && typeof focused.name === "string" ? focused.name : ""
+  } catch (e) {
+    return ""
+  }
+}
+
+// The Quickshell config the prompt runs as: a fixed directory per plugin
+// checkout (so Quickshell keeps one shell id for it, not one per prompt) that
+// holds no secret, only shell.qml and links to the shell kit and this
+// directory. The shell's `qs.Commons` and `qs.Ui` resolve against it, so the
+// prompt draws with the shell's own theme, font, border and rounding.
+function promptConfig(runtime, kit) {
+  const id = crypto.createHash("sha256").update(here).digest("hex").slice(0, 12)
+  const dir = path.join(runtime, "qsbw-pinentry-ui-" + id)
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 })
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e
+  }
+  const st = fs.lstatSync(dir)
+  if (!st.isDirectory() || st.isSymbolicLink() || (process.getuid && st.uid !== process.getuid())) {
+    throw new Error("unexpected " + dir)
+  }
+  fs.chmodSync(dir, 0o700)
+  const place = (name, write) => {
+    const tmp = path.join(dir, "." + name + "." + process.pid)
+    fs.rmSync(tmp, { force: true })
+    write(tmp)
+    fs.renameSync(tmp, path.join(dir, name))
+  }
+  const want = (name, target) => {
+    try {
+      if (fs.readlinkSync(path.join(dir, name)) === target) return
+    } catch (e) { /* not a link yet */ }
+    place(name, tmp => fs.symlinkSync(target, tmp))
+  }
+  want("Commons", path.join(kit, "Commons"))
+  want("Ui", path.join(kit, "Ui"))
+  want("prompt", here)
+  // The card's field is the panel's own LineField (`import ".."`).
+  want("LineField.qml", path.join(path.dirname(here), "LineField.qml"))
+  const shell = "// Written by omarchy-pinentry; rewritten on every prompt.\n"
+    + "import Quickshell\nimport \"prompt\"\n\nShellRoot {\n  PinentryPrompt {}\n}\n"
+  let current = ""
+  try { current = fs.readFileSync(path.join(dir, "shell.qml"), "utf8") } catch (e) { /* none yet */ }
+  if (current !== shell) place("shell.qml", tmp => fs.writeFileSync(tmp, shell, { mode: 0o600 }))
+  return dir
+}
+
+function uiEnvironment(dir) {
+  const env = Object.assign({}, process.env)
+  for (const name of ["QS_CONFIG_PATH", "QS_CONFIG_NAME", "QS_MANIFEST", "QSBW_PE_DESC", "QSBW_PE_ERR"]) delete env[name]
+  env.QSBW_PINENTRY_DIR = dir
+  env.QS_NO_RELOAD_POPUP = "1"
+  env.QS_DISABLE_FILE_WATCHER = "1"
+  // Quickshell's crash handler would dump the crashed process and its log
+  // into ~/.cache/quickshell/crashes, past the zero core-file limit this
+  // process and the prompt inherit from the vault helper.
+  env.QS_DISABLE_CRASH_HANDLER = "1"
+  return env
+}
+
+// Prompt directories a SIGKILL left behind: ours by uid, a real directory
+// (no symlink followed), whose prompt.json names a pid that is gone, or none.
+// One with no prompt.json yet may be another run between mkdtemp and the
+// write, so it goes only once it is old. Errors leave the directory alone.
+function sweepStale(runtime) {
+  let names
+  try { names = fs.readdirSync(runtime) } catch (e) { return }
+  for (const name of names) {
+    if (!/^qsbw-pinentry-[A-Za-z0-9]{6}$/.test(name)) continue
+    const dir = path.join(runtime, name)
+    try {
+      const st = fs.lstatSync(dir)
+      if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid())) continue
+      let pid = 0
+      try {
+        const file = path.join(dir, "prompt.json")
+        if (!fs.lstatSync(file).isFile()) continue
+        pid = JSON.parse(fs.readFileSync(file, "utf8")).pid
+      } catch (e) {
+        if (e.code !== "ENOENT" || Date.now() - st.mtimeMs < 60000) continue
+      }
+      if (pid === process.pid) continue
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, 0)
+          continue
+        } catch (e) {
+          if (e.code !== "ESRCH") continue
+        }
+      }
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch (e) { /* left alone */ }
+  }
+}
+
+function getpin() {
+  if (run) {
+    reply(ERR_GENERAL)
+    return
+  }
+  const runtime = runtimeDir()
+  const kit = testUi ? "" : kitDir()
+  if (!runtime || (!testUi && !kit)) {
+    reply(ERR_GENERAL)
+    return
+  }
+  sweepStale(runtime)
+  const r = { dir: "", server: null, child: null, socket: null, chunks: [], size: 0, timer: null,
+    exitTimer: null, settled: false, exited: false }
+  run = r
+  try {
+    r.dir = fs.mkdtempSync(path.join(runtime, "qsbw-pinentry-"))
+    fs.chmodSync(r.dir, 0o700)
+    const ask = {
+      title: settings.title, description: settings.description, prompt: settings.prompt,
+      error: settings.error, ok: settings.ok, cancel: settings.cancel,
+      timeout: settings.timeout, monitor: focusedMonitor(), pid: process.pid
+    }
+    fs.writeFileSync(path.join(r.dir, "prompt.json"), JSON.stringify(ask), { mode: 0o600, flag: "wx" })
+  } catch (e) {
+    settle(ERR_GENERAL)
+    return
+  }
+  // Shown with this GETPIN only, as pinentry does.
+  settings.error = ""
+
+  r.server = net.createServer({ allowHalfOpen: false }, socket => {
+    // One prompt, one connection.
+    if (r.socket || r.settled) {
+      socket.destroy()
+      return
+    }
+    r.socket = socket
+    r.server.close()
+    socket.on("data", chunk => {
+      if (r.settled) return
+      r.chunks.push(chunk)
+      r.size += chunk.length
+      if (r.size > ANSWER_MAX) {
+        settle(ERR_GENERAL)
+        return
+      }
+      if (chunk.indexOf(0x0a) !== -1) answered()
+    })
+    socket.on("error", () => {})
+    socket.on("close", () => { if (r.exited && !r.settled) settle(ERR_GENERAL) })
+  })
+  r.server.on("error", () => settle(ERR_GENERAL))
+  r.server.listen(path.join(r.dir, "answer.sock"), () => {
+    if (r.settled) return
+    let child
+    try {
+      const argv = testUi ? [testUi, []] : ["quickshell", ["-p", promptConfig(runtime, kit)]]
+      child = spawn(argv[0], argv[1], { env: uiEnvironment(r.dir), stdio: ["ignore", "ignore", "inherit"] })
+    } catch (e) {
+      settle(ERR_GENERAL)
+      return
+    }
+    r.child = child
+    child.on("error", () => { r.exited = true; settle(ERR_GENERAL) })
+    child.on("exit", () => {
+      r.exited = true
+      r.child = null
+      if (r.settled) return
+      // What it sent may still be on its way.
+      r.exitTimer = setTimeout(() => settle(ERR_GENERAL), EXIT_GRACE_MS)
+    })
+  })
+  if (settings.timeout > 0) r.timer = setTimeout(() => settle(ERR_TIMEOUT), settings.timeout * 1000)
+}
+
+// The prompt's line: `D <percent-encoded answer>` or `CANCEL`.
+function answered() {
+  const r = run
+  const all = Buffer.concat(r.chunks, r.size)
+  for (const chunk of r.chunks) chunk.fill(0)
+  r.chunks = []
+  r.size = 0
+  try {
+    const end = all.indexOf(0x0a)
+    if (end === 6 && all.toString("latin1", 0, 6) === "CANCEL") {
+      settle(ERR_CANCELED)
+    } else if (end >= 2 && all[0] === 0x44 && all[1] === 0x20) {
+      const decoded = percentDecode(all, 2, end)
+      if (!decoded) {
+        settle(ERR_GENERAL)
+        return
+      }
+      const lines = dataLines(decoded.buffer, decoded.length)
+      decoded.buffer.fill(0)
+      settle(null, lines)
+    } else {
+      settle(ERR_GENERAL)
+    }
+  } finally {
+    all.fill(0)
+  }
+}
+
+// Ends the run: the prompt is closed and its directory removed, then the
+// answer's `D` lines and OK, or `error`, are written. The directory goes
+// first: the script reading the answer may exit, and kill this process, as
+// soon as the line is out, so nothing may be left to do after it.
+function settle(error, lines) {
+  const r = run
+  if (!r || r.settled) {
+    if (lines) for (const line of lines) line.fill(0)
+    return
+  }
+  r.settled = true
+  endRun()
+  if (lines) {
+    for (const line of lines) {
+      writeOut(line)
+      line.fill(0)
+    }
+    reply("OK")
+  } else {
+    reply(error || ERR_GENERAL)
+  }
+  // Anything sent meanwhile is answered now, in order.
+  setImmediate(drain)
+}
+
+function endRun() {
+  const r = run
+  if (!r) return
+  run = null
+  r.settled = true
+  if (r.timer) clearTimeout(r.timer)
+  if (r.exitTimer) clearTimeout(r.exitTimer)
+  for (const chunk of r.chunks) chunk.fill(0)
+  r.chunks = []
+  if (r.socket) r.socket.destroy()
+  if (r.server) {
+    try { r.server.close() } catch (e) { /* not listening */ }
+  }
+  if (r.child) {
+    try { r.child.kill("SIGTERM") } catch (e) { /* gone */ }
+  }
+  if (r.dir) {
+    try { fs.rmSync(r.dir, { recursive: true, force: true }) } catch (e) { /* gone */ }
+  }
+}
+
+// --- commands -----------------------------------------------------------------------
+
+const SETTERS = { SETTITLE: "title", SETDESC: "description", SETPROMPT: "prompt", SETERROR: "error",
+  SETOK: "ok", SETCANCEL: "cancel" }
+
+function command(line) {
+  const space = line.indexOf(" ")
+  const verb = (space === -1 ? line : line.slice(0, space)).toUpperCase()
+  const arg = space === -1 ? "" : line.slice(space + 1)
+  if (verb === "" || verb.charAt(0) === "#") return
+  if (SETTERS[verb]) {
+    settings[SETTERS[verb]] = argText(arg)
+    reply("OK")
+  } else if (verb === "SETTIMEOUT") {
+    const n = Number(arg.trim())
+    settings.timeout = Number.isInteger(n) && n > 0 ? Math.min(n, 86400) : 0
+    reply("OK")
+  } else if (verb === "GETPIN") {
+    getpin()
+  } else if (verb === "GETINFO") {
+    const what = arg.trim().toLowerCase()
+    const info = { pid: String(process.pid), version: VERSION, flavor: "omarchy", ttyinfo: "- - -" }[what]
+    if (info === undefined) reply(ERR_PARAMETER)
+    else {
+      reply("D " + info)
+      reply("OK")
+    }
+  } else if (verb === "CONFIRM") {
+    reply(ERR_CANCELED)
+  } else if (verb === "RESET") {
+    resetSettings()
+    reply("OK")
+  } else if (verb === "BYE") {
+    reply("OK closing connection")
+    shutdown(0)
+  } else if (verb === "OPTION" || verb === "NOP" || verb === "MESSAGE" || verb.startsWith("SET")) {
+    reply("OK")
+  } else {
+    reply(ERR_UNKNOWN_CMD)
+  }
+}
+
+// --- lifetime -----------------------------------------------------------------------
+
+function shutdown(code) {
+  if (closed) return
+  closed = true
+  endRun()
+  process.exit(code)
+}
+
+process.on("exit", endRun)
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGPIPE"]) process.on(signal, () => shutdown(0))
+process.on("uncaughtException", () => shutdown(1))
+
+const reason = unusableReason()
+if (reason) {
+  process.stderr.write("omarchy-pinentry: " + reason + "\n")
+  process.exit(1)
+}
+
+sweepStale(runtimeDir())
+reply("OK Pleased to meet you")
+
+// Assuan is one request at a time: a line that arrives while a prompt is
+// open waits for its answer.
+const queue = []
+let pending = ""
+let inputEnded = false
+
+function drain() {
+  while (!run && !closed && queue.length > 0) command(queue.shift())
+  if (!run && inputEnded) shutdown(0)
+}
+
+process.stdin.setEncoding("utf8")
+process.stdin.on("data", text => {
+  pending += text
+  let at
+  while ((at = pending.indexOf("\n")) !== -1) {
+    queue.push(pending.slice(0, at).replace(/\r$/, ""))
+    pending = pending.slice(at + 1)
+  }
+  drain()
+})
+// The end of input still lets a prompt already open be answered, and the
+// lines after it run, as `printf ... | omarchy-pinentry` expects. The
+// panel's script ends its pinentry with SIGTERM; one that was killed
+// itself is noticed by the parent changing.
+process.stdin.on("end", () => {
+  inputEnded = true
+  drain()
+})
+const parent = process.ppid
+setInterval(() => { if (process.ppid !== parent) shutdown(0) }, 1000).unref()
+process.stdin.on("error", () => shutdown(0))

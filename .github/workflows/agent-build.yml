@@ -131,7 +131,7 @@ jobs:
           done
 
       - name: Upload the candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # Every helper and SHA256SUMS; commit them together.
           name: qs-bitwarden-helpers-x86_64-linux
@@ -189,30 +189,23 @@ jobs:
       - name: Dependency and licence policy
         # Advisories, licences, registries and duplicates for a binary that
         # holds private keys. `--config` is explicit (cargo-deny would otherwise
-        # silently use defaults from agent/). Not version-pinned: it reads a
-        # live advisory database. The published static musl binary (not `cargo
-        # install`, which took ~2 min), resolved from the `releases/latest`
-        # redirect (the API is rate-limited per shared runner address) and
-        # verified against its published digest. `shell: bash` for pipefail
-        # (a container step defaults to dash).
+        # silently use defaults from agent/). The version is the one
+        # release.yml installs, and the published static musl binary (not
+        # `cargo install`, which took ~2 min) is checked against the digest
+        # recorded here, not one fetched beside it, so a changed release
+        # stops the job rather than running. The advisory database it reads
+        # is live. `shell: bash` for pipefail (a container step defaults to
+        # dash).
         shell: bash
         run: |
           set -euo pipefail
-          latest="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-            https://github.com/EmbarkStudios/cargo-deny/releases/latest)"
-          version="${latest##*/}"
-          # A broken redirect would yield a path, not a version: check the shape.
-          case "$version" in
-            [0-9]*.[0-9]*) : ;;
-            *) echo "::error::could not resolve the latest cargo-deny release (got '$version' from '$latest')"; exit 1 ;;
-          esac
+          version=0.20.2
+          digest=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
           base="https://github.com/EmbarkStudios/cargo-deny/releases/download/$version"
           archive="cargo-deny-$version-x86_64-unknown-linux-musl.tar.gz"
           curl -fsSL -o "$archive" "$base/$archive"
-          curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
-          # Upstream publishes the bare digest, so pair it with the filename
-          # before sha256sum will read it. A mismatch stops the job here.
-          echo "$(cat "$archive.sha256")  $archive" | sha256sum -c -
+          # A mismatch stops the job here.
+          echo "$digest  $archive" | sha256sum -c -
           tar -xzf "$archive" --strip-components=1 -C /usr/local/cargo/bin \
             "cargo-deny-$version-x86_64-unknown-linux-musl/cargo-deny"
           # Say which build actually did the checking, the way the QML step
@@ -296,7 +289,7 @@ jobs:
           sudo apt-get update -o APT::Update::Error-Mode=any
           sudo apt-get install -y -qq --no-install-recommends jq openssh-client argon2
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
 
@@ -326,14 +319,17 @@ jobs:
         # The panel's JavaScript runs in QML's engine, which differs from Node.
         run: |
           # Every module named explicitly: --no-install-recommends drops
-          # QtQml.WorkerScript, which QtQuick needs.
+          # QtQml.WorkerScript, which QtQuick needs. Controls (with its
+          # Templates) is for tests that stand in a LineField-shaped TextArea.
           sudo apt-get install -y -qq --no-install-recommends \
             qt6-declarative-dev-tools \
             qml6-module-qttest \
             qml6-module-qtqml \
             qml6-module-qtqml-workerscript \
             qml6-module-qtquick \
-            qml6-module-qtquick-window
+            qml6-module-qtquick-window \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-templates
           # Log the resolved versions, so behaviour changes can be traced.
           dpkg -l qt6-declarative-dev-tools qml6-module-qttest | tail -2
           # The import paths qmltestrunner searches, for debugging.

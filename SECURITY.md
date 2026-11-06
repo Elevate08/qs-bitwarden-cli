@@ -43,12 +43,30 @@ you to it.
   checksums, attestations or SBOM do not match it.
 - Anything reachable through the IPC target or the agent socket by a program
   that should not have that power.
+- Auto-type typing while it is off, without an armed login, more than once
+  for one arm, after the arm has expired or been dropped, or anything other
+  than the armed login's username and password.
 - Damage to the OS keyring or to other apps' secrets in it.
 
 ## Out of scope
 
 - Limits the README already documents: with fingerprint unlock on, a program
   running as you can open the stored password; root can read anything.
+- The quick-unlock envelope's data key kept by a program that recovered it
+  by guessing the PIN from a copy, or read it while fingerprint unlock was on
+  and before it was turned off. Changing the master password re-wraps the
+  same key, so that program can open the later copies too until the envelope
+  is deleted: turning fingerprint unlock off deletes it, and so does logging
+  out of the account; the methods are then set up again under a new key.
+- What the IPC target lets any program running as you do: open, close and
+  toggle the panel, lock, sync, switch the active account, read which accounts
+  exist (their emails and servers) and, with auto-type on, trigger an armed
+  type. It never unlocks, reads an item or changes a setting.
+- What auto-type, when you turn it on, documents it gives away: the focused
+  window gets the password; while a login is armed any program running as
+  you can make it type, since the IPC cannot tell who calls it; and `wtype`'s
+  keymap, which a program running as you can read while it types, lists the
+  characters it is typing.
 - Helper memory reaching swap. Neither helper locks its memory (`mlockall` would
   hit the default 8 MiB `RLIMIT_MEMLOCK`), so the kernel may write a page
   holding a decrypted key or the session key to swap. Use encrypted swap, or

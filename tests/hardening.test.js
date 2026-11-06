@@ -303,7 +303,7 @@ printf '%s\\n' "\${QSBW_TEST_TYPES:-text/plain}" | tr ',' '\\n'
   }
 }
 check("a password missing from the in-memory item uses a managed generation-stamped fetch",
-  /requestPasswordCopy\(item\.id,\s*item\.typeCode\)/.test(bodyOf("copyPasswordNow"))
+  /requestPasswordCopy\(item\.id,\s*item\.typeCode\b/.test(bodyOf("copyPasswordNow"))
     && /beginVaultRead\("passwordCopy"\)/.test(bodyOf("requestPasswordCopy"))
     && /Model\.getPasswordCommand\(itemId,\s*typeCode\)/.test(bodyOf("requestPasswordCopy"))
     && /vaultReadIsStale\("passwordCopy"\)/.test(bodyOf("onPasswordCopyFinished")),

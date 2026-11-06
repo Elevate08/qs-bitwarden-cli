@@ -129,4 +129,7 @@ if command -v systemd-creds >/dev/null 2>&1; then
 fi
 
 say "restart the computer so gnome-keyring loads the default collection again"
+# The copy holds the same sealed items as the keyring; it is for going back,
+# not for keeping.
+say "once the keyring works again, delete the copy of the original: rm -- '$backup'"
 status repaired

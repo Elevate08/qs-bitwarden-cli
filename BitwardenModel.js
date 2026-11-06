@@ -62,6 +62,17 @@ function keyringClearEntryCommand(account) {
   return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", account]
 }
 
+// The same as a script step that succeeds once the entry is gone. libsecret's
+// clear returns 1 without stderr when no matching item exists; service
+// failures also return 1, with an error on stderr. The clear's stderr is
+// captured (a trailing '.' keeps a newline-only error from being dropped) and
+// read: absent is success, anything else is not.
+function keyringClearEntryScript(account) {
+  return "__clear_error=$(secret-tool clear" + keyringAttributes(account)
+    + " 2>&1 >/dev/null; __status=$?; printf '.'; exit \"$__status\"); __clear_rc=$?; __clear_error=\"${__clear_error%.}\"; "
+    + "[ \"$__clear_rc\" -eq 0 ] || { [ \"$__clear_rc\" -eq 1 ] && [ -z \"$__clear_error\" ]; }"
+}
+
 function keyringHasEntryCommand(account) {
   var script = "if secret-tool lookup" + keyringAttributes(account)
     + " >/dev/null 2>&1; then echo yes; else echo no; fi"
@@ -1300,6 +1311,558 @@ function clipboardCopyCommand(clearSec) {
     + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
 }
 
+// A non-secret (the auto-type keybinding line) for the user to paste
+// elsewhere: no --sensitive mark, so clipboard history keeps it and a lock
+// leaves it alone, and no timed clear. Same env-var route as a secret.
+function clipboardCopyPlainCommand() {
+  return ["bash", "-c", "exec env -u " + CLIPBOARD_ENV + " wl-copy"
+    + " < <(printf '%s' \"$" + CLIPBOARD_ENV + "\")"]
+}
+
+// -------------------------------------------------------------------------
+// Auto-type
+// -------------------------------------------------------------------------
+//
+// Off unless `autoTypeEnabled`. Ctrl+C or a row's button in the panel copies
+// a login's password and arms it, after any re-prompt; the `autoType` IPC
+// then types its username, Tab and password into the focused window, once,
+// within AUTO_TYPE_ARM_MS. With the vault helper the helper types it
+// (`autoType` request, vault/src/main.rs) and the shell never sees the
+// password; without it the shell writes the text to wtype's stdin. Never in
+// argv or an environment.
+
+var AUTO_TYPE_ARM_MS = 30000
+// Typing a long login takes seconds; a helper that has not answered by then
+// predates the request (it refuses it with no reply) or is stuck.
+var AUTO_TYPE_ANSWER_MS = 15000
+
+function autoTypeArmMs() { return AUTO_TYPE_ARM_MS }
+function autoTypeAnswerMs() { return AUTO_TYPE_ANSWER_MS }
+
+// The same wtype run as the helper's (WTYPE_ARGS): a pause so the shortcut is
+// let go first, a short delay between keys, the text on stdin, and a UTF-8
+// locale (under C wtype stops at the first non-ASCII character and still
+// exits 0). `exec` from bash so a missing wtype is exit 127, not a start
+// failure Process would not report.
+function autoTypeCommand() {
+  return ["bash", "-c", "LC_ALL=C.UTF-8 exec wtype -s 250 -d 12 -"]
+}
+
+// What is typed, as the helper builds it (auto_type_text()): username, Tab,
+// password, or the password alone. wtype presses Return for a newline and Tab
+// for a tab, and xkb maps backspace, delete and escape to their keys, so a
+// value with any control character is refused.
+function autoTypeText(username, password) {
+  var user = String(username || "")
+  var pass = String(password || "")
+  if (!pass) return { ok: false, reason: "empty", text: "" }
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(user + pass)) return { ok: false, reason: "unsafe", text: "" }
+  return { ok: true, reason: "", text: user ? user + "\t" + pass : pass }
+}
+
+// Why a type did not happen, from the helper's or the fallback's reason.
+function autoTypeFailureMessage(reason) {
+  switch (String(reason || "")) {
+    case "missing": return "Auto-type needs wtype, which is not installed"
+    case "unsafe": return "Not auto-typed: the username or password holds a line break, tab or other control character"
+    case "empty": return "Not auto-typed: this login has no password"
+    case "busy": return "Not auto-typed: another auto-type is still typing"
+    case "not-held": return "Not auto-typed: the vault helper does not hold this item yet; sync and arm it again"
+    case "gone": return "Not auto-typed: the armed item is no longer in the vault"
+    case "unread": return "Not auto-typed: could not read this password"
+    case "timeout": return "Auto-type timed out: the vault helper, wtype or bw did not finish in time"
+    case "stopped": return "Auto-type was stopped by the vault locking"
+    default: return "Auto-type failed (wtype could not type into the focused window)"
+  }
+}
+
+// The panel is usually closed when auto-type runs, so a failure is a desktop
+// notification too. The text is one of the messages above: no item data.
+function autoTypeFailedNoticeCommand(message) {
+  return ["notify-send", "-a", "Bitwarden", "Auto-type", String(message || "")]
+}
+
+// -------------------------------------------------------------------------
+// Auto-type keybinding
+// -------------------------------------------------------------------------
+//
+// The `autoType` IPC does nothing until a key runs it. Omarchy 4 configures
+// Hyprland in Lua: ~/.config/hypr/hyprland.lua requires `hypr.bindings`, the
+// user's ~/.config/hypr/bindings.lua, and Hyprland reloads on save (Omarchy's
+// bootstrap drops the cached module, so a reload reads the file again). The
+// settings screen appends one o.bind() line there, after a comment line
+// saying the plugin added it, and removes only that exact pair. It never
+// rewrites or reorders anything else in the file.
+//
+// `hyprctl binds -j` reports an o.bind() as dispatcher "__lua" with an opaque
+// closure number, so the command cannot be read back from it. The binding is
+// found in bindings.lua by its command, and in hyprctl by its description, or
+// by an `exec` dispatcher whose argument is the command (a hyprland.conf
+// bind). Conflicts are checked against hyprctl, which also lists Omarchy's
+// defaults and every other file's binds; bindings.lua alone without it.
+//
+// The chord is the only text the user types. It is held to
+// [A-Za-z0-9_+ ], so it can sit inside a Lua string as is, and the line still
+// reaches the script as an argument, never spliced into it.
+
+var AUTO_TYPE_IPC_COMMAND = "omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType"
+var AUTO_TYPE_BIND_DESCRIPTION = "Bitwarden auto-type"
+var AUTO_TYPE_BIND_COMMENT = "-- Added by the qs-bitwarden-cli plugin (Settings > General > Auto-type logins)."
+var AUTO_TYPE_BINDINGS_REL = ".config/hypr/bindings.lua"
+var AUTO_TYPE_HYPRLAND_REL = ".config/hypr/hyprland.lua"
+// Free on a stock Omarchy 4, which gives SUPER + SHIFT + A to its ChatGPT web
+// app. The first goes with the README's SUPER + CTRL + SLASH for the panel.
+var AUTO_TYPE_CHORD_SUGGESTIONS = ["SUPER + CTRL + BACKSLASH", "SUPER + ALT + A", "SUPER + ALT + BACKSLASH"]
+// Hyprland's modmask bits.
+var CHORD_MODIFIER_BITS = { SUPER: 64, SHIFT: 1, CTRL: 4, ALT: 8 }
+var CHORD_MODIFIER_ORDER = ["SUPER", "SHIFT", "CTRL", "ALT"]
+var CHORD_MAX_LENGTH = 64
+// What the inspection reads of bindings.lua and of `hyprctl binds -j`.
+var AUTO_TYPE_BINDINGS_READ_BYTES = 262144
+var HYPR_BINDS_READ_BYTES = 4194304
+
+function autoTypeBindingsDisplayPath() {
+  return "~/" + AUTO_TYPE_BINDINGS_REL
+}
+
+function autoTypeChordSuggestions() { return AUTO_TYPE_CHORD_SUGGESTIONS.slice() }
+
+// The chord grammar o.bind() takes: modifiers from SUPER, SHIFT, CTRL and ALT
+// joined by " + ", then one key name. Case and spacing are forgiven and
+// normalised; anything else is refused with the reason. One of SUPER, CTRL or
+// ALT is required, so plain typing (Shift included) can never set it off.
+function autoTypeChord(raw) {
+  var text = (raw === undefined || raw === null) ? "" : String(raw)
+  function fail(message) { return { ok: false, chord: "", modmask: 0, key: "", message: message } }
+  if (text.trim() === "") return fail("Type a key combination, such as " + AUTO_TYPE_CHORD_SUGGESTIONS[0] + ".")
+  if (text.length > CHORD_MAX_LENGTH) return fail("That is too long for a key combination.")
+  if (!/^[A-Za-z0-9_+ ]+$/.test(text)) {
+    return fail("Use only letters, digits, _ and +, as in " + AUTO_TYPE_CHORD_SUGGESTIONS[0] + ".")
+  }
+  var parts = text.split("+")
+  for (var i = 0; i < parts.length; i++) {
+    parts[i] = parts[i].trim()
+    if (parts[i] === "") return fail("Put one key name between each +.")
+    if (/\s/.test(parts[i])) return fail("Join the modifiers and the key with +, as in " + AUTO_TYPE_CHORD_SUGGESTIONS[0] + ".")
+  }
+  if (parts.length < 2) return fail("Hold SUPER, CTRL or ALT with the key, as in " + AUTO_TYPE_CHORD_SUGGESTIONS[0] + ".")
+  var key = parts.pop()
+  var mods = []
+  var modmask = 0
+  for (var m = 0; m < parts.length; m++) {
+    var name = parts[m].toUpperCase()
+    if (name === "CONTROL") name = "CTRL"
+    if (!CHORD_MODIFIER_BITS.hasOwnProperty(name)) {
+      return fail("\"" + parts[m] + "\" is not a modifier; use SUPER, SHIFT, CTRL or ALT.")
+    }
+    if (modmask & CHORD_MODIFIER_BITS[name]) return fail(name + " is in there twice.")
+    modmask |= CHORD_MODIFIER_BITS[name]
+    mods.push(name)
+  }
+  var upperKey = key.toUpperCase()
+  if (CHORD_MODIFIER_BITS.hasOwnProperty(upperKey) || upperKey === "CONTROL") {
+    return fail("End with the key to press, after the modifiers.")
+  }
+  if (!(modmask & (CHORD_MODIFIER_BITS.SUPER | CHORD_MODIFIER_BITS.CTRL | CHORD_MODIFIER_BITS.ALT))) {
+    return fail("Hold SUPER, CTRL or ALT with the key, so ordinary typing never sets it off.")
+  }
+  // Hyprland looks key names up case-insensitively; XF86 names keep their
+  // usual spelling.
+  var normalKey = /^XF86/i.test(key) ? "XF86" + key.slice(4) : upperKey
+  return { ok: true, chord: mods.concat([normalKey]).join(" + "), modmask: modmask, key: normalKey, message: "" }
+}
+
+// "SUPER + SHIFT + A" from a `hyprctl binds -j` entry; "" for a keycode,
+// mouse or other bind with no key name.
+function chordFromHyprBind(bind) {
+  if (!bind || typeof bind.key !== "string" || bind.key === "") return ""
+  var mask = Number(bind.modmask) || 0
+  var names = []
+  for (var i = 0; i < CHORD_MODIFIER_ORDER.length; i++) {
+    if (mask & CHORD_MODIFIER_BITS[CHORD_MODIFIER_ORDER[i]]) names.push(CHORD_MODIFIER_ORDER[i])
+  }
+  return names.concat([bind.key]).join(" + ")
+}
+
+// Whether a hyprctl bind is pressed with this parsed chord (autoTypeChord()).
+// Only the top-level submap, and never a mouse bind.
+function hyprBindHasChord(bind, parsed) {
+  if (!bind || !parsed || !parsed.ok) return false
+  if (bind.mouse === true || (bind.submap && bind.submap !== "")) return false
+  return (Number(bind.modmask) || 0) === parsed.modmask
+    && String(bind.key || "").toUpperCase() === parsed.key.toUpperCase()
+}
+
+// `hyprctl binds -j` as a list of { modmask, key, description, dispatcher,
+// arg, submap, mouse }, or null when it is not a JSON array.
+function parseHyprBinds(raw) {
+  var text = String(raw === undefined || raw === null ? "" : raw).trim()
+  if (text === "") return null
+  var data
+  try { data = JSON.parse(text) } catch (e) { return null }
+  if (!Array.isArray(data)) return null
+  var out = []
+  for (var i = 0; i < data.length; i++) {
+    var b = data[i]
+    if (!b || typeof b !== "object") continue
+    out.push({
+      modmask: Math.floor(Number(b.modmask)) || 0,
+      key: typeof b.key === "string" ? b.key : "",
+      description: typeof b.description === "string" ? b.description : "",
+      dispatcher: typeof b.dispatcher === "string" ? b.dispatcher : "",
+      arg: typeof b.arg === "string" ? b.arg : "",
+      submap: typeof b.submap === "string" ? b.submap : "",
+      mouse: b.mouse === true
+    })
+  }
+  return out
+}
+
+function isAutoTypeCommand(text) {
+  return /io\.github\.elevate08\.qs-bitwarden-cli\s+autoType(?![A-Za-z0-9_])/.test(String(text || ""))
+}
+
+// A hyprctl bind that runs the autoType IPC: an `exec` of the command, or
+// (o.bind() shows only "__lua") the description this plugin writes.
+function hyprBindRunsAutoType(bind) {
+  if (!bind) return false
+  if (/^exec/.test(bind.dispatcher) && isAutoTypeCommand(bind.arg)) return true
+  return bind.description === AUTO_TYPE_BIND_DESCRIPTION
+}
+
+// The line the plugin appends for `chord`, or "" if the chord is not valid.
+function autoTypeBindLine(chord) {
+  var parsed = autoTypeChord(chord)
+  if (!parsed.ok) return ""
+  return "o.bind(\"" + parsed.chord + "\", \"" + AUTO_TYPE_BIND_DESCRIPTION + "\", \""
+    + AUTO_TYPE_IPC_COMMAND + "\")"
+}
+
+function autoTypeBindComment() { return AUTO_TYPE_BIND_COMMENT }
+
+// What bindings.lua holds: every o.bind() with a plain string chord and
+// command, and the line(s) that run the autoType IPC. Comment lines are
+// skipped. `removable` is the comment-and-line pair this plugin appends,
+// found exactly once and unchanged.
+function parseBindingsLua(text) {
+  var lines = String(text === undefined || text === null ? "" : text).split("\n")
+  var binds = []
+  var autoType = null
+  var autoTypeCount = 0
+  var pairs = 0
+  var pairChord = ""
+  var bindRe = /^\s*o\.bind\(\s*"([^"\\]*)"\s*,\s*(?:nil|"((?:[^"\\]|\\.)*)")\s*,\s*"((?:[^"\\]|\\.)*)"/
+  var chordRe = /^\s*(?:o|hl)\.bind\(\s*"([^"\\]*)"/
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/\r$/, "")
+    if (/^\s*--/.test(line)) continue
+    var m = line.match(bindRe)
+    if (m) binds.push({ chord: m[1], description: m[2] === undefined ? "" : m[2], command: m[3], line: i + 1 })
+    if (!isAutoTypeCommand(line)) continue
+    autoTypeCount++
+    var c = line.match(chordRe)
+    var parsed = autoTypeChord(c ? c[1] : "")
+    var ours = i > 0 && lines[i - 1].replace(/\r$/, "") === AUTO_TYPE_BIND_COMMENT
+      && parsed.ok && line === autoTypeBindLine(parsed.chord)
+    if (ours) { pairs++; pairChord = parsed.chord }
+    if (!autoType) {
+      autoType = {
+        chord: parsed.ok ? parsed.chord : (c ? c[1] : ""),
+        description: m ? (m[2] === undefined ? "" : m[2]) : "",
+        line: i + 1,
+        ours: ours
+      }
+    }
+  }
+  return {
+    binds: binds,
+    autoType: autoType,
+    autoTypeCount: autoTypeCount,
+    removable: pairs === 1,
+    removableChord: pairs === 1 ? pairChord : ""
+  }
+}
+
+// Reads the live binds (compacted to one line by jq, a required tool), whether
+// hyprland.lua loads bindings.lua, and the file itself, last, after a `---`
+// line. Read-only.
+function autoTypeKeybindInspectCommand() {
+  var filter = "if type == \"array\" then [.[] | {modmask, key, description, dispatcher, arg, submap, mouse}] else empty end"
+  var script = "test -n \"${HOME:-}\" || { echo home=0; exit 0; }; echo home=1; "
+    + "__f=\"$HOME/" + AUTO_TYPE_BINDINGS_REL + "\"; __main=\"$HOME/" + AUTO_TYPE_HYPRLAND_REL + "\"; "
+    + "if command -v hyprctl >/dev/null 2>&1 "
+    + "&& __b=$(hyprctl binds -j 2>/dev/null | head -c " + HYPR_BINDS_READ_BYTES + " | jq -c " + shellQuote(filter) + " 2>/dev/null) "
+    + "&& [ -n \"$__b\" ]; then printf 'binds=%s\\n' \"$__b\"; else echo binds=; fi; "
+    + "if " + hyprlandLoadsBindingsShell() + "; then echo requires=1; else echo requires=0; fi; "
+    + "if [ ! -e \"$__f\" ] && [ ! -L \"$__f\" ]; then echo file=absent; "
+    + "elif [ ! -f \"$__f\" ] || [ ! -r \"$__f\" ]; then echo file=unusable; "
+    + "else echo file=present; echo ---; head -c " + AUTO_TYPE_BINDINGS_READ_BYTES + " -- \"$__f\"; fi"
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// Whether ~/.config/hypr/hyprland.lua requires hypr.bindings outside a
+// comment, as Omarchy 4's template does: the only case where a missing
+// bindings.lua is created.
+function hyprlandLoadsBindingsShell() {
+  return "grep -Eq " + shellQuote("^[[:space:]]*require[[:space:]]*\\(?[[:space:]]*[\"']hypr\\.bindings[\"']")
+    + " -- \"$__main\" 2>/dev/null"
+}
+
+function parseAutoTypeKeybindInspection(raw) {
+  var text = String(raw === undefined || raw === null ? "" : raw)
+  var cut = text.indexOf("\n---\n")
+  var header = cut >= 0 ? text.slice(0, cut) : text
+  var found = probeFields(header)
+  if (found["home"] === undefined) return null
+  var file = String(found["file"] || "")
+  return {
+    home: found["home"] === "1",
+    binds: parseHyprBinds(found["binds"]),
+    requires: found["requires"] === "1",
+    file: file === "present" || file === "absent" || file === "unusable" ? file : "unusable",
+    bindings: cut >= 0 ? parseBindingsLua(text.slice(cut + 5)) : parseBindingsLua("")
+  }
+}
+
+// What the keybinding row shows, from parseAutoTypeKeybindInspection().
+function autoTypeKeybindState(inspection) {
+  var where = autoTypeBindingsDisplayPath()
+  if (!inspection) {
+    return { checked: false, bound: false, chord: "", live: false, removable: false, removableChord: "",
+      hyprctl: false, binds: [], fileBinds: [], canRegister: false,
+      status: "Checking the keybinding...", detail: "", blocked: "", setupNote: "" }
+  }
+  var binds = inspection.binds || []
+  var parsed = inspection.bindings || parseBindingsLua("")
+  var state = {
+    checked: true, bound: false, chord: "", live: false, removable: false, removableChord: "",
+    hyprctl: inspection.binds !== null && inspection.binds !== undefined,
+    binds: binds, fileBinds: parsed.binds, canRegister: false,
+    status: "No keybinding yet", detail: "", blocked: "",
+    // The setup screen's line under wtype.
+    setupNote: "No keybinding yet: register one under Settings > General > Auto-type logins."
+  }
+
+  var hit = parsed.autoType
+  var live = null
+  for (var i = 0; i < binds.length; i++) {
+    if (hyprBindRunsAutoType(binds[i])) { live = binds[i]; break }
+  }
+
+  if (hit) {
+    var hitChord = autoTypeChord(hit.chord)
+    state.bound = true
+    state.chord = hit.chord
+    state.removable = parsed.removable
+    state.removableChord = parsed.removableChord
+    // An o.bind() of the command with its own description, or ours.
+    for (var j = 0; j < binds.length; j++) {
+      if (hyprBindHasChord(binds[j], hitChord)
+          && (hyprBindRunsAutoType(binds[j]) || binds[j].description === hit.description)) {
+        state.live = true
+        break
+      }
+    }
+    state.detail = (parsed.removable && parsed.autoTypeCount === 1
+      ? "Added by this plugin on line " + hit.line + " of " + where + "."
+      : "Set on line " + hit.line + " of " + where + "; change or remove it there.")
+      + (parsed.autoTypeCount > 1 ? " " + parsed.autoTypeCount + " lines there run auto-type." : "")
+    if (state.hyprctl && !state.live) {
+      state.detail += " Hyprland has not loaded it yet: save the file again or run hyprctl reload."
+    }
+  } else if (live) {
+    state.bound = true
+    state.live = true
+    state.chord = chordFromHyprBind(live)
+    state.detail = "Set outside " + where + "; change or remove it where you added it."
+  }
+  if (state.bound) {
+    state.status = state.chord ? "Bound to " + state.chord : "Bound to a key"
+    state.setupNote = "Keybinding: " + (state.chord || "set") + "."
+    return state
+  }
+
+  if (!inspection.home) {
+    state.blocked = "No HOME is set, so there is no " + where + " to add it to."
+  } else if (inspection.file === "present") {
+    state.canRegister = true
+  } else if (inspection.file === "absent" && inspection.requires) {
+    state.canRegister = true
+    state.detail = where + " does not exist yet; registering creates it, and your hyprland.lua already loads it."
+  } else if (inspection.file === "absent") {
+    state.blocked = "Your ~/" + AUTO_TYPE_HYPRLAND_REL + " does not load " + where
+      + ", so the plugin will not create it. Copy the line and add it where your bindings live."
+  } else {
+    state.blocked = where + " is not a regular file this plugin can read, so it is left alone. "
+      + "Copy the line and add it yourself."
+  }
+  return state
+}
+
+// The chord field's verdict: the normalised chord, or why it cannot be used,
+// a key already taken included (named by its description, and by its command
+// when bindings.lua has it).
+function autoTypeChordCheck(text, state) {
+  var parsed = autoTypeChord(text)
+  if (!parsed.ok) return { ok: false, chord: "", line: "", message: parsed.message, note: "" }
+  var out = { ok: true, chord: parsed.chord, line: autoTypeBindLine(parsed.chord), message: "", note: "" }
+  var fileBinds = (state && state.fileBinds) || []
+  var fileHolder = null
+  for (var f = 0; f < fileBinds.length; f++) {
+    var fc = autoTypeChord(fileBinds[f].chord)
+    if (fc.ok && fc.modmask === parsed.modmask && fc.key.toUpperCase() === parsed.key.toUpperCase()) {
+      fileHolder = fileBinds[f]
+    }
+  }
+  var holder = null
+  if (state && state.hyprctl) {
+    var binds = state.binds || []
+    for (var i = 0; i < binds.length; i++) {
+      if (hyprBindHasChord(binds[i], parsed)) { holder = binds[i]; break }
+    }
+    // A line in bindings.lua that Hyprland does not have (an unbind after it,
+    // or not loaded yet) is not a conflict.
+    if (!holder) return out
+  } else {
+    if (state && state.checked) {
+      out.note = "hyprctl is not available, so only " + autoTypeBindingsDisplayPath() + " was checked for this key."
+    }
+    if (!fileHolder) return out
+  }
+  var label = holder && holder.description ? holder.description
+    : (fileHolder && fileHolder.description ? fileHolder.description : "")
+  var command = holder && /^exec/.test(holder.dispatcher) && holder.arg ? holder.arg
+    : (fileHolder ? fileHolder.command : "")
+  if ((holder && hyprBindRunsAutoType(holder)) || isAutoTypeCommand(command)) {
+    out.ok = false
+    out.message = parsed.chord + " already runs auto-type."
+    return out
+  }
+  out.ok = false
+  out.message = parsed.chord + " is already bound"
+    + (label ? " to \"" + label + "\"" : "")
+    + (command ? " (" + command + ")" : (label ? "" : " to another command"))
+    + ". Pick another key, or unbind that one in " + autoTypeBindingsDisplayPath() + " first."
+  return out
+}
+
+// The chord the field starts with: the first suggestion nothing holds.
+function autoTypeChordSuggestion(state) {
+  for (var i = 0; i < AUTO_TYPE_CHORD_SUGGESTIONS.length; i++) {
+    if (autoTypeChordCheck(AUTO_TYPE_CHORD_SUGGESTIONS[i], state).ok) return AUTO_TYPE_CHORD_SUGGESTIONS[i]
+  }
+  return AUTO_TYPE_CHORD_SUGGESTIONS[0]
+}
+
+// Exit codes of the register and remove scripts.
+var KEYBIND_EXIT_NO_HOME = 3
+var KEYBIND_EXIT_FILE = 4
+var KEYBIND_EXIT_BOUND = 5
+var KEYBIND_EXIT_NOT_LOADED = 6
+var KEYBIND_EXIT_WRITE = 7
+var KEYBIND_EXIT_NOT_OURS = 8
+
+// After a change: reload Hyprland's config (not the monitors) and report its
+// first config errors, if any.
+function keybindApplyShell() {
+  return "if command -v hyprctl >/dev/null 2>&1; then "
+    + "if hyprctl reload config-only >/dev/null 2>&1; then echo reloaded; "
+    + "__err=$(hyprctl configerrors -j 2>/dev/null | jq -r '.[]? | strings | select(length > 0)' 2>/dev/null "
+    + "| head -n 3 | tr -d '\\000-\\010\\013-\\037' | tr '\\n' ' ' | head -c 400); "
+    + "[ -z \"$__err\" ] || printf 'errors=%s\\n' \"$__err\"; "
+    + "else echo reload-failed; fi; "
+    + "else echo no-hyprctl; fi"
+}
+
+// Appends the comment and the bind line ($2, $1) to bindings.lua, once:
+// refused if a line there already runs the IPC, or if the file is anything
+// but a regular file (a symlink to one is followed, as an editor would). A
+// missing file is created only when hyprland.lua loads it. A blank line
+// separates it from what is there; a last line with no newline gets one.
+function autoTypeKeybindRegisterCommand(chord) {
+  var line = autoTypeBindLine(chord)
+  if (!line) return []
+  var script = "test -n \"${HOME:-}\" || exit " + KEYBIND_EXIT_NO_HOME + "; "
+    + "__f=\"$HOME/" + AUTO_TYPE_BINDINGS_REL + "\"; __main=\"$HOME/" + AUTO_TYPE_HYPRLAND_REL + "\"; "
+    + "if [ -e \"$__f\" ] || [ -L \"$__f\" ]; then "
+    + "[ -f \"$__f\" ] && [ -r \"$__f\" ] && [ -w \"$__f\" ] || exit " + KEYBIND_EXIT_FILE + "; "
+    + "if grep -v '^[[:space:]]*--' -- \"$__f\" | grep -Eq "
+    + shellQuote("io\\.github\\.elevate08\\.qs-bitwarden-cli[[:space:]]+autoType([^A-Za-z0-9_]|$)")
+    + "; then exit " + KEYBIND_EXIT_BOUND + "; fi; "
+    + "else " + hyprlandLoadsBindingsShell() + " || exit " + KEYBIND_EXIT_NOT_LOADED + "; fi; "
+    + "__sep=''; if [ -s \"$__f\" ]; then __sep='\\n'; "
+    + "[ -z \"$(tail -c 1 -- \"$__f\")\" ] || __sep='\\n\\n'; fi; "
+    + "printf '%b%s\\n%s\\n' \"$__sep\" \"$2\" \"$1\" >> \"$__f\" || exit " + KEYBIND_EXIT_WRITE + "; "
+    + "echo appended; "
+    + keybindApplyShell()
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES), "qsbw-keybind", line, AUTO_TYPE_BIND_COMMENT]
+}
+
+// Removes the comment-and-line pair autoTypeKeybindRegisterCommand() wrote
+// for `chord`, and the blank line it put before them, only when that exact
+// pair is there exactly once; anything else is left for the user. The file
+// is rewritten through a temporary file beside it (the symlink's target, if
+// it is one) and renamed over it, keeping its mode.
+function autoTypeKeybindRemoveCommand(chord) {
+  var line = autoTypeBindLine(chord)
+  if (!line) return []
+  var awk = "{ a[NR] = $0 } END { n = 0; "
+    + "for (i = 1; i < NR; i++) if (a[i] == ENVIRON[\"QSBW_NOTE\"] && a[i + 1] == ENVIRON[\"QSBW_LINE\"]) { n++; at = i }; "
+    + "if (n != 1) exit 1; blank = (at > 1 && a[at - 1] == \"\") ? at - 1 : 0; "
+    + "for (i = 1; i <= NR; i++) if (i != at && i != at + 1 && i != blank) print a[i] }"
+  var script = "test -n \"${HOME:-}\" || exit " + KEYBIND_EXIT_NO_HOME + "; "
+    + "__f=\"$HOME/" + AUTO_TYPE_BINDINGS_REL + "\"; "
+    + "[ -f \"$__f\" ] && [ -r \"$__f\" ] && [ -w \"$__f\" ] || exit " + KEYBIND_EXIT_FILE + "; "
+    + "__real=$(readlink -f -- \"$__f\") && [ -n \"$__real\" ] || exit " + KEYBIND_EXIT_FILE + "; "
+    + "__tmp=$(mktemp -- \"$(dirname -- \"$__real\")/.bindings.lua.XXXXXX\") || exit " + KEYBIND_EXIT_WRITE + "; "
+    + "QSBW_LINE=\"$1\" QSBW_NOTE=\"$2\" awk " + shellQuote(awk) + " \"$__real\" > \"$__tmp\"; __awk=$?; "
+    + "if [ \"$__awk\" -eq 1 ]; then rm -f -- \"$__tmp\"; exit " + KEYBIND_EXIT_NOT_OURS + "; fi; "
+    + "if [ \"$__awk\" -ne 0 ]; then rm -f -- \"$__tmp\"; exit " + KEYBIND_EXIT_WRITE + "; fi; "
+    + "chmod --reference=\"$__real\" -- \"$__tmp\" 2>/dev/null; "
+    + "mv -f -- \"$__tmp\" \"$__real\" || { rm -f -- \"$__tmp\"; exit " + KEYBIND_EXIT_WRITE + "; }; "
+    + "echo removed; "
+    + keybindApplyShell()
+  return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES), "qsbw-keybind", line, AUTO_TYPE_BIND_COMMENT]
+}
+
+// { ok, message } for the row, from either script.
+function parseAutoTypeKeybindResult(exitCode, stdout, chord) {
+  var where = autoTypeBindingsDisplayPath()
+  var failures = {}
+  failures[KEYBIND_EXIT_NO_HOME] = { code: "NO_HOME", message: "No HOME is set, so there is no " + where + "." }
+  failures[KEYBIND_EXIT_FILE] = { code: "FILE",
+    message: where + " is not a regular file this plugin can read and write, so it was left alone." }
+  failures[KEYBIND_EXIT_BOUND] = { code: "BOUND",
+    message: where + " already has a line that runs auto-type, so nothing was added." }
+  failures[KEYBIND_EXIT_NOT_LOADED] = { code: "NOT_LOADED",
+    message: where + " does not exist and your hyprland.lua does not load it, so it was not created. "
+      + "Copy the line and add it where your bindings live." }
+  failures[KEYBIND_EXIT_WRITE] = { code: "WRITE", message: "Could not write " + where + "." }
+  failures[KEYBIND_EXIT_NOT_OURS] = { code: "NOT_OURS",
+    message: "The line this plugin added is no longer there exactly as written, so nothing was removed. "
+      + "Edit " + where + " yourself." }
+  var shown = String(chord || "")
+  return parseExitCodeResult(exitCode, stdout, function(out) {
+    var lines = out.split("\n")
+    var action = lines[0]
+    if (action !== "appended" && action !== "removed") return null
+    var applied = lines.indexOf("reloaded") > 0
+    var errors = ""
+    for (var i = 1; i < lines.length; i++) {
+      if (lines[i].indexOf("errors=") === 0) errors = lines[i].slice(7).trim()
+    }
+    var message = action === "appended"
+      ? (applied
+        ? "Registered " + shown + ". Arm a login, then press it in the window to type into."
+        : "Added " + shown + " to " + where + ". Hyprland uses it once it reloads its config (hyprctl reload).")
+      : (applied
+        ? "Removed the keybinding this plugin added."
+        : "Removed the keybinding this plugin added. Hyprland drops it once it reloads its config (hyprctl reload).")
+    if (errors) message += " Hyprland reports a config error: " + errors
+    return { ok: true, code: action === "appended" ? "APPENDED" : "REMOVED", message: message, warning: errors !== "" }
+  }, failures, "Could not update " + where + ".")
+}
+
 // Clears the clipboard only while it holds a copy marked sensitive (ours, or
 // another password manager's), so a lock or account switch never wipes what
 // the user copied themselves since.
@@ -1778,23 +2341,26 @@ function pinUnlockCommand(slot) {
 // Typed secrets in a pinentry
 // -------------------------------------------------------------------------
 //
-// The master password and the PIN are typed into `pinentry`, a separate
-// process, instead of the panel: a string typed into the shell stays in its
-// heap after it is cleared. The script below is the Assuan client. It runs
-// through the vault helper with capture "pinentry:<name>", so what it prints
-// (the answer, still percent-encoded) is decoded and held there and the shell
-// is told nothing of it. Everything the user can influence (account email,
+// The master password and the PIN are typed into the plugin's own pinentry,
+// a separate process, instead of the panel: a string typed into the shell
+// stays in its heap after it is cleared. The script below is the Assuan
+// client. It runs through the vault helper with capture "pinentry:<name>", so
+// what it prints (the answer, still percent-encoded) is decoded and held there
+// and the shell is told nothing of it. Everything the user can influence (account email,
 // error text) is an argument, encoded for Assuan, never part of the script.
 
-// Left unset, the program is chosen when the script runs: `pinentry-qt` if it
-// is runnable, else `pinentry`. (`pinentry` on some systems is a wrapper that
-// picks pinentry-gnome3, which has no show/hide control and types into
-// gcr-prompter.) pinentryProgram() gives "" for that automatic choice.
-var PINENTRY_PREFERRED_PROGRAM = "pinentry-qt"
-var PINENTRY_DEFAULT_PROGRAM = "pinentry"
-// Shell that sets __prog from "$1": the given program, or for "" the automatic choice.
-var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ]; then if command -v -- " + PINENTRY_PREFERRED_PROGRAM
-  + " >/dev/null 2>&1; then __prog=" + PINENTRY_PREFERRED_PROGRAM + "; else __prog=" + PINENTRY_DEFAULT_PROGRAM + "; fi; fi"
+// The pinentry is the plugin's own and nothing else: pinentry/omarchy-pinentry,
+// a Node Assuan server that draws its prompt as a card in a Quickshell of its
+// own, run by absolute path from the plugin's directory. Its `--check` says
+// whether it can show a prompt here (quickshell, the shell kit, a Wayland
+// display and a runtime dir); node missing fails it too. There is no other
+// program to fall back to: where it cannot run, the panel says so and offers
+// its own field (typedSecretEntry()).
+var OMARCHY_PINENTRY_FILE = "pinentry/omarchy-pinentry"
+// Shell that sets __prog from "$1", the frontend's absolute path, when it is
+// executable and its `--check` passes, else to "".
+var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ] || [ ! -x \"$__prog\" ]"
+  + " || ! \"$__prog\" --check >/dev/null 2>&1; then __prog=\"\"; fi"
 var PINENTRY_TEXT_MAX = 400
 var PINENTRY_DESC_ENV = "QSBW_PE_DESC"
 var PINENTRY_ERR_ENV = "QSBW_PE_ERR"
@@ -1817,13 +2383,14 @@ function pinentryExitCodes() {
 // 5, 83886179; any code whose low 16 bits are 99 is read as a cancel. Its
 // timeout, GPG_ERR_TIMEOUT (62), is one too: nobody answered.
 var PINENTRY_SCRIPT = [
-  PINENTRY_RESOLVE,
-  // The description and error can name the account, so they come in the
-  // environment, not argv, and are gone before pinentry starts.
   "__title=\"$2\"; __prompt=\"$3\"; __min=\"${4:-0}\"",
+  // The description and error can name the account, so they come in the
+  // environment, not argv, and are gone before any child starts: the
+  // frontend's `--check` below as much as the prompt itself.
   "__desc=\"$" + PINENTRY_DESC_ENV + "\"; __err=\"$" + PINENTRY_ERR_ENV + "\"",
   "unset " + PINENTRY_DESC_ENV + " " + PINENTRY_ERR_ENV,
-  "command -v -- \"$__prog\" >/dev/null 2>&1 || exit " + PINENTRY_EXIT.missing,
+  PINENTRY_RESOLVE,
+  "[ -n \"$__prog\" ] || exit " + PINENTRY_EXIT.missing,
   // Assuan data: only %, CR and LF need encoding.
   "__enc() { __e=\"$1\"; __e=\"${__e//%/%25}\"; __e=\"${__e//$'\\r'/%0D}\"; __e=\"${__e//$'\\n'/%0A}\"; }",
   "coproc PE { exec \"$__prog\" 2>/dev/null; }",
@@ -1849,8 +2416,10 @@ var PINENTRY_SCRIPT = [
   "    OK|OK\\ *)",
   "      printf 'BYE\\n' >&\"${PE[1]}\"",
   "      [ -n \"$__d\" ] || exit " + PINENTRY_EXIT.empty,
-  // The length of what was typed: each %XX stands for one character.
-  "      __t=\"${__d//[^%]/}\"; __n=$(( ${#__d} - 2 * ${#__t} ))",
+  // The length of what was typed: each %XX stands for one character, and
+  // the rest is counted in characters, not bytes, whatever the shell's
+  // locale (pinentry keeps its own: the subshell's setting goes no further).
+  "      __n=$(LC_ALL=C.UTF-8; __t=\"${__d//[^%]/}\"; echo $(( ${#__d} - 2 * ${#__t} )))",
   "      if [[ \"$__min\" =~ ^[0-9]+$ ]] && (( __n < __min )); then exit " + PINENTRY_EXIT.short + "; fi",
   "      printf '%s' \"$__d\"; exit 0 ;;",
   "    ERR|ERR\\ *)",
@@ -1863,9 +2432,15 @@ var PINENTRY_SCRIPT = [
 ].join("\n")
 
 // The notice after a run that failed. Not remembered: the next attempt
-// opens pinentry again, and the field is used only when picked.
+// opens the prompt again, and the field is used only when picked.
 function pinentryFailedNotice() {
-  return "Pinentry stopped before answering. Try again, or type it here instead."
+  return "The unlock prompt stopped before answering. Try again, or type it here instead."
+}
+
+// The notice while the probe says the prompt cannot run here.
+function pinentryMissingNotice() {
+  return "The unlock prompt cannot open here (it needs quickshell, node and a Wayland display)."
+    + " Typed here, it stays in the shell's memory until the shell restarts."
 }
 
 // `bw unlock` refusing the password itself, as opposed to any other failure
@@ -1894,21 +2469,24 @@ function pinentryText(value) {
     .replace(/\u0000/g, "").slice(0, PINENTRY_TEXT_MAX)
 }
 
-// The program to run: a setting that names one, used exactly as given (even
-// "pinentry"), else "" for the automatic choice made by the scripts
-// (pinentry-qt, else `pinentry` from PATH). Never an option: it is the first
-// word of the command.
-function pinentryProgram(configured) {
-  var name = typeof configured === "string" ? configured.trim() : ""
-  if (!name || name.charAt(0) === "-" || name.indexOf("\u0000") !== -1) return ""
-  return name
+// The frontend's absolute path in the plugin at `pluginDir`, or "" for a
+// directory that is not a clean absolute path. Passed to the scripts as an
+// argument value, never as script text.
+function omarchyPinentryPath(pluginDir) {
+  var dir = cleanAbsoluteDir(pluginDir)
+  return dir ? (dir === "/" ? "" : dir) + "/" + OMARCHY_PINENTRY_FILE : ""
 }
 
-// `opts`: { title, description, prompt, error } as plain text, and
-// `minLength`: an answer of fewer characters exits short (nothing is held).
-function pinentryCommand(program, opts) {
+function bundledPinentry(path) {
+  return typeof path === "string" && path.charAt(0) === "/" && path.indexOf("\u0000") === -1 ? path : ""
+}
+
+// `frontend`: omarchyPinentryPath(). `opts`: { title, description, prompt,
+// error } as plain text, and `minLength`: an answer of fewer characters exits
+// short (nothing is held).
+function pinentryCommand(frontend, opts) {
   var o = opts || {}
-  return ["bash", "-c", PINENTRY_SCRIPT, "_", pinentryProgram(program),
+  return ["bash", "-c", PINENTRY_SCRIPT, "_", bundledPinentry(frontend),
     pinentryText(o.title), pinentryText(o.prompt),
     String(Math.max(0, Math.floor(Number(o.minLength) || 0)))]
 }
@@ -1923,16 +2501,17 @@ function pinentryEnvironment(opts) {
   return env
 }
 
-// Prints "found" or "missing": whether `program` names something runnable.
-function pinentryProbeCommand(program) {
-  return ["bash", "-c", PINENTRY_RESOLVE + "; command -v -- \"$__prog\" >/dev/null 2>&1 && echo found || echo missing", "_",
-    pinentryProgram(program)]
+// Prints "found" or "missing": whether the frontend at `frontend` (as for
+// pinentryCommand()) is there and its `--check` passes.
+function pinentryProbeCommand(frontend) {
+  return ["bash", "-c", PINENTRY_RESOLVE + "; [ -n \"$__prog\" ] && echo found || echo missing", "_",
+    bundledPinentry(frontend)]
 }
 
 // Whether a probe run says the program is missing. Only the probe's own
 // answer counts: one that was killed (any program running as you can) or
-// stopped early says nothing, and pinentry is still tried; a pinentry that
-// is really missing then fails, and the panel offers its field when picked.
+// stopped early says nothing, and the prompt is still tried; one that really
+// cannot run then fails, and the panel offers its field when picked.
 function pinentryProbeMissing(exitCode, stdoutText) {
   return exitCode === 0 && String(stdoutText || "").trim() === "missing"
 }
@@ -1943,8 +2522,9 @@ function pinentryProbeMissing(exitCode, stdoutText) {
 // up the panel waits for it: offering the field instead would put what is
 // typed into the shell whenever the helper is starting, restarting or was
 // left stopped (which a program running as you can cause by killing it). The
-// field is used only when pinentry is off, reported missing or declined, or
-// when the vault is held in the shell as allowVaultWithoutHelper allows.
+// field is used only when pinentry is off, reported unable to run here or
+// declined, or when the vault is held in the shell as allowVaultWithoutHelper
+// allows.
 function typedSecretEntry(o) {
   if (!o.usePinentry || o.missing || o.declined) return "field"
   if (o.helperState === "active") return "pinentry"
@@ -2163,14 +2743,21 @@ function unlockEnvelopeCreateCommand(tool, account) {
 //   { kind: "add-fido", cred, rp, salt }      password in KEYRING_SECRET_ENV,
 //                                             hmac-secret for `salt` in FIDO_HMAC_ENV
 //   { kind: "remove", method, cred }          no secret
+//   { kind: "delete" }                        no secret: the envelope entry itself goes
 //   { kind: "mark-stale" }                    no secret
 //   { kind: "rotate", auth }                  new password in NEW_SECRET_ENV; `auth` is a
 //                                             `via` as for opening, with its secret where
 //                                             unlockEnvelopeOpenCommand expects it
 // Adds are authorized by the typed master password opening the `master`
-// wrap; nothing typed is stored.
+// wrap; nothing typed is stored. `delete` opens nothing: it clears the slot's
+// entry, and an entry already gone is the state it wanted (exit 1 only for a
+// keyring error; see keyringClearEntryScript()).
 function unlockEnvelopeUpdateCommand(tool, account, op) {
   if (!envelopeArgsOk(tool, account) || !op) return envelopeRefused()
+  if (op.kind === "delete") {
+    return ["bash", "-c", cappedScript(keyringClearEntryScript(keyringEntryName(KEYRING_ENVELOPE, account.slot))
+      + " || exit 1", MAX_STDERR_BYTES)]
+  }
   var masterKey = "__mk=\"$(__wrap_key '.master' \"$" + KEYRING_SECRET_ENV + "\")\" || exit $?; "
   var transform = ""
   var verifyOpen = ""
@@ -2307,15 +2894,27 @@ function repairedKeyringNoticeCommand() {
 // invisible, since the settings row then reads "off"). This removes one
 // method from each listed slot's envelope, and that slot's legacy entry for
 // the method, in one process queued like any envelope write.
+//
+// Fingerprint is the exception: its wrap holds the data key in the clear
+// (a fingerprint releases no secret), and the key is the envelope's for as
+// long as it exists, so a program that read it while fingerprint unlock was
+// on could open every later copy of the envelope after the wrap is gone (see
+// "How quick unlock stores your password" in the README). So turning
+// fingerprint off deletes the envelope of every account that has the wrap,
+// PIN and FIDO2 ways in included; the next unlock with the master password
+// stores the password again under a new key. An envelope without the wrap is
+// left alone, and a wrap removed for any other reason (a setup that was
+// cancelled as its wrap landed) is a plain `remove`.
 
 // The legacy keyring entry each method used before the envelope.
 var LEGACY_ENTRY_FOR_METHOD = { pin: KEYRING_PIN, fingerprint: KEYRING_MASTER, fido: KEYRING_FIDO }
 // One wrap per method, except FIDO2 (one per key, at most 16 in the tool).
 var MAX_PURGE_ROUNDS = 17
 
-// One slot: remove `method` until none is left. Exits 0 when there is no
-// envelope or nothing to remove; the account the envelope names is checked
-// against itself after each write (remove needs no account arguments).
+// One slot: remove `method` until none is left (fingerprint: delete the
+// envelope). Exits 0 when there is no envelope or nothing to remove; the
+// account the envelope names is checked against itself after each write
+// (remove needs no account arguments).
 function envelopeMethodPurgeScript(tool, slot, method) {
   var present = method === "pin" ? ".pin != null"
     : (method === "fingerprint" ? ".fingerprint == true" : "(.fido | length) > 0")
@@ -2336,17 +2935,22 @@ function envelopeMethodPurgeScript(tool, slot, method) {
     + "__summary=\"$(__unseal \"$__sealed\" | \"$__tool\" inspect)\" || exit " + ENVELOPE_EXIT.unseal + "; "
     + "printf '%s' \"$__summary\" | jq -e " + shellQuote(present) + " >/dev/null; __present_rc=$?; "
     + "case \"$__present_rc\" in 0) ;; 1) exit 0 ;; *) exit 1 ;; esac; "
-    + "__id=\"$(printf '%s' \"$__summary\" | jq -r '.account.id')\"; "
-    + "__server=\"$(printf '%s' \"$__summary\" | jq -r '.account.server')\"; "
-  if (method === "fido") {
-    script += "__c=\"$(printf '%s' \"$__summary\" | jq -r '.fido[0].cred // empty')\"; "
-      + "case \"$__c\" in ''|*[!A-Za-z0-9+/=]*) exit 4 ;; esac; "
-      + "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method fido --cred \"$__c\" | __seal)\" || exit $?; "
+  if (method === "fingerprint") {
+    // The data key is in this wrap in the clear: the whole envelope goes.
+    script += keyringClearEntryScript(keyringEntryName(KEYRING_ENVELOPE, slot)) + " || exit 1; exit 0; "
   } else {
-    script += "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method " + method + " | __seal)\" || exit $?; "
+    script += "__id=\"$(printf '%s' \"$__summary\" | jq -r '.account.id')\"; "
+      + "__server=\"$(printf '%s' \"$__summary\" | jq -r '.account.server')\"; "
+    if (method === "fido") {
+      script += "__c=\"$(printf '%s' \"$__summary\" | jq -r '.fido[0].cred // empty')\"; "
+        + "case \"$__c\" in ''|*[!A-Za-z0-9+/=]*) exit 4 ;; esac; "
+        + "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method fido --cred \"$__c\" | __seal)\" || exit $?; "
+    } else {
+      script += "__new=\"$(__unseal \"$__sealed\" | \"$__tool\" remove --method " + method + " | __seal)\" || exit $?; "
+    }
+    script += "__verify_account \"$__id\" \"$__server\"; __store; "
   }
-  script += "__verify_account \"$__id\" \"$__server\"; __store; "
-    + "done; exit 8"
+  script += "done; exit 8"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
@@ -2367,11 +2971,8 @@ function quickUnlockPurgeCommand(tool, slots, method) {
   var script = "rc=0; "
   for (var j = 0; j < list.length; j++) {
     script += nestedScript(envelopeMethodPurgeScript(tool, list[j], method)) + " || rc=1; "
-      // libsecret's clear returns 1 without stderr when no matching item
-      // exists; service failures also return 1, with an error on stderr.
-      + "__clear_error=$(secret-tool clear" + keyringAttributes(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j]))
-      + " 2>&1 >/dev/null; __status=$?; printf '.'; exit \"$__status\"); __clear_rc=$?; __clear_error=\"${__clear_error%.}\"; "
-      + "if [ \"$__clear_rc\" -ne 0 ] && { [ \"$__clear_rc\" -ne 1 ] || [ -n \"$__clear_error\" ]; }; then rc=1; fi; "
+      // Absent counts as cleared (keyringClearEntryScript()).
+      + keyringClearEntryScript(keyringEntryName(LEGACY_ENTRY_FOR_METHOD[method], list[j])) + " || rc=1; "
   }
   script += "exit \"$rc\""
   return ["bash", "-c", script]
@@ -4558,6 +5159,14 @@ var DEPENDENCIES = [
     purpose: "Safely strips SSH private keys before the panel reads your vault."
   },
   {
+    key: "wtype", label: "wtype", binary: "wtype", pkg: "wtype", aur: false,
+    required: false,
+    // Listed, and installed with the rest, only while auto-type is on: a
+    // tool that types into other windows is not something to add unasked.
+    feature: "autoType",
+    purpose: "Types the armed login into the focused window for auto-type."
+  },
+  {
     // Set up by `omarchy setup security fingerprint` (packages, enrolment,
     // PAM), not a package install: `ready` needs an enrolled finger too.
     key: "fprintd", label: "Fingerprint unlock", binary: "fprintd-list", pkg: "fprintd", aur: false,
@@ -4655,8 +5264,10 @@ function parseBwVersionProbe(raw) {
 
 // `probedVersion` is the result of bwVersionCommand(); null while it has not
 // answered for this binary, which leaves SSH support "checking". A
-// `bw_version` line in `raw` itself takes precedence.
-function parseDependencies(raw, probedVersion) {
+// `bw_version` line in `raw` itself takes precedence. `features` says which
+// opt-in features are on ({ autoType: true }); a tool only one of them needs
+// is not applicable while it is off.
+function parseDependencies(raw, probedVersion, features) {
   var found = probeFields(raw)
 
   var inline = found["bw_version"] !== undefined
@@ -4695,8 +5306,10 @@ function parseDependencies(raw, probedVersion) {
       purpose: dep.purpose,
       // Offer Omarchy's setup command instead of a package install.
       setup: Boolean(dep.setup),
-      // Missing hardware is not a missing dependency.
-      applicable: dep.key === "fprintd" ? found["fingerprint_hw"] === "1" : true,
+      // Missing hardware is not a missing dependency, nor is a tool for a
+      // feature that is off.
+      applicable: dep.key === "fprintd" ? found["fingerprint_hw"] === "1"
+        : (dep.feature ? Boolean(features && features[dep.feature]) : true),
       installed: installed,
       // fprintd on PATH is not the same as a usable reader with an enrolled finger.
       ready: ready,
@@ -6625,15 +7238,15 @@ var SETTINGS_SCHEMA = [
     description: "Keep the unlocked session in the OS keyring so it survives a shell restart." },
   { key: "fingerprintUnlock", group: "security", type: "bool", label: "Unlock with fingerprint", defaultValue: false,
     requires: "fprintd", action: "fingerprint",
-    description: "A verified fingerprint opens your master password, stored once, encrypted and sealed to this machine." },
+    description: "A verified fingerprint opens your master password, stored once, encrypted and sealed to this machine. Turning this off deletes the stored password, so PIN and security-key unlock need setting up again." },
   { key: "fidoUnlock", group: "security", type: "bool", label: "Unlock with FIDO2 key", defaultValue: false,
     action: "fido",
     description: "A FIDO2 key touch opens your master password, stored once, encrypted and sealed to this machine. Requires 'omarchy setup security fido2'; the same registration also serves the system's own authentication prompts." },
   { key: "pinUnlock", group: "security", type: "bool", label: "Unlock with PIN", defaultValue: false,
     action: "pin",
     description: "A PIN of 6 digits or more opens your master password, stored once, encrypted and sealed to this machine. A program running as you can copy it and try every 6-digit PIN in about 16 hours, so use 8 or more (about 2 months)." },
-  { key: "usePinentry", group: "security", type: "bool", label: "Type secrets in pinentry", defaultValue: true,
-    description: "Type your master password and PIN into pinentry, a separate window, instead of the panel, so they never enter the shell. Needs pinentry installed and the vault helper running; while the helper is not running, the panel waits for it instead of offering its own field." },
+  { key: "usePinentry", group: "security", type: "bool", label: "Type secrets in a separate prompt", defaultValue: true,
+    description: "Type your master password and PIN into the plugin's own unlock prompt, a card over the focused monitor drawn like the shell's password prompt, instead of the panel, so they never enter the shell. It is a separate, short-lived process under the vault helper and needs quickshell, node and a Wayland display; while the helper is not running, the panel waits for it instead of offering its own field." },
 
   { key: "sshAgentEnabled", group: "sshAgent", type: "bool", label: "Act as your SSH agent", defaultValue: false,
     description: "Serve SSH keys from your vault to ssh, Git and signing, while the vault is unlocked. Private keys stay in a separate helper process and are never written to disk." },
@@ -6645,8 +7258,15 @@ var SETTINGS_SCHEMA = [
     min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
 
+  { key: "autoSyncMinutes", group: "general", type: "int", label: "Automatically sync every", unit: "minutes",
+    min: 0, max: 1440, step: 5, zeroLabel: "Off", defaultValue: 15,
+    description: "Sync while the vault is unlocked and idle. If the server is offline, retry at this interval." },
   { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
+  // Asks once more before it goes on (`confirm`, toggleBoolSetting()).
+  { key: "autoTypeEnabled", group: "general", type: "bool", label: "Auto-type logins", defaultValue: false,
+    confirm: "Auto-type types your password into whatever window has focus, and any program running as you can trigger it while an entry is armed. Press again to turn it on.",
+    description: "Off by default: whatever window has focus when it types gets your password, and while an entry is armed any program running as you can make it type. With it on, Ctrl+C in the panel copies the highlighted login's password and arms it for 30 seconds; the autoType command, bound to a key, then types its username, Tab and password into the focused window, once. Needs wtype." },
   { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
     description: "Use the active Omarchy theme accent for the primary menu-bar icon." },
   { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
@@ -7212,6 +7832,31 @@ function vaultHostDecision(found, elapsedMs, timeoutMs) {
   var limit = Number(timeoutMs)
   if (!(limit >= 0)) limit = VAULT_HOST_TIMEOUT_MS
   return Number(elapsedMs) >= limit ? "private" : "wait"
+}
+
+// Gone private, the view keeps asking for the shared service, slowly: a
+// serviceFor() call is cheap, and a shell that was merely slow publishes it
+// soon after.
+var VAULT_HAND_OVER_POLL_MS = 1000
+
+function vaultHandOverPollMs() {
+  return VAULT_HAND_OVER_POLL_MS
+}
+
+// What a private view does on one such poll, given whether the shared service
+// was found and its private vault's state: "none" | "wait" | "lock" | "adopt".
+// `busy` (a pinentry up, an authentication running) waits rather than cut a
+// prompt or a bw run short; `held` (a session, items, an unlock under way) is
+// locked first, so nothing stays unlocked in a vault no view reaches; and
+// `locking` (that lock still running) waits for it, since retiring the vault
+// would kill the run.
+function vaultHandOverStep(found, state) {
+  if (!found) return "none"
+  var s = state || {}
+  if (s.busy === true) return "wait"
+  if (s.held === true) return "lock"
+  if (s.locking === true) return "wait"
+  return "adopt"
 }
 
 // Which view acts when the vault needs the screen (raise the popout, show an

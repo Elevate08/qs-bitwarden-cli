@@ -4,8 +4,8 @@
 //! The panel starts this as a child and talks to it only on stdin/stdout:
 //! no socket, no FIFO, no port. It runs the panel's `bw` commands with the
 //! session key added to their environment, keeps each item's secrets, and
-//! answers for one item, one password copy, one TOTP code or one search at a
-//! time. See docs/vault-helper.md.
+//! answers for one item, one password copy or auto-type, one TOTP code or
+//! one search at a time. See docs/vault-helper.md.
 
 pub mod assuan;
 pub mod control;
