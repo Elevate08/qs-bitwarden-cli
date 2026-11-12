@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.13.0] - 2026-11-12
+
+### Added
+
+- **ARM64 (aarch64) Linux is supported out of the box**
+  ([#150](https://github.com/Elevate08/qs-bitwarden-cli/issues/150)). The
+  three helpers (vault, quick unlock, SSH agent) now ship for aarch64 as
+  well as x86_64, in `bin/aarch64-linux/` beside `bin/x86_64-linux/`, and the
+  panel picks the build for the machine's processor from `uname -m`. Before,
+  an ARM laptop (Asahi Linux on Apple Silicon, for one) got only the x86_64
+  helpers; with a `qemu-x86_64` binfmt handler registered they failed with
+  "did not report a usable version" and the vault stayed locked for good.
+  A machine neither build is for now says so ("not shipped for this
+  machine's processor") instead, and a locally built helper still serves it.
+
+  The aarch64 bytes are held to the same trust path as the x86_64 ones: CI
+  builds them natively on an arm64 runner in the same digest-pinned
+  multi-arch image, twice from different paths, and fails if the committed
+  bytes differ from that build; the helper rebuild commits both
+  architectures; and a release checks, runs and attests both, attaching them
+  as `<name>-x86_64-linux` and `<name>-aarch64-linux` with an SBOM, a
+  dependency tree and debug symbols for each. The helpers' tests run on
+  aarch64 too. `scripts/build-agent.sh --arch aarch64` rebuilds them on any
+  machine whose container runtime can run arm64 images.
+
 ## [1.12.0] - 2026-11-05
 
 ### Added

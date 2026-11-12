@@ -3,11 +3,14 @@
 # only workflow holding a token that can write. Three stages:
 #
 #   gates    agent-build.yml's checks, re-run against the tag
-#   verify   release-only checks (tag vs manifest, changelog and binary
-#            versions; bytes vs SHA256SUMS) plus SBOM, dependency report and
-#            debug symbols
-#   host-run the shipped bytes run on a plain runner, with no container and no
-#            write token, so the helpers never execute beside the release token
+#   verify   release-only checks (tag vs manifest and changelog; every
+#            architecture's bytes vs SHA256SUMS) plus SBOM and dependency
+#            report
+#   symbols  debug symbols, built per architecture on its own runner
+#   host-run the shipped bytes run on a plain runner of each architecture,
+#            with no container and no write token, so the helpers never
+#            execute beside the release token; their versions are checked
+#            against the panel's
 #   release  the only job with write, id-token and attestation permissions,
 #            behind the `release` environment
 #
@@ -51,8 +54,8 @@ jobs:
       run:
         # A container job defaults to `sh`; the steps below use bash arrays.
         shell: bash
-    # The digest scripts/build-agent.sh pins, so the debug build matches the
-    # release toolchain.
+    # The digest scripts/build-agent.sh pins, so the reports describe the
+    # release toolchain's resolution.
     container:
       image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
 
@@ -92,31 +95,206 @@ jobs:
       - name: The committed bytes are the ones the committed checksum names
         # The panel's launch-time question: does the shipped SHA256SUMS still
         # describe each binary (the gates proved source -> bytes).
+        # Every architecture the release ships, and the ELF machine `file`
+        # names for it.
         run: |
           ( cd bin && sha256sum -c SHA256SUMS )
-          for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
-                        bin/x86_64-linux/qs-bitwarden-unlock-key \
-                        bin/x86_64-linux/qs-bitwarden-vault; do
-            test -f "$binary" || { echo "::error::no tracked helper at $binary"; exit 1; }
+          for pair in "x86_64:x86-64" "aarch64:ARM aarch64"; do
+            arch="${pair%%:*}"; machine="${pair#*:}"
+            for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
+              binary="bin/$arch-linux/$name"
+              test -f "$binary" || { echo "::error::no tracked helper at $binary"; exit 1; }
+              test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
+              # Each binary needs its own line: `sha256sum -c` ignores omissions.
+              grep -qE "  ${binary#bin/}\$" bin/SHA256SUMS || {
+                echo "::error::bin/SHA256SUMS has no line for $binary"
+                exit 1
+              }
+              file "$binary"
+              file "$binary" | grep -q "ELF 64-bit LSB.*$machine" || {
+                echo "::error::$binary is not a $machine ELF"
+                exit 1
+              }
+            done
+          done
+          # Nothing else under bin/: an architecture the panel does not know
+          # would ship unchecked.
+          extra="$(cd bin && find . -type f ! -name SHA256SUMS ! -path './x86_64-linux/*' ! -path './aarch64-linux/*')"
+          [ -z "$extra" ] || { echo "::error::unexpected files in bin/: $extra"; exit 1; }
+
+      - name: Collect the dependency and licence report
+        # The gates' dependency policy, published as evidence.
+        run: |
+          mkdir -p dist
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny --manifest-path agent/Cargo.toml --config deny.toml \
+            list --layout crate --format json > dist/dependency-licences.json
+          # The unlock tool and the vault helper are their own packages with
+          # their own dependency sets. deny.toml's graph covers every target.
+          cargo deny --manifest-path unlock-key/Cargo.toml --config deny.toml \
+            list --layout crate --format json > dist/unlock-key-dependency-licences.json
+          cargo deny --manifest-path vault/Cargo.toml --config deny.toml \
+            list --layout crate --format json > dist/vault-dependency-licences.json
+          # The resolved tree per shipped target, since a dependency can be
+          # target-specific.
+          for arch in x86_64 aarch64; do
+            for package in agent unlock-key vault; do
+              prefix="$package-"; [ "$package" = agent ] && prefix=""
+              cargo tree --manifest-path "$package/Cargo.toml" --locked \
+                --edges normal --target "$arch-unknown-linux-gnu" \
+                > "dist/${prefix}dependency-tree-$arch-linux.txt"
+            done
+          done
+
+      - name: Collect the SBOM
+        run: |
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          # One SBOM per helper per shipped target.
+          for arch in x86_64 aarch64; do
+            for spec in agent:qs-bitwarden-ssh-agent unlock-key:qs-bitwarden-unlock-key vault:qs-bitwarden-vault; do
+              package="${spec%%:*}"; name="${spec#*:}"
+              cargo cyclonedx --manifest-path "$package/Cargo.toml" --format json \
+                --describe binaries --target "$arch-unknown-linux-gnu"
+              mv "$package/${name}_bin.cdx.json" "dist/$name-$arch-linux.cdx.json"
+            done
+          done
+
+      - name: Upload the release reports
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-reports
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+
+  symbols:
+    name: debug symbols (${{ matrix.arch }})
+    needs: gates
+    # Native on each architecture's runner, in the digest scripts/build-agent.sh
+    # pins, so the companion build matches the release toolchain.
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Collect debug symbols
+        # The shipped binary is stripped, so symbols come from a companion
+        # build (same commit, toolchain and flags, debug info on). Its
+        # addresses differ from the shipped binary's, as dist/DEBUG-SYMBOLS.md
+        # says: it is for debugging this source under gdb.
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          src="$PWD"
+          for spec in agent:qs-bitwarden-ssh-agent unlock-key:qs-bitwarden-unlock-key vault:qs-bitwarden-vault; do
+            package="${spec%%:*}"; name="${spec#*:}"
+            CARGO_TARGET_DIR="$src/target-debuginfo" \
+            CARGO_PROFILE_RELEASE_STRIP=none \
+            CARGO_PROFILE_RELEASE_DEBUG=full \
+            RUSTFLAGS="--remap-path-prefix=$src=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry=/registry" \
+              cargo build --manifest-path "$package/Cargo.toml" --locked --release \
+                --target "$ARCH-unknown-linux-gnu"
+            built="$src/target-debuginfo/$ARCH-unknown-linux-gnu/release/$name"
+            objcopy --only-keep-debug "$built" "dist/$name-$ARCH-linux.debug"
+            gzip -9 "dist/$name-$ARCH-linux.debug"
+          done
+          # The note is the same on every architecture; the x86_64 leg ships it.
+          [ "$ARCH" = x86_64 ] || exit 0
+          cat > dist/DEBUG-SYMBOLS.md <<'NOTE'
+          # Debug symbols
+
+          `qs-bitwarden-ssh-agent-<arch>-linux.debug.gz`, `qs-bitwarden-unlock-key-<arch>-linux.debug.gz` and
+          `qs-bitwarden-vault-<arch>-linux.debug.gz`, one set per shipped architecture (`x86_64`, `aarch64`),
+          come from companion builds of the tagged commit: the same source, the same pinned container, the same
+          `--remap-path-prefix` flags, but built with debug information instead
+          of the release profile's `strip = "symbols"`.
+
+          It is **not** a split of the shipped binary. Enabling debug
+          information changes the link, so the companion build's entry point
+          and code layout differ from the bytes in `bin/<arch>-linux/`. Use
+          these symbols to debug this version of the source; do not use them to
+          translate an address taken from a shipped helper.
+
+          The shipped binaries deliberately carry no symbols: one holds
+          decrypted private keys and the other the master password, and both
+          release profiles also set `panic = "abort"` and disable core dumps at
+          startup.
+          NOTE
+
+      - name: Upload the debug symbols
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-symbols-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+
+  host-run:
+    name: run the shipped bytes on a plain runner (${{ matrix.arch }})
+    needs: verify
+    # Not in the build container, and on a different glibc from it, once per
+    # shipped architecture on its own runner. No write token here: the
+    # checkout keeps no credentials, and the job has no permissions beyond
+    # read.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      ARCH: ${{ matrix.arch }}
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the shipped bytes on the runner, outside the build container
+        run: |
+          ( cd bin && sha256sum -c SHA256SUMS )
+          uname -m
+          ldd --version | head -1
+          for binary in "bin/$ARCH-linux/qs-bitwarden-ssh-agent" \
+                        "bin/$ARCH-linux/qs-bitwarden-unlock-key" \
+                        "bin/$ARCH-linux/qs-bitwarden-vault"; do
             test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
-            # Each binary needs its own line: `sha256sum -c` ignores omissions.
-            grep -qE "  ${binary#bin/}\$" bin/SHA256SUMS || {
-              echo "::error::bin/SHA256SUMS has no line for $binary"
-              exit 1
-            }
-            file "$binary"
-            file "$binary" | grep -q 'ELF 64-bit LSB.*x86-64' || {
-              echo "::error::$binary is not an x86-64 ELF"
-              exit 1
-            }
             ldd "$binary" || true
+            "./$binary" --version
+            "./$binary" --self-test
+            sha256sum "$binary"
           done
 
       - name: The helper reports the versions the panel expects
         # Crate version, the panel's control-protocol version, and the binary's
         # own report must agree; a mismatch disables SSH at users' next launch.
         run: |
-          binary=bin/x86_64-linux/qs-bitwarden-ssh-agent
+          binary=bin/$ARCH-linux/qs-bitwarden-ssh-agent
           reported="$("./$binary" --version)"
           echo "$reported"
           crate="$(grep -oP '^version\s*=\s*"\K[^"]+' agent/Cargo.toml | head -1)"
@@ -134,7 +312,7 @@ jobs:
       - name: The unlock tool reports the versions the panel expects
         # The same for the unlock tool and its envelope format.
         run: |
-          binary=bin/x86_64-linux/qs-bitwarden-unlock-key
+          binary=bin/$ARCH-linux/qs-bitwarden-unlock-key
           reported="$("./$binary" --version)"
           echo "$reported"
           crate="$(grep -oP '^version\s*=\s*"\K[^"]+' unlock-key/Cargo.toml | head -1)"
@@ -152,7 +330,7 @@ jobs:
       - name: The vault helper reports the versions the panel expects
         # The same for the vault helper and the protocol the panel speaks to it.
         run: |
-          binary=bin/x86_64-linux/qs-bitwarden-vault
+          binary=bin/$ARCH-linux/qs-bitwarden-vault
           reported="$("./$binary" --version)"
           echo "$reported"
           crate="$(grep -oP '^version\s*=\s*"\K[^"]+' vault/Cargo.toml | head -1)"
@@ -167,80 +345,42 @@ jobs:
           }
           "./$binary" --self-test
 
-      - name: Collect the dependency and licence report
-        # The gates' dependency policy, published as evidence.
-        run: |
-          mkdir -p dist
-          cargo install cargo-deny --version 0.20.2 --locked
-          cargo deny --manifest-path agent/Cargo.toml --config deny.toml \
-            list --layout crate --format json > dist/dependency-licences.json
-          cargo tree --manifest-path agent/Cargo.toml --locked \
-            --edges normal --target x86_64-unknown-linux-gnu > dist/dependency-tree.txt
-          # The unlock tool is its own package with its own dependency set.
-          cargo deny --manifest-path unlock-key/Cargo.toml --config deny.toml \
-            list --layout crate --format json > dist/unlock-key-dependency-licences.json
-          cargo tree --manifest-path unlock-key/Cargo.toml --locked \
-            --edges normal --target x86_64-unknown-linux-gnu > dist/unlock-key-dependency-tree.txt
-          # And the vault helper.
-          cargo deny --manifest-path vault/Cargo.toml --config deny.toml \
-            list --layout crate --format json > dist/vault-dependency-licences.json
-          cargo tree --manifest-path vault/Cargo.toml --locked \
-            --edges normal --target x86_64-unknown-linux-gnu > dist/vault-dependency-tree.txt
+  release:
+    name: attest and publish
+    needs: [verify, symbols, host-run]
+    # Only a tag publishes; a dispatch run stops after verification.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    # The only job asking for more than read. No reviewer click: the work was
+    # reviewed on the release branch, and this only makes a draft. The
+    # environment scopes these permissions, records the deployment, and only
+    # admits `v*` tags.
+    environment:
+      name: release
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+    permissions:
+      contents: write       # create the release and upload its assets
+      id-token: write       # mint the OIDC token the attestation is signed with
+      attestations: write   # record the provenance attestation
 
-      - name: Collect the SBOM
-        run: |
-          cargo install cargo-cyclonedx --version 0.5.9 --locked
-          cargo cyclonedx --manifest-path agent/Cargo.toml --format json \
-            --describe binaries --target x86_64-unknown-linux-gnu
-          mv agent/qs-bitwarden-ssh-agent_bin.cdx.json dist/qs-bitwarden-ssh-agent.cdx.json
-          cargo cyclonedx --manifest-path unlock-key/Cargo.toml --format json \
-            --describe binaries --target x86_64-unknown-linux-gnu
-          mv unlock-key/qs-bitwarden-unlock-key_bin.cdx.json dist/qs-bitwarden-unlock-key.cdx.json
-          cargo cyclonedx --manifest-path vault/Cargo.toml --format json \
-            --describe binaries --target x86_64-unknown-linux-gnu
-          mv vault/qs-bitwarden-vault_bin.cdx.json dist/qs-bitwarden-vault.cdx.json
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Publishing goes through GH_TOKEN below, not the git remote.
+          persist-credentials: false
 
-      - name: Collect debug symbols
-        # The shipped binary is stripped, so symbols come from a companion
-        # build (same commit, toolchain and flags, debug info on). Its
-        # addresses differ from the shipped binary's, as dist/DEBUG-SYMBOLS.md
-        # says: it is for debugging this source under gdb.
-        run: |
-          src="$PWD"
-          for spec in agent:qs-bitwarden-ssh-agent unlock-key:qs-bitwarden-unlock-key vault:qs-bitwarden-vault; do
-            package="${spec%%:*}"; name="${spec#*:}"
-            CARGO_TARGET_DIR="$src/target-debuginfo" \
-            CARGO_PROFILE_RELEASE_STRIP=none \
-            CARGO_PROFILE_RELEASE_DEBUG=full \
-            RUSTFLAGS="--remap-path-prefix=$src=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry=/registry" \
-              cargo build --manifest-path "$package/Cargo.toml" --locked --release \
-                --target x86_64-unknown-linux-gnu
-            built="$src/target-debuginfo/x86_64-unknown-linux-gnu/release/$name"
-            objcopy --only-keep-debug "$built" "dist/$name.debug"
-            gzip -9 "dist/$name.debug"
-          done
-          cat > dist/DEBUG-SYMBOLS.md <<'NOTE'
-          # Debug symbols
-
-          `qs-bitwarden-ssh-agent.debug.gz`, `qs-bitwarden-unlock-key.debug.gz` and `qs-bitwarden-vault.debug.gz`
-          come from companion builds of the tagged commit: the same source, the same pinned container, the same
-          `--remap-path-prefix` flags, but built with debug information instead
-          of the release profile's `strip = "symbols"`.
-
-          It is **not** a split of the shipped binary. Enabling debug
-          information changes the link, so the companion build's entry point
-          and code layout differ from the bytes in `bin/x86_64-linux/`. Use
-          these symbols to debug this version of the source; do not use them to
-          translate an address taken from a shipped helper.
-
-          The shipped binaries deliberately carry no symbols: one holds
-          decrypted private keys and the other the master password, and both
-          release profiles also set `panic = "abort"` and disable core dumps at
-          startup.
-          NOTE
+      - name: Collect the reports and debug symbols
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
 
       - name: Refuse to publish anything that looks like key material
-        # Make sure no key material reached dist/ (the suite creates
+        # Here, on exactly the files about to be published (the reports and
+        # every architecture's symbols); a grep, no repository code. Make
+        # sure no key material reached dist/ (the suite creates
         # disposable keys). Two patterns:
         #
         #   b3BlbnNzaC1rZXktdjE  base64 "openssh-key-v1", the start of every
@@ -277,74 +417,6 @@ jobs:
           [ "$found" -eq 0 ] || exit 1
           ls -l dist/
 
-      - name: Upload the release reports
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: release-reports
-          path: dist/
-          if-no-files-found: error
-          retention-days: 90
-
-  host-run:
-    name: run the shipped bytes on a plain runner
-    needs: verify
-    # Not in the build container, and on a different glibc from it. No write
-    # token here: the checkout keeps no credentials, and the job has no
-    # permissions beyond read.
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-
-    steps:
-      - name: Check out the tagged commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Run the shipped bytes on the runner, outside the build container
-        run: |
-          ( cd bin && sha256sum -c SHA256SUMS )
-          ldd --version | head -1
-          for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
-                        bin/x86_64-linux/qs-bitwarden-unlock-key \
-                        bin/x86_64-linux/qs-bitwarden-vault; do
-            test -x "$binary" || { echo "::error::$binary is not executable"; exit 1; }
-            "./$binary" --version
-            "./$binary" --self-test
-            sha256sum "$binary"
-          done
-
-  release:
-    name: attest and publish
-    needs: [verify, host-run]
-    # Only a tag publishes; a dispatch run stops after verification.
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-24.04
-    # The only job asking for more than read. No reviewer click: the work was
-    # reviewed on the release branch, and this only makes a draft. The
-    # environment scopes these permissions, records the deployment, and only
-    # admits `v*` tags.
-    environment:
-      name: release
-      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
-    permissions:
-      contents: write       # create the release and upload its assets
-      id-token: write       # mint the OIDC token the attestation is signed with
-      attestations: write   # record the provenance attestation
-
-    steps:
-      - name: Check out the tagged commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Publishing goes through GH_TOKEN below, not the git remote.
-          persist-credentials: false
-
-      - name: Collect the reports the verify job produced
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-reports
-          path: dist
-
       - name: Check the bytes to attest against SHA256SUMS
         # Only the check: the binaries ran in host-run, without the token.
         run: |
@@ -354,13 +426,17 @@ jobs:
         # Binds these digests to this repo, workflow and commit. Verify with
         #   gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
         #      --repo ${{ github.repository }}
-        # and the same for the unlock tool and the vault helper.
+        # and the same for the unlock tool, the vault helper and the
+        # aarch64-linux builds.
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             bin/x86_64-linux/qs-bitwarden-ssh-agent
             bin/x86_64-linux/qs-bitwarden-unlock-key
             bin/x86_64-linux/qs-bitwarden-vault
+            bin/aarch64-linux/qs-bitwarden-ssh-agent
+            bin/aarch64-linux/qs-bitwarden-unlock-key
+            bin/aarch64-linux/qs-bitwarden-vault
 
       - name: Publish the release
         env:
@@ -380,10 +456,19 @@ jobs:
           }
           cp bin/SHA256SUMS dist/SHA256SUMS
           notes=dist/release-notes.md
+          # A release asset is named by its file name alone, and every
+          # architecture's helper has the same one, so each is attached as
+          # <name>-<arch>-linux: the same bytes as bin/<arch>-linux/<name>.
+          binaries=()
+          for arch in x86_64 aarch64; do
+            for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
+              cp "bin/$arch-linux/$name" "dist/$name-$arch-linux"
+              cmp "bin/$arch-linux/$name" "dist/$name-$arch-linux"
+              binaries+=("dist/$name-$arch-linux")
+            done
+          done
           assets=(dist/*.json dist/*.txt dist/*.gz dist/DEBUG-SYMBOLS.md dist/SHA256SUMS
-                  bin/x86_64-linux/qs-bitwarden-ssh-agent
-                  bin/x86_64-linux/qs-bitwarden-unlock-key
-                  bin/x86_64-linux/qs-bitwarden-vault)
+                  "${binaries[@]}")
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           # A draft: the tag is on a release branch not yet merged to master.

@@ -35,8 +35,19 @@ concurrency:
 
 jobs:
   reproducible:
-    name: byte-identical across build paths
-    runs-on: ubuntu-24.04
+    name: byte-identical across build paths (${{ matrix.arch }})
+    # One leg per shipped architecture, each built natively on its own runner
+    # in that architecture's variant of the same multi-arch image digest. No
+    # cross-linker, so nothing is installed on top of the pinned image.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # The same digest scripts/build-agent.sh pins. Keep the two in step.
     container:
       image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
@@ -80,6 +91,7 @@ jobs:
         env:
           # This job is the pinned environment; the script verifies the claim.
           QSBW_PINNED_BUILD: '1'
+          ARCH: ${{ matrix.arch }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
         # One pass (`--ci`): two builds from different paths must match; the
         # first is compared with the tracked bytes BEFORE it is written to bin/
@@ -92,7 +104,9 @@ jobs:
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           set +e
-          ./scripts/build-agent.sh --ci
+          # --arch explicitly, so a leg on the wrong runner fails rather than
+          # building the other architecture under its name.
+          ./scripts/build-agent.sh --ci --arch "$ARCH"
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then
@@ -118,11 +132,13 @@ jobs:
           fi
 
       - name: Report what was produced
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           cat bin/SHA256SUMS
-          for binary in bin/x86_64-linux/qs-bitwarden-ssh-agent \
-                        bin/x86_64-linux/qs-bitwarden-unlock-key \
-                        bin/x86_64-linux/qs-bitwarden-vault; do
+          for binary in "bin/$ARCH-linux/qs-bitwarden-ssh-agent" \
+                        "bin/$ARCH-linux/qs-bitwarden-unlock-key" \
+                        "bin/$ARCH-linux/qs-bitwarden-vault"; do
             echo "--- $binary"
             file "$binary"
             ldd "$binary" || true
@@ -133,12 +149,13 @@ jobs:
       - name: Upload the candidate
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          # Every helper and SHA256SUMS; commit them together.
-          name: qs-bitwarden-helpers-x86_64-linux
+          # Every helper for this architecture and SHA256SUMS (its own lines
+          # fresh, the other architecture's as tracked); commit them together.
+          name: qs-bitwarden-helpers-${{ matrix.arch }}-linux
           path: |
-            bin/x86_64-linux/qs-bitwarden-ssh-agent
-            bin/x86_64-linux/qs-bitwarden-unlock-key
-            bin/x86_64-linux/qs-bitwarden-vault
+            bin/${{ matrix.arch }}-linux/qs-bitwarden-ssh-agent
+            bin/${{ matrix.arch }}-linux/qs-bitwarden-unlock-key
+            bin/${{ matrix.arch }}-linux/qs-bitwarden-vault
             bin/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -219,6 +236,30 @@ jobs:
         # Real sockets, FIFOs, child processes and disposable keys; no network
         # or vault. The agent's slow lifecycle cases take a couple of minutes.
         run: |
+          for package in $HELPERS; do
+            ( cd "$package" && cargo test --locked --all-targets ) || exit 1
+          done
+
+  aarch64-tests:
+    name: tests on aarch64
+    # The helpers' own tests on the other shipped architecture, in the same
+    # pinned image (its arm64 variant). Format, lint and the dependency policy
+    # do not depend on the architecture and run once, in `gates`.
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cargo-target
+      HELPERS: agent unlock-key vault
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tests
+        run: |
+          uname -m
           for package in $HELPERS; do
             ( cd "$package" && cargo test --locked --all-targets ) || exit 1
           done

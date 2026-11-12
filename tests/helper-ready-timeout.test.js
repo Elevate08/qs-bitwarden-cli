@@ -13,7 +13,7 @@ const { eq, check, done } = createSuite("helper-ready-timeout")
 function vault() {
   const v = {
     Model, console: { warn() {} }, Qt: { callLater: f => f() },
-    vaultHelperState: "pending", vaultHelper: { source: "bundled" }, sshAgentPluginDir: "/synthetic/plugin",
+    vaultHelperState: "pending", vaultHelper: { source: "bundled", arch: "x86_64" }, sshAgentPluginDir: "/synthetic/plugin",
     vaultHelperRestarts: 2, vaultHelperWarning: "", shuttingDown: false, allowVaultWithoutHelper: true,
     vaultHelperReadyTimedOut: false, vaultHelperRetryPending: false,
     vaultRuns: {}, vaultQueries: {}, session: "", heldSessionMarker: Model.vaultHeldSession(),

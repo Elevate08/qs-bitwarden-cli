@@ -46,8 +46,13 @@ eq("helper runs directly with no shell and no arguments", helperCmd.length, 1)
 eq("helper command is the absolute helper path", helperCmd[0],
   "/opt/bw/agent/target/debug/qs-bitwarden-ssh-agent")
 eq("the shipped helper is launched when that is what was accepted",
-  Model.sshAgentHelperCommand("/opt/bw", "bundled")[0],
+  Model.sshAgentHelperCommand("/opt/bw", "bundled", "x86_64")[0],
   "/opt/bw/bin/x86_64-linux/qs-bitwarden-ssh-agent")
+eq("on aarch64, its own build",
+  Model.sshAgentHelperCommand("/opt/bw", "bundled", "aarch64")[0],
+  "/opt/bw/bin/aarch64-linux/qs-bitwarden-ssh-agent")
+eq("the shipped helper with no reported architecture launches nothing",
+  Model.sshAgentHelperCommand("/opt/bw", "bundled", "").length, 0)
 eq("no accepted source launches nothing", Model.sshAgentHelperCommand("/opt/bw", "").length, 0)
 eq("an unknown source launches nothing", Model.sshAgentHelperCommand("/opt/bw", "elsewhere").length, 0)
 check("helper command never goes through a shell",
