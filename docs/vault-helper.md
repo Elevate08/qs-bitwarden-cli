@@ -229,8 +229,9 @@ not a program a command reaches some other way, over D-Bus for instance.
 
 ## If the helper is missing or fails
 
-It is checked like the other helpers: present, executable, the right
-architecture, the checksum in `bin/SHA256SUMS`, its own self-test, and the
+It is checked like the other helpers: the build for this machine's
+processor (`bin/x86_64-linux/` or `bin/aarch64-linux/`), present, executable,
+the right architecture, the checksum in `bin/SHA256SUMS`, its own self-test, and the
 protocol version. A locally built one (`vault/target/debug/`) is used if the
 shipped one is absent or unusable.
 
@@ -244,7 +245,7 @@ Only with `allowVaultWithoutHelper` set to `true` in `shell.json` (it is not
 in the settings screen) does the panel work as it did before the helper: the
 session and the items are held in the shell, and a banner says crash
 protection is off and why. That is for a platform the helper is not built
-for, or a source checkout without one.
+for (anything but x86_64 and aarch64 Linux), or a source checkout without one.
 
 If the helper stops while the vault is open, the session key goes with it, so
 the vault locks as the lock button would: the SSH agent drops its private keys
@@ -260,7 +261,12 @@ The binary is built reproducibly and attested like the SSH helper
 ([docs/ssh-agent.md](ssh-agent.md#verifying-the-helper)):
 
 ```bash
-./scripts/build-agent.sh --compare-tracked
+./scripts/build-agent.sh --compare-tracked             # this machine's architecture
+./scripts/build-agent.sh --compare-tracked --arch aarch64  # another, via qemu binfmt
 gh attestation verify bin/x86_64-linux/qs-bitwarden-vault --repo Elevate08/qs-bitwarden-cli
 bin/x86_64-linux/qs-bitwarden-vault --self-test
 ```
+
+On an ARM64 machine, use `bin/aarch64-linux/`. CI builds each architecture
+natively, on an x86_64 and an arm64 runner, in the same digest-pinned
+multi-arch image.

@@ -9,12 +9,16 @@
 #   Cargo.lock              the exact dependency set          (committed, per package)
 #   rust-toolchain.toml     the exact compiler                (committed, per package,
 #                                                              and the same in each)
-#   --target                the ABI                           (below)
+#   --target                the ABI, one per architecture     (below)
 #   --remap-path-prefix     build paths, which otherwise leak (below)
 #   the container image     glibc, ld and strip               (PINNED_IMAGE)
 #
 # The image matters because glibc symbol versions and `strip` output change
-# with the host. rustc embeds no timestamp (so no SOURCE_DATE_EPOCH), and no git
+# with the host. Each architecture is built natively, in that architecture's
+# variant of the same multi-arch image: CI uses an arm64 runner for aarch64,
+# and a container runtime elsewhere can emulate one (`--platform linux/arm64`
+# through qemu binfmt). No cross-linker is involved, so both builds use the
+# image's own gcc, glibc and strip, and nothing is installed on top of it. rustc embeds no timestamp (so no SOURCE_DATE_EPOCH), and no git
 # commit is embedded: a binary cannot name the commit that tracks it.
 
 set -o pipefail
@@ -24,13 +28,41 @@ set -u
 # every binary in the same commit. By digest, not tag: the tag is rebuilt on
 # new Debian bases (new glibc/binutils). Multi-arch digest of 2026-08-25.
 PINNED_IMAGE="rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
-SUPPORTED_TARGET="x86_64-unknown-linux-gnu"
+# Every architecture a release ships, as `uname -m` names it, and the Rust
+# target each is built for. The panel's table (HELPER_ARCHITECTURES in
+# BitwardenModel.js) must list the same ones.
+SUPPORTED_ARCHES=(x86_64 aarch64)
+target_for() {
+  case "$1" in
+    x86_64) printf 'x86_64-unknown-linux-gnu' ;;
+    aarch64) printf 'aarch64-unknown-linux-gnu' ;;
+    *) return 1 ;;
+  esac
+}
+# The container platform that carries each architecture's image variant.
+platform_for() {
+  case "$1" in
+    x86_64) printf 'linux/amd64' ;;
+    aarch64) printf 'linux/arm64' ;;
+    *) return 1 ;;
+  esac
+}
+# `uname -m` spellings, normalised to the names above (or nothing).
+normalise_arch() {
+  case "$1" in
+    x86_64|amd64) printf 'x86_64' ;;
+    aarch64|arm64) printf 'aarch64' ;;
+    *) return 1 ;;
+  esac
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Architecture-scoped so a second target needs no restructuring (x86_64 only
-# for now).
-OUTPUT_ARCH="x86_64-linux"
-OUTPUT_DIR="$REPO_ROOT/bin/$OUTPUT_ARCH"
+# Set by select_arch from --arch, or this machine's architecture: the target,
+# and the architecture-scoped output directory bin/<arch>-linux/.
+ARCH=""
+SUPPORTED_TARGET=""
+OUTPUT_ARCH=""
+OUTPUT_DIR=""
 # Tracked artifacts as `<package directory>:<binary name>`. Separate packages
 # and lockfiles, so a crate added to one cannot change the other's bytes.
 ARTIFACTS=(
@@ -43,11 +75,17 @@ SUMS_FILE="$REPO_ROOT/bin/SHA256SUMS"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/build-agent.sh [--verify-reproducible] [--compare-tracked]
-                              [--ci] [--allow-unpinned] [--explain]
+Usage: scripts/build-agent.sh [--arch x86_64|aarch64] [--verify-reproducible]
+                              [--compare-tracked] [--ci] [--allow-unpinned]
+                              [--explain]
 
-  (no flags)            Build every release helper into bin/<arch>/ and write
-                        bin/SHA256SUMS.
+  (no flags)            Build every release helper into bin/<arch>-linux/ and
+                        update that architecture's lines in bin/SHA256SUMS.
+  --arch ARCH           The architecture to build (default: this machine's).
+                        Builds are native: outside the pinned image the
+                        container runs that architecture's variant (another
+                        architecture needs qemu binfmt); inside it, ARCH must
+                        be the machine's own.
   --verify-reproducible Build twice from two different absolute paths and
                         require byte-identical output. Writes nothing.
   --compare-tracked     Report whether every tracked binary matches a fresh
@@ -89,11 +127,38 @@ require_lockfile() {
   done
 }
 
+# The architecture to build: --arch, or this machine's. Fixes the target and
+# the output directory every mode uses.
+select_arch() {
+  local requested="$1" host
+  host="$(normalise_arch "$(uname -m)")" || host=""
+  if [ -z "$requested" ]; then
+    [ -n "$host" ] || fail "this machine is $(uname -m), which no release ships; pass --arch with one of: ${SUPPORTED_ARCHES[*]}"
+    requested="$host"
+  fi
+  ARCH="$(normalise_arch "$requested")" \
+    || fail "unsupported architecture '$requested'; releases ship: ${SUPPORTED_ARCHES[*]}"
+  SUPPORTED_TARGET="$(target_for "$ARCH")"
+  OUTPUT_ARCH="$ARCH-linux"
+  OUTPUT_DIR="$REPO_ROOT/bin/$OUTPUT_ARCH"
+}
+
 # Only the target the committed binaries are for.
 require_target() {
   local target="${1:-$SUPPORTED_TARGET}"
   [ "$target" = "$SUPPORTED_TARGET" ] \
-    || fail "unsupported target '$target'; this release builds only $SUPPORTED_TARGET"
+    || fail "unsupported target '$target'; this build is for $SUPPORTED_TARGET (--arch $ARCH)"
+}
+
+# Inside the image the build is native: the image has no cross-linker, and
+# installing one would put an unpinned package into the release bytes.
+require_native() {
+  local host
+  host="$(normalise_arch "$(uname -m)")" || host="$(uname -m)"
+  [ "$host" = "$ARCH" ] \
+    || fail "this $host environment cannot build $ARCH natively. Run the script outside the
+       image with --arch $ARCH, so the container runtime starts the $(platform_for "$ARCH") variant
+       (on another architecture that needs qemu binfmt), or build on a $ARCH machine."
 }
 
 # Whether we are already inside the pinned environment (CI runs this inside
@@ -136,10 +201,11 @@ reexec_in_container() {
   note "entering the pinned image with: $runtime"
   # shellcheck disable=SC2086
   $runtime run --rm \
+    --platform "$(platform_for "$ARCH")" \
     -e QSBW_PINNED_BUILD=1 \
     -v "$REPO_ROOT:/work" -w /work \
     "$PINNED_IMAGE" \
-    /work/scripts/build-agent.sh "$@"
+    /work/scripts/build-agent.sh --arch "$ARCH" "$@"
 }
 
 # --- the build itself ------------------------------------------------------
@@ -180,6 +246,20 @@ build_clean_copy() {
 
 binary_name() { printf '%s' "${1#*:}"; }
 
+# Replace this architecture's lines in bin/SHA256SUMS and keep every other
+# architecture's, sorted by path. Paths are relative to bin/, one line per
+# artifact (the panel checks each binary against its own line).
+write_sums() {
+  local kept="" listed=("$@")
+  if [ -f "$SUMS_FILE" ]; then
+    kept="$(grep -v "  $OUTPUT_ARCH/" "$SUMS_FILE" || true)"
+  fi
+  ( cd "$REPO_ROOT/bin" \
+    && { [ -z "$kept" ] || printf '%s\n' "$kept"; sha256sum "${listed[@]}"; } \
+       | LC_ALL=C sort -k2 > "$SUMS_FILE.new" ) \
+    && mv "$SUMS_FILE.new" "$SUMS_FILE"
+}
+
 digest() { sha256sum "$1" | cut -d' ' -f1; }
 
 # --- modes -----------------------------------------------------------------
@@ -198,7 +278,8 @@ verify_reproducible() {
        refuses to report success it cannot support. It runs in CI, which executes it inside
        the pinned image. See --allow-unpinned for a plain build that makes no such claim."
   fi
-  note "building in the pinned environment"
+  require_native
+  note "building $ARCH in the pinned environment"
 
   local work first second
   work="$(mktemp -d)" || fail "could not create a work directory"
@@ -242,7 +323,8 @@ compare_tracked() {
        reasons that are not drift -- so this check refuses to report a mismatch it cannot
        stand behind. It runs in CI, which executes it inside the pinned image."
   fi
-  note "comparing in the pinned environment"
+  require_native
+  note "comparing $ARCH in the pinned environment"
 
   local work
   work="$(mktemp -d)" || fail "could not create a work directory"
@@ -278,6 +360,7 @@ build_release() {
     note "WARNING: building with the host toolchain. These bytes are not reproducible"
     note "         and must not be committed as the release binary."
   fi
+  require_native
   mkdir -p "$OUTPUT_DIR"
   local work
   work="$(mktemp -d)" || fail "could not create a work directory"
@@ -290,10 +373,8 @@ build_release() {
     install -m 0755 "$built/$name" "$OUTPUT_DIR/$name"
     listed+=("$OUTPUT_ARCH/$name")
   done
-  # Paths relative to bin/, one line per artifact (the panel checks each
-  # binary against its own line).
-  ( cd "$REPO_ROOT/bin" && sha256sum "${listed[@]}" > "$SUMS_FILE" )
-  note "wrote ${listed[*]/#/bin/} and bin/SHA256SUMS"
+  write_sums "${listed[@]}" || fail "could not write bin/SHA256SUMS"
+  note "wrote ${listed[*]/#/bin/} and their lines in bin/SHA256SUMS"
 }
 
 # --verify-reproducible, --compare-tracked and the release build in one pass:
@@ -308,7 +389,8 @@ ci_build() {
     fi
     fail "not in the pinned build environment and no container runtime to enter one"
   fi
-  note "building twice in the pinned environment"
+  require_native
+  note "building $ARCH twice in the pinned environment"
 
   local work one two spec name a b have differ=0 drifted="" listed=()
   work="$(mktemp -d)" || fail "could not create a work directory"
@@ -335,8 +417,8 @@ ci_build() {
     install -m 0755 "$one/$name" "$OUTPUT_DIR/$name"
     listed+=("$OUTPUT_ARCH/$name")
   done
-  ( cd "$REPO_ROOT/bin" && sha256sum "${listed[@]}" > "$SUMS_FILE" )
-  note "wrote the candidate: ${listed[*]/#/bin/} and bin/SHA256SUMS"
+  write_sums "${listed[@]}" || fail "could not write bin/SHA256SUMS"
+  note "wrote the candidate: ${listed[*]/#/bin/} and their lines in bin/SHA256SUMS"
 
   if [ -n "$drifted" ]; then
     note "does not match a build of this source:$drifted"
@@ -347,6 +429,7 @@ ci_build() {
 
 # Report the decision without acting on it (for people, and for tests).
 explain() {
+  printf 'arch:        %s (%s, bin/%s/)\n' "$ARCH" "$SUPPORTED_TARGET" "$OUTPUT_ARCH"
   if in_pinned_environment; then
     printf 'environment: pinned (building here directly)\n'
     return 0
@@ -354,7 +437,7 @@ explain() {
   local runtime
   if runtime="$(container_runtime)"; then
     printf 'environment: not pinned, but reachable via %s\n' "$runtime"
-    printf 'image:       %s\n' "$PINNED_IMAGE"
+    printf 'image:       %s (%s)\n' "$PINNED_IMAGE" "$(platform_for "$ARCH")"
     return 0
   fi
   printf 'environment: not pinned and no container runtime to enter one\n'
@@ -365,9 +448,12 @@ explain() {
 # --- entry point -----------------------------------------------------------
 
 main() {
-  local mode="build" allow_unpinned="no"
+  local mode="build" allow_unpinned="no" arch=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --arch) [ $# -ge 2 ] || { usage >&2; fail "--arch needs a value"; }
+              arch="$2"; shift ;;
+      --arch=*) arch="${1#--arch=}" ;;
       --verify-reproducible) mode="verify" ;;
       --explain) mode="explain" ;;
       --compare-tracked) mode="compare" ;;
@@ -379,6 +465,7 @@ main() {
     shift
   done
 
+  select_arch "$arch"
   require_lockfile
   require_target "${CARGO_BUILD_TARGET:-$SUPPORTED_TARGET}"
   command -v cargo >/dev/null 2>&1 || fail "cargo is not on PATH"

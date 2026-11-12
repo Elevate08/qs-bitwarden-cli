@@ -23,6 +23,8 @@ const jobs = new Map(
   [...jobsBody.matchAll(/^ {2}([a-z][a-z0-9-]*):\n([\s\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\n|$(?![\s\S]))/gm)]
     .map(([, name, body]) => [name, body]))
 
+const symbols = jobs.get("symbols") || ""
+
 check("the workflow defines the three stages it describes",
   ["gates", "verify", "release"].every(j => jobs.has(j)),
   `jobs found: ${[...jobs.keys()].join(", ")}`)
@@ -101,7 +103,8 @@ check("a branch build and a release cannot cancel each other",
     && /cancel-in-progress: \$\{\{ github\.workflow != 'release' \}\}/.test(build),
   "the called workflow's concurrency group does not distinguish its callers")
 check("nothing publishes before those gates pass",
-  /needs: gates/.test(jobs.get("verify") || "") && /needs: \[?verify\b/.test(jobs.get("release") || ""),
+  /needs: gates/.test(jobs.get("verify") || "") && /needs: gates/.test(symbols)
+    && /needs: \[verify, symbols, host-run\]/.test(jobs.get("release") || ""),
   "the publishing job does not depend on verification")
 
 // -------------------------------------------------------------------------
@@ -115,11 +118,20 @@ check("the tag, the manifest and the changelog must agree",
 check("the committed checksum is re-checked against the committed bytes",
   (release.match(/sha256sum -c SHA256SUMS/g) || []).length >= 2,
   "the binary and the checksum shipped beside it are never compared at release time")
+const hostRun = jobs.get("host-run") || ""
 check("the helper's reported versions are checked against the panel's",
-  /SSH_AGENT_CONTROL_VERSION/.test(verify) && /control protocol/.test(verify),
+  /SSH_AGENT_CONTROL_VERSION/.test(hostRun) && /control protocol/.test(hostRun)
+    && /UNLOCK_KEY_ENVELOPE_VERSION/.test(hostRun) && /VAULT_HELPER_PROTOCOL/.test(hostRun),
   "a protocol bump could ship to users and disable the feature at launch")
 check("the shipped binary is executed, not merely compiled",
-  /--self-test/.test(verify), "nothing runs the bytes being released")
+  /--self-test/.test(hostRun), "nothing runs the bytes being released")
+check("every architecture's bytes run on a runner of that architecture",
+  /- arch: x86_64\s*\n\s*runner: ubuntu-24\.04\s*\n/.test(hostRun) && /- arch: aarch64\s*\n\s*runner: ubuntu-24\.04-arm\s*\n/.test(hostRun)
+    && /bin\/\$ARCH-linux\/qs-bitwarden-vault/.test(hostRun),
+  "an architecture's helpers are published without ever being run")
+check("verify checks every architecture's bytes, machine and checksum line",
+  /"x86_64:x86-64" "aarch64:ARM aarch64"/.test(verify) && /has no line for/.test(verify),
+  "an architecture's binaries are not checked against SHA256SUMS")
 // A container job defaults to `sh`, which has no arrays.
 check("the container job declares bash rather than taking the image's sh",
   /defaults:\n\s*run:\n(?:\s*#[^\n]*\n)*\s*shell: bash/.test(verify),
@@ -144,14 +156,18 @@ check("the publishing job does not execute the bytes it attests",
 // to verify both.
 const attestation = /attest-build-provenance@[0-9a-f]{40}[\s\S]{0,500}?subject-path: \|?([\s\S]*?)\n\s*\n/
   .exec(releaseJob)
-for (const binary of ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key", "qs-bitwarden-vault"]) {
-  check(`the attestation names ${binary} as a subject`,
-    !!attestation && attestation[1].includes(`bin/x86_64-linux/${binary}`),
-    "the provenance attestation does not bind these tracked bytes")
-  check(`${binary} is published as a release asset`,
-    new RegExp(`assets=\\([\\s\\S]*?bin/x86_64-linux/${binary}[\\s\\S]*?\\)`).test(releaseJob),
-    "a binary that is attested but not attached cannot be verified by anyone")
+for (const arch of ["x86_64", "aarch64"]) {
+  for (const binary of ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key", "qs-bitwarden-vault"]) {
+    check(`the attestation names ${arch}-linux/${binary} as a subject`,
+      !!attestation && attestation[1].includes(`bin/${arch}-linux/${binary}`),
+      "the provenance attestation does not bind these tracked bytes")
+  }
 }
+// Each is attached as <name>-<arch>-linux, a copy checked against bin/.
+check("every architecture's helpers are published as release assets",
+  /for arch in x86_64 aarch64; do[\s\S]{0,200}?for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do[\s\S]{0,200}?cmp "bin\/\$arch-linux\/\$name" "dist\/\$name-\$arch-linux"[\s\S]{0,200}?binaries\+=/.test(releaseJob)
+    && /assets=\([\s\S]*?"\$\{binaries\[@\]\}"\)/.test(releaseJob),
+  "a binary that is attested but not attached cannot be verified by anyone")
 check("the verification command is written down where a reviewer will find it",
   /gh attestation verify/.test(release),
   "users are given provenance with no documented way to check it")
@@ -165,16 +181,20 @@ check("a dependency and licence report is published",
   /cargo deny[\s\S]{0,140}?\blist\b/.test(verify) && /cargo tree/.test(verify),
   "users cannot see what is in the binary or under what terms")
 check("debug symbols are published separately from the shipped bytes",
-  /only-keep-debug/.test(verify) && /\.debug/.test(verify),
+  /only-keep-debug/.test(symbols) && /\.debug/.test(symbols)
+    && /- arch: aarch64\s*\n\s*runner: ubuntu-24\.04-arm/.test(symbols),
   "a stripped binary ships with no way to debug it at all")
+check("the symbols job holds no write token",
+  !/write/.test(symbols), "the companion build runs beside a write token")
 // The release profile strips symbols, and a debug build links differently --
 // its entry point and code layout move. Publishing the file is fine.
 // Implying it maps onto the shipped bytes would not be.
 check("the debug symbols say plainly that they are not the shipped bytes",
-  /DEBUG-SYMBOLS\.md/.test(verify) && /not[\s\S]{0,80}split of the shipped binary/i.test(verify),
+  /DEBUG-SYMBOLS\.md/.test(symbols) && /not[\s\S]{0,80}split of the shipped binary/i.test(symbols),
   "the symbol file invites address-level conclusions it cannot support")
 check("release artifacts are scanned for key material before publication",
-  /PRIVATE KEY/.test(verify) && /BW_SESSION/.test(verify),
+  /PRIVATE KEY/.test(releaseJob) && /BW_SESSION/.test(releaseJob)
+    && releaseJob.indexOf("Refuse to publish anything that looks like key material") < releaseJob.indexOf("gh release create"),
   "nothing checks that a report or symbol file is free of secrets")
 check("the release notes are the changelog section for this version",
   /release-notes\.md/.test(releaseJob) && /no changelog section for/.test(releaseJob),

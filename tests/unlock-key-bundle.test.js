@@ -13,6 +13,8 @@ const path = require("path")
 const { spawnSync } = require("child_process")
 
 const Model = loadModule()
+const HOST_ARCH = Model.helperArchitecture({ x64: "x86_64", arm64: "aarch64" }[process.arch] || process.arch)
+const HOST_DIR = HOST_ARCH ? Model.HELPER_ARCHITECTURES[HOST_ARCH].dir : "unsupported-linux"
 
 const { check, eq, done } = createSuite("unlock-key-bundle")
 
@@ -20,7 +22,7 @@ const { check, eq, done } = createSuite("unlock-key-bundle")
 // The shipped artifact is really in the repository
 // -------------------------------------------------------------------------
 
-const bundled = path.join(repoRoot, "bin", "x86_64-linux", "qs-bitwarden-unlock-key")
+const bundled = path.join(repoRoot, "bin", HOST_DIR, "qs-bitwarden-unlock-key")
 const development = path.join(repoRoot, "unlock-key", "target", "debug", "qs-bitwarden-unlock-key")
 const sums = path.join(repoRoot, "bin", "SHA256SUMS")
 
@@ -31,7 +33,7 @@ check("it is a real ELF binary",
   fs.existsSync(bundled) && fs.readFileSync(bundled).subarray(0, 4).toString("latin1") === "\x7fELF",
   "no ELF magic")
 const sumLines = fs.existsSync(sums) ? fs.readFileSync(sums, "utf8").trim().split("\n") : []
-const recorded = sumLines.find(l => l.endsWith("  x86_64-linux/qs-bitwarden-unlock-key")) || ""
+const recorded = sumLines.find(l => l.endsWith(`  ${HOST_DIR}/qs-bitwarden-unlock-key`)) || ""
 check("it has its own line in SHA256SUMS", recorded !== "", sumLines.join(" | "))
 if (fs.existsSync(bundled) && recorded) {
   const actual = spawnSync("sha256sum", [bundled], { encoding: "utf8" }).stdout.split(" ")[0]
@@ -43,7 +45,7 @@ if (fs.existsSync(bundled) && recorded) {
 // -------------------------------------------------------------------------
 
 eq("the bundled path is architecture-scoped",
-  Model.UNLOCK_KEY_BUNDLED_RELATIVE, "bin/x86_64-linux/qs-bitwarden-unlock-key")
+  Model.helperBundledRelative(Model.UNLOCK_KEY_SPEC, "x86_64"), "bin/x86_64-linux/qs-bitwarden-unlock-key")
 eq("the development path is cargo's debug output for its own package",
   Model.UNLOCK_KEY_DEVELOPMENT_RELATIVE, "unlock-key/target/debug/qs-bitwarden-unlock-key")
 eq("the panel reads envelope v1", Model.UNLOCK_KEY_ENVELOPE_VERSION, 1)
@@ -104,12 +106,12 @@ if (fs.existsSync(sample)) {
 
   // Shipped but stale: its line names other bytes.
   inTemp(dir => {
-    const target = path.join(dir, "bin", "x86_64-linux")
+    const target = path.join(dir, "bin", HOST_DIR)
     fs.mkdirSync(target, { recursive: true })
     fs.copyFileSync(sample, path.join(target, "qs-bitwarden-unlock-key"))
     fs.chmodSync(path.join(target, "qs-bitwarden-unlock-key"), 0o755)
     fs.writeFileSync(path.join(dir, "bin", "SHA256SUMS"),
-      "0".repeat(64) + "  x86_64-linux/qs-bitwarden-unlock-key\n")
+      "0".repeat(64) + `  ${HOST_DIR}/qs-bitwarden-unlock-key\n`)
     const result = inspect(dir)
     eq("a stale shipped tool is refused", result.state, "checksum-mismatch")
     eq("and quick unlock stays off", Model.helperReady(result), false)
@@ -118,15 +120,15 @@ if (fs.existsSync(sample)) {
   // Shipped and correct, beside a stale SSH helper line: the SSH agent's
   // problem is not quick unlock's.
   inTemp(dir => {
-    const target = path.join(dir, "bin", "x86_64-linux")
+    const target = path.join(dir, "bin", HOST_DIR)
     fs.mkdirSync(target, { recursive: true })
     const copy = path.join(target, "qs-bitwarden-unlock-key")
     fs.copyFileSync(sample, copy)
     fs.chmodSync(copy, 0o755)
     const digest = spawnSync("sha256sum", [copy], { encoding: "utf8" }).stdout.split(" ")[0]
     fs.writeFileSync(path.join(dir, "bin", "SHA256SUMS"),
-      "f".repeat(64) + "  x86_64-linux/qs-bitwarden-ssh-agent\n"
-      + digest + "  x86_64-linux/qs-bitwarden-unlock-key\n")
+      "f".repeat(64) + `  ${HOST_DIR}/qs-bitwarden-ssh-agent\n`
+      + digest + `  ${HOST_DIR}/qs-bitwarden-unlock-key\n`)
     const result = inspect(dir)
     eq("a stale SSH helper line does not disable quick unlock", result.state, "ok")
     eq("its own line matches", result.checksum, "match")
@@ -136,7 +138,7 @@ if (fs.existsSync(sample)) {
 // The panel, not the shell, decides whether a command interface is one it
 // can drive: a v1 tool (flags for the account) would be refused, not misused.
 {
-  const newer = Model.parseUnlockKeyInspection("state=ok\nsource=bundled\nversion=0.2.0\nprotocol=1\n")
+  const newer = Model.parseUnlockKeyInspection("state=ok\nsource=bundled\nversion=0.2.0\nprotocol=1\narch=x86_64\n")
   eq("a command interface the panel does not speak is refused", newer.state, "protocol-mismatch")
   check("and the message says to reinstall", /Reinstall/.test(newer.message), newer.message)
 }

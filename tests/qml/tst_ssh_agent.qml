@@ -66,11 +66,11 @@ TestCase {
     compare(dir, "/home/u/.config/omarchy/plugins/bw")
     // The source comes from the bundle inspection; the command follows it
     // rather than guessing which binary to run.
-    var cmd = Model.sshAgentHelperCommand(dir, "bundled")
+    var cmd = Model.sshAgentHelperCommand(dir, "bundled", "x86_64")
     compare(cmd.length, 1)
     compare(cmd[0].charAt(0), "/")
     verify(cmd[0].indexOf("/home/u/.config/omarchy/plugins/bw/") === 0)
-    compare(Model.sshAgentHelperCommand(Model.pluginDirFromUrl("file:///opt/bw/../etc/"), "bundled").length, 0)
+    compare(Model.sshAgentHelperCommand(Model.pluginDirFromUrl("file:///opt/bw/../etc/"), "bundled", "x86_64").length, 0)
     compare(Model.sshAgentHelperCommand(dir, "").length, 0)
   }
 
