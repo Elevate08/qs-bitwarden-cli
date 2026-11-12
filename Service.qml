@@ -1041,7 +1041,7 @@ Item {
   }
 
   function startVaultHelper() {
-    var path = Model.vaultHelperPath(sshAgentPluginDir, vaultHelper.source)
+    var path = Model.vaultHelperPath(sshAgentPluginDir, vaultHelper.source, vaultHelper.arch)
     if (!path) {
       useVaultFallback("")
       return
@@ -1415,7 +1415,7 @@ Item {
   }
 
   function envelopeTool() {
-    return Model.unlockKeyPath(sshAgentPluginDir, unlockKeyHelper.source)
+    return Model.unlockKeyPath(sshAgentPluginDir, unlockKeyHelper.source, unlockKeyHelper.arch)
   }
 
   function envelopeAccount() {
@@ -9030,7 +9030,7 @@ Item {
   Process {
     id: sshAgentProc
     // The candidate the inspection accepted.
-    command: Model.sshAgentHelperCommand(root.sshAgentPluginDir, root.sshAgentHelper.source)
+    command: Model.sshAgentHelperCommand(root.sshAgentPluginDir, root.sshAgentHelper.source, root.sshAgentHelper.arch)
     clearEnvironment: true
     environment: Model.sshAgentHelperEnv(root.sshAgentRuntimeDir) || ({})
     stdinEnabled: true

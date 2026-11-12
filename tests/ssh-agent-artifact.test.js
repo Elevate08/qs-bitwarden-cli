@@ -65,8 +65,22 @@ check("CI verifies the container's Rust matches the pin at run time",
 
 check("the build is locked to the committed dependency set",
   /cargo build[^\n]*--locked/.test(script), "the build does not pass --locked")
-check("the target is fixed",
-  /SUPPORTED_TARGET="x86_64-unknown-linux-gnu"/.test(script), "no fixed target")
+check("the target is fixed per architecture",
+  /x86_64\) printf 'x86_64-unknown-linux-gnu'/.test(script)
+    && /aarch64\) printf 'aarch64-unknown-linux-gnu'/.test(script),
+  "no fixed target for each shipped architecture")
+check("the script ships the architectures the panel knows",
+  /SUPPORTED_ARCHES=\(x86_64 aarch64\)/.test(script)
+    && Object.keys(require("./harness").loadModule().HELPER_ARCHITECTURES).join(" ") === "x86_64 aarch64",
+  "build-agent.sh and HELPER_ARCHITECTURES disagree about what a release ships")
+// The image has no cross-linker, and installing one would put an unpinned
+// package into the bytes: each architecture builds natively.
+check("inside the image a build is native, never cross-compiled",
+  /require_native\(\)/.test(script) && (script.match(/^\s*require_native$/gm) || []).length >= 4,
+  "a mode can build another architecture with the image's own linker")
+check("a container build runs the requested architecture's image variant",
+  /--platform "\$\(platform_for "\$ARCH"\)"/.test(script) && /build-agent\.sh --arch "\$ARCH"/.test(script),
+  "the re-exec ignores --arch, so it builds the host's architecture under another's name")
 check("the source path is remapped out of the binary",
   /--remap-path-prefix=%s=\/src/.test(script), "the source path is not remapped")
 check("the registry path is remapped too",
@@ -105,9 +119,19 @@ eq("--help succeeds", run("--help").status, 0)
 eq("an unknown argument is refused", run("--bogus").status, 1)
 
 const wrongTarget = spawnSync("bash", [path.join(repoRoot, "scripts/build-agent.sh")],
-  { encoding: "utf8", env: Object.assign({}, process.env, { CARGO_BUILD_TARGET: "aarch64-unknown-linux-gnu" }) })
+  { encoding: "utf8", env: Object.assign({}, process.env, { CARGO_BUILD_TARGET: "riscv64gc-unknown-linux-gnu" }) })
 eq("an unsupported target is refused", wrongTarget.status, 1)
-check("the refusal names the target", /aarch64/.test(wrongTarget.stderr), wrongTarget.stderr.slice(0, 160))
+check("the refusal names the target", /riscv64/.test(wrongTarget.stderr), wrongTarget.stderr.slice(0, 160))
+const wrongArch = run("--arch", "riscv64")
+eq("an unshipped architecture is refused", wrongArch.status, 1)
+check("the refusal lists what ships", /x86_64 aarch64/.test(wrongArch.stderr), wrongArch.stderr.slice(0, 160))
+for (const arch of ["x86_64", "aarch64", "arm64"]) {
+  const explained = run("--explain", "--arch", arch)
+  eq(`--arch ${arch} is accepted`, explained.status, 0)
+  check(`--arch ${arch} names its target and directory`,
+    new RegExp(`${arch === "arm64" ? "aarch64" : arch}-unknown-linux-gnu, bin/${arch === "arm64" ? "aarch64" : arch}-linux/`).test(explained.stdout),
+    explained.stdout.slice(0, 200))
+}
 
 // CI runs the script inside the image (no container runtime), so "am I
 // pinned" must not mean "can I start a container".
@@ -175,15 +199,39 @@ check("no mode passes its own target directory",
 
 // Paths and flag names the release process refers to.
 check("the artifact is architecture-scoped",
-  /OUTPUT_ARCH="x86_64-linux"/.test(script) && /OUTPUT_DIR="\$REPO_ROOT\/bin\/\$OUTPUT_ARCH"/.test(script),
-  "a flat bin/ has to be restructured the day a second target appears")
+  /OUTPUT_ARCH="\$ARCH-linux"/.test(script) && /OUTPUT_DIR="\$REPO_ROOT\/bin\/\$OUTPUT_ARCH"/.test(script),
+  "each architecture's helpers need their own bin/<arch>-linux/")
 check("checksums go to one SHA256SUMS, not a sidecar per binary",
   /SUMS_FILE="\$REPO_ROOT\/bin\/SHA256SUMS"/.test(script),
   "no bin/SHA256SUMS")
+const writeSums = functionBodyOf(script, "write_sums")
 check("the checksum file is written relative to bin/ so sha256sum -c works there",
   /listed\+=\("\$OUTPUT_ARCH\/\$name"\)/.test(script)
-    && /cd "\$REPO_ROOT\/bin" && sha256sum "\$\{listed\[@\]\}" > "\$SUMS_FILE"/.test(script),
+    && /cd "\$REPO_ROOT\/bin"/.test(writeSums) && /sha256sum "\$\{listed\[@\]\}"/.test(writeSums),
   "absolute or checkout-relative paths in SHA256SUMS would only verify here")
+check("a build replaces only its own architecture's lines in SHA256SUMS",
+  /grep -v "  \$OUTPUT_ARCH\/" "\$SUMS_FILE"/.test(writeSums) && /LC_ALL=C sort -k2/.test(writeSums)
+    && (script.match(/write_sums "\$\{listed\[@\]\}"/g) || []).length === 2,
+  "building one architecture would drop the other's checksums")
+// write_sums, run for real against a scratch bin/.
+{
+  const fsx = require("fs"), osx = require("os")
+  const dir = fsx.mkdtempSync(path.join(osx.tmpdir(), "qsbw-sums-"))
+  try {
+    fsx.mkdirSync(path.join(dir, "bin", "aarch64-linux"), { recursive: true })
+    fsx.writeFileSync(path.join(dir, "bin", "aarch64-linux", "qs-bitwarden-vault"), "arm\n")
+    fsx.writeFileSync(path.join(dir, "bin", "SHA256SUMS"),
+      "1".repeat(64) + "  aarch64-linux/qs-bitwarden-vault\n" + "2".repeat(64) + "  x86_64-linux/qs-bitwarden-vault\n")
+    const body = functionBodyOf(script, "write_sums") + "\n}\n"
+    const out = spawnSync("bash", ["-c", `${body}\nwrite_sums aarch64-linux/qs-bitwarden-vault`],
+      { encoding: "utf8", env: Object.assign({}, process.env,
+        { REPO_ROOT: dir, SUMS_FILE: path.join(dir, "bin", "SHA256SUMS"), OUTPUT_ARCH: "aarch64-linux" }) })
+    const written = fsx.readFileSync(path.join(dir, "bin", "SHA256SUMS"), "utf8")
+    eq("write_sums succeeds", out.status, 0)
+    check("write_sums keeps the other architecture's line", written.includes("2".repeat(64) + "  x86_64-linux/qs-bitwarden-vault"), written)
+    check("and replaces its own", !written.includes("1".repeat(64)) && /^[0-9a-f]{64}  aarch64-linux\/qs-bitwarden-vault$/m.test(written), written)
+  } finally { fsx.rmSync(dir, { recursive: true, force: true }) }
+}
 
 // -------------------------------------------------------------------------
 // More than one helper
@@ -230,8 +278,24 @@ check("CI applies the dependency policy to every package",
   /for package in \$HELPERS; do\s*\n\s*cargo deny --manifest-path "\$package\/Cargo\.toml" --config deny\.toml check/.test(workflow),
   "a package's dependencies are not checked against deny.toml")
 check("the uploaded candidate carries every helper and the checksum file",
-  /bin\/x86_64-linux\/qs-bitwarden-ssh-agent\s*\n\s*bin\/x86_64-linux\/qs-bitwarden-unlock-key\s*\n\s*bin\/x86_64-linux\/qs-bitwarden-vault\s*\n\s*bin\/SHA256SUMS/.test(workflow),
+  /bin\/\$\{\{ matrix\.arch \}\}-linux\/qs-bitwarden-ssh-agent\s*\n\s*bin\/\$\{\{ matrix\.arch \}\}-linux\/qs-bitwarden-unlock-key\s*\n\s*bin\/\$\{\{ matrix\.arch \}\}-linux\/qs-bitwarden-vault\s*\n\s*bin\/SHA256SUMS/.test(workflow),
   "a maintainer committing the candidate would commit a SHA256SUMS naming a binary not in it")
+// Every shipped architecture is built, natively, on its own runner, in CI,
+// both by the gates and by the rebuild that commits bytes.
+for (const [file, text] of [["agent-build.yml", workflow], ["helper-rebuild.yml", read(".github/workflows/helper-rebuild.yml")]]) {
+  check(`${file} builds x86_64 on an x86_64 runner and aarch64 on an arm64 runner`,
+    /- arch: x86_64\s*\n\s*runner: ubuntu-24\.04\s*\n/.test(text) && /- arch: aarch64\s*\n\s*runner: ubuntu-24\.04-arm\s*\n/.test(text)
+      && /runs-on: \$\{\{ matrix\.runner \}\}/.test(text),
+    "an architecture is not built in CI, or not natively")
+  check(`${file} passes the leg's architecture to the build`,
+    /build-agent\.sh --(ci|compare-tracked) --arch "\$ARCH"/.test(text), "the build picks its own architecture")
+}
+check("the helpers' tests run on aarch64 too",
+  /runs-on: ubuntu-24\.04-arm[\s\S]{0,800}?cargo test --locked --all-targets/.test(workflow),
+  "the aarch64 helpers ship without their tests ever running on aarch64")
+check("the dependency policy covers every shipped target",
+  /targets = \["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"\]/.test(read("deny.toml")),
+  "an aarch64-only dependency would escape cargo-deny")
 check("Dependabot watches the unlock tool's lockfile too",
   /directory: \/unlock-key/.test(read(".github/dependabot.yml")),
   "the unlock tool's dependencies would never be proposed for update")

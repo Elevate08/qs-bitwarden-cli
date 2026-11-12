@@ -5521,8 +5521,8 @@ function cleanAbsoluteDir(dir) {
 
 // Run directly, not via `bash -c`, so closing stdin and killing the Process
 // reach the process holding the keys.
-function sshAgentHelperCommand(pluginDir, source) {
-  var path = helperPath(pluginDir, SSH_AGENT_HELPER_SPEC, source)
+function sshAgentHelperCommand(pluginDir, source, arch) {
+  var path = helperPath(pluginDir, SSH_AGENT_HELPER_SPEC, source, arch)
   return path ? [path] : []
 }
 
@@ -5959,26 +5959,54 @@ function sshAuthSockDiagnostic(sock, runtimeDir) {
 // architecture, matching checksum, passing self-test, matching protocol.
 // SHA256SUMS sits beside the binary, so it catches stale or incomplete files,
 // not tampering; provenance is covered by the release attestation.
-var SSH_AGENT_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-ssh-agent"
+//
+// Every architecture a release ships, by its `uname -m` name: the bin/
+// directory its helpers are in, and the ELF e_machine byte they carry.
+// scripts/build-agent.sh (SUPPORTED_ARCHES) builds exactly these.
+var HELPER_ARCHITECTURES = {
+  "x86_64": { dir: "x86_64-linux", elfMachine: "3e" },
+  "aarch64": { dir: "aarch64-linux", elfMachine: "b7" }
+}
+// Other `uname -m` spellings of the same machines.
+var HELPER_ARCHITECTURE_ALIASES = { "amd64": "x86_64", "arm64": "aarch64" }
 var SSH_AGENT_SUMS_RELATIVE = "bin/SHA256SUMS"
 // Cargo's debug build, used when the shipped binary is absent or unusable;
 // the settings screen names which one is running.
 var SSH_AGENT_DEVELOPMENT_RELATIVE = "agent/target/debug/qs-bitwarden-ssh-agent"
 
-// In preference order: shipped artifact, then local build.
-function helperCandidates(pluginDir, spec) {
+// A shipped architecture's name for a `uname -m` value, or "".
+function helperArchitecture(machine) {
+  var name = String(machine === undefined || machine === null ? "" : machine).trim()
+  if (Object.prototype.hasOwnProperty.call(HELPER_ARCHITECTURE_ALIASES, name)) {
+    name = HELPER_ARCHITECTURE_ALIASES[name]
+  }
+  return Object.prototype.hasOwnProperty.call(HELPER_ARCHITECTURES, name) ? name : ""
+}
+
+// The shipped helper's path relative to the plugin for an architecture, or ""
+// for one no release ships.
+function helperBundledRelative(spec, arch) {
+  var name = helperArchitecture(arch)
+  return name ? "bin/" + HELPER_ARCHITECTURES[name].dir + "/" + spec.name : ""
+}
+
+// In preference order: shipped artifact (for a shipped architecture), then
+// local build.
+function helperCandidates(pluginDir, spec, arch) {
   var root = cleanAbsoluteDir(pluginDir)
   if (!root) return []
-  return [
-    { source: "bundled", path: root + "/" + spec.bundled },
-    { source: "development", path: root + "/" + spec.development }
-  ]
+  var out = []
+  var bundled = helperBundledRelative(spec, arch)
+  if (bundled) out.push({ source: "bundled", path: root + "/" + bundled })
+  out.push({ source: "development", path: root + "/" + spec.development })
+  return out
 }
 
 // The absolute path of the candidate the inspection accepted, or "". Never a
-// guess: an unaccepted source launches nothing.
-function helperPath(pluginDir, spec, source) {
-  var candidates = helperCandidates(pluginDir, spec)
+// guess: an unaccepted source launches nothing, and the shipped one needs the
+// architecture the inspection reported.
+function helperPath(pluginDir, spec, source, arch) {
+  var candidates = helperCandidates(pluginDir, spec, arch)
   for (var i = 0; i < candidates.length; i++) {
     if (candidates[i].source === source) return candidates[i].path
   }
@@ -6003,24 +6031,46 @@ function sshAgentHelperSourceLabel(source) {
   return ""
 }
 
+// The shell `case` arms that read this machine's architecture: the shipped
+// helper's path, its SHA256SUMS line (its path relative to bin/, exactly) and
+// the ELF machine byte. An architecture no release ships leaves them empty.
+function helperArchitectureCases(spec) {
+  var arms = ""
+  for (var arch in HELPER_ARCHITECTURES) {
+    var spellings = [arch]
+    for (var alias in HELPER_ARCHITECTURE_ALIASES) {
+      if (HELPER_ARCHITECTURE_ALIASES[alias] === arch) spellings.push(alias)
+    }
+    var rel = helperBundledRelative(spec, arch)
+    var sumsLine = "^[0-9a-f]{64}  " + rel.replace(/^bin\//, "").replace(/[.]/g, "\\.") + "$"
+    arms += spellings.join("|") + ") __arch=" + shellQuote(arch)
+      + "; __bundled=" + shellQuote(rel)
+      + "; __sums_line=" + shellQuote(sumsLine)
+      + "; __elf=" + shellQuote(HELPER_ARCHITECTURES[arch].elfMachine) + ";; "
+  }
+  return "case \"$(uname -m 2>/dev/null)\" in " + arms
+    + "*) __arch=''; __bundled=''; __sums_line=''; __elf='';; esac; "
+}
+
 // Checks both candidates in one shell and reports the first usable one as
 // `key=value` lines; none of the helper's own output reaches a message.
-// `spec` gives the binary name, candidate paths and the sed expression that
-// reads its protocol version from `--version`.
+// `spec` gives the binary name, development path and the sed expression that
+// reads its protocol version from `--version`. The shipped helper is the one
+// for this machine's architecture (`uname -m`), reported as `arch=`.
 function helperInspectCommand(pluginDir, spec) {
   var root = cleanAbsoluteDir(pluginDir)
   if (!root) return ["bash", "-c", "echo state=missing"]
-  // The binary's line in SHA256SUMS: its path relative to bin/, exactly.
-  var sumsPath = spec.bundled.replace(/^bin\//, "")
-  var sumsLine = "^[0-9a-f]{64}  " + sumsPath.replace(/[.]/g, "\\.") + "$"
 
   var script = "__root=" + shellQuote(root) + "; "
-    + "__report() { printf '%s\\n' \"$@\"; exit 0; }; "
+    + helperArchitectureCases(spec)
+    + "__report() { printf '%s\\n' \"$@\" \"arch=$__arch\"; exit 0; }; "
     + "__found=''; "
     // Shipped first; a local build only if that is absent or unusable.
-    + "for __pair in " + shellQuote("bundled:" + spec.bundled)
-    + " " + shellQuote("development:" + spec.development) + "; do "
-    + "  __source=\"${__pair%%:*}\"; __rel=\"${__pair#*:}\"; __bin=\"$__root/$__rel\"; "
+    + "for __pair in \"bundled:$__bundled\" " + shellQuote("development:" + spec.development) + "; do "
+    + "  __source=\"${__pair%%:*}\"; __rel=\"${__pair#*:}\"; "
+    // No release ships this architecture: say so, and try a local build.
+    + "  if [ -z \"$__rel\" ]; then __found=\"$__source\"; __state=unsupported-architecture; continue; fi; "
+    + "  __bin=\"$__root/$__rel\"; "
     + "  [ -e \"$__bin\" ] || continue; "
     + "  __found=\"$__source\"; "
     + "  [ -f \"$__bin\" ] || { __state=not-a-file; continue; }; "
@@ -6028,13 +6078,13 @@ function helperInspectCommand(pluginDir, spec) {
     // ELF magic first, so LFS placeholders and truncated files fail clearly.
     + "  __magic=\"$(head -c 4 -- \"$__bin\" 2>/dev/null | od -An -tx1 | tr -d ' \\n')\"; "
     + "  [ \"$__magic\" = \"7f454c46\" ] || { __state=not-elf; continue; }; "
-    + "  __arch=\"$(od -An -tx1 -j 18 -N 1 -- \"$__bin\" 2>/dev/null | tr -d ' \\n')\"; "
-    + "  [ \"$__arch\" = \"3e\" ] || { __state=wrong-architecture; continue; }; "
+    + "  __machine=\"$(od -An -tx1 -j 18 -N 1 -- \"$__bin\" 2>/dev/null | tr -d ' \\n')\"; "
+    + "  [ -z \"$__elf\" ] || [ \"$__machine\" = \"$__elf\" ] || { __state=wrong-architecture; continue; }; "
     // Shipped artifact only, and only its own SHA256SUMS line, so one stale
     // helper cannot disable the other. A missing line is a mismatch.
     + "  __checksum=unchecked; "
     + "  if [ \"$__source\" = bundled ] && [ -f \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" ]; then "
-    + "    __line=\"$(grep -E " + shellQuote(sumsLine) + " \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" | head -1)\"; "
+    + "    __line=\"$(grep -E \"$__sums_line\" \"$__root/" + SSH_AGENT_SUMS_RELATIVE + "\" | head -1)\"; "
     + "    if [ -n \"$__line\" ] && ( cd \"$__root/bin\" && printf '%s\\n' \"$__line\" | sha256sum -c --status ) 2>/dev/null; then "
     + "      __checksum=match; "
     + "    else __checksum=mismatch; __state=checksum-mismatch; continue; fi; "
@@ -6058,7 +6108,6 @@ function helperInspectCommand(pluginDir, spec) {
 
 var SSH_AGENT_HELPER_SPEC = {
   name: "qs-bitwarden-ssh-agent",
-  bundled: SSH_AGENT_BUNDLED_RELATIVE,
   development: SSH_AGENT_DEVELOPMENT_RELATIVE,
   protocolSed: "s/.*protocol \\([0-9]*\\).*/\\1/p"
 }
@@ -6069,13 +6118,13 @@ function sshAgentHelperInspectCommand(pluginDir) {
 
 // A helper's state before its inspection has run.
 function uninspectedHelper() {
-  return { state: "unknown", source: "", version: "", protocol: 0,
+  return { state: "unknown", source: "", arch: "", version: "", protocol: 0,
     checksum: "unchecked", selfTest: "", message: "" }
 }
 
 // Parses the inspection lines; the panel, not the script, judges the protocol.
 function parseHelperInspection(raw, expectedProtocol, messages) {
-  var fields = { state: "missing", source: "", version: "", protocol: 0,
+  var fields = { state: "missing", source: "", arch: "", version: "", protocol: 0,
     checksum: "unchecked", selfTest: "" }
   var lines = String(raw === undefined || raw === null ? "" : raw).split("\n")
   for (var i = 0; i < lines.length; i++) {
@@ -6086,6 +6135,9 @@ function parseHelperInspection(raw, expectedProtocol, messages) {
     if (key === "protocol") fields.protocol = Math.floor(Number(value)) || 0
     else if (fields[key] !== undefined) fields[key] = value
   }
+  // Only a shipped architecture's name; it picks the bin/ directory.
+  fields.arch = helperArchitecture(fields.arch)
+  if (fields.state === "ok" && fields.source === "bundled" && !fields.arch) fields.state = "unusable"
   if (fields.state === "ok" && fields.protocol !== expectedProtocol) {
     fields.state = "protocol-mismatch"
   }
@@ -6104,8 +6156,11 @@ function helperMessages(noun, manifest, protocolMismatch) {
       + "file modes; `chmod +x` on it is enough.",
     "not-elf": the + " is not a program. A partial clone, or Git LFS leaving a "
       + "placeholder, both look like this.",
-    "wrong-architecture": the + " was built for a different architecture. This "
-      + "release ships x86_64 only.",
+    "wrong-architecture": the + " was built for a different processor than this "
+      + "machine's. A copy mixed up between architectures looks like this; reinstall the plugin.",
+    "unsupported-architecture": the + " is not shipped for this machine's processor; "
+      + "releases ship x86_64 and aarch64 Linux builds. Elsewhere, build it with "
+      + "`cargo build --manifest-path " + manifest + " --locked`.",
     "checksum-mismatch": the + " does not match its recorded checksum. That usually "
       + "means a stale binary after an update, or an incomplete clone.",
     "no-version": the + " did not report a usable version.",
@@ -6140,12 +6195,10 @@ var UNLOCK_KEY_ENVELOPE_VERSION = 1
 // QSBW_ACCOUNT_ID and QSBW_SERVER instead of --account-id and --server, so a
 // v1 binary (which would refuse the missing flags) is turned away up front.
 var UNLOCK_KEY_CLI_VERSION = 2
-var UNLOCK_KEY_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-unlock-key"
 var UNLOCK_KEY_DEVELOPMENT_RELATIVE = "unlock-key/target/debug/qs-bitwarden-unlock-key"
 
 var UNLOCK_KEY_SPEC = {
   name: "qs-bitwarden-unlock-key",
-  bundled: UNLOCK_KEY_BUNDLED_RELATIVE,
   development: UNLOCK_KEY_DEVELOPMENT_RELATIVE,
   protocolSed: "s/.*cli v\\([0-9]*\\).*/\\1/p"
 }
@@ -6194,12 +6247,10 @@ function heldSecretName(value) {
   var text = typeof value === "string" ? value : ""
   return text.indexOf(HELD_SECRET_PREFIX) === 0 ? text.slice(HELD_SECRET_PREFIX.length) : ""
 }
-var VAULT_HELPER_BUNDLED_RELATIVE = "bin/x86_64-linux/qs-bitwarden-vault"
 var VAULT_HELPER_DEVELOPMENT_RELATIVE = "vault/target/debug/qs-bitwarden-vault"
 
 var VAULT_HELPER_SPEC = {
   name: "qs-bitwarden-vault",
-  bundled: VAULT_HELPER_BUNDLED_RELATIVE,
   development: VAULT_HELPER_DEVELOPMENT_RELATIVE,
   protocolSed: "s/.*protocol \\([0-9]*\\).*/\\1/p"
 }
@@ -6215,8 +6266,8 @@ function parseVaultHelperInspection(raw) {
   return parseHelperInspection(raw, VAULT_HELPER_PROTOCOL, VAULT_HELPER_MESSAGES)
 }
 
-function vaultHelperPath(pluginDir, source) {
-  return helperPath(pluginDir, VAULT_HELPER_SPEC, source)
+function vaultHelperPath(pluginDir, source, arch) {
+  return helperPath(pluginDir, VAULT_HELPER_SPEC, source, arch)
 }
 
 // The banner while the vault is held in the shell instead.
@@ -6276,8 +6327,8 @@ function isQuickUnlockSetting(key) {
 }
 
 // The absolute path of the unlock tool the inspection chose, or "".
-function unlockKeyPath(pluginDir, source) {
-  return helperPath(pluginDir, UNLOCK_KEY_SPEC, source)
+function unlockKeyPath(pluginDir, source, arch) {
+  return helperPath(pluginDir, UNLOCK_KEY_SPEC, source, arch)
 }
 
 // -------------------------------------------------------------------------

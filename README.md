@@ -23,6 +23,10 @@ One command. It clones the plugin, enables it, and puts it in the bar:
 omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 ```
 
+It runs on x86_64 and aarch64 (ARM64, such as Asahi Linux on Apple Silicon):
+the plugin's small helper programs ship prebuilt for both, built by CI from
+this repository's source and checked again before they are committed.
+
 Nothing else has to be installed first. Open the panel and it tells you what it
 still needs -- on a stock Omarchy install that is the Bitwarden CLI and `jq` --
 with an **Install** button that hands off to Omarchy's own installer.
@@ -407,7 +411,7 @@ The first account lives where a terminal `bw` finds it (`~/.config/Bitwarden CLI
 
 ### How your vault is held
 
-While your vault is open, its session key and every item's secrets are held by a small helper process (`bin/x86_64-linux/qs-bitwarden-vault`), not by the shell. If the shell crashes, the core dump systemd keeps has no session key and no passwords in it, except a value you had revealed or an item you were editing, and the shell's own crash dumps still work for diagnosing it. Opening an item shows no secret until you reveal it. A value you copy goes from the helper straight to the clipboard; TOTP codes and search are answered by the helper too. It talks only to the shell that started it, on its stdin and stdout.
+While your vault is open, its session key and every item's secrets are held by a small helper process (`bin/<arch>-linux/qs-bitwarden-vault`), not by the shell. If the shell crashes, the core dump systemd keeps has no session key and no passwords in it, except a value you had revealed or an item you were editing, and the shell's own crash dumps still work for diagnosing it. Opening an item shows no secret until you reveal it. A value you copy goes from the helper straight to the clipboard; TOTP codes and search are answered by the helper too. It talks only to the shell that started it, on its stdin and stdout.
 
 It ships and is verified like the other helpers. If it is missing or fails its check, the vault stays locked and a banner says why, with a click to check again. Setting `allowVaultWithoutHelper` to `true` in `shell.json` holds the vault in the shell instead, as before the helper, with a banner saying crash protection is off. **[How it works and what it does not cover →](docs/vault-helper.md)**
 
@@ -421,7 +425,7 @@ PIN, fingerprint and FIDO2 unlock all need your master password, because `bw unl
 - If you change your master password elsewhere, the next unlock with the new one re-seals the stored copy and keeps every method.
 - Logging out of an account deletes its copy; other accounts keep theirs.
 
-The small helper that does the encryption (`bin/x86_64-linux/qs-bitwarden-unlock-key`) ships and is verified exactly like the SSH helper; if it is missing or fails its check, quick unlock is unavailable and your master password still works. Everything else is the operating system: `argon2`, `systemd-creds`, `fido2-assert` and `secret-tool`.
+The small helper that does the encryption (`bin/<arch>-linux/qs-bitwarden-unlock-key`) ships and is verified exactly like the SSH helper; if it is missing or fails its check, quick unlock is unavailable and your master password still works. Everything else is the operating system: `argon2`, `systemd-creds`, `fido2-assert` and `secret-tool`.
 
 An earlier build could store this item across several lines, which makes gnome-keyring refuse Omarchy's passwordless default keyring at the next login (apps ask you to create a new keyring, and the journal says `keyring was in an invalid or unrecognized format`). The plugin repairs this on its own each time it starts: an item the keyring still serves is stored again on one line, and a keyring file already refused has the item joined back onto one line in place, with the original kept beside it as `Default_keyring.keyring.before-repair-<time>`. A notification then asks you to restart the computer (Omarchy has no logout), which loads the collection cleanly. To do it by hand, run `scripts/repair-keyring.sh` from the plugin's directory (`--check` only reports). Nothing else in the keyring is changed, and no secret is printed.
 

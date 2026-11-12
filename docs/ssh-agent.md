@@ -11,7 +11,7 @@ Off by default. Turn on **Act as your SSH agent** in the settings screen and the
 
 Private keys are held only by that helper, in memory. They never reach QML -- the vault read is split in a `jq` stage and the panel's half has the private material removed before it arrives -- they are never written to disk, and they are dropped when the vault locks, when you log out, and when the helper exits.
 
-**Requirements.** Bitwarden CLI `2025.1.2+` for SSH key items; `2026.8.0+` also fixes a bug where one malformed SSH item fails the whole vault list. `jq`, which the plugin already needs. The helper ships prebuilt for x86_64 Linux. A missing, corrupt, stale, wrong-architecture, non-executable or self-test-failing helper disables **only** this feature, names the reason under **SSH AGENT STATUS**, and leaves the rest of the plugin working.
+**Requirements.** Bitwarden CLI `2025.1.2+` for SSH key items; `2026.8.0+` also fixes a bug where one malformed SSH item fails the whole vault list. `jq`, which the plugin already needs. The helper ships prebuilt for x86_64 and aarch64 Linux (`bin/x86_64-linux/`, `bin/aarch64-linux/`); the panel picks the one for the machine's processor (`uname -m`). A missing, corrupt, stale, wrong-architecture, non-executable or self-test-failing helper disables **only** this feature, names the reason under **SSH AGENT STATUS**, and leaves the rest of the plugin working.
 
 #### Pointing SSH clients at it
 
@@ -80,6 +80,8 @@ Provenance is the separate mechanism with a different root of trust. Releases fr
 gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
    --repo Elevate08/qs-bitwarden-cli
 ```
+
+On an ARM64 machine, the same with `bin/aarch64-linux/`. Releases from `v1.13.0` on attest both architectures' binaries.
 
 `gh` is not an Omarchy dependency, so this is a check you run if you want it, not one the plugin can assume. Worth re-running after a plugin update, when the binary has changed.
 

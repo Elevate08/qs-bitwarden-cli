@@ -12,8 +12,9 @@
 #
 # Two jobs, so the job that runs repository code never holds a write token:
 #
-#   build   read-only, in the digest-pinned image: compare, rebuild, upload
-#   commit  contents/actions write, runs no repository code: verify the
+#   build   read-only, in the digest-pinned image, once per architecture on
+#           that architecture's runner: compare, rebuild, upload
+#   commit  contents/actions write, runs no repository code: verify each
 #           artifact's checksums, commit only bin/, push, then dispatch
 #           agent-build.yml so the new commit gets its own checks
 
@@ -32,12 +33,19 @@ concurrency:
 
 jobs:
   build:
-    name: rebuild the helpers if they drifted
-    runs-on: ubuntu-24.04
+    name: rebuild the helpers if they drifted (${{ matrix.arch }})
+    # Native on each architecture's runner, as agent-build.yml builds them.
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     container:
       image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
-    outputs:
-      rebuilt: ${{ steps.rebuild.outputs.rebuilt }}
 
     steps:
       - name: Check out the pull request head
@@ -54,11 +62,12 @@ jobs:
         id: rebuild
         env:
           QSBW_PINNED_BUILD: '1'
+          ARCH: ${{ matrix.arch }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
           ACTOR: ${{ github.actor }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          if ./scripts/build-agent.sh --compare-tracked; then
+          if ./scripts/build-agent.sh --compare-tracked --arch "$ARCH"; then
             echo "rebuilt=no" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -68,11 +77,11 @@ jobs:
           # it running reads as "no".
           eligible="$(git show "origin/${GITHUB_BASE_REF}:scripts/helper-autocommit-eligible.sh" 2>/dev/null | bash)"
           if [ "$eligible" != "yes" ]; then
-            echo "::notice::the helpers drifted but this PR is not eligible for a CI commit; agent build reports it"
+            echo "::notice::the $ARCH helpers drifted but this PR is not eligible for a CI commit; agent build reports it"
             echo "rebuilt=no" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          ./scripts/build-agent.sh
+          ./scripts/build-agent.sh --arch "$ARCH"
           cat bin/SHA256SUMS
           echo "rebuilt=yes" >> "$GITHUB_OUTPUT"
 
@@ -80,11 +89,11 @@ jobs:
         if: steps.rebuild.outputs.rebuilt == 'yes'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: helper-rebuild
+          name: helper-rebuild-${{ matrix.arch }}
           path: |
-            bin/x86_64-linux/qs-bitwarden-ssh-agent
-            bin/x86_64-linux/qs-bitwarden-unlock-key
-            bin/x86_64-linux/qs-bitwarden-vault
+            bin/${{ matrix.arch }}-linux/qs-bitwarden-ssh-agent
+            bin/${{ matrix.arch }}-linux/qs-bitwarden-unlock-key
+            bin/${{ matrix.arch }}-linux/qs-bitwarden-vault
             bin/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -92,21 +101,38 @@ jobs:
   commit:
     name: commit the rebuilt helpers
     needs: build
-    if: needs.build.outputs.rebuilt == 'yes'
+    # Every leg finished; which of them rebuilt is read from the run's
+    # artifacts below (a matrix job has no per-leg outputs).
+    if: needs.build.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
-      # Push bin/ to this PR's branch, and dispatch agent-build.yml on it (a
-      # push made with this token starts no workflow by itself).
+      # Push bin/ to this PR's branch, list this run's artifacts, and dispatch
+      # agent-build.yml on the branch (a push made with this token starts no
+      # workflow by itself).
       contents: write
       actions: write
 
     steps:
+      - name: Find which architectures were rebuilt
+        id: found
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          names="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" \
+                     --jq '.artifacts[].name | select(startswith("helper-rebuild-"))')"
+          echo "rebuilt: ${names:-none}"
+          if [ -n "$names" ]; then echo "any=yes" >> "$GITHUB_OUTPUT"; else echo "any=no" >> "$GITHUB_OUTPUT"; fi
+
       - name: Check out the pull request branch
+        if: steps.found.outputs.any == 'yes'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.head_ref }}
 
       - name: Refuse a branch that moved since the build
+        if: steps.found.outputs.any == 'yes'
         env:
           BUILT: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -116,28 +142,49 @@ jobs:
           }
 
       - name: Download the rebuilt helpers
+        if: steps.found.outputs.any == 'yes'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: helper-rebuild
+          pattern: helper-rebuild-*
           path: candidate
 
       - name: Verify and stage only bin/
+        if: steps.found.outputs.any == 'yes'
         run: |
-          ( cd candidate && sha256sum -c SHA256SUMS )
-          cp candidate/x86_64-linux/qs-bitwarden-ssh-agent \
-             candidate/x86_64-linux/qs-bitwarden-unlock-key \
-             candidate/x86_64-linux/qs-bitwarden-vault bin/x86_64-linux/
-          cp candidate/SHA256SUMS bin/SHA256SUMS
+          set -euo pipefail
+          staged=()
+          for dir in candidate/helper-rebuild-*; do
+            arch="${dir#candidate/helper-rebuild-}"
+            case "$arch" in x86_64|aarch64) ;; *) echo "::error::unexpected artifact $dir"; exit 1 ;; esac
+            # Each artifact's own lines (the other architecture's name files
+            # this artifact does not carry).
+            grep "  $arch-linux/" "$dir/SHA256SUMS" > "$dir/own.sums"
+            [ "$(wc -l < "$dir/own.sums")" -eq 3 ] || { echo "::error::$dir does not list three helpers"; exit 1; }
+            ( cd "$dir" && sha256sum -c own.sums )
+            mkdir -p "bin/$arch-linux"
+            for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
+              cp "$dir/$arch-linux/$name" "bin/$arch-linux/$name"
+              chmod 755 "bin/$arch-linux/$name"
+              staged+=("bin/$arch-linux/$name")
+            done
+          done
+          # One SHA256SUMS for every architecture, from the bytes now in bin/;
+          # each artifact's own lines must appear in it unchanged.
+          ( cd bin && sha256sum -- */qs-bitwarden-* | LC_ALL=C sort -k2 > SHA256SUMS )
+          for dir in candidate/helper-rebuild-*; do
+            while IFS= read -r line; do
+              grep -qxF -- "$line" bin/SHA256SUMS || { echo "::error::bin/SHA256SUMS lost: $line"; exit 1; }
+            done < "$dir/own.sums"
+          done
           rm -rf candidate
-          chmod 755 bin/x86_64-linux/qs-bitwarden-ssh-agent bin/x86_64-linux/qs-bitwarden-unlock-key \
-                    bin/x86_64-linux/qs-bitwarden-vault
           ( cd bin && sha256sum -c SHA256SUMS )
-          git add bin/SHA256SUMS bin/x86_64-linux/qs-bitwarden-ssh-agent \
-                  bin/x86_64-linux/qs-bitwarden-unlock-key bin/x86_64-linux/qs-bitwarden-vault
-          other="$(git status --porcelain | grep -v '^M  bin/' || true)"
+          cat bin/SHA256SUMS
+          git add bin/SHA256SUMS "${staged[@]}"
+          other="$(git status --porcelain | grep -Ev '^[MA]  bin/' || true)"
           [ -z "$other" ] || { echo "::error::refusing to commit anything outside bin/:"; echo "$other"; exit 1; }
 
       - name: Commit, push and re-check
+        if: steps.found.outputs.any == 'yes'
         env:
           HEAD_REF: ${{ github.head_ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
