@@ -102,6 +102,19 @@ check("a branch build and a release cannot cancel each other",
   /group: agent-build-\$\{\{ github\.workflow \}\}/.test(build)
     && /cancel-in-progress: \$\{\{ github\.workflow != 'release' \}\}/.test(build),
   "the called workflow's concurrency group does not distinguish its callers")
+// A bare branch cut skips the branch build (its tree already passed), but the
+// skip must name this workflow: called from release.yml on a tag push, the
+// event is also a `created` push with no new commits, and the gates must run.
+const buildJobs = [...build.slice(build.indexOf("\njobs:"))
+  .matchAll(/^ {2}([a-z][a-z0-9-]*):\n([\s\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\n|$(?![\s\S]))/gm)]
+const branchCutSkip = "if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}"
+const unskipped = buildJobs.filter(([, , body]) => !body.includes(branchCutSkip)).map(([, name]) => name)
+check("only a bare branch cut skips the branch build, never the release's gates",
+  buildJobs.length >= 5 && unskipped.length === 0,
+  `jobs without the exact skip condition: ${unskipped.join(", ") || "(no jobs found)"}`)
+check("the end-to-end job retries a stalled Arch snapshot download",
+  /for attempt in 1 2 3; do\s*\n\s*pacman -Syu --noconfirm --needed --disable-download-timeout/.test(build),
+  "one slow response from archive.archlinux.org fails the whole gate")
 check("nothing publishes before those gates pass",
   /needs: gates/.test(jobs.get("verify") || "") && /needs: gates/.test(symbols)
     && /needs: \[verify, symbols, host-run\]/.test(jobs.get("release") || ""),
