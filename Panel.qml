@@ -2707,6 +2707,77 @@ Panel {
 
             PanelSectionHeader {
               textFormat: Text.PlainText
+              text: "VERSION"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
+
+            Column {
+              id: versionInfo
+              width: parent.width
+              spacing: Style.space(4)
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Plugin: " + (root.vault.pluginVersionLabel || "checking...")
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "bw CLI: " + (root.vault.dependencies && root.vault.dependencies.bwVersion
+                  ? root.vault.dependencies.bwVersion : "unknown")
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                visible: root.vault.updateAvailableVersion !== ""
+                width: parent.width
+                text: "Update available: " + root.vault.updateAvailableVersion
+                color: Color.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                wrapMode: Text.WordWrap
+              }
+
+              // Without a floating terminal helper there is nothing to
+              // launch, so the command is shown to run by hand.
+              Text {
+                textFormat: Text.PlainText
+                visible: root.vault.updateAvailableVersion !== "" && !root.vault.pluginUpdateCanLaunch
+                width: parent.width
+                text: "Run: " + root.vault.pluginUpdateCommandText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WrapAnywhere
+              }
+
+              Button {
+                visible: root.vault.updateAvailableVersion !== "" && root.vault.pluginUpdateCanLaunch
+                text: "Update plugin"
+                iconText: "󰚰"
+                tooltipText: "Runs " + root.vault.pluginUpdateCommandText + " in a terminal"
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.vault.runPluginUpdate()
+              }
+            }
+
+            Item { width: parent.width; height: Style.space(18) }
+
+            PanelSectionHeader {
+              textFormat: Text.PlainText
               text: "MAINTENANCE"
               foreground: root.fg
               fontFamily: root.fontFamily

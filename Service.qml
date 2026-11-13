@@ -133,6 +133,19 @@ Item {
   // The vault list and an item's detail side by side (the view decides
   // whether the screen is wide enough).
   readonly property bool sideBySide: Model.boolSetting("sideBySide", setting("sideBySide", true))
+  // One request a day to GitHub's releases API; off makes none.
+  readonly property bool checkForUpdates: Model.boolSetting("checkForUpdates", setting("checkForUpdates", true))
+  // { checkedAt, latest } of the last release check, kept in update-check.json
+  // in the plugin's state directory (not shell.json: writing a setting reloads
+  // the shell) and read when Settings opens.
+  property var updateCheckState: null
+  // Where this copy came from (parsePluginVersionProbe()), read on opening Settings.
+  property var pluginVersionInfo: null
+  readonly property string pluginVersionLabel: pluginVersionInfo ? Model.versionLabel(pluginVersionInfo) : ""
+  readonly property string updateAvailableVersion:
+    Model.updateAvailable(pluginVersionInfo, updateCheckState, checkForUpdates)
+  readonly property string pluginUpdateCommandText: Model.pluginUpdateCommandText()
+  readonly property bool pluginUpdateCanLaunch: Boolean(pluginVersionInfo && pluginVersionInfo.terminal)
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
@@ -5504,6 +5517,7 @@ Item {
     autoTypeKeybindResult = null
     if (autoTypeEnabled) inspectAutoTypeKeybind()
     currentScreen = "settings"
+    refreshVersionInfo()
     Qt.callLater(function() { eachView(function(view) { view.updateSettingsSticky() }) })
   }
 
@@ -5523,6 +5537,47 @@ Item {
   function writeSettingQuietly(key, value, type) {
     settingWriteProc.command = Model.settingWriteCommand(key, value, type)
     settingWriteProc.running = true
+  }
+
+  // Settings opened: say where this copy came from, and ask GitHub for the
+  // latest release when it is due (at most daily, never when switched off).
+  function refreshVersionInfo() {
+    var dir = Model.pluginDirFromUrl(String(Qt.resolvedUrl(".")))
+    if (dir !== "" && !pluginVersionProc.running) {
+      pluginVersionProc.command = Model.pluginVersionProbeCommand(dir)
+      pluginVersionProc.running = true
+    }
+    // Off: not even the state file is read, and no request follows.
+    if (checkForUpdates && !updateCheckStateProc.running && !updateCheckProc.running) {
+      updateCheckStateProc.command = Model.updateCheckReadCommand()
+      updateCheckStateProc.running = true
+    }
+  }
+
+  function onUpdateCheckStateRead(raw) {
+    updateCheckState = Model.parseUpdateCheckState(raw)
+    if (!updateCheckProc.running && Model.updateCheckDue(checkForUpdates, updateCheckState, Date.now())) {
+      updateCheckProc.command = Model.updateCheckCommand()
+      updateCheckProc.running = true
+    }
+  }
+
+  function onUpdateCheckFinished(raw) {
+    // A failed request prints no release JSON, so it parses to "". The time
+    // is stored anyway: offline, the next try waits a day too.
+    var latest = Model.parseLatestRelease(raw)
+    updateCheckState = Model.updateCheckRecord(updateCheckState, latest, Date.now())
+    if (updateCheckWriteProc.running) return
+    updateCheckWriteProc.stdinEnabled = true
+    updateCheckWriteProc.running = true
+    updateCheckWriteProc.write(JSON.stringify(updateCheckState))
+    updateCheckWriteProc.stdinEnabled = false
+  }
+
+  function runPluginUpdate() {
+    if (!pluginUpdateCanLaunch) return
+    close()
+    Quickshell.execDetached(Model.pluginUpdateLaunchCommand())
   }
 
   function rememberTwoFactorMethod(method) {
@@ -5561,6 +5616,7 @@ Item {
       case "suggestOnOpen": return suggestOnOpen
       case "showWebsiteIcons": return showWebsiteIcons
       case "sideBySide": return sideBySide
+      case "checkForUpdates": return checkForUpdates
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
@@ -9514,6 +9570,36 @@ Item {
       // Treat the silent probe as checked so refreshStatus() can proceed.
       root.depsChecked = true
       root.refreshStatus()
+    }
+  }
+
+  Process {
+    id: pluginVersionProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.pluginVersionInfo = Model.parsePluginVersionProbe(text)
+    }
+  }
+
+  Process {
+    id: updateCheckStateProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onUpdateCheckStateRead(text)
+    }
+  }
+
+  Process {
+    id: updateCheckWriteProc
+    command: Model.updateCheckWriteCommand()
+    stdinEnabled: true
+  }
+
+  Process {
+    id: updateCheckProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onUpdateCheckFinished(text)
     }
   }
 
