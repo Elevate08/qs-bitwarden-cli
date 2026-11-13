@@ -33,6 +33,7 @@
       "colorizeIcon": false,
       "showWebsiteIcons": true,
       "sideBySide": true,
+      "checkForUpdates": true,
       "suggestOnOpen": true,
       "fingerprintUnlock": false,
       "fidoUnlock": false,
@@ -41,6 +42,8 @@
       "sshAgentEnabled": false,
       "sshAgentUnlockOnDemand": false,
       "sshAgentApprovalPopup": true,
+      "sshAgentNotifyFallback": true,
+      "sshAgentTerminalApproval": false,
       "sshAgentApprovalWindowSec": 120
     },
     "schema": [
@@ -141,6 +144,13 @@
         "defaultValue": true
       },
       {
+        "key": "checkForUpdates",
+        "type": "boolean",
+        "label": "Check for updates",
+        "description": "Once a day, ask GitHub for the latest release and say in Settings when a newer one exists. GitHub sees your IP address and that you asked. Off makes no request at all.",
+        "defaultValue": true
+      },
+      {
         "key": "suggestOnOpen",
         "type": "boolean",
         "label": "Contextual password suggestions",
@@ -195,6 +205,20 @@
         "label": "Use centered approval popup",
         "description": "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel.",
         "defaultValue": true
+      },
+      {
+        "key": "sshAgentNotifyFallback",
+        "type": "boolean",
+        "label": "Notify when a prompt goes unanswered",
+        "description": "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with Allow once and Deny buttons. Dismissing or ignoring the notification denies the request. Needs notify-send.",
+        "defaultValue": true
+      },
+      {
+        "key": "sshAgentTerminalApproval",
+        "type": "boolean",
+        "label": "Allow approving from a terminal",
+        "description": "Let the sshReply IPC command approve a signing request. Off by default: any program running as you could then approve its own request. Listing requests and denying them is always allowed.",
+        "defaultValue": false
       },
       {
         "key": "sshAgentApprovalWindowSec",

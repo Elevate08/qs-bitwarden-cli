@@ -3889,6 +3889,9 @@ function parseItems(raw) {
       // Custom fields of an item the helper holds, hidden values already
       // gone: its detail is drawn from the row (publicItemDetail()).
       fields: held ? itemCustomFields(it.fields, it) : [],
+      // Dates of the previous passwords the helper holds (the passwords stay
+      // there); a row that carries its whole item has them in rawObject.
+      historyDates: held && Array.isArray(held.passwordHistory) ? held.passwordHistory.map(String) : [],
       // Which other secrets the helper holds for it (card code, identity
       // numbers), so the detail draws a row for each without the value.
       heldFlags: held,
@@ -4082,8 +4085,48 @@ function itemDetailFromObject(it) {
     card: cardDetail(it.card),
     identity: identityDetail(it.identity),
     fields: itemCustomFields(it.fields, it),
+    passwordHistory: Number(it.type || 1) === 1 ? passwordHistoryEntries(it.passwordHistory, false) : [],
     rawObject: it
   }
+}
+
+// A login's previous passwords (Bitwarden's `passwordHistory`), newest first,
+// as [{ index, date, password }]. `index` is the entry's position in the
+// stored list, which is how the helper names it ("passwordHistory:<index>").
+// `raw` is the stored array of { password, lastUsedDate }; with `withheld` it
+// is the helper's list of dates alone (the passwords stay in the helper) and
+// each password is the WITHHELD stand-in. An entry without a usable date sorts
+// after the dated ones.
+function passwordHistoryEntries(raw, withheld) {
+  var list = Array.isArray(raw) ? raw : []
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i]
+    var date = withheld ? entry : (entry && typeof entry === "object" ? entry.lastUsedDate : "")
+    var password = ""
+    if (withheld) password = WITHHELD
+    else if (entry && typeof entry === "object" && entry.password !== undefined && entry.password !== null) password = String(entry.password)
+    if (!withheld && password === "") continue
+    date = typeof date === "string" ? date : ""
+    var ms = Date.parse(date)
+    out.push({ index: i, date: date, time: isNaN(ms) ? -Infinity : ms, password: password })
+  }
+  out.sort(function(a, b) {
+    if (a.time !== b.time) return a.time < b.time ? 1 : -1
+    // Equal times (or none): the later one in the list is the more recent.
+    return b.index - a.index
+  })
+  return out.map(function(e) { return { index: e.index, date: e.date, password: e.password } })
+}
+
+// "YYYY-MM-DD HH:MM" in local time for a history entry; "Unknown date" if the
+// stored date does not parse.
+function formatHistoryDate(iso) {
+  var d = new Date(String(iso || ""))
+  if (isNaN(d.getTime())) return "Unknown date"
+  var two = function(n) { return (n < 10 ? "0" : "") + n }
+  return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate())
+    + " " + two(d.getHours()) + ":" + two(d.getMinutes())
 }
 
 // Stands in for a secret in a row of publicItemDetail(): the row is drawn
@@ -4146,6 +4189,7 @@ function publicItemDetail(src) {
     card: card,
     identity: identity,
     fields: fields,
+    passwordHistory: passwordHistoryEntries(src.historyDates, true),
     rawObject: null,
     secretsWithheld: true
   }
@@ -4165,6 +4209,13 @@ function detailSecretValue(detail, key) {
     ssn: identity.ssn, passportNumber: identity.passportNumber, licenseNumber: identity.licenseNumber
   }
   var value = Object.prototype.hasOwnProperty.call(values, key) ? values[key] : undefined
+  if (String(key).indexOf("passwordHistory:") === 0) {
+    var at = Number(String(key).slice("passwordHistory:".length))
+    var history = toList(detail.passwordHistory)
+    for (var h = 0; h < history.length; h++) {
+      if (history[h].index === at) value = history[h].password
+    }
+  }
   if (String(key).indexOf("customField:") === 0) {
     var index = Number(String(key).slice("customField:".length))
     var fields = toList(detail.fields)
@@ -4948,6 +4999,104 @@ function scoreContextualMatches(items, ctx) {
 function isLoginItem(item) {
   return Boolean(item && (Number(item.typeCode) === 1 || item.type === "login"
     || (item.typeCode === undefined && item.type === undefined)))
+}
+
+// -----------------------------------------------------------------------------
+// Action palette (Ctrl+K)
+// -----------------------------------------------------------------------------
+//
+// The commands the selected item supports, each with the letter that already
+// runs it (`key`, "" where it has none). context.screen is "main" (the list's
+// highlighted row, which has the letters of runShortcut() only) or "detail"
+// (the open item, with the detail screen's letters); context.revealed says
+// whether the item's primary secret is showing, which flips Reveal to Hide.
+// Only what the item has is listed. The panel runs an action through the
+// same function its letter does; the rest (no letter) through the same call
+// as the field's copy button.
+function itemActions(item, context) {
+  var out = []
+  if (!item || typeof item !== "object") return out
+  var push = function(id, label, key) { out.push({ id: id, label: label, key: key || "" }) }
+  var detail = Boolean(context && context.screen === "detail")
+  var type = Number(item.typeCode || 1)
+  var login = isLoginItem(item)
+  var hasPassword = login && (item.hasPassword !== undefined ? Boolean(item.hasPassword) : Boolean(item.password))
+  var uris = toList(item.uris)
+  var openable = uris.length > 0 && normalizeOpenableUrl(uris[0]).ok
+  var card = type === 3 ? (item.card || {}) : null
+  var identity = type === 4 ? (item.identity || {}) : null
+
+  if (!detail) {
+    if (hasPassword) push("copyPassword", "Copy password", "p")
+    if (login && item.username) push("copyUsername", "Copy username", "u")
+    if (login && item.hasTotp) push("copyTotp", "Copy TOTP code", "m")
+    if (openable) push("openWebsite", "Open website", "w")
+    push("openDetail", "Open details", "e")
+    return out
+  }
+
+  var revealed = Boolean(context && context.revealed)
+  if (hasPassword) push("copyPassword", "Copy password", "p")
+  if (login && item.username) push("copyUsername", "Copy username", "u")
+  if (identity && identity.username) push("copyUsername", "Copy username", "u")
+  if (identity && identity.email) push("copyEmail", "Copy email", "c")
+  if (login && item.hasTotp) push("copyTotp", "Copy TOTP code", "m")
+  if (openable) push("openWebsite", "Open website")
+  if (card && card.number) push("copyCardNumber", "Copy card number", "n")
+  if (card && card.code) push("copyCardCode", "Copy security code", "k")
+  if (hasPassword) push("reveal", (revealed ? "Hide" : "Reveal") + " password", "v")
+  else if (card && card.number) push("reveal", (revealed ? "Hide" : "Reveal") + " card number", "v")
+  if (item.hasAttachments) push("saveAttachments", "Save attachments", "a")
+  if (login && toList(item.passwordHistory).length > 0) push("passwordHistory", "Password history", "h")
+
+  if (card) {
+    if (card.cardholderName) push("copyCardholder", "Copy cardholder name")
+    if (card.brand) push("copyCardBrand", "Copy card brand")
+    if (card.expMonth || card.expYear) push("copyCardExpiry", "Copy card expiry")
+  }
+  if (identity) {
+    if (identityFullName(identity)) push("copyIdentityName", "Copy name")
+    if (identity.company) push("copyCompany", "Copy company")
+    if (identity.phone) push("copyPhone", "Copy phone")
+    if (identity.ssn) push("copySsn", "Copy social security number")
+    if (identity.passportNumber) push("copyPassport", "Copy passport number")
+    if (identity.licenseNumber) push("copyLicense", "Copy licence number")
+    if (nonEmptyParts([identity.address1, identity.address2, identity.address3, identity.city,
+      identity.state, identity.postalCode, identity.country]).length > 0) push("copyAddress", "Copy address")
+  }
+  if (type !== 5 && (item.hasNotes || item.notes)) push("copyNotes", "Copy notes")
+  var fields = toList(item.fields)
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i]
+    if (!f || !f.name) continue
+    if (!f.sensitive && f.value === "") continue
+    push("customField:" + f.index, "Copy field: " + f.name)
+  }
+
+  // An SSH key is read-only here.
+  if (type !== 5) {
+    push("edit", "Edit", "e")
+    push("delete", "Delete", "x")
+  }
+  return out
+}
+
+// What the palette's box leaves of `actions`: every word of the query within
+// the label, label-start matches first, the list's order otherwise.
+function filterActions(actions, query) {
+  var list = toList(actions)
+  var words = String(query || "").toLowerCase().split(/\s+/).filter(function(w) { return w !== "" })
+  if (words.length === 0) return list.slice()
+  var first = []
+  var rest = []
+  for (var i = 0; i < list.length; i++) {
+    var label = String(list[i].label).toLowerCase()
+    var all = words.every(function(w) { return label.indexOf(w) !== -1 })
+    if (!all) continue
+    if (label.indexOf(words[0]) === 0) first.push(list[i])
+    else rest.push(list[i])
+  }
+  return first.concat(rest)
 }
 
 function compareContextualMatches(a, b) {
@@ -6774,6 +6923,89 @@ function sshAgentPromptView(message, approvalWindowSec) {
   }
 }
 
+// -------------------------------------------------------------------------
+// Desktop-notification fallback and terminal replies for approvals
+// -------------------------------------------------------------------------
+
+// How long a prompt may sit unanswered before a desktop notification repeats
+// it, and how soon after a notification appears its actions are ignored (the
+// card's armDelayMs, for the same reason: a click meant for another window).
+var SSH_AGENT_NOTIFY_DELAY_MS = 8000
+var SSH_AGENT_NOTIFY_ARM_MS = 800
+
+function sshAgentNotifyDelayMs() { return SSH_AGENT_NOTIFY_DELAY_MS }
+function sshAgentNotifyArmMs() { return SSH_AGENT_NOTIFY_ARM_MS }
+
+// Notification bodies are markup on most daemons; the text is already stripped
+// of invisible characters (visibleText), so only the markup characters remain.
+function notifyEscape(text) {
+  return String(text === undefined || text === null ? "" : text)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+// The notify-send argv for one signing prompt: what the card shows (key,
+// fingerprint, program, operation), nothing else. No secret exists at this
+// point and none is added. Everything after "--" is data, never an option.
+function sshAgentNotifyCommand(view, remainingSec) {
+  if (!view || !isRequestId(view.requestId)) return []
+  var lines = []
+  var key = view.keyName || "Unnamed key"
+  lines.push(notifyEscape(key) + (view.fingerprint ? " (" + notifyEscape(view.fingerprint) + ")" : ""))
+  var program = view.processName || view.processPath || "unknown program"
+  lines.push("Program: " + notifyEscape(program))
+  if (view.operationLabel) lines.push(notifyEscape(view.operationLabel))
+  if (view.destinationLabel) lines.push(notifyEscape(view.destinationLabel))
+  if (view.forwardedWarning) lines.push(notifyEscape(view.forwardedWarning))
+  var seconds = Math.floor(Number(remainingSec))
+  if (!isFinite(seconds) || seconds < 5) seconds = 5
+  return ["notify-send", "--app-name=Bitwarden", "--urgency=normal", "--icon=dialog-password",
+    "--expire-time=" + (seconds * 1000),
+    "--action=allow=Allow once", "--action=deny=Deny", "--wait",
+    "--", "SSH signing request", lines.join("\n")]
+}
+
+// What a finished notify-send means. Only the "allow" action approves, and not
+// within the arm delay of its appearing ("early": show it again). A deny
+// action, a dismissal or an expiry (empty output, exit 0) all deny. A failed
+// notify-send (no daemon, no libnotify) decides nothing: "none".
+function sshAgentNotifyDecision(exitCode, stdout, elapsedMs) {
+  if (exitCode !== 0) return "none"
+  var action = String(stdout || "").trim()
+  if (action === "allow") {
+    return Number(elapsedMs) >= SSH_AGENT_NOTIFY_ARM_MS ? "allow" : "early"
+  }
+  return "deny"
+}
+
+// The requests a terminal may list, from the raw companion messages. Signing
+// prompts can be allowed (once, never as a grant) or denied; unlock prompts
+// only denied.
+function sshAgentPendingRequests(prompt, queue, unlockRequest, unlockQueue) {
+  var out = []
+  function add(kind, request) {
+    if (!request || !isRequestId(request.requestId)) return
+    var view = sshAgentPromptView(request, 0)
+    out.push({
+      id: view.requestId,
+      kind: kind,
+      key: view.keyName,
+      fingerprint: view.fingerprint,
+      program: view.processPath,
+      pid: view.pid,
+      operation: view.operationLabel,
+      destination: view.destinationLabel,
+      forwarded: request.forwarded === true
+    })
+  }
+  add("sign", prompt)
+  var q = Array.isArray(queue) ? queue : []
+  for (var i = 0; i < q.length; i++) add("sign", q[i])
+  add("unlock", unlockRequest)
+  var u = Array.isArray(unlockQueue) ? unlockQueue : []
+  for (var j = 0; j < u.length; j++) add("unlock", u[j])
+  return out
+}
+
 // Whether an approval_required is the release of the request an unlock_required
 // held: the same program, key and kind of signature. Request ids differ (the
 // release issues a new one), so they are not compared.
@@ -7407,6 +7639,10 @@ var SETTINGS_SCHEMA = [
     description: "Let an SSH client open the unlock prompt when the vault is locked. Off by default because every ssh connection asks for identities, including ones with nothing to do with your vault." },
   { key: "sshAgentApprovalPopup", group: "sshAgent", type: "bool", label: "Use centered approval popup", defaultValue: true,
     description: "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel." },
+  { key: "sshAgentNotifyFallback", group: "sshAgent", type: "bool", label: "Notify when a prompt goes unanswered", defaultValue: true,
+    description: "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with Allow once and Deny buttons. Dismissing or ignoring the notification denies the request. Needs notify-send." },
+  { key: "sshAgentTerminalApproval", group: "sshAgent", type: "bool", label: "Allow approving from a terminal", defaultValue: false,
+    description: "Let 'sshReply <id> allow' (omarchy-shell IPC) approve a signing request. Off by default: any program running as you could then approve its own request. Listing requests and denying them is always allowed." },
   { key: "sshAgentApprovalWindowSec", group: "sshAgent", type: "int", label: "Approve for this long", unit: "seconds",
     min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
@@ -7426,6 +7662,8 @@ var SETTINGS_SCHEMA = [
     description: "Show a recognizable image beside each login, and card brand marks, as Bitwarden does. Each login's website name is sent to your server's icon service (icons.bitwarden.net on Bitwarden's cloud), which so learns which sites you have saved." },
   { key: "sideBySide", group: "general", type: "bool", label: "Show details beside the list", defaultValue: true,
     description: "Open items in a pane beside the vault list, as Bitwarden desktop does. Off keeps the compact panel, where an item replaces the list." },
+  { key: "checkForUpdates", group: "general", type: "bool", label: "Check for updates", defaultValue: true,
+    description: "Once a day, ask GitHub for the latest release and say in Settings when a newer one exists. GitHub sees your IP address and that you asked. Off makes no request at all." },
   { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
     min: 0, max: 30, step: 1, zeroLabel: "Off", defaultValue: 3,
     description: "Replace the clipboard with the 2FA code this long after the password." },
@@ -7533,6 +7771,233 @@ function settingWriteCommand(key, value, type) {
   var script = "omarchy bar set io.github.elevate08.qs-bitwarden-cli "
     + shellQuote(String(key)) + " " + shellQuote(raw) + " --json | head -c " + MAX_MISC_BYTES
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
+}
+
+// -------------------------------------------------------------------------
+// Version and update notice
+// -------------------------------------------------------------------------
+//
+// The plugin is a git clone (`omarchy plugin add`), so its own directory says
+// where the running copy came from. The release check is one curl a day, and
+// only while "Check for updates" is on.
+var PLUGIN_ID = "io.github.elevate08.qs-bitwarden-cli"
+var UPDATE_CHECK_URL = "https://api.github.com/repos/Elevate08/qs-bitwarden-cli/releases/latest"
+var UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+var UPDATE_CHECK_TIMEOUT_SECS = 10
+var UPDATE_CHECK_MAX_BYTES = 256 * 1024
+var RELEASE_BRANCHES = ["master"]
+
+// Semantic version -> { major, minor, patch, pre: [identifier...] }, or null.
+// A leading "v" and +build metadata are accepted; numbers are capped at 9
+// digits so they compare exactly.
+function parseSemver(raw) {
+  if (typeof raw !== "string" || raw.length > 64) return null
+  var m = raw.trim().match(/^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
+  if (!m) return null
+  // No leading zeros in the numbers (SemVer 2.0.0), as in the identifiers.
+  for (var n = 1; n <= 3; n++) if (m[n].length > 1 && m[n][0] === "0") return null
+  var pre = m[4] ? m[4].split(".") : []
+  for (var i = 0; i < pre.length; i++) {
+    if (/^\d+$/.test(pre[i]) && pre[i].length > 1 && pre[i][0] === "0") return null
+    if (/^\d+$/.test(pre[i]) && pre[i].length > 9) return null
+  }
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), pre: pre }
+}
+
+function semverString(v) {
+  if (!v) return ""
+  return v.major + "." + v.minor + "." + v.patch + (v.pre.length ? "-" + v.pre.join(".") : "")
+}
+
+// -1, 0 or 1; null when either side is malformed. A prerelease sorts before
+// its release, and identifiers compare as SemVer 2.0.0 says (numbers below
+// words, a longer list above its prefix).
+function compareSemver(a, b) {
+  var x = parseSemver(a)
+  var y = parseSemver(b)
+  if (!x || !y) return null
+  var nx = [x.major, x.minor, x.patch]
+  var ny = [y.major, y.minor, y.patch]
+  for (var i = 0; i < 3; i++) {
+    if (nx[i] !== ny[i]) return nx[i] < ny[i] ? -1 : 1
+  }
+  if (!x.pre.length && !y.pre.length) return 0
+  if (!x.pre.length) return 1
+  if (!y.pre.length) return -1
+  for (var j = 0; j < Math.min(x.pre.length, y.pre.length); j++) {
+    var p = x.pre[j]
+    var q = y.pre[j]
+    var pn = /^\d+$/.test(p)
+    var qn = /^\d+$/.test(q)
+    if (pn && qn) {
+      if (Number(p) !== Number(q)) return Number(p) < Number(q) ? -1 : 1
+    } else if (pn !== qn) {
+      return pn ? -1 : 1
+    } else if (p !== q) {
+      return p < q ? -1 : 1
+    }
+  }
+  if (x.pre.length === y.pre.length) return 0
+  return x.pre.length < y.pre.length ? -1 : 1
+}
+
+// Argv (the plugin directory is a positional parameter, never spliced into the
+// script) that prints key=value lines: version, branch, commit, dirty, terminal.
+function pluginVersionProbeCommand(dir) {
+  var script = "d=$1; [ -d \"$d\" ] || exit 0; export GIT_OPTIONAL_LOCKS=0; "
+    + "v=$(sed -n 's/^ *\"version\": *\"\\([^\"]*\\)\".*/\\1/p' \"$d/manifest.json\" 2>/dev/null | head -n 1 | head -c 64); "
+    + "echo \"version=$v\"; "
+    + "if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1; then echo terminal=1; fi; "
+    // Only when the plugin directory is itself the repository, not a clone
+    // that happens to enclose it (a dotfiles repo over ~/.config).
+    + "top=$(git -C \"$d\" rev-parse --show-toplevel 2>/dev/null) || exit 0; "
+    + "[ \"$top\" = \"$(cd \"$d\" && pwd -P)\" ] || exit 0; "
+    + "echo \"branch=$(git -C \"$d\" symbolic-ref --short -q HEAD || echo HEAD)\"; "
+    + "echo \"commit=$(git -C \"$d\" rev-parse --short=7 HEAD 2>/dev/null)\"; "
+    + "if [ -n \"$(git -C \"$d\" status --porcelain --untracked-files=no 2>/dev/null | head -c 1)\" ]; then echo dirty=1; else echo dirty=0; fi"
+  return ["bash", "-c", cappedScript("{ " + script + "; } | head -c 4096", MAX_STDERR_BYTES), "bash", String(dir)]
+}
+
+// Untrusted text in, a small record out. `git` is false when the directory is
+// not a clone, `version` is "" when the manifest could not be read.
+function parsePluginVersionProbe(raw) {
+  var out = { version: "", git: false, branch: "", commit: "", dirty: false, terminal: false }
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    var cut = line.indexOf("=")
+    if (cut < 0) continue
+    var key = line.slice(0, cut)
+    var value = line.slice(cut + 1)
+    if (key === "version") {
+      var v = parseSemver(value)
+      out.version = v ? semverString(v) : ""
+    } else if (key === "branch" && /^[A-Za-z0-9._\/-]{1,100}$/.test(value)) {
+      out.branch = value
+      out.git = true
+    } else if (key === "commit" && /^[0-9a-f]{7,40}$/.test(value)) {
+      out.commit = value
+    } else if (key === "dirty") {
+      out.dirty = value === "1"
+    } else if (key === "terminal") {
+      out.terminal = value === "1"
+    }
+  }
+  if (!out.commit) out.git = false
+  return out
+}
+
+// A release is a clean checkout of the release branch.
+function isReleaseBuild(info) {
+  return Boolean(info && info.git && !info.dirty && RELEASE_BRANCHES.indexOf(info.branch) >= 0)
+}
+
+// "1.13.0 (master @ abc1234)", "dev build (branch feat/x @ abc1234, uncommitted
+// changes)", or just the version when git cannot say.
+function versionLabel(info) {
+  if (!info) return ""
+  var version = info.version || "unknown version"
+  if (!info.git) return version
+  if (isReleaseBuild(info)) return version + " (" + info.branch + " @ " + info.commit + ")"
+  var where = info.branch === "HEAD" ? "detached HEAD" : "branch " + info.branch
+  return "dev build (" + where + " @ " + info.commit + (info.dirty ? ", uncommitted changes" : "") + ")"
+}
+
+function updateCheckCommand() {
+  // -q first: ignore ~/.curlrc. HTTPS only, also across redirects.
+  return ["curl", "-q", "-sS", "--proto", "=https", "--proto-redir", "=https", "--location", "--max-redirs", "3",
+    "--max-time", String(UPDATE_CHECK_TIMEOUT_SECS), "--connect-timeout", String(UPDATE_CHECK_TIMEOUT_SECS),
+    "--max-filesize", String(UPDATE_CHECK_MAX_BYTES),
+    "-H", "Accept: application/vnd.github+json", "-A", "qs-bitwarden-cli-update-check",
+    UPDATE_CHECK_URL]
+}
+
+// The release's version ("1.14.0"), from the API's JSON; "" for anything else,
+// a draft or a prerelease included.
+function parseLatestRelease(raw) {
+  var text = String(raw || "")
+  if (text.length === 0 || text.length > UPDATE_CHECK_MAX_BYTES) return ""
+  var data
+  try { data = JSON.parse(text) } catch (e) { return "" }
+  if (!data || typeof data !== "object" || data.draft === true || data.prerelease === true) return ""
+  var tag = data.tag_name
+  if (typeof tag !== "string" || tag.charAt(0) !== "v") return ""
+  var v = parseSemver(tag)
+  return v && !v.pre.length ? semverString(v) : ""
+}
+
+// Due when on and never checked, a day on, or the stored time is in the
+// future (a clock that was wrong).
+function updateCheckDue(enabled, state, nowMs) {
+  if (enabled !== true) return false
+  var at = state && typeof state === "object" ? Number(state.checkedAt) : 0
+  if (!isFinite(at) || at <= 0) return true
+  var now = Number(nowMs)
+  if (!isFinite(now)) return false
+  return at > now || now - at >= UPDATE_CHECK_INTERVAL_MS
+}
+
+// What a finished check stores: the time always (so a failure waits a day too),
+// the release only when one was read (else the previous one stays).
+function updateCheckRecord(previous, latest, nowMs) {
+  var prev = previous && typeof previous === "object" ? parseSemver(String(previous.latest || "")) : null
+  return { checkedAt: Number(nowMs) || 0, latest: latest || (prev ? semverString(prev) : "") }
+}
+
+// The newer release's version, or "". Never for a dev build, and never when
+// the installed version is the same, newer or unreadable.
+function updateAvailable(info, state, enabled) {
+  if (enabled !== true || !isReleaseBuild(info) || !state || typeof state !== "object") return ""
+  var latest = parseSemver(String(state.latest || ""))
+  if (!latest || latest.pre.length) return ""
+  return compareSemver(info.version, semverString(latest)) === -1 ? semverString(latest) : ""
+}
+
+// The last check lives in a small file beside the other plugin state, not in
+// shell.json: writing a setting reloads the shell, which would redraw the
+// panel under the user once a day.
+var UPDATE_CHECK_FILE = "update-check.json"
+var MAX_UPDATE_STATE_BYTES = 1024
+
+function updateCheckReadCommand() {
+  var script = "d=\"" + ASSOC_DIR + "\"; f=\"$d/" + UPDATE_CHECK_FILE + "\"; "
+    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
+    + "head -c " + MAX_UPDATE_STATE_BYTES + " \"$f\" 2>/dev/null || true; fi"
+  return ["bash", "-c", script]
+}
+
+// The record arrives on stdin (see updateCheckRecord()), never in the script.
+function updateCheckWriteCommand() {
+  var script = "set -e; d=\"" + ASSOC_DIR + "\"; "
+    + privateDirScript("d")
+    + "umask 077; tmp=$(mktemp -- \"$d/.update-check.XXXXXXXX\"); "
+    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
+    + "head -c " + (MAX_UPDATE_STATE_BYTES + 1) + " > \"$tmp\"; "
+    + "[ \"$(wc -c < \"$tmp\")\" -le " + MAX_UPDATE_STATE_BYTES + " ]; chmod 600 \"$tmp\"; "
+    + "mv -fT -- \"$tmp\" \"$d/" + UPDATE_CHECK_FILE + "\"; trap - EXIT HUP INT TERM"
+  return ["bash", "-c", script]
+}
+
+// Stored text in, { checkedAt, latest } out; null for anything unusable.
+function parseUpdateCheckState(raw) {
+  var text = String(raw || "")
+  if (text === "" || text.length > MAX_UPDATE_STATE_BYTES) return null
+  var data
+  try { data = JSON.parse(text) } catch (e) { return null }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null
+  var at = Number(data.checkedAt)
+  if (!isFinite(at) || at <= 0) return null
+  var v = parseSemver(typeof data.latest === "string" ? data.latest : "")
+  return { checkedAt: at, latest: v && !v.pre.length ? semverString(v) : "" }
+}
+
+function pluginUpdateCommandText() {
+  return "omarchy plugin update " + PLUGIN_ID
+}
+
+// The command, in Omarchy's floating terminal.
+function pluginUpdateLaunchCommand() {
+  return ["omarchy-launch-floating-terminal-with-presentation", pluginUpdateCommandText()]
 }
 
 // -------------------------------------------------------------------------
@@ -8033,4 +8498,22 @@ function presenterIndex(views, focusedScreen) {
     }
   }
   return 0
+}
+
+// Filter cycling
+//
+// The option after (delta 1) or before (delta -1) the active one in a filter
+// drawer's list (Service.filterOptions(): { id, active }), wrapping at the
+// ends. Same walk as cycleCategory() for Tab: an unmatched active option
+// counts as the first. Returns the option's id, or "" for an empty list.
+function nextFilterOptionId(options, delta) {
+  var list = options || []
+  if (list.length === 0) return ""
+  var current = 0
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].active) { current = i; break }
+  }
+  var step = delta < 0 ? -1 : 1
+  var next = (current + step + list.length) % list.length
+  return list[next].id
 }

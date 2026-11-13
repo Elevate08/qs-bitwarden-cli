@@ -133,6 +133,19 @@ Item {
   // The vault list and an item's detail side by side (the view decides
   // whether the screen is wide enough).
   readonly property bool sideBySide: Model.boolSetting("sideBySide", setting("sideBySide", true))
+  // One request a day to GitHub's releases API; off makes none.
+  readonly property bool checkForUpdates: Model.boolSetting("checkForUpdates", setting("checkForUpdates", true))
+  // { checkedAt, latest } of the last release check, kept in update-check.json
+  // in the plugin's state directory (not shell.json: writing a setting reloads
+  // the shell) and read when Settings opens.
+  property var updateCheckState: null
+  // Where this copy came from (parsePluginVersionProbe()), read on opening Settings.
+  property var pluginVersionInfo: null
+  readonly property string pluginVersionLabel: pluginVersionInfo ? Model.versionLabel(pluginVersionInfo) : ""
+  readonly property string updateAvailableVersion:
+    Model.updateAvailable(pluginVersionInfo, updateCheckState, checkForUpdates)
+  readonly property string pluginUpdateCommandText: Model.pluginUpdateCommandText()
+  readonly property bool pluginUpdateCanLaunch: Boolean(pluginVersionInfo && pluginVersionInfo.terminal)
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
@@ -146,6 +159,8 @@ Item {
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
   readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", true))
+  readonly property bool sshAgentNotifyFallback: Model.boolSetting("sshAgentNotifyFallback", setting("sshAgentNotifyFallback", true))
+  readonly property bool sshAgentTerminalApproval: Model.boolSetting("sshAgentTerminalApproval", setting("sshAgentTerminalApproval", false))
   readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
 
   // State
@@ -206,7 +221,7 @@ Item {
   // handoff is only read shortly after. See sessionHandoffReadCommand().
   property double terminalLoginStartedAt: 0
 
-  // Navigation: "main" | "detail" | "edit" | "settings" | "setup" | "pin" |
+  // Navigation: "main" | "detail" | "history" | "edit" | "settings" | "setup" | "pin" |
   // "fingerprint" | "generator" | "sends" | "sshApproval" | "locked". Lock and
   // login screens follow `status`; "locked" only moves off the open screen.
   property string currentScreen: "main"
@@ -351,7 +366,7 @@ Item {
     }
     var epoch = vaultEpoch
     vaultQuery("field", { id: id, field: key }, function(ok, value) {
-      if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
+      if (epoch !== root.vaultEpoch || (root.currentScreen !== "detail" && root.currentScreen !== "history")
           || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
       if (!ok) {
         root.errorMessage = "Could not read this value"
@@ -359,6 +374,21 @@ Item {
       }
       callback(String(value))
     })
+  }
+
+  // Password history: a sub-screen of the open login's detail. The dates are
+  // public; each old password is revealed or copied by its own key
+  // ("passwordHistory:<index>") through the same paths as the password.
+  readonly property int detailHistoryCount: detailItem && detailIsLoginLike && Array.isArray(detailItem.passwordHistory)
+    ? detailItem.passwordHistory.length : 0
+
+  function openHistory() {
+    if (currentScreen !== "detail" || detailHistoryCount === 0) return
+    currentScreen = "history"
+  }
+
+  function closeHistory() {
+    if (currentScreen === "history") currentScreen = "detail"
   }
 
   // The detail screen's copy of one secret: the helper hands it to wl-copy
@@ -2580,6 +2610,8 @@ Item {
 
   function showSshApproval(message) {
     root.sshPrompt = Model.sshAgentPromptView(message, root.sshAgentApprovalWindowSec)
+    root.sshPromptRaw = message
+    armSshNotifyFallback()
     if (startSshPromptClock()) return
     if (root.currentScreen !== "sshApproval") root.screenBeforeSshApproval = root.currentScreen
     // Recorded before opening, because open() is what makes it true.
@@ -2606,6 +2638,8 @@ Item {
   }
 
   function dismissSshApproval() {
+    stopSshNotifyFallback()
+    root.sshPromptRaw = null
     var openedForThis = root.sshPromptOpenedPanel
     var popupWasUsed = root.sshApprovalPopupOpen
     root.sshPrompt = null
@@ -2678,6 +2712,10 @@ Item {
 
   function approveSshRequest(grantSeconds) {
     if (!sshPrompt) return
+    // Approving is a person acting, and the signature it allows is the use the
+    // vault is kept open for. An identity listing (`ssh-add -l`) is neither,
+    // and is not counted anywhere: see onSshAgentMessage().
+    resetAutoLockTimer()
     sshAgentWrite(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
     noteSshCooldown()
@@ -2767,6 +2805,135 @@ Item {
     sshAgentWrite(Model.sshAgentRevokeGrantsLine())
   }
 
+  // The approval_required message behind sshPrompt (the view drops fields
+  // the terminal listing needs).
+  property var sshPromptRaw: null
+
+  // --- Desktop-notification fallback ---------------------------------------
+  // "Unavailable" means the card was shown and nobody answered within a few
+  // seconds: the panel may be on a screen nobody is looking at, covered, or
+  // not drawn at all. (A shell that is not running has no agent either: the
+  // helper is its child and exits with it, so there is nothing to ask.)
+  // Only signing prompts get one; an unlock needs a secret typed, which a
+  // notification must never collect.
+  property int sshNotifyRequestId: -1
+  property double sshNotifyStartedMs: 0
+
+  function armSshNotifyFallback() {
+    stopSshNotifyFallback()
+    if (!root.sshAgentNotifyFallback || !root.sshPrompt) return
+    sshNotifyTimer.interval = Model.sshAgentNotifyDelayMs()
+    sshNotifyTimer.restart()
+  }
+
+  function stopSshNotifyFallback() {
+    sshNotifyTimer.stop()
+    // Cleared first, so the kill's exit decides nothing.
+    root.sshNotifyRequestId = -1
+    if (sshNotifyProc.running) sshNotifyProc.running = false
+  }
+
+  function showSshNotification() {
+    if (!root.sshAgentNotifyFallback || !root.sshPrompt || sshNotifyProc.running) return
+    var elapsedSec = (Date.now() - root.sshPromptStartedMs) / 1000
+    var remaining = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000 - elapsedSec)
+    var command = Model.sshAgentNotifyCommand(root.sshPrompt, remaining)
+    if (command.length === 0) return
+    root.sshNotifyRequestId = root.sshPrompt.requestId
+    root.sshNotifyStartedMs = Date.now()
+    sshNotifyProc.command = command
+    sshNotifyProc.running = true
+  }
+
+  function onSshNotifyExited(exitCode, stdout) {
+    var id = root.sshNotifyRequestId
+    root.sshNotifyRequestId = -1
+    // Answered elsewhere, or a different request is up now.
+    if (id < 0 || !root.sshPrompt || root.sshPrompt.requestId !== id) return
+    var decision = Model.sshAgentNotifyDecision(exitCode, stdout, Date.now() - root.sshNotifyStartedMs)
+    if (decision === "allow") approveSshRequest(0)
+    else if (decision === "deny") denyCurrentSshPrompt()
+    else if (decision === "early") showSshNotification()
+  }
+
+  Timer {
+    id: sshNotifyTimer
+    repeat: false
+    onTriggered: root.showSshNotification()
+  }
+
+  Process {
+    id: sshNotifyProc
+    stdout: StdioCollector { id: sshNotifyStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onSshNotifyExited(exitCode, sshNotifyStdout.text) }
+  }
+
+  // --- Terminal replies ------------------------------------------------------
+  function denyCurrentSshPrompt() {
+    if (!sshPrompt) return
+    sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+    noteSshCooldown()
+    advanceSshPrompt()
+  }
+
+  function sshPendingJson() {
+    return JSON.stringify({
+      terminalApproval: root.sshAgentTerminalApproval,
+      requests: Model.sshAgentPendingRequests(root.sshPromptRaw, root.sshPromptQueue,
+        root.sshUnlockRaw, root.sshUnlockQueue)
+    })
+  }
+
+  // The same answers as the card: allow is once, never a grant; deny is always
+  // possible. Allowing from a terminal is its own opt-in.
+  function replySshRequest(idText, decision) {
+    var text = String(idText || "").trim()
+    var id = /^[0-9]{1,15}$/.test(text) ? Number(text) : -1
+    var allow = decision === "allow"
+    if (id < 0 || (!allow && decision !== "deny")) return "invalid"
+    if (allow && !root.sshAgentTerminalApproval) return "disabled"
+    if (root.sshPrompt && root.sshPrompt.requestId === id) {
+      if (allow) approveSshRequest(0)
+      else denyCurrentSshPrompt()
+      return allow ? "allowed" : "denied"
+    }
+    var queued = Model.sshAgentRemovePrompt(root.sshPromptQueue, id)
+    if (queued.length !== root.sshPromptQueue.length) {
+      root.sshPromptQueue = queued
+      if (allow) {
+        resetAutoLockTimer()
+        sshAgentWrite(Model.sshAgentApproveLine(id, 0))
+        root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
+      } else {
+        sshAgentWrite(Model.sshAgentDenyLine(id))
+        root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+      }
+      noteSshCooldown()
+      return allow ? "allowed" : "denied"
+    }
+    // An unlock prompt may be denied, never allowed.
+    if (allow) {
+      var pending = Model.sshAgentPendingRequests(null, [], root.sshUnlockRaw, root.sshUnlockQueue)
+      for (var i = 0; i < pending.length; i++) if (pending[i].id === id) return "unlock-only"
+      return "unknown"
+    }
+    if (root.sshUnlockRequest && root.sshUnlockRequest.requestId === id) {
+      sshAgentWrite(Model.sshAgentUnlockCancelledLine(id))
+      root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+      noteSshCooldown()
+      advanceSshUnlock()
+      return "denied"
+    }
+    var unlockLeft = Model.sshAgentRemovePrompt(root.sshUnlockQueue, id)
+    if (unlockLeft.length !== root.sshUnlockQueue.length) {
+      root.sshUnlockQueue = unlockLeft
+      sshAgentWrite(Model.sshAgentUnlockCancelledLine(id))
+      return "denied"
+    }
+    return "unknown"
+  }
+
   property var sshPromotedOldId: null
   // The unlock_required message the shown prompt was promoted from. An unlock
   // releases every held request in no fixed order, so the first approval_required
@@ -2777,6 +2944,7 @@ Item {
     if (root.sshPromotedOldId !== null && root.sshPrompt
         && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
       root.sshPrompt.requestId = message.requestId
+      root.sshPromptRaw = message
       root.sshPromotedOldId = null
       root.sshPromotedRaw = null
       return true
@@ -2799,6 +2967,10 @@ Item {
       showSshApproval(message)
       return
     }
+    // An "unlock_required" with reason "list-identities" is `ssh-add -l` against
+    // an empty cache. Like every message here it is not user activity: nothing
+    // in this function refreshes the auto-lock deadline. Only a person acting
+    // does (approveSshRequest(), unlocking).
     if (message.type === "unlock_required") {
       if (!sshAgentMayPrompt()) {
         sshAgentWrite(Model.sshAgentUnlockCancelledLine(message.requestId))
@@ -5504,6 +5676,7 @@ Item {
     autoTypeKeybindResult = null
     if (autoTypeEnabled) inspectAutoTypeKeybind()
     currentScreen = "settings"
+    refreshVersionInfo()
     Qt.callLater(function() { eachView(function(view) { view.updateSettingsSticky() }) })
   }
 
@@ -5523,6 +5696,47 @@ Item {
   function writeSettingQuietly(key, value, type) {
     settingWriteProc.command = Model.settingWriteCommand(key, value, type)
     settingWriteProc.running = true
+  }
+
+  // Settings opened: say where this copy came from, and ask GitHub for the
+  // latest release when it is due (at most daily, never when switched off).
+  function refreshVersionInfo() {
+    var dir = Model.pluginDirFromUrl(String(Qt.resolvedUrl(".")))
+    if (dir !== "" && !pluginVersionProc.running) {
+      pluginVersionProc.command = Model.pluginVersionProbeCommand(dir)
+      pluginVersionProc.running = true
+    }
+    // Off: not even the state file is read, and no request follows.
+    if (checkForUpdates && !updateCheckStateProc.running && !updateCheckProc.running) {
+      updateCheckStateProc.command = Model.updateCheckReadCommand()
+      updateCheckStateProc.running = true
+    }
+  }
+
+  function onUpdateCheckStateRead(raw) {
+    updateCheckState = Model.parseUpdateCheckState(raw)
+    if (!updateCheckProc.running && Model.updateCheckDue(checkForUpdates, updateCheckState, Date.now())) {
+      updateCheckProc.command = Model.updateCheckCommand()
+      updateCheckProc.running = true
+    }
+  }
+
+  function onUpdateCheckFinished(raw) {
+    // A failed request prints no release JSON, so it parses to "". The time
+    // is stored anyway: offline, the next try waits a day too.
+    var latest = Model.parseLatestRelease(raw)
+    updateCheckState = Model.updateCheckRecord(updateCheckState, latest, Date.now())
+    if (updateCheckWriteProc.running) return
+    updateCheckWriteProc.stdinEnabled = true
+    updateCheckWriteProc.running = true
+    updateCheckWriteProc.write(JSON.stringify(updateCheckState))
+    updateCheckWriteProc.stdinEnabled = false
+  }
+
+  function runPluginUpdate() {
+    if (!pluginUpdateCanLaunch) return
+    close()
+    Quickshell.execDetached(Model.pluginUpdateLaunchCommand())
   }
 
   function rememberTwoFactorMethod(method) {
@@ -5561,6 +5775,7 @@ Item {
       case "suggestOnOpen": return suggestOnOpen
       case "showWebsiteIcons": return showWebsiteIcons
       case "sideBySide": return sideBySide
+      case "checkForUpdates": return checkForUpdates
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
@@ -5569,6 +5784,8 @@ Item {
       case "sshAgentEnabled": return sshAgentEnabled
       case "sshAgentUnlockOnDemand": return sshAgentUnlockOnDemand
       case "sshAgentApprovalPopup": return sshAgentApprovalPopup
+      case "sshAgentNotifyFallback": return sshAgentNotifyFallback
+      case "sshAgentTerminalApproval": return sshAgentTerminalApproval
       case "sshAgentApprovalWindowSec": return sshAgentApprovalWindowSec
     }
     return entry.type === "bool" ? Model.boolSetting(entry.key, setting(entry.key, entry.defaultValue)) : Number(setting(entry.key, 0))
@@ -6996,6 +7213,8 @@ Item {
     } else if (currentScreen === "edit") {
       // Escape discards the form, like its Cancel button.
       currentScreen = formIsEditing ? "detail" : "main"
+    } else if (currentScreen === "history") {
+      closeHistory()
     } else if (currentScreen === "detail") {
       currentScreen = "main"
     } else {
@@ -7021,14 +7240,15 @@ Item {
     // An SSH approval shown in the panel covers the screen it came over and
     // returns to it, so the item and its form are judged by that screen.
     var screen = currentScreen === "sshApproval" ? screenBeforeSshApproval : currentScreen
-    var inItem = screen === "detail" || screen === "edit"
+    var inItem = screen === "detail" || screen === "history" || screen === "edit"
       || (screen === "generator" && generatorReturnScreen === "edit")
     if (repromptPending) cancelReprompt()
     if (!inItem) {
       clearRepromptGrant()
       liveTotp = ""
     } else if (screen === "detail") {
-      // Back from the edit form: the whole item it loaded goes.
+      // Back from the edit form or the password history: the whole item it
+      // loaded goes, and every revealed value with it.
       withholdDetailSecrets()
     }
     // The edit form's copy of the item, a typed or generated password
@@ -8178,6 +8398,16 @@ Item {
     selectedOrg = orgId
     selectedIndex = 0
     rebuildFilter()
+  }
+
+  // Alt+V (vault scope) and Ctrl+Alt+F (folder): step the filter without
+  // opening its drawer, over the same rows the drawer lists.
+  function cycleFilter(group, delta) {
+    var id = Model.nextFilterOptionId(filterOptions(group), delta)
+    if (id === "") return
+    openFilterGroup = ""
+    if (group === "folders") selectFolder(id)
+    else selectOrganization(id)
   }
 
   function cycleCategory(delta) {
@@ -9518,6 +9748,36 @@ Item {
   }
 
   Process {
+    id: pluginVersionProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.pluginVersionInfo = Model.parsePluginVersionProbe(text)
+    }
+  }
+
+  Process {
+    id: updateCheckStateProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onUpdateCheckStateRead(text)
+    }
+  }
+
+  Process {
+    id: updateCheckWriteProc
+    command: Model.updateCheckWriteCommand()
+    stdinEnabled: true
+  }
+
+  Process {
+    id: updateCheckProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onUpdateCheckFinished(text)
+    }
+  }
+
+  Process {
     id: settingWriteProc
     stderr: StdioCollector {
       id: settingWriteStderr
@@ -10071,6 +10331,14 @@ Item {
     }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
+    // Pending SSH requests as JSON (non-secret: what the approval card shows).
+    function sshPending(): string { return root.sshPendingJson() }
+    // Answers one by id: decision "allow" (once; needs sshAgentTerminalApproval)
+    // or "deny". Returns allowed, denied, disabled, unlock-only, unknown or
+    // invalid.
+    function sshReply(id: string, decision: string): string {
+      return root.replySshRequest(id, decision)
+    }
     // Types the armed entry's username, Tab and password into the focused
     // window (see requestAutoType()). "started" is not delivery: the panel
     // says how it went.

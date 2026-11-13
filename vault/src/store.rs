@@ -36,6 +36,8 @@ pub enum SecretField {
     LicenseNumber,
     /// The custom field at this position in the item's `fields`.
     Custom(usize),
+    /// The previous password at this position in the item's `passwordHistory`.
+    History(usize),
 }
 
 impl SecretField {
@@ -49,16 +51,11 @@ impl SecretField {
             "passportNumber" => Self::PassportNumber,
             "licenseNumber" => Self::LicenseNumber,
             other => {
-                let index = other.strip_prefix("customField:")?;
-                // Plain digits without a leading zero, so a field has one name.
-                if index.is_empty()
-                    || index.len() > 4
-                    || !index.bytes().all(|b| b.is_ascii_digit())
-                    || (index.len() > 1 && index.starts_with('0'))
-                {
-                    return None;
+                if let Some(index) = other.strip_prefix("customField:") {
+                    Self::Custom(parse_index(index)?)
+                } else {
+                    Self::History(parse_index(other.strip_prefix("passwordHistory:")?)?)
                 }
-                Self::Custom(index.parse().ok()?)
             }
         })
     }
@@ -72,9 +69,22 @@ impl SecretField {
             Self::Ssn => &["identity", "ssn"],
             Self::PassportNumber => &["identity", "passportNumber"],
             Self::LicenseNumber => &["identity", "licenseNumber"],
-            Self::Custom(_) => return None,
+            Self::Custom(_) | Self::History(_) => return None,
         })
     }
+}
+
+/// A list position as the panel names it: plain digits without a leading
+/// zero, so an entry has one name.
+fn parse_index(index: &str) -> Option<usize> {
+    if index.is_empty()
+        || index.len() > 4
+        || !index.bytes().all(|b| b.is_ascii_digit())
+        || (index.len() > 1 && index.starts_with('0'))
+    {
+        return None;
+    }
+    index.parse().ok()
 }
 
 /// The item field a linked custom field points at, for the linked fields the
@@ -215,10 +225,21 @@ impl Store {
         if let Some(path) = field.path() {
             return self.value_at(id, path);
         }
+        let mut item: Value = serde_json::from_str(self.item(id)?).ok()?;
+        if let SecretField::History(index) = field {
+            let value = item
+                .get("passwordHistory")
+                .and_then(Value::as_array)
+                .and_then(|history| history.get(*index))
+                .and_then(|entry| entry.get("password"))
+                .and_then(Value::as_str)
+                .map(|s| Zeroizing::new(s.to_owned()));
+            wipe_value(&mut item);
+            return value;
+        }
         let SecretField::Custom(index) = field else {
             return None;
         };
-        let mut item: Value = serde_json::from_str(self.item(id)?).ok()?;
         let value = (|| {
             let custom = item.get("fields")?.as_array()?.get(*index)?;
             let text = |node: &Value| node.as_str().map(|s| Zeroizing::new(s.to_owned()));
@@ -405,6 +426,23 @@ fn strip_item(item: &mut Map<String, Value>) {
     ] {
         held.insert(flag.into(), Value::Bool(present(item, path)));
     }
+    // Previous passwords stay behind; their dates (not secret) tell the panel
+    // how many there were and when each was last used, in the same order.
+    if let Some(Value::Array(history)) = item.get("passwordHistory") {
+        let dates = history
+            .iter()
+            .map(|entry| {
+                Value::String(
+                    entry
+                        .get("lastUsedDate")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            })
+            .collect();
+        held.insert("passwordHistory".into(), Value::Array(dates));
+    }
     for path in SECRET_PATHS {
         remove(item, path);
     }
@@ -480,7 +518,7 @@ mod tests {
             "sshCapability": "confirmed",
             "items": [
                 { "id": "a", "type": 1, "name": "Bank", "notes": "recovery words",
-                  "passwordHistory": [{ "password": "old-pw" }],
+                  "passwordHistory": [{ "password": "old-pw", "lastUsedDate": "2024-05-01T10:00:00.000Z" }],
                   "login": { "username": "me", "password": "hunter2", "totp": "JBSWY3DPEHPK3PXP",
                              "uris": [{ "uri": "https://bank.example", "match": 3 }] },
                   "fields": [{ "name": "pin", "value": "4242", "type": 1 }, { "name": "note", "value": "plain", "type": 0 }] },
@@ -492,6 +530,19 @@ mod tests {
             "sshKeys": [{ "id": "s", "name": "Laptop", "type": 5, "publicKey": "ssh-ed25519 AAAA", "fingerprint": "SHA256:x" }]
         })
         .to_string()
+    }
+
+    #[test]
+    fn a_previous_password_is_read_by_position() {
+        let mut store = Store::default();
+        store.strip_vault(&vault(), true).unwrap();
+        let read = |id: &str, name: &str| {
+            let field = SecretField::parse(name)?;
+            store.item_secret(id, &field).map(|v| v.as_str().to_owned())
+        };
+        assert_eq!(read("a", "passwordHistory:0").as_deref(), Some("old-pw"));
+        assert_eq!(read("a", "passwordHistory:1"), None);
+        assert_eq!(read("c", "passwordHistory:0"), None);
     }
 
     #[test]
@@ -519,7 +570,8 @@ mod tests {
         assert_eq!(
             bank["qsbwHeld"],
             serde_json::json!({ "password": true, "totp": true, "notes": true, "cardCode": false,
-                                "ssn": false, "passportNumber": false, "licenseNumber": false })
+                                "ssn": false, "passportNumber": false, "licenseNumber": false,
+                                "passwordHistory": ["2024-05-01T10:00:00.000Z"] })
         );
         assert_eq!(parsed["items"][1]["qsbwHeld"]["cardCode"], true);
         assert_eq!(parsed["items"][2]["qsbwHeld"]["ssn"], true);
@@ -544,6 +596,8 @@ mod tests {
             ("licenseNumber", SecretField::LicenseNumber),
             ("customField:0", SecretField::Custom(0)),
             ("customField:12", SecretField::Custom(12)),
+            ("passwordHistory:0", SecretField::History(0)),
+            ("passwordHistory:12", SecretField::History(12)),
         ] {
             assert_eq!(SecretField::parse(name), Some(field), "{name}");
         }
@@ -564,6 +618,10 @@ mod tests {
             "customField:12345",
             "customField:99999999999999999999",
             "customfield:1",
+            "passwordHistory:",
+            "passwordHistory:01",
+            "passwordHistory:-1",
+            "passwordHistory:a",
         ] {
             assert_eq!(SecretField::parse(name), None, "{name:?}");
         }

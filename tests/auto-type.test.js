@@ -553,6 +553,7 @@ function searchBoxWith(opts = {}) {
     armed: [], alt: [],
     getSelectedItem() { return r.filteredItems[r.selectedIndex] || null },
     copyPasswordAndArm(item) { r.armed.push(item.id); return opts.armResult !== false },
+    cycleFilterFromKey() { return false },
     runAltShortcut(t) { r.alt.push(t); return true }
   }
   r.armAutoTypeFromKey = new Function("root", "Qt", body("armAutoTypeFromKey") + "\nreturn armAutoTypeFromKey")(r, Qt)

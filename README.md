@@ -44,6 +44,8 @@ whichever `bw` it finds there.
 
 To update: `omarchy plugin update io.github.elevate08.qs-bitwarden-cli`
 
+To open the panel from a key, see [Global hotkey](#global-hotkey), including how to take over Omarchy's `SUPER + SHIFT + SLASH` password-manager shortcut.
+
 ### Sign in
 
 <img src="docs/screenshots/12-login.png" width="420" align="right" alt="Login screen">
@@ -334,10 +336,13 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up), or open the item when there is no password to copy -- a card, an identity, a note, an SSH key |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy the highlighted login's password and arm it for 30 seconds, for the `autoType` IPC to type. That is the row <kbd>Enter</kbd> acts on, the first suggestion (or first item) when the panel opens, so nothing needs selecting first; it works from the search box too, unless text is selected there. Off, or over selected text, it is the usual copy |
+| <kbd>Ctrl</kbd>+<kbd>K</kbd> | Open the **action palette** for the highlighted item: every action it supports, with its letter, filtered as you type (<kbd>↑</kbd> / <kbd>↓</kbd> move, <kbd>Enter</kbd> runs, <kbd>Esc</kbd> closes). Works from the search box too |
 | <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
 | <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle types without opening the drawer |
+| <kbd>Alt</kbd>+<kbd>v</kbd> / <kbd>Alt+Shift+v</kbd> | Cycle the **v**ault scope without opening the drawer: all vaults, My Vault, each organization. Works from the search box |
+| <kbd>Ctrl+Alt+f</kbd> / <kbd>Ctrl+Alt+Shift+f</kbd> | Cycle **f**olders without opening the drawer: all, No Folder, each folder. Works from the search box. (<kbd>Alt</kbd>+<kbd>f</kbd> remains the Folders drawer, the Alt mirror of <kbd>f</kbd>, so folders take <kbd>Ctrl</kbd> as well) |
 | <kbd>p</kbd> *(or <kbd>y</kbd>)* | Copy **p**assword |
 | <kbd>u</kbd> *(or <kbd>c</kbd>)* | Copy **u**sername / email |
 | <kbd>m</kbd> | Copy TOTP **m**ulti-factor code |
@@ -368,7 +373,9 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>k</kbd> | Copy a card's security code |
 | <kbd>m</kbd> | Copy TOTP code |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy a login's password and arm it for 30 seconds |
+| <kbd>Ctrl</kbd>+<kbd>K</kbd> | Action palette for this item: copy any field it has (card and identity fields, custom fields, notes), open its website, reveal, save attachments, edit, delete |
 | <kbd>v</kbd> | Toggle re**v**eal on the item's principal secret -- the password on a login, the number on a card. Every other masked field has its own eye, and each reveals independently |
+| <kbd>h</kbd> | Open the password **h**istory of a login that has one: each previous password, newest first, masked, with reveal and copy. <kbd>Esc</kbd> / <kbd>b</kbd> / <kbd>q</kbd> return to the item |
 | <kbd>a</kbd> | Save every **a**ttachment on this item |
 | <kbd>e</kbd> | Edit this item |
 | <kbd>x</kbd> | Delete this item (asks first) |
@@ -380,6 +387,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | Shortcut | Action |
 | :--- | :--- |
 | <kbd>f</kbd> / <kbd>o</kbd> / <kbd>t</kbd> | Open (or close) that drawer |
+| <kbd>Alt</kbd>+<kbd>v</kbd> / <kbd>Ctrl+Alt+f</kbd> | Step the vault scope / folder to the next option without opening a drawer (<kbd>Shift</kbd> goes back); a drawer left open closes |
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Move through the options |
 | <kbd>Enter</kbd> | Apply the highlighted option |
 | <kbd>Esc</kbd> | Close without changing anything |
@@ -557,6 +565,32 @@ by hand.
 Off by default. See **[docs/ssh-agent.md](docs/ssh-agent.md)** for setup, the
 provenance check, and what the agent does and does not protect.
 
+If a signing request sits unanswered for about eight seconds, it is repeated as
+a desktop notification with **Allow once** and **Deny** (`notify-send`;
+dismissing it denies; `sshAgentNotifyFallback`). From a terminal,
+`omarchy-shell io.github.elevate08.qs-bitwarden-cli sshPending` lists the
+requests and `... sshReply <id> deny` answers one; `sshReply <id> allow` also
+needs **Allow approving from a terminal** (`sshAgentTerminalApproval`, off by
+default). `ssh-add -l` never counts as activity for auto-lock; approving a
+signature does.
+
+### Version and updates
+
+**Settings → Version** shows the plugin's version and where this copy came from,
+read from the plugin's own directory: `1.13.0 (master @ abc1234)` for
+a clean checkout of `master`, or `dev build (branch feat/x @ abc1234,
+uncommitted changes)` for anything else. It also shows the `bw` CLI version.
+
+Opening Settings checks GitHub's latest release at most once a day, and the
+result is kept in `update-check.json` in the plugin's state directory
+(`${XDG_STATE_HOME:-~/.local/state}/qs-bitwarden-cli/`: when it last asked and what it
+found), not in `shell.json`, so a check never reloads the shell. When the release is newer than a clean `master` install, Settings says
+"Update available: X.Y.Z" with a button that runs `omarchy plugin update
+io.github.elevate08.qs-bitwarden-cli` in a floating terminal; without
+Omarchy's floating-terminal helper it shows that command to run yourself. A dev
+build never gets the notice. **Settings → General → Check for updates**
+(`checkForUpdates`) turns the check off, and then no request is made.
+
 ### Automatic sync
 
 Every 15 minutes by default. **Settings → General → Automatically sync every**
@@ -659,6 +693,17 @@ o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell io.github.eleva
 If the key is one of Omarchy's defaults (`omarchy menu keybindings --print`
 lists them), add `hl.unbind("SUPER + CTRL + SLASH")` on the line before it.
 
+**Taking over Omarchy's password-manager key.** Omarchy binds
+`SUPER + SHIFT + SLASH` to **Passwords**, which launches 1Password. To make it
+open this panel instead, put this in `~/.config/hypr/bindings.lua`:
+
+```lua
+hl.unbind("SUPER + SHIFT + SLASH")
+o.bind("SUPER + SHIFT + SLASH", "Bitwarden vault", "omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle")
+```
+
+No window rule is needed: the panel is a shell layer surface, not a window.
+
 ---
 
 ## Configuration Reference
@@ -681,6 +726,7 @@ The following settings are read from the plugin's own entry in the
 | `autoTypeEnabled` | `boolean` | `false` | Let <kbd>Ctrl</kbd>+<kbd>C</kbd> in the panel arm a login, and the `autoType` IPC type its username, <kbd>Tab</kbd> and password into the focused window with `wtype`. Whatever window has focus gets the password, and while a login is armed any program running as you can trigger it -- see [Auto-type](#auto-type). The settings screen asks you to confirm before turning it on. |
 | `showWebsiteIcons` | `boolean` | `true` | Show a login's website icon, an app's Android or Apple mark and a card's brand mark, where Bitwarden's apps would. Each icon is fetched from the account server's icon service -- `icons.bitwarden.net` (US cloud or no server set), `icons.bitwarden.eu` (EU cloud), or `<server>/icons` when self-hosted -- which so learns the names of the sites you have saved. Only a login's first URI, and only a plain host name or IPv4 address in it, is ever sent; `.onion` and `.i2p` hosts never are. Off draws the type glyphs and fetches nothing. |
 | `sideBySide` | `boolean` | `true` | Open items in a pane beside the vault list, as Bitwarden desktop does, half each in a 470 px panel (450 px compact) while unlocked, with the filter bar under both. Off keeps the compact panel, where an item replaces the list. A screen narrower than 440 px gets the compact layout. |
+| `checkForUpdates` | `boolean` | `true` | Once a day, ask GitHub for the latest release and show "Update available" in Settings when a newer one exists. The request is one `curl` to `api.github.com`, which sees your IP address; nothing else about you or your vault is sent. Off makes no request at all. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. Turning it off deletes the stored password, so PIN and FIDO2 unlock must be set up again. |
 | `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |
@@ -690,6 +736,8 @@ The following settings are read from the plugin's own entry in the
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](docs/ssh-agent.md). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
 | `sshAgentApprovalPopup` | `boolean` | `true` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show prompts in the panel. Multiple concurrent requests are queued sequentially with a "1 of N" counter and "Deny all" option. Escape and outside click deny. |
+| `sshAgentNotifyFallback` | `boolean` | `true` | Repeat a signing request still unanswered after about eight seconds as a desktop notification with Allow once and Deny buttons (`notify-send`). Dismissing or ignoring it denies. See [SSH agent](docs/ssh-agent.md). |
+| `sshAgentTerminalApproval` | `boolean` | `false` | Let `sshReply <id> allow` approve a signing request from a terminal (once, never a grant). Listing and denying are always allowed. Off because any program running as you could call it. |
 | `sshAgentApprovalWindowSec` | `number` | `120` | How long one approval keeps covering further signatures from the same program with the same key. Range `0`-`900`; `0` asks every time. Held in memory only and dropped on lock, logout or exit. |
 
 One further key, `twoFactorMethods`, is written to the same entry but is not a
