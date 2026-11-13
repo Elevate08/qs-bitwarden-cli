@@ -2,15 +2,12 @@
 
 ## [Unreleased]
 
-### Documentation
+### Added
 
 - **Taking over Omarchy's password-manager key.** The README's Global hotkey
   section now shows the two `bindings.lua` lines that make
   `SUPER + SHIFT + SLASH` toggle the panel instead of launching 1Password,
   and the Install section links to it.
-
-### Added
-
 - **Password history.** A login with previous passwords shows a "Password
   history (N)" button on its detail screen (key <kbd>h</kbd>) that opens the
   list, newest first, each with the date it was last used, masked until its
