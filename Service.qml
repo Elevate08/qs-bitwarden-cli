@@ -8180,6 +8180,16 @@ Item {
     rebuildFilter()
   }
 
+  // Alt+V (vault scope) and Ctrl+Alt+F (folder): step the filter without
+  // opening its drawer, over the same rows the drawer lists.
+  function cycleFilter(group, delta) {
+    var id = Model.nextFilterOptionId(filterOptions(group), delta)
+    if (id === "") return
+    openFilterGroup = ""
+    if (group === "folders") selectFolder(id)
+    else selectOrganization(id)
+  }
+
   function cycleCategory(delta) {
     var currentIndex = 0
     for (var i = 0; i < visibleCategories.length; i++) {

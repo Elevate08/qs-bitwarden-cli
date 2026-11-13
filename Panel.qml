@@ -671,6 +671,19 @@ Panel {
     anchorItem: button
   }
 
+  // Alt+V cycles the vault scope, Ctrl+Alt+F the folder; Shift reverses. Alt+F
+  // stays the Folders drawer (the Alt mirror of `f`), hence Ctrl for folders.
+  // Keyed on event.key: Ctrl turns event.text into a control character.
+  function cycleFilterFromKey(event) {
+    if (root.vault.status !== "unlocked" || root.vault.currentScreen !== "main") return false
+    var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+    var dir = (event.modifiers & Qt.ShiftModifier) ? -1 : 1
+    if (event.key === Qt.Key_V && !ctrl) root.vault.cycleFilter("organizations", dir)
+    else if (event.key === Qt.Key_F && ctrl) root.vault.cycleFilter("folders", dir)
+    else return false
+    return true
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: button
@@ -720,6 +733,11 @@ Panel {
         var t = event.text ? String(event.text).toLowerCase() : ""
         if (!t && event.key >= Qt.Key_A && event.key <= Qt.Key_Z) {
           t = String.fromCharCode(event.key).toLowerCase()
+        }
+
+        if ((event.modifiers & Qt.AltModifier) && root.cycleFilterFromKey(event)) {
+          event.accepted = true
+          return
         }
 
         if (event.modifiers & Qt.AltModifier) {
@@ -3457,6 +3475,10 @@ Panel {
                 // Ctrl+C never sees a key while it does. Only with nothing
                 // selected; a selection's Ctrl+C is the box's own copy.
                 if (searchField.selectedText === "" && root.armAutoTypeFromKey(event)) {
+                  event.accepted = true
+                  return
+                }
+                if ((event.modifiers & Qt.AltModifier) && root.cycleFilterFromKey(event)) {
                   event.accepted = true
                   return
                 }

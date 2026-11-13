@@ -340,6 +340,8 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
 | <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> | Cycle types without opening the drawer |
+| <kbd>Alt</kbd>+<kbd>v</kbd> / <kbd>Alt+Shift+v</kbd> | Cycle the **v**ault scope without opening the drawer: all vaults, My Vault, each organization. Works from the search box |
+| <kbd>Ctrl+Alt+f</kbd> / <kbd>Ctrl+Alt+Shift+f</kbd> | Cycle **f**olders without opening the drawer: all, No Folder, each folder. Works from the search box. (<kbd>Alt</kbd>+<kbd>f</kbd> remains the Folders drawer, the Alt mirror of <kbd>f</kbd>, so folders take <kbd>Ctrl</kbd> as well) |
 | <kbd>p</kbd> *(or <kbd>y</kbd>)* | Copy **p**assword |
 | <kbd>u</kbd> *(or <kbd>c</kbd>)* | Copy **u**sername / email |
 | <kbd>m</kbd> | Copy TOTP **m**ulti-factor code |
@@ -382,6 +384,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | Shortcut | Action |
 | :--- | :--- |
 | <kbd>f</kbd> / <kbd>o</kbd> / <kbd>t</kbd> | Open (or close) that drawer |
+| <kbd>Alt</kbd>+<kbd>v</kbd> / <kbd>Ctrl+Alt+f</kbd> | Step the vault scope / folder to the next option without opening a drawer (<kbd>Shift</kbd> goes back); a drawer left open closes |
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Move through the options |
 | <kbd>Enter</kbd> | Apply the highlighted option |
 | <kbd>Esc</kbd> | Close without changing anything |
