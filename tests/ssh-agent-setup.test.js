@@ -20,13 +20,15 @@ const manifestEntry = key => manifestSchema.find(e => e.key === key)
 const modelEntry = key => Model.settingSchemaEntry(key)
 
 // -------------------------------------------------------------------------
-// The four settings, consistent across manifest, model schema and defaults
+// The six settings, consistent across manifest, model schema and defaults
 // -------------------------------------------------------------------------
 
 const expected = [
   { key: "sshAgentEnabled", type: "bool", manifestType: "boolean", defaultValue: false },
   { key: "sshAgentUnlockOnDemand", type: "bool", manifestType: "boolean", defaultValue: false },
   { key: "sshAgentApprovalPopup", type: "bool", manifestType: "boolean", defaultValue: true },
+  { key: "sshAgentNotifyFallback", type: "bool", manifestType: "boolean", defaultValue: true },
+  { key: "sshAgentTerminalApproval", type: "bool", manifestType: "boolean", defaultValue: false },
   { key: "sshAgentApprovalWindowSec", type: "int", manifestType: "integer", defaultValue: 120 }
 ]
 
@@ -88,7 +90,7 @@ check("there is an SSH Agent settings group", !!sshGroup, JSON.stringify(Model.S
 const grouped = Model.groupedSettings()
 eq("grouping still covers every schema entry", grouped.length, Model.SETTINGS_SCHEMA.length)
 const sshRows = grouped.filter(e => e.group === "sshAgent")
-eq("the SSH Agent group holds exactly the four settings", sshRows.length, 4)
+eq("the SSH Agent group holds exactly the six settings", sshRows.length, 6)
 eq("the group header is drawn once", sshRows.filter(e => e.groupLabel).length, 1)
 eq("the enabled toggle leads the group", sshRows[0].key, "sshAgentEnabled")
 check("grouping did not mutate the schema",
@@ -118,7 +120,7 @@ for (const [label, deps, checked] of [
   const settings = rows.filter(e => e.kind === "setting")
   const headers = rows.filter(e => e.kind === "group")
   eq(`${label} hides the SSH settings`, rows.filter(e => e.group === "sshAgent").length, 0)
-  eq(`${label} keeps every other setting`, settings.length, Model.SETTINGS_SCHEMA.length - 4)
+  eq(`${label} keeps every other setting`, settings.length, Model.SETTINGS_SCHEMA.length - 6)
   check(`${label} still draws every remaining group header`,
     headers.length === new Set(settings.map(e => e.group)).size,
     JSON.stringify(headers.map(e => e.label)))

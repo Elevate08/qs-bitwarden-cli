@@ -564,6 +564,15 @@ by hand.
 Off by default. See **[docs/ssh-agent.md](docs/ssh-agent.md)** for setup, the
 provenance check, and what the agent does and does not protect.
 
+If a signing request sits unanswered for about eight seconds, it is repeated as
+a desktop notification with **Allow once** and **Deny** (`notify-send`;
+dismissing it denies; `sshAgentNotifyFallback`). From a terminal,
+`omarchy-shell io.github.elevate08.qs-bitwarden-cli sshPending` lists the
+requests and `... sshReply <id> deny` answers one; `sshReply <id> allow` also
+needs **Allow approving from a terminal** (`sshAgentTerminalApproval`, off by
+default). `ssh-add -l` never counts as activity for auto-lock; approving a
+signature does.
+
 ### Version and updates
 
 **Settings → Version** shows the plugin's version and where this copy came from,
@@ -726,6 +735,8 @@ The following settings are read from the plugin's own entry in the
 | `sshAgentEnabled` | `boolean` | `false` | Serve your vault's SSH keys to `ssh`, Git and signing while the vault is unlocked. Starts a helper process and a socket under `$XDG_RUNTIME_DIR`; private keys stay in that helper and are dropped on lock -- see [SSH Agent](docs/ssh-agent.md). |
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
 | `sshAgentApprovalPopup` | `boolean` | `true` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show prompts in the panel. Multiple concurrent requests are queued sequentially with a "1 of N" counter and "Deny all" option. Escape and outside click deny. |
+| `sshAgentNotifyFallback` | `boolean` | `true` | Repeat a signing request still unanswered after about eight seconds as a desktop notification with Allow once and Deny buttons (`notify-send`). Dismissing or ignoring it denies. See [SSH agent](docs/ssh-agent.md). |
+| `sshAgentTerminalApproval` | `boolean` | `false` | Let `sshReply <id> allow` approve a signing request from a terminal (once, never a grant). Listing and denying are always allowed. Off because any program running as you could call it. |
 | `sshAgentApprovalWindowSec` | `number` | `120` | How long one approval keeps covering further signatures from the same program with the same key. Range `0`-`900`; `0` asks every time. Held in memory only and dropped on lock, logout or exit. |
 
 One further key, `twoFactorMethods`, is written to the same entry but is not a
