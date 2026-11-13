@@ -33,6 +33,14 @@
   Up and Down walk the list and the detail follows (without teaching
   suggestions, unlike a pick). **Show details beside the list**
   (`sideBySide`, on by default) keeps the compact panel when off.
+- **Version and update notice in Settings.** Settings shows the plugin
+  version with where it came from (`1.13.0 (master @ abc1234)`, or `dev build
+  (branch feat/x @ abc1234, uncommitted changes)`) and the `bw` version. At
+  most once a day it asks GitHub for the latest release and, for a clean
+  `master` install that is behind, offers "Update available" with a button
+  running `omarchy plugin update` in a floating terminal. **Check for
+  updates** (`checkForUpdates`, on by default) turns it off, and then no
+  request is made.
 
 ## [1.13.0] - 2026-11-12
 

@@ -562,6 +562,23 @@ by hand.
 Off by default. See **[docs/ssh-agent.md](docs/ssh-agent.md)** for setup, the
 provenance check, and what the agent does and does not protect.
 
+### Version and updates
+
+**Settings → Version** shows the plugin's version and where this copy came from,
+read from the plugin's own directory: `1.13.0 (master @ abc1234)` for
+a clean checkout of `master`, or `dev build (branch feat/x @ abc1234,
+uncommitted changes)` for anything else. It also shows the `bw` CLI version.
+
+Opening Settings checks GitHub's latest release at most once a day, and the
+result is kept in `update-check.json` in the plugin's state directory
+(`${XDG_STATE_HOME:-~/.local/state}/qs-bitwarden-cli/`: when it last asked and what it
+found), not in `shell.json`, so a check never reloads the shell. When the release is newer than a clean `master` install, Settings says
+"Update available: X.Y.Z" with a button that runs `omarchy plugin update
+io.github.elevate08.qs-bitwarden-cli` in a floating terminal; without
+Omarchy's floating-terminal helper it shows that command to run yourself. A dev
+build never gets the notice. **Settings → General → Check for updates**
+(`checkForUpdates`) turns the check off, and then no request is made.
+
 ### Automatic sync
 
 Every 15 minutes by default. **Settings → General → Automatically sync every**
@@ -697,6 +714,7 @@ The following settings are read from the plugin's own entry in the
 | `autoTypeEnabled` | `boolean` | `false` | Let <kbd>Ctrl</kbd>+<kbd>C</kbd> in the panel arm a login, and the `autoType` IPC type its username, <kbd>Tab</kbd> and password into the focused window with `wtype`. Whatever window has focus gets the password, and while a login is armed any program running as you can trigger it -- see [Auto-type](#auto-type). The settings screen asks you to confirm before turning it on. |
 | `showWebsiteIcons` | `boolean` | `true` | Show a login's website icon, an app's Android or Apple mark and a card's brand mark, where Bitwarden's apps would. Each icon is fetched from the account server's icon service -- `icons.bitwarden.net` (US cloud or no server set), `icons.bitwarden.eu` (EU cloud), or `<server>/icons` when self-hosted -- which so learns the names of the sites you have saved. Only a login's first URI, and only a plain host name or IPv4 address in it, is ever sent; `.onion` and `.i2p` hosts never are. Off draws the type glyphs and fetches nothing. |
 | `sideBySide` | `boolean` | `true` | Open items in a pane beside the vault list, as Bitwarden desktop does, half each in a 470 px panel (450 px compact) while unlocked, with the filter bar under both. Off keeps the compact panel, where an item replaces the list. A screen narrower than 440 px gets the compact layout. |
+| `checkForUpdates` | `boolean` | `true` | Once a day, ask GitHub for the latest release and show "Update available" in Settings when a newer one exists. The request is one `curl` to `api.github.com`, which sees your IP address; nothing else about you or your vault is sent. Off makes no request at all. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. Turning it off deletes the stored password, so PIN and FIDO2 unlock must be set up again. |
 | `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |

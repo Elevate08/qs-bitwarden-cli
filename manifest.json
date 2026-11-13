@@ -33,6 +33,7 @@
       "colorizeIcon": false,
       "showWebsiteIcons": true,
       "sideBySide": true,
+      "checkForUpdates": true,
       "suggestOnOpen": true,
       "fingerprintUnlock": false,
       "fidoUnlock": false,
@@ -138,6 +139,13 @@
         "type": "boolean",
         "label": "Show details beside the list",
         "description": "Open items in a pane beside the vault list, as Bitwarden desktop does. Off keeps the compact panel, where an item replaces the list.",
+        "defaultValue": true
+      },
+      {
+        "key": "checkForUpdates",
+        "type": "boolean",
+        "label": "Check for updates",
+        "description": "Once a day, ask GitHub for the latest release and say in Settings when a newer one exists. GitHub sees your IP address and that you asked. Off makes no request at all.",
         "defaultValue": true
       },
       {
