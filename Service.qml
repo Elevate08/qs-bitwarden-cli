@@ -127,6 +127,12 @@ Item {
   readonly property bool autoTypeEnabled: Model.boolSetting("autoTypeEnabled", setting("autoTypeEnabled", false))
   readonly property bool colorizeIcon: Model.boolSetting("colorizeIcon", setting("colorizeIcon", false))
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
+  // Bitwarden's "Show website icons", on by default as there; see
+  // websiteIconUrl() in BitwardenModel.js.
+  readonly property bool showWebsiteIcons: Model.boolSetting("showWebsiteIcons", setting("showWebsiteIcons", true))
+  // The vault list and an item's detail side by side (the view decides
+  // whether the screen is wide enough).
+  readonly property bool sideBySide: Model.boolSetting("sideBySide", setting("sideBySide", true))
   readonly property bool fingerprintUnlock: Model.boolSetting("fingerprintUnlock", setting("fingerprintUnlock", false))
   readonly property bool fidoUnlock: Model.boolSetting("fidoUnlock", setting("fidoUnlock", false))
   readonly property bool pinUnlock: Model.boolSetting("pinUnlock", setting("pinUnlock", false))
@@ -5553,6 +5559,8 @@ Item {
       case "closeOnCopy": return closeOnCopy
       case "autoTypeEnabled": return autoTypeEnabled
       case "suggestOnOpen": return suggestOnOpen
+      case "showWebsiteIcons": return showWebsiteIcons
+      case "sideBySide": return sideBySide
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
@@ -7219,12 +7227,14 @@ Item {
     }
   }
 
-  function openDetail(item) {
+  // `browsing`: walked to with the arrows beside the list (browseDetail()),
+  // not picked, so nothing is learned from it.
+  function openDetail(item, browsing) {
     closeFilterGroup()
     if (!item || !item.id) return
     // Another item's confirmation does not carry over.
     if (String(item.id) !== repromptVerifiedId) clearRepromptGrant()
-    learnFromPick(item)
+    if (!browsing) learnFromPick(item)
     isLoading = true
     errorMessage = ""
     revealedFields = ({})
@@ -8217,6 +8227,31 @@ Item {
     openFilterGroup = ""
     selectedIndex = Math.max(0, Math.min(filteredItems.length - 1, selectedIndex + delta))
     presenter.revealListIndex(selectedIndex)
+  }
+
+  // Side by side, the arrows move through the list with an item open, and the
+  // detail follows the cursor.
+  // The cursor moves at once; the detail opens once it settles, so holding an
+  // arrow down does not start a read per row passed.
+  function browseDetail(delta) {
+    if (filteredItems.length === 0) return
+    moveCursor(delta)
+    browseDetailTimer.restart()
+  }
+
+  function openBrowsedDetail() {
+    if (currentScreen !== "detail" || status !== "unlocked") return
+    var item = getSelectedItem()
+    if (!item || (detailItem && String(detailItem.id) === String(item.id))) return
+    // SSH keys without their record have no detail view; the last item stays.
+    if (item.typeCode === 5 && !item.rawObject) return
+    openDetail(item, true)
+  }
+
+  Timer {
+    id: browseDetailTimer
+    interval: 120
+    onTriggered: root.openBrowsedDetail()
   }
 
   function getSelectedItem() {

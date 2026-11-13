@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Website icons, where Bitwarden shows them.** Logins carry their site's
+  icon from the account server's icon service, as in Bitwarden's own apps
+  (`icons.bitwarden.net` on the US cloud, `icons.bitwarden.eu` on the EU
+  cloud, `<server>/icons` when self-hosted); app URIs get an Android or
+  Apple mark, and Visa, Mastercard, Amex, Discover, JCB and Diners Club
+  cards their brand mark. The glyph stays until an icon has loaded and
+  comes back if it fails. Only a login's first URI is used, and only a plain
+  host name or IPv4 address from it goes into the request. **Show website
+  icons** (`showWebsiteIcons`, on by default as in Bitwarden) turns them
+  off, and with it nothing is fetched.
+- **The vault list and an item side by side.** An item opens in a pane
+  beside the list, as in Bitwarden desktop, half each in a 470 px panel
+  with the filter bar under both; the list drops its hover buttons and
+  folder tags there, and the detail's actions are icons. With an item open,
+  Up and Down walk the list and the detail follows (without teaching
+  suggestions, unlike a pick). **Show details beside the list**
+  (`sideBySide`, on by default) keeps the compact panel when off.
+
 ## [1.13.0] - 2026-11-12
 
 ### Added

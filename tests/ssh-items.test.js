@@ -111,7 +111,8 @@ try {
     /placeholderText:\s*"[^"]*(public keys|fingerprints)[^"]*"/i.test(panelSrc),
     "search placeholder does not mention public keys or fingerprints")
   check("the detail delete shortcut is guarded for read-only SSH items",
-    /lower === "x"[\s\S]{0,120}detailItem[\s\S]{0,120}typeCode !== 5[\s\S]{0,120}showDeleteConfirm = true/.test(panelSrc),
+    // The kit delivers `x` as deleteRequested, not a text key.
+    /onDeleteRequested:[\s\S]{0,400}currentScreen === "detail"[\s\S]{0,120}detailItem[\s\S]{0,120}typeCode !== 5[\s\S]{0,120}showDeleteConfirm = true/.test(panelSrc),
     "detail shortcut x can open delete confirmation for SSH")
 
   check("the sanitizer is a bounded bash pipeline",
