@@ -4950,6 +4950,103 @@ function isLoginItem(item) {
     || (item.typeCode === undefined && item.type === undefined)))
 }
 
+// -----------------------------------------------------------------------------
+// Action palette (Ctrl+K)
+// -----------------------------------------------------------------------------
+//
+// The commands the selected item supports, each with the letter that already
+// runs it (`key`, "" where it has none). context.screen is "main" (the list's
+// highlighted row, which has the letters of runShortcut() only) or "detail"
+// (the open item, with the detail screen's letters); context.revealed says
+// whether the item's primary secret is showing, which flips Reveal to Hide.
+// Only what the item has is listed. The panel runs an action through the
+// same function its letter does; the rest (no letter) through the same call
+// as the field's copy button.
+function itemActions(item, context) {
+  var out = []
+  if (!item || typeof item !== "object") return out
+  var push = function(id, label, key) { out.push({ id: id, label: label, key: key || "" }) }
+  var detail = Boolean(context && context.screen === "detail")
+  var type = Number(item.typeCode || 1)
+  var login = isLoginItem(item)
+  var hasPassword = login && (item.hasPassword !== undefined ? Boolean(item.hasPassword) : Boolean(item.password))
+  var uris = toList(item.uris)
+  var openable = uris.length > 0 && normalizeOpenableUrl(uris[0]).ok
+  var card = type === 3 ? (item.card || {}) : null
+  var identity = type === 4 ? (item.identity || {}) : null
+
+  if (!detail) {
+    if (hasPassword) push("copyPassword", "Copy password", "p")
+    if (login && item.username) push("copyUsername", "Copy username", "u")
+    if (login && item.hasTotp) push("copyTotp", "Copy TOTP code", "m")
+    if (openable) push("openWebsite", "Open website", "w")
+    push("openDetail", "Open details", "e")
+    return out
+  }
+
+  var revealed = Boolean(context && context.revealed)
+  if (hasPassword) push("copyPassword", "Copy password", "p")
+  if (login && item.username) push("copyUsername", "Copy username", "u")
+  if (identity && identity.username) push("copyUsername", "Copy username", "u")
+  if (identity && identity.email) push("copyEmail", "Copy email", "c")
+  if (login && item.hasTotp) push("copyTotp", "Copy TOTP code", "m")
+  if (openable) push("openWebsite", "Open website")
+  if (card && card.number) push("copyCardNumber", "Copy card number", "n")
+  if (card && card.code) push("copyCardCode", "Copy security code", "k")
+  if (hasPassword) push("reveal", (revealed ? "Hide" : "Reveal") + " password", "v")
+  else if (card && card.number) push("reveal", (revealed ? "Hide" : "Reveal") + " card number", "v")
+  if (item.hasAttachments) push("saveAttachments", "Save attachments", "a")
+
+  if (card) {
+    if (card.cardholderName) push("copyCardholder", "Copy cardholder name")
+    if (card.brand) push("copyCardBrand", "Copy card brand")
+    if (card.expMonth || card.expYear) push("copyCardExpiry", "Copy card expiry")
+  }
+  if (identity) {
+    if (identityFullName(identity)) push("copyIdentityName", "Copy name")
+    if (identity.company) push("copyCompany", "Copy company")
+    if (identity.phone) push("copyPhone", "Copy phone")
+    if (identity.ssn) push("copySsn", "Copy social security number")
+    if (identity.passportNumber) push("copyPassport", "Copy passport number")
+    if (identity.licenseNumber) push("copyLicense", "Copy licence number")
+    if (nonEmptyParts([identity.address1, identity.address2, identity.address3, identity.city,
+      identity.state, identity.postalCode, identity.country]).length > 0) push("copyAddress", "Copy address")
+  }
+  if (type !== 5 && (item.hasNotes || item.notes)) push("copyNotes", "Copy notes")
+  var fields = toList(item.fields)
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i]
+    if (!f || !f.name) continue
+    if (!f.sensitive && f.value === "") continue
+    push("customField:" + f.index, "Copy field: " + f.name)
+  }
+
+  // An SSH key is read-only here.
+  if (type !== 5) {
+    push("edit", "Edit", "e")
+    push("delete", "Delete", "x")
+  }
+  return out
+}
+
+// What the palette's box leaves of `actions`: every word of the query within
+// the label, label-start matches first, the list's order otherwise.
+function filterActions(actions, query) {
+  var list = toList(actions)
+  var words = String(query || "").toLowerCase().split(/\s+/).filter(function(w) { return w !== "" })
+  if (words.length === 0) return list.slice()
+  var first = []
+  var rest = []
+  for (var i = 0; i < list.length; i++) {
+    var label = String(list[i].label).toLowerCase()
+    var all = words.every(function(w) { return label.indexOf(w) !== -1 })
+    if (!all) continue
+    if (label.indexOf(words[0]) === 0) first.push(list[i])
+    else rest.push(list[i])
+  }
+  return first.concat(rest)
+}
+
 function compareContextualMatches(a, b) {
   if (b.score !== a.score) return b.score - a.score
   if (a.item.favorite !== b.item.favorite) return a.item.favorite ? -1 : 1

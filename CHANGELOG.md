@@ -21,6 +21,14 @@
   Up and Down walk the list and the detail follows (without teaching
   suggestions, unlike a pick). **Show details beside the list**
   (`sideBySide`, on by default) keeps the compact panel when off.
+- **An action palette on Ctrl+K.** A searchable list of what the highlighted
+  item, or the open one, can do, each action with its existing letter
+  (Copy password `p`, Copy username `u`, Copy TOTP `m`, Open website, Copy
+  card number `n`, Copy security code `k`, Reveal `v`, Save attachments `a`,
+  Edit `e`, Delete `x`), plus the card, identity and custom fields and notes
+  that have a copy button. Typing filters, the arrows move, Enter runs it
+  through the same handler as its letter, and Escape returns to where you
+  were. It opens from the search box as well.
 
 ## [1.13.0] - 2026-11-12
 

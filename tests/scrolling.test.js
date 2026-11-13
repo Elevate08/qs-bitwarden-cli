@@ -44,7 +44,7 @@ check("a wheel event carrying no vertical movement changes nothing",
 const scrollViews = [
   "sendFlick", "fpFlick", "genFlick", "pinFlick", "setupFlick", "settingsFlick",
   "itemsListView", "filterOptionsList", "detailFlickable", "editFlickable",
-  "folderPickList", "orgPickList", "collectionList",
+  "folderPickList", "orgPickList", "collectionList", "paletteList",
 ]
 
 for (const view of scrollViews) {

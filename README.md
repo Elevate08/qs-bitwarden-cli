@@ -334,6 +334,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | :--- | :--- |
 | <kbd>Enter</kbd> | Copy password (and arm the TOTP follow-up), or open the item when there is no password to copy -- a card, an identity, a note, an SSH key |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy the highlighted login's password and arm it for 30 seconds, for the `autoType` IPC to type. That is the row <kbd>Enter</kbd> acts on, the first suggestion (or first item) when the panel opens, so nothing needs selecting first; it works from the search box too, unless text is selected there. Off, or over selected text, it is the usual copy |
+| <kbd>Ctrl</kbd>+<kbd>K</kbd> | Open the **action palette** for the highlighted item: every action it supports, with its letter, filtered as you type (<kbd>↑</kbd> / <kbd>↓</kbd> move, <kbd>Enter</kbd> runs, <kbd>Esc</kbd> closes). Works from the search box too |
 | <kbd>Enter</kbd> *(again)* | Copy the TOTP code during the follow-up window |
 | <kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>j</kbd> / <kbd>k</kbd> | Move through items, or through an open filter drawer |
 | <kbd>/</kbd> | Focus the search box |
@@ -368,6 +369,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>k</kbd> | Copy a card's security code |
 | <kbd>m</kbd> | Copy TOTP code |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy a login's password and arm it for 30 seconds |
+| <kbd>Ctrl</kbd>+<kbd>K</kbd> | Action palette for this item: copy any field it has (card and identity fields, custom fields, notes), open its website, reveal, save attachments, edit, delete |
 | <kbd>v</kbd> | Toggle re**v**eal on the item's principal secret -- the password on a login, the number on a card. Every other masked field has its own eye, and each reveals independently |
 | <kbd>a</kbd> | Save every **a**ttachment on this item |
 | <kbd>e</kbd> | Edit this item |
