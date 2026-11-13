@@ -4,6 +4,11 @@
 
 ### Added
 
+- **Cycle the vault and folder filters without opening a drawer.** Alt+V
+  steps the vault scope (all vaults, My Vault, each organization) and
+  Ctrl+Alt+F the folder (all, No Folder, each folder); Shift goes backwards.
+  Both work from the list and the search box. Folders take Ctrl as well
+  because Alt+F is already the Folders drawer.
 - **Website icons, where Bitwarden shows them.** Logins carry their site's
   icon from the account server's icon service, as in Bitwarden's own apps
   (`icons.bitwarden.net` on the US cloud, `icons.bitwarden.eu` on the EU

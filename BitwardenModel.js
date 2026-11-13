@@ -8034,3 +8034,21 @@ function presenterIndex(views, focusedScreen) {
   }
   return 0
 }
+
+// Filter cycling
+//
+// The option after (delta 1) or before (delta -1) the active one in a filter
+// drawer's list (Service.filterOptions(): { id, active }), wrapping at the
+// ends. Same walk as cycleCategory() for Tab: an unmatched active option
+// counts as the first. Returns the option's id, or "" for an empty list.
+function nextFilterOptionId(options, delta) {
+  var list = options || []
+  if (list.length === 0) return ""
+  var current = 0
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].active) { current = i; break }
+  }
+  var step = delta < 0 ? -1 : 1
+  var next = (current + step + list.length) % list.length
+  return list[next].id
+}
