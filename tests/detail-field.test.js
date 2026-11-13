@@ -48,7 +48,8 @@ check("unbounded custom-field names wrap within the detail width",
 
 // --- how the detail screen uses it -------------------------------------------
 
-const uses = panelSrc.match(/DetailField \{[\s\S]*?\n              \}/g) || []
+// Each use up to the brace that closes it, at the opener's own indentation.
+const uses = panelSrc.match(/^( *)DetailField \{[\s\S]*?\n\1\}/gm) || []
 check("the detail screen draws its fields through the component",
   uses.length >= 14, `found ${uses.length} DetailField uses`)
 
@@ -225,7 +226,8 @@ check("a save that lands but cannot be sanitised drops its provisional row",
   "a provisional row must not survive the reload that replaces it")
 
 check("the saving row is marked in the list",
-  /text: itemData\.pending \? "[^"]*" : Model\.itemTypeGlyph/.test(panelSrc),
+  /ItemIcon \{[^}]*pending: Boolean\(itemData\.pending\)/.test(panelSrc)
+    && /text: icon\.pending \? "[^"]*" : Model\.itemIconGlyph/.test(read("ItemIcon.qml")),
   "the user needs to see which row has not landed yet")
 
 // --- gating ------------------------------------------------------------------

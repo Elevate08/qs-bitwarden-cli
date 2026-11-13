@@ -81,6 +81,14 @@ window and the live 2FA code replaces it on the clipboard.
 Items show their folder and organization inline. The bottom bar filters by
 folder, organization and type without leaving the keyboard.
 
+**Website icons** sit beside logins where Bitwarden would show them: the
+site's icon from your server's icon service, an Android or Apple mark for an
+app, and a brand mark for Visa, Mastercard, Amex, Discover, JCB and Diners
+Club cards. Fetching an icon tells the icon service the site's name
+(`icons.bitwarden.net` on Bitwarden's cloud, your own server when
+self-hosted), as in Bitwarden's own apps; turn off **Show website icons** to
+keep the type glyphs and fetch nothing.
+
 **Suggestions** read the focused window or browser tab and pin the matching
 credential to the top, so <kbd>Enter</kbd> is usually the only key you need.
 Picking an item remembers it for the site's domain or the app; for a site
@@ -112,6 +120,13 @@ Username, password and the live TOTP with its countdown, the websites attached
 to the item, its notes and any custom fields. Copy any of them with one key.
 An item marked **Master password re-prompt** asks for your master password
 before anything secret of it is shown, copied or edited.
+
+The item opens in a pane **beside the list**, as in Bitwarden desktop, with
+the filter bar under both, and <kbd>↑</kbd>/<kbd>↓</kbd> walk the list with
+the detail following. Beside the detail the list drops its hover buttons and
+folder tags, and the detail's actions are icons, to fit both in a panel
+barely wider than the compact one. **Show details beside the list** off keeps
+the compact panel shown here, where the item replaces the list.
 
 **Suggest here** pins this item for the app or site in front of you, so it is
 offered outright next time rather than inferred.
@@ -357,7 +372,8 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>a</kbd> | Save every **a**ttachment on this item |
 | <kbd>e</kbd> | Edit this item |
 | <kbd>x</kbd> | Delete this item (asks first) |
-| <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Back to the list |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Beside the list: open the previous / next item |
+| <kbd>b</kbd> / <kbd>q</kbd> / <kbd>Esc</kbd> | Back to the list (beside it: close the item) |
 
 ### Filter Drawer (Folders / Organizations / Types)
 
@@ -663,6 +679,8 @@ The following settings are read from the plugin's own entry in the
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Also whether an [auto-type](#auto-type) copies the login's TOTP code once it has typed. Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `autoTypeEnabled` | `boolean` | `false` | Let <kbd>Ctrl</kbd>+<kbd>C</kbd> in the panel arm a login, and the `autoType` IPC type its username, <kbd>Tab</kbd> and password into the focused window with `wtype`. Whatever window has focus gets the password, and while a login is armed any program running as you can trigger it -- see [Auto-type](#auto-type). The settings screen asks you to confirm before turning it on. |
+| `showWebsiteIcons` | `boolean` | `true` | Show a login's website icon, an app's Android or Apple mark and a card's brand mark, where Bitwarden's apps would. Each icon is fetched from the account server's icon service -- `icons.bitwarden.net` (US cloud or no server set), `icons.bitwarden.eu` (EU cloud), or `<server>/icons` when self-hosted -- which so learns the names of the sites you have saved. Only a login's first URI, and only a plain host name or IPv4 address in it, is ever sent; `.onion` and `.i2p` hosts never are. Off draws the type glyphs and fetches nothing. |
+| `sideBySide` | `boolean` | `true` | Open items in a pane beside the vault list, as Bitwarden desktop does, half each in a 470 px panel (450 px compact) while unlocked, with the filter bar under both. Off keeps the compact panel, where an item replaces the list. A screen narrower than 440 px gets the compact layout. |
 | `suggestOnOpen` | `boolean` | `true` | Automatically suggest matching vault items for the active window or browser tab on open. |
 | `fingerprintUnlock` | `boolean` | `false` | Unlock the vault with an enrolled fingerprint. Adds a way into the one encrypted stored password -- see [Fingerprint unlock](#fingerprint-unlock) for its limit. Turning it off deletes the stored password, so PIN and FIDO2 unlock must be set up again. |
 | `fidoUnlock` | `boolean` | `false` | Unlock the vault with a FIDO2 authenticator, on the registration `omarchy setup security fido2` writes. The key's `hmac-secret` opens the stored password -- see [FIDO2 key unlock](#fido2-key-unlock). |

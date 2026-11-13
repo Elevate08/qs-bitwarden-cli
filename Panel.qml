@@ -644,6 +644,23 @@ Panel {
   }
 
   // -------------------------------------------------------------------------
+  // Panel width
+  // -------------------------------------------------------------------------
+  //
+  // The vault list and an item's detail side by side (the `sideBySide`
+  // setting), as Bitwarden desktop draws them, in a panel wide enough for
+  // both. Only while unlocked: the lock and login screens keep the compact
+  // panel. A screen that cannot fit the split gets the compact layout instead.
+  readonly property int compactPanelWidth: Style.space(450)
+  readonly property int splitPanelWidth: Style.space(470)
+  readonly property bool splitView: root.vault.sideBySide && root.vault.status === "unlocked"
+    && panel.fittedContentWidth(root.splitPanelWidth) >= Style.space(440)
+  // Half each, less the gaps and divider.
+  readonly property int splitGutter: vaultSplit.spacing * 2 + 1
+  readonly property int splitListWidth: Math.round((vaultSplit.width - root.splitGutter) * 0.5)
+  readonly property int splitDetailWidth: vaultSplit.width - root.splitGutter - root.splitListWidth
+
+  // -------------------------------------------------------------------------
   // Popup window
   // -------------------------------------------------------------------------
 
@@ -674,7 +691,7 @@ Panel {
         : (root.vault.status === "unauthenticated"
           ? (root.vault.show2faField ? code2faField : emailField)
           : (unlockForm.focusField ? unlockForm.focusField : keyCatcher)))
-    contentWidth: panel.fittedContentWidth(Style.space(450))
+    contentWidth: panel.fittedContentWidth(root.splitView ? root.splitPanelWidth : root.compactPanelWidth)
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight, Style.space(640) + root.vault.filterDrawerHeight)
 
     // Our letter shortcuts get the first look: PanelKeyCatcher would consume
@@ -790,6 +807,10 @@ Panel {
         if (root.vault.currentScreen === "main") {
           if (dy !== 0) root.vault.moveCursor(dy)
           else if (dx !== 0) root.vault.cycleCategory(dx)
+        } else if (root.vault.currentScreen === "detail" && root.splitView) {
+          // The list is beside the detail: the arrows walk it, and the
+          // detail follows.
+          if (dy !== 0) root.vault.browseDetail(dy)
         }
       }
       onActivateRequested: {
@@ -826,12 +847,21 @@ Panel {
         // a card's number. Nothing on notes and identities.
         if (root.vault.currentScreen === "detail") root.copyPrimarySecret()
       }
+      // The kit turns x (and Delete) into this signal rather than a text key,
+      // so `x` never reached onTextKey and did nothing.
+      onDeleteRequested: {
+        if (root.vault.currentScreen === "sends" && root.vault.sendMode === "list") {
+          if (root.vault.sendIndex < root.vault.sends.length) root.vault.deleteSend(root.vault.sends[root.vault.sendIndex])
+        } else if (root.vault.currentScreen === "detail") {
+          // Asks first (the confirmation banner).
+          if (root.vault.detailItem && root.vault.detailItem.typeCode !== 5) root.vault.showDeleteConfirm = true
+        }
+      }
       onTextKey: function(key) {
         var lower = String(key).toLowerCase()
         if (root.vault.currentScreen === "sends" && root.vault.sendMode === "list") {
           if (lower === "n") root.vault.beginCreateSend()
           else if (lower === "r") root.vault.loadSends()
-          else if (lower === "x" && root.vault.sendIndex < root.vault.sends.length) root.vault.deleteSend(root.vault.sends[root.vault.sendIndex])
           return
         }
         if (root.vault.currentScreen === "main") {
@@ -865,8 +895,6 @@ Panel {
             root.vault.copyDetailTotp()
           } else if (lower === "e") {
             root.editDetailItem()
-          } else if (lower === "x") {
-            if (root.vault.detailItem && root.vault.detailItem.typeCode !== 5) root.vault.showDeleteConfirm = true
           } else if (lower === "v") {
             if (root.vault.primaryRevealKey !== "") root.toggleProtectedReveal(root.vault.primaryRevealKey)
           } else if (lower === "a") {
@@ -915,7 +943,8 @@ Panel {
 
             // New Item Button
             PanelActionButton {
-              visible: root.vault.status === "unlocked" && root.vault.activeScreen === "main"
+              visible: root.vault.status === "unlocked"
+                && (root.vault.activeScreen === "main" || (root.splitView && root.vault.activeScreen === "detail"))
               iconText: "󰐕"
               tooltipText: "New item (n)"
               fontFamily: root.fontFamily
@@ -3393,11 +3422,12 @@ Panel {
           }
         }
 
-        // -------------------------------------------------------------------
-        // SCREEN 3: ITEM LIST
-        // -------------------------------------------------------------------
+        // Search, and the window-title suggestion, over both panes when they
+        // are side by side. Shown wherever the list is.
         Column {
-          visible: root.vault.status === "unlocked" && root.vault.activeScreen === "main"
+          id: vaultSearchBar
+          visible: root.vault.status === "unlocked"
+            && (root.vault.activeScreen === "main" || (root.splitView && root.vault.activeScreen === "detail"))
           width: parent.width
           spacing: Style.space(8)
 
@@ -3520,306 +3550,1261 @@ Panel {
           }
 
           PanelSeparator { width: parent.width }
+        }
 
-          // Item List View (Fast Virtualized ListView with Delegate Recycling)
-          Item {
-            width: parent.width
-            height: Style.space(320)
+        // -------------------------------------------------------------------
+        // SCREENS 3 + 4: the vault list and an item's detail. Side by side
+        // with root.splitView, as Bitwarden desktop draws them; otherwise the
+        // detail replaces the list.
+        // -------------------------------------------------------------------
+        Row {
+          id: vaultSplit
+          visible: root.vault.status === "unlocked"
+            && (root.vault.activeScreen === "main" || root.vault.activeScreen === "detail")
+          width: parent.width
+          spacing: root.splitView ? Style.space(8) : 0
+          // -------------------------------------------------------------------
+          // SCREEN 3: ITEM LIST
+          // -------------------------------------------------------------------
+          Column {
+            id: vaultListColumn
+            // Beside the detail too, when there is room for both.
+            visible: root.vault.activeScreen === "main" || root.splitView
+            width: root.splitView ? root.splitListWidth : parent.width
+            spacing: Style.space(8)
 
-            ListView {
-              id: itemsListView
-              anchors.fill: parent
-              clip: true
-              model: root.vault.filteredItems
-              spacing: Style.space(4)
-              boundsBehavior: Flickable.StopAtBounds
-              reuseItems: true
-              currentIndex: root.vault.selectedIndex
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            // Item List View (Fast Virtualized ListView with Delegate Recycling)
+            Item {
+              width: parent.width
+              height: root.splitView ? Style.space(380) : Style.space(320)
 
-              WheelScroll { view: itemsListView }
+              ListView {
+                id: itemsListView
+                anchors.fill: parent
+                clip: true
+                model: root.vault.filteredItems
+                spacing: Style.space(4)
+                boundsBehavior: Flickable.StopAtBounds
+                reuseItems: true
+                currentIndex: root.vault.selectedIndex
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-              delegate: BorderSurface {
-                id: itemRow
-                required property var modelData
-                required property int index
+                WheelScroll { view: itemsListView }
 
-                readonly property var itemData: modelData
-                readonly property bool isSelected: root.vault.cursorActive && root.vault.selectedIndex === index
-                readonly property bool isHovered: rowMouseArea.containsMouse
+                delegate: BorderSurface {
+                  id: itemRow
+                  required property var modelData
+                  required property int index
 
-                width: ListView.view.width - root.scrollGutter
-                implicitHeight: Style.space(46)
-                radius: Style.cornerRadius
-                color: isSelected
-                  ? Style.selectedFillFor(root.fg, Color.accent)
-                  : (isHovered ? Style.hoverFillFor(root.fg, Color.accent) : "transparent")
-                borderSpec: isSelected
-                  ? Border.controlSpec("selected", root.fg, Color.accent)
-                  : Border.none()
+                  readonly property var itemData: modelData
+                  readonly property bool isSelected: root.vault.cursorActive && root.vault.selectedIndex === index
+                  readonly property bool isHovered: rowMouseArea.containsMouse
 
-                Row {
-                  anchors.fill: parent
-                  anchors.leftMargin: Style.space(10)
-                  anchors.rightMargin: Style.space(8)
-                  spacing: Style.space(10)
+                  width: ListView.view.width - root.scrollGutter
+                  implicitHeight: Style.space(46)
+                  radius: Style.cornerRadius
+                  color: isSelected
+                    ? Style.selectedFillFor(root.fg, Color.accent)
+                    : (isHovered ? Style.hoverFillFor(root.fg, Color.accent) : "transparent")
+                  borderSpec: isSelected
+                    ? Border.controlSpec("selected", root.fg, Color.accent)
+                    : Border.none()
 
-                  // The type glyph, spinning while the row is being saved.
+                  Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: Style.space(10)
+                    anchors.rightMargin: Style.space(8)
+                    spacing: Style.space(10)
+
+                    // Website icon or type glyph, spinning while the row is
+                    // being saved.
+                    ItemIcon {
+                      anchors.verticalCenter: parent.verticalCenter
+                      item: itemData
+                      pending: Boolean(itemData.pending)
+                      showWebsiteIcons: root.vault.showWebsiteIcons
+                      serverUrl: root.vault.accountServer
+                      color: itemData.favorite ? Color.accent : root.fg
+                      pendingColor: root.dim
+                      fontFamily: root.fontFamily
+                      size: Style.space(20)
+                      glyphSize: Style.font.title
+                    }
+
+                    // Labels (Title + Subtitle + Org Tag)
+                    Column {
+                      anchors.verticalCenter: parent.verticalCenter
+                      // Beside the detail the buttons are not drawn, so
+                      // they take no room from the name.
+                      width: parent.width - Style.space(20)
+                        - (root.splitView ? 0 : actionButtonsRow.implicitWidth) - Style.space(28)
+                      spacing: Style.space(1)
+
+                      Row {
+                        spacing: Style.space(4)
+                        width: parent.width
+
+                        Text {
+                          textFormat: Text.PlainText
+                          text: itemData.name
+                          color: root.fg
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.body
+                          font.bold: true
+                          elide: Text.ElideRight
+                          width: Math.min(implicitWidth, parent.width
+                            - (itemData.favorite ? Style.space(16) : 0)
+                            - (root.asksMasterPassword(itemData) ? Style.space(18) : 0)
+                            - (itemData.hasAttachments ? Style.space(18) : 0))
+                        }
+
+                        Text {
+                          textFormat: Text.PlainText
+                          visible: itemData.favorite
+                          text: "★"
+                          color: Color.accent
+                          font.pixelSize: Style.font.bodySmall
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        // Asks for the master password before its secrets.
+                        Text {
+                          textFormat: Text.PlainText
+                          visible: root.asksMasterPassword(itemData)
+                          text: "\u{F033E}"
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        // Attachments badge; names are in the detail view.
+                        Text {
+                          textFormat: Text.PlainText
+                          visible: Boolean(itemData.hasAttachments)
+                          text: "󰏢"
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+                      }
+
+                      Row {
+                        spacing: Style.space(4)
+                        width: parent.width
+
+                        Text {
+                          textFormat: Text.PlainText
+                          visible: Boolean(itemData.isSuggested)
+                          text: root.vault.learnedIds[itemData.id] ? "󰐾 Suggested" : "󰌠 Suggested"
+                          color: Color.accent
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          font.bold: true
+                        }
+
+                        Text {
+                          textFormat: Text.PlainText
+                          visible: Boolean(itemData.organizationId)
+                          text: "󰓹 Org"
+                          color: Color.accent
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          font.bold: true
+                        }
+
+                        Text {
+                          id: rowSubtitle
+                          textFormat: Text.PlainText
+                          text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          elide: Text.ElideRight
+                          // Only what it needs, so the folder tag keeps its place.
+                          width: Math.min(implicitWidth,
+                            parent.width
+                              - (itemData.organizationId ? Style.space(40) : 0)
+                              - (itemData.isSuggested ? Style.space(75) : 0)
+                              - (rowFolderTag.visible ? Style.space(90) : 0))
+                        }
+
+                        Text {
+                          id: rowFolderTag
+                          textFormat: Text.PlainText
+                          // Only worth showing when it is not already implied by the filter.
+                          // Not beside the detail, which names it: the pane is
+                          // too narrow for it and the username both.
+                          visible: Boolean(itemData.folderId) && root.vault.selectedFolder === "all" && !root.splitView
+                          text: "· 󰉋 " + Model.folderName(root.vault.folders, itemData.folderId)
+                          color: Qt.darker(root.dim, 1.1)
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          elide: Text.ElideRight
+                          width: Math.min(implicitWidth, Style.space(90))
+                        }
+                      }
+                    }
+
+                    // Quick Action Buttons
+                    Row {
+                      id: actionButtonsRow
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(4)
+                      // Not beside the detail: the pane is too narrow for
+                      // them, and the detail has every copy button.
+                      visible: (isSelected || isHovered) && !root.splitView
+
+                      PanelActionButton {
+                        visible: itemData.typeCode !== 5 && itemData.hasPassword
+                        iconText: "󰌆"
+                        tooltipText: "Copy password (Enter / y)"
+                        fontFamily: root.fontFamily
+                        onClicked: root.smartEnter(itemData)
+                      }
+
+                      // Re-prompt first, inside copyPasswordAndArm().
+                      PanelActionButton {
+                        visible: root.vault.autoTypeEnabled && Model.isLoginItem(itemRow.itemData) && itemRow.itemData.hasPassword
+                        iconText: ""
+                        tooltipText: "Copy password and arm auto-type (Ctrl+C)"
+                        fontFamily: root.fontFamily
+                        onClicked: root.vault.copyPasswordAndArm(itemRow.itemData)
+                      }
+
+                      PanelActionButton {
+                        visible: itemData.typeCode !== 5 && itemData.username !== ""
+                        iconText: ""
+                        tooltipText: "Copy username (u)"
+                        fontFamily: root.fontFamily
+                        onClicked: root.vault.copyUsername(itemData)
+                      }
+
+                      PanelActionButton {
+                        visible: itemData.typeCode !== 5 && itemData.hasTotp
+                        iconText: "󰥔"
+                        tooltipText: "Copy TOTP code (m)"
+                        fontFamily: root.fontFamily
+                        onClicked: root.protect(itemData, function() { root.vault.copyTotpCode(itemData) })
+                      }
+
+                      PanelActionButton {
+                        iconText: "󰏫"
+                        tooltipText: itemData.typeCode === 5 ? "View public key" : "View / Edit item (e)"
+                        fontFamily: root.fontFamily
+                        onClicked: root.vault.openDetail(itemData)
+                      }
+
+                      PanelActionButton {
+                        visible: itemData.typeCode !== 5 && itemData.uris && itemData.uris.length > 0
+                        iconText: "󰖟"
+                        tooltipText: "Open URL (w)"
+                        fontFamily: root.fontFamily
+                        onClicked: root.vault.openUrl(itemData.uris[0])
+                      }
+                    }
+                  }
+
+                  MouseArea {
+                    id: rowMouseArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    propagateComposedEvents: true
+                    onClicked: function(mouse) {
+                      // This area is drawn over the row, buttons included: a
+                      // click on a button is passed down (propagateComposedEvents)
+                      // instead of opening the item. One in the gaps between
+                      // them opens it, like the rest of the row.
+                      var at = rowMouseArea.mapToItem(actionButtonsRow, mouse.x, mouse.y)
+                      var hit = actionButtonsRow.childAt(at.x, at.y)
+                      if (hit && hit.visible) {
+                        mouse.accepted = false
+                        return
+                      }
+                      root.vault.cursorActive = true
+                      root.vault.openFilterGroup = ""
+                      root.vault.selectedIndex = index
+                      root.vault.openDetail(itemData)
+                    }
+                  }
+                }
+              }
+
+              // Empty state overlay
+              Item {
+                visible: root.vault.filteredItems.length === 0
+                anchors.fill: parent
+
+                Column {
+                  anchors.centerIn: parent
+                  spacing: Style.space(6)
+
                   Text {
                     textFormat: Text.PlainText
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: itemData.pending ? "󰑐" : Model.itemTypeGlyph(itemData.typeCode)
-                    color: itemData.pending
-                      ? root.dim
-                      : (itemData.favorite ? Color.accent : root.fg)
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: root.vault.isLoading && root.vault.items.length === 0 ? "󰑐" : (root.vault.items.length === 0 ? "󰞀" : "󰍡")
+                    color: root.dim
                     font.family: root.fontFamily
-                    font.pixelSize: Style.font.title
-                    width: Style.space(20)
-                    // Centred so it spins on its own axis.
-                    horizontalAlignment: Text.AlignHCenter
-                    transformOrigin: Item.Center
-
+                    font.pixelSize: Style.space(36)
                     RotationAnimation on rotation {
-                      running: Boolean(itemData.pending)
-                      loops: Animation.Infinite
+                      running: root.vault.isLoading && root.vault.items.length === 0
                       from: 0
                       to: 360
                       duration: 900
+                      loops: Animation.Infinite
                     }
                   }
 
-                  // Labels (Title + Subtitle + Org Tag)
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: root.vault.isLoading && root.vault.items.length === 0
+                      ? "Loading items..."
+                      : root.vault.emptyListMessage()
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+                }
+              }
+            }
+
+          }
+
+          // The divider between the panes.
+          Rectangle {
+            visible: root.splitView
+            width: 1
+            height: vaultListColumn.height
+            color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.12)
+          }
+
+          // -------------------------------------------------------------------
+          // SCREEN 4: ITEM DETAIL
+          // -------------------------------------------------------------------
+          Column {
+            id: vaultDetailColumn
+            visible: root.vault.activeScreen === "detail"
+            width: root.splitView ? root.splitDetailWidth : parent.width
+            // Level with the list beside it.
+            height: root.splitView ? vaultListColumn.height : implicitHeight
+            spacing: Style.space(12)
+
+            // Back and actions. A Flow, since the suggestion button appears at
+            // runtime and the panel can be narrower than asked; it wraps rather
+            // than pushing Delete off the edge.
+            Flow {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Button {
+                // Short, like the Sends screen's. Beside the list, it closes
+                // the pane rather than going anywhere.
+                // Icon-only beside the list, as are the others: the pane is
+                // too narrow for their labels on one line.
+                text: root.splitView ? "" : "Back (Esc)"
+                iconText: root.splitView ? "󰅖" : "󰁍"
+                tooltipText: root.splitView ? "Close (Esc)" : ""
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.vault.currentScreen = "main"
+              }
+
+              Button {
+                visible: Boolean(root.vault.detectedContext && root.vault.detectedContext.displayName && root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
+                readonly property bool pinned: Boolean(root.vault.detailItem
+                  && Model.isAssociated(root.vault.associations, root.vault.detectedContext, root.vault.detailItem.id))
+                text: root.splitView ? "" : (pinned ? "Suggested here" : "Suggest here")
+                iconText: pinned ? "󰐾" : "󰐽"
+                selected: pinned
+                accent: Color.accent
+                // Window titles are untrusted; tooltips auto-detect markup.
+                tooltipText: Model.plainLabel((pinned ? "Stop suggesting this for " : "Always suggest this for ")
+                  + (root.vault.detectedContext ? root.vault.detectedContext.displayName : ""))
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.vault.toggleAssociation(root.vault.detailItem)
+              }
+
+              Button {
+                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
+                text: root.splitView ? "" : "Edit"
+                iconText: "󰏫"
+                tooltipText: root.splitView ? "Edit (e)" : ""
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.editDetailItem()
+              }
+
+              Button {
+                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
+                text: root.splitView ? "" : "Delete"
+                iconText: "󰆴"
+                tooltipText: root.splitView ? "Delete (x)" : ""
+                accent: Color.urgent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.vault.showDeleteConfirm = true
+              }
+            }
+
+            // Delete Confirmation Banner
+            BorderSurface {
+              visible: root.vault.showDeleteConfirm
+              width: parent.width
+              implicitHeight: deleteConfirmLayout.implicitHeight + Style.space(28)
+              color: Util.alpha(Color.urgent, 0.15)
+              radius: Style.cornerRadius
+              borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
+
+              // One line normally; beside the list the pane is too narrow, so
+              // the question sits above its buttons.
+              Grid {
+                id: deleteConfirmLayout
+                anchors.centerIn: parent
+                columns: root.splitView ? 1 : 3
+                rowSpacing: Style.space(8)
+                columnSpacing: Style.space(12)
+                horizontalItemAlignment: Grid.AlignHCenter
+                verticalItemAlignment: Grid.AlignVCenter
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Permanently delete this item?"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                }
+
+                Button {
+                  text: "Confirm Delete"
+                  iconText: "󰆴"
+                  selected: true
+                  accent: Color.urgent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.vault.deleteCurrentItem()
+                }
+
+                Button {
+                  text: "Cancel"
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.vault.showDeleteConfirm = false
+                }
+              }
+            }
+
+            PanelSeparator { width: parent.width }
+
+            Flickable {
+              id: detailFlickable
+              width: parent.width
+              // Beside the list it fills the pane, so the list does not
+              // jump with the item's length.
+              height: root.splitView
+                ? Math.max(Style.space(120), vaultDetailColumn.height - y)
+                : Math.min(Style.space(380), detailContentColumn.implicitHeight)
+              contentWidth: width
+              contentHeight: detailContentColumn.implicitHeight
+              clip: true
+              boundsBehavior: Flickable.StopAtBounds
+              flickableDirection: Flickable.VerticalFlick
+              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+              WheelScroll { view: detailFlickable }
+
+              Column {
+                id: detailContentColumn
+                width: detailFlickable.width - root.scrollGutter
+                spacing: Style.space(12)
+
+                // Item Header
+                Row {
+                  width: parent.width
+                  spacing: Style.space(10)
+
+                  ItemIcon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    item: root.vault.detailItem
+                    showWebsiteIcons: root.vault.showWebsiteIcons
+                    serverUrl: root.vault.accountServer
+                    color: (root.vault.detailItem && root.vault.detailItem.favorite) ? Color.accent : root.fg
+                    fontFamily: root.fontFamily
+                    size: Style.space(30)
+                    glyphSize: Style.space(26)
+                  }
+
                   Column {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - Style.space(20) - actionButtonsRow.implicitWidth - Style.space(28)
-                    spacing: Style.space(1)
+                    width: parent.width - Style.space(40)
+                    spacing: Style.space(2)
 
                     Row {
-                      spacing: Style.space(4)
+                      spacing: Style.space(6)
                       width: parent.width
 
                       Text {
                         textFormat: Text.PlainText
-                        text: itemData.name
+                        text: root.vault.detailItem ? root.vault.detailItem.name : "Loading..."
                         color: root.fg
                         font.family: root.fontFamily
-                        font.pixelSize: Style.font.body
+                        font.pixelSize: Style.font.title
                         font.bold: true
                         elide: Text.ElideRight
-                        width: Math.min(implicitWidth, parent.width
-                          - (itemData.favorite ? Style.space(16) : 0)
-                          - (root.asksMasterPassword(itemData) ? Style.space(18) : 0)
-                          - (itemData.hasAttachments ? Style.space(18) : 0))
+                        width: Math.min(implicitWidth, parent.width - Style.space(20)
+                          - (root.asksMasterPassword(root.vault.detailItem) ? Style.space(20) : 0))
                       }
 
                       Text {
                         textFormat: Text.PlainText
-                        visible: itemData.favorite
+                        visible: Boolean(root.vault.detailItem && root.vault.detailItem.favorite)
                         text: "★"
                         color: Color.accent
-                        font.pixelSize: Style.font.bodySmall
-                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: Style.font.body
                       }
 
-                      // Asks for the master password before its secrets.
                       Text {
                         textFormat: Text.PlainText
-                        visible: root.asksMasterPassword(itemData)
+                        visible: root.asksMasterPassword(root.vault.detailItem)
                         text: "\u{F033E}"
                         color: root.dim
                         font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        anchors.verticalCenter: parent.verticalCenter
-                      }
-
-                      // Attachments badge; names are in the detail view.
-                      Text {
-                        textFormat: Text.PlainText
-                        visible: Boolean(itemData.hasAttachments)
-                        text: "󰏢"
-                        color: root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: Style.font.body
                       }
                     }
 
                     Row {
-                      spacing: Style.space(4)
-                      width: parent.width
-
+                      spacing: Style.space(6)
                       Text {
                         textFormat: Text.PlainText
-                        visible: Boolean(itemData.isSuggested)
-                        text: root.vault.learnedIds[itemData.id] ? "󰐾 Suggested" : "󰌠 Suggested"
-                        color: Color.accent
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.bold: true
-                      }
-
-                      Text {
-                        textFormat: Text.PlainText
-                        visible: Boolean(itemData.organizationId)
-                        text: "󰓹 Org"
-                        color: Color.accent
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.bold: true
-                      }
-
-                      Text {
-                        id: rowSubtitle
-                        textFormat: Text.PlainText
-                        text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
+                        text: root.vault.detailItem ? Model.itemTypeLabel(root.vault.detailItem.typeCode) : ""
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
-                        elide: Text.ElideRight
-                        // Only what it needs, so the folder tag keeps its place.
-                        width: Math.min(implicitWidth,
-                          parent.width
-                            - (itemData.organizationId ? Style.space(40) : 0)
-                            - (itemData.isSuggested ? Style.space(75) : 0)
-                            - (rowFolderTag.visible ? Style.space(90) : 0))
                       }
-
                       Text {
-                        id: rowFolderTag
                         textFormat: Text.PlainText
-                        // Only worth showing when it is not already implied by the filter.
-                        visible: Boolean(itemData.folderId) && root.vault.selectedFolder === "all"
-                        text: "· 󰉋 " + Model.folderName(root.vault.folders, itemData.folderId)
-                        color: Qt.darker(root.dim, 1.1)
+                        visible: Boolean(root.vault.detailItem && root.vault.detailItem.organizationId)
+                        text: "• Shared Organization"
+                        color: Color.accent
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
-                        elide: Text.ElideRight
-                        width: Math.min(implicitWidth, Style.space(90))
+                      }
+                      Text {
+                        textFormat: Text.PlainText
+                        visible: Boolean(root.vault.detailItem && root.vault.detailItem.folderId)
+                        text: root.vault.detailItem
+                          ? "• 󰉋 " + Model.folderName(root.vault.folders, root.vault.detailItem.folderId)
+                          : ""
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
                       }
                     }
                   }
+                }
 
-                  // Quick Action Buttons
+                // FIELD: Public SSH key (type 5 is deliberately read-only)
+                Column {
+                  visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode === 5)
+                  width: parent.width
+                  spacing: Style.space(4)
+                  PanelSectionHeader { text: "PUBLIC KEY" }
+                  BorderSurface {
+                    width: parent.width
+                    implicitHeight: Math.max(Style.space(54), sshPublicKeyText.implicitHeight + Style.space(20))
+                    radius: Style.cornerRadius
+                    color: Style.hoverFillFor(root.fg, Color.accent)
+                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+                    Text {
+                      id: sshPublicKeyText
+                      textFormat: Text.PlainText
+                      anchors.fill: parent
+                      anchors.margins: Style.space(10)
+                      text: root.vault.detailItem ? (root.vault.detailItem.publicKey || "No public key") : ""
+                      color: root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WrapAnywhere
+                    }
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: Boolean(root.vault.detailItem && root.vault.detailItem.fingerprint)
+                    text: "Fingerprint: " + (root.vault.detailItem ? root.vault.detailItem.fingerprint : "")
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WrapAnywhere
+                  }
+                }
+
+                // FIELD: Username
+                DetailField {
+                  visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && root.vault.detailItem.username !== ""
+                  label: "Username / Email"
+                  copyLabel: "Username"
+                  shortcutHint: "u"
+                  copyIcon: ""
+                  value: root.vault.detailItem ? root.vault.detailItem.username : ""
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailItem ? root.vault.detailItem.username : "", "Username")
+                }
+
+                // FIELD: Password
+                Column {
+                  visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && (root.vault.detailPassword !== "" || root.vault.detailItem.hasPassword)
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  PanelSectionHeader { text: "PASSWORD" }
+
+                  BorderSurface {
+                    width: parent.width
+                    implicitHeight: Style.space(34)
+                    radius: Style.cornerRadius
+                    color: Style.hoverFillFor(root.fg, Color.accent)
+                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                    Row {
+                      anchors.fill: parent
+                      anchors.leftMargin: Style.space(10)
+                      anchors.rightMargin: Style.space(6)
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.vault.isFieldRevealed("password")
+                          ? root.vault.shownSecret("password", "") : Model.maskString(root.vault.detailPassword || "password")
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        elide: Text.ElideRight
+                        width: parent.width - passActions.width - Style.space(10)
+                      }
+
+                      Row {
+                        id: passActions
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(4)
+
+                        PanelActionButton {
+                          iconText: root.vault.isFieldRevealed("password") ? "󰈉" : "󰈈"
+                          tooltipText: root.vault.isFieldRevealed("password") ? "Hide password (v)" : "Reveal password (v)"
+                          fontFamily: root.fontFamily
+                          onClicked: root.toggleProtectedReveal("password")
+                        }
+
+                        PanelActionButton {
+                          iconText: "󰌆"
+                          tooltipText: "Copy password (y / Enter)"
+                          fontFamily: root.fontFamily
+                          onClicked: root.copyDetailSecret("password", "Password")
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // FIELD: TOTP (2FA Code)
+                Column {
+                  visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && root.vault.detailItem.hasTotp
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  RowLayout {
+                    width: parent.width
+                    PanelSectionHeader { text: "VERIFICATION CODE (TOTP)" }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                      textFormat: Text.PlainText
+                      text: root.vault.totpSecRemaining + "s"
+                      color: Color.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      Layout.alignment: Qt.AlignVCenter
+                    }
+                  }
+
+                  BorderSurface {
+                    width: parent.width
+                    implicitHeight: Style.space(44)
+                    radius: Style.cornerRadius
+                    color: Style.hoverFillFor(root.fg, Color.accent)
+                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                    Rectangle {
+                      anchors.left: parent.left
+                      anchors.bottom: parent.bottom
+                      height: Style.space(3)
+                      radius: Style.cornerRadius
+                      width: parent.width * (root.vault.totpSecRemaining / 30.0)
+                      color: Color.accent
+                    }
+
+                    Row {
+                      anchors.fill: parent
+                      anchors.leftMargin: Style.space(12)
+                      anchors.rightMargin: Style.space(6)
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.verticalCenter: parent.verticalCenter
+                        // A flagged item's code stays hidden until revealed.
+                        text: root.asksMasterPassword(root.vault.detailItem) && !root.vault.isFieldRevealed("totp")
+                          ? "\u2022\u2022\u2022 \u2022\u2022\u2022"
+                          : (root.vault.liveTotp ? (root.vault.liveTotp.length === 6 ? root.vault.liveTotp.slice(0, 3) + " " + root.vault.liveTotp.slice(3) : root.vault.liveTotp) : "Loading...")
+                        color: Color.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.title
+                        font.bold: true
+                        font.letterSpacing: 2.0
+                        width: parent.width - totpActions.width - Style.space(10)
+                      }
+
+                      Row {
+                        id: totpActions
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(4)
+
+                        PanelActionButton {
+                          visible: root.asksMasterPassword(root.vault.detailItem)
+                          iconText: root.vault.isFieldRevealed("totp") ? "󰈉" : "󰈈"
+                          tooltipText: root.vault.isFieldRevealed("totp") ? "Hide code" : "Reveal code"
+                          fontFamily: root.fontFamily
+                          onClicked: root.toggleProtectedReveal("totp")
+                        }
+
+                        PanelActionButton {
+                          id: copyTotpBtn
+                          iconText: "󰥔"
+                          tooltipText: "Copy TOTP code (m)"
+                          fontFamily: root.fontFamily
+                          // A flagged item's code comes after the prompt.
+                          enabled: root.vault.liveTotp !== "" || root.asksMasterPassword(root.vault.detailItem)
+                          onClicked: root.vault.copyDetailTotp()
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // FIELD: Website / URIs
+                Column {
+                  visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && root.vault.detailItem.uris && root.vault.detailItem.uris.length > 0
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  PanelSectionHeader { text: "WEBSITE" }
+
+                  Repeater {
+                    model: root.vault.detailItem ? root.vault.detailItem.uris : []
+                    delegate: BorderSurface {
+                      width: detailContentColumn.width
+                      implicitHeight: Style.space(34)
+                      radius: Style.cornerRadius
+                      color: Style.hoverFillFor(root.fg, Color.accent)
+                      borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                      Row {
+                        anchors.fill: parent
+                        anchors.leftMargin: Style.space(10)
+                        anchors.rightMargin: Style.space(6)
+
+                        Text {
+                          textFormat: Text.PlainText
+                          anchors.verticalCenter: parent.verticalCenter
+                          text: modelData
+                          color: root.fg
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          elide: Text.ElideRight
+                          width: parent.width - openUriBtn.width - Style.space(10)
+                        }
+
+                        PanelActionButton {
+                          id: openUriBtn
+                          anchors.verticalCenter: parent.verticalCenter
+                          iconText: "󰖟"
+                          tooltipText: "Open in browser (w)"
+                          fontFamily: root.fontFamily
+                          onClicked: root.vault.openUrl(modelData)
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // FIELD: Attachments. Listed from the item's metadata; bytes are
+                // fetched on request. Above NOTES, which grows with its text and
+                // would push the files below the fold.
+                Column {
+                  visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5 && root.vault.detailItem.hasAttachments)
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  RowLayout {
+                    width: parent.width
+                    spacing: Style.space(6)
+                    PanelSectionHeader { text: "ATTACHMENTS" }
+                    Item { Layout.fillWidth: true }
+                    PanelActionButton {
+                      visible: Boolean(root.vault.detailItem && root.vault.detailItem.attachments
+                        && root.vault.detailItem.attachments.length > 1)
+                      iconText: "󰇚"
+                      tooltipText: "Save all attachments (a)"
+                      size: Style.space(20)
+                      fontFamily: root.fontFamily
+                      onClicked: root.protect(root.vault.detailItem, function() { root.vault.saveAllAttachments() })
+                    }
+                  }
+
+                  Repeater {
+                    model: root.vault.detailItem ? root.vault.detailItem.attachments : []
+                    delegate: BorderSurface {
+                      readonly property string savedPath: root.vault.attachmentSavedPath(modelData.id)
+                      readonly property bool busy: root.vault.attachmentBusyId === modelData.id
+                      readonly property bool queued: root.vault.isAttachmentQueued(modelData.id)
+
+                      width: detailContentColumn.width
+                      implicitHeight: Style.space(34)
+                      radius: Style.cornerRadius
+                      color: Style.hoverFillFor(root.fg, Color.accent)
+                      borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                      Row {
+                        anchors.fill: parent
+                        anchors.leftMargin: Style.space(10)
+                        anchors.rightMargin: Style.space(6)
+                        spacing: Style.space(6)
+
+                        Text {
+                          id: attachmentGlyph
+                          textFormat: Text.PlainText
+                          anchors.verticalCenter: parent.verticalCenter
+                          text: "󰈔"
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                        }
+
+                        // The file name is vault text, so it is drawn as text.
+                        Text {
+                          textFormat: Text.PlainText
+                          anchors.verticalCenter: parent.verticalCenter
+                          text: modelData.fileName
+                          color: root.fg
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          elide: Text.ElideRight
+                          width: Math.max(0, parent.width - attachmentGlyph.width
+                            - attachmentStatus.width - attachmentActions.width - Style.space(34))
+                        }
+
+                        Text {
+                          id: attachmentStatus
+                          textFormat: Text.PlainText
+                          anchors.verticalCenter: parent.verticalCenter
+                          text: busy ? "Saving..." : queued ? "Queued" : modelData.sizeName
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+
+                        Row {
+                          id: attachmentActions
+                          anchors.verticalCenter: parent.verticalCenter
+                          spacing: Style.space(2)
+
+                          PanelActionButton {
+                            visible: savedPath === ""
+                            enabled: !busy && !queued
+                            iconText: "󰇚"
+                            tooltipText: "Save to your download folder"
+                            fontFamily: root.fontFamily
+                            onClicked: {
+                              var attachment = modelData
+                              root.protect(root.vault.detailItem, function() { root.vault.queueAttachment(attachment) })
+                            }
+                          }
+
+                          PanelActionButton {
+                            visible: savedPath !== ""
+                            iconText: "󰏌"
+                            tooltipText: "Open the saved file"
+                            fontFamily: root.fontFamily
+                            onClicked: root.vault.openSavedAttachment(modelData.id)
+                          }
+
+                          PanelActionButton {
+                            visible: savedPath !== ""
+                            iconText: "󰝰"
+                            // Our own path, still drawn as text.
+                            tooltipText: Model.plainLabel("Show in " + Model.parentDirectory(savedPath))
+                            fontFamily: root.fontFamily
+                            onClicked: root.vault.revealSavedAttachment(modelData.id)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // FIELD: Notes
+                Column {
+                  visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5
+                    && (root.vault.detailItem.notes !== "" || root.vault.detailItem.hasNotes))
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  RowLayout {
+                    width: parent.width
+                    PanelSectionHeader { text: "NOTES" }
+                    Item { Layout.fillWidth: true }
+                    PanelActionButton {
+                      iconText: root.vault.isFieldRevealed("notes") ? "󰈉" : "󰈈"
+                      tooltipText: root.vault.isFieldRevealed("notes") ? "Hide notes" : "Show notes"
+                      size: Style.space(20)
+                      fontFamily: root.fontFamily
+                      onClicked: root.toggleProtectedReveal("notes")
+                    }
+                    PanelActionButton {
+                      iconText: "󰈙"
+                      tooltipText: "Copy notes"
+                      size: Style.space(20)
+                      fontFamily: root.fontFamily
+                      onClicked: root.copyDetailSecret("notes", "Notes")
+                    }
+                  }
+
+                  BorderSurface {
+                    width: parent.width
+                    implicitHeight: notesText.implicitHeight + Style.space(16)
+                    radius: Style.cornerRadius
+                    color: Style.hoverFillFor(root.fg, Color.accent)
+                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                    Text {
+                      id: notesText
+                      textFormat: Text.PlainText
+                      anchors.fill: parent
+                      anchors.margins: Style.space(10)
+                      // Notes (a Secure Note's whole content) stay hidden until
+                      // shown, and are fetched from the helper only then.
+                      text: !root.vault.detailItem ? ""
+                        : (!root.vault.isFieldRevealed("notes")
+                          ? (root.asksMasterPassword(root.vault.detailItem)
+                            ? "Hidden: this item asks for your master password first."
+                            : "Hidden. Use the eye button to show the notes.")
+                          : root.vault.shownSecret("notes", ""))
+                      color: root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      wrapMode: Text.Wrap
+                    }
+                  }
+                }
+
+                // -----------------------------------------------------------
+                // FIELDS: Card
+                // -----------------------------------------------------------
+                // Expiry shown as one value.
+                DetailField {
+                  visible: root.vault.detailIsCard
+                  label: "Cardholder Name"
+                  value: root.vault.detailCard ? root.vault.detailCard.cardholderName : ""
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.cardholderName : "", "Cardholder name")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsCard
+                  label: "Brand"
+                  value: root.vault.detailCard ? root.vault.detailCard.brand : ""
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.brand : "", "Brand")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsCard
+                  label: "Card Number"
+                  copyLabel: "Card number"
+                  shortcutHint: "n / Enter"
+                  revealHint: "v"
+                  sensitive: true
+                  revealed: root.vault.isFieldRevealed("cardNumber")
+                  value: root.vault.shownSecret("cardNumber", root.vault.detailCard ? root.vault.detailCard.number : "")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onRevealToggled: root.toggleProtectedReveal("cardNumber")
+                  onCopyRequested: root.copyDetailSecret("cardNumber", "Card number")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsCard
+                  label: "Expires"
+                  value: root.vault.detailCardExpiry
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailCardExpiry, "Expiry")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsCard
+                  label: "Security Code"
+                  copyLabel: "Security code"
+                  shortcutHint: "k"
+                  sensitive: true
+                  revealed: root.vault.isFieldRevealed("cardCode")
+                  value: root.vault.shownSecret("cardCode", root.vault.detailCard ? root.vault.detailCard.code : "")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onRevealToggled: root.toggleProtectedReveal("cardCode")
+                  onCopyRequested: root.copyDetailSecret("cardCode", "Security code")
+                }
+
+                // -----------------------------------------------------------
+                // FIELDS: Identity
+                // -----------------------------------------------------------
+                // Every field is declared; DetailField hides the empty ones.
+                DetailField {
+                  visible: root.vault.detailIsIdentity
+                  label: "Name"
+                  value: root.vault.detailIdentityName
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentityName, "Name")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsIdentity
+                  label: "Username"
+                  shortcutHint: "u"
+                  value: root.vault.detailIdentity ? root.vault.detailIdentity.username : ""
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.username : "", "Username")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsIdentity
+                  label: "Company"
+                  value: root.vault.detailIdentity ? root.vault.detailIdentity.company : ""
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.company : "", "Company")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsIdentity
+                  label: "Email"
+                  shortcutHint: "c"
+                  value: root.vault.detailIdentity ? root.vault.detailIdentity.email : ""
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.email : "", "Email")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsIdentity
+                  label: "Phone"
+                  value: root.vault.detailIdentity ? root.vault.detailIdentity.phone : ""
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.phone : "", "Phone")
+                }
+
+                // Masked like a password (and unlike one, not rotatable).
+                DetailField {
+                  visible: root.vault.detailIsIdentity
+                  label: "Social Security Number"
+                  copyLabel: "SSN"
+                  sensitive: true
+                  revealed: root.vault.isFieldRevealed("ssn")
+                  value: root.vault.shownSecret("ssn", root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onRevealToggled: root.toggleProtectedReveal("ssn")
+                  onCopyRequested: root.copyDetailSecret("ssn", "SSN")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsIdentity
+                  label: "Passport Number"
+                  copyLabel: "Passport number"
+                  sensitive: true
+                  revealed: root.vault.isFieldRevealed("passportNumber")
+                  value: root.vault.shownSecret("passportNumber", root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onRevealToggled: root.toggleProtectedReveal("passportNumber")
+                  onCopyRequested: root.copyDetailSecret("passportNumber", "Passport number")
+                }
+
+                DetailField {
+                  visible: root.vault.detailIsIdentity
+                  label: "Licence Number"
+                  copyLabel: "Licence number"
+                  sensitive: true
+                  revealed: root.vault.isFieldRevealed("licenseNumber")
+                  value: root.vault.shownSecret("licenseNumber", root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onRevealToggled: root.toggleProtectedReveal("licenseNumber")
+                  onCopyRequested: root.copyDetailSecret("licenseNumber", "Licence number")
+                }
+
+                PanelSectionHeader {
+                  visible: root.vault.detailIsIdentity && root.vault.detailIdentityAddress !== ""
+                  text: "ADDRESS"
+                }
+
+                // One block, not seven rows. An address is copied as an address.
+                BorderSurface {
+                  visible: root.vault.detailIsIdentity && root.vault.detailIdentityAddress !== ""
+                  width: parent.width
+                  implicitHeight: addressText.implicitHeight + Style.space(16)
+                  radius: Style.cornerRadius
+                  color: Style.hoverFillFor(root.fg, Color.accent)
+                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
                   Row {
-                    id: actionButtonsRow
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: Style.space(4)
-                    visible: isSelected || isHovered
+                    anchors.fill: parent
+                    anchors.margins: Style.space(8)
+                    spacing: Style.space(6)
 
-                    PanelActionButton {
-                      visible: itemData.typeCode !== 5 && itemData.hasPassword
-                      iconText: "󰌆"
-                      tooltipText: "Copy password (Enter / y)"
-                      fontFamily: root.fontFamily
-                      onClicked: root.smartEnter(itemData)
-                    }
-
-                    // Re-prompt first, inside copyPasswordAndArm().
-                    PanelActionButton {
-                      visible: root.vault.autoTypeEnabled && Model.isLoginItem(itemRow.itemData) && itemRow.itemData.hasPassword
-                      iconText: ""
-                      tooltipText: "Copy password and arm auto-type (Ctrl+C)"
-                      fontFamily: root.fontFamily
-                      onClicked: root.vault.copyPasswordAndArm(itemRow.itemData)
+                    Text {
+                      id: addressText
+                      textFormat: Text.PlainText
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: root.vault.detailIdentityAddress
+                      color: root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      wrapMode: Text.Wrap
+                      width: parent.width - copyAddressBtn.width - Style.space(10)
                     }
 
                     PanelActionButton {
-                      visible: itemData.typeCode !== 5 && itemData.username !== ""
-                      iconText: ""
-                      tooltipText: "Copy username (u)"
+                      id: copyAddressBtn
+                      anchors.verticalCenter: parent.verticalCenter
+                      iconText: "󰈙"
+                      tooltipText: "Copy address"
                       fontFamily: root.fontFamily
-                      onClicked: root.vault.copyUsername(itemData)
-                    }
-
-                    PanelActionButton {
-                      visible: itemData.typeCode !== 5 && itemData.hasTotp
-                      iconText: "󰥔"
-                      tooltipText: "Copy TOTP code (m)"
-                      fontFamily: root.fontFamily
-                      onClicked: root.protect(itemData, function() { root.vault.copyTotpCode(itemData) })
-                    }
-
-                    PanelActionButton {
-                      iconText: "󰏫"
-                      tooltipText: itemData.typeCode === 5 ? "View public key" : "View / Edit item (e)"
-                      fontFamily: root.fontFamily
-                      onClicked: root.vault.openDetail(itemData)
-                    }
-
-                    PanelActionButton {
-                      visible: itemData.typeCode !== 5 && itemData.uris && itemData.uris.length > 0
-                      iconText: "󰖟"
-                      tooltipText: "Open URL (w)"
-                      fontFamily: root.fontFamily
-                      onClicked: root.vault.openUrl(itemData.uris[0])
+                      onClicked: root.vault.copyToClipboard(root.vault.detailIdentityAddress, "Address")
                     }
                   }
                 }
 
-                MouseArea {
-                  id: rowMouseArea
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  propagateComposedEvents: true
-                  onClicked: function(mouse) {
-                    // This area is drawn over the row, buttons included: a
-                    // click on a button is passed down (propagateComposedEvents)
-                    // instead of opening the item. One in the gaps between
-                    // them opens it, like the rest of the row.
-                    var at = rowMouseArea.mapToItem(actionButtonsRow, mouse.x, mouse.y)
-                    var hit = actionButtonsRow.childAt(at.x, at.y)
-                    if (hit && hit.visible) {
-                      mouse.accepted = false
-                      return
+                // -----------------------------------------------------------
+                // FIELDS: Custom
+                // -----------------------------------------------------------
+                // Hidden fields use the same per-field reveal and copy as the
+                // built-in secrets.
+                Column {
+                  id: customFieldsSection
+                  visible: Boolean(root.vault.detailItem && root.vault.detailItem.fields
+                    && root.vault.detailItem.fields.length > 0)
+                  width: parent.width
+                  spacing: Style.space(8)
+
+                  PanelSectionHeader { text: "CUSTOM FIELDS" }
+
+                  Repeater {
+                    id: customFieldRepeater
+                    model: root.vault.detailItem ? root.vault.detailItem.fields : []
+
+                    delegate: DetailField {
+                      required property var modelData
+                      required property int index
+                      // The helper names a field by its place in the item's own list.
+                      readonly property string revealKey: "customField:" + modelData.index
+
+                      label: modelData.name
+                      copyLabel: modelData.name
+                      value: root.vault.shownSecret(revealKey, modelData.value)
+                      sensitive: Boolean(modelData.sensitive)
+                      revealed: root.vault.isFieldRevealed(revealKey)
+                      foreground: root.fg
+                      fontFamily: root.fontFamily
+                      onRevealToggled: root.toggleProtectedReveal(revealKey)
+                      // Hidden fields are protected; plain ones are not.
+                      onCopyRequested: {
+                        if (sensitive) root.copyDetailSecret(revealKey, modelData.name)
+                        else root.vault.copyToClipboard(modelData.value, modelData.name)
+                      }
                     }
-                    root.vault.cursorActive = true
-                    root.vault.openFilterGroup = ""
-                    root.vault.selectedIndex = index
-                    root.vault.openDetail(itemData)
                   }
                 }
+
+
               }
             }
 
-            // Empty state overlay
-            Item {
-              visible: root.vault.filteredItems.length === 0
-              anchors.fill: parent
+          }
 
-              Column {
-                anchors.centerIn: parent
-                spacing: Style.space(6)
+          // Nothing open yet: the right pane says how to fill it.
+          Item {
+            visible: root.splitView && root.vault.activeScreen === "main"
+            width: root.splitDetailWidth
+            height: vaultListColumn.height
 
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  text: root.vault.isLoading && root.vault.items.length === 0 ? "󰑐" : (root.vault.items.length === 0 ? "󰞀" : "󰍡")
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.space(36)
-                  RotationAnimation on rotation {
-                    running: root.vault.isLoading && root.vault.items.length === 0
-                    from: 0
-                    to: 360
-                    duration: 900
-                    loops: Animation.Infinite
-                  }
-                }
+            Column {
+              anchors.centerIn: parent
+              width: parent.width - Style.space(24)
+              spacing: Style.space(8)
 
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  text: root.vault.isLoading && root.vault.items.length === 0
-                    ? "Loading items..."
-                    : root.vault.emptyListMessage()
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
+              Text {
+                textFormat: Text.PlainText
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "󰞀"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.space(40)
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: "No item selected"
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: "Click an item, or press e on the highlighted one, to see its details here."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
               }
             }
           }
+        }
+
+        // The filter bar, under both panes when they are side by side.
+        Column {
+          id: vaultFilterBar
+          // Wherever the list is drawn. Stated outright: reading the panes'
+          // own `visible` made a binding loop.
+          visible: root.vault.status === "unlocked"
+            && (root.vault.activeScreen === "main" || (root.splitView && root.vault.activeScreen === "detail"))
+          width: parent.width
+          spacing: Style.space(8)
 
           // -----------------------------------------------------------------
           // Bottom filter bar: Folders / Vaults / Types
@@ -4023,856 +5008,6 @@ Panel {
               shortcut: "t"
             }
           }
-
-        }
-
-        // -------------------------------------------------------------------
-        // SCREEN 4: ITEM DETAIL
-        // -------------------------------------------------------------------
-        Column {
-          visible: root.vault.status === "unlocked" && root.vault.activeScreen === "detail"
-          width: parent.width
-          spacing: Style.space(12)
-
-          // Back and actions. A Flow, since the suggestion button appears at
-          // runtime and the panel can be narrower than asked; it wraps rather
-          // than pushing Delete off the edge.
-          Flow {
-            width: parent.width
-            spacing: Style.space(8)
-
-            Button {
-              // Short, like the Sends screen's.
-              text: "Back (Esc)"
-              iconText: "󰁍"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.vault.currentScreen = "main"
-            }
-
-            Button {
-              visible: Boolean(root.vault.detectedContext && root.vault.detectedContext.displayName && root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
-              readonly property bool pinned: Boolean(root.vault.detailItem
-                && Model.isAssociated(root.vault.associations, root.vault.detectedContext, root.vault.detailItem.id))
-              text: pinned ? "Suggested here" : "Suggest here"
-              iconText: pinned ? "󰐾" : "󰐽"
-              selected: pinned
-              accent: Color.accent
-              // Window titles are untrusted; tooltips auto-detect markup.
-              tooltipText: Model.plainLabel((pinned ? "Stop suggesting this for " : "Always suggest this for ")
-                + (root.vault.detectedContext ? root.vault.detectedContext.displayName : ""))
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.vault.toggleAssociation(root.vault.detailItem)
-            }
-
-            Button {
-              visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
-              text: "Edit"
-              iconText: "󰏫"
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.editDetailItem()
-            }
-
-            Button {
-              visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
-              text: "Delete"
-              iconText: "󰆴"
-              accent: Color.urgent
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.vault.showDeleteConfirm = true
-            }
-          }
-
-          // Delete Confirmation Banner
-          BorderSurface {
-            visible: root.vault.showDeleteConfirm
-            width: parent.width
-            implicitHeight: Style.space(64)
-            color: Util.alpha(Color.urgent, 0.15)
-            radius: Style.cornerRadius
-            borderSpec: Border.surfaceSpec("menu", "border", Color.urgent, 1)
-
-            Row {
-              anchors.centerIn: parent
-              spacing: Style.space(12)
-
-              Text {
-                textFormat: Text.PlainText
-                text: "Permanently delete this item?"
-                color: root.fg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                font.bold: true
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              Button {
-                text: "Confirm Delete"
-                iconText: "󰆴"
-                selected: true
-                accent: Color.urgent
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                onClicked: root.vault.deleteCurrentItem()
-              }
-
-              Button {
-                text: "Cancel"
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                onClicked: root.vault.showDeleteConfirm = false
-              }
-            }
-          }
-
-          PanelSeparator { width: parent.width }
-
-          Flickable {
-            id: detailFlickable
-            width: parent.width
-            height: Math.min(Style.space(380), detailContentColumn.implicitHeight)
-            contentWidth: width
-            contentHeight: detailContentColumn.implicitHeight
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.VerticalFlick
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-            WheelScroll { view: detailFlickable }
-
-            Column {
-              id: detailContentColumn
-              width: detailFlickable.width - root.scrollGutter
-              spacing: Style.space(12)
-
-              // Item Header
-              Row {
-                width: parent.width
-                spacing: Style.space(10)
-
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: root.vault.detailItem ? Model.itemTypeGlyph(root.vault.detailItem.typeCode) : "󰌋"
-                  color: (root.vault.detailItem && root.vault.detailItem.favorite) ? Color.accent : root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.space(26)
-                }
-
-                Column {
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(40)
-                  spacing: Style.space(2)
-
-                  Row {
-                    spacing: Style.space(6)
-                    width: parent.width
-
-                    Text {
-                      textFormat: Text.PlainText
-                      text: root.vault.detailItem ? root.vault.detailItem.name : "Loading..."
-                      color: root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.title
-                      font.bold: true
-                      elide: Text.ElideRight
-                      width: Math.min(implicitWidth, parent.width - Style.space(20)
-                        - (root.asksMasterPassword(root.vault.detailItem) ? Style.space(20) : 0))
-                    }
-
-                    Text {
-                      textFormat: Text.PlainText
-                      visible: Boolean(root.vault.detailItem && root.vault.detailItem.favorite)
-                      text: "★"
-                      color: Color.accent
-                      font.pixelSize: Style.font.body
-                    }
-
-                    Text {
-                      textFormat: Text.PlainText
-                      visible: root.asksMasterPassword(root.vault.detailItem)
-                      text: "\u{F033E}"
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                    }
-                  }
-
-                  Row {
-                    spacing: Style.space(6)
-                    Text {
-                      textFormat: Text.PlainText
-                      text: root.vault.detailItem ? Model.itemTypeLabel(root.vault.detailItem.typeCode) : ""
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-                    Text {
-                      textFormat: Text.PlainText
-                      visible: Boolean(root.vault.detailItem && root.vault.detailItem.organizationId)
-                      text: "• Shared Organization"
-                      color: Color.accent
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-                    Text {
-                      textFormat: Text.PlainText
-                      visible: Boolean(root.vault.detailItem && root.vault.detailItem.folderId)
-                      text: root.vault.detailItem
-                        ? "• 󰉋 " + Model.folderName(root.vault.folders, root.vault.detailItem.folderId)
-                        : ""
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-                  }
-                }
-              }
-
-              // FIELD: Public SSH key (type 5 is deliberately read-only)
-              Column {
-                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode === 5)
-                width: parent.width
-                spacing: Style.space(4)
-                PanelSectionHeader { text: "PUBLIC KEY" }
-                BorderSurface {
-                  width: parent.width
-                  implicitHeight: Math.max(Style.space(54), sshPublicKeyText.implicitHeight + Style.space(20))
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-                  Text {
-                    id: sshPublicKeyText
-                    textFormat: Text.PlainText
-                    anchors.fill: parent
-                    anchors.margins: Style.space(10)
-                    text: root.vault.detailItem ? (root.vault.detailItem.publicKey || "No public key") : ""
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    wrapMode: Text.WrapAnywhere
-                  }
-                }
-                Text {
-                  textFormat: Text.PlainText
-                  visible: Boolean(root.vault.detailItem && root.vault.detailItem.fingerprint)
-                  text: "Fingerprint: " + (root.vault.detailItem ? root.vault.detailItem.fingerprint : "")
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WrapAnywhere
-                }
-              }
-
-              // FIELD: Username
-              DetailField {
-                visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && root.vault.detailItem.username !== ""
-                label: "Username / Email"
-                copyLabel: "Username"
-                shortcutHint: "u"
-                copyIcon: ""
-                value: root.vault.detailItem ? root.vault.detailItem.username : ""
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailItem ? root.vault.detailItem.username : "", "Username")
-              }
-
-              // FIELD: Password
-              Column {
-                visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && (root.vault.detailPassword !== "" || root.vault.detailItem.hasPassword)
-                width: parent.width
-                spacing: Style.space(4)
-
-                PanelSectionHeader { text: "PASSWORD" }
-
-                BorderSurface {
-                  width: parent.width
-                  implicitHeight: Style.space(34)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                  Row {
-                    anchors.fill: parent
-                    anchors.leftMargin: Style.space(10)
-                    anchors.rightMargin: Style.space(6)
-
-                    Text {
-                      textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: root.vault.isFieldRevealed("password")
-                        ? root.vault.shownSecret("password", "") : Model.maskString(root.vault.detailPassword || "password")
-                      color: root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                      elide: Text.ElideRight
-                      width: parent.width - passActions.width - Style.space(10)
-                    }
-
-                    Row {
-                      id: passActions
-                      anchors.verticalCenter: parent.verticalCenter
-                      spacing: Style.space(4)
-
-                      PanelActionButton {
-                        iconText: root.vault.isFieldRevealed("password") ? "󰈉" : "󰈈"
-                        tooltipText: root.vault.isFieldRevealed("password") ? "Hide password (v)" : "Reveal password (v)"
-                        fontFamily: root.fontFamily
-                        onClicked: root.toggleProtectedReveal("password")
-                      }
-
-                      PanelActionButton {
-                        iconText: "󰌆"
-                        tooltipText: "Copy password (y / Enter)"
-                        fontFamily: root.fontFamily
-                        onClicked: root.copyDetailSecret("password", "Password")
-                      }
-                    }
-                  }
-                }
-              }
-
-              // FIELD: TOTP (2FA Code)
-              Column {
-                visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && root.vault.detailItem.hasTotp
-                width: parent.width
-                spacing: Style.space(4)
-
-                RowLayout {
-                  width: parent.width
-                  PanelSectionHeader { text: "VERIFICATION CODE (TOTP)" }
-                  Item { Layout.fillWidth: true }
-                  Text {
-                    textFormat: Text.PlainText
-                    text: root.vault.totpSecRemaining + "s"
-                    color: Color.accent
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                    Layout.alignment: Qt.AlignVCenter
-                  }
-                }
-
-                BorderSurface {
-                  width: parent.width
-                  implicitHeight: Style.space(44)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                  Rectangle {
-                    anchors.left: parent.left
-                    anchors.bottom: parent.bottom
-                    height: Style.space(3)
-                    radius: Style.cornerRadius
-                    width: parent.width * (root.vault.totpSecRemaining / 30.0)
-                    color: Color.accent
-                  }
-
-                  Row {
-                    anchors.fill: parent
-                    anchors.leftMargin: Style.space(12)
-                    anchors.rightMargin: Style.space(6)
-
-                    Text {
-                      textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      // A flagged item's code stays hidden until revealed.
-                      text: root.asksMasterPassword(root.vault.detailItem) && !root.vault.isFieldRevealed("totp")
-                        ? "\u2022\u2022\u2022 \u2022\u2022\u2022"
-                        : (root.vault.liveTotp ? (root.vault.liveTotp.length === 6 ? root.vault.liveTotp.slice(0, 3) + " " + root.vault.liveTotp.slice(3) : root.vault.liveTotp) : "Loading...")
-                      color: Color.accent
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.title
-                      font.bold: true
-                      font.letterSpacing: 2.0
-                      width: parent.width - totpActions.width - Style.space(10)
-                    }
-
-                    Row {
-                      id: totpActions
-                      anchors.verticalCenter: parent.verticalCenter
-                      spacing: Style.space(4)
-
-                      PanelActionButton {
-                        visible: root.asksMasterPassword(root.vault.detailItem)
-                        iconText: root.vault.isFieldRevealed("totp") ? "󰈉" : "󰈈"
-                        tooltipText: root.vault.isFieldRevealed("totp") ? "Hide code" : "Reveal code"
-                        fontFamily: root.fontFamily
-                        onClicked: root.toggleProtectedReveal("totp")
-                      }
-
-                      PanelActionButton {
-                        id: copyTotpBtn
-                        iconText: "󰥔"
-                        tooltipText: "Copy TOTP code (m)"
-                        fontFamily: root.fontFamily
-                        // A flagged item's code comes after the prompt.
-                        enabled: root.vault.liveTotp !== "" || root.asksMasterPassword(root.vault.detailItem)
-                        onClicked: root.vault.copyDetailTotp()
-                      }
-                    }
-                  }
-                }
-              }
-
-              // FIELD: Website / URIs
-              Column {
-                visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && root.vault.detailItem.uris && root.vault.detailItem.uris.length > 0
-                width: parent.width
-                spacing: Style.space(4)
-
-                PanelSectionHeader { text: "WEBSITE" }
-
-                Repeater {
-                  model: root.vault.detailItem ? root.vault.detailItem.uris : []
-                  delegate: BorderSurface {
-                    width: detailContentColumn.width
-                    implicitHeight: Style.space(34)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                    Row {
-                      anchors.fill: parent
-                      anchors.leftMargin: Style.space(10)
-                      anchors.rightMargin: Style.space(6)
-
-                      Text {
-                        textFormat: Text.PlainText
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData
-                        color: root.fg
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        elide: Text.ElideRight
-                        width: parent.width - openUriBtn.width - Style.space(10)
-                      }
-
-                      PanelActionButton {
-                        id: openUriBtn
-                        anchors.verticalCenter: parent.verticalCenter
-                        iconText: "󰖟"
-                        tooltipText: "Open in browser (w)"
-                        fontFamily: root.fontFamily
-                        onClicked: root.vault.openUrl(modelData)
-                      }
-                    }
-                  }
-                }
-              }
-
-              // FIELD: Attachments. Listed from the item's metadata; bytes are
-              // fetched on request. Above NOTES, which grows with its text and
-              // would push the files below the fold.
-              Column {
-                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5 && root.vault.detailItem.hasAttachments)
-                width: parent.width
-                spacing: Style.space(4)
-
-                RowLayout {
-                  width: parent.width
-                  spacing: Style.space(6)
-                  PanelSectionHeader { text: "ATTACHMENTS" }
-                  Item { Layout.fillWidth: true }
-                  PanelActionButton {
-                    visible: Boolean(root.vault.detailItem && root.vault.detailItem.attachments
-                      && root.vault.detailItem.attachments.length > 1)
-                    iconText: "󰇚"
-                    tooltipText: "Save all attachments (a)"
-                    size: Style.space(20)
-                    fontFamily: root.fontFamily
-                    onClicked: root.protect(root.vault.detailItem, function() { root.vault.saveAllAttachments() })
-                  }
-                }
-
-                Repeater {
-                  model: root.vault.detailItem ? root.vault.detailItem.attachments : []
-                  delegate: BorderSurface {
-                    readonly property string savedPath: root.vault.attachmentSavedPath(modelData.id)
-                    readonly property bool busy: root.vault.attachmentBusyId === modelData.id
-                    readonly property bool queued: root.vault.isAttachmentQueued(modelData.id)
-
-                    width: detailContentColumn.width
-                    implicitHeight: Style.space(34)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                    Row {
-                      anchors.fill: parent
-                      anchors.leftMargin: Style.space(10)
-                      anchors.rightMargin: Style.space(6)
-                      spacing: Style.space(6)
-
-                      Text {
-                        id: attachmentGlyph
-                        textFormat: Text.PlainText
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "󰈔"
-                        color: root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                      }
-
-                      // The file name is vault text, so it is drawn as text.
-                      Text {
-                        textFormat: Text.PlainText
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.fileName
-                        color: root.fg
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        elide: Text.ElideRight
-                        width: Math.max(0, parent.width - attachmentGlyph.width
-                          - attachmentStatus.width - attachmentActions.width - Style.space(34))
-                      }
-
-                      Text {
-                        id: attachmentStatus
-                        textFormat: Text.PlainText
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: busy ? "Saving..." : queued ? "Queued" : modelData.sizeName
-                        color: root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                      }
-
-                      Row {
-                        id: attachmentActions
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: Style.space(2)
-
-                        PanelActionButton {
-                          visible: savedPath === ""
-                          enabled: !busy && !queued
-                          iconText: "󰇚"
-                          tooltipText: "Save to your download folder"
-                          fontFamily: root.fontFamily
-                          onClicked: {
-                            var attachment = modelData
-                            root.protect(root.vault.detailItem, function() { root.vault.queueAttachment(attachment) })
-                          }
-                        }
-
-                        PanelActionButton {
-                          visible: savedPath !== ""
-                          iconText: "󰏌"
-                          tooltipText: "Open the saved file"
-                          fontFamily: root.fontFamily
-                          onClicked: root.vault.openSavedAttachment(modelData.id)
-                        }
-
-                        PanelActionButton {
-                          visible: savedPath !== ""
-                          iconText: "󰝰"
-                          // Our own path, still drawn as text.
-                          tooltipText: Model.plainLabel("Show in " + Model.parentDirectory(savedPath))
-                          fontFamily: root.fontFamily
-                          onClicked: root.vault.revealSavedAttachment(modelData.id)
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-
-              // FIELD: Notes
-              Column {
-                visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5
-                  && (root.vault.detailItem.notes !== "" || root.vault.detailItem.hasNotes))
-                width: parent.width
-                spacing: Style.space(4)
-
-                RowLayout {
-                  width: parent.width
-                  PanelSectionHeader { text: "NOTES" }
-                  Item { Layout.fillWidth: true }
-                  PanelActionButton {
-                    iconText: root.vault.isFieldRevealed("notes") ? "󰈉" : "󰈈"
-                    tooltipText: root.vault.isFieldRevealed("notes") ? "Hide notes" : "Show notes"
-                    size: Style.space(20)
-                    fontFamily: root.fontFamily
-                    onClicked: root.toggleProtectedReveal("notes")
-                  }
-                  PanelActionButton {
-                    iconText: "󰈙"
-                    tooltipText: "Copy notes"
-                    size: Style.space(20)
-                    fontFamily: root.fontFamily
-                    onClicked: root.copyDetailSecret("notes", "Notes")
-                  }
-                }
-
-                BorderSurface {
-                  width: parent.width
-                  implicitHeight: notesText.implicitHeight + Style.space(16)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                  Text {
-                    id: notesText
-                    textFormat: Text.PlainText
-                    anchors.fill: parent
-                    anchors.margins: Style.space(10)
-                    // Notes (a Secure Note's whole content) stay hidden until
-                    // shown, and are fetched from the helper only then.
-                    text: !root.vault.detailItem ? ""
-                      : (!root.vault.isFieldRevealed("notes")
-                        ? (root.asksMasterPassword(root.vault.detailItem)
-                          ? "Hidden: this item asks for your master password first."
-                          : "Hidden. Use the eye button to show the notes.")
-                        : root.vault.shownSecret("notes", ""))
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    wrapMode: Text.Wrap
-                  }
-                }
-              }
-
-              // -----------------------------------------------------------
-              // FIELDS: Card
-              // -----------------------------------------------------------
-              // Expiry shown as one value.
-              DetailField {
-                visible: root.vault.detailIsCard
-                label: "Cardholder Name"
-                value: root.vault.detailCard ? root.vault.detailCard.cardholderName : ""
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.cardholderName : "", "Cardholder name")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsCard
-                label: "Brand"
-                value: root.vault.detailCard ? root.vault.detailCard.brand : ""
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.brand : "", "Brand")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsCard
-                label: "Card Number"
-                copyLabel: "Card number"
-                shortcutHint: "n / Enter"
-                revealHint: "v"
-                sensitive: true
-                revealed: root.vault.isFieldRevealed("cardNumber")
-                value: root.vault.shownSecret("cardNumber", root.vault.detailCard ? root.vault.detailCard.number : "")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onRevealToggled: root.toggleProtectedReveal("cardNumber")
-                onCopyRequested: root.copyDetailSecret("cardNumber", "Card number")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsCard
-                label: "Expires"
-                value: root.vault.detailCardExpiry
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailCardExpiry, "Expiry")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsCard
-                label: "Security Code"
-                copyLabel: "Security code"
-                shortcutHint: "k"
-                sensitive: true
-                revealed: root.vault.isFieldRevealed("cardCode")
-                value: root.vault.shownSecret("cardCode", root.vault.detailCard ? root.vault.detailCard.code : "")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onRevealToggled: root.toggleProtectedReveal("cardCode")
-                onCopyRequested: root.copyDetailSecret("cardCode", "Security code")
-              }
-
-              // -----------------------------------------------------------
-              // FIELDS: Identity
-              // -----------------------------------------------------------
-              // Every field is declared; DetailField hides the empty ones.
-              DetailField {
-                visible: root.vault.detailIsIdentity
-                label: "Name"
-                value: root.vault.detailIdentityName
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentityName, "Name")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsIdentity
-                label: "Username"
-                shortcutHint: "u"
-                value: root.vault.detailIdentity ? root.vault.detailIdentity.username : ""
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.username : "", "Username")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsIdentity
-                label: "Company"
-                value: root.vault.detailIdentity ? root.vault.detailIdentity.company : ""
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.company : "", "Company")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsIdentity
-                label: "Email"
-                shortcutHint: "c"
-                value: root.vault.detailIdentity ? root.vault.detailIdentity.email : ""
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.email : "", "Email")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsIdentity
-                label: "Phone"
-                value: root.vault.detailIdentity ? root.vault.detailIdentity.phone : ""
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.phone : "", "Phone")
-              }
-
-              // Masked like a password (and unlike one, not rotatable).
-              DetailField {
-                visible: root.vault.detailIsIdentity
-                label: "Social Security Number"
-                copyLabel: "SSN"
-                sensitive: true
-                revealed: root.vault.isFieldRevealed("ssn")
-                value: root.vault.shownSecret("ssn", root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onRevealToggled: root.toggleProtectedReveal("ssn")
-                onCopyRequested: root.copyDetailSecret("ssn", "SSN")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsIdentity
-                label: "Passport Number"
-                copyLabel: "Passport number"
-                sensitive: true
-                revealed: root.vault.isFieldRevealed("passportNumber")
-                value: root.vault.shownSecret("passportNumber", root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onRevealToggled: root.toggleProtectedReveal("passportNumber")
-                onCopyRequested: root.copyDetailSecret("passportNumber", "Passport number")
-              }
-
-              DetailField {
-                visible: root.vault.detailIsIdentity
-                label: "Licence Number"
-                copyLabel: "Licence number"
-                sensitive: true
-                revealed: root.vault.isFieldRevealed("licenseNumber")
-                value: root.vault.shownSecret("licenseNumber", root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onRevealToggled: root.toggleProtectedReveal("licenseNumber")
-                onCopyRequested: root.copyDetailSecret("licenseNumber", "Licence number")
-              }
-
-              PanelSectionHeader {
-                visible: root.vault.detailIsIdentity && root.vault.detailIdentityAddress !== ""
-                text: "ADDRESS"
-              }
-
-              // One block, not seven rows. An address is copied as an address.
-              BorderSurface {
-                visible: root.vault.detailIsIdentity && root.vault.detailIdentityAddress !== ""
-                width: parent.width
-                implicitHeight: addressText.implicitHeight + Style.space(16)
-                radius: Style.cornerRadius
-                color: Style.hoverFillFor(root.fg, Color.accent)
-                borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-
-                Row {
-                  anchors.fill: parent
-                  anchors.margins: Style.space(8)
-                  spacing: Style.space(6)
-
-                  Text {
-                    id: addressText
-                    textFormat: Text.PlainText
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: root.vault.detailIdentityAddress
-                    color: root.fg
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    wrapMode: Text.Wrap
-                    width: parent.width - copyAddressBtn.width - Style.space(10)
-                  }
-
-                  PanelActionButton {
-                    id: copyAddressBtn
-                    anchors.verticalCenter: parent.verticalCenter
-                    iconText: "󰈙"
-                    tooltipText: "Copy address"
-                    fontFamily: root.fontFamily
-                    onClicked: root.vault.copyToClipboard(root.vault.detailIdentityAddress, "Address")
-                  }
-                }
-              }
-
-              // -----------------------------------------------------------
-              // FIELDS: Custom
-              // -----------------------------------------------------------
-              // Hidden fields use the same per-field reveal and copy as the
-              // built-in secrets.
-              Column {
-                id: customFieldsSection
-                visible: Boolean(root.vault.detailItem && root.vault.detailItem.fields
-                  && root.vault.detailItem.fields.length > 0)
-                width: parent.width
-                spacing: Style.space(8)
-
-                PanelSectionHeader { text: "CUSTOM FIELDS" }
-
-                Repeater {
-                  id: customFieldRepeater
-                  model: root.vault.detailItem ? root.vault.detailItem.fields : []
-
-                  delegate: DetailField {
-                    required property var modelData
-                    required property int index
-                    // The helper names a field by its place in the item's own list.
-                    readonly property string revealKey: "customField:" + modelData.index
-
-                    label: modelData.name
-                    copyLabel: modelData.name
-                    value: root.vault.shownSecret(revealKey, modelData.value)
-                    sensitive: Boolean(modelData.sensitive)
-                    revealed: root.vault.isFieldRevealed(revealKey)
-                    foreground: root.fg
-                    fontFamily: root.fontFamily
-                    onRevealToggled: root.toggleProtectedReveal(revealKey)
-                    // Hidden fields are protected; plain ones are not.
-                    onCopyRequested: {
-                      if (sensitive) root.copyDetailSecret(revealKey, modelData.name)
-                      else root.vault.copyToClipboard(modelData.value, modelData.name)
-                    }
-                  }
-                }
-              }
-
-
-            }
-          }
-
         }
 
         // -------------------------------------------------------------------

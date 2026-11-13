@@ -3279,6 +3279,108 @@ function itemTypeLabel(type) {
 }
 
 // -------------------------------------------------------------------------
+// Item icons
+// -------------------------------------------------------------------------
+//
+// What Bitwarden's own clients draw beside an item (buildCipherIcon() in
+// bitwarden/clients, libs/common/src/vault/icon/build-cipher-icon.ts): a
+// login's website icon from the server's icon service, an Android or Apple
+// mark for an app URI, a card's brand mark, and the type glyph otherwise.
+// Website icons and brand marks follow "Show website icons"; app marks do not.
+
+// Nerd Font Awesome card marks, for the brands Bitwarden draws a mark for and
+// the font has one. Maestro, UnionPay and RuPay keep the card glyph.
+var CARD_BRAND_GLYPHS = {
+  "visa": "",
+  "mastercard": "",
+  "discover": "",
+  "amex": "",
+  "jcb": "",
+  "diners club": ""
+}
+
+function firstItemUri(item) {
+  var uris = item && item.uris
+  if (!uris || !(uris.length > 0)) return ""
+  var first = uris[0]
+  if (first && typeof first === "object") first = first.uri
+  return first === undefined || first === null ? "" : String(first).trim()
+}
+
+// The glyph drawn for an item: under a website icon while it loads, and in its
+// place when there is none.
+function itemIconGlyph(item, showWebsiteIcons) {
+  if (!item) return itemTypeGlyph(1)
+  var type = itemTypeName(item.typeCode)
+  if (type === "login") {
+    var uri = firstItemUri(item).toLowerCase()
+    if (uri.indexOf("androidapp://") === 0) return "\u{F0032}" // md-android
+    if (uri.indexOf("iosapp://") === 0) return "\u{F0035}"     // md-apple
+  } else if (type === "card" && showWebsiteIcons === true) {
+    var brand = item.card ? String(item.card.brand || "").toLowerCase() : ""
+    if (CARD_BRAND_GLYPHS.hasOwnProperty(brand)) return CARD_BRAND_GLYPHS[brand]
+  }
+  return itemTypeGlyph(item.typeCode)
+}
+
+// The host whose icon Bitwarden would fetch for a login URI, or "" for none.
+// Bitwarden's rule: a URI with a dot and no scheme is a website, as is an
+// http(s) one with a dot; .onion and .i2p never are. Narrower than its
+// hostname parser on purpose: only a plain ASCII host name or IPv4 address
+// goes into the icon URL, so nothing in a vault entry can shape the request
+// beyond naming a host.
+function websiteIconHost(uri) {
+  var u = String(uri || "").trim()
+  if (!u || u.length > 2048) return ""
+  // URL parsers read `\` as `/` in an http(s) authority; this one would not.
+  if (u.indexOf("\\") !== -1) return ""
+  if (u.indexOf("://") === -1) {
+    if (u.indexOf(".") === -1) return ""
+    u = "http://" + u
+  } else if (!/^https?:\/\//i.test(u) || u.indexOf(".") === -1) {
+    return ""
+  }
+  var m = u.match(/^https?:\/\/(?:[^\/?#@\s]*@)?([^\/?#:\s\\]+)/i)
+  if (!m) return ""
+  var host = m[1].toLowerCase().replace(/\.$/, "")
+  if (host.length > 253) return ""
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(host)) return ""
+  if (/\.(?:onion|i2p)$/.test(host)) return ""
+  return host
+}
+
+// The icon service for an account's server, as Bitwarden's environments set
+// it: icons.bitwarden.net for the US cloud (and no server set),
+// icons.bitwarden.eu for the EU cloud, `<server>/icons` when self-hosted.
+// "" when the server address is not one an icon could safely be fetched from.
+function iconServiceUrl(serverUrl) {
+  var raw = String(serverUrl || "").trim()
+  if (!raw) return "https://icons.bitwarden.net"
+  if (raw.indexOf("://") === -1) raw = "https://" + raw
+  var m = raw.match(/^(https?):\/\/([^\/?#\s\\@]+)([^?#\s\\]*)$/i)
+  if (!m) return ""
+  var scheme = m[1].toLowerCase()
+  var authority = m[2].toLowerCase()
+  var host = authority.replace(/:\d+$/, "")
+  if (!/^[a-z0-9.-]+$/.test(host) && !/^\[[0-9a-f:.]+\]$/.test(host)) return ""
+  if (host === "bitwarden.com" || /\.bitwarden\.com$/.test(host)) return "https://icons.bitwarden.net"
+  if (host === "bitwarden.eu" || /\.bitwarden\.eu$/.test(host)) return "https://icons.bitwarden.eu"
+  var path = m[3].replace(/\/+$/, "")
+  if (!/^[A-Za-z0-9._~\/-]*$/.test(path)) return ""
+  return scheme + "://" + authority + path + "/icons"
+}
+
+// The website icon to show for an item, or "" for none: logins only, and only
+// with "Show website icons" on.
+function websiteIconUrl(item, showWebsiteIcons, serverUrl) {
+  if (showWebsiteIcons !== true || !isLoginItem(item)) return ""
+  var host = websiteIconHost(firstItemUri(item))
+  if (!host) return ""
+  var base = iconServiceUrl(serverUrl)
+  return base ? base + "/" + host + "/icon.png" : ""
+}
+
+// -------------------------------------------------------------------------
 // Attachments
 // -------------------------------------------------------------------------
 //
@@ -7320,6 +7422,10 @@ var SETTINGS_SCHEMA = [
     description: "Off by default: whatever window has focus when it types gets your password, and while an entry is armed any program running as you can make it type. With it on, Ctrl+C in the panel copies the highlighted login's password and arms it for 30 seconds; the autoType command, bound to a key, then types its username, Tab and password into the focused window, once. Needs wtype." },
   { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
     description: "Use the active Omarchy theme accent for the primary menu-bar icon." },
+  { key: "showWebsiteIcons", group: "general", type: "bool", label: "Show website icons", defaultValue: true,
+    description: "Show a recognizable image beside each login, and card brand marks, as Bitwarden does. Each login's website name is sent to your server's icon service (icons.bitwarden.net on Bitwarden's cloud), which so learns which sites you have saved." },
+  { key: "sideBySide", group: "general", type: "bool", label: "Show details beside the list", defaultValue: true,
+    description: "Open items in a pane beside the vault list, as Bitwarden desktop does. Off keeps the compact panel, where an item replaces the list." },
   { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
     min: 0, max: 30, step: 1, zeroLabel: "Off", defaultValue: 3,
     description: "Replace the clipboard with the 2FA code this long after the password." },

@@ -31,6 +31,8 @@
       "closeOnCopy": true,
       "autoTypeEnabled": false,
       "colorizeIcon": false,
+      "showWebsiteIcons": true,
+      "sideBySide": true,
       "suggestOnOpen": true,
       "fingerprintUnlock": false,
       "fidoUnlock": false,
@@ -123,6 +125,20 @@
         "label": "Colorize menu-bar icon",
         "description": "Use the active Omarchy theme accent for the primary menu-bar icon.",
         "defaultValue": false
+      },
+      {
+        "key": "showWebsiteIcons",
+        "type": "boolean",
+        "label": "Show website icons",
+        "description": "Show a recognizable image beside each login, and card brand marks, as Bitwarden does. Each login's website name is sent to your server's icon service (icons.bitwarden.net on Bitwarden's cloud), which so learns which sites you have saved.",
+        "defaultValue": true
+      },
+      {
+        "key": "sideBySide",
+        "type": "boolean",
+        "label": "Show details beside the list",
+        "description": "Open items in a pane beside the vault list, as Bitwarden desktop does. Off keeps the compact panel, where an item replaces the list.",
+        "defaultValue": true
       },
       {
         "key": "suggestOnOpen",
