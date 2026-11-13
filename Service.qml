@@ -146,6 +146,8 @@ Item {
   readonly property bool sshAgentEnabled: Model.boolSetting("sshAgentEnabled", setting("sshAgentEnabled", false))
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
   readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", true))
+  readonly property bool sshAgentNotifyFallback: Model.boolSetting("sshAgentNotifyFallback", setting("sshAgentNotifyFallback", true))
+  readonly property bool sshAgentTerminalApproval: Model.boolSetting("sshAgentTerminalApproval", setting("sshAgentTerminalApproval", false))
   readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
 
   // State
@@ -2580,6 +2582,8 @@ Item {
 
   function showSshApproval(message) {
     root.sshPrompt = Model.sshAgentPromptView(message, root.sshAgentApprovalWindowSec)
+    root.sshPromptRaw = message
+    armSshNotifyFallback()
     if (startSshPromptClock()) return
     if (root.currentScreen !== "sshApproval") root.screenBeforeSshApproval = root.currentScreen
     // Recorded before opening, because open() is what makes it true.
@@ -2606,6 +2610,8 @@ Item {
   }
 
   function dismissSshApproval() {
+    stopSshNotifyFallback()
+    root.sshPromptRaw = null
     var openedForThis = root.sshPromptOpenedPanel
     var popupWasUsed = root.sshApprovalPopupOpen
     root.sshPrompt = null
@@ -2678,6 +2684,10 @@ Item {
 
   function approveSshRequest(grantSeconds) {
     if (!sshPrompt) return
+    // Approving is a person acting, and the signature it allows is the use the
+    // vault is kept open for. An identity listing (`ssh-add -l`) is neither,
+    // and is not counted anywhere: see onSshAgentMessage().
+    resetAutoLockTimer()
     sshAgentWrite(Model.sshAgentApproveLine(sshPrompt.requestId, grantSeconds))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
     noteSshCooldown()
@@ -2767,6 +2777,135 @@ Item {
     sshAgentWrite(Model.sshAgentRevokeGrantsLine())
   }
 
+  // The approval_required message behind sshPrompt (the view drops fields
+  // the terminal listing needs).
+  property var sshPromptRaw: null
+
+  // --- Desktop-notification fallback ---------------------------------------
+  // "Unavailable" means the card was shown and nobody answered within a few
+  // seconds: the panel may be on a screen nobody is looking at, covered, or
+  // not drawn at all. (A shell that is not running has no agent either: the
+  // helper is its child and exits with it, so there is nothing to ask.)
+  // Only signing prompts get one; an unlock needs a secret typed, which a
+  // notification must never collect.
+  property int sshNotifyRequestId: -1
+  property double sshNotifyStartedMs: 0
+
+  function armSshNotifyFallback() {
+    stopSshNotifyFallback()
+    if (!root.sshAgentNotifyFallback || !root.sshPrompt) return
+    sshNotifyTimer.interval = Model.sshAgentNotifyDelayMs()
+    sshNotifyTimer.restart()
+  }
+
+  function stopSshNotifyFallback() {
+    sshNotifyTimer.stop()
+    // Cleared first, so the kill's exit decides nothing.
+    root.sshNotifyRequestId = -1
+    if (sshNotifyProc.running) sshNotifyProc.running = false
+  }
+
+  function showSshNotification() {
+    if (!root.sshAgentNotifyFallback || !root.sshPrompt || sshNotifyProc.running) return
+    var elapsedSec = (Date.now() - root.sshPromptStartedMs) / 1000
+    var remaining = Math.ceil(Model.sshAgentRequestDeadlineMs() / 1000 - elapsedSec)
+    var command = Model.sshAgentNotifyCommand(root.sshPrompt, remaining)
+    if (command.length === 0) return
+    root.sshNotifyRequestId = root.sshPrompt.requestId
+    root.sshNotifyStartedMs = Date.now()
+    sshNotifyProc.command = command
+    sshNotifyProc.running = true
+  }
+
+  function onSshNotifyExited(exitCode, stdout) {
+    var id = root.sshNotifyRequestId
+    root.sshNotifyRequestId = -1
+    // Answered elsewhere, or a different request is up now.
+    if (id < 0 || !root.sshPrompt || root.sshPrompt.requestId !== id) return
+    var decision = Model.sshAgentNotifyDecision(exitCode, stdout, Date.now() - root.sshNotifyStartedMs)
+    if (decision === "allow") approveSshRequest(0)
+    else if (decision === "deny") denyCurrentSshPrompt()
+    else if (decision === "early") showSshNotification()
+  }
+
+  Timer {
+    id: sshNotifyTimer
+    repeat: false
+    onTriggered: root.showSshNotification()
+  }
+
+  Process {
+    id: sshNotifyProc
+    stdout: StdioCollector { id: sshNotifyStdout; waitForEnd: true }
+    onExited: function(exitCode) { root.onSshNotifyExited(exitCode, sshNotifyStdout.text) }
+  }
+
+  // --- Terminal replies ------------------------------------------------------
+  function denyCurrentSshPrompt() {
+    if (!sshPrompt) return
+    sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
+    root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+    noteSshCooldown()
+    advanceSshPrompt()
+  }
+
+  function sshPendingJson() {
+    return JSON.stringify({
+      terminalApproval: root.sshAgentTerminalApproval,
+      requests: Model.sshAgentPendingRequests(root.sshPromptRaw, root.sshPromptQueue,
+        root.sshUnlockRaw, root.sshUnlockQueue)
+    })
+  }
+
+  // The same answers as the card: allow is once, never a grant; deny is always
+  // possible. Allowing from a terminal is its own opt-in.
+  function replySshRequest(idText, decision) {
+    var text = String(idText || "").trim()
+    var id = /^[0-9]{1,15}$/.test(text) ? Number(text) : -1
+    var allow = decision === "allow"
+    if (id < 0 || (!allow && decision !== "deny")) return "invalid"
+    if (allow && !root.sshAgentTerminalApproval) return "disabled"
+    if (root.sshPrompt && root.sshPrompt.requestId === id) {
+      if (allow) approveSshRequest(0)
+      else denyCurrentSshPrompt()
+      return allow ? "allowed" : "denied"
+    }
+    var queued = Model.sshAgentRemovePrompt(root.sshPromptQueue, id)
+    if (queued.length !== root.sshPromptQueue.length) {
+      root.sshPromptQueue = queued
+      if (allow) {
+        resetAutoLockTimer()
+        sshAgentWrite(Model.sshAgentApproveLine(id, 0))
+        root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "approved", Date.now())
+      } else {
+        sshAgentWrite(Model.sshAgentDenyLine(id))
+        root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+      }
+      noteSshCooldown()
+      return allow ? "allowed" : "denied"
+    }
+    // An unlock prompt may be denied, never allowed.
+    if (allow) {
+      var pending = Model.sshAgentPendingRequests(null, [], root.sshUnlockRaw, root.sshUnlockQueue)
+      for (var i = 0; i < pending.length; i++) if (pending[i].id === id) return "unlock-only"
+      return "unknown"
+    }
+    if (root.sshUnlockRequest && root.sshUnlockRequest.requestId === id) {
+      sshAgentWrite(Model.sshAgentUnlockCancelledLine(id))
+      root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+      noteSshCooldown()
+      advanceSshUnlock()
+      return "denied"
+    }
+    var unlockLeft = Model.sshAgentRemovePrompt(root.sshUnlockQueue, id)
+    if (unlockLeft.length !== root.sshUnlockQueue.length) {
+      root.sshUnlockQueue = unlockLeft
+      sshAgentWrite(Model.sshAgentUnlockCancelledLine(id))
+      return "denied"
+    }
+    return "unknown"
+  }
+
   property var sshPromotedOldId: null
   // The unlock_required message the shown prompt was promoted from. An unlock
   // releases every held request in no fixed order, so the first approval_required
@@ -2777,6 +2916,7 @@ Item {
     if (root.sshPromotedOldId !== null && root.sshPrompt
         && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
       root.sshPrompt.requestId = message.requestId
+      root.sshPromptRaw = message
       root.sshPromotedOldId = null
       root.sshPromotedRaw = null
       return true
@@ -2799,6 +2939,10 @@ Item {
       showSshApproval(message)
       return
     }
+    // An "unlock_required" with reason "list-identities" is `ssh-add -l` against
+    // an empty cache. Like every message here it is not user activity: nothing
+    // in this function refreshes the auto-lock deadline. Only a person acting
+    // does (approveSshRequest(), unlocking).
     if (message.type === "unlock_required") {
       if (!sshAgentMayPrompt()) {
         sshAgentWrite(Model.sshAgentUnlockCancelledLine(message.requestId))
@@ -5569,6 +5713,8 @@ Item {
       case "sshAgentEnabled": return sshAgentEnabled
       case "sshAgentUnlockOnDemand": return sshAgentUnlockOnDemand
       case "sshAgentApprovalPopup": return sshAgentApprovalPopup
+      case "sshAgentNotifyFallback": return sshAgentNotifyFallback
+      case "sshAgentTerminalApproval": return sshAgentTerminalApproval
       case "sshAgentApprovalWindowSec": return sshAgentApprovalWindowSec
     }
     return entry.type === "bool" ? Model.boolSetting(entry.key, setting(entry.key, entry.defaultValue)) : Number(setting(entry.key, 0))
@@ -10071,6 +10217,14 @@ Item {
     }
     function sync(): string { root.syncVault(); return "syncing" }
     function status(): string { return root.status }
+    // Pending SSH requests as JSON (non-secret: what the approval card shows).
+    function sshPending(): string { return root.sshPendingJson() }
+    // Answers one by id: decision "allow" (once; needs sshAgentTerminalApproval)
+    // or "deny". Returns allowed, denied, disabled, unlock-only, unknown or
+    // invalid.
+    function sshReply(id: string, decision: string): string {
+      return root.replySshRequest(id, decision)
+    }
     // Types the armed entry's username, Tab and password into the focused
     // window (see requestAutoType()). "started" is not delivery: the panel
     // says how it went.

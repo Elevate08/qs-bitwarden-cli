@@ -21,6 +21,26 @@
   Up and Down walk the list and the detail follows (without teaching
   suggestions, unlike a pick). **Show details beside the list**
   (`sideBySide`, on by default) keeps the compact panel when off.
+- **A desktop notification for an SSH request nobody answered.** A signing
+  request still waiting about eight seconds after its card appeared is repeated
+  through `notify-send` with Allow once and Deny. It shows what the card shows
+  and nothing secret; Allow once opens no grant and is ignored within the
+  card's arming delay; dismissing, expiring or Deny denies.
+  **Notify when a prompt goes unanswered** (`sshAgentNotifyFallback`, on by
+  default) turns it off.
+- **Answering SSH requests from a terminal.** `omarchy-shell
+  io.github.elevate08.qs-bitwarden-cli sshPending` lists pending requests as
+  JSON and `sshReply <id> deny|allow` answers one. Allow is once, never a
+  grant, and needs **Allow approving from a terminal**
+  (`sshAgentTerminalApproval`, off by default, since any program running as you
+  could otherwise approve its own request); deny is always available and an
+  unlock request can only be denied.
+
+### Fixed
+
+- **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
+  only ask for identities never move the auto-lock deadline; a test now holds
+  that. Approving a signature, a person's own action, does.
 
 ## [1.13.0] - 2026-11-12
 

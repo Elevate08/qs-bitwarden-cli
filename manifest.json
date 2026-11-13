@@ -41,6 +41,8 @@
       "sshAgentEnabled": false,
       "sshAgentUnlockOnDemand": false,
       "sshAgentApprovalPopup": true,
+      "sshAgentNotifyFallback": true,
+      "sshAgentTerminalApproval": false,
       "sshAgentApprovalWindowSec": 120
     },
     "schema": [
@@ -195,6 +197,20 @@
         "label": "Use centered approval popup",
         "description": "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel.",
         "defaultValue": true
+      },
+      {
+        "key": "sshAgentNotifyFallback",
+        "type": "boolean",
+        "label": "Notify when a prompt goes unanswered",
+        "description": "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with Allow once and Deny buttons. Dismissing or ignoring the notification denies the request. Needs notify-send.",
+        "defaultValue": true
+      },
+      {
+        "key": "sshAgentTerminalApproval",
+        "type": "boolean",
+        "label": "Allow approving from a terminal",
+        "description": "Let the sshReply IPC command approve a signing request. Off by default: any program running as you could then approve its own request. Listing requests and denying them is always allowed.",
+        "defaultValue": false
       },
       {
         "key": "sshAgentApprovalWindowSec",

@@ -46,6 +46,24 @@ Live grants appear under **ACTIVE APPROVALS** with the program, what they cover,
 
 Two unanswered or refused prompts in a row start a five-minute cooldown during which signing requests are refused without raising an approval surface. A banner in the panel says so and counts down, because a silent multi-minute SSH outage is impossible to connect back to its cause -- and unattended requests, the case the cooldown exists for, are exactly the ones you were not watching. Approving cannot end a cooldown that is already running: it is the prompts an approval would answer that the cooldown is suppressing. **Resume Signing Now** on that banner is the way out, or wait the five minutes. A process that keeps asking neither shortens the window nor extends it; the refusals it collects are answered without a prompt and never counted.
 
+#### When the card goes unanswered, and answering from a terminal
+
+**Desktop notification.** If a signing request is still waiting about eight seconds after its card appeared (the card is on a screen nobody is looking at, or hidden), the same question is repeated as a desktop notification from `notify-send` (libnotify, through whatever notification daemon the desktop runs) with **Allow once** and **Deny**. It shows only what the card shows: key name and fingerprint, the program, and what is being signed. **Allow once** approves this request and opens no grant. A click within the first 0.8 seconds is ignored and the notification is shown again, as the card ignores input while it arms. Dismissing the notification, letting it expire, or **Deny** denies the request. Answering the card first removes the request's claim on the notification. A stale notification may stay on screen until its own expiry, but it no longer does anything. Unlock requests never get a notification, because unlocking means typing a secret. If `notify-send` is missing or no daemon is running, nothing changes and the card stays. Turn it off with **Notify when a prompt goes unanswered** (`sshAgentNotifyFallback`, on by default). The helper is a child of the shell, so a shell that is not running has no agent to ask; there is no notification path without it.
+
+**Terminal.** Pending requests can be listed and answered through the plugin's IPC target, so a terminal on another workspace can handle one:
+
+```sh
+omarchy-shell io.github.elevate08.qs-bitwarden-cli sshPending
+omarchy-shell io.github.elevate08.qs-bitwarden-cli sshReply 12 deny
+omarchy-shell io.github.elevate08.qs-bitwarden-cli sshReply 12 allow
+```
+
+`sshPending` prints JSON with each request's `id`, `kind` (`sign` or `unlock`), key, fingerprint, program, what is being signed and whether it was forwarded -- no secret, nothing the card does not show. `sshReply <id> deny` is always available. `sshReply <id> allow` approves once, never as a grant, and is refused (`disabled`) unless **Allow approving from a terminal** (`sshAgentTerminalApproval`) is on. It is off by default, because any program running as you can call the IPC target and so could approve its own request, which the card (needing a person at the screen) prevents. An unlock request can be denied from a terminal but never allowed. Replies return `allowed`, `denied`, `disabled`, `unlock-only`, `unknown` (no such request) or `invalid`.
+
+#### Auto-lock and listing keys
+
+`ssh-add -l`, and any `ssh` connection that only asks which keys the agent holds, does not count as activity: it never moves the auto-lock deadline. Approving a signature does, as the person's own action does; an approval answered by a grant window, or by a request that is denied, does not.
+
 #### While the vault is locked
 
 Public identities stay advertised, so `ssh` can still offer them, but nothing is signed while the vault is locked. A signing request for a key the helper already knows raises the unlock prompt and holds the request rather than failing it: by that point a specific vault key has been chosen, and refusing a client that has no way to retry is worse than asking. Dismiss the prompt and the signature is refused at once. This does not depend on any setting.

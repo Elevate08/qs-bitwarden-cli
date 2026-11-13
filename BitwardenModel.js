@@ -6774,6 +6774,89 @@ function sshAgentPromptView(message, approvalWindowSec) {
   }
 }
 
+// -------------------------------------------------------------------------
+// Desktop-notification fallback and terminal replies for approvals
+// -------------------------------------------------------------------------
+
+// How long a prompt may sit unanswered before a desktop notification repeats
+// it, and how soon after a notification appears its actions are ignored (the
+// card's armDelayMs, for the same reason: a click meant for another window).
+var SSH_AGENT_NOTIFY_DELAY_MS = 8000
+var SSH_AGENT_NOTIFY_ARM_MS = 800
+
+function sshAgentNotifyDelayMs() { return SSH_AGENT_NOTIFY_DELAY_MS }
+function sshAgentNotifyArmMs() { return SSH_AGENT_NOTIFY_ARM_MS }
+
+// Notification bodies are markup on most daemons; the text is already stripped
+// of invisible characters (visibleText), so only the markup characters remain.
+function notifyEscape(text) {
+  return String(text === undefined || text === null ? "" : text)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+// The notify-send argv for one signing prompt: what the card shows (key,
+// fingerprint, program, operation), nothing else. No secret exists at this
+// point and none is added. Everything after "--" is data, never an option.
+function sshAgentNotifyCommand(view, remainingSec) {
+  if (!view || !isRequestId(view.requestId)) return []
+  var lines = []
+  var key = view.keyName || "Unnamed key"
+  lines.push(notifyEscape(key) + (view.fingerprint ? " (" + notifyEscape(view.fingerprint) + ")" : ""))
+  var program = view.processName || view.processPath || "unknown program"
+  lines.push("Program: " + notifyEscape(program))
+  if (view.operationLabel) lines.push(notifyEscape(view.operationLabel))
+  if (view.destinationLabel) lines.push(notifyEscape(view.destinationLabel))
+  if (view.forwardedWarning) lines.push(notifyEscape(view.forwardedWarning))
+  var seconds = Math.floor(Number(remainingSec))
+  if (!isFinite(seconds) || seconds < 5) seconds = 5
+  return ["notify-send", "--app-name=Bitwarden", "--urgency=normal", "--icon=dialog-password",
+    "--expire-time=" + (seconds * 1000),
+    "--action=allow=Allow once", "--action=deny=Deny", "--wait",
+    "--", "SSH signing request", lines.join("\n")]
+}
+
+// What a finished notify-send means. Only the "allow" action approves, and not
+// within the arm delay of its appearing ("early": show it again). A deny
+// action, a dismissal or an expiry (empty output, exit 0) all deny. A failed
+// notify-send (no daemon, no libnotify) decides nothing: "none".
+function sshAgentNotifyDecision(exitCode, stdout, elapsedMs) {
+  if (exitCode !== 0) return "none"
+  var action = String(stdout || "").trim()
+  if (action === "allow") {
+    return Number(elapsedMs) >= SSH_AGENT_NOTIFY_ARM_MS ? "allow" : "early"
+  }
+  return "deny"
+}
+
+// The requests a terminal may list, from the raw companion messages. Signing
+// prompts can be allowed (once, never as a grant) or denied; unlock prompts
+// only denied.
+function sshAgentPendingRequests(prompt, queue, unlockRequest, unlockQueue) {
+  var out = []
+  function add(kind, request) {
+    if (!request || !isRequestId(request.requestId)) return
+    var view = sshAgentPromptView(request, 0)
+    out.push({
+      id: view.requestId,
+      kind: kind,
+      key: view.keyName,
+      fingerprint: view.fingerprint,
+      program: view.processPath,
+      pid: view.pid,
+      operation: view.operationLabel,
+      destination: view.destinationLabel,
+      forwarded: request.forwarded === true
+    })
+  }
+  add("sign", prompt)
+  var q = Array.isArray(queue) ? queue : []
+  for (var i = 0; i < q.length; i++) add("sign", q[i])
+  add("unlock", unlockRequest)
+  var u = Array.isArray(unlockQueue) ? unlockQueue : []
+  for (var j = 0; j < u.length; j++) add("unlock", u[j])
+  return out
+}
+
 // Whether an approval_required is the release of the request an unlock_required
 // held: the same program, key and kind of signature. Request ids differ (the
 // release issues a new one), so they are not compared.
@@ -7407,6 +7490,10 @@ var SETTINGS_SCHEMA = [
     description: "Let an SSH client open the unlock prompt when the vault is locked. Off by default because every ssh connection asks for identities, including ones with nothing to do with your vault." },
   { key: "sshAgentApprovalPopup", group: "sshAgent", type: "bool", label: "Use centered approval popup", defaultValue: true,
     description: "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel." },
+  { key: "sshAgentNotifyFallback", group: "sshAgent", type: "bool", label: "Notify when a prompt goes unanswered", defaultValue: true,
+    description: "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with Allow once and Deny buttons. Dismissing or ignoring the notification denies the request. Needs notify-send." },
+  { key: "sshAgentTerminalApproval", group: "sshAgent", type: "bool", label: "Allow approving from a terminal", defaultValue: false,
+    description: "Let 'sshReply <id> allow' (omarchy-shell IPC) approve a signing request. Off by default: any program running as you could then approve its own request. Listing requests and denying them is always allowed." },
   { key: "sshAgentApprovalWindowSec", group: "sshAgent", type: "int", label: "Approve for this long", unit: "seconds",
     min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
