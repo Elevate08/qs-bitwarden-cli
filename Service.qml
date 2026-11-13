@@ -221,7 +221,7 @@ Item {
   // handoff is only read shortly after. See sessionHandoffReadCommand().
   property double terminalLoginStartedAt: 0
 
-  // Navigation: "main" | "detail" | "edit" | "settings" | "setup" | "pin" |
+  // Navigation: "main" | "detail" | "history" | "edit" | "settings" | "setup" | "pin" |
   // "fingerprint" | "generator" | "sends" | "sshApproval" | "locked". Lock and
   // login screens follow `status`; "locked" only moves off the open screen.
   property string currentScreen: "main"
@@ -366,7 +366,7 @@ Item {
     }
     var epoch = vaultEpoch
     vaultQuery("field", { id: id, field: key }, function(ok, value) {
-      if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
+      if (epoch !== root.vaultEpoch || (root.currentScreen !== "detail" && root.currentScreen !== "history")
           || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
       if (!ok) {
         root.errorMessage = "Could not read this value"
@@ -374,6 +374,21 @@ Item {
       }
       callback(String(value))
     })
+  }
+
+  // Password history: a sub-screen of the open login's detail. The dates are
+  // public; each old password is revealed or copied by its own key
+  // ("passwordHistory:<index>") through the same paths as the password.
+  readonly property int detailHistoryCount: detailItem && detailIsLoginLike && Array.isArray(detailItem.passwordHistory)
+    ? detailItem.passwordHistory.length : 0
+
+  function openHistory() {
+    if (currentScreen !== "detail" || detailHistoryCount === 0) return
+    currentScreen = "history"
+  }
+
+  function closeHistory() {
+    if (currentScreen === "history") currentScreen = "detail"
   }
 
   // The detail screen's copy of one secret: the helper hands it to wl-copy
@@ -7198,6 +7213,8 @@ Item {
     } else if (currentScreen === "edit") {
       // Escape discards the form, like its Cancel button.
       currentScreen = formIsEditing ? "detail" : "main"
+    } else if (currentScreen === "history") {
+      closeHistory()
     } else if (currentScreen === "detail") {
       currentScreen = "main"
     } else {
@@ -7223,14 +7240,15 @@ Item {
     // An SSH approval shown in the panel covers the screen it came over and
     // returns to it, so the item and its form are judged by that screen.
     var screen = currentScreen === "sshApproval" ? screenBeforeSshApproval : currentScreen
-    var inItem = screen === "detail" || screen === "edit"
+    var inItem = screen === "detail" || screen === "history" || screen === "edit"
       || (screen === "generator" && generatorReturnScreen === "edit")
     if (repromptPending) cancelReprompt()
     if (!inItem) {
       clearRepromptGrant()
       liveTotp = ""
     } else if (screen === "detail") {
-      // Back from the edit form: the whole item it loaded goes.
+      // Back from the edit form or the password history: the whole item it
+      // loaded goes, and every revealed value with it.
       withholdDetailSecrets()
     }
     // The edit form's copy of the item, a typed or generated password

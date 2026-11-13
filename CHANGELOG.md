@@ -11,6 +11,16 @@
 
 ### Added
 
+- **Password history.** A login with previous passwords shows a "Password
+  history (N)" button on its detail screen (key <kbd>h</kbd>) that opens the
+  list, newest first, each with the date it was last used, masked until its
+  eye is pressed, with a copy button. Copying goes through the same
+  clipboard path and auto-clear as the current password, and a master-password
+  re-prompt item asks first. The helper keeps the old passwords like the
+  current one: the panel gets only their dates, and reads one when it is
+  revealed or copied (`passwordHistory:<n>`). This needs the rebuilt vault
+  helper; with an older one the button does not appear. <kbd>Esc</kbd> /
+  <kbd>b</kbd> / <kbd>q</kbd> go back to the detail.
 - **Cycle the vault and folder filters without opening a drawer.** Alt+V
   steps the vault scope (all vaults, My Vault, each organization) and
   Ctrl+Alt+F the folder (all, No Folder, each folder); Shift goes backwards.
@@ -69,6 +79,7 @@
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.
+
 
 ## [1.13.0] - 2026-11-12
 

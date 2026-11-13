@@ -3889,6 +3889,9 @@ function parseItems(raw) {
       // Custom fields of an item the helper holds, hidden values already
       // gone: its detail is drawn from the row (publicItemDetail()).
       fields: held ? itemCustomFields(it.fields, it) : [],
+      // Dates of the previous passwords the helper holds (the passwords stay
+      // there); a row that carries its whole item has them in rawObject.
+      historyDates: held && Array.isArray(held.passwordHistory) ? held.passwordHistory.map(String) : [],
       // Which other secrets the helper holds for it (card code, identity
       // numbers), so the detail draws a row for each without the value.
       heldFlags: held,
@@ -4082,8 +4085,48 @@ function itemDetailFromObject(it) {
     card: cardDetail(it.card),
     identity: identityDetail(it.identity),
     fields: itemCustomFields(it.fields, it),
+    passwordHistory: Number(it.type || 1) === 1 ? passwordHistoryEntries(it.passwordHistory, false) : [],
     rawObject: it
   }
+}
+
+// A login's previous passwords (Bitwarden's `passwordHistory`), newest first,
+// as [{ index, date, password }]. `index` is the entry's position in the
+// stored list, which is how the helper names it ("passwordHistory:<index>").
+// `raw` is the stored array of { password, lastUsedDate }; with `withheld` it
+// is the helper's list of dates alone (the passwords stay in the helper) and
+// each password is the WITHHELD stand-in. An entry without a usable date sorts
+// after the dated ones.
+function passwordHistoryEntries(raw, withheld) {
+  var list = Array.isArray(raw) ? raw : []
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i]
+    var date = withheld ? entry : (entry && typeof entry === "object" ? entry.lastUsedDate : "")
+    var password = ""
+    if (withheld) password = WITHHELD
+    else if (entry && typeof entry === "object" && entry.password !== undefined && entry.password !== null) password = String(entry.password)
+    if (!withheld && password === "") continue
+    date = typeof date === "string" ? date : ""
+    var ms = Date.parse(date)
+    out.push({ index: i, date: date, time: isNaN(ms) ? -Infinity : ms, password: password })
+  }
+  out.sort(function(a, b) {
+    if (a.time !== b.time) return a.time < b.time ? 1 : -1
+    // Equal times (or none): the later one in the list is the more recent.
+    return b.index - a.index
+  })
+  return out.map(function(e) { return { index: e.index, date: e.date, password: e.password } })
+}
+
+// "YYYY-MM-DD HH:MM" in local time for a history entry; "Unknown date" if the
+// stored date does not parse.
+function formatHistoryDate(iso) {
+  var d = new Date(String(iso || ""))
+  if (isNaN(d.getTime())) return "Unknown date"
+  var two = function(n) { return (n < 10 ? "0" : "") + n }
+  return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate())
+    + " " + two(d.getHours()) + ":" + two(d.getMinutes())
 }
 
 // Stands in for a secret in a row of publicItemDetail(): the row is drawn
@@ -4146,6 +4189,7 @@ function publicItemDetail(src) {
     card: card,
     identity: identity,
     fields: fields,
+    passwordHistory: passwordHistoryEntries(src.historyDates, true),
     rawObject: null,
     secretsWithheld: true
   }
@@ -4165,6 +4209,13 @@ function detailSecretValue(detail, key) {
     ssn: identity.ssn, passportNumber: identity.passportNumber, licenseNumber: identity.licenseNumber
   }
   var value = Object.prototype.hasOwnProperty.call(values, key) ? values[key] : undefined
+  if (String(key).indexOf("passwordHistory:") === 0) {
+    var at = Number(String(key).slice("passwordHistory:".length))
+    var history = toList(detail.passwordHistory)
+    for (var h = 0; h < history.length; h++) {
+      if (history[h].index === at) value = history[h].password
+    }
+  }
   if (String(key).indexOf("customField:") === 0) {
     var index = Number(String(key).slice("customField:".length))
     var fields = toList(detail.fields)
@@ -4996,6 +5047,7 @@ function itemActions(item, context) {
   if (hasPassword) push("reveal", (revealed ? "Hide" : "Reveal") + " password", "v")
   else if (card && card.number) push("reveal", (revealed ? "Hide" : "Reveal") + " card number", "v")
   if (item.hasAttachments) push("saveAttachments", "Save attachments", "a")
+  if (login && toList(item.passwordHistory).length > 0) push("passwordHistory", "Password history", "h")
 
   if (card) {
     if (card.cardholderName) push("copyCardholder", "Copy cardholder name")

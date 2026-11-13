@@ -375,6 +375,7 @@ The panel opens with the item list focused, so single-letter shortcuts work stra
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | With [auto-type](#auto-type) on: copy a login's password and arm it for 30 seconds |
 | <kbd>Ctrl</kbd>+<kbd>K</kbd> | Action palette for this item: copy any field it has (card and identity fields, custom fields, notes), open its website, reveal, save attachments, edit, delete |
 | <kbd>v</kbd> | Toggle re**v**eal on the item's principal secret -- the password on a login, the number on a card. Every other masked field has its own eye, and each reveals independently |
+| <kbd>h</kbd> | Open the password **h**istory of a login that has one: each previous password, newest first, masked, with reveal and copy. <kbd>Esc</kbd> / <kbd>b</kbd> / <kbd>q</kbd> return to the item |
 | <kbd>a</kbd> | Save every **a**ttachment on this item |
 | <kbd>e</kbd> | Edit this item |
 | <kbd>x</kbd> | Delete this item (asks first) |

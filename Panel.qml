@@ -257,6 +257,8 @@ Panel {
       if (root.vault.primaryRevealKey !== "") root.toggleProtectedReveal(root.vault.primaryRevealKey)
     } else if (lower === "a") {
       root.protect(root.vault.detailItem, function() { root.vault.saveAllAttachments() })
+    } else if (lower === "h") {
+      root.vault.openHistory()
     } else if (lower === "b" || lower === "q") {
       root.vault.currentScreen = "main"
     }
@@ -981,6 +983,8 @@ Panel {
           else root.vault.runShortcut(lower)
         } else if (root.vault.currentScreen === "detail") {
           root.runDetailShortcut(lower)
+        } else if (root.vault.currentScreen === "history") {
+          if (lower === "b" || lower === "q") root.vault.closeHistory()
         }
       }
 
@@ -4088,6 +4092,17 @@ Panel {
                 onClicked: root.vault.toggleAssociation(root.vault.detailItem)
               }
 
+              // Previous passwords, as Bitwarden's own clients offer them.
+              Button {
+                visible: root.vault.detailHistoryCount > 0
+                text: root.splitView ? "" : "Password history (" + root.vault.detailHistoryCount + ")"
+                iconText: "󰋚"
+                tooltipText: root.splitView ? "Password history (" + root.vault.detailHistoryCount + ") (h)" : ""
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.vault.openHistory()
+              }
+
               Button {
                 visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
                 text: root.splitView ? "" : "Edit"
@@ -5166,6 +5181,108 @@ Panel {
               name: "Types"
               value: root.vault.typeFilterLabel()
               shortcut: "t"
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------
+        // SCREEN 4b: PASSWORD HISTORY (a sub-screen of the detail)
+        // -------------------------------------------------------------------
+        Column {
+          visible: root.vault.status === "unlocked" && root.vault.activeScreen === "history"
+          width: parent.width
+          spacing: Style.space(12)
+
+          Flow {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Back (Esc)"
+              iconText: "󰁍"
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.vault.closeHistory()
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.vault.detailItem ? "Password history: " + root.vault.detailItem.name : "Password history"
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+            elide: Text.ElideRight
+          }
+
+          PanelSeparator { width: parent.width }
+
+          // Bitwarden keeps at most five, so it needs no scrolling.
+          Column {
+            id: historyColumn
+            width: parent.width
+            spacing: Style.space(8)
+
+            Repeater {
+              model: root.vault.detailItem && root.vault.detailItem.passwordHistory ? root.vault.detailItem.passwordHistory : []
+
+              Column {
+                id: historyEntry
+                required property var modelData
+                readonly property string revealKey: "passwordHistory:" + modelData.index
+                width: historyColumn.width
+                spacing: Style.space(4)
+
+                PanelSectionHeader { text: Model.formatHistoryDate(modelData.date).toUpperCase() }
+
+                BorderSurface {
+                  width: parent.width
+                  implicitHeight: Style.space(34)
+                  radius: Style.cornerRadius
+                  color: Style.hoverFillFor(root.fg, Color.accent)
+                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+
+                  Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: Style.space(10)
+                    anchors.rightMargin: Style.space(6)
+
+                    Text {
+                      textFormat: Text.PlainText
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: root.vault.isFieldRevealed(historyEntry.revealKey)
+                        ? root.vault.shownSecret(historyEntry.revealKey, "") : Model.maskString(historyEntry.modelData.password || "password")
+                      color: root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      elide: Text.ElideRight
+                      width: parent.width - historyActions.width - Style.space(10)
+                    }
+
+                    Row {
+                      id: historyActions
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(4)
+
+                      PanelActionButton {
+                        iconText: root.vault.isFieldRevealed(historyEntry.revealKey) ? "󰈉" : "󰈈"
+                        tooltipText: root.vault.isFieldRevealed(historyEntry.revealKey) ? "Hide password" : "Reveal password"
+                        fontFamily: root.fontFamily
+                        onClicked: root.toggleProtectedReveal(historyEntry.revealKey)
+                      }
+
+                      PanelActionButton {
+                        iconText: "󰌆"
+                        tooltipText: "Copy password"
+                        fontFamily: root.fontFamily
+                        onClicked: root.copyDetailSecret(historyEntry.revealKey, "Previous password")
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }
