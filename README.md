@@ -44,6 +44,8 @@ whichever `bw` it finds there.
 
 To update: `omarchy plugin update io.github.elevate08.qs-bitwarden-cli`
 
+To open the panel from a key, see [Global hotkey](#global-hotkey), including how to take over Omarchy's `SUPER + SHIFT + SLASH` password-manager shortcut.
+
 ### Sign in
 
 <img src="docs/screenshots/12-login.png" width="420" align="right" alt="Login screen">
@@ -658,6 +660,17 @@ o.bind("SUPER + CTRL + SLASH", "Bitwarden vault", "omarchy-shell io.github.eleva
 
 If the key is one of Omarchy's defaults (`omarchy menu keybindings --print`
 lists them), add `hl.unbind("SUPER + CTRL + SLASH")` on the line before it.
+
+**Taking over Omarchy's password-manager key.** Omarchy binds
+`SUPER + SHIFT + SLASH` to **Passwords**, which launches 1Password. To make it
+open this panel instead, put this in `~/.config/hypr/bindings.lua`:
+
+```lua
+hl.unbind("SUPER + SHIFT + SLASH")
+o.bind("SUPER + SHIFT + SLASH", "Bitwarden vault", "omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle")
+```
+
+No window rule is needed: the panel is a shell layer surface, not a window.
 
 ---
 

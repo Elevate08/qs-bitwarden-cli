@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Documentation
+
+- **Taking over Omarchy's password-manager key.** The README's Global hotkey
+  section now shows the two `bindings.lua` lines that make
+  `SUPER + SHIFT + SLASH` toggle the panel instead of launching 1Password,
+  and the Install section links to it.
+
 ### Added
 
 - **Website icons, where Bitwarden shows them.** Logins carry their site's
