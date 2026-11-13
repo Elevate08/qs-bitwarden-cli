@@ -224,6 +224,92 @@ Panel {
     if (item) root.protect(item, function() { root.vault.startEditItem(item) })
   }
 
+  // The detail screen's letters, from the key catcher and the action palette.
+  function runDetailShortcut(lower) {
+    // `y` copies the item's primary secret (password or card number).
+    if (lower === "y" || lower === "p") {
+      root.copyPrimarySecret()
+    } else if (lower === "n") {
+      if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.number) {
+        root.copyDetailSecret("cardNumber", "Card number")
+      }
+    } else if (lower === "k") {
+      if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.code) {
+        root.copyDetailSecret("cardCode", "Security code")
+      }
+    } else if (lower === "u" || lower === "c") {
+      // `u` copies the identifier, `c` the contact address (both the
+      // username on a login).
+      if (root.vault.detailIsIdentity && root.vault.detailIdentity) {
+        if (lower === "c" && root.vault.detailIdentity.email) {
+          root.vault.copyToClipboard(root.vault.detailIdentity.email, "Email")
+        } else if (root.vault.detailIdentity.username) {
+          root.vault.copyToClipboard(root.vault.detailIdentity.username, "Username")
+        }
+      } else if (root.vault.detailItem && root.vault.detailItem.username) {
+        root.vault.copyToClipboard(root.vault.detailItem.username, "Username")
+      }
+    } else if (lower === "m") {
+      root.vault.copyDetailTotp()
+    } else if (lower === "e") {
+      root.editDetailItem()
+    } else if (lower === "v") {
+      if (root.vault.primaryRevealKey !== "") root.toggleProtectedReveal(root.vault.primaryRevealKey)
+    } else if (lower === "a") {
+      root.protect(root.vault.detailItem, function() { root.vault.saveAllAttachments() })
+    } else if (lower === "b" || lower === "q") {
+      root.vault.currentScreen = "main"
+    }
+  }
+
+  // Ctrl+K: the commands of the highlighted row, or of the open item.
+  function openActionPalette() {
+    actionPalette.openFor()
+  }
+
+  // Runs a palette action through what its letter, or its field's copy button,
+  // runs. `screen` is the one the palette was opened from.
+  function runPaletteAction(action, screen) {
+    // Like x: asks first, and an SSH key has no Delete.
+    if (action.id === "delete") {
+      if (root.vault.detailItem && root.vault.detailItem.typeCode !== 5) root.vault.showDeleteConfirm = true
+      return
+    }
+    if (action.key) {
+      if (screen === "detail") root.runDetailShortcut(action.key)
+      else root.vault.runShortcut(action.key)
+      return
+    }
+    var item = root.vault.detailItem
+    if (!item) return
+    switch (action.id) {
+      case "openWebsite": if (item.uris && item.uris.length > 0) root.vault.openUrl(item.uris[0]); return
+      case "copyCardholder": root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.cardholderName : "", "Cardholder name"); return
+      case "copyCardBrand": root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.brand : "", "Brand"); return
+      case "copyCardExpiry": root.vault.copyToClipboard(root.vault.detailCardExpiry, "Expiry"); return
+      case "copyIdentityName": root.vault.copyToClipboard(root.vault.detailIdentityName, "Name"); return
+      case "copyCompany": root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.company : "", "Company"); return
+      case "copyPhone": root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.phone : "", "Phone"); return
+      case "copyAddress": root.vault.copyToClipboard(root.vault.detailIdentityAddress, "Address"); return
+      case "copySsn": root.copyDetailSecret("ssn", "SSN"); return
+      case "copyPassport": root.copyDetailSecret("passportNumber", "Passport number"); return
+      case "copyLicense": root.copyDetailSecret("licenseNumber", "Licence number"); return
+      case "copyNotes": root.copyDetailSecret("notes", "Notes"); return
+    }
+    if (String(action.id).indexOf("customField:") === 0) {
+      var index = Number(String(action.id).slice("customField:".length))
+      var fields = item.fields || []
+      for (var i = 0; i < fields.length; i++) {
+        if (fields[i].index !== index) continue
+        // Hidden fields are protected; plain ones are not.
+        var modelData = fields[i]
+        if (modelData.sensitive) root.copyDetailSecret(action.id, modelData.name)
+        else root.vault.copyToClipboard(modelData.value, modelData.name)
+        return
+      }
+    }
+  }
+
   // Whether an item carries the flag, for the lock glyph and masking.
   function asksMasterPassword(item) {
     return !!item && Number(item.reprompt) === 1
@@ -745,6 +831,13 @@ Panel {
           return
         }
 
+        // Ctrl+K: the action palette for the highlighted row or open item.
+        if ((event.modifiers & ~Qt.KeypadModifier) === Qt.ControlModifier && event.key === Qt.Key_K) {
+          root.openActionPalette()
+          event.accepted = true
+          return
+        }
+
         // With auto-type on, Ctrl+C arms the highlighted login
         // (armAutoTypeFromKey()). Only while the catcher has the keys: in a
         // field it stays the field's own copy, except in the search box,
@@ -778,6 +871,7 @@ Panel {
         || (root.vault.currentScreen === "fido")
         || (root.vault.currentScreen === "fingerprint")
         || (root.vault.currentScreen === "sends" && root.vault.sendMode === "create")
+        || actionPalette.shown
 
       // Holds the keyboard until an SSH request shown in the panel is armed
       // (see rearmSshKeys()). Escape is left to the dispatch, which denies.
@@ -886,40 +980,7 @@ Panel {
           if (lower === "/") searchField.forceActiveFocus()
           else root.vault.runShortcut(lower)
         } else if (root.vault.currentScreen === "detail") {
-          // `y` copies the item's primary secret (password or card number).
-          if (lower === "y" || lower === "p") {
-            root.copyPrimarySecret()
-          } else if (lower === "n") {
-            if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.number) {
-              root.copyDetailSecret("cardNumber", "Card number")
-            }
-          } else if (lower === "k") {
-            if (root.vault.detailIsCard && root.vault.detailCard && root.vault.detailCard.code) {
-              root.copyDetailSecret("cardCode", "Security code")
-            }
-          } else if (lower === "u" || lower === "c") {
-            // `u` copies the identifier, `c` the contact address (both the
-            // username on a login).
-            if (root.vault.detailIsIdentity && root.vault.detailIdentity) {
-              if (lower === "c" && root.vault.detailIdentity.email) {
-                root.vault.copyToClipboard(root.vault.detailIdentity.email, "Email")
-              } else if (root.vault.detailIdentity.username) {
-                root.vault.copyToClipboard(root.vault.detailIdentity.username, "Username")
-              }
-            } else if (root.vault.detailItem && root.vault.detailItem.username) {
-              root.vault.copyToClipboard(root.vault.detailItem.username, "Username")
-            }
-          } else if (lower === "m") {
-            root.vault.copyDetailTotp()
-          } else if (lower === "e") {
-            root.editDetailItem()
-          } else if (lower === "v") {
-            if (root.vault.primaryRevealKey !== "") root.toggleProtectedReveal(root.vault.primaryRevealKey)
-          } else if (lower === "a") {
-            root.protect(root.vault.detailItem, function() { root.vault.saveAllAttachments() })
-          } else if (lower === "b" || lower === "q") {
-            root.vault.currentScreen = "main"
-          }
+          root.runDetailShortcut(lower)
         }
       }
 
@@ -3553,6 +3614,12 @@ Panel {
                   event.accepted = true
                   return
                 }
+                // Ctrl+K opens the action palette from the box too.
+                if ((event.modifiers & ~Qt.KeypadModifier) === Qt.ControlModifier && event.key === Qt.Key_K) {
+                  root.openActionPalette()
+                  event.accepted = true
+                  return
+                }
                 // Alt+letter runs the same shortcuts without leaving the box.
                 if (!(event.modifiers & Qt.AltModifier)) return
                 if (!event.text) return
@@ -5909,6 +5976,234 @@ Panel {
         anchors.fill: parent
         panel: root
         vault: root.vault
+      }
+
+      // Ctrl+K: a searchable list of what the highlighted row or open item
+      // can do (Model.itemActions()), each with its letter. Enter runs it, the
+      // arrows move, Escape returns to where the key was pressed. Overlaid
+      // with a scrim, like the re-prompt question.
+      Item {
+        id: actionPalette
+        anchors.fill: parent
+        z: 25
+        visible: shown
+
+        property bool shown: false
+        property string query: ""
+        property int cursor: 0
+        // Where Ctrl+K was pressed: the screen, and whether from the search box.
+        property string fromScreen: "main"
+        property bool fromSearch: false
+        property var all: []
+        readonly property var actions: shown ? Model.filterActions(all, query) : []
+        readonly property real rowHeight: Style.space(30)
+        readonly property int visibleRows: 8
+
+        onQueryChanged: cursor = 0
+
+        function openFor() {
+          var v = root.vault
+          if (actionPalette.shown || repromptConfirm.shown || v.status !== "unlocked") return
+          var screen = v.currentScreen
+          var item = screen === "detail" ? v.detailItem : (screen === "main" ? v.getSelectedItem() : null)
+          if (!item) return
+          actionPalette.fromScreen = screen
+          actionPalette.fromSearch = searchField.activeFocus
+          actionPalette.all = Model.itemActions(item, {
+            screen: screen,
+            revealed: v.primaryRevealKey !== "" && v.isFieldRevealed(v.primaryRevealKey)
+          })
+          actionPalette.query = ""
+          actionPalette.cursor = 0
+          actionPalette.shown = true
+          Qt.callLater(function() { if (actionPalette.shown) paletteField.forceActiveFocus() })
+        }
+
+        // Back to where it was opened.
+        function close() {
+          if (!actionPalette.shown) return
+          actionPalette.shown = false
+          actionPalette.all = []
+          if (actionPalette.fromScreen === "main" && actionPalette.fromSearch) searchField.forceActiveFocus()
+          else keyCatcher.forceActiveFocus()
+        }
+
+        function move(delta) {
+          if (actions.length === 0) return
+          cursor = (cursor + delta + actions.length) % actions.length
+          var y = cursor * rowHeight
+          if (y < paletteList.contentY) paletteList.contentY = y
+          else if (y + rowHeight > paletteList.contentY + paletteList.height) {
+            paletteList.contentY = y + rowHeight - paletteList.height
+          }
+        }
+
+        function runAt(index) {
+          if (index < 0 || index >= actions.length) return
+          var action = actions[index]
+          var screen = actionPalette.fromScreen
+          // Closed first: an action may open a screen, a prompt or a form
+          // that takes the keyboard itself.
+          actionPalette.close()
+          root.runPaletteAction(action, screen)
+        }
+
+        // Closed when the vault locks or the screen changes underneath it.
+        Connections {
+          target: root.vault
+          function onStatusChanged() { if (root.vault.status !== "unlocked") actionPalette.close() }
+          function onCurrentScreenChanged() { if (root.vault.currentScreen !== actionPalette.fromScreen) actionPalette.close() }
+        }
+
+        Rectangle {
+          anchors.fill: parent
+          color: Color.menu.scrim
+        }
+
+        // Nothing underneath is reachable while it is open; a click outside
+        // the card closes it.
+        MouseArea {
+          anchors.fill: parent
+          acceptedButtons: Qt.AllButtons
+          hoverEnabled: true
+          onClicked: actionPalette.close()
+        }
+
+        BorderSurface {
+          anchors.horizontalCenter: parent.horizontalCenter
+          y: Style.space(56)
+          width: Math.min(parent.width - Style.space(24), Style.space(380))
+          implicitHeight: paletteContent.implicitHeight + Style.space(24)
+          radius: Style.cornerRadius
+          color: Color.popups.background
+          borderSpec: Border.surfaceSpec("popups", "border", Color.accent, 1)
+
+          MouseArea { anchors.fill: parent }
+
+          Column {
+            id: paletteContent
+            anchors.centerIn: parent
+            width: parent.width - Style.space(24)
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              text: "\u{F0AE7}  Actions"
+              color: Color.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+
+            LineField {
+              id: paletteField
+              width: parent.width
+              placeholderText: "Type to filter actions..."
+              text: actionPalette.query
+              onTextChanged: actionPalette.query = text
+              onAccepted: actionPalette.runAt(actionPalette.cursor)
+              Keys.onUpPressed: function(event) { actionPalette.move(-1); event.accepted = true }
+              Keys.onDownPressed: function(event) { actionPalette.move(1); event.accepted = true }
+              // Taken here: the panel's own Escape would leave the screen.
+              Keys.onEscapePressed: function(event) {
+                event.accepted = true
+                actionPalette.close()
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: actionPalette.actions.length === 0
+              width: parent.width
+              text: actionPalette.all.length === 0 ? "This item has no actions." : "No matching action."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Flickable {
+              id: paletteList
+              visible: actionPalette.actions.length > 0
+              width: parent.width
+              height: Math.min(actionPalette.visibleRows, actionPalette.actions.length) * actionPalette.rowHeight
+              contentWidth: width
+              contentHeight: paletteRows.implicitHeight
+              clip: true
+              boundsBehavior: Flickable.StopAtBounds
+              flickableDirection: Flickable.VerticalFlick
+              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+              WheelScroll { view: paletteList }
+
+              Column {
+                id: paletteRows
+                width: paletteList.width - root.scrollGutter
+                spacing: 0
+
+                Repeater {
+                  model: actionPalette.actions
+
+                  delegate: BorderSurface {
+                    required property var modelData
+                    required property int index
+                    width: paletteRows.width
+                    implicitHeight: actionPalette.rowHeight
+                    radius: Style.cornerRadius
+                    readonly property bool cursored: index === actionPalette.cursor
+                    color: (cursored || rowMouse.containsMouse) ? Style.hoverFillFor(root.fg, Color.accent) : "transparent"
+                    borderSpec: Border.surfaceSpec("menu", "border",
+                      cursored ? Color.accent : "transparent", cursored ? 1 : 0)
+
+                    MouseArea {
+                      id: rowMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onEntered: actionPalette.cursor = index
+                      onClicked: actionPalette.runAt(index)
+                    }
+
+                    Text {
+                      textFormat: Text.PlainText
+                      anchors.verticalCenter: parent.verticalCenter
+                      anchors.left: parent.left
+                      anchors.leftMargin: Style.space(10)
+                      anchors.right: keyHint.left
+                      anchors.rightMargin: Style.space(8)
+                      text: modelData.label
+                      color: cursored ? Color.accent : root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      font.bold: cursored
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      id: keyHint
+                      textFormat: Text.PlainText
+                      anchors.verticalCenter: parent.verticalCenter
+                      anchors.right: parent.right
+                      anchors.rightMargin: Style.space(10)
+                      text: modelData.key
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+                }
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: "Enter runs  ·  ↑↓ moves  ·  Esc closes"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
       }
 
       // Overlaid beside mainColumn, outside the layout, so messages never

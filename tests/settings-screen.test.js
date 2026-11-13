@@ -198,7 +198,7 @@ check("the gutter has a floor for a null bar and for the frames before layout",
 const scrollViews = [
   "sendFlick", "fpFlick", "genFlick", "pinFlick", "setupFlick", "settingsFlick",
   "filterOptionsList", "detailFlickable", "editFlickable",
-  "folderPickList", "orgPickList", "collectionList",
+  "folderPickList", "orgPickList", "collectionList", "paletteList",
 ]
 for (const view of scrollViews) {
   check(`${view} keeps its content clear of the scrollbar`,
