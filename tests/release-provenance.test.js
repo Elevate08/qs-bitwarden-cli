@@ -112,6 +112,16 @@ const unskipped = buildJobs.filter(([, , body]) => !body.includes(branchCutSkip)
 check("only a bare branch cut skips the branch build, never the release's gates",
   buildJobs.length >= 5 && unskipped.length === 0,
   `jobs without the exact skip condition: ${unskipped.join(", ") || "(no jobs found)"}`)
+// The reviewer path (REVIEWING.md): a plain runner, no container and no Rust,
+// so build-agent.sh has to re-enter the pinned image itself.
+const reviewerJob = (buildJobs.find(([, name]) => name === "reviewer-rebuild") || [])[2] || ""
+check("CI runs the reviewers' rebuild through the container re-exec",
+  /runs-on: ubuntu-24\.04\n/.test(reviewerJob) && !/container:/.test(reviewerJob)
+    && /if: github\.event_name != 'pull_request'\n\s*run: scripts\/verify-helpers\.sh --rebuild --arch x86_64\n/.test(reviewerJob)
+    && !/QSBW_PINNED_BUILD/.test(reviewerJob)
+    && /permissions:\n\s*contents: read/.test(reviewerJob)
+    && /persist-credentials: false/.test(reviewerJob) && /timeout-minutes: \d+/.test(reviewerJob),
+  "nothing in CI exercises the rebuild path REVIEWING.md tells reviewers to run")
 check("the end-to-end job retries a stalled Arch snapshot download",
   /for attempt in 1 2 3; do\s*\n\s*pacman -Syu --noconfirm --needed --disable-download-timeout/.test(build),
   "one slow response from archive.archlinux.org fails the whole gate")

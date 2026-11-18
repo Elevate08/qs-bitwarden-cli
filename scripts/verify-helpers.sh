@@ -31,8 +31,9 @@ Usage: scripts/verify-helpers.sh [--attestations] [--rebuild] [--arch x86_64|aar
                   attestation names.
   --rebuild       scripts/build-agent.sh --arch ARCH --compare-tracked: rebuild in
                   the pinned container image and require byte-identical output.
-                  Needs cargo on PATH and docker (or podman) usable without a
-                  password prompt; aarch64 on an x86_64 machine needs qemu binfmt.
+                  Needs a container runtime usable without a password prompt
+                  (docker or podman) and a regular clone, not a linked git
+                  worktree; aarch64 on an x86_64 machine needs qemu binfmt.
   --arch ARCH     Which architecture to rebuild (default: this machine's).
                   Attestations are always checked for every architecture.
 USAGE
@@ -63,7 +64,7 @@ if [ "$do_attest" = 1 ]; then
 
   echo "== provenance attestations ($SIGNER)"
   if ! command -v gh >/dev/null 2>&1; then
-    flunk "attestations" "gh is not installed (https://cli.github.com; on Arch: pacman -S github-cli)"
+    flunk "attestations" "gh is not installed; install the GitHub CLI (https://cli.github.com)"
   elif ! gh auth status >/dev/null 2>&1; then
     flunk "attestations" "gh is not signed in; run 'gh auth login' (any GitHub account works)"
   else
@@ -90,13 +91,15 @@ if [ "$do_rebuild" = 1 ]; then
   if [ "$arch" = all ]; then rebuild=("${ARCHES[@]}"); else rebuild=("${arch:-$(uname -m)}"); fi
   for a in "${rebuild[@]}"; do
     echo "== reproducible rebuild ($a)"
-    if ! command -v cargo >/dev/null 2>&1; then
-      flunk "rebuild $a" "build-agent.sh needs cargo on PATH even to enter the container (pacman -S rust)"
+    # The container mounts only this directory; a linked worktree's .git
+    # points outside it.
+    if [ -f "$ROOT/.git" ]; then
+      flunk "rebuild $a" "this checkout is a linked git worktree, which the container cannot read; run from a regular clone"
       continue
     fi
     explain="$("$ROOT/scripts/build-agent.sh" --arch "$a" --explain 2>&1 || true)"
     if [[ "$explain" == *"no container runtime"* ]]; then
-      flunk "rebuild $a" "no container runtime usable without a password prompt; build-agent.sh tries docker, sudo -n docker, then podman"
+      flunk "rebuild $a" "no container runtime usable without a password prompt; see scripts/build-agent.sh --explain"
       continue
     fi
     if "$ROOT/scripts/build-agent.sh" --arch "$a" --compare-tracked; then

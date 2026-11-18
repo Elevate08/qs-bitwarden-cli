@@ -159,6 +159,9 @@ require_native() {
     || fail "this $host environment cannot build $ARCH natively. Run the script outside the
        image with --arch $ARCH, so the container runtime starts the $(platform_for "$ARCH") variant
        (on another architecture that needs qemu binfmt), or build on a $ARCH machine."
+  # Every mode calls this just before it builds here, so cargo is required only
+  # where it runs: not to explain, or to re-enter the image, which brings its own.
+  command -v cargo >/dev/null 2>&1 || fail "cargo is not on PATH"
 }
 
 # Whether we are already inside the pinned environment (CI runs this inside
@@ -198,6 +201,11 @@ container_runtime() {
 reexec_in_container() {
   local runtime="$1"
   shift
+  # Only the checkout is mounted. In a linked worktree (or submodule) .git is a
+  # file naming a directory outside it, so `git archive` would fail in there.
+  [ ! -f "$REPO_ROOT/.git" ] \
+    || fail "$REPO_ROOT is a linked git worktree; the container sees only this directory, not
+       the repository it points to. Run this from a regular clone."
   note "entering the pinned image with: $runtime"
   # Under rootful docker the container's root does not own the mounted
   # checkout, and git refuses `git archive` there unless /work is marked safe.
@@ -471,7 +479,6 @@ main() {
   select_arch "$arch"
   require_lockfile
   require_target "${CARGO_BUILD_TARGET:-$SUPPORTED_TARGET}"
-  command -v cargo >/dev/null 2>&1 || fail "cargo is not on PATH"
 
   case "$mode" in
     explain) explain ;;
