@@ -102,6 +102,32 @@ check("a branch build and a release cannot cancel each other",
   /group: agent-build-\$\{\{ github\.workflow \}\}/.test(build)
     && /cancel-in-progress: \$\{\{ github\.workflow != 'release' \}\}/.test(build),
   "the called workflow's concurrency group does not distinguish its callers")
+// A bare branch cut skips the branch build (its tree already passed), but the
+// skip must name this workflow: called from release.yml on a tag push, the
+// event is also a `created` push with no new commits, and the gates must run.
+const buildJobs = [...build.slice(build.indexOf("\njobs:"))
+  .matchAll(/^ {2}([a-z][a-z0-9-]*):\n([\s\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\n|$(?![\s\S]))/gm)]
+const branchCutSkip = "if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}"
+const unskipped = buildJobs.filter(([, , body]) => !body.includes(branchCutSkip)).map(([, name]) => name)
+check("only a bare branch cut skips the branch build, never the release's gates",
+  buildJobs.length >= 5 && unskipped.length === 0,
+  `jobs without the exact skip condition: ${unskipped.join(", ") || "(no jobs found)"}`)
+// The reviewer path (REVIEWING.md): a plain runner, no container and no Rust,
+// so build-agent.sh has to re-enter the pinned image itself.
+const reviewerJob = (buildJobs.find(([, name]) => name === "reviewer-rebuild") || [])[2] || ""
+check("CI runs the reviewers' rebuild through the container re-exec",
+  /runs-on: ubuntu-24\.04\n/.test(reviewerJob) && !/container:/.test(reviewerJob)
+    && /if: github\.event_name != 'pull_request'\n\s*run: scripts\/verify-helpers\.sh --rebuild --arch x86_64\n/.test(reviewerJob)
+    && !/QSBW_PINNED_BUILD/.test(reviewerJob)
+    && /permissions:\n\s*contents: read/.test(reviewerJob)
+    && /persist-credentials: false/.test(reviewerJob) && /timeout-minutes: \d+/.test(reviewerJob),
+  "nothing in CI exercises the rebuild path REVIEWING.md tells reviewers to run")
+check("the end-to-end job retries a stalled Arch snapshot download",
+  /for attempt in 1 2 3; do\s*\n\s*pacman -Syu --noconfirm --needed --disable-download-timeout/.test(build),
+  "one slow response from archive.archlinux.org fails the whole gate")
+check("the panel tests job retries a failed apt index update",
+  /for attempt in 1 2 3; do\s*\n\s*sudo apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=3 && break/.test(build),
+  "one 429 from a runner mirror fails the whole gate")
 check("nothing publishes before those gates pass",
   /needs: gates/.test(jobs.get("verify") || "") && /needs: gates/.test(symbols)
     && /needs: \[verify, symbols, host-run\]/.test(jobs.get("release") || ""),
@@ -199,6 +225,36 @@ check("release artifacts are scanned for key material before publication",
 check("the release notes are the changelog section for this version",
   /release-notes\.md/.test(releaseJob) && /no changelog section for/.test(releaseJob),
   "a release could publish empty notes or the entire changelog")
+// The published release is what a reviewer sees, so it says how to check the
+// helpers: the gates run that rebuilt them, the attestation command, the
+// local script. Written after the changelog section, with the run link and
+// repository passed through env rather than expanded into the script.
+const publishStep = releaseJob.slice(releaseJob.indexOf("- name: Publish the release"))
+const notesSection = /section="\$\(cat <<'EOF'\n([\s\S]*?)\n\s*EOF\n/.exec(publishStep)
+const notesText = notesSection ? notesSection[1] : ""
+check("the release notes carry a section on verifying the helpers",
+  /^\s*## Verifying the helpers$/m.test(notesText)
+    && publishStep.indexOf("CHANGELOG.md > dist/release-notes.md") < publishStep.indexOf("## Verifying the helpers")
+    && /printf '\\n%s\\n' "\$section" >> "\$notes"/.test(publishStep)
+    && publishStep.indexOf(">> \"$notes\"") < publishStep.indexOf("gh release create"),
+  "a reviewer of the published release is not told how to check the bundled binaries")
+check("the notes link the gates run that rebuilt the helpers on both architectures",
+  /\[`gates` run\]\(@RUN_URL@\)/.test(notesText) && /x86_64/.test(notesText) && /aarch64/.test(notesText)
+    && /RUN_URL: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/.test(publishStep)
+    && /section="\$\{section\/\/@RUN_URL@\/\$RUN_URL\}"/.test(publishStep),
+  "the notes claim a reproducible rebuild without pointing at the run that did it")
+check("the notes give the attestation command and the local verification script",
+  /gh attestation verify bin\/<arch>-linux\/<name> --repo @REPO@/.test(notesText)
+    && /REPO: \$\{\{ github\.repository \}\}/.test(publishStep)
+    && /section="\$\{section\/\/@REPO@\/\$REPO\}"/.test(publishStep)
+    && /scripts\/verify-helpers\.sh --attestations/.test(notesText)
+    && /scripts\/verify-helpers\.sh --rebuild/.test(notesText)
+    && /REVIEWING\.md/.test(notesText)
+    && /SHA256SUMS/.test(notesText),
+  "the notes do not say how to check the attestations or repeat the rebuild")
+check("no expression is expanded inside the notes text",
+  notesSection !== null && !/\$\{\{/.test(notesText),
+  "a workflow expression in the script body is injected as shell source")
 
 // -------------------------------------------------------------------------
 // Who has to look at it

@@ -13,6 +13,13 @@ on:
   # tree already passed here (publish-on-master.yml handles publication). So a
   # PR into master from anything but a release branch gets no checks; release
   # branches are the gated route.
+  # A push that only creates a branch at a commit already on the remote
+  # (cutting release/X.Y.Z from master) skips every job: that tree already
+  # passed, and the branch's next push would cancel the run part-way,
+  # leaving cancelled checks on master's commit. A new branch pushed with
+  # new commits lists them in `commits`, so it still runs. Only this
+  # workflow's own push trigger is affected; release.yml's tag-push gates
+  # run as `release` and are never skipped.
   push:
     branches: ['release/**']
   pull_request:
@@ -36,6 +43,8 @@ concurrency:
 jobs:
   reproducible:
     name: byte-identical across build paths (${{ matrix.arch }})
+    # Skip a bare branch cut; see `on.push` above.
+    if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}
     # One leg per shipped architecture, each built natively on its own runner
     # in that architecture's variant of the same multi-arch image digest. No
     # cross-linker, so nothing is installed on top of the pinned image.
@@ -173,8 +182,41 @@ jobs:
           echo "::error::The compare step's log names which helper drifted, or is not tracked yet."
           exit 1
 
+  # The path REVIEWING.md gives reviewers: from a plain host (no container:),
+  # build-agent.sh re-enters the pinned image itself. The job above
+  # already runs inside the image, so without this nothing in CI exercises
+  # that re-exec. x86_64 only; the bytes are the same ones checked above.
+  reviewer-rebuild:
+    name: reviewer rebuild (container re-exec)
+    # Skip a bare branch cut; see `on.push` above.
+    if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # As above: the build exports HEAD with `git archive`.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # GitHub's runner user can use docker without sudo, which is what
+      # build-agent.sh tries first. Pushes and tags only: on a PR, drift can
+      # be expected (helper-rebuild.yml commits the fix, and forks cannot
+      # receive it), and the job above already reports it there.
+      - name: Rebuild in the pinned image and compare with the tracked helpers
+        if: github.event_name != 'pull_request'
+        run: scripts/verify-helpers.sh --rebuild --arch x86_64
+      - name: Note that a PR skips the reviewer rebuild
+        if: github.event_name == 'pull_request'
+        run: echo "::notice::the reviewer rebuild runs on pushes to release branches and on release tags"
+
   gates:
     name: tests, format and lint
+    # Skip a bare branch cut; see `on.push` above.
+    if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}
     runs-on: ubuntu-24.04
     container:
       image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
@@ -242,6 +284,8 @@ jobs:
 
   aarch64-tests:
     name: tests on aarch64
+    # Skip a bare branch cut; see `on.push` above.
+    if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}
     # The helpers' own tests on the other shipped architecture, in the same
     # pinned image (its arm64 variant). Format, lint and the dependency policy
     # do not depend on the architecture and run once, in `gates`.
@@ -266,6 +310,8 @@ jobs:
 
   e2e:
     name: panel end-to-end
+    # Skip a bare branch cut; see `on.push` above.
+    if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     # The real Service.qml in a headless Quickshell (tests/e2e/). Quickshell
@@ -290,7 +336,17 @@ jobs:
           # diffutils: the envelope's write check compares with `cmp`, which
           # every desktop has but the bare image does not.
           # openssh: ssh-keygen, the SSH agent test's client.
-          pacman -Syu --noconfirm --needed quickshell argon2 jq nodejs diffutils openssh dbus gnome-keyring libsecret
+          # The archive is the only source for a dated snapshot and sometimes
+          # stalls, so wait on slow downloads and retry the whole transaction.
+          # Signature checks are unchanged on every attempt.
+          for attempt in 1 2 3; do
+            pacman -Syu --noconfirm --needed --disable-download-timeout \
+              quickshell argon2 jq nodejs diffutils openssh dbus gnome-keyring libsecret \
+              && break
+            [ "$attempt" = 3 ] && { echo "::error::pacman failed after 3 attempts"; exit 1; }
+            echo "::warning::pacman attempt $attempt failed; retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
+          done
           # Log what was installed, so behaviour changes can be traced.
           pacman -Q quickshell qt6-declarative nodejs argon2 jq diffutils openssh dbus gnome-keyring libsecret
 
@@ -313,6 +369,8 @@ jobs:
 
   javascript:
     name: panel tests
+    # Skip a bare branch cut; see `on.push` above.
+    if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -325,9 +383,15 @@ jobs:
         # the runner's own mirrors (provenance comes from `Signed-By`); nothing
         # here reaches the shipped binary, and the job holds no secrets or
         # write token. Error-Mode=any makes a failed index fail here instead of
-        # later as a missing package.
+        # later as a missing package. A mirror answering 429 or timing out is
+        # retried, up to three updates, rather than failing the job.
         run: |
-          sudo apt-get update -o APT::Update::Error-Mode=any
+          for attempt in 1 2 3; do
+            sudo apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=3 && break
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::apt-get update failed (attempt $attempt); retrying"
+            sleep $((attempt * 20))
+          done
           sudo apt-get install -y -qq --no-install-recommends jq openssh-client argon2
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

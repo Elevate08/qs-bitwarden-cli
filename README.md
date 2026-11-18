@@ -4,7 +4,7 @@ Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
 every item type without opening a browser.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.11.2-green.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/version-1.13.1-green.svg)](manifest.json)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-7c3aed.svg)](https://omarchy.org/)
 [![Requires: Bitwarden CLI + jq](https://img.shields.io/badge/requires-bw%20CLI%20%2B%20jq-175ddc.svg)](https://bitwarden.com/help/cli/)
 
@@ -25,7 +25,7 @@ omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 
 It runs on x86_64 and aarch64 (ARM64, such as Asahi Linux on Apple Silicon):
 the plugin's small helper programs ship prebuilt for both, built by CI from
-this repository's source and checked again before they are committed.
+this repository's source and checked again before they are committed ([how to verify](REVIEWING.md)).
 
 Nothing else has to be installed first. Open the panel and it tells you what it
 still needs -- on a stock Omarchy install that is the Bitwarden CLI and `jq` --

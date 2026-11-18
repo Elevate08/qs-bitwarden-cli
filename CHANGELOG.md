@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.13.1] - 2026-11-18
+
+### Added
+
+- **A guide for reviewing the plugin, and one command to verify its
+  helpers.** `REVIEWING.md` is for marketplace and security reviewers. It
+  covers what the three bundled helpers do and what bounds them, how CI
+  proves each binary in `bin/` is built from this source, and where each
+  capability an automated scan flags lives (the helpers themselves, the
+  dependency install through `sudo pacman`, and the build script's
+  `sudo -n docker`), with why each exists. `scripts/verify-helpers.sh`
+  checks `bin/SHA256SUMS` and every helper's build-provenance attestation,
+  then rebuilds the helpers in the pinned image and compares them byte for
+  byte. Release notes now say how to verify the attached helpers.
+
+### Changed
+
+- **CI runs the rebuild a reviewer would.** A new job runs
+  `scripts/verify-helpers.sh --rebuild` from a plain runner on release
+  branches and tags, so the path that re-enters the pinned image is tested,
+  not just the in-image build. `scripts/build-agent.sh` no longer needs Rust
+  on the host to re-enter the image. It works under rootful docker, and it
+  explains instead of failing obscurely when run from a git worktree.
+- **A bare release-branch cut no longer leaves cancelled checks on master**,
+  and the panel end-to-end job retries a stalled Arch archive download
+  (from 2.0.0's branch, brought to this release). The panel tests job
+  likewise retries an apt index update that a runner mirror rejects.
+
+The helper binaries are byte-identical to 1.13.0.
+
 ## [1.13.0] - 2026-11-12
 
 ### Added
