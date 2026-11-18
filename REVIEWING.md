@@ -57,8 +57,8 @@ dependency reports and debug symbols.
 
 One CI path writes binaries: `.github/workflows/helper-rebuild.yml`. For a
 same-repository PR into a `release/**` branch whose Rust changes are only plain
-source under `*/src/`, it commits the pinned-image rebuild to the PR branch.
-Fork PRs and Dependabot's PRs are excluded. `scripts/helper-autocommit-eligible.sh`,
+source under `agent/src/`, `unlock-key/src/` or `vault/src/`, it commits the pinned-image rebuild to the PR branch.
+Fork PRs are excluded, and so are runs triggered by Dependabot (`github.actor`). `scripts/helper-autocommit-eligible.sh`,
 taken from the base branch, decides which PRs qualify. The workflow itself runs
 on `pull_request`, so a same-repository PR that edits `helper-rebuild.yml`
 could bypass that gate; such an edit is visible in the PR's diff. Changes to
@@ -87,7 +87,8 @@ scripts/verify-helpers.sh --rebuild --arch all
   image. Run it from a regular clone: in a linked `git worktree` the container
   cannot see the repository, and the script stops. aarch64 on an x86_64 host
   needs qemu binfmt. `build-agent.sh --explain` shows which environment it
-  would use, without running anything.
+  would use without building anything (it only probes `docker info`, then
+  `sudo -n docker info`, then `podman info`).
 
 More detail: [docs/ssh-agent.md](docs/ssh-agent.md#verifying-the-helper) and
 [docs/vault-helper.md](docs/vault-helper.md#verifying-the-shipped-binary).
@@ -142,14 +143,15 @@ container runtime (`container_runtime`) it tries `docker`, then docker through
 sudo with `-n`, which never prompts, so it only succeeds where sudo is already
 cached or passwordless, then `podman`. Omarchy setups use docker through sudo
 rather than the docker group, which is root-equivalent. `--explain` reports the
-choice without running anything.
+choice without building anything; it only runs those probes.
 
 ## Other things a reviewer may look for
 
 - Item URLs open with `xdg-open`, http and https only (`normalizeOpenableUrl`).
 - Every `bw` run gets two Node preloads from the plugin directory through
   `NODE_OPTIONS`: `bw-login-code.js` (hands bw the two-step code without an
-  argv) and `bw-fast-exit.js` (skips bw's idle time after it answers).
+  argv) and `bw-fast-exit.js` (skips bw's idle time after it answers). They load
+  in any Node process in those commands but act only inside bw.
 
 ## What the plugin does not do
 
@@ -165,15 +167,18 @@ Checked against this commit's source (QML, JS, shell scripts, helper crates):
 - It keeps no vault copy of its own. bw's encrypted cache lives in bw's data
   directory (for added accounts, inside
   `~/.local/share/qs-bitwarden-cli/accounts/<slot>`), and attachments you
-  download are written decrypted where you choose.
+  download are written decrypted to your Downloads directory
+  (`xdg-user-dir DOWNLOAD`, else `~/Downloads`).
 
 As of this commit, what it writes outside its own directory is user-owned and
 outside system paths:
 
 - the keyring (session key, quick-unlock envelope; see README), and its entry
   in `~/.config/omarchy/shell.json`;
-- `$XDG_RUNTIME_DIR/qs-bitwarden-cli/`, and `$XDG_RUNTIME_DIR/qsbw-pinentry-*`
-  directories holding an `answer.sock` unix socket (pinentry);
+- `$XDG_RUNTIME_DIR/qs-bitwarden-cli/`, and per-prompt
+  `$XDG_RUNTIME_DIR/qsbw-pinentry-<random>/` (prompt.json and an `answer.sock`
+  unix socket) and `$XDG_RUNTIME_DIR/qsbw-pinentry-ui-<hash>/` (a generated
+  shell.qml and symlinks), both from pinentry;
 - `~/.local/state/qs-bitwarden-cli/` and `~/.local/share/qs-bitwarden-cli/`,
   including bw's data for added accounts (`accounts/<slot>`, passed to bw as
   `BITWARDENCLI_APPDATA_DIR`);
@@ -181,7 +186,8 @@ outside system paths:
   `scripts/repair-keyring.sh --auto`, run at every start, rewrites it only when
   it holds an entry gnome-keyring refuses to load, keeping a
   `.before-repair-<time>` backup beside it;
-- on request only: `~/.config/hypr/bindings.lua` (the auto-type keybind,
-  written to a temporary file and renamed into place), the Downloads directory
+- on request only: `~/.config/hypr/bindings.lua` (the auto-type keybind:
+  appended on enable, creating the file if hyprland.lua loads it and it is
+  missing; removed by rewriting through a temporary file renamed into place), the Downloads directory
   (`xdg-user-dir DOWNLOAD`, else `~/Downloads`) for attachments, staged in a
   `.qsbw-*` directory, and `~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent`.
