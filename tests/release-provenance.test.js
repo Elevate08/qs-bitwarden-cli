@@ -212,6 +212,36 @@ check("release artifacts are scanned for key material before publication",
 check("the release notes are the changelog section for this version",
   /release-notes\.md/.test(releaseJob) && /no changelog section for/.test(releaseJob),
   "a release could publish empty notes or the entire changelog")
+// The published release is what a reviewer sees, so it says how to check the
+// helpers: the gates run that rebuilt them, the attestation command, the
+// local script. Written after the changelog section, with the run link and
+// repository passed through env rather than expanded into the script.
+const publishStep = releaseJob.slice(releaseJob.indexOf("- name: Publish the release"))
+const notesSection = /section="\$\(cat <<'EOF'\n([\s\S]*?)\n\s*EOF\n/.exec(publishStep)
+const notesText = notesSection ? notesSection[1] : ""
+check("the release notes carry a section on verifying the helpers",
+  /^\s*## Verifying the helpers$/m.test(notesText)
+    && publishStep.indexOf("CHANGELOG.md > dist/release-notes.md") < publishStep.indexOf("## Verifying the helpers")
+    && /printf '\\n%s\\n' "\$section" >> "\$notes"/.test(publishStep)
+    && publishStep.indexOf(">> \"$notes\"") < publishStep.indexOf("gh release create"),
+  "a reviewer of the published release is not told how to check the bundled binaries")
+check("the notes link the gates run that rebuilt the helpers on both architectures",
+  /\[`gates` run\]\(@RUN_URL@\)/.test(notesText) && /x86_64/.test(notesText) && /aarch64/.test(notesText)
+    && /RUN_URL: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/.test(publishStep)
+    && /section="\$\{section\/\/@RUN_URL@\/\$RUN_URL\}"/.test(publishStep),
+  "the notes claim a reproducible rebuild without pointing at the run that did it")
+check("the notes give the attestation command and the local verification script",
+  /gh attestation verify bin\/<arch>-linux\/<name> --repo @REPO@/.test(notesText)
+    && /REPO: \$\{\{ github\.repository \}\}/.test(publishStep)
+    && /section="\$\{section\/\/@REPO@\/\$REPO\}"/.test(publishStep)
+    && /scripts\/verify-helpers\.sh --attestations/.test(notesText)
+    && /scripts\/verify-helpers\.sh --rebuild/.test(notesText)
+    && /REVIEWING\.md/.test(notesText)
+    && /SHA256SUMS/.test(notesText),
+  "the notes do not say how to check the attestations or repeat the rebuild")
+check("no expression is expanded inside the notes text",
+  notesSection !== null && !/\$\{\{/.test(notesText),
+  "a workflow expression in the script body is injected as shell source")
 
 // -------------------------------------------------------------------------
 // Who has to look at it

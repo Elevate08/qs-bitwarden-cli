@@ -199,10 +199,13 @@ reexec_in_container() {
   local runtime="$1"
   shift
   note "entering the pinned image with: $runtime"
+  # Under rootful docker the container's root does not own the mounted
+  # checkout, and git refuses `git archive` there unless /work is marked safe.
   # shellcheck disable=SC2086
   $runtime run --rm \
     --platform "$(platform_for "$ARCH")" \
     -e QSBW_PINNED_BUILD=1 \
+    -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/work \
     -v "$REPO_ROOT:/work" -w /work \
     "$PINNED_IMAGE" \
     /work/scripts/build-agent.sh --arch "$ARCH" "$@"
