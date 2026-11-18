@@ -383,9 +383,15 @@ jobs:
         # the runner's own mirrors (provenance comes from `Signed-By`); nothing
         # here reaches the shipped binary, and the job holds no secrets or
         # write token. Error-Mode=any makes a failed index fail here instead of
-        # later as a missing package.
+        # later as a missing package. A mirror answering 429 or timing out is
+        # retried, up to three updates, rather than failing the job.
         run: |
-          sudo apt-get update -o APT::Update::Error-Mode=any
+          for attempt in 1 2 3; do
+            sudo apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=3 && break
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::apt-get update failed (attempt $attempt); retrying"
+            sleep $((attempt * 20))
+          done
           sudo apt-get install -y -qq --no-install-recommends jq openssh-client argon2
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
