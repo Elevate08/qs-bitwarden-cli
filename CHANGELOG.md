@@ -25,7 +25,8 @@
   explains instead of failing obscurely when run from a git worktree.
 - **A bare release-branch cut no longer leaves cancelled checks on master**,
   and the panel end-to-end job retries a stalled Arch archive download
-  (from 2.0.0's branch, brought to this release).
+  (from 2.0.0's branch, brought to this release). The panel tests job
+  likewise retries an apt index update that a runner mirror rejects.
 
 The helper binaries are byte-identical to 1.13.0.
 
