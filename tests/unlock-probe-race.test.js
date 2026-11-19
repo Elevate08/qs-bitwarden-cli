@@ -34,6 +34,8 @@ function vault(extra) {
     envelopeProc: { running: false, outputHeld: true }, envelopeStdout: { text: "" },
     logoutPending: false, allCredentialsClearPending: false, forgotten: [], seq: 0,
     pinUnlockProc: { running: false, runId: 0 },
+    // Node's compile cache as it stands at the start: none in these runs.
+    refreshBwCompileCacheIn() {},
     newHeldName() { return "pw" + (++this.seq) },
     forgetVaultSecret(name) { this.forgotten.push(name) },
     clearProcessCollectorSoon() {}, finishScrubRun() { return false },

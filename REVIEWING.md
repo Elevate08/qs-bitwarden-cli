@@ -186,13 +186,27 @@ choice without building anything; it only runs those probes.
     repaired, and a failed check means `bw` runs without the cache, with a
     note on the setting's row.
   - *When.* At shell start with the setting on, when the setting is turned
-    on, when an unlock is submitted, and when the vault opens another way (a
-    terminal sign-in, a session found open) unless a check started in the
-    last two minutes. A new check withdraws the previous answer until it has
-    its own, so a `bw` started in those ~20 ms runs without the cache.
-    Between checks the directory is not looked at again: if it is deleted
-    meanwhile, Node recreates it with the default umask, inside the plugin's
-    0700 directory if that is still there, and the next check judges it.
+    on, and when an unlock is submitted (password, PIN, fingerprint, FIDO2
+    and the pinentry all end in `unlockVaultWithPassword`). A vault that
+    opens with no unlock submitted (a terminal sign-in, a login, a session
+    found open) is checked as it opens, unless one of the three checks above
+    was started in the two minutes before and no opening has used it yet:
+    one check serves one opening (`recheckBwCompileCacheOnOpen`). A new check
+    withdraws the previous answer until it has its own, so a `bw` started in
+    those ~20 ms runs without the cache: after a submitted unlock that is
+    none of the reads that follow (`bw` takes about a second to unlock);
+    after an opening checked as it opens it is the first reads of the list,
+    organizations and folders. A lock or an envelope job queued earlier has
+    the variable set again as its process starts
+    (`refreshBwCompileCacheIn`), so a withdrawn directory is not used by it
+    either. Between checks the directory is not looked at again: if it is
+    deleted meanwhile, Node recreates it with the default umask, inside the
+    plugin's 0700 directory if that is still there, and the next check
+    judges it. Under a umask that leaves new directories group-writable
+    (002), the directory Node makes inside the cache for its own version is
+    one the next check refuses, so there the cache is used until the next
+    check and not after; `chmod -R go-w` on it, or a umask of 022 or 077 for
+    the shell, puts that right.
   - *Which launches use it.* Only `bw` itself, in the commands started with
     `bwEnv()`: status, login, unlock, lock, logout, sync, the list, get,
     create, edit, delete, send and generate commands, attachment download,

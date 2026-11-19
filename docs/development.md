@@ -132,18 +132,23 @@ inventory with the environment it runs in; a `node -e` goes through
 The check itself (`bash`, `id`, `realpath`, a `stat` per directory up to `/`,
 one `find` over the contents) took 17 ms over a filled cache of 1,631
 entries (median of 21, same tmpfs) and 25 ms the first time, when it makes
-the directories. It runs at shell start, when the setting is turned on, when
-an unlock is submitted, and when the vault opens some other way more than two
-minutes after the last check; a new check withdraws the last answer until it
-has its own. An unlock takes `bw` about a second after it is submitted, so
-the check has answered before the reads that follow it start; a `bw` started
-within those ~20 ms runs without the cache. Checking before every `bw` start
-was not done: each start would wait on a process of its own, and the
-directory could still change between that check and Node opening it. Instead
-the directory is not looked at between checks. If it is deleted in that time
-Node makes it again with the default umask (inside the plugin's 0700
-directory when only the inner one went), and the next check refuses it if
-that left it group- or world-writable.
+the directories; both on tmpfs, not timed on a disk. It runs at shell start,
+when the setting is turned on and when an unlock is submitted; a vault that
+opens with no unlock submitted (a terminal sign-in, a login, a session found
+open) is checked as it opens unless one of those checks was started in the
+two minutes before and no opening has used it. A new check withdraws the last
+answer until it has its own. An unlock takes `bw` about a second after it is
+submitted, so the check has answered before the reads that follow it start;
+a `bw` started within those ~20 ms runs without the cache, and so do the
+first reads of a vault that was checked as it opened. Checking before every
+`bw` start was not done: each start would wait on a process of its own, and
+the directory could still change between that check and Node opening it.
+Instead the directory is not looked at between checks. If it is deleted in
+that time Node makes it again with the default umask (inside the plugin's
+0700 directory when only the inner one went), and the next check refuses it
+if that left it group- or world-writable. For the same reason a shell with a
+umask of 002 loses the cache at the second check: Node's own version
+directory inside it is then group-writable.
 
 `tests/bw-compile-cache.test.js` needs a directory whose whole ancestor chain
 is the user's or root's for its filesystem cases: it uses `$XDG_RUNTIME_DIR`,

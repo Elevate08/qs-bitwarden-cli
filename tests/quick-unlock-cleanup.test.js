@@ -32,6 +32,8 @@ function vault() {
     runStatusCheck() { this.statusChecks++ }, pinUnlockError: "", fingerprintError: "", fingerprintMessage: "",
     envelopeJobs: [], envelopeJob: null, envelopeProc: { running: false, outputHeld: true },
     envelopeStdout: { text: "" }, seq: 0,
+    // Node's compile cache as it stands at the start: none in these runs.
+    refreshBwCompileCacheIn() {},
     newHeldName() { return "pw" + (++this.seq) },
     forgetVaultSecret(name) { this.forgotten.push(name) },
     unlockVaultWithPassword(value) { this.unlocks.push(value) },

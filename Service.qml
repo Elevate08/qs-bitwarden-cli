@@ -957,7 +957,7 @@ Item {
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
     // Only with the setting on: off, it runs nothing and makes no directory.
-    root.probeBwCompileCache()
+    root.probeBwCompileCache(true)
   }
 
   readonly property var categories: [
@@ -1675,6 +1675,7 @@ Item {
     if (job.holdOutput) job.heldName = newHeldName()
     envelopeProc.capture = job.holdOutput ? "secret:" + job.heldName : (job.capture || "plain")
     envelopeProc.inject = job.inject || ({})
+    refreshBwCompileCacheIn(job.env)
     envelopeProc.environment = Object.assign({}, job.accountEnv || {}, job.env || {})
     job.env = null
     envelopeProc.running = true
@@ -4743,26 +4744,39 @@ Item {
   // one (the setting since turned off, or asked again) is not taken.
   property int bwCompileCacheProbeSeq: 0
   property bool bwCompileCacheProbeWaiting: false
-  // When the check in effect was started (wall clock); 0 for none.
+  // When a check was started that the next opening of the vault may stand
+  // on (wall clock); 0 for none, and once an opening has used it.
   property double bwCompileCacheProbedAt: 0
+  // The status the last change left, to tell the vault opening from the rest.
+  property string bwCompileCacheStatusSeen: ""
 
   // The directory is checked when the shell starts with the setting on, when
-  // the setting is turned on, when an unlock is submitted, and when the vault
-  // opens some other way unless a check was started in the last two minutes
-  // (Model.bwCompileCacheCheckIsRecent()). Nothing is believed meanwhile: a
-  // new check withdraws the last one's directory until it has answered, so a
-  // `bw` started in that moment runs without the cache. Between checks the
-  // directory is not looked at again (see docs/development.md).
-  onBwCompileCacheChanged: probeBwCompileCache()
-  onIsUnlockingChanged: if (isUnlocking) probeBwCompileCache()
+  // the setting is turned on, when an unlock is submitted (every unlock
+  // method ends in unlockVaultWithPassword()), and when the vault opens with
+  // none of those in the two minutes before
+  // (Model.bwCompileCacheCheckIsRecent()): a terminal sign-in, a session
+  // found open, a login. One check serves one opening. Nothing is believed
+  // meanwhile: a new check withdraws the last one's directory until it has
+  // answered, so a `bw` started in that moment runs without the cache.
+  // Between checks the directory is not looked at again (see
+  // docs/development.md).
+  onBwCompileCacheChanged: probeBwCompileCache(true)
+  onIsUnlockingChanged: if (isUnlocking) probeBwCompileCache(true)
 
   // Called when the status changes (onStatusChanged).
   function recheckBwCompileCacheOnOpen() {
-    if (status === "unlocked" && bwCompileCache
-        && !Model.bwCompileCacheCheckIsRecent(bwCompileCacheProbedAt, Date.now())) probeBwCompileCache()
+    var opened = status === "unlocked" && bwCompileCacheStatusSeen !== "unlocked"
+    bwCompileCacheStatusSeen = status
+    if (!opened || !bwCompileCache) return
+    var recent = Model.bwCompileCacheCheckIsRecent(bwCompileCacheProbedAt, Date.now())
+    // Used: the next opening needs a check of its own.
+    bwCompileCacheProbedAt = 0
+    if (!recent) probeBwCompileCache(false)
   }
 
-  function probeBwCompileCache() {
+  // `forOpening`: an opening of the vault within two minutes may stand on
+  // this check.
+  function probeBwCompileCache(forOpening) {
     bwCompileCacheDir = ""
     bwCompileCacheProbeSeq += 1
     bwCompileCacheProbedAt = 0
@@ -4771,7 +4785,7 @@ Item {
       return
     }
     bwCompileCacheState = "pending"
-    bwCompileCacheProbedAt = Date.now()
+    if (forOpening === true) bwCompileCacheProbedAt = Date.now()
     startBwCompileCacheProbe()
   }
 
@@ -4804,6 +4818,16 @@ Item {
   // a null). The setting is read here too: off wins whatever was accepted.
   function bwCompileCacheEnvValue() {
     return bwCompileCache && bwCompileCacheDir !== "" ? bwCompileCacheDir : null
+  }
+
+  // For an environment built by bwEnv() some time before its `bw` starts (a
+  // queued lock, a queued envelope job): the variable is set again, in
+  // place, to what it is now, so a directory withdrawn since (the setting
+  // turned off, a new check) is not the one that `bw` gets. Nothing else in
+  // it is touched, and an environment without the variable is left alone.
+  function refreshBwCompileCacheIn(env) {
+    var name = Model.bwCompileCacheEnvVar()
+    if (env && env.hasOwnProperty(name)) env[name] = bwCompileCacheEnvValue()
   }
 
   // No session here: a VaultProcess adds it (vaultStart()).
@@ -6746,6 +6770,7 @@ Item {
       return
     }
     if (!run.checking) run.attempts += 1
+    refreshBwCompileCacheIn(run.env)
     lockProc.environment = run.env
     var inject = {}
     inject[Model.sessionEnvVar()] = "secret:" + run.key

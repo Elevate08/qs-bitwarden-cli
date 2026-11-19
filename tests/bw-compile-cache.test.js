@@ -398,17 +398,18 @@ if (trusted) {
 check("the directory offered to bw is the one the probe printed; a new check withdraws it first, and nothing else sets it",
   /property string bwCompileCacheDir: ""/.test(svc)
     && /bwCompileCacheDir = Model\.bwCompileCacheAccepted\(exitCode, output\)/.test(functionBody(svc, "onBwCompileCacheProbed"))
-    && /^function probeBwCompileCache\(\) \{\s+bwCompileCacheDir = ""/.test(functionBody(svc, "probeBwCompileCache"))
+    && /^function probeBwCompileCache\(forOpening\) \{\s+bwCompileCacheDir = ""/.test(functionBody(svc, "probeBwCompileCache"))
     && (svc.match(/\bbwCompileCacheDir = /g) || []).length === 2,
   functionBody(svc, "onBwCompileCacheProbed"))
 check("the check runs at start, when the setting changes, when an unlock is submitted and when the vault opens",
-  /root\.probeBwCompileCache\(\)/.test(svc.slice(svc.indexOf("onLiveChanged: {"), svc.indexOf("readonly property var categories")))
-    && /\n  onBwCompileCacheChanged: probeBwCompileCache\(\)\n/.test(svc)
-    && /\n  onIsUnlockingChanged: if \(isUnlocking\) probeBwCompileCache\(\)\n/.test(svc)
+  /root\.probeBwCompileCache\(true\)/.test(svc.slice(svc.indexOf("onLiveChanged: {"), svc.indexOf("readonly property var categories")))
+    && /\n  onBwCompileCacheChanged: probeBwCompileCache\(true\)\n/.test(svc)
+    && /\n  onIsUnlockingChanged: if \(isUnlocking\) probeBwCompileCache\(true\)\n/.test(svc)
     && /onStatusChanged: \{[^}]*recheckBwCompileCacheOnOpen\(\)\s+promoteUnlockToApproval\(\)/.test(svc)
     && /bwCompileCacheHome: Model\.bwCompileCacheHome\(\s*Quickshell\.env\("XDG_CACHE_HOME"\) \|\| "", Quickshell\.env\("HOME"\) \|\| ""\)/.test(svc))
-check("only bwEnv() and the generator's server name the variable; pinentry, which runs no bw, starts without an inherited one",
-  (svc.match(/bwCompileCacheEnvVar\(\)/g) || []).length === 2
+check("only bwEnv(), the generator's server and the refresh of a queued environment name the variable; pinentry, which runs no bw, starts without an inherited one",
+  (svc.match(/bwCompileCacheEnvVar\(\)/g) || []).length === 3
+    && /var name = Model\.bwCompileCacheEnvVar\(\)\s+if \(env && env\.hasOwnProperty\(name\)\) env\[name\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "refreshBwCompileCacheIn"))
     && /env\[Model\.bwCompileCacheEnvVar\(\)\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "bwEnv"))
     && /env\[Model\.bwCompileCacheEnvVar\(\)\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "generatorServeEnv"))
     && Model.pinentryEnvironment({})[VAR] === null
@@ -602,7 +603,7 @@ check("only bwEnv() and the generator's server name the variable; pinentry, whic
 function service(state) {
   const v = Object.assign({ Model, bwNodeOptions: "", started: true, bwCompileCache: true,
     bwCompileCacheHome: "/h/.cache", bwCompileCacheDir: "", bwCompileCacheState: "off",
-    bwCompileCacheProbeSeq: 0, bwCompileCacheProbeWaiting: false, bwCompileCacheProbedAt: 0,
+    bwCompileCacheProbeSeq: 0, bwCompileCacheProbeWaiting: false, bwCompileCacheProbedAt: 0, bwCompileCacheStatusSeen: "",
     status: "locked", warnings: [], later: [],
     // The probe process: `running` set true is a start; its exit is answer().
     bwCompileCacheProc: { running: false, probeSeq: 0, starts: 0 },
@@ -615,7 +616,7 @@ function service(state) {
   v.Qt = { callLater: fn => v.later.push(fn) }
   v.Date = { now: () => v.now || 1000000 }
   const names = ["bwEnv", "generatorServeEnv", "bwCompileCacheEnvValue", "onBwCompileCacheProbed",
-    "probeBwCompileCache", "startBwCompileCacheProbe", "recheckBwCompileCacheOnOpen"]
+    "probeBwCompileCache", "startBwCompileCacheProbe", "recheckBwCompileCacheOnOpen", "refreshBwCompileCacheIn"]
   Object.assign(v, new Function("scope", "with (scope) {\n" + names.map(nm => functionBody(svc, nm)).join("\n")
     + "\nreturn { " + names.join(", ") + " } }")(v))
   // The running probe exits with `rc` and `out`.
@@ -745,30 +746,99 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
   check("before the service has started (the setting's first value arriving) nothing runs; the start does it",
     early.bwCompileCacheProc.starts === 0 && early.bwCompileCacheState === "off")
 
-  // When the vault opens.
+  // When the vault opens. `to(status)` is the status changing, as
+  // onStatusChanged sees it; `submit()` an unlock being submitted.
   const minute = 60 * 1000
-  const opened = service({ now: 10 * minute })
-  opened.probeBwCompileCache()
+  const vaultAt = (now, extra) => {
+    const v = service(Object.assign({ now }, extra))
+    v.to = status => { v.status = status; v.recheckBwCompileCacheOnOpen() }
+    v.submit = () => v.probeBwCompileCache(true)
+    v.to("locked")
+    return v
+  }
+  const opened = vaultAt(10 * minute)
+  opened.submit()
   opened.answer(0, GOOD + "\n")
-  opened.status = "unlocked"
-  opened.now = 10 * minute + 5000
-  opened.recheckBwCompileCacheOnOpen()
-  check("the vault opening seconds after a check (an unlock was submitted) keeps what that check accepted",
+  opened.now += 1000
+  opened.to("unlocked")
+  check("the vault opening on an unlock that was submitted stands on the check that unlock started",
     opened.bwCompileCacheProc.starts === 1 && opened.bwEnv()[VAR] === GOOD)
-  opened.now = 10 * minute + 2 * minute + 1
-  opened.recheckBwCompileCacheOnOpen()
-  check("...but opening by another way more than two minutes after the last check is checked again first, with nothing believed meanwhile",
+  opened.to("locked")
+  opened.now += 5000
+  opened.to("unlocked")
+  check("...but that check served that opening only: locked and opened again seconds later with no unlock submitted (a terminal sign-in), it is checked again, with nothing believed meanwhile",
     opened.bwCompileCacheProc.starts === 2 && opened.bwEnv()[VAR] === null && opened.bwCompileCacheState === "pending")
   opened.answer(0, GOOD + "\n")
-  opened.now = 5 * minute
-  opened.recheckBwCompileCacheOnOpen()
-  check("a clock set back does not make an old check recent", opened.bwCompileCacheProc.starts === 3)
-  const lockedStill = service({ now: 100 * minute, status: "locked" })
-  lockedStill.recheckBwCompileCacheOnOpen()
-  const offOpen = service({ now: 100 * minute, status: "unlocked", bwCompileCache: false })
-  offOpen.recheckBwCompileCacheOnOpen()
+  opened.to("locked")
+  opened.now += 5000
+  opened.to("unlocked")
+  check("...and the check an opening made for itself does not serve the next one either",
+    opened.bwCompileCacheProc.starts === 3 && opened.bwEnv()[VAR] === null)
+  opened.answer(0, GOOD + "\n")
+  opened.to("unlocked")
+  check("a status that was already unlocked is not an opening", opened.bwCompileCacheProc.starts === 3 && opened.bwEnv()[VAR] === GOOD)
+
+  const slow = vaultAt(10 * minute)
+  slow.submit()
+  slow.answer(0, GOOD + "\n")
+  slow.now += 2 * minute + 1
+  slow.to("unlocked")
+  check("an opening more than two minutes after the last submitted unlock (it failed; this is another way in) is checked again first",
+    slow.bwCompileCacheProc.starts === 2 && slow.bwEnv()[VAR] === null && slow.bwCompileCacheState === "pending")
+  const back = vaultAt(10 * minute)
+  back.submit()
+  back.answer(0, GOOD + "\n")
+  back.now = 5 * minute
+  back.to("unlocked")
+  check("a clock set back does not make an old check recent", back.bwCompileCacheProc.starts === 2)
+  const atStart = vaultAt(10 * minute)
+  atStart.probeBwCompileCache(true)
+  atStart.answer(0, GOOD + "\n")
+  atStart.now += 3000
+  atStart.to("checking")
+  atStart.to("unlocked")
+  check("a session found open as the shell starts stands on the check made at start",
+    atStart.bwCompileCacheProc.starts === 1 && atStart.bwEnv()[VAR] === GOOD)
+  const lockedStill = vaultAt(100 * minute)
+  lockedStill.to("checking")
+  lockedStill.to("locked")
+  const offOpen = vaultAt(100 * minute, { bwCompileCache: false })
+  offOpen.to("unlocked")
   check("no check for a status other than unlocked, or with the setting off",
     lockedStill.bwCompileCacheProc.starts === 0 && offOpen.bwCompileCacheProc.starts === 0)
+  check("every unlock method ends in the one function that submits an unlock, which is what starts the check",
+    (svc.match(/\bisUnlocking = true\b/g) || []).length === 1 && /isUnlocking = true/.test(functionBody(svc, "unlockVaultWithPassword"))
+      && ["onEnvelopePinResult", "onPinUnlockResult", "onFingerprintPasswordRetrieved", "unlockWithPinentry", "unlockVault"]
+        .every(name => /unlockVaultWithPassword\(/.test(functionBody(svc, name)))
+      && /id: fidoUnlocker[\s\S]{0,1200}root\.unlockVaultWithPassword\(password\)/.test(svc))
+
+  // An environment built some time before its bw starts.
+  const queued = service({})
+  queued.probeBwCompileCache(true)
+  queued.answer(0, GOOD + "\n")
+  const lockEnv = queued.bwEnv()
+  const jobEnv = queued.bwEnv({ SECRET: "s" })
+  const other = { SECRET: "s" }
+  queued.bwCompileCache = false
+  queued.refreshBwCompileCacheIn(lockEnv)
+  queued.refreshBwCompileCacheIn(jobEnv)
+  queued.refreshBwCompileCacheIn(other)
+  queued.refreshBwCompileCacheIn(null)
+  check("a lock or an envelope job queued with the cache, and started after the setting was turned off, starts without it",
+    lockEnv[VAR] === null && jobEnv[VAR] === null && jobEnv.SECRET === "s", JSON.stringify([lockEnv, jobEnv]))
+  check("...an environment that never carried the variable is left exactly as it was",
+    JSON.stringify(other) === JSON.stringify({ SECRET: "s" }))
+  queued.bwCompileCache = true
+  queued.probeBwCompileCache(true)
+  const during = queued.bwEnv()
+  queued.refreshBwCompileCacheIn(lockEnv)
+  check("...and one started while a new check is running has none either", lockEnv[VAR] === null && during[VAR] === null)
+  queued.answer(0, GOOD + "\n")
+  queued.refreshBwCompileCacheIn(lockEnv)
+  check("...until that check has passed", lockEnv[VAR] === GOOD)
+  check("both queues set the variable again as the process starts, in place, before the environment is handed over",
+    /refreshBwCompileCacheIn\(run\.env\)\s+lockProc\.environment = run\.env/.test(functionBody(svc, "runBwLockStep"))
+      && /refreshBwCompileCacheIn\(job\.env\)\s+envelopeProc\.environment = Object\.assign\(\{\}, job\.accountEnv \|\| \{\}, job\.env \|\| \{\}\)\s*\n\s*job\.env = null/.test(functionBody(svc, "pumpEnvelopeJobs")))
   check("how long a check counts as recent when the vault opens: two minutes, by the wall clock",
     Model.bwCompileCacheCheckIsRecent(1000, 1000 + 2 * minute) === true
       && Model.bwCompileCacheCheckIsRecent(1000, 1001 + 2 * minute) === false

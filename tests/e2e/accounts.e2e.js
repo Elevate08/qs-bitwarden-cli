@@ -13,7 +13,7 @@
 //
 //   node tests/e2e/accounts.e2e.js
 
-const { createSuite } = require("../harness")
+const { createSuite, loadModule } = require("../harness")
 const { createShell, sleep } = require("./shell")
 const fs = require("fs")
 const path = require("path")
@@ -174,8 +174,20 @@ const seen = (sh, pattern) => cacheLines(sh).filter(l => pattern.test(l.args))
 // is theirs up to /. Where there is none, the default (under /tmp, which the
 // check refuses) still shows the setting-off case.
 const runtimeDir = process.env.XDG_RUNTIME_DIR
-const trustedRoot = runtimeDir && path.isAbsolute(runtimeDir) && fs.existsSync(runtimeDir)
+let trustedRoot = runtimeDir && path.isAbsolute(runtimeDir) && fs.existsSync(runtimeDir)
   ? fs.mkdtempSync(path.join(fs.realpathSync(runtimeDir), "qsbw-e2e-cache-")) : ""
+if (trustedRoot) {
+  // Having a runtime directory is not having one the check accepts (a
+  // container may put it under a shared directory): ask the check itself.
+  const Model = loadModule()
+  const trial = Model.bwCompileCacheCommand(path.join(trustedRoot, "trial"))
+  const r = require("child_process").spawnSync(trial[0], trial.slice(1),
+    { encoding: "utf8", env: Model.plainProbeEnv("/usr/local/bin:/usr/bin:/bin") })
+  if (Model.bwCompileCacheAccepted(r.status, r.stdout) === "") {
+    fs.rmSync(trustedRoot, { recursive: true, force: true })
+    trustedRoot = ""
+  }
+}
 if (!failedToRun) {
   const inherited = path.join(fs.mkdtempSync("/tmp/qsbw-e2e-inherited-"), "cache")
   const cacheHome = trustedRoot ? path.join(trustedRoot, "off") : ""
@@ -217,7 +229,7 @@ if (!failedToRun) {
   }
 }
 if (!failedToRun && !trustedRoot) {
-  console.log("e2e-accounts: SKIPPED the compile cache's setting-on scenario: no $XDG_RUNTIME_DIR to hold a cache home the check would accept")
+  console.log("e2e-accounts: SKIPPED the compile cache's setting-on scenario: there is no $XDG_RUNTIME_DIR, or the check does not accept a cache home in it (an ancestor someone else can write to)")
 }
 if (!failedToRun && trustedRoot) {
   const inherited = path.join(trustedRoot, "inherited")
@@ -300,7 +312,7 @@ if (!failedToRun && trustedRoot) {
     mark = cacheLines(third).length
     // The real bw takes about a second over an unlock (its key derivation);
     // the stand-in answers at once unless told to take as long.
-    fs.writeFileSync(path.join(third.env.HOME, ".config", "Bitwarden CLI", "fake-unlock-delay"), "0.5")
+    fs.writeFileSync(path.join(third.env.HOME, ".config", "Bitwarden CLI", "fake-unlock-delay"), "2")
     third.q("unlock", "pw-a@x")
     third.expect("with the symlink gone the next unlock's check accepts it again",
       s => s.status === "unlocked" && s.compileCache === wanted && s.items.join() === "Login of a@x")

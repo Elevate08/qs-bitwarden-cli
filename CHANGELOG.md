@@ -19,8 +19,9 @@
   directory is used only after a check (about 17 ms) that it, everything in
   it and every directory above it are yours (or root's, above it) and
   writable by no one else, with no symlink inside and a path of printable
-  ASCII; the check runs at shell start, when the setting is turned on and at
-  each unlock, and its row in Settings says when it failed. The pinentry, the
+  ASCII; the check runs at shell start, when the setting is turned on and for
+  each unlock (when it is submitted, or as the vault opens if it opened some
+  other way), and its row in Settings says when it failed. The pinentry, the
   `bw -v` version probe, `bw login` in a terminal, the `bw logout` that
   retires a signed-out account and the plugin's own `node -e` checks never
   use the cache. Turning the setting off leaves the directory;
