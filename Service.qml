@@ -6976,12 +6976,8 @@ Item {
   function onListFinished(rawJson) {
     isLoading = false
     if (vaultReadIsStale("items")) return
-    // A read that failed before this one left its message up; anything else
-    // on show is not this read's to clear.
-    if (listReadError !== "") {
-      if (errorMessage === listReadError) errorMessage = ""
-      listReadError = ""
-    }
+    if (errorMessage === listReadError) errorMessage = ""
+    listReadError = ""
     // One parse for both: parsing the list once per consumer cost several
     // whole-vault parses on the GUI thread per load.
     var vault = Model.readSanitizedVault(rawJson)
