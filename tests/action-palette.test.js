@@ -228,6 +228,7 @@ check("onTextKey uses runDetailShortcut", /onTextKey[\s\S]*?root\.runDetailShort
 function saveStandIn(state) {
   const v = Object.assign({ Model, isLoading: true, itemPayloadJson: "x", errorMessage: "", failedSave: null,
     itemsLoadedAt: 0, currentScreen: "detail", opened: [], reloads: 0,
+    itemMutations: 0, listRereadOwed: false, pendingDelete: null, createdItemHandoff: null, screenBeforeSshApproval: "main",
     vaultReadIsStale() { return false }, flashNotification() {}, refreshDerivedFromItems() {},
     loadItems() { v.reloads++ },
     // What a click on the row does, as far as this test needs: the detail
@@ -236,7 +237,8 @@ function saveStandIn(state) {
   }, state)
   v.root = v
   Object.assign(v, new Function("root", "with (root) {\n" + functionBody(serviceSrc, "onSaveItemFinished") + "\n"
-    + functionBody(serviceSrc, "followCreatedItem") + "\nreturn { onSaveItemFinished, followCreatedItem } }")(v))
+    + ["followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail", "settleOwedListRead"]
+      .map(n => functionBody(serviceSrc, n)).join("\n") + "\nreturn { onSaveItemFinished, followCreatedItem } }")(v))
   return v
 }
 const draft = { type: 1, name: "New login", notes: "", favorite: false, login: { username: "me", password: "pw", uris: [] } }

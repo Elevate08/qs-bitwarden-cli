@@ -20,7 +20,9 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "loadItems", "abandonSyncReload", "startVaultListRead", "vaultListEnv", "onListFinished", "onListProcessExited",
   "loadOrganizations", "onListOrgsFinished", "loadFolders", "onListFoldersFinished",
   "loadOrgCollections", "onOrgCollectionsLoaded", "loadSends", "onSendsLoaded",
-  "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState"]
+  "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
+  "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
+  "onDeleteItemFinished"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
 // a run only when none is held (runId 0); to false it asks for a kill, and
@@ -68,6 +70,8 @@ function fixture() {
   const c = {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
+    itemMutations: 0, listReadMutations: 0, listRereadOwed: false, createdItemHandoff: null,
+    pendingSave: null, pendingDelete: null,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
     itemsLoadedAt: 0, orgsLoadedAt: 0, foldersLoadedAt: 0, metaFreshMs: 0,
@@ -85,7 +89,9 @@ function fixture() {
     flashes: [], derived: 0,
     bwEnv: () => ({}), endSshAgentLoad() {}, maybeStartupLoad() {}, deferredMetadataTimer: { restart() {} },
     refreshDerivedFromItems() { c.derived++ }, flashNotification: m => c.flashes.push(m),
-    closeFilterGroup() {}, clearRepromptGrant() {}, learnFromPick() {}, fetchTotp() {}
+    closeFilterGroup() {}, clearRepromptGrant() {}, learnFromPick() {}, fetchTotp() {},
+    itemPayloadJson: "", failedSave: null, screenBeforeSshApproval: "main", forgotten: [],
+    forgetVaultItem: id => c.forgotten.push(id)
   }
   for (const id of ["listProc", "listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"])
     c[id] = makeProc(id, runs)
@@ -289,6 +295,167 @@ for (const [name, id, out, starter] of READERS) {
   e.exit("getItemProc", 0, itemJson("a"), "")
   check("an item read of the account just left is not shown in the new one",
     e.detailItem === null && e.runsOf("getItemProc").length === 2, JSON.stringify(e.detailItem))
+}
+
+// --- a save or delete while a list refresh is in flight -------------------------------
+// The save's answer and the refresh's can arrive in either order. The saved
+// item goes in once, under the id the save answered with, and a snapshot
+// started before the save (or delete) finished is read again, not shown: it
+// has replaced the helper's items as well, so only a new read puts both right.
+const draft = { type: 1, name: "New login", notes: "", favorite: false, login: { username: "me", password: "pw", uris: [] } }
+const provisionalId = Model.pendingItemId(777)
+const savedId = "55555555-5555-5555-5555-555555555555"
+const oldId = "11111111-1111-1111-1111-111111111111"
+const stored = (id, name) => ({ object: "item", id, type: 1, name, login: { username: "me" }, qsbwHeld: { password: true } })
+const listOf = (...rows) => JSON.stringify({ sshCapability: "unconfirmed", sshKeys: [], items: rows })
+const savedAnswer = listOf(stored(savedId, "New login"))
+const ids = c => Array.from(c.items).map(i => i.id).join()
+// A vault with one item, a new one being saved (its provisional row listed), and optionally its detail open.
+function saving(open) {
+  const c = fixture()
+  c.loadItems(false); c.exit("listProc", 0, listOf(stored(oldId, "Old")), "")
+  c.items = Model.replaceItemById(c.items, provisionalId, Model.optimisticItem(draft, provisionalId))
+  c.pendingSave = { id: provisionalId, isCreate: true, name: "New login", previous: null, form: {} }
+  c.readEpochs.itemSave = c.vaultEpoch
+  if (open) { c.currentScreen = "detail"; c.detailItem = { id: provisionalId, name: "New login", pending: true } }
+  return c
+}
+const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFinished(code, out, code ? "refused" : "") }
+{
+  // (a) The refresh, which already lists the saved item, answers first.
+  const c = saving(true)
+  c.loadItems(false)
+  c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "New login")), "")
+  check("a snapshot landing while the save runs is not shown: the provisional row and its detail stay",
+    ids(c).split(",").sort().join() === [oldId, provisionalId].sort().join() && c.detailItem.id === provisionalId
+      && c.listRereadOwed === true && c.runsOf("listProc").length === 2, ids(c))
+  finishSave(c, 0, savedAnswer)
+  check("the save then puts its item in once, with no provisional row left",
+    Array.from(c.items).filter(i => i.id === savedId).length === 1 && c.items.length === 2
+      && !Array.from(c.items).some(i => Model.isPendingItemId(i.id)), ids(c))
+  check("the open detail moves to the id the save answered with",
+    c.detailItem && c.detailItem.id === savedId && c.currentScreen === "detail", JSON.stringify(c.detailItem && c.detailItem.id))
+  check("and the list is read again, after the save", c.runsOf("listProc").length === 3 && !c.listRereadOwed
+    && c.listReadMutations === c.itemMutations, JSON.stringify(c.runs.length))
+  c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "New login")), "")
+  check("whose answer is accepted", c.items.length === 2 && c.runsOf("listProc").length === 3 && !c.listProc.running, ids(c))
+}
+{
+  // (a) again, had that snapshot been shown (as it was): the list holds the
+  // saved id and no provisional row when the save answers.
+  const c = saving(true)
+  c.items = Model.parseItems([stored(oldId, "Old"), stored(savedId, "New login")])
+  finishSave(c, 0, savedAnswer)
+  check("a saved item a refresh listed first is not inserted a second time",
+    c.items.length === 2 && Array.from(c.items).filter(i => i.id === savedId).length === 1, ids(c))
+  check("and the detail still moves to it, by the id in the save's answer", c.detailItem && c.detailItem.id === savedId,
+    JSON.stringify(c.detailItem && c.detailItem.id))
+}
+{
+  // Several rows are new to the list when the save answers: its id says which is its own.
+  const c = saving(true)
+  c.items = Model.replaceItemById(c.items, "22222222-2222-2222-2222-222222222222", Model.parseItems([stored("22222222-2222-2222-2222-222222222222", "From a sync")])[0])
+  finishSave(c, 0, savedAnswer)
+  eq("another new row beside it does not stop the detail following its own save", c.detailItem && c.detailItem.id, savedId)
+}
+{
+  // (b) The save answers first; a snapshot taken before it lands after.
+  const c = saving(false)
+  c.syncReloadPending = true; c.isSyncing = true
+  c.loadItems(true)
+  finishSave(c, 0, savedAnswer)
+  c.isLoading = true
+  eq("premise: the saved row is listed", ids(c).split(",").sort().join(), [oldId, savedId].sort().join())
+  c.errorMessage = "kept"; c.listReadError = "kept"
+  c.exit("listProc", 0, listOf(stored(oldId, "Old")), "")
+  check("a snapshot from before the save does not take the saved row away",
+    ids(c).split(",").sort().join() === [oldId, savedId].sort().join(), ids(c))
+  check("it settles nothing an accepted list would: the sync, the spinner and the list error wait",
+    c.syncReloadPending && c.isSyncing && c.isLoading && c.errorMessage === "kept" && c.flashes.indexOf("Vault synced with Bitwarden") === -1,
+    JSON.stringify({ sync: c.syncReloadPending, loading: c.isLoading, error: c.errorMessage }))
+  check("the list is read again instead", c.runsOf("listProc").length === 3 && c.listProc.running, String(c.runs.length))
+  c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "New login")), "")
+  check("and that read is accepted and settles them",
+    c.items.length === 2 && !c.syncReloadPending && !c.isSyncing && !c.isLoading && c.errorMessage === ""
+      && c.flashes.indexOf("Vault synced with Bitwarden") !== -1 && c.runsOf("listProc").length === 3, ids(c))
+}
+{
+  // A delete: the row is gone at once, and no reload follows a successful one.
+  const deleting = () => {
+    const c = fixture()
+    c.loadItems(false); c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "Doomed")), "")
+    c.pendingDelete = { id: savedId, name: "Doomed", previous: Model.findItemById(c.items, savedId) }
+    c.readEpochs.itemDelete = c.vaultEpoch
+    c.items = Model.replaceItemById(c.items, savedId, null)
+    return c
+  }
+  const c = deleting()
+  c.loadItems(false)
+  c.onDeleteItemFinished(0, "", "")
+  c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "Doomed")), "")
+  check("a snapshot from before a delete finished does not bring the deleted row back",
+    ids(c) === oldId && c.runsOf("listProc").length === 3, ids(c))
+  const d = deleting()
+  d.loadItems(false)
+  d.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "Doomed")), "")
+  check("nor one landing while the delete runs", ids(d) === oldId && d.listRereadOwed && d.runsOf("listProc").length === 2, ids(d))
+  d.onDeleteItemFinished(0, "", "")
+  check("the list is read again once the delete has finished", d.runsOf("listProc").length === 3 && !d.listRereadOwed, String(d.runs.length))
+  const r = deleting()
+  r.loadItems(false)
+  r.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "Doomed")), "")
+  r.onDeleteItemFinished(1, "", "refused")
+  check("a refused delete puts the row back and still reads again",
+    ids(r).split(",").sort().join() === [oldId, savedId].sort().join() && r.runsOf("listProc").length === 3, ids(r))
+  const k = deleting()
+  k.loadItems(false); k.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "Doomed")), "")
+  k.dropVaultState()
+  check("a lock drops the read owed after a delete", k.listRereadOwed === false)
+}
+{
+  // Nothing saved or deleted: a refresh is accepted as before, once.
+  const c = fixture()
+  c.loadItems(false); c.exit("listProc", 0, listOf(stored(oldId, "Old")), "")
+  c.loadItems(false); c.exit("listProc", 0, listOf(stored(oldId, "Renamed")), "")
+  check("with no save or delete about, a refresh is accepted as it was", names(c) === "Renamed" && c.runsOf("listProc").length === 2, names(c))
+}
+{
+  // The save's answer has no usable id (the unsanitized marker): the list is
+  // reloaded, and a detail open on the provisional row goes back to the list.
+  const c = saving(true)
+  finishSave(c, 0, Model.savedUnsanitizedMarker())
+  check("a save answered without an id returns the provisional detail to the list and reloads",
+    c.currentScreen === "main" && ids(c) === oldId && c.runsOf("listProc").length === 2, c.currentScreen + " " + ids(c))
+  const o = saving(false); o.currentScreen = "detail"; o.detailItem = { id: oldId }
+  finishSave(o, 0, Model.savedUnsanitizedMarker())
+  eq("a detail open on another item stays", o.currentScreen, "detail")
+  // Covered by the in-panel SSH approval: the screen to come back to is the list.
+  const s = saving(true); s.currentScreen = "sshApproval"; s.screenBeforeSshApproval = "detail"
+  finishSave(s, 0, "not json")
+  check("under an SSH approval, the approval stays up and returns to the list",
+    s.currentScreen === "sshApproval" && s.screenBeforeSshApproval === "main", s.currentScreen + "/" + s.screenBeforeSshApproval)
+}
+{
+  // The in-panel SSH approval covers the provisional detail as the save answers.
+  const c = saving(true); c.currentScreen = "sshApproval"; c.screenBeforeSshApproval = "detail"
+  finishSave(c, 0, savedAnswer)
+  check("under an SSH approval the save does not take the screen, and the handoff is kept by id only",
+    c.currentScreen === "sshApproval" && c.detailItem.id === provisionalId
+      && JSON.stringify(c.createdItemHandoff) === JSON.stringify({ from: provisionalId, to: savedId }), JSON.stringify(c.createdItemHandoff))
+  c.currentScreen = "detail"; c.resumeCreatedItem()      // dismissSshApproval(), then onCurrentScreenChanged
+  check("the detail moves to the saved item when it is back", c.detailItem.id === savedId && c.createdItemHandoff === null
+    && c.currentScreen === "detail", JSON.stringify(c.detailItem.id))
+  const g = saving(true); g.currentScreen = "sshApproval"; g.screenBeforeSshApproval = "detail"
+  finishSave(g, 0, savedAnswer)
+  g.items = Model.replaceItemById(g.items, savedId, null)   // a sync removed it meanwhile
+  g.currentScreen = "detail"; g.resumeCreatedItem()
+  eq("a saved item gone by then leaves the list, not a provisional detail", g.currentScreen, "main")
+  const l = saving(true); l.currentScreen = "sshApproval"; l.screenBeforeSshApproval = "detail"
+  finishSave(l, 0, savedAnswer); l.dropVaultState()
+  eq("a lock drops the handoff", l.createdItemHandoff, null)
+  const screenChanged = source.slice(source.indexOf("\n  onCurrentScreenChanged: {"), source.indexOf("function restoreScreenFocus"))
+  check("the screen change that brings the detail back runs the handoff",
+    /if \(currentScreen === "detail"\) resumeCreatedItem\(\)/.test(screenChanged), screenChanged)
 }
 
 check("the waiting reads are per-vault state a lock drops", /queuedReads = \(\{\}\)/.test(functionBody(source, "dropVaultState")))

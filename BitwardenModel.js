@@ -4034,18 +4034,28 @@ function replaceItemById(items, id, replacement) {
 
 function savedUnsanitizedMarker() { return SAVED_UNSANITIZED_MARKER }
 
-// Puts the item a save returned into the list. null if the output is not a
-// sanitized envelope; the caller then reloads.
-function spliceSavedItem(items, raw, replacingId) {
+// The one item a save printed, as a list row; null if the output is not a
+// sanitized envelope holding exactly one item with an id.
+function savedItemOf(raw) {
   var envelope = parseSanitizedEnvelope(raw)
   if (!envelope) return null
   var saved = envelope.items.concat(envelope.sshKeys)
   if (saved.length !== 1) return null
   var one = saved[0]
-  if (!one || !one.id) return null
+  return one && one.id ? one : null
+}
 
-  // On a create, `replacingId` is the provisional row's id.
-  return replaceItemById(items, replacingId ? String(replacingId) : one.id, one)
+// Puts the item a save returned into the list, once: in place of the row
+// under its own id (an edit, or a refresh that listed a new item before its
+// save answered) and, on a create, of the provisional row `replacingId`.
+// `saved` is the save's output or the row savedItemOf() read from it. null
+// if there is no such item; the caller then reloads.
+function spliceSavedItem(items, saved, replacingId) {
+  var one = saved && typeof saved === "object" ? saved : savedItemOf(saved)
+  if (!one || !one.id) return null
+  var rest = replacingId && String(replacingId) !== one.id
+    ? replaceItemById(items, String(replacingId), null) : items
+  return replaceItemById(rest, one.id, one)
 }
 
 // The item list and the SSH capability from one parse of the sanitized vault

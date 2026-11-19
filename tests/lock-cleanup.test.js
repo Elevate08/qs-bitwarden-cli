@@ -85,6 +85,11 @@ esac
   }
 }
 
+// What the list races keep between a request and its answer is per-vault.
+check("a lock drops reads still waiting for their process, a list read owed after a save, and a held detail handoff",
+  /queuedReads = \(\{\}\)/.test(body("dropVaultState")) && /listRereadOwed = false/.test(body("dropVaultState"))
+    && /createdItemHandoff = null/.test(body("dropVaultState")), body("dropVaultState"))
+
 // --- a suspend waits for the lock ---------------------------------------------------
 
 const sleepSignal = body("onSleepSignal")

@@ -172,6 +172,16 @@
   cleared. A read now waits for the run before it to exit and that run's
   answer is dropped; the same goes for a second organization's collections
   or a second item asked for while the first is being read.
+- **Saving a new item while the list refreshes.** If the refresh already
+  listed the new item when its save answered, the item appeared twice and a
+  detail opened on it stayed on its "saving" row, where nothing works; if a
+  list read from before the save answered after it, the new row vanished
+  again (and a deleted one could come back). The saved item now goes in
+  once, under the id the save answered with, and the open detail moves to
+  that id. A list read that started before a save or delete finished is not
+  shown: the list is read again. A save whose answer carries no item returns
+  that detail to the list, and when an SSH approval is covering the detail
+  as the save answers, the move happens once the detail is back.
 
 ## [1.13.1] - 2026-11-18
 

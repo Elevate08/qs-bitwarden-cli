@@ -756,6 +756,18 @@ Item {
   // Reads waiting for their process: { name: { epoch, launch } }
   // (startVaultRead()). Holds no vault data.
   property var queuedReads: ({})
+  // Saves and deletes that have finished, and the count when the list read
+  // in flight started: a list read that started before one of them finished
+  // is a snapshot from before it (listSnapshotOutdated()).
+  property int itemMutations: 0
+  property int listReadMutations: 0
+  // Such a snapshot arrived while a save or delete was still running: the
+  // list is read again when that finishes (settleOwedListRead()).
+  property bool listRereadOwed: false
+  // A new item's detail, covered by an SSH approval when its save answered:
+  // { from: provisional id, to: saved id }, taken up when the detail is back
+  // (resumeCreatedItem()).
+  property var createdItemHandoff: null
 
   // Processes whose collectors still need emptying after a lock; see
   // scrubSecretBuffers().
@@ -6712,6 +6724,8 @@ Item {
     sshAgentLoadFailStreak = 0
     readEpochs = ({})
     queuedReads = ({})
+    listRereadOwed = false
+    createdItemHandoff = null
     masterPassword = ""
     itemsLoadedAt = 0
     orgsLoadedAt = 0
@@ -6997,6 +7011,7 @@ Item {
       }
     }
     listAgentBranchActive = useAgent
+    listReadMutations = itemMutations
     listProc.environment = root.vaultListEnv(useAgent ? sshAgentLoadId : "")
     listProc.command = Model.sanitizedListCommand({ agentBranch: useAgent })
     listProc.running = true
@@ -7051,6 +7066,15 @@ Item {
 
     if (exitCode === 0) {
       listRetriedWithoutAgent = false
+      // A snapshot from before a save or delete finished would take the saved
+      // row away again, or bring the deleted one back, here and in the helper
+      // (whose items this read has already replaced): read again instead.
+      // What an accepted list settles (the sync, the spinner) waits for that.
+      if (!vaultReadIsStale("items") && listSnapshotOutdated()) {
+        if (pendingSave || pendingDelete) listRereadOwed = true
+        else startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
+        return
+      }
       onListFinished(rawJson)
       return
     }
@@ -7087,6 +7111,21 @@ Item {
       errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
       listReadError = errorMessage
     }
+  }
+
+  // Whether the list read that just ended started before a save or delete
+  // finished, or one is still running.
+  function listSnapshotOutdated() {
+    return listReadMutations !== itemMutations || !!pendingSave || !!pendingDelete
+  }
+
+  // A save or delete has finished: the list read its snapshot was held back
+  // for runs now, after it.
+  function settleOwedListRead() {
+    itemMutations += 1
+    if (!listRereadOwed || pendingSave || pendingDelete) return
+    listRereadOwed = false
+    loadItems(false)
   }
 
   // Rarely change; this panel's own changes pass `force`.
@@ -7311,6 +7350,7 @@ Item {
     if (screen !== "edit" && !(screen === "generator" && generatorReturnScreen === "edit")) {
       resetItemForm()
     }
+    if (currentScreen === "detail") resumeCreatedItem()
     restoreScreenFocus()
   }
 
@@ -8242,6 +8282,7 @@ Item {
     var save = pendingSave
     pendingSave = null
     if (vaultReadIsStale("itemSave")) return
+    settleOwedListRead()
 
     if (exitCode !== 0) {
       // Refused: restore the previous row (or remove a created one) and keep
@@ -8262,37 +8303,63 @@ Item {
 
     // Update the list from the saved item the command printed. If it was not
     // sanitized (marker) or not recognised (null), reload the full list.
-    var spliced = String(stdoutText).indexOf(Model.savedUnsanitizedMarker()) === 0
-      ? null : Model.spliceSavedItem(items, stdoutText, save ? save.id : "")
-    if (!spliced) {
-      // A provisional row must never survive a reload it is not part of.
-      if (save && save.isCreate) items = Model.replaceItemById(items, save.id, null)
+    var saved = String(stdoutText).indexOf(Model.savedUnsanitizedMarker()) === 0
+      ? null : Model.savedItemOf(stdoutText)
+    if (!saved) {
+      // A provisional row must never survive a reload it is not part of, and
+      // a detail open on it has no item to become: back to the list.
+      if (save && save.isCreate) {
+        items = Model.replaceItemById(items, save.id, null)
+        leaveProvisionalDetail(save.id)
+      }
       loadItems()
       return
     }
-    var before = items
-    items = spliced
+    // Once, under the id the vault gave it, whether or not a refresh listed
+    // it first.
+    items = Model.spliceSavedItem(items, saved, save ? save.id : "")
     itemsLoadedAt = Date.now()
     refreshDerivedFromItems()
-    if (save && save.isCreate) followCreatedItem(save.id, before)
+    if (save && save.isCreate) followCreatedItem(save.id, saved.id)
   }
 
   // A new item's provisional row can be opened while its save runs. Once the
   // server has given it an id that row is gone, so a detail still open on it
-  // is opened again on the saved item (the one row `before` did not have),
-  // as a click on its row would: any re-prompt and on-demand read apply.
-  function followCreatedItem(provisionalId, before) {
-    if (currentScreen !== "detail" || !detailItem || String(detailItem.id) !== String(provisionalId)) return
-    var known = ({})
-    for (var i = 0; i < before.length; i++) if (before[i]) known[String(before[i].id)] = true
-    var created = null
-    for (var j = 0; j < items.length; j++) {
-      if (!items[j] || known[String(items[j].id)]) continue
-      // More than one new row: no telling which is this save's.
-      if (created) return
-      created = items[j]
+  // is opened again on the saved item, the row under the id the save
+  // answered with, as a click on it would: any re-prompt and on-demand read
+  // apply. Under an SSH approval shown in the panel the detail is not on
+  // screen and opening would take the screen from the approval, so that
+  // waits until the detail is back.
+  function followCreatedItem(provisionalId, savedId) {
+    if (!detailItem || String(detailItem.id) !== String(provisionalId)) return
+    if (currentScreen === "sshApproval" && screenBeforeSshApproval === "detail") {
+      createdItemHandoff = { from: String(provisionalId), to: String(savedId) }
+      return
     }
+    if (currentScreen !== "detail") return
+    var created = Model.findItemById(items, String(savedId))
     if (created) openDetail(created, true)
+  }
+
+  // The detail is on screen again (onCurrentScreenChanged): a handoff held
+  // back under an SSH approval happens now, if the detail is still the
+  // provisional one. A saved item no longer listed leaves nothing to show.
+  function resumeCreatedItem() {
+    var handoff = createdItemHandoff
+    if (!handoff) return
+    createdItemHandoff = null
+    if (currentScreen !== "detail" || !detailItem || String(detailItem.id) !== handoff.from) return
+    var created = Model.findItemById(items, handoff.to)
+    if (created) openDetail(created, true)
+    else currentScreen = "main"
+  }
+
+  // A detail open on a provisional row that will get no saved item to move
+  // to: the list, now or when an SSH approval covering it is answered.
+  function leaveProvisionalDetail(provisionalId) {
+    if (!detailItem || String(detailItem.id) !== String(provisionalId)) return
+    if (currentScreen === "detail") currentScreen = "main"
+    else if (currentScreen === "sshApproval" && screenBeforeSshApproval === "detail") screenBeforeSshApproval = "main"
   }
 
   // The row disappears at once; if the vault refuses, it comes back. A
@@ -8345,9 +8412,11 @@ Item {
     // follows, so the helper would keep its secrets and go on serving them.
     if (exitCode === 0 && removal) forgetVaultItem(removal.id)
     if (vaultReadIsStale("itemDelete")) return
+    settleOwedListRead()
 
     if (exitCode === 0) {
-      // Nothing else changed; no reload needed.
+      // Nothing else changed; no reload needed, unless a list snapshot was
+      // held back for this delete (settleOwedListRead()).
       flashNotification("Item deleted")
       return
     }

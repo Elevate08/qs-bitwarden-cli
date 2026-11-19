@@ -28,7 +28,8 @@ const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submit
   "totpWanted", "helperRow", "readDetailSecret", "copyDetailField", "copyDetailFieldNow", "startEditItem",
   "copyDetailTotp", "copyTotpCodeNow", "applyTotpCode", "fetchTotp", "localTotp", "saveItemForm",
   "beginVaultRead", "beginEpochOperation", "invalidateEpochOperation", "vaultReadIsStale", "vaultProcBusy",
-  "startVaultRead", "supersededVaultRead"]
+  "startVaultRead", "supersededVaultRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem",
+  "leaveProvisionalDetail", "settleOwedListRead", "listSnapshotOutdated"]
 
 // `items`: the list (rows from Model.parseItems). `fallback`: no helper.
 function makeVault(items, fallback) {
@@ -43,7 +44,10 @@ function makeVault(items, fallback) {
     totpFollowupActive: false, totpFollowupItem: null, totpFollowupCode: "", totpCopyItemId: "",
     totpRequestItemId: "", totpQueuedItemId: "", totpQueuedEpoch: -1, totpRestartPending: false,
     getTotpProc: { running: false }, getItemProc: { running: false, command: [] },
-    readEpochs: {}, queuedReads: {},
+    readEpochs: {}, queuedReads: {}, itemMutations: 0, listReadMutations: 0, listRereadOwed: false,
+    createdItemHandoff: null, screenBeforeSshApproval: "main", pendingDelete: null, itemPayloadJson: "",
+    failedSave: null, itemsLoadedAt: 0, reloads: 0,
+    refreshDerivedFromItems() {}, loadItems() { v.reloads++ },
     pendingSave: null, formIsEditing: true, formItemId: "g1",
     queries: [], answers: [], copied: [], edits: [], flashes: [], formResets: 0, verify: null,
     closeFilterGroup() {}, learnFromPick() {},
