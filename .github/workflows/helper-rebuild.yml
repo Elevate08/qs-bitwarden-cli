@@ -73,13 +73,28 @@ jobs:
         env:
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
           ACTOR: ${{ github.actor }}
-        # The base branch's copy of the gate, not this PR's: a pull request
+          # The two commits judged, by id: a name such as origin/<base> could
+          # be a tag. agent-build.yml gives the script the same pair.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # The base commit's copy of the gate, not this PR's: a pull request
         # cannot edit the script that judges it, and in this job none of its
-        # code has run or will. (It could still edit this workflow, which is
-        # a diff a reviewer sees.) Anything but a clean "yes" reads as "no".
+        # code has run or will. (It could still edit this workflow; see
+        # REVIEWING.md.) Anything but a clean "yes" is "no", and a "no" the
+        # script did not give with its reason is explained here.
+        shell: bash
         run: |
-          verdict="$(git show "origin/${GITHUB_BASE_REF}:scripts/helper-autocommit-eligible.sh" 2>/dev/null | bash)" || true
-          [ "$verdict" = "yes" ] || verdict="no"
+          set -o pipefail
+          verdict="no"
+          if ! gate="$(git show "$BASE_SHA:scripts/helper-autocommit-eligible.sh")"; then
+            echo "::warning::not eligible: the gate script could not be read from the base commit $BASE_SHA"
+          elif ! answer="$(printf '%s\n' "$gate" | bash)"; then
+            echo "::warning::not eligible: the gate script failed before it answered"
+          elif [ "$answer" = "yes" ]; then
+            verdict="yes"
+          elif [ "$answer" != "no" ]; then
+            echo "::warning::not eligible: the gate script answered neither yes nor no"
+          fi
           echo "eligible=$verdict" >> "$GITHUB_OUTPUT"
 
   build:

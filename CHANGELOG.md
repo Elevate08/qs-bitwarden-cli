@@ -260,7 +260,14 @@
   build checks the pull request out only when the answer is yes, and the job
   that pushes requires that same answer. A pull request that is not eligible
   is no longer built by this workflow at all; `agent-build.yml` still reports
-  its drift.
+  its drift, and now asks the same script about the same two commits, with
+  the same actor, before its own build runs (it left out the actor, so a
+  Dependabot run's drift could pass unfixed, and it judged the merge
+  preview). Both name the base by commit id, so a tag called
+  `origin/<branch>` cannot stand in for the branch. A pull request that
+  changes anything under `scripts/` or `.github/` is now rebuilt by hand
+  too, a gate that could not run says why in its log, and the file names in
+  a refusal are printed shell-escaped.
 
 ### Fixed
 

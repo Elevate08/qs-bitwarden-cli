@@ -374,7 +374,8 @@ const gateJob = rebuildJobs.find(j => /^gate:/.test(j)) || ""
 // and it is the only place the gate runs: in the build job it ran after the
 // PR's build had, where that build could have answered for it.
 check("the commit gate is decided from the base branch's copy before any PR code runs",
-  /git show "origin\/\$\{GITHUB_BASE_REF\}:scripts\/helper-autocommit-eligible\.sh" 2>\/dev\/null \| bash/.test(gateJob)
+  /set -o pipefail\n[\s\S]*git show "\$BASE_SHA:scripts\/helper-autocommit-eligible\.sh"\)/.test(gateJob)
+    && /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/.test(gateJob)
     && !/\.\/|build-agent|cargo |container:|write|needs:/.test(gateJob)
     && /outputs:\n\s*eligible: \$\{\{ steps\.verdict\.outputs\.eligible \}\}/.test(gateJob)
     && !/helper-autocommit-eligible/.test(buildJob + commitJob),
@@ -410,9 +411,16 @@ check("dependency and toolchain changes are rebuilt by a person",
   /Cargo\.lock/.test(eligible) && /Cargo\.toml/.test(eligible) && /rust-toolchain\.toml/.test(eligible)
     && /dependabot/.test(eligible) && /IS_FORK/.test(eligible),
   "a lockfile change could be rebuilt and committed with nobody reading it")
+// The same script, given the same actor and the same two commits as the gate
+// job, and asked before this workflow's first run of the PR's build script.
+const gateInputs = text => ["IS_FORK", "ACTOR", "BASE_SHA", "HEAD_SHA"]
+  .map(name => (text.match(new RegExp(`\\n\\s+${name}: (\\$\\{\\{[^\\n]+\\}\\})\\n`)) || [])[1])
+const autofixStep = workflow.split(/\n      - /).find(step => /^name: [^\n]*\n\s+id: autofix\n/.test(step)) || ""
 check("agent build tolerates drift only where helper-rebuild fixes it",
-  /steps\.compare\.outputs\.autofix != 'yes'/.test(workflow)
-    && /helper-autocommit-eligible\.sh/.test(workflow),
+  /steps\.autofix\.outputs\.autofix != 'yes'/.test(workflow)
+    && /git show "\$BASE_SHA:scripts\/helper-autocommit-eligible\.sh"\)/.test(autofixStep)
+    && gateInputs(gateJob).every(Boolean) && gateInputs(autofixStep).join() === gateInputs(gateJob).join()
+    && workflow.indexOf(autofixStep) < workflow.indexOf("./scripts/build-agent.sh"),
   "the drift gate and the auto-commit disagree about which PRs are fixed")
 // Publishing from the tag announced a version before master contained it.
 check("the tag build leaves the release as a draft for master to publish",

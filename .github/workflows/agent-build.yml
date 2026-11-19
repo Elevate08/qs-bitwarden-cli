@@ -71,6 +71,34 @@ jobs:
           # Nothing here pushes; the build runs repository code.
           persist-credentials: false
 
+      - name: Decide whether helper-rebuild.yml will fix drift on this PR
+        id: autofix
+        if: github.event_name == 'pull_request'
+        env:
+          # What helper-rebuild.yml's gate job is given, so the two agree: the
+          # PR's own base and head commits (this job has the merge preview
+          # checked out, whose diff can differ) and the actor.
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ACTOR: ${{ github.actor }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # Before any step runs the PR's build script, so that build cannot
+        # answer for it. The base commit's copy, so a PR cannot edit its own
+        # verdict. Anything but a clean "yes" is "no": drift then fails below.
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          autofix="no"
+          if ! gate="$(git show "$BASE_SHA:scripts/helper-autocommit-eligible.sh")"; then
+            echo "::warning::the gate script could not be read from the base commit $BASE_SHA; drift will fail this job"
+          elif ! answer="$(printf '%s\n' "$gate" | bash)"; then
+            echo "::warning::the gate script failed before it answered; drift will fail this job"
+          elif [ "$answer" = "yes" ]; then
+            autofix="yes"
+          fi
+          echo "autofix=$autofix" >> "$GITHUB_OUTPUT"
+
       - name: Record the build environment
         run: |
           # These are the inputs that decide the output bytes. Printing them
@@ -102,13 +130,14 @@ jobs:
           QSBW_PINNED_BUILD: '1'
           ARCH: ${{ matrix.arch }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          AUTOFIX: ${{ steps.autofix.outputs.autofix }}
         # One pass (`--ci`): two builds from different paths must match; the
         # first is compared with the tracked bytes BEFORE it is written to bin/
         # as the candidate. Two builds for every helper instead of four. Exit 3
         # is drift: recorded here, fatal at the end, so a drifted build's
         # candidate is still uploaded. On a PR that helper-rebuild.yml commits
-        # for (see scripts/helper-autocommit-eligible.sh), drift is reported,
-        # not fatal; its commit re-runs this workflow.
+        # for (decided above, by scripts/helper-autocommit-eligible.sh), drift
+        # is reported, not fatal; its commit re-runs this workflow.
         shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -124,14 +153,7 @@ jobs:
           fi
           [ "$rc" -eq 3 ] || exit "$rc"
           echo "drift=yes" >> "$GITHUB_OUTPUT"
-          # The base branch's copy, as helper-rebuild.yml runs it, so the two
-          # agree and a PR cannot edit its own verdict. Not a PR: "no".
-          autofix="no"
-          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
-            autofix="$(git show "origin/${GITHUB_BASE_REF}:scripts/helper-autocommit-eligible.sh" 2>/dev/null | bash)"
-          fi
-          echo "autofix=$autofix" >> "$GITHUB_OUTPUT"
-          if [ "$autofix" = "yes" ]; then
+          if [ "$AUTOFIX" = "yes" ]; then
             echo "::notice::the helpers drifted; helper-rebuild.yml commits the rebuilt bytes to this branch"
           fi
           if [ "$IS_FORK" = "true" ]; then
@@ -174,7 +196,7 @@ jobs:
         # (they cannot receive CI's commit), as are PRs helper-rebuild.yml
         # fixes; tags and branch pushes always fail on drift.
         if: steps.compare.outputs.drift == 'yes'
-          && steps.compare.outputs.autofix != 'yes'
+          && steps.autofix.outputs.autofix != 'yes'
           && github.event.pull_request.head.repo.fork != true
         run: |
           echo "::error::the tracked binary does not match a clean build of this source."
