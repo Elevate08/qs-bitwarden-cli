@@ -10,13 +10,30 @@
 # only check against a malicious crate (which builds just as reproducibly as
 # an honest one).
 #
-# Two jobs, so the job that runs repository code never holds a write token:
+# Three jobs, in this order, so the verdict exists before any of the pull
+# request's code runs, and the job that runs repository code never holds a
+# token that can push:
 #
+#   gate    read-only, plain runner, runs no repository code: pipes the base
+#           branch's copy of the eligibility script into bash and publishes
+#           its yes/no as a job output. Nothing later can change that output.
 #   build   read-only, in the digest-pinned image, once per architecture on
-#           that architecture's runner: compare, rebuild, upload
-#   commit  contents/actions write, runs no repository code: verify each
-#           artifact's checksums, commit only bin/, push, then dispatch
-#           agent-build.yml so the new commit gets its own checks
+#           that architecture's runner. Does nothing unless the gate said
+#           yes; then: compare, rebuild, upload
+#   commit  contents/actions write, runs no repository code, and only when
+#           the gate said yes: verify each artifact's checksums, commit only
+#           bin/, push, then dispatch agent-build.yml so the new commit gets
+#           its own checks (two builds that must match each other and the
+#           committed bytes)
+#
+# What of the pull request still runs before a commit: for an eligible PR,
+# build-agent.sh (which the gate requires to be unchanged from the base
+# branch's history) has cargo compile the PR's Rust source. That source is
+# compiled, not executed: the gate has refused every file that runs during a
+# build (build.rs, Cargo manifests and lockfiles, .cargo, the toolchain file,
+# the build script), and the build runs no tests and none of the binaries.
+# A pull request that edits this workflow file runs its own edit; that is a
+# diff a reviewer sees.
 
 name: helper rebuild
 
@@ -32,9 +49,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  gate:
+    name: decide whether CI may commit rebuilt helpers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      eligible: ${{ steps.verdict.outputs.eligible }}
+
+    steps:
+      - name: Check out the pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the gate diffs the head against the base branch.
+          # The tree is only read by git here; nothing in it is run.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Ask the base branch's gate
+        id: verdict
+        env:
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ACTOR: ${{ github.actor }}
+          # The two commits judged, by id: a name such as origin/<base> could
+          # be a tag. agent-build.yml gives the script the same pair.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # The base commit's copy of the gate, not this PR's: a pull request
+        # cannot edit the script that judges it, and in this job none of its
+        # code has run or will. (It could still edit this workflow; see
+        # REVIEWING.md.) Anything but a clean "yes" is "no", and a "no" the
+        # script did not give with its reason is explained here.
+        shell: bash
+        run: |
+          set -o pipefail
+          verdict="no"
+          if ! [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::warning::not eligible: the event gave no base and head commit"
+          elif ! gate="$(git show "$BASE_SHA:scripts/helper-autocommit-eligible.sh")"; then
+            echo "::warning::not eligible: the gate script could not be read from the base commit $BASE_SHA"
+          elif ! answer="$(printf '%s\n' "$gate" | bash)"; then
+            echo "::warning::not eligible: the gate script failed before it answered"
+          elif [ "$answer" = "yes" ]; then
+            verdict="yes"
+          elif [ "$answer" != "no" ]; then
+            echo "::warning::not eligible: the gate script answered neither yes nor no"
+          fi
+          echo "eligible=$verdict" >> "$GITHUB_OUTPUT"
+
   build:
     name: rebuild the helpers if they drifted (${{ matrix.arch }})
+    needs: gate
     # Native on each architecture's runner, as agent-build.yml builds them.
+    # Not skipped as a job when the gate said no (each leg keeps its check
+    # name); its steps are, so an ineligible PR's code never runs here.
     strategy:
       fail-fast: true
       matrix:
@@ -48,36 +118,30 @@ jobs:
       image: rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
 
     steps:
+      - name: Note that this PR is not eligible for a CI commit
+        if: needs.gate.outputs.eligible != 'yes'
+        run: echo "::notice::not eligible for a CI commit (the gate job's log says why); agent build reports any drift"
+
       - name: Check out the pull request head
+        if: needs.gate.outputs.eligible == 'yes'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The head, not the merge preview: the bytes are committed onto it.
-          # Full history, for `git archive` and the diff against the base.
+          # Full history, for `git archive`.
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           # This job runs the PR's build; the token that can push lives in `commit`.
           persist-credentials: false
 
-      - name: Compare, and rebuild if eligible
+      - name: Compare, and rebuild on drift
         id: rebuild
+        if: needs.gate.outputs.eligible == 'yes'
         env:
           QSBW_PINNED_BUILD: '1'
           ARCH: ${{ matrix.arch }}
-          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
-          ACTOR: ${{ github.actor }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           if ./scripts/build-agent.sh --compare-tracked --arch "$ARCH"; then
-            echo "rebuilt=no" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # The base branch's copy of the gate, not this PR's: a pull request
-          # cannot edit the script that judges it. (It could still edit this
-          # workflow, which is a diff a reviewer sees.) Anything that stops
-          # it running reads as "no".
-          eligible="$(git show "origin/${GITHUB_BASE_REF}:scripts/helper-autocommit-eligible.sh" 2>/dev/null | bash)"
-          if [ "$eligible" != "yes" ]; then
-            echo "::notice::the $ARCH helpers drifted but this PR is not eligible for a CI commit; agent build reports it"
             echo "rebuilt=no" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -100,10 +164,12 @@ jobs:
 
   commit:
     name: commit the rebuilt helpers
-    needs: build
-    # Every leg finished; which of them rebuilt is read from the run's
-    # artifacts below (a matrix job has no per-leg outputs).
-    if: needs.build.result == 'success'
+    needs: [gate, build]
+    # The gate's own verdict, not anything the build job reported: that job
+    # compiled the PR's source. Every leg finished; which of them rebuilt is
+    # read from the run's artifacts below (a matrix job has no per-leg
+    # outputs).
+    if: needs.gate.outputs.eligible == 'yes' && needs.build.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
       # Push bin/ to this PR's branch, list this run's artifacts, and dispatch

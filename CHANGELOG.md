@@ -252,6 +252,22 @@
 - **Suggestions for the focused window cost less on a large vault.** Matching
   5,000 items against a window title took about 14.5 ms and takes about
   9 ms (2,000 items: 6.7 ms to 5.3 ms); the suggestions are the same.
+- **CI decides whether it may commit rebuilt helpers before it runs anything
+  from the pull request.** `helper-rebuild.yml` asked the base branch's
+  eligibility script only after the pull request's own build had run in the
+  same job, so that build could have answered for it. The script now runs
+  first, in a read-only job that runs nothing from the pull request; the
+  build checks the pull request out only when the answer is yes, and the job
+  that pushes requires that same answer. A pull request that is not eligible
+  is no longer built by this workflow at all; `agent-build.yml` still reports
+  its drift, and now asks the same script about the same two commits, with
+  the same actor, before its own build runs (it left out the actor, so a
+  Dependabot run's drift could pass unfixed, and it judged the merge
+  preview). Both name the base by commit id, so a tag called
+  `origin/<branch>` cannot stand in for the branch. A pull request that
+  changes anything under `scripts/` or `.github/` is now rebuilt by hand
+  too, a gate that could not run says why in its log, and the file names in
+  a refusal are printed shell-escaped.
 
 ### Fixed
 
