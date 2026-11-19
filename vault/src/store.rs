@@ -21,6 +21,27 @@ const SECRET_PATHS: &[&[&str]] = &[
     &["identity", "licenseNumber"],
 ];
 
+/// An SSH private key, wherever `bw` or the panel's filter has put one. No
+/// request reads it back, so it is removed before an item is held as well:
+/// the SSH agent gets its keys from the vault read's other branch, never
+/// from here.
+const SSH_PRIVATE_KEY_PATHS: &[&[&str]] = &[&["sshKey", "privateKey"], &["privateKey"]];
+
+/// The whole of a vault read, and of one `sshKeys` record in it: what the
+/// panel's jq filter (BitwardenModel.js SANITIZED_ITEMS_FILTER) writes.
+const VAULT_KEYS: &[&str] = &["sshCapability", "items", "sshKeys"];
+const SSH_RECORD_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "type",
+    "organizationId",
+    "folderId",
+    "favorite",
+    "reprompt",
+    "publicKey",
+    "fingerprint",
+];
+
 /// A value the panel may ask for one at a time (`field`, `copyField`): the
 /// secrets of `SECRET_PATHS` it shows or copies, and hidden custom fields. The
 /// TOTP key and passkeys are not on the list: the code is computed here, and
@@ -128,8 +149,8 @@ pub fn extract_session(raw: &str) -> Option<Zeroizing<String>> {
 
 struct Held {
     id: String,
-    /// The item exactly as `bw` returned it (sanitized), for the detail and
-    /// edit views and for copying.
+    /// The item as `bw` returned it (sanitized, and without an SSH private
+    /// key), for the detail and edit views and for copying.
     full: Zeroizing<String>,
     /// Lowercased search text, fields separated by NUL.
     haystack: Zeroizing<String>,
@@ -281,33 +302,41 @@ impl Store {
     /// Takes a sanitized vault read (`{sshCapability, items, sshKeys}`, the
     /// panel's jq filter output) and returns it with every secret removed.
     /// `replace` swaps the whole store (a list read); otherwise the items are
-    /// added or updated (a save). `None`: not a vault read, forward as is.
+    /// added or updated (a save). `None`: not a vault read of that shape.
+    /// Nothing of it may be forwarded, and the store is left as it was.
     pub fn strip_vault(&mut self, raw: &str, replace: bool) -> Option<Zeroizing<String>> {
         let mut vault: Value = serde_json::from_str(raw).ok()?;
-        let object = vault.as_object_mut()?;
+        if !is_vault_read(&vault) {
+            wipe_value(&mut vault);
+            return None;
+        }
         if replace {
             self.items.clear();
             self.index.clear();
         }
-        if let Some(Value::Array(items)) = object.get_mut("items") {
+        if let Some(Value::Array(items)) = vault.get_mut("items") {
             for item in items.iter_mut() {
                 if let Value::Object(map) = item {
+                    for path in SSH_PRIVATE_KEY_PATHS {
+                        remove(map, path);
+                    }
                     self.hold(map);
                     strip_item(map);
                 }
             }
         }
-        if let Some(Value::Array(keys)) = object.get("sshKeys") {
-            for key in keys {
+        if let Some(Value::Array(keys)) = vault.get_mut("sshKeys") {
+            for key in keys.iter_mut() {
                 if let Value::Object(map) = key {
-                    // Public records only: held for search, nothing to strip.
-                    self.hold(&mut map.clone());
+                    // Public records: cut down to that, then held for search.
+                    public_ssh_record(map);
+                    self.hold(map);
                 }
             }
         }
-        let out = Zeroizing::new(serde_json::to_string(&vault).ok()?);
+        let out = serde_json::to_string(&vault).ok().map(Zeroizing::new);
         wipe_value(&mut vault);
-        Some(out)
+        out
     }
 
     fn hold(&mut self, item: &mut Map<String, Value>) {
@@ -336,6 +365,38 @@ impl Store {
             }
         }
     }
+}
+
+/// Exactly the shape of a vault read: the three keys and no other, `items`
+/// an array of objects, `sshKeys` (if there) the same, `sshCapability` (if
+/// there) a string. Anything else may be decrypted items in a form
+/// `strip_item` would not recognise.
+fn is_vault_read(vault: &Value) -> bool {
+    let objects = |value: &Value| {
+        value
+            .as_array()
+            .is_some_and(|list| list.iter().all(Value::is_object))
+    };
+    let Some(object) = vault.as_object() else {
+        return false;
+    };
+    object.keys().all(|key| VAULT_KEYS.contains(&key.as_str()))
+        && object.get("items").is_some_and(objects)
+        && object.get("sshKeys").is_none_or(objects)
+        && object.get("sshCapability").is_none_or(Value::is_string)
+}
+
+/// Keeps the public fields of an `sshKeys` record, and those only as plain
+/// values: a record that came with more (a whole SSH item, say) loses it.
+fn public_ssh_record(record: &mut Map<String, Value>) {
+    record.retain(|key, value| {
+        let keep =
+            SSH_RECORD_KEYS.contains(&key.as_str()) && !value.is_object() && !value.is_array();
+        if !keep {
+            wipe_value(value);
+        }
+        keep
+    });
 }
 
 fn get<'a>(item: &'a Map<String, Value>, path: &[&str]) -> Option<&'a Value> {
@@ -446,46 +507,77 @@ fn strip_item(item: &mut Map<String, Value>) {
     for path in SECRET_PATHS {
         remove(item, path);
     }
-    if let Some(Value::Object(card)) = item.get_mut("card") {
-        if let Some(Value::String(number)) = card.get_mut("number") {
-            let keep = number
-                .chars()
-                .rev()
-                .take(4)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<String>();
-            wipe_string(number);
-            *number = keep;
+    match get(item, &["card", "number"]) {
+        Some(Value::String(_)) => {
+            if let Some(Value::String(number)) =
+                item.get_mut("card").and_then(|card| card.get_mut("number"))
+            {
+                let keep = number
+                    .chars()
+                    .rev()
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<String>();
+                wipe_string(number);
+                *number = keep;
+            }
         }
+        Some(Value::Null) | None => {}
+        // A number that is not text cannot be cut to its last four.
+        Some(_) => remove(item, &["card", "number"]),
     }
-    if let Some(Value::Array(fields)) = item.get_mut("fields") {
-        for field in fields.iter_mut() {
-            // Hidden custom fields (type 1) lose their value.
-            if field.get("type").and_then(Value::as_u64) != Some(1) {
-                continue;
-            }
-            if let Value::Object(map) = field {
-                if let Some(mut value) = map.remove("value") {
-                    wipe_value(&mut value);
-                }
-            }
-        }
+    match item.get_mut("fields") {
+        Some(Value::Array(fields)) => fields.iter_mut().for_each(strip_field),
+        Some(Value::Null) | None => {}
+        // Not a list of fields, so nothing says which of it is hidden.
+        Some(_) => remove(item, &["fields"]),
     }
     item.insert("qsbwHeld".into(), Value::Object(held));
 }
 
+/// A custom field keeps its value only if it is plainly text (type 0), a
+/// boolean (2) or linked (3). A hidden one (1) loses it, and so does one
+/// whose type is missing or written any other way; an entry that is not a
+/// field at all is blanked in place, so the ones after it keep the positions
+/// `customField:<n>` names.
+fn strip_field(field: &mut Value) {
+    let Value::Object(map) = field else {
+        wipe_value(field);
+        *field = Value::Null;
+        return;
+    };
+    if matches!(map.get("type").and_then(Value::as_u64), Some(0 | 2 | 3)) {
+        return;
+    }
+    if let Some(mut value) = map.remove("value") {
+        wipe_value(&mut value);
+    }
+}
+
+/// Removes what is at `path`. A parent that is there but is not an object
+/// goes whole: the secret could be anywhere in it.
 fn remove(item: &mut Map<String, Value>, path: &[&str]) {
     let Some((last, parents)) = path.split_last() else {
         return;
     };
     let mut map = item;
     for key in parents {
-        match map.get_mut(*key) {
-            Some(Value::Object(next)) => map = next,
-            _ => return,
+        match map.get(*key) {
+            Some(Value::Object(_)) => {}
+            Some(Value::Null) | None => return,
+            Some(_) => {
+                if let Some(mut value) = map.remove(*key) {
+                    wipe_value(&mut value);
+                }
+                return;
+            }
         }
+        let Some(Value::Object(next)) = map.get_mut(*key) else {
+            return;
+        };
+        map = next;
     }
     if let Some(mut value) = map.remove(*last) {
         wipe_value(&mut value);
@@ -721,6 +813,126 @@ mod tests {
         store.strip_vault(&saved.to_string(), true).unwrap();
         assert!(store.item("c").is_none());
         assert!(store.strip_vault("not json", true).is_none());
+    }
+
+    #[test]
+    fn a_read_of_another_shape_is_refused_and_empties_nothing() {
+        let mut store = Store::default();
+        store.strip_vault(&vault(), true).unwrap();
+        for raw in [
+            r#"{"id":"x","login":{"password":"SECRET"}}"#,
+            r#"{"items":{"id":"x","login":{"password":"SECRET"}}}"#,
+            r#"{"items":[[{"id":"x","notes":"SECRET"}]],"sshKeys":[]}"#,
+            r#"{"items":[],"sshKeys":[],"data":[{"login":{"password":"SECRET"}}]}"#,
+            r#"{"items":[],"sshKeys":{"id":"s","privateKey":"SECRET"}}"#,
+            r#"{"items":[],"sshKeys":["SECRET"]}"#,
+            r#"{"items":[],"sshCapability":{"notes":"SECRET"}}"#,
+            r#"{"sshKeys":[]}"#,
+            r#"[{"id":"x","login":{"password":"SECRET"}}]"#,
+            r#""SECRET""#,
+        ] {
+            for replace in [true, false] {
+                assert!(store.strip_vault(raw, replace).is_none(), "{raw}");
+            }
+        }
+        // A refused read is not a vault: what was held stays held.
+        assert!(store.item("a").unwrap().contains("hunter2"));
+        assert_eq!(store.search("  ").len(), 5);
+    }
+
+    #[test]
+    fn an_ssh_private_key_reaches_neither_the_panel_nor_the_store() {
+        let mut store = Store::default();
+        let read = serde_json::json!({
+            "items": [
+                { "id": "x", "type": 5, "name": "Stray", "privateKey": "SECRET-TOP",
+                  "sshKey": { "privateKey": "SECRET-E", "publicKey": "ssh-ed25519 BBBB" } },
+                { "id": "y", "type": 1, "name": "Odd", "sshKey": ["SECRET-LIST"] }
+            ],
+            "sshKeys": [
+                { "id": "s", "name": "Laptop", "type": 5, "organizationId": null, "folderId": null,
+                  "favorite": true, "reprompt": 0, "publicKey": "ssh-ed25519 AAAA", "fingerprint": "SHA256:x",
+                  "notes": "SECRET-NOTES", "privateKey": "SECRET-RAW",
+                  "sshKey": { "privateKey": "SECRET-NESTED" } },
+                { "id": "t", "name": { "privateKey": "SECRET-NAME" }, "type": 5 }
+            ]
+        })
+        .to_string();
+        let out = store.strip_vault(&read, true).unwrap();
+        assert!(
+            !out.contains("SECRET"),
+            "reached the panel: {}",
+            out.as_str()
+        );
+        // `item` hands the held copy to the panel, so it is gone there too.
+        for id in ["x", "y", "s", "t"] {
+            let held = store.item(id).unwrap();
+            assert!(!held.contains("SECRET"), "{id} is held as {held}");
+        }
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["items"][0]["sshKey"]["publicKey"],
+            "ssh-ed25519 BBBB"
+        );
+        assert_eq!(
+            parsed["sshKeys"][0],
+            serde_json::json!({ "id": "s", "name": "Laptop", "type": 5, "organizationId": null,
+                                "folderId": null, "favorite": true, "reprompt": 0,
+                                "publicKey": "ssh-ed25519 AAAA", "fingerprint": "SHA256:x" })
+        );
+        assert_eq!(
+            parsed["sshKeys"][1],
+            serde_json::json!({ "id": "t", "type": 5 })
+        );
+        assert_eq!(store.search("sha256:x"), ["s"]);
+    }
+
+    #[test]
+    fn a_secret_in_an_unexpected_place_inside_an_item_is_dropped() {
+        let mut store = Store::default();
+        let read = serde_json::json!({ "items": [
+            { "id": "l", "type": 1, "name": "List login", "login": [{ "password": "SECRET-LOGIN" }] },
+            { "id": "c", "type": 3, "name": "Card", "card": { "number": 4111111111111111u64, "code": 123 } },
+            { "id": "d", "type": 3, "name": "Card text", "card": "SECRET-CARD" },
+            { "id": "i", "type": 4, "name": "Me", "identity": ["SECRET-IDENTITY"] },
+            { "id": "f", "type": 1, "name": "Fields", "fields": [
+                { "name": "text", "value": "plain", "type": 0 },
+                { "name": "flag", "value": "true", "type": 2 },
+                { "name": "hidden as text", "value": "SECRET-STRING-TYPE", "type": "1" },
+                { "name": "hidden as float", "value": "SECRET-FLOAT-TYPE", "type": 1.0 },
+                { "name": "untyped", "value": "SECRET-UNTYPED" },
+                "SECRET-BARE",
+                { "name": "linked", "type": 3, "linkedId": 101 }
+            ] },
+            { "id": "g", "type": 1, "name": "Field map",
+              "fields": { "0": { "name": "pin", "value": "SECRET-MAP", "type": 1 } } },
+            { "id": "n", "type": 2, "name": "Empty", "login": null, "card": null, "identity": null,
+              "fields": null, "sshKey": null },
+            { "id": "e", "type": 3, "name": "Blank card", "card": { "number": null, "code": null } }
+        ], "sshKeys": [] })
+        .to_string();
+        let out = store.strip_vault(&read, true).unwrap();
+        assert!(
+            !out.contains("SECRET") && !out.contains("4111111111111111") && !out.contains("123"),
+            "reached the panel: {}",
+            out.as_str()
+        );
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        let fields = &parsed["items"][4]["fields"];
+        // Positions hold, since `customField:<n>` counts them.
+        assert_eq!(fields.as_array().unwrap().len(), 7);
+        assert_eq!(fields[0]["value"], "plain");
+        assert_eq!(fields[1]["value"], "true");
+        assert_eq!(fields[2]["name"], "hidden as text");
+        assert_eq!(fields[5], Value::Null);
+        assert_eq!(fields[6]["linkedId"], 101);
+        // Nulls are what `bw` writes for the parts an item does not have.
+        assert_eq!(parsed["items"][6]["login"], Value::Null);
+        assert_eq!(parsed["items"][6]["qsbwHeld"]["password"], false);
+        assert!(parsed["items"][7]["card"]
+            .as_object()
+            .unwrap()
+            .contains_key("number"));
     }
 
     #[test]

@@ -64,7 +64,19 @@ output is handed back as it is, except:
   by the helper and replaced by a placeholder;
 - the item list and a saved item are kept, and handed back with their
   secrets removed (the shell then asks for one value at a time: `field` to
-  show it, `copyField` to copy it, `item` to edit);
+  show it, `copyField` to copy it, `item` to edit). A read that is not
+  exactly the shape the panel's filter writes -- another top-level key, or
+  an item list that is not a list of items -- is refused whole: the shell
+  gets an empty answer, as for a failed read, and what the helper held stays.
+  Inside an item, a secret's place holding something unexpected (a `login`
+  that is a list, a custom field with no recognisable type) is dropped
+  rather than passed on. The helper knows the secret fields listed above; a
+  field Bitwarden adds later is not among them until the helper learns it;
+- an SSH private key is removed from that read, and is not kept by this
+  helper either: the SSH agent gets its keys from a separate branch of the
+  same `bw` pipeline ([docs/ssh-agent.md](ssh-agent.md)), which writes them
+  straight to the agent, so they are never in this helper's memory or the
+  shell's;
 - the master password a quick-unlock method opens is kept, and the shell gets
   a reference to it;
 - a password or PIN typed into pinentry (below) is kept, and the shell gets
