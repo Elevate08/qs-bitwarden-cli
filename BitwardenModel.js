@@ -6928,13 +6928,10 @@ function sshAgentPromptView(message, approvalWindowSec) {
 // -------------------------------------------------------------------------
 
 // How long a prompt may sit unanswered before a desktop notification repeats
-// it, and how soon after a notification appears its actions are ignored (the
-// card's armDelayMs, for the same reason: a click meant for another window).
+// it.
 var SSH_AGENT_NOTIFY_DELAY_MS = 8000
-var SSH_AGENT_NOTIFY_ARM_MS = 800
 
 function sshAgentNotifyDelayMs() { return SSH_AGENT_NOTIFY_DELAY_MS }
-function sshAgentNotifyArmMs() { return SSH_AGENT_NOTIFY_ARM_MS }
 
 // Notification bodies are markup on most daemons; the text is already stripped
 // of invisible characters (visibleText), so only the markup characters remain.
@@ -6944,8 +6941,11 @@ function notifyEscape(text) {
 }
 
 // The notify-send argv for one signing prompt: what the card shows (key,
-// fingerprint, program, operation), nothing else. No secret exists at this
-// point and none is added. Everything after "--" is data, never an option.
+// fingerprint, program name and path with the "not verified" note,
+// operation), nothing else. No secret exists at this point and none is added.
+// Everything after "--" is data, never an option. It offers Deny and no way
+// to approve: a notification daemon lets any program running as you press an
+// action, so approving stays on the card.
 function sshAgentNotifyCommand(view, remainingSec) {
   if (!view || !isRequestId(view.requestId)) return []
   var lines = []
@@ -6953,28 +6953,28 @@ function sshAgentNotifyCommand(view, remainingSec) {
   lines.push(notifyEscape(key) + (view.fingerprint ? " (" + notifyEscape(view.fingerprint) + ")" : ""))
   var program = view.processName || view.processPath || "unknown program"
   lines.push("Program: " + notifyEscape(program))
+  if (view.processPath) lines.push(notifyEscape(view.processPath))
+  if (view.provenanceNote) lines.push(notifyEscape(view.provenanceNote))
   if (view.operationLabel) lines.push(notifyEscape(view.operationLabel))
   if (view.destinationLabel) lines.push(notifyEscape(view.destinationLabel))
   if (view.forwardedWarning) lines.push(notifyEscape(view.forwardedWarning))
+  lines.push("To approve, answer on the Bitwarden card.")
   var seconds = Math.floor(Number(remainingSec))
   if (!isFinite(seconds) || seconds < 5) seconds = 5
   return ["notify-send", "--app-name=Bitwarden", "--urgency=normal", "--icon=dialog-password",
     "--expire-time=" + (seconds * 1000),
-    "--action=allow=Allow once", "--action=deny=Deny", "--wait",
+    "--action=deny=Deny", "--wait",
     "--", "SSH signing request", lines.join("\n")]
 }
 
-// What a finished notify-send means. Only the "allow" action approves, and not
-// within the arm delay of its appearing ("early": show it again). A deny
-// action, a dismissal or an expiry (empty output, exit 0) all deny. A failed
-// notify-send (no daemon, no libnotify) decides nothing: "none".
-function sshAgentNotifyDecision(exitCode, stdout, elapsedMs) {
+// What a finished notify-send means: "deny" for the Deny action, and "none"
+// for everything else. A dismissal, an expiry, a suppressed notification
+// (empty output, exit 0), any other output and a failed notify-send (no
+// daemon, no libnotify) decide nothing; the request stays on the card until
+// its own deadline. Nothing a notification returns approves.
+function sshAgentNotifyDecision(exitCode, stdout) {
   if (exitCode !== 0) return "none"
-  var action = String(stdout || "").trim()
-  if (action === "allow") {
-    return Number(elapsedMs) >= SSH_AGENT_NOTIFY_ARM_MS ? "allow" : "early"
-  }
-  return "deny"
+  return String(stdout || "").trim() === "deny" ? "deny" : "none"
 }
 
 // The requests a terminal may list, from the raw companion messages. Signing
@@ -7640,7 +7640,7 @@ var SETTINGS_SCHEMA = [
   { key: "sshAgentApprovalPopup", group: "sshAgent", type: "bool", label: "Use centered approval popup", defaultValue: true,
     description: "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel." },
   { key: "sshAgentNotifyFallback", group: "sshAgent", type: "bool", label: "Notify when a prompt goes unanswered", defaultValue: true,
-    description: "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with Allow once and Deny buttons. Dismissing or ignoring the notification denies the request. Needs notify-send." },
+    description: "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with a Deny button. Approving is done on the card; dismissing or ignoring the notification leaves the request waiting there. Needs notify-send." },
   { key: "sshAgentTerminalApproval", group: "sshAgent", type: "bool", label: "Allow approving from a terminal", defaultValue: false,
     description: "Let 'sshReply <id> allow' (omarchy-shell IPC) approve a signing request. Off by default: any program running as you could then approve its own request. Listing requests and denying them is always allowed." },
   { key: "sshAgentApprovalWindowSec", group: "sshAgent", type: "int", label: "Approve for this long", unit: "seconds",

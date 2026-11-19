@@ -2815,9 +2815,10 @@ Item {
   // not drawn at all. (A shell that is not running has no agent either: the
   // helper is its child and exits with it, so there is nothing to ask.)
   // Only signing prompts get one; an unlock needs a secret typed, which a
-  // notification must never collect.
+  // notification must never collect. The notification can deny and nothing
+  // else: its actions can be pressed by any program running as the user
+  // (through the notification daemon), so approving stays on the card.
   property int sshNotifyRequestId: -1
-  property double sshNotifyStartedMs: 0
 
   function armSshNotifyFallback() {
     stopSshNotifyFallback()
@@ -2840,7 +2841,6 @@ Item {
     var command = Model.sshAgentNotifyCommand(root.sshPrompt, remaining)
     if (command.length === 0) return
     root.sshNotifyRequestId = root.sshPrompt.requestId
-    root.sshNotifyStartedMs = Date.now()
     sshNotifyProc.command = command
     sshNotifyProc.running = true
   }
@@ -2850,10 +2850,9 @@ Item {
     root.sshNotifyRequestId = -1
     // Answered elsewhere, or a different request is up now.
     if (id < 0 || !root.sshPrompt || root.sshPrompt.requestId !== id) return
-    var decision = Model.sshAgentNotifyDecision(exitCode, stdout, Date.now() - root.sshNotifyStartedMs)
-    if (decision === "allow") approveSshRequest(0)
-    else if (decision === "deny") denyCurrentSshPrompt()
-    else if (decision === "early") showSshNotification()
+    // Only the Deny action decides. Dismissed, expired or suppressed, the
+    // request stays on the card and nothing is counted toward the cooldown.
+    if (Model.sshAgentNotifyDecision(exitCode, stdout) === "deny") denyCurrentSshPrompt()
   }
 
   Timer {

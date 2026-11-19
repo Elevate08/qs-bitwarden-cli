@@ -58,9 +58,11 @@
   were. It opens from the search box as well.
 - **A desktop notification for an SSH request nobody answered.** A signing
   request still waiting about eight seconds after its card appeared is repeated
-  through `notify-send` with Allow once and Deny. It shows what the card shows
-  and nothing secret; Allow once opens no grant and is ignored within the
-  card's arming delay; dismissing, expiring or Deny denies.
+  through `notify-send` with a Deny button. It shows what the card shows
+  (the key, the program's name and full path with the "not verified" note,
+  what is being signed) and nothing secret. It cannot approve: that stays on
+  the card. Deny denies; dismissing it or letting it expire leaves the request
+  on the card and does not count toward the cooldown.
   **Notify when a prompt goes unanswered** (`sshAgentNotifyFallback`, on by
   default) turns it off.
 - **Answering SSH requests from a terminal.** `omarchy-shell
@@ -70,6 +72,22 @@
   (`sshAgentTerminalApproval`, off by default, since any program running as you
   could otherwise approve its own request); deny is always available and an
   unlock request can only be denied.
+
+### Security
+
+- **The SSH notification can no longer approve a signature.** As first
+  written on this branch (never released), the notification for an unanswered
+  signing request had an Allow once button. A notification daemon lets any
+  program running as you press a notification's buttons (`makoctl invoke`,
+  `dunstctl action`, the Omarchy shell's `notifications` IPC), so a program
+  could ask for a signature, wait for the notification and approve its own
+  request with nobody at the screen. The notification now has Deny only, and
+  nothing it returns approves; approving is done on the card. It also names
+  the program by its full path with the "not verified" note, as the card
+  does, where it showed only the file name. A notification that is
+  dismissed, expires or is dropped by do-not-disturb used to deny the request
+  and count toward the five-minute cooldown, which any program running as you
+  could cause; it now leaves the request on the card.
 
 ### Fixed
 

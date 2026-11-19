@@ -25,7 +25,11 @@ const view = Model.sshAgentPromptView(raw, 120)
 
 const cmd = Model.sshAgentNotifyCommand(view, 100)
 eq("uses notify-send", cmd[0], "notify-send")
-check("offers Allow once and Deny", cmd.includes("--action=allow=Allow once") && cmd.includes("--action=deny=Deny"))
+check("offers Deny", cmd.includes("--action=deny=Deny"))
+// Any program running as the user can press a notification action through the
+// daemon, so the notification must have nothing that approves.
+check("offers no action but Deny (nothing that approves)",
+  cmd.filter(a => /^(--action|-A)/.test(a)).join("|") === "--action=deny=Deny" && !/allow|approve/i.test(cmd.slice(0, cmd.indexOf("--")).join(" ")))
 check("waits for the answer", cmd.includes("--wait"))
 check("expires with the request", cmd.includes("--expire-time=100000"))
 const sep = cmd.indexOf("--")
@@ -33,6 +37,15 @@ check("title and body come after a lone --", sep > 0 && cmd.length === sep + 3)
 const body = cmd[cmd.length - 1]
 check("body names the key, fingerprint and program (no pid, as on the card)",
   body.includes("SHA256:abc") && body.includes("ssh") && !body.includes("4242"))
+const tmpView = Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/tmp/x/git" }), 120)
+const tmpBody = Model.sshAgentNotifyCommand(tmpView, 100).pop()
+check("body shows the full program path, as the card does", tmpBody.split("\n").includes("/tmp/x/git") && body.split("\n").includes("/usr/bin/ssh"))
+check("body carries the card's not-verified note",
+  tmpView.provenanceNote !== "" && tmpBody.includes(tmpView.provenanceNote) && /not verified/.test(tmpBody))
+check("body sends approval to the card", /answer on the Bitwarden card/.test(body))
+check("a path is escaped as markup too",
+  Model.sshAgentNotifyCommand(Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/tmp/<b>/git" }), 120), 100)
+    .pop().includes("/tmp/&lt;b&gt;/git"))
 check("body is escaped as markup", body.includes("&lt;key&gt; &amp; co") && !body.includes("<key>"))
 check("a bad request id builds nothing", Model.sshAgentNotifyCommand({ requestId: -1 }, 100).length === 0)
 check("a forwarded request carries its warning",
@@ -44,13 +57,18 @@ check("expiry never drops below five seconds", Model.sshAgentNotifyCommand(view,
 // Notification decision
 // -------------------------------------------------------------------------
 
-const arm = Model.sshAgentNotifyArmMs()
-eq("allow after the arm delay approves", Model.sshAgentNotifyDecision(0, "allow\n", arm + 1), "allow")
-eq("allow inside the arm delay is ignored and re-shown", Model.sshAgentNotifyDecision(0, "allow\n", 100), "early")
-eq("deny action denies", Model.sshAgentNotifyDecision(0, "deny\n", 5000), "deny")
-eq("dismiss or expiry (no output) denies", Model.sshAgentNotifyDecision(0, "", 5000), "deny")
-eq("unknown output denies", Model.sshAgentNotifyDecision(0, "0\n", 5000), "deny")
-eq("a failed notify-send decides nothing", Model.sshAgentNotifyDecision(1, "", 5000), "none")
+eq("a stale or foreign allow decides nothing", Model.sshAgentNotifyDecision(0, "allow\n"), "none")
+eq("no elapsed time makes an allow count", Model.sshAgentNotifyDecision(0, "allow\n", 60000), "none")
+check("the decision is never an approval",
+  ["allow", "allow\n", "Allow once", "approve", "default", "0", "", "deny\nallow"].every(out =>
+    [0, 1, 2].every(code => ["deny", "none"].includes(Model.sshAgentNotifyDecision(code, out)))))
+eq("deny action denies", Model.sshAgentNotifyDecision(0, "deny\n"), "deny")
+eq("dismiss, expiry or suppression (no output) leaves the request pending", Model.sshAgentNotifyDecision(0, ""), "none")
+eq("unknown output leaves the request pending", Model.sshAgentNotifyDecision(0, "0\n"), "none")
+eq("a failed notify-send decides nothing", Model.sshAgentNotifyDecision(1, ""), "none")
+eq("a failed notify-send that printed deny decides nothing", Model.sshAgentNotifyDecision(1, "deny\n"), "none")
+check("the arm delay that only guarded the notification's allow is gone",
+  typeof Model.sshAgentNotifyArmMs === "undefined" && !/sshNotifyStartedMs|NOTIFY_ARM/.test(service + readPluginSource("BitwardenModel.js")))
 check("the notification waits before appearing", Model.sshAgentNotifyDelayMs() >= 3000)
 
 // -------------------------------------------------------------------------
@@ -90,6 +108,18 @@ check("the notification fallback is armed only for signing prompts (showSshAppro
 check("dismissing the prompt stops the notification", /stopSshNotifyFallback\(\)/.test(body_("dismissSshApproval")))
 check("a notification answer applies only to the request it was raised for",
   /root\.sshPrompt\.requestId !== id/.test(body_("onSshNotifyExited")))
+// The exit handler alone (body_ runs on into the Timer and Process after it).
+const notifyExit = body_("onSshNotifyExited").split("\n  Timer {")[0]
+check("a notification answer cannot approve",
+  notifyExit !== "" && !/approve/i.test(body_("onSshNotifyExited"))
+  && !/approve/i.test(body_("showSshNotification")))
+check("only the deny decision denies; anything else leaves the request pending and uncounted",
+  /sshAgentNotifyDecision\(exitCode, stdout\) === "deny"\) denyCurrentSshPrompt\(\)/.test(notifyExit)
+  && !/sshCooldown|expireSshRequest|dismissSshApproval|advanceSshPrompt|showSshNotification|sshAgentWrite/.test(notifyExit))
+check("the setting says the notification cannot approve, in the schema and the manifest",
+  [Model.SETTINGS_SCHEMA.find(s => s.key === "sshAgentNotifyFallback").description,
+    JSON.parse(readPluginSource("manifest.json")).barWidget.schema.find(s => s.key === "sshAgentNotifyFallback").description]
+    .every(d => /Deny button/.test(d) && /Approving is done on the card/.test(d) && !/Allow once/.test(d)))
 check("the notification command carries no secret state",
   !/masterPassword|pinEntry|session/i.test(body_("showSshNotification")))
 

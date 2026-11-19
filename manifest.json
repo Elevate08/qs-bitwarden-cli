@@ -210,7 +210,7 @@
         "key": "sshAgentNotifyFallback",
         "type": "boolean",
         "label": "Notify when a prompt goes unanswered",
-        "description": "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with Allow once and Deny buttons. Dismissing or ignoring the notification denies the request. Needs notify-send.",
+        "description": "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with a Deny button. Approving is done on the card; dismissing or ignoring the notification leaves the request waiting there. Needs notify-send.",
         "defaultValue": true
       },
       {
