@@ -6,7 +6,7 @@ import "../../BitwardenModel.js" as Model
 // (onItemsChanged / onAssociationsChanged) to know whether the suggestions on
 // show still answer the question being asked. That rests on a `property var`
 // notifying on every assignment of another array or object, equal in content
-// or not, and staying quiet for the same one.
+// or not.
 TestCase {
   name: "VarChange"
 
@@ -32,13 +32,9 @@ TestCase {
     compare(holder.gen, before + 5, "an equal object that is another object notifies")
   }
 
-  function test_assigning_the_same_one_does_not() {
-    var list = [{ id: "a" }]
-    holder.items = list
-    var before = holder.gen
-    holder.items = list
-    compare(holder.gen, before, "nothing was replaced")
-  }
+  // Assigning the very same array again is not pinned: Qt 6.4 notifies and
+  // later releases do not. Either way is safe, since an extra count only
+  // costs one more match and never keeps an old answer.
 
   function test_the_handler_has_run_before_the_assignment_returns() {
     var before = holder.gen
