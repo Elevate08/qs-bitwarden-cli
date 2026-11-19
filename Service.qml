@@ -8422,6 +8422,11 @@ Item {
       if (root.failedSave === null || root.failedSave.form !== f) return
       root.failedSave = null
       root.errorMessage = ""
+      // Gone while the prompt was up: the draft goes with it.
+      if (row && !Model.findItemById(root.items, String(f.itemId))) {
+        root.flashNotification("That item is no longer in the vault")
+        return
+      }
       root.restoreItemForm(f)
     }
     if (row) withReprompt(row, reopen)
@@ -9115,7 +9120,8 @@ Item {
     withReprompt(item, function() {
       root.autoTypeItemId = String(item.id)
       root.autoTypeArmEpoch = root.vaultEpoch
-      root.autoTypeArmReprompt = root.itemNeedsReprompt(item)
+      // By the row the gate went by, not the one handed in.
+      root.autoTypeArmReprompt = root.itemNeedsReprompt(Model.findItemById(root.items, item.id) || item)
       autoTypeArmTimer.restart()
       // The poll runs while armed; a reading now is normally in before the
       // key can be pressed, so the first type is not refused as stale.
@@ -9298,7 +9304,9 @@ Item {
   // only once any re-prompt has passed.
   function armTotpFollowup(item) {
     if (!item || !item.hasTotp) return
-    totpFollowupItem = item
+    // The current row, as the gate went by: recheckTotpFollowup() compares
+    // a later list with what was true when this was armed.
+    totpFollowupItem = Model.findItemById(items, item.id) || item
     totpFollowupActive = true
     fetchTotp(item.id)
     totpFollowupTimer.restart()

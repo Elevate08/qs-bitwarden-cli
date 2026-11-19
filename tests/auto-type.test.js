@@ -213,6 +213,19 @@ const reloaded = (v, id, reprompt) => { v.items = v.items.map(i => i.id === id ?
   eq("disarming forgets how it was armed", v.autoTypeArmReprompt, false)
 }
 {
+  // A row still drawn from before a refresh says the item asks; the list
+  // says it does not, and the gate goes by the list. The arm must remember
+  // what the gate went by, or a later list turning the prompt on would find
+  // it "already asked".
+  const v = makeVault()
+  const stale = Object.assign({}, item(v, "a"), { reprompt: 1 })
+  v.copyPasswordAndArm(stale)
+  check("premise: a stale row that asks arms with no prompt, by the list's row", v.autoTypeArmed() && !v.repromptPending)
+  eq("and the arm remembers the list's answer, not the stale row's", v.autoTypeArmReprompt, false)
+  reloaded(v, "a", 1)
+  check("so a list that turns the prompt on disarms it", !v.autoTypeArmed())
+}
+{
   const v = makeVault()
   v.copyPasswordAndArm(item(v, "a"))
   v.items = v.items.filter(i => i.id !== "a")
