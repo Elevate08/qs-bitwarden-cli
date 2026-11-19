@@ -269,20 +269,24 @@ Panel {
     actionPalette.openFor()
   }
 
-  // The item the palette was opened for, as the vault holds it now: the open
-  // detail if it is still that item, or the list's item with that id. Null
-  // when a sync removed it or another item took its place.
+  // The item the palette was opened for, as the vault holds it now: the
+  // list's item with that id, or on the detail screen the open detail if it
+  // is still that item. Null when a sync removed it from the vault or another
+  // item took its place. The open detail is a copy read earlier, so it also
+  // has to agree with the list about the master-password re-prompt: a sync
+  // that turned it on must not leave the palette acting on the old answer.
   function paletteItem(screen, itemId) {
     if (itemId === "") return null
-    if (screen === "detail") {
-      var detail = root.vault.detailItem
-      return detail && String(detail.id) === itemId ? detail : null
-    }
+    var fresh = null
     var list = root.vault.items || []
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] && String(list[i].id) === itemId) return list[i]
+    for (var i = 0; i < list.length && !fresh; i++) {
+      if (list[i] && String(list[i].id) === itemId) fresh = list[i]
     }
-    return null
+    if (!fresh || screen !== "detail") return fresh
+    var detail = root.vault.detailItem
+    if (!detail || String(detail.id) !== itemId) return null
+    if (root.vault.itemNeedsReprompt(fresh) !== root.vault.itemNeedsReprompt(detail)) return null
+    return detail
   }
 
   // Runs a palette action through what its letter, or its field's copy button,

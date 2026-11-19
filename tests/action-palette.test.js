@@ -4,7 +4,7 @@
 //
 //   node tests/action-palette.test.js
 
-const { createSuite, loadModule, read } = require("./harness")
+const { createSuite, functionBody, loadModule, read } = require("./harness")
 const Model = loadModule()
 
 const { check, done } = createSuite("action-palette")
@@ -115,21 +115,110 @@ check("the item is looked up by id among the vault's items",
   /String\(list\[i\]\.id\) === itemId/.test(paletteItem) && /root\.vault\.items/.test(paletteItem)
   && /if \(itemId === ""\) return null/.test(paletteItem))
 check("on the detail screen the open item must still be the palette's",
-  /String\(detail\.id\) === itemId \? detail : null/.test(paletteItem))
+  /String\(detail\.id\) !== itemId\) return null/.test(paletteItem))
 check("delete asks only for the palette's own item", /if \(item\.typeCode !== 5\) root\.vault\.showDeleteConfirm = true/.test(runPalette)
   && !/root\.vault\.detailItem/.test(runPalette))
 
-// paletteItem() uses nothing of QML but root.vault, so it runs here as written.
-const lookup = new Function("root", "screen", "itemId",
-  paletteItem.slice(paletteItem.indexOf("{") + 1))
+// --- the real paletteItem() and runPaletteAction(), run against a stand-in panel ------
+// Both use nothing of QML but root and root.vault. The vault's re-prompt test
+// is Service.qml's own.
+
+const serviceSrc = read("Service.qml")
+function makePanel(items, detailItem) {
+  const calls = []
+  const rec = name => (...args) => { calls.push([name, ...args]) }
+  const vault = {
+    items, detailItem: detailItem || null, selectedIndex: 0, showDeleteConfirm: false,
+    detailCard: null, detailIdentity: null,
+    copyPassword: rec("copyPassword"), copyUsername: rec("copyUsername"), copyTotpCode: rec("copyTotpCode"),
+    openUrl: rec("openUrl"), openDetail: rec("openDetail"), copyToClipboard: rec("copyToClipboard"),
+    // What the palette must never fall back to.
+    runShortcut: rec("runShortcut"),
+    getSelectedItem() { calls.push(["getSelectedItem"]); return vault.items[vault.selectedIndex] || null }
+  }
+  vault.itemNeedsReprompt = new Function(functionBody(serviceSrc, "itemNeedsReprompt") + "\nreturn itemNeedsReprompt")()
+  const root = { vault, calls, runDetailShortcut: rec("runDetailShortcut"), copyDetailSecret: rec("copyDetailSecret") }
+  Object.assign(root, new Function("root", functionBody(panel, "paletteItem") + "\n" + functionBody(panel, "runPaletteAction")
+    + "\nreturn { paletteItem: paletteItem, runPaletteAction: runPaletteAction }")(root))
+  return root
+}
+
 const A = { id: "a" }, B = { id: "b" }
-check("finds the item wherever a sync moved it", lookup({ vault: { items: [B, A] } }, "main", "a") === A)
-check("an item a sync removed resolves to nothing", lookup({ vault: { items: [B] } }, "main", "a") === null)
-check("an empty id resolves to nothing", lookup({ vault: { items: [{ id: "" }, A] } }, "main", "") === null)
-check("detail: the same item resolves", lookup({ vault: { detailItem: A, items: [] } }, "detail", "a") === A)
+const lookup = (vault, screen, id) => {
+  const p = makePanel(vault.items, vault.detailItem)
+  return p.paletteItem(screen, id)
+}
+check("finds the item wherever a sync moved it", lookup({ items: [B, A] }, "main", "a") === A)
+check("an item a sync removed resolves to nothing", lookup({ items: [B] }, "main", "a") === null)
+check("an empty id resolves to nothing", lookup({ items: [{ id: "" }, A] }, "main", "") === null)
+check("detail: the open item resolves while the vault still has it", lookup({ detailItem: A, items: [B, { id: "a" }] }, "detail", "a") === A)
 check("detail: another item in its place resolves to nothing",
-  lookup({ vault: { detailItem: B, items: [A, B] } }, "detail", "a") === null
-  && lookup({ vault: { detailItem: null, items: [A] } }, "detail", "a") === null)
+  lookup({ detailItem: B, items: [A, B] }, "detail", "a") === null
+  && lookup({ detailItem: null, items: [A] }, "detail", "a") === null)
+check("detail: an open item a sync removed from the vault resolves to nothing",
+  lookup({ detailItem: A, items: [B] }, "detail", "a") === null && lookup({ detailItem: A, items: [] }, "detail", "a") === null)
+check("detail: a re-prompt a sync turned on, which the open copy does not have, resolves to nothing",
+  lookup({ detailItem: { id: "a", reprompt: 0 }, items: [{ id: "a", reprompt: 1 }] }, "detail", "a") === null
+  && lookup({ detailItem: { id: "a" }, items: [{ id: "a", reprompt: 1 }] }, "detail", "a") === null)
+check("detail: a re-prompt turned off since resolves to nothing too (the copy is stale either way)",
+  lookup({ detailItem: { id: "a", reprompt: 1 }, items: [{ id: "a", reprompt: 0 }] }, "detail", "a") === null)
+const guarded = { id: "a", reprompt: 1 }
+check("detail: agreeing re-prompt flags resolve to the open item",
+  lookup({ detailItem: guarded, items: [{ id: "a", reprompt: 1 }] }, "detail", "a") === guarded)
+
+// The list: the palette was opened on row 0 (the login); by the time the action
+// runs a sync has put another item there and moved the login down.
+const other = Object.assign({}, login, { id: "other", name: "Other", username: "them", uris: ["https://other.example/"] })
+const listActions = Model.itemActions(Object.assign({ id: "a" }, login), LIST)
+const expectCall = { copyPassword: "copyPassword", copyUsername: "copyUsername", copyTotp: "copyTotpCode",
+  openWebsite: "openUrl", openDetail: "openDetail" }
+check("the list offers the five actions the dispatch test covers",
+  listActions.map(a => a.id).sort().join() === Object.keys(expectCall).sort().join())
+for (const action of listActions) {
+  const fresh = Object.assign({ id: "a" }, login)
+  const p = makePanel([other, { id: "x" }, fresh])
+  p.vault.selectedIndex = 0
+  p.runPaletteAction(action, "main", "a")
+  const want = action.id === "openWebsite" ? fresh.uris[0] : fresh
+  check(`list ${action.id}: runs ${expectCall[action.id]} once, on the palette's item, not the selected row`,
+    p.calls.length === 1 && p.calls[0][0] === expectCall[action.id] && p.calls[0][1] === want && p.calls[0].length === 2,
+    JSON.stringify(p.calls.map(c => c[0])))
+  const gone = makePanel([other, { id: "x" }])
+  gone.runPaletteAction(action, "main", "a")
+  check(`list ${action.id}: does nothing once the item is gone`, gone.calls.length === 0, JSON.stringify(gone.calls.map(c => c[0])))
+}
+{
+  const p = makePanel([Object.assign({ id: "a" }, login, { hasTotp: false, uris: [] })])
+  p.runPaletteAction({ id: "copyTotp", key: "m" }, "main", "a")
+  p.runPaletteAction({ id: "openWebsite", key: "w" }, "main", "a")
+  check("list: a TOTP or website the item no longer has is not acted on", p.calls.length === 0)
+  p.runPaletteAction({ id: "noSuchAction", key: "p" }, "main", "a")
+  check("list: an unknown action runs nothing (no fall back to its letter)", p.calls.length === 0)
+}
+
+// The detail screen: letters go to runDetailShortcut, the rest by id, and all
+// of it only while the open item is still the vault's.
+{
+  const open = Object.assign({ id: "a" }, login)
+  const live = makePanel([other, Object.assign({ id: "a" }, login)], open)
+  live.runPaletteAction({ id: "copyPassword", key: "p" }, "detail", "a")
+  live.runPaletteAction({ id: "openWebsite", key: "" }, "detail", "a")
+  live.runPaletteAction({ id: "copyNotes", key: "" }, "detail", "a")
+  live.runPaletteAction({ id: "delete", key: "x" }, "detail", "a")
+  check("detail: letter, website, notes and delete reach their handlers",
+    JSON.stringify(live.calls) === JSON.stringify([["runDetailShortcut", "p"], ["openUrl", open.uris[0]], ["copyDetailSecret", "notes", "Notes"]])
+    && live.vault.showDeleteConfirm === true, JSON.stringify(live.calls))
+
+  for (const [why, items, detail] of [
+    ["a sync removed the item", [other], open],
+    ["another item is open", [other, Object.assign({ id: "a" }, login)], other],
+    ["the vault now asks for the master password and the open copy does not", [Object.assign({ id: "a", reprompt: 1 }, login)], open]]) {
+    const p = makePanel(items, detail)
+    for (const action of Model.itemActions(open, DETAIL)) p.runPaletteAction(action, "detail", "a")
+    check(`detail: no action runs when ${why}`, p.calls.length === 0 && p.vault.showDeleteConfirm === false,
+      JSON.stringify(p.calls.map(c => c[0])))
+  }
+}
 check("onTextKey uses runDetailShortcut", /onTextKey[\s\S]*?root\.runDetailShortcut\(lower\)/.test(panel))
 check("README documents Ctrl+K", (read("README.md").match(/<kbd>Ctrl<\/kbd>\+<kbd>K<\/kbd>/g) || []).length >= 2)
 check("CHANGELOG mentions the palette", /action palette/i.test(read("CHANGELOG.md").split("## [Unreleased]")[1].split(/\n## \[/)[0]))
