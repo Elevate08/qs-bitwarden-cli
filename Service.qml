@@ -786,12 +786,6 @@ Item {
   // Such a snapshot arrived while a save or delete was still running: the
   // list is read again when that finishes (settleOwedListRead()).
   property bool listRereadOwed: false
-  // The ids in a list answer the panel refused as such a snapshot, which the
-  // vault helper has taken as its items all the same; null when the helper
-  // holds none. A list that is accepted replaces it there. If the read
-  // meant to replace it fails instead, the helper is told to drop those
-  // items (dropUnacceptedList()).
-  property var listUnacceptedIds: null
   // A new item's detail, covered by an SSH approval when its save answered:
   // { from: provisional id, to: saved id }, taken up when the detail is back
   // (resumeCreatedItem()).
@@ -6899,8 +6893,6 @@ Item {
     readEpochs = ({})
     queuedReads = ({})
     listRereadOwed = false
-    // forgetVault(), above, has emptied the helper.
-    listUnacceptedIds = null
     createdItemHandoff = null
     masterPassword = ""
     itemsLoadedAt = 0
@@ -7164,8 +7156,6 @@ Item {
       abandonSyncReload()
       errorMessage = Model.vaultListBlockedMessage(dependencies)
       listReadError = errorMessage
-      // No read can replace a snapshot the helper took and the panel refused.
-      dropUnacceptedList()
       return
     }
     // Behind a run still going (an account just left, a lock's scrub, a
@@ -7221,8 +7211,6 @@ Item {
     if (vaultReadIsStale("items")) return
     if (errorMessage === listReadError) errorMessage = ""
     listReadError = ""
-    // The helper's items are this list's now.
-    listUnacceptedIds = null
     // One parse for both: parsing the list once per consumer cost several
     // whole-vault parses on the GUI thread per load.
     var vault = Model.readSanitizedVault(rawJson)
@@ -7261,14 +7249,9 @@ Item {
     // as failed would lock the agent), and a load is owed again: the read
     // that replaces this one starts before the next nonce is in, so it is
     // the list that is shown that is followed by one (maybeStartupLoad()).
-    var outdated = exitCode === 0 && !vaultReadIsStale("items") && listSnapshotOutdated()
-    var notShown = !!queuedReads["items"] || outdated
+    var notShown = !!queuedReads["items"]
+      || (exitCode === 0 && !vaultReadIsStale("items") && listSnapshotOutdated())
     if (hadAgentBranch && notShown && !vaultReadIsStale("items")) sshAgentLoadedForVaultEpoch = -1
-    // Such a snapshot is refused below, or replaced by the read waiting, but
-    // the vault helper took it as it was printed: every item in it is the
-    // helper's copy now, an edited one with its old password. Which items,
-    // in case the read that is to replace them fails (dropUnacceptedList()).
-    if (outdated && vaultHelperActive) listUnacceptedIds = Model.vaultListIds(rawJson)
     // A read asked for since this run started replaces its answer.
     if (supersededVaultRead("items")) {
       listRetriedWithoutAgent = false
@@ -7325,46 +7308,12 @@ Item {
     if (!vaultReadIsStale("items") && !wasEarly) {
       errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
       listReadError = errorMessage
-      // The list on screen is not known to be current: the next time it is
-      // wanted it is read again (ensureItemsFresh()).
+      // The list on screen is not known to be current (this may have been
+      // the re-read of a snapshot that was refused, which the vault helper
+      // has taken all the same): the next time it is wanted it is read
+      // again (ensureItemsFresh()).
       itemsLoadedAt = 0
     }
-    // This may have been the re-read of a snapshot that was refused, which
-    // the vault helper has taken all the same.
-    if (!vaultReadIsStale("items")) dropUnacceptedList()
-  }
-
-  // The current list could not be read while the vault helper holds a
-  // snapshot the panel refused (listUnacceptedIds): the helper would go on
-  // answering from it, an edited item's old password included, with the
-  // panel showing the newer rows. It is told to drop every item it can
-  // hold: those of that snapshot, and the rows the panel has (a save since
-  // put its item there too). A copy, reveal, edit, TOTP or auto-type then
-  // fails as for an item the helper does not have, and a search finds
-  // nothing, until a list is read: the failed read has left its error up
-  // and the list due for another read. The rows on screen stay. The key
-  // stays too: `forget` would drop it with the items, and no read could
-  // follow. Newest first: the helper removes from the end of its list
-  // without moving the rest.
-  function dropUnacceptedList() {
-    var refused = listUnacceptedIds
-    if (refused === null) return
-    listUnacceptedIds = null
-    // The list is due for another read whichever failure this was.
-    itemsLoadedAt = 0
-    var sent = {}
-    function drop(id) {
-      id = String(id || "")
-      if (id === "" || sent[id] === true) return
-      sent[id] = true
-      forgetVaultItem(id)
-    }
-    var inRefused = {}
-    for (var r = 0; r < refused.length; r++) inRefused[refused[r]] = true
-    for (var i = items.length - 1; i >= 0; i--) {
-      if (items[i] && inRefused[items[i].id] !== true) drop(items[i].id)
-    }
-    for (var j = refused.length - 1; j >= 0; j--) drop(refused[j])
   }
 
   // Whether the list read that just ended started before a save or delete

@@ -56,16 +56,12 @@ everything. A lock that is still running `bw lock` keeps its own copy of the
 key until it finishes.
 
 The helper takes each list read as its items when `bw` prints it, before the
-panel has decided whether to show it. A list that was started before a save,
-delete or sync finished is not shown: the panel reads the list again, and
-that read replaces the helper's items too. If that second read fails, the
-helper would be left answering from the older list, an edited item's old
-password included, so the panel tells it to drop its items one by one (the
-key is kept). Until a list is read again, copying, revealing, editing, a TOTP
-code and auto-type fail and a search finds nothing; the rows already on
-screen stay, with the read's error above them, and the list is read again the
-next time it is wanted. An ordinary failed read, with no such list before
-it, changes nothing in the helper.
+panel decides whether to show it. When the panel refuses a list snapshot (one
+started before a save, delete or sync finished) and the read that should
+replace it fails, the helper holds that refused snapshot, an edited item's
+old password included, until the next list read succeeds. The panel shows the
+list error and treats its list as stale, so the list is read again the next
+time it is wanted.
 
 ## How the shell talks to it
 
@@ -85,9 +81,7 @@ output is handed back as it is, except:
   not exactly the shape the panel's filter writes -- another top-level key,
   or an item list that is not a list of items -- is refused whole and
   reported as a failed read: the panel keeps the rows it had and says it
-  could not safely read the vault, and what the helper held stays (unless
-  it was holding a list the panel had not accepted: see the end of the
-  section above). A save
+  could not safely read the vault, and what the helper held stays. A save
   whose answer is refused makes the panel read the list again. Inside an
   item, a secret's place holding something unexpected (a `login` that is a
   list) is dropped rather than passed on; a custom field keeps its value

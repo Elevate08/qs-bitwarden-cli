@@ -4123,26 +4123,6 @@ function parseSshKeys(keys) {
   return out
 }
 
-// The id of every record a list answer holds, items then SSH key records
-// (the order the vault helper keeps them in), without building a row for
-// any. For an answer that is not going to be shown; [] if it cannot be read.
-function vaultListIds(raw) {
-  var envelope = null
-  try { envelope = JSON.parse(raw) } catch (e) { return [] }
-  if (!envelope || typeof envelope !== "object") return []
-  var out = []
-  var lists = [envelope.items, envelope.sshKeys]
-  for (var l = 0; l < lists.length; l++) {
-    var list = lists[l]
-    if (!Array.isArray(list)) continue
-    for (var i = 0; i < list.length; i++) {
-      var id = list[i] && typeof list[i] === "object" ? list[i].id : null
-      if (typeof id === "string" && id !== "") out.push(id)
-    }
-  }
-  return out
-}
-
 function parseSanitizedEnvelope(raw) {
   var envelope = null
   try { envelope = JSON.parse(raw) } catch (e) { return null }

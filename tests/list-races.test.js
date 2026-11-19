@@ -23,7 +23,7 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
   "onDeleteItemFinished", "reconcileOpenDetail", "totpWanted",
-  "isFieldRevealed", "itemChangeRunning", "dropUnacceptedList"]
+  "isFieldRevealed", "itemChangeRunning"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
 // a run only when none is held (runId 0); to false it asks for a kill, and
@@ -71,7 +71,7 @@ function fixture() {
   const c = {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
-    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, listUnacceptedIds: null, createdItemHandoff: null,
+    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, createdItemHandoff: null,
     pendingSave: null, pendingDelete: null, recheckArmedAutoType() {}, recheckTotpFollowup() {}, sshTotalPendingCount: 0,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
@@ -647,167 +647,6 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
   m.loadItems(false); m.vaultChanges += 1        // a save, delete or manual sync: no automatic reload is owed
   m.exit("listProc", 0, vaultOf("old"), "")
   eq("without an automatic reload owed there is nothing to leave it to", m.runsOf("listProc").length, 2)
-}
-
-// --- a refused snapshot whose re-read fails --------------------------------------------
-// The vault helper takes every list answer as its items when the read
-// prints it, before the panel has decided whether to show it. A snapshot the
-// panel refuses is therefore what the helper answers from until a list is
-// accepted. If the read meant to replace it fails, the helper is told to drop
-// those items: nothing is better than an edited item's old password.
-{
-  // The helper, as far as its items go: a list answer that exits 0 replaces
-  // them, a save's answer updates one, `forgetItem` removes one, `forget`
-  // empties it (and drops the key, which is why it is not what is sent).
-  const A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", X = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-  const row = (id, name, password) => Object.assign(stored(id, name), { helperPassword: password })
-  function withHelper(c) {
-    c.helper = new Map()
-    c.lines = []
-    c.forgets = 0
-    c.forgetVault = () => { c.forgets++; c.helper.clear() }
-    c.vaultHelperProc = { write(line) {
-      c.lines.push(line)
-      const message = JSON.parse(line)
-      if (message.type === "forgetItem") c.helper.delete(message.id)
-    } }
-    // The real sender, not the fixture's recorder.
-    vm.runInContext(functionBody(source, "forgetVaultItem"), c)
-    const exit = c.exit
-    c.exit = (id, code, out, err) => {
-      if (id === "listProc" && code === 0 && c.vaultHelperActive) {
-        c.helper = new Map(JSON.parse(out).items.map(item => [item.id, item.helperPassword]))
-      }
-      exit(id, code, out, err)
-    }
-    return c
-  }
-  const sent = c => c.lines.map(line => JSON.parse(line))
-  // A vault with A and X listed; A's password is then changed and X deleted
-  // while a list read from before both is still running.
-  function editedDuringARead() {
-    const c = withHelper(fixture())
-    c.loadItems(false); c.exit("listProc", 0, listOf(row(A, "Bank", "old-password"), row(X, "Doomed", "x")), "")
-    c.loadItems(false)                                   // the read that will be the outdated snapshot
-    c.helper.set(A, "new-password"); c.helper.delete(X)  // the save's answer and the delete, in the helper
-    c.items = Model.replaceItemById(c.items, X, null)
-    c.settleOwedListRead()                               // a save or delete has finished
-    return c
-  }
-  const snapshot = listOf(row(A, "Bank", "old-password"), row(X, "Doomed", "x"))
-
-  const c = editedDuringARead()
-  eq("premise: the helper holds the saved password", c.helper.get(A), "new-password")
-  c.exit("listProc", 0, snapshot, "")
-  check("premise: the snapshot is refused, and the helper has taken it all the same",
-    ids(c) === A && c.listProc.running && c.helper.get(A) === "old-password" && c.helper.has(X), ids(c))
-  eq("nothing is dropped while the re-read may still put it right", c.lines.length, 0)
-  c.errorMessage = ""
-  c.exit("listProc", 1, "", "Could not safely read vault items.")
-  check("the re-read failing empties the helper: no item answers from the snapshot",
-    c.helper.size === 0, JSON.stringify(Array.from(c.helper)))
-  check("with the existing per-item message, for the panel's rows and for what only the snapshot held",
-    sent(c).every(m => m.type === "forgetItem" && m.v === 1) && sent(c).map(m => m.id).sort().join() === [A, X].sort().join(),
-    c.lines.join(""))
-  eq("each id once", sent(c).length, 2)
-  eq("the key is kept: `forget` is not sent, so the next read can run", c.forgets, 0)
-  check("the list error is up", c.errorMessage !== "" && c.listReadError === c.errorMessage, c.errorMessage)
-  eq("the list is due for another read", c.itemsLoadedAt, 0)
-  check("the panel's own rows are left as they were", ids(c) === A && names(c) === "Bank", ids(c))
-  eq("and nothing more is owed to the helper", c.listUnacceptedIds, null)
-
-  c.loadItems(false)
-  c.exit("listProc", 1, "", "Could not safely read vault items.")
-  eq("a second failure sends nothing more", c.lines.length, 2)
-  c.loadItems(false)
-  c.exit("listProc", 0, listOf(row(A, "Bank", "new-password")), "")
-  check("the next list that is read is accepted, and the helper answers from it",
-    names(c) === "Bank" && c.helper.get(A) === "new-password" && c.errorMessage === "" && c.lines.length === 2, names(c))
-
-  // The re-read succeeding is the ordinary case: nothing is dropped.
-  const ok = editedDuringARead()
-  ok.exit("listProc", 0, snapshot, "")
-  check("a refused snapshot is remembered until a list is accepted",
-    Array.from(ok.listUnacceptedIds || []).join() === [A, X].join(), JSON.stringify(ok.listUnacceptedIds))
-  ok.exit("listProc", 0, listOf(row(A, "Bank", "new-password")), "")
-  check("a re-read that succeeds drops nothing",
-    ok.lines.length === 0 && ok.listUnacceptedIds === null && ok.helper.get(A) === "new-password", ok.lines.join(""))
-  ok.loadItems(false); ok.exit("listProc", 1, "", "Could not safely read vault items.")
-  check("and a later failed read is an ordinary one", ok.lines.length === 0 && ok.helper.get(A) === "new-password")
-
-  // An ordinary failed read, with no snapshot refused: exactly as before.
-  const plain = withHelper(fixture())
-  plain.loadItems(false); plain.exit("listProc", 0, listOf(row(A, "Bank", "pw")), "")
-  const loadedAt = plain.itemsLoadedAt
-  plain.loadItems(false); plain.exit("listProc", 1, "", "Could not safely read vault items.")
-  check("a failed read with no refused snapshot tells the helper nothing",
-    plain.lines.length === 0 && plain.forgets === 0 && plain.helper.get(A) === "pw", plain.lines.join(""))
-  check("and reports as it did: the error, the rows kept, the list due for another read",
-    plain.errorMessage !== "" && names(plain) === "Bank" && loadedAt > 0 && plain.itemsLoadedAt === 0, plain.errorMessage)
-
-  // A snapshot replaced by a read already waiting was never shown either.
-  const q = withHelper(fixture())
-  q.loadItems(false); q.exit("listProc", 0, listOf(row(A, "Bank", "old-password")), "")
-  q.loadItems(false)
-  q.helper.set(A, "new-password"); q.vaultChanges += 1
-  q.loadItems(false)                                     // asked again after the save: waits for the run
-  q.exit("listProc", 0, listOf(row(A, "Bank", "old-password")), "")
-  check("premise: the waiting read starts, and the helper holds the older snapshot",
-    q.listProc.running && q.helper.get(A) === "old-password" && q.lines.length === 0)
-  q.exit("listProc", 1, "", "Could not safely read vault items.")
-  check("a snapshot a waiting read replaced is dropped too when that read fails",
-    q.helper.size === 0 && sent(q).map(m => m.id).join() === A && q.forgets === 0, q.lines.join(""))
-
-  // The read cannot run at all (jq gone) once the save it waited for ends.
-  const b = withHelper(fixture())
-  b.loadItems(false); b.exit("listProc", 0, listOf(row(A, "Bank", "old-password")), "")
-  b.pendingSave = { id: A, isCreate: false, name: "Bank", previous: null, form: {} }
-  b.readEpochs.itemSave = b.vaultEpoch
-  b.loadItems(false)
-  b.exit("listProc", 0, listOf(row(A, "Bank", "old-password")), "")
-  check("premise: a snapshot landing during the save is refused and a read is owed",
-    b.listRereadOwed === true && b.lines.length === 0 && Array.from(b.listUnacceptedIds || []).join() === A)
-  b.dependencies = Model.parseDependencies("bw=1\njq=0\nomarchy=1", null, {})
-  b.pendingSave = null
-  b.settleOwedListRead()
-  check("a re-read that is blocked drops the snapshot as a failed one does",
-    b.helper.size === 0 && sent(b).map(m => m.id).join() === A && b.errorMessage !== "" && b.itemsLoadedAt === 0
-      && names(b) === "Bank" && b.forgets === 0, b.lines.join("") + b.errorMessage)
-
-  // A lock empties the helper itself; nothing is owed after it.
-  const k = editedDuringARead()
-  k.exit("listProc", 0, snapshot, "")
-  k.dropVaultState()
-  check("a lock forgets the refused snapshot with the vault", k.listUnacceptedIds === null && k.lines.length === 0)
-
-  // With the vault held in the shell there is no helper copy to drop.
-  const n = fixture()
-  n.vaultHelperActive = false
-  n.loadItems(false); n.exit("listProc", 0, listOf(row(A, "Bank", "old-password")), "")
-  n.loadItems(false); n.vaultChanges += 1
-  n.exit("listProc", 0, listOf(row(A, "Bank", "old-password")), "")
-  n.exit("listProc", 1, "", "Could not safely read vault items.")
-  check("without the helper nothing is remembered or sent", n.listUnacceptedIds === null && n.forgotten.length === 0,
-    JSON.stringify(n.forgotten))
-
-  // Newest first, so the helper removes from the end of its list: rows the
-  // panel has that the snapshot lacks (a save since), then the snapshot's.
-  const o = withHelper(fixture())
-  o.items = [{ id: "p1" }, { id: "s2" }, { id: "p2" }, { id: "" }, null, { id: "p2" }]
-  o.listUnacceptedIds = ["s1", "s2", "s3", "s3"]
-  o.itemsLoadedAt = 5
-  o.dropUnacceptedList()
-  eq("the order of what is dropped", sent(o).map(m => m.id).join(), "p2,p1,s3,s2,s1")
-  eq("dropping leaves the list due for another read", o.itemsLoadedAt, 0)
-  o.dropUnacceptedList()
-  eq("and is done once", o.lines.length, 5)
-
-  // What the ids are read from: the answer as printed, items then SSH keys.
-  eq("the ids of a list answer", Model.vaultListIds(JSON.stringify({ sshCapability: "confirmed",
-    items: [{ id: "a" }, { id: "" }, { name: "no id" }, null, "text", { id: 7 }, { id: "b" }],
-    sshKeys: [{ id: "k" }] })).join(), "a,b,k")
-  for (const bad of ["", "not json", "null", "[]", "{}", '{"items":{"id":"x"}}', '{"items":"x","sshKeys":7}'])
-    eq(`an answer that is not a list (${bad}) has none`, Model.vaultListIds(bad).length, 0)
 }
 
 check("the waiting reads are per-vault state a lock drops", /queuedReads = \(\{\}\)/.test(functionBody(source, "dropVaultState")))

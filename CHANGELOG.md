@@ -226,17 +226,6 @@
   open nor use a grant. With a helper from before this change the panel
   treats every forwarded login's server as claimed. This needs the rebuilt
   SSH agent helper.
-- **A failed list read no longer leaves the vault helper answering from an
-  older list.** A list read that started before a save, delete or sync
-  finished is not shown and is read again, but the vault helper had already
-  taken it as its items. If the second read then failed, the helper kept
-  the older copies until some later read worked: copying an item you had
-  just edited gave its old password, with nothing to say so. The panel now
-  tells the helper to drop its items when that happens (the session key is
-  kept), so a copy, reveal, edit, TOTP code or auto-type fails and a search
-  finds nothing until the list has been read again; the rows on screen and
-  the read's error stay, and the next open reads the list. A failed read
-  with no such list before it behaves as before. No helper change.
 
 ### Changed
 

@@ -8,7 +8,7 @@ const Model = loadModule()
 const source = read("Service.qml")
 const functions = ["autoSyncIdle", "maybeAutoSync", "syncVault", "onSyncFinished",
   "onListFinished", "dropVaultState", "beginVaultRead", "vaultReadIsStale",
-  "beginEpochOperation", "epochOperationIsStale", "loadItems", "abandonSyncReload", "dropUnacceptedList",
+  "beginEpochOperation", "epochOperationIsStale", "loadItems", "abandonSyncReload",
   "vaultProcBusy", "vaultReadRunning", "startVaultRead", "supersededVaultRead"]
 const deps = Model.parseDependencies("bw=1\njq=1\nomarchy=1", null, {})
 const noJq = Model.parseDependencies("bw=1\njq=0\nomarchy=1", null, {})
@@ -23,7 +23,7 @@ function fixture() {
     autoLockMinutes: 15, autoLockArmedAt: 1000000, suspendLockPending: false, syncReloadPending: false,
     autoSyncReloadPending: false, backgroundSync: false,
     autoSyncError: "Automatic sync failed. The local vault may be out of date.",
-    errorMessage: "", listReadError: "", vaultEpoch: 1, readEpochs: {}, queuedReads: {}, vaultChanges: 0, listReadChanges: 0, listUnacceptedIds: null, itemsLoadedAt: 100,
+    errorMessage: "", listReadError: "", vaultEpoch: 1, readEpochs: {}, queuedReads: {}, vaultChanges: 0, listReadChanges: 0, itemsLoadedAt: 100,
    
     statusRefreshAfterItems: false, loadCalls: [], flashes: [], closedFilters: 0,
     dependencies: deps, listReadEarly: false, listReadMode: "", listReads: 0,
