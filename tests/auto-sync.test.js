@@ -329,7 +329,15 @@ for (const code of [0, 1]) {
   const finished = functionBody(source, "onListFinished")
   const staleAt = finished.indexOf('vaultReadIsStale("items")) return')
   check("a stale list result clears nothing",
-    staleAt >= 0 && staleAt < finished.indexOf("listReadError"), finished)
+    staleAt >= 0 && finished.indexOf("listReadError") > staleAt, finished)
+  // The same, run: a list answer for a vault no longer open, with a message up.
+  const st = fixture(); st.dependencies = noJq; st.loadItems(false); st.dependencies = deps
+  const up = st.errorMessage
+  st.syncReloadPending = true; st.beginVaultRead("items"); st.vaultEpoch += 1
+  st.onListFinished("[]")
+  check("a stale list answer leaves the message, its marker, the timestamp and a pending sync as they were",
+    up !== "" && st.errorMessage === up && st.listReadError === up && st.itemsLoadedAt === 100 && st.syncReloadPending === true
+      && st.flashes.length === 0, st.errorMessage + "|" + st.listReadError)
 }
 check("timer belongs to the shared service", /id: autoSyncTimer/.test(source)
   && !/id: autoSyncTimer/.test(read("Panel.qml")), "one timer across monitors")
