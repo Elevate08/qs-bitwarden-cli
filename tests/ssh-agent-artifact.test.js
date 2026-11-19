@@ -369,6 +369,25 @@ const eligible = read("scripts/helper-autocommit-eligible.sh")
 const rebuildJobs = rebuild.split(/\n  (?=\w[\w-]*:\n)/)
 const buildJob = rebuildJobs.find(j => /^build:/.test(j)) || ""
 const commitJob = rebuildJobs.find(j => /^commit:/.test(j)) || ""
+const gateJob = rebuildJobs.find(j => /^gate:/.test(j)) || ""
+// The verdict is a job of its own that runs nothing of the pull request's,
+// and it is the only place the gate runs: in the build job it ran after the
+// PR's build had, where that build could have answered for it.
+check("the commit gate is decided from the base branch's copy before any PR code runs",
+  /set -o pipefail\n[\s\S]*git show "\$BASE_SHA:scripts\/helper-autocommit-eligible\.sh"\)/.test(gateJob)
+    && /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/.test(gateJob)
+    && !/\.\/|build-agent|cargo |container:|write|needs:/.test(gateJob)
+    && /outputs:\n\s*eligible: \$\{\{ steps\.verdict\.outputs\.eligible \}\}/.test(gateJob)
+    && !/helper-autocommit-eligible/.test(buildJob + commitJob),
+  gateJob.slice(0, 300))
+const gated = "if: needs.gate.outputs.eligible == 'yes'"
+check("nothing of the PR is checked out, built or committed unless that verdict is yes",
+  /\n    needs: gate\n/.test(buildJob)
+    && buildJob.split(/\n      - /).slice(1).filter(step => /uses: actions\/checkout|\.\/scripts\//.test(step))
+      .every(step => step.includes(`\n        ${gated}\n`))
+    && /\n    needs: \[gate, build\]\n/.test(commitJob)
+    && commitJob.includes(`\n    ${gated} && needs.build.result == 'success'\n`),
+  "the build or the commit no longer waits for the gate job's own output")
 check("the helper rebuild is read-only by default",
   /^permissions:\n\s*contents: read\s*$/m.test(rebuild), "top-level permissions are not read-only")
 check("the job that builds holds no write token",
@@ -392,14 +411,19 @@ check("dependency and toolchain changes are rebuilt by a person",
   /Cargo\.lock/.test(eligible) && /Cargo\.toml/.test(eligible) && /rust-toolchain\.toml/.test(eligible)
     && /dependabot/.test(eligible) && /IS_FORK/.test(eligible),
   "a lockfile change could be rebuilt and committed with nobody reading it")
+// The same script, given the same actor and the same two commits as the gate
+// job, and asked before this workflow's first run of the PR's build script.
+const gateInputs = text => ["IS_FORK", "ACTOR", "BASE_SHA", "HEAD_SHA"]
+  .map(name => (text.match(new RegExp(`\\n\\s+${name}: (\\$\\{\\{[^\\n]+\\}\\})\\n`)) || [])[1])
+const autofixStep = workflow.split(/\n      - /).find(step => /^name: [^\n]*\n\s+id: autofix\n/.test(step)) || ""
 check("agent build tolerates drift only where helper-rebuild fixes it",
-  /steps\.compare\.outputs\.autofix != 'yes'/.test(workflow)
-    && /helper-autocommit-eligible\.sh/.test(workflow),
+  /steps\.autofix\.outputs\.autofix != 'yes'/.test(workflow)
+    && /git show "\$BASE_SHA:scripts\/helper-autocommit-eligible\.sh"\)/.test(autofixStep)
+    && gateInputs(gateJob).every(Boolean) && gateInputs(autofixStep).join() === gateInputs(gateJob).join()
+    && workflow.indexOf(autofixStep) < workflow.indexOf("./scripts/build-agent.sh"),
   "the drift gate and the auto-commit disagree about which PRs are fixed")
-// Publishing from the tag announced a version before master contained it.
-check("the tag build leaves the release as a draft for master to publish",
-  /gh release create "\$TAG"[^\n]*--draft/.test(read(".github/workflows/release.yml")),
-  "release.yml publishes at tag time again, so master's merge is no longer what releases")
+// That the tag build leaves a draft for master to publish is run, not read:
+// tests/release-provenance.test.js.
 
 check("no paths filter decides which changes are checked",
   !/^\s*paths:/m.test(workflow),
