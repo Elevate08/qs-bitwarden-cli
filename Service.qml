@@ -2829,7 +2829,7 @@ Item {
   }
 
   function onSshExportFinished(exitCode, stdout) {
-    var result = Model.parseSshExportResult(exitCode, stdout)
+    var result = Model.parseSshExportResult(exitCode, stdout, Quickshell.env("XDG_DATA_HOME") || "")
     root.sshExportError = result.ok ? "" : result.message
   }
 

@@ -6809,8 +6809,12 @@ function unlockKeyPath(pluginDir, source, arch) {
 // plugin must not manage). Private material never goes here.
 var SSH_EXPORT_SUBDIR = "qs-bitwarden-cli/ssh"
 
-function sshExportDisplayDir() {
-  return "~/.local/share/" + SSH_EXPORT_SUBDIR
+// The directory for a message: under `xdgDataHome` when that is set to an
+// absolute path, as the scripts resolve it (sshExportDirPrelude()).
+function sshExportDisplayDir(xdgDataHome) {
+  var base = String(xdgDataHome || "")
+  if (base.charAt(0) !== "/") base = "~/.local/share"
+  return base.replace(/\/+$/, "") + "/" + SSH_EXPORT_SUBDIR
 }
 
 // Vault item names are untrusted: sanitized like attachment names, then
@@ -6949,18 +6953,23 @@ function sshExportClearCommand() {
     // in argv. Unlike the glob, find's * matches a leading dot, so hidden
     // *.pub files are excluded by name.
     + "find \"$__dir\" -mindepth 1 -maxdepth 1 \\( -name '[!.]*.pub' -o -name '.export.*' \\) "
-    + "! -type d -delete 2>/dev/null; "
+    // A file that could not be removed is a failure, not "cleared". A
+    // directory left because something else is in it is not.
+    + "! -type d -delete 2>/dev/null || exit " + SSH_EXPORT_EXIT_WRITE + "; "
     + "rmdir -- \"$__dir\" 2>/dev/null; "
     + "echo cleared"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
-function parseSshExportResult(exitCode, stdout) {
+// `xdgDataHome`: the shell's XDG_DATA_HOME, so the message names the
+// directory the scripts used.
+function parseSshExportResult(exitCode, stdout, xdgDataHome) {
+  var dir = sshExportDisplayDir(xdgDataHome)
   var failures = {}
   failures[SSH_EXPORT_EXIT_NO_HOME] = { code: "NO_HOME",
     message: "No data directory is set, so public key files cannot be written." }
   failures[SSH_EXPORT_EXIT_UNSAFE_DIR] = { code: "UNSAFE_DIR",
-    message: sshExportDisplayDir() + " is not a directory this plugin will write to. "
+    message: dir + " is not a directory this plugin will write to. "
       + "Remove or rename whatever is at that path." }
 
   return parseExitCodeResult(exitCode, stdout, function(out) {
@@ -6968,7 +6977,7 @@ function parseSshExportResult(exitCode, stdout) {
       return { ok: true, code: "OK", message: "" }
     }
     return null
-  }, failures, "Could not write public key files to " + sshExportDisplayDir() + ".")
+  }, failures, "Could not write or remove public key files in " + dir + ".")
 }
 
 // -------------------------------------------------------------------------
