@@ -2407,22 +2407,16 @@ Item {
   // plain JS object.
   property string sshAgentPhase: "disabled"
   property bool sshAgentGateOpen: false
-  property string sshAgentSocketPath: ""
-  property string sshAgentFifoPath: ""
   property string sshAgentVersion: ""
   property string sshAgentErrorCode: ""
-  property string sshAgentErrorMessage: ""
 
   function applySshAgentEvent(event) {
     var step = Model.sshAgentReduce(root.sshAgentState, event)
     root.sshAgentState = step.state
     root.sshAgentPhase = step.state.phase
     root.sshAgentGateOpen = step.state.gateOpen
-    root.sshAgentSocketPath = step.state.socketPath
-    root.sshAgentFifoPath = step.state.fifoPath
     root.sshAgentVersion = step.state.agentVersion
     root.sshAgentErrorCode = step.state.errorCode
-    root.sshAgentErrorMessage = step.state.errorMessage
 
     // State is committed first: stopping the Process can re-enter with the
     // exit before this returns, and must see the new phase.
@@ -3037,7 +3031,6 @@ Item {
     }
     if (message.type === "keys_loaded") {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
-      root.sshAgentKeysLoadedAt = Date.now()
       root.sshAgentLoadFailStreak = 0
       // Every public_key for this epoch arrived before this message.
       if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
@@ -3091,7 +3084,6 @@ Item {
   // (all at once would exceed the line limit).
   property var sshPendingPublicKeys: []
   property int sshPendingPublicEpoch: -1
-  property double sshAgentKeysLoadedAt: 0
   // The vault epoch a key load was started for, so a startup load runs once.
   property int sshAgentLoadedForVaultEpoch: -1
   // Auto-retries of a failed FIFO load (one), so a bad payload cannot loop.
@@ -3156,7 +3148,6 @@ Item {
     if (action.advanceEpoch) sshAgentEpoch += 1
     if (action.clearPublic) {
       root.sshAgentKeyCount = 0
-      root.sshAgentKeysLoadedAt = 0
       clearSshPublicKeys()
     }
     // The ack is not a precondition: a companion that cannot confirm the lock
@@ -6871,7 +6862,7 @@ Item {
   }
 
   function vaultReadIsStale(name) {
-    return epochOperationIsStale(name) || !session
+    return Model.vaultReadIsStale(readEpochs[name], vaultEpoch, !!session)
   }
 
   // Items, organizations and folders together: each is its own bw start, and
@@ -9184,7 +9175,6 @@ Item {
   Process {
     id: sshAgentHelperProc
     stdout: StdioCollector {
-      id: sshAgentHelperStdout
       waitForEnd: true
       onStreamFinished: root.onSshAgentHelperInspected(text)
     }
@@ -9232,7 +9222,6 @@ Item {
     vault: root
     stdout: VaultCollector {
       id: envelopeStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) { root.onEnvelopeJobExited(exitCode) }
   }
@@ -9259,7 +9248,6 @@ Item {
     id: loadIdProc
     command: Model.loadIdCommand()
     stdout: StdioCollector {
-      id: loadIdStdout
       waitForEnd: true
       onStreamFinished: root.onSshAgentLoadIdRead(text)
     }
@@ -9269,7 +9257,6 @@ Item {
     id: uwsmInspectProc
     command: Model.uwsmInspectCommand()
     stdout: StdioCollector {
-      id: uwsmInspectStdout
       waitForEnd: true
       onStreamFinished: {
         root.uwsmFragment = Model.parseUwsmInspection(text)
@@ -9296,7 +9283,6 @@ Item {
     id: autoTypeKeybindInspectProc
     command: Model.autoTypeKeybindInspectCommand()
     stdout: StdioCollector {
-      id: autoTypeKeybindInspectStdout
       waitForEnd: true
       onStreamFinished: root.onAutoTypeKeybindInspected(text)
     }
@@ -9340,7 +9326,6 @@ Item {
 
   // Handshake bound: a helper without `ready` in time is stopped and retried.
   Timer {
-    id: sshAgentHandshakeTimer
     interval: Model.sshAgentHandshakeTimeoutMs()
     repeat: false
     running: root.sshAgentPhase === "starting" || root.sshAgentPhase === "handshaking"
@@ -9434,7 +9419,6 @@ Item {
     environment: root.bwEnv()
     stdout: VaultCollector {
       id: statusStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(statusProc)) {
@@ -9459,7 +9443,6 @@ Item {
     command: Model.sessionHandoffReadCommand(false)
     stdout: VaultCollector {
       id: sessionHandoffStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(sessionHandoffProc)) {
@@ -9478,7 +9461,6 @@ Item {
     command: Model.keyringLookupCommand(root.activeSlot)
     stdout: VaultCollector {
       id: keyringLookupStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupProc)) {
@@ -9518,7 +9500,6 @@ Item {
     environment: root.bwEnv()
     stdout: VaultCollector {
       id: listFoldersStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(listFoldersProc)) return
@@ -9532,7 +9513,6 @@ Item {
     environment: root.bwEnv()
     stdout: VaultCollector {
       id: orgCollectionsStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(orgCollectionsProc)) return
@@ -9545,7 +9525,7 @@ Item {
     id: createFolderProc
     vault: root
     environment: root.folderEnv()
-    stdout: VaultCollector { id: createFolderStdout; waitForEnd: true }
+    stdout: VaultCollector { id: createFolderStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(createFolderProc)) return
       root.onFolderCreated(exitCode, createFolderStdout.text)
@@ -9556,8 +9536,8 @@ Item {
     id: attachmentProc
     vault: root
     environment: root.bwEnv(Model.attachmentDownloadEnv(root.attachmentBusyName))
-    stdout: VaultCollector { id: attachmentStdout; waitForEnd: true }
-    stderr: VaultCollector { id: attachmentStderr; waitForEnd: true }
+    stdout: VaultCollector { id: attachmentStdout }
+    stderr: VaultCollector { id: attachmentStderr }
     onExited: function(exitCode) {
       if (root.finishScrubRun(attachmentProc)) return
       root.onAttachmentDownloaded(exitCode, attachmentStdout.text, attachmentStderr.text)
@@ -9570,7 +9550,6 @@ Item {
     environment: root.bwEnv()
     stdout: VaultCollector {
       id: listSendsStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(listSendsProc)) return
@@ -9583,8 +9562,8 @@ Item {
     id: createSendProc
     vault: root
     environment: root.sendEnv(root.sendPayloadJson)
-    stdout: VaultCollector { id: createSendStdout; waitForEnd: true }
-    stderr: VaultCollector { id: createSendStderr; waitForEnd: true }
+    stdout: VaultCollector { id: createSendStdout }
+    stderr: VaultCollector { id: createSendStderr }
     onExited: function(exitCode) {
       if (root.finishScrubRun(createSendProc)) return
       root.onSendCreated(exitCode, createSendStdout.text, createSendStderr.text)
@@ -9602,7 +9581,7 @@ Item {
     id: generateProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector { id: generateStdout; waitForEnd: true }
+    stdout: VaultCollector { id: generateStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(generateProc)) return
       if (root.generateCliStopping) {
@@ -9685,7 +9664,7 @@ Item {
     id: pinentryProc
     vault: root
     session: false
-    stderr: VaultCollector { id: pinentryStderr; waitForEnd: true }
+    stderr: VaultCollector { id: pinentryStderr }
     onExited: function(exitCode) { root.onPinentryExited(exitCode, pinentryProc.outputHeld, pinentryStderr.text) }
   }
 
@@ -9706,7 +9685,7 @@ Item {
     session: false
     command: Model.pinUnlockCommand(root.activeSlot)
     environment: root.pinEnv(root.heldPinName ? Model.heldSecretRef(root.heldPinName) : root.pinEntry)
-    stdout: VaultCollector { id: pinUnlockStdout; waitForEnd: true }
+    stdout: VaultCollector { id: pinUnlockStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(pinUnlockProc)) return
       root.onPinUnlockResult(exitCode, root.heldOutput(pinUnlockProc, pinUnlockStdout.text))
@@ -9753,7 +9732,6 @@ Item {
   // An install runs in a terminal we do not own, so re-probe while the setup
   // screen is open; the moment `bw` appears the panel moves on.
   Timer {
-    id: setupPollTimer
     interval: 2500
     running: root.opened && root.currentScreen === "setup" && root.setupActionsPending
     repeat: true
@@ -9763,7 +9741,6 @@ Item {
   // If the dependency probe never reports (broken PATH), probe status anyway
   // after a few seconds rather than sit on "checking".
   Timer {
-    id: statusProbeFallbackTimer
     interval: 4000
     running: root.live && !root.statusProbeStarted
     repeat: false
@@ -9869,7 +9846,6 @@ Item {
     command: Model.keyringLookupMasterPasswordCommand(root.activeSlot)
     stdout: VaultCollector {
       id: keyringLookupMasterStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupMasterProc)) return
@@ -10041,7 +10017,6 @@ Item {
   // Polled on the wall clock, like the auto-lock, so a login pending across a
   // suspend expires on real time.
   Timer {
-    id: pendingLoginTimer
     interval: 1000
     repeat: true
     running: root.secondFactorStartedAt > 0
@@ -10059,11 +10034,9 @@ Item {
     environment: root.loginProcessEnv()
     stdout: VaultCollector {
       id: loginStdout
-      waitForEnd: true
     }
     stderr: VaultCollector {
       id: loginStderr
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       // A scrub started here briefly holds the process; a submit arriving then
@@ -10097,11 +10070,9 @@ Item {
     environment: root.authEnv("", "", "", "")
     stdout: VaultCollector {
       id: unlockStdout
-      waitForEnd: true
     }
     stderr: VaultCollector {
       id: unlockStderr
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(unlockProc)) {
@@ -10131,11 +10102,9 @@ Item {
     environment: root.bwEnv()
     stdout: VaultCollector {
       id: listStdout
-      waitForEnd: true
     }
     stderr: VaultCollector {
       id: listStderr
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       root.onListProcessExited(exitCode, listStdout.text, listStderr.text)
@@ -10148,7 +10117,6 @@ Item {
     environment: root.bwEnv()
     stdout: VaultCollector {
       id: listOrgsStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(listOrgsProc)) return
@@ -10162,11 +10130,9 @@ Item {
     environment: root.bwEnv()
     stdout: VaultCollector {
       id: getItemStdout
-      waitForEnd: true
     }
     stderr: VaultCollector {
       id: getItemStderr
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(getItemProc)) return
@@ -10187,7 +10153,6 @@ Item {
     environment: root.bwEnv()
     stdout: VaultCollector {
       id: getTotpStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) {
       if (root.finishScrubRun(getTotpProc)) {
@@ -10202,7 +10167,7 @@ Item {
     id: copyPasswordProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector { id: copyPasswordStdout; waitForEnd: true }
+    stdout: VaultCollector { id: copyPasswordStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(copyPasswordProc)) return
       root.onPasswordCopyFinished(exitCode, copyPasswordStdout.text)
@@ -10216,7 +10181,7 @@ Item {
     vault: root
     environment: root.bwEnv()
     property string itemId: ""
-    stdout: VaultCollector { id: autoTypeReadStdout; waitForEnd: true }
+    stdout: VaultCollector { id: autoTypeReadStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(autoTypeReadProc)) return
       root.onAutoTypeRead(exitCode, autoTypeReadStdout.text, autoTypeReadProc.itemId)
@@ -10282,8 +10247,8 @@ Item {
     vault: root
     capture: "vaultMerge"
     environment: root.itemEnv()
-    stdout: VaultCollector { id: createItemStdout; waitForEnd: true }
-    stderr: VaultCollector { id: createItemStderr; waitForEnd: true }
+    stdout: VaultCollector { id: createItemStdout }
+    stderr: VaultCollector { id: createItemStderr }
     onExited: function(exitCode) {
       if (root.finishScrubRun(createItemProc)) return
       root.itemPayloadJson = ""
@@ -10296,8 +10261,8 @@ Item {
     vault: root
     capture: "vaultMerge"
     environment: root.itemEnv()
-    stdout: VaultCollector { id: editItemStdout; waitForEnd: true }
-    stderr: VaultCollector { id: editItemStderr; waitForEnd: true }
+    stdout: VaultCollector { id: editItemStdout }
+    stderr: VaultCollector { id: editItemStderr }
     onExited: function(exitCode) {
       if (root.finishScrubRun(editItemProc)) return
       root.itemPayloadJson = ""
@@ -10309,8 +10274,8 @@ Item {
     id: deleteItemProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector { id: deleteItemStdout; waitForEnd: true }
-    stderr: VaultCollector { id: deleteItemStderr; waitForEnd: true }
+    stdout: VaultCollector { id: deleteItemStdout }
+    stderr: VaultCollector { id: deleteItemStderr }
     onExited: function(exitCode) {
       if (root.finishScrubRun(deleteItemProc)) return
       root.onDeleteItemFinished(exitCode, deleteItemStdout.text, deleteItemStderr.text)
@@ -10334,7 +10299,7 @@ Item {
     vault: root
     // Its key comes from `inject`: the copy held when the lock was asked for.
     session: false
-    stdout: VaultCollector { id: lockStdout; waitForEnd: true }
+    stdout: VaultCollector { id: lockStdout }
     onExited: function(exitCode) { root.onBwLockExited(exitCode, lockStdout.text) }
   }
 

@@ -49,7 +49,10 @@ check("unbounded custom-field names wrap within the detail width",
 // --- how the detail screen uses it -------------------------------------------
 
 // Each use up to the brace that closes it, at the opener's own indentation.
-const uses = panelSrc.match(/^( *)DetailField \{[\s\S]*?\n\1\}/gm) || []
+// VaultField is the panel's DetailField with its foreground and font set.
+check("the panel's VaultField is a DetailField",
+  /component VaultField: DetailField \{\s*foreground: root\.fg\s*fontFamily: root\.fontFamily\s*\}/.test(panelSrc))
+const uses = panelSrc.match(/^( *)(?:Vault|Detail)Field \{[\s\S]*?\n\1\}/gm) || []
 check("the detail screen draws its fields through the component",
   uses.length >= 14, `found ${uses.length} DetailField uses`)
 
@@ -128,7 +131,7 @@ check("the detail screen has a custom-fields section",
 check("custom fields are rendered from the parsed detail collection",
   /id:\s*customFieldRepeater/.test(customUse)
     && /model:\s*root\.detailItem\s*\?\s*root\.detailItem\.fields\s*:\s*\[\]/.test(customUse)
-    && /delegate:\s*DetailField/.test(customUse)
+    && /delegate:\s*VaultField/.test(customUse)
     && /label:\s*modelData\.name/.test(customUse)
     && /value:\s*root\.shownSecret\(revealKey, modelData\.value\)/.test(customUse),
   customUse)

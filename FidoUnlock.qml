@@ -488,7 +488,6 @@ Item {
     session: false
     stdout: VaultCollector {
       id: assertStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) { fido.onAssertExited(exitCode) }
   }
@@ -507,7 +506,6 @@ Item {
   // Asks the legacy check again once its process is free (the Process can
   // still read as running inside its own exit handler).
   Timer {
-    id: hasRecheckTimer
     interval: 150
     repeat: true
     running: fido.hasRecheck

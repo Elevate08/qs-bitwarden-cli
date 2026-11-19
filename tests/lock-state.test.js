@@ -146,6 +146,9 @@ check("no session at all: stale whatever the generation says",
   Model.vaultReadIsStale(3, 3, false) === true, "accepted a result into a locked vault")
 check("a reader that never recorded a generation is stale, not fresh",
   Model.vaultReadIsStale(undefined, 0, true) === true, "unstamped read treated as fresh")
+check("and the vault's own guard is that function, on its generation and session",
+  /function vaultReadIsStale\(name\) \{\s*return Model\.vaultReadIsStale\(readEpochs\[name\], vaultEpoch, !!session\)\s*\}/
+    .test(read("Service.qml")))
 
 // Replay of the real sequence, with the panel's own logic standing in for the
 // panel. `bw list items` is in flight; the vault locks; the list lands.

@@ -331,10 +331,7 @@ function accountSlotRetireCommand(slot) {
 }
 
 function accountRegistryReadCommand() {
-  var script = "d=\"" + ACCOUNTS_DIR + "\"; f=\"$d/registry.json\"; "
-    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
-    + "head -c " + MAX_ACCOUNTS_BYTES + " \"$f\" 2>/dev/null || printf '{}'; else printf '{}'; fi"
-  return ["bash", "-c", script]
+  return privateFileReadCommand(ACCOUNTS_DIR, "registry.json", MAX_ACCOUNTS_BYTES, "printf '{}'")
 }
 
 // Payload in the environment; written to a private temp file and renamed,
@@ -638,6 +635,31 @@ function privateDirScript(name) {
   var d = "\"$" + name + "\""
   return "if [ -e " + d + " ]; then [ -d " + d + " ] && [ ! -L " + d + " ] || exit 1; "
     + "else (umask 077 && mkdir -p -- " + d + ") || exit 1; fi; chmod 700 -- " + d + " || exit 1; "
+}
+
+// Reads at most `maxBytes` of `file` in `dir`, following no symlink at either.
+// `missing` is the shell command that stands in for a file that is not there
+// or cannot be read; without one, nothing is printed.
+function privateFileReadCommand(dir, file, maxBytes, missing) {
+  var script = "d=\"" + dir + "\"; f=\"$d/" + file + "\"; "
+    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
+    + "head -c " + maxBytes + " \"$f\" 2>/dev/null || "
+    + (missing ? missing + "; else " + missing : "true") + "; fi"
+  return ["bash", "-c", script]
+}
+
+// Writes stdin to `file` in `dir` through a private temp file and a rename,
+// so a symlink is replaced, not followed, and the file is always 0600. A
+// payload over `maxBytes` is refused rather than written truncated.
+function privateFileWriteCommand(dir, file, tmpPrefix, maxBytes) {
+  var script = "set -e; d=\"" + dir + "\"; "
+    + privateDirScript("d")
+    + "umask 077; tmp=$(mktemp -- \"$d/." + tmpPrefix + ".XXXXXXXX\"); "
+    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
+    + "head -c " + (maxBytes + 1) + " > \"$tmp\"; "
+    + "[ \"$(wc -c < \"$tmp\")\" -le " + maxBytes + " ]; chmod 600 \"$tmp\"; "
+    + "mv -fT -- \"$tmp\" \"$d/" + file + "\"; trap - EXIT HUP INT TERM"
+  return ["bash", "-c", script]
 }
 
 function authFifoPrelude(channel) {
@@ -1195,7 +1217,6 @@ var SLEEP_ACK_TIMEOUT_S = 4
 function sleepSignalToken() { return SLEEP_SIGNAL_TOKEN }
 function wakeSignalToken() { return WAKE_SIGNAL_TOKEN }
 function sleepAckLine() { return SLEEP_ACK_TOKEN + "\n" }
-function sleepAckTimeoutS() { return SLEEP_ACK_TIMEOUT_S }
 
 function sleepMonitorCommand() {
   var monitor = "gdbus monitor --system --dest org.freedesktop.login1"
@@ -1537,8 +1558,6 @@ function autoTypeBindLine(chord) {
   return "o.bind(\"" + parsed.chord + "\", \"" + AUTO_TYPE_BIND_DESCRIPTION + "\", \""
     + AUTO_TYPE_IPC_COMMAND + "\")"
 }
-
-function autoTypeBindComment() { return AUTO_TYPE_BIND_COMMENT }
 
 // What bindings.lua holds: every o.bind() with a plain string chord and
 // command, and the line(s) that run the autoType IPC. Comment lines are
@@ -2069,6 +2088,16 @@ function parseJsonArray(raw) {
     return Array.isArray(parsed) ? parsed : []
   } catch (e) {
     return []
+  }
+}
+
+// The parsed object (arrays included), or null for anything else.
+function parseJsonObject(raw) {
+  try {
+    var parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" ? parsed : null
+  } catch (e) {
+    return null
   }
 }
 
@@ -3189,13 +3218,8 @@ function keyringClearAllCommand(slot) {
 // -------------------------------------------------------------------------
 
 function parseStatus(raw) {
-  var st = null
-  try {
-    st = JSON.parse(raw)
-  } catch (e) {
-    return null
-  }
-  if (!st || typeof st !== "object") return null
+  var st = parseJsonObject(raw)
+  if (!st) return null
   return {
     authenticated: st.status !== "unauthenticated",
     locked: st.status === "locked",
@@ -3473,10 +3497,6 @@ function baseName(path) {
 // The decrypted file name travels in the environment: argv is world-readable
 // in /proc, and the vault helper passes argv through unchanged.
 var ATTACHMENT_NAME_ENV = "QSBW_ATTACHMENT_NAME"
-
-function attachmentNameEnvVar() {
-  return ATTACHMENT_NAME_ENV
-}
 
 function attachmentDownloadEnv(fileName) {
   var env = {}
@@ -4014,15 +4034,8 @@ function spliceSavedItem(items, raw, replacingId) {
   return replaceItemById(items, replacingId ? String(replacingId) : one.id, one)
 }
 
-function parseSanitizedItems(raw) {
-  var envelope = parseSanitizedEnvelope(raw)
-  return envelope ? envelope.items : []
-}
-
 // The item list and the SSH capability from one parse of the sanitized vault
-// read. The panel calls this once per load; inspectSanitizedVault() and
-// parseSanitizedItems() each parse on their own and are kept for callers that
-// need only one of the two.
+// read. The panel calls this once per load.
 function readSanitizedVault(raw) {
   var envelope = parseSanitizedEnvelope(raw)
   return {
@@ -4032,13 +4045,7 @@ function readSanitizedVault(raw) {
 }
 
 function parseItemDetail(raw) {
-  var it = null
-  try {
-    it = JSON.parse(raw)
-  } catch (e) {
-    return null
-  }
-  return itemDetailFromObject(it)
+  return itemDetailFromObject(parseJsonObject(raw))
 }
 
 // The list already holds each full cipher as `rawObject`, so the detail view
@@ -5154,10 +5161,7 @@ function associationsFileName(slot) {
 }
 
 function associationsReadCommand(slot) {
-  var script = "d=\"" + ASSOC_DIR + "\"; f=\"$d/" + associationsFileName(slot) + "\"; "
-    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
-    + "head -c " + MAX_ASSOC_BYTES + " \"$f\" 2>/dev/null || printf '{}'; else printf '{}'; fi"
-  return ["bash", "-c", script]
+  return privateFileReadCommand(ASSOC_DIR, associationsFileName(slot), MAX_ASSOC_BYTES, "printf '{}'")
 }
 
 // The payload arrives on stdin, which the panel closes after writing
@@ -5167,16 +5171,7 @@ function associationsReadCommand(slot) {
 // cap is refused rather than written truncated (which would read back as
 // no store at all).
 function associationsWriteCommand(slot) {
-  // Write a private temp file and rename it, so a symlink is replaced, not
-  // followed, and the file is always 0600.
-  var script = "set -e; d=\"" + ASSOC_DIR + "\"; "
-    + privateDirScript("d")
-    + "umask 077; tmp=$(mktemp -- \"$d/.associations.XXXXXXXX\"); "
-    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
-    + "head -c " + (MAX_ASSOC_BYTES + 1) + " > \"$tmp\"; "
-    + "[ \"$(wc -c < \"$tmp\")\" -le " + MAX_ASSOC_BYTES + " ]; chmod 600 \"$tmp\"; "
-    + "mv -fT -- \"$tmp\" \"$d/" + associationsFileName(slot) + "\"; trap - EXIT HUP INT TERM"
-  return ["bash", "-c", script]
+  return privateFileWriteCommand(ASSOC_DIR, associationsFileName(slot), "associations", MAX_ASSOC_BYTES)
 }
 
 // Cleared on logout: it records the sites the account has credentials for.
@@ -5660,10 +5655,6 @@ function defaultSshCapability() {
   }
 }
 
-function inspectSanitizedVault(raw) {
-  return sshCapabilityOf(parseSanitizedEnvelope(raw))
-}
-
 // The SSH capability of an already-parsed sanitized envelope (null: unread).
 function sshCapabilityOf(parsed) {
   if (!parsed) return defaultSshCapability()
@@ -5733,8 +5724,6 @@ var SSH_AGENT_EVENT_TYPES = [
   "keys_loaded", "public_key", "locked", "load_failed", "grants_changed", "state_changed", "error"
 ]
 
-function sshAgentMaxLineBytes() { return SSH_AGENT_MAX_LINE_BYTES }
-function sshAgentMaxRestarts() { return SSH_AGENT_MAX_RESTARTS }
 function sshAgentHandshakeTimeoutMs() { return SSH_AGENT_HANDSHAKE_TIMEOUT_MS }
 
 // The plugin directory from QML's `file://` URL. It is the base of the only
@@ -5912,7 +5901,6 @@ function runtimeFilePath(runtimeDir, name) {
 }
 
 function sshAgentSocketPath(runtimeDir) { return runtimeFilePath(runtimeDir, "ssh-agent.sock") }
-function sshAgentFifoPath(runtimeDir) { return runtimeFilePath(runtimeDir, "ssh-keys.fifo") }
 
 // Per-load nonce, so no other same-UID process can inject keys into the FIFO.
 // Sent to the companion on stdin and to jq in the environment, never argv.
@@ -8003,22 +7991,12 @@ var UPDATE_CHECK_FILE = "update-check.json"
 var MAX_UPDATE_STATE_BYTES = 1024
 
 function updateCheckReadCommand() {
-  var script = "d=\"" + ASSOC_DIR + "\"; f=\"$d/" + UPDATE_CHECK_FILE + "\"; "
-    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
-    + "head -c " + MAX_UPDATE_STATE_BYTES + " \"$f\" 2>/dev/null || true; fi"
-  return ["bash", "-c", script]
+  return privateFileReadCommand(ASSOC_DIR, UPDATE_CHECK_FILE, MAX_UPDATE_STATE_BYTES, "")
 }
 
 // The record arrives on stdin (see updateCheckRecord()), never in the script.
 function updateCheckWriteCommand() {
-  var script = "set -e; d=\"" + ASSOC_DIR + "\"; "
-    + privateDirScript("d")
-    + "umask 077; tmp=$(mktemp -- \"$d/.update-check.XXXXXXXX\"); "
-    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
-    + "head -c " + (MAX_UPDATE_STATE_BYTES + 1) + " > \"$tmp\"; "
-    + "[ \"$(wc -c < \"$tmp\")\" -le " + MAX_UPDATE_STATE_BYTES + " ]; chmod 600 \"$tmp\"; "
-    + "mv -fT -- \"$tmp\" \"$d/" + UPDATE_CHECK_FILE + "\"; trap - EXIT HUP INT TERM"
-  return ["bash", "-c", script]
+  return privateFileWriteCommand(ASSOC_DIR, UPDATE_CHECK_FILE, "update-check", MAX_UPDATE_STATE_BYTES)
 }
 
 // Stored text in, { checkedAt, latest } out; null for anything unusable.
@@ -8292,12 +8270,7 @@ function generateServeUrl(opts) {
 
 // { success: true, data: { data: "<password>" } } on the way out.
 function parseServeGenerated(raw) {
-  var parsed = null
-  try {
-    parsed = JSON.parse(raw)
-  } catch (e) {
-    return ""
-  }
+  var parsed = parseJsonObject(raw)
   if (!parsed || parsed.success !== true || !parsed.data) return ""
   return String(parsed.data.data || "")
 }

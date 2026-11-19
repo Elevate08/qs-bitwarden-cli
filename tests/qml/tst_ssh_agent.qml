@@ -99,7 +99,7 @@ TestCase {
   }
 
   function test_overlong_output_is_rejected_by_bytes() {
-    var filler = new Array(Model.sshAgentMaxLineBytes()).join("é")
+    var filler = new Array(Model.SSH_AGENT_MAX_LINE_BYTES).join("é")
     var run = drive(ready().state, [{
       kind: "line", nowMs: 100,
       line: '{"v":1,"type":"error","code":"X","message":"' + filler + '"}'
@@ -137,7 +137,7 @@ TestCase {
       { kind: "enabled", value: true, nowMs: 0 }).state
     var scheduled = 0
     var clock = 0
-    for (var i = 0; i < Model.sshAgentMaxRestarts() + 2; i++) {
+    for (var i = 0; i < Model.SSH_AGENT_MAX_RESTARTS + 2; i++) {
       clock += 10
       state = Model.sshAgentReduce(state, { kind: "started", nowMs: clock }).state
       clock += 10
@@ -151,7 +151,7 @@ TestCase {
     compare(state.phase, "failed")
     compare(state.errorCode, "CRASH_LOOP")
     compare(state.gateOpen, false)
-    compare(scheduled, Model.sshAgentMaxRestarts())
+    compare(scheduled, Model.SSH_AGENT_MAX_RESTARTS)
   }
 
   function test_backoff_is_capped() {
@@ -171,7 +171,7 @@ TestCase {
     var failed = Model.sshAgentInitialState()
     failed.phase = "failed"
     failed.errorCode = "CRASH_LOOP"
-    failed.failures = Model.sshAgentMaxRestarts() + 1
+    failed.failures = Model.SSH_AGENT_MAX_RESTARTS + 1
     var run = drive(failed, [{ kind: "enabled", value: true, nowMs: 0 }])
     compare(run.state.phase, "starting")
     compare(run.state.errorCode, "")

@@ -1,5 +1,4 @@
 import QtQuick
-import qs.Commons
 import qs.Ui
 
 // PanelSectionHeader in the bar's foreground and font.

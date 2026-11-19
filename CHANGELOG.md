@@ -142,6 +142,12 @@
   and normally never reach this helper; one that does is discarded as the
   read is parsed. This needs the rebuilt vault helper.
 
+### Changed
+
+- **Internal cleanup, no behaviour change.** Unused ids, properties and
+  test-only model functions are gone, and repeated panel markup and model
+  script builders are shared. The helper binaries are untouched.
+
 ### Fixed
 
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
