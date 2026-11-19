@@ -91,7 +91,7 @@ check("a lock drops reads still waiting for their process, a list read owed afte
     && /createdItemHandoff = null/.test(body("dropVaultState")), body("dropVaultState"))
 // The arm, and whether its item asked for the master password when armed.
 check("a lock drops an auto-type arm and how it was made",
-  /disarmAutoType\(\)/.test(body("dropVaultSecrets"))
+  /dropVaultSecrets\(\)/.test(body("dropVaultState")) && /disarmAutoType\(\)/.test(body("dropVaultSecrets"))
     && /autoTypeItemId = ""\s*autoTypeArmEpoch = -1\s*autoTypeArmReprompt = false/.test(body("disarmAutoType")), body("disarmAutoType"))
 
 // --- a suspend waits for the lock ---------------------------------------------------

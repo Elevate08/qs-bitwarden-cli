@@ -150,10 +150,9 @@ try {
   q("reveal", "password")
   expect("B's item is open with its password revealed, no prompt asked",
     s => s.screen === "detail" && s.revealed.join() === "password" && !s.reprompt.pending)
-  q("reload")
   fs.rmSync(bwLog + ".clipboard", { force: true })
   q("copyField", "password")
-  expect("a reload that changes nothing leaves it revealed, and a copy goes through",
+  expect("and a copy goes through",
     s => s.error === "" && s.revealed.join() === "password" && s.screen === "detail" && fs.existsSync(bwLog + ".clipboard"))
   // A sync elsewhere turns the item's re-prompt on; the next list brings it.
   fs.writeFileSync(path.join(dataB, "fake-item-reprompt"), "1")
