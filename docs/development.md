@@ -86,13 +86,14 @@ answered. In Node, same machine and fixtures (2026-11-19, p95 of 40 opens,
 matching only): an open from another window than last time went from two
 passes to one, 14.8 ms to 6.9 ms at 5,000 items, 5.3 ms to 2.5 ms at 2,000
 and 1.2 ms to 0.6 ms at 500; an open from the same window, nothing having
-changed, from two passes to none (0.01 ms). Two passes remain only when
-both hold: the answer for the window last seen is stale (the learned picks
+changed, from two passes to none (0.01 ms). For windows that can be keyed,
+two passes remain only when both hold: the answer for the window last seen is stale (the learned picks
 were replaced since; a list reload refreshes it at once) and the open is
 from a different window, the stale one being matched first. A window whose data JSON cannot spell exactly (a number
 that is not finite) is given no key and matched on every pass in which it is
 the window being matched (so once, when only the newly focused window is
-such a one and the answer for the window last seen is current), and an empty
+such a one and the answer for the window last seen is current, and twice
+when the open is from that same window), and an empty
 list clears the suggestions, as the vault purge does. The list is still
 rebuilt on both passes. The suite's two `open` columns report this, and
 `tests/context-match.test.js` checks the counts and, over 400 random opens,
