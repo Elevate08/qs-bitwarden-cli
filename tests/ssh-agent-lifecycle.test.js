@@ -365,7 +365,8 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
 
 {
   const service = readPluginSource("Service.qml")
-  const names = ["adoptSshPrompt", "onSshAgentMessage", "keepSshHandoffDeny", "applySshHandoffDeny", "denyCurrentSshPrompt"]
+  const names = ["adoptSshPrompt", "onSshAgentMessage", "keepSshHandoffDeny", "applySshHandoffDeny", "denyCurrentSshPrompt",
+    "promoteUnlockToApproval"]
   const unlockMessage = (requestId, extra) => Object.assign({
     type: "unlock_required", requestId: requestId, reason: "sign", keyName: "k",
     fingerprint: "SHA256:A", pid: 10, processPath: "/usr/bin/ssh-keygen",
@@ -418,8 +419,11 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
     d.onSshAgentMessage(approvalOf(20, b))
     d.onSshAgentMessage(approvalOf(21, a))
     d.onSshAgentMessage(approvalOf(22, a))               // a later one that looks the same is asked about
+    // Two held requests that look the same; the card is promoted from one.
     const twin = makeVault({ requestId: 1, raw: a })
-    twin.sshPromotedAmbiguous = true
+    Object.assign(twin, { status: "unlocked", sshPrompt: null, sshUnlockRaw: a, sshUnlockQueue: [unlockMessage(2)],
+      showSshApproval(message) { twin.sshPrompt = { requestId: message.requestId } } })
+    twin.promoteUnlockToApproval()
     twin.onSshAgentMessage(approvalOf(21, a))
     eq("a Deny given during the renumbering reaches the request once; an ambiguous one keeps no notification",
       JSON.stringify([d.writes, d.shownNew.map(m => m.requestId), d.sshHandoffDeny, twin.sshPrompt.requestId, twin.sshNotifyRequestId,

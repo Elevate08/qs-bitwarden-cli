@@ -162,9 +162,10 @@ choice without building anything; it only runs those probes.
     URL is ever built from a vault value alone, so an item cannot make the
     panel request a `file:`, `qrc:` or LAN address. The rest is Qt's own
     loader, which the plugin does not configure: it follows the service's
-    redirects under Qt's default policy (to other hosts, not from `https`
-    to `http`, not to `file:`), so a self-hosted or impersonated icon
-    endpoint can make the panel send a blind `GET` elsewhere; it sends its
+    redirects under Qt's default policy (seen here on Qt 6.12: to other
+    hosts, not to `file:`; Qt documents that default as refusing `https`
+    to `http`, which was not tested), so a self-hosted or impersonated
+    icon endpoint can make the panel send a blind `GET` elsewhere; it sends its
     stock `User-Agent` (`Mozilla/5.0`), keeps the service's cookies in
     memory until the shell exits, and has no disk cache. It reads the whole
     answer, picks the decoder by the bytes, not by the `.png` in the URL,

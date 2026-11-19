@@ -2780,6 +2780,7 @@ Item {
 
   function denyAllSshRequests() {
     if (sshPrompt) {
+      keepSshHandoffDeny()
       sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
     }
     for (var i = 0; i < root.sshPromptQueue.length; i++) {
