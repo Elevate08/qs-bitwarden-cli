@@ -135,6 +135,9 @@ Item {
   readonly property bool sideBySide: Model.boolSetting("sideBySide", setting("sideBySide", true))
   // One request a day to GitHub's releases API; off makes none.
   readonly property bool checkForUpdates: Model.boolSetting("checkForUpdates", setting("checkForUpdates", true))
+  // Node's compile cache for `bw`, off unless asked for; see
+  // probeBwCompileCache().
+  readonly property bool bwCompileCache: Model.boolSetting("bwCompileCache", setting("bwCompileCache", false))
   // { checkedAt, latest } of the last release check, kept in update-check.json
   // in the plugin's state directory (not shell.json: writing a setting reloads
   // the shell) and read when Settings opens.
@@ -953,6 +956,8 @@ Item {
     root.inspectUnlockKey()
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
+    // Only with the setting on: off, it runs nothing and makes no directory.
+    root.probeBwCompileCache()
   }
 
   readonly property var categories: [
@@ -1264,6 +1269,7 @@ Item {
       if (held) inject[key] = "secret:" + held
       else environment[key] = proc.environment[key]
     }
+    bwEnvAtStart(environment)
     if (!vaultHelperActive) {
       // What was typed into pinentry would come back to the shell: not run.
       if (proc.capture.indexOf("pinentry:") === 0) {
@@ -1985,7 +1991,7 @@ Item {
     beginEpochOperation("bwVerify")
     queueEnvelopeJob({
       command: Model.bwVerifyPasswordCommand(),
-      env: bwEnv(env), secretOutput: true, capture: "session",
+      env: bwSecretEnv(env), secretOutput: true, capture: "session",
       onDone: function(code, out) {
         var s = code === 0 ? Model.extractSessionToken(out) : ""
         // Locked or logged out meanwhile: adopting the new session would
@@ -2255,9 +2261,7 @@ Item {
     // its own file.
     associationsWritePending = false
     associations = Model.emptyAssociations()
-    suggestedItems = []
-    detectedContext = null
-    learnedIds = ({})
+    clearContextMatch()
     syncLoginFieldsToState()
   }
 
@@ -3212,6 +3216,8 @@ Item {
   }
 
   onStatusChanged: {
+    // First: an opening's reads wait for its own check (uncached till then).
+    if (status === "unlocked") probeBwCompileCache()
     promoteUnlockToApproval()
     maybeStartupLoad()
   }
@@ -3507,21 +3513,55 @@ Item {
     if (activeWindowData) handleActiveWindowDetected(activeWindowData)
   }
 
+  // What the suggestions on show were matched from
+  // (Model.contextMatchKey()): the window, and a count that moves whenever
+  // the list or the learned picks are replaced. "" when they are not a
+  // match's answer. Opening the panel asks twice, once with the window it
+  // already knew and once when the compositor has named the focused one;
+  // matching is a function of those three alone, so a question already
+  // answered is not worked out again.
+  property string contextMatchKey: ""
+  property int contextInputsGen: 0
+  onItemsChanged: contextInputsGen += 1
+  onAssociationsChanged: contextInputsGen += 1
+
+  function clearContextMatch() {
+    contextMatchKey = ""
+    suggestedItems = []
+    detectedContext = null
+    learnedIds = ({})
+  }
+
+  // The compositor's answer was empty or could not be read: the window is
+  // not known, so nothing is suggested for it, the last one's rows leave
+  // the list, and a later refresh has no old window to match again.
+  function windowDetectionFailed() {
+    activeWindowData = null
+    clearContextMatch()
+    rebuildFilter()
+  }
+
   function handleActiveWindowDetected(data) {
     activeWindowData = data
     if (!suggestOnOpen) {
-      suggestedItems = []
-      detectedContext = null
+      clearContextMatch()
       rebuildFilter()
       return
     }
     if (items.length === 0) {
+      // Nothing to suggest from: what an earlier list suggested goes too.
+      clearContextMatch()
+      rebuildFilter()
       return
     }
-    var res = Model.findContextualMatches(items, data, associations)
-    detectedContext = res.context
-    suggestedItems = res.matches
-    learnedIds = res.learnedIds || ({})
+    var key = Model.contextMatchKey(contextInputsGen, data)
+    if (key === "" || key !== contextMatchKey) {
+      var res = Model.findContextualMatches(items, data, associations)
+      detectedContext = res.context
+      suggestedItems = res.matches
+      learnedIds = res.learnedIds || ({})
+      contextMatchKey = key
+    }
     rebuildFilter()
   }
 
@@ -4452,7 +4492,8 @@ Item {
     // Opens the window in which a handed-over session key is accepted. See
     // refreshStatus().
     terminalLoginStartedAt = Date.now()
-    Quickshell.execDetached(Model.terminalLoginCommand(mode, serverUrl, activeSlot))
+    Quickshell.execDetached({ command: Model.terminalLoginCommand(mode, serverUrl, activeSlot),
+      environment: Model.withoutCompileCache({}) })
   }
 
   // Signs the active account out and forgets it; other accounts keep their
@@ -4666,8 +4707,7 @@ Item {
       associationsClearProc.running = true
     }
     associations = Model.emptyAssociations()
-    suggestedItems = []
-    detectedContext = null
+    clearContextMatch()
     activeWindowData = null
     cancelFingerprintUnlock()
     fingerprintStored = false
@@ -4702,10 +4742,95 @@ Item {
   // Read once: the shell's own NODE_OPTIONS plus the early-exit preload.
   readonly property string bwNodeOptions: Model.bwNodeOptions(sshAgentPluginDir, Quickshell.env("NODE_OPTIONS"))
 
+  // Node's compile cache for `bw`, with the `bwCompileCache` setting on: the
+  // directory the last check printed once it had passed it
+  // (Model.bwCompileCacheCommand()). "" with the setting off, while a check
+  // is running and after one that failed, and `bw` then starts with no cache.
+  readonly property string bwCompileCacheHome: Model.bwCompileCacheHome(
+    Quickshell.env("XDG_CACHE_HOME") || "", Quickshell.env("HOME") || "")
+  property string bwCompileCacheDir: ""
+  // "off", "pending", "accepted" or "refused": what the last check came to.
+  property string bwCompileCacheState: "off"
+  // Moves with every question put to the check, so an answer to an earlier
+  // one (the setting since turned off, or asked again) is not taken.
+  property int bwCompileCacheProbeSeq: 0
+
+  // The directory is checked when the shell starts with the setting on, when
+  // the setting is turned on, and every time the vault becomes unlocked
+  // (onStatusChanged), whichever way it was opened. A new check withdraws
+  // the last one's directory until it has answered, so the first reads of an
+  // opening run without the cache. Nothing is remembered from one check to
+  // the next but the directory itself, and between checks the directory is
+  // not looked at again (see docs/development.md). A `bw` that is given the
+  // master password, or a login's credentials, never gets the cache
+  // (bwSecretEnv()).
+  onBwCompileCacheChanged: probeBwCompileCache()
+
+  function probeBwCompileCache() {
+    bwCompileCacheDir = ""
+    bwCompileCacheProbeSeq += 1
+    if (!started || !bwCompileCache || bwCompileCacheHome === "") {
+      bwCompileCacheState = bwCompileCache && started ? "refused" : "off"
+      return
+    }
+    bwCompileCacheState = "pending"
+    startBwCompileCacheProbe()
+  }
+
+  // Also run later, from the exit of a check that answered an earlier
+  // question: so it starts nothing (and so makes no directory) unless the
+  // setting is on and a question is still open, and what it starts answers
+  // the newest one.
+  function startBwCompileCacheProbe() {
+    if (!bwCompileCache || bwCompileCacheState !== "pending" || bwCompileCacheProc.running) return
+    bwCompileCacheProc.probeSeq = bwCompileCacheProbeSeq
+    bwCompileCacheProc.running = true
+  }
+
+  function onBwCompileCacheProbed(seq, exitCode, output) {
+    if (seq !== bwCompileCacheProbeSeq) {
+      Qt.callLater(startBwCompileCacheProbe)
+      return
+    }
+    if (!bwCompileCache || bwCompileCacheState !== "pending") return
+    bwCompileCacheDir = Model.bwCompileCacheAccepted(exitCode, output)
+    bwCompileCacheState = bwCompileCacheDir !== "" ? "accepted" : "refused"
+    if (bwCompileCacheDir === "") {
+      console.warn("qs-bitwarden-cli: the compile cache directory did not pass its check (exit " + exitCode + "); bw runs without it")
+    }
+  }
+
+  // NODE_COMPILE_CACHE for a `bw`: the accepted directory, or null, which
+  // removes one the shell inherited (Process and the vault helper both unset
+  // a null). The setting is read here too: off wins whatever was accepted.
+  function bwCompileCacheEnvValue() {
+    return bwCompileCache && bwCompileCacheDir !== "" ? bwCompileCacheDir : null
+  }
+
+  // Called for every VaultProcess as it is handed to the vault helper
+  // (vaultStart()) and again as it starts here instead
+  // (VaultProcess.launchLocal()): an environment may have been built some
+  // time before (a queued lock or envelope job, a run that waited for the
+  // helper), so a directory it names is replaced, in place, by what holds
+  // now. One with the variable removed keeps it removed.
+  function bwEnvAtStart(env) {
+    var name = Model.bwCompileCacheEnvVar()
+    if (env && env[name] !== undefined && env[name] !== null) env[name] = bwCompileCacheEnvValue()
+    return env
+  }
+
+  // For a `bw` that is given the master password or a login's credentials
+  // (unlock and the process waiting for it, every login, the password
+  // check): never the cache, whatever was accepted.
+  function bwSecretEnv(extra) {
+    return Model.withoutCompileCache(bwEnv(extra))
+  }
+
   // No session here: a VaultProcess adds it (vaultStart()).
   function bwEnv(extra) {
     var env = accountAppDataEnv()
     if (bwNodeOptions) env.NODE_OPTIONS = bwNodeOptions
+    env[Model.bwCompileCacheEnvVar()] = bwCompileCacheEnvValue()
     if (extra) for (var k in extra) env[k] = extra[k]
     return env
   }
@@ -4714,7 +4839,7 @@ Item {
   // FIFO by password flows), BW_CLIENTID and BW_CLIENTSECRET for API login.
   // Read as a binding by loginProc and unlockProc.
   function authEnv(password, clientId, clientSecret, code) {
-    var env = bwEnv()
+    var env = bwSecretEnv()
     env[Model.noInteractionEnvVar()] = "true"
     if (password) env[Model.passwordEnvVar()] = String(password)
     if (clientId) env[Model.clientIdEnvVar()] = String(clientId)
@@ -4736,7 +4861,7 @@ Item {
     // The one login allowed to prompt: BW_NOINTERACTION omitted (so not
     // authEnv()), and the code set for the command's printf.
     if (deviceVerificationAttempt) {
-      var deviceEnv = bwEnv()
+      var deviceEnv = bwSecretEnv()
       deviceEnv[Model.deviceCodeEnvVar()] = String(loginDeviceCode || "").trim()
       return deviceEnv
     }
@@ -4964,6 +5089,7 @@ Item {
     var env = accountAppDataEnv()
     env[Model.sessionEnvVar()] = null
     env[Model.noInteractionEnvVar()] = "true"
+    env[Model.bwCompileCacheEnvVar()] = bwCompileCacheEnvValue()
     return env
   }
 
@@ -5574,6 +5700,9 @@ Item {
   // rows say so.
   function settingNote(entry) {
     if (entry && entry.confirm && settingConfirmKey === entry.key) return entry.confirm
+    if (entry && entry.key === "bwCompileCache") {
+      return Model.bwCompileCacheNote(bwCompileCache, bwCompileCacheHome, bwCompileCacheState)
+    }
     if (entry && entry.key === "autoTypeEnabled" && autoTypeEnabled && depsChecked
         && !Model.dependencyInstalled(dependencies, "wtype")) {
       return "wtype is not installed, so nothing can be typed yet: install it from Dependencies below."
@@ -5769,6 +5898,7 @@ Item {
       case "showWebsiteIcons": return showWebsiteIcons
       case "sideBySide": return sideBySide
       case "checkForUpdates": return checkForUpdates
+      case "bwCompileCache": return bwCompileCache
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
@@ -6713,6 +6843,12 @@ Item {
     foldersLoadedAt = 0
     items = []
     filteredItems = []
+    // What the window suggested came from the list just dropped
+    // (clearContextMatch(), spelled out).
+    contextMatchKey = ""
+    suggestedItems = []
+    detectedContext = null
+    learnedIds = ({})
     organizations = []
     folders = []
     selectedOrg = "all"
@@ -7609,7 +7745,7 @@ Item {
     var path = attachmentSaved[id]
     if (!path) return
     resetAutoLockTimer()
-    var env = {}
+    var env = Model.withoutCompileCache({})
     env[Model.openPathEnvVar()] = String(path)
     Quickshell.execDetached({ command: Model.attachmentOpenCommand(), environment: env })
   }
@@ -9233,6 +9369,7 @@ Item {
   Process {
     id: sshExportProc
     command: Model.sshExportCommand()
+    environment: Model.withoutCompileCache({})
     stdinEnabled: true
     stdout: StdioCollector { id: sshExportStdout; waitForEnd: true }
     onExited: function(exitCode) {
@@ -9674,6 +9811,7 @@ Item {
 
   Process {
     id: pinentryProbeProc
+    environment: Model.withoutCompileCache({})
     stdout: StdioCollector { id: pinentryProbeOut; waitForEnd: true }
     onExited: function(exitCode) { root.pinentryMissing = Model.pinentryProbeMissing(exitCode, pinentryProbeOut.text) }
   }
@@ -9726,6 +9864,7 @@ Item {
     id: bwVersionProc
     property string probeId: ""
     command: Model.bwVersionCommand()
+    environment: Model.withoutCompileCache({})
     stdout: StdioCollector {
       id: bwVersionStdout
       waitForEnd: true
@@ -9912,6 +10051,18 @@ Item {
 
   // ---- Accounts ----
 
+  // Not a VaultProcess: it runs no `bw` and is given no session, nor
+  // anything else of the shell's environment but PATH.
+  Process {
+    id: bwCompileCacheProc
+    property int probeSeq: 0
+    command: Model.bwCompileCacheCommand(root.bwCompileCacheHome)
+    clearEnvironment: true
+    environment: Model.plainProbeEnv(Quickshell.env("PATH") || "")
+    stdout: StdioCollector { id: bwCompileCacheOut; waitForEnd: true }
+    onExited: function(exitCode) { root.onBwCompileCacheProbed(probeSeq, exitCode, bwCompileCacheOut.text) }
+  }
+
   Process {
     id: accountsReadProc
     command: Model.accountRegistryReadCommand()
@@ -9930,6 +10081,7 @@ Item {
 
   Process {
     id: slotRemovalProc
+    environment: Model.withoutCompileCache({})
     onExited: function(exitCode) {
       if (exitCode !== 0) console.warn("qs-bitwarden-cli: could not remove a signed-out account (exit " + exitCode + ")")
       Qt.callLater(root.pumpSlotRemovals)
@@ -10238,9 +10390,10 @@ Item {
             var data = JSON.parse(text)
             root.handleActiveWindowDetected(data)
           } catch (e) {
-            root.suggestedItems = []
-            root.detectedContext = null
+            root.windowDetectionFailed()
           }
+        } else {
+          root.windowDetectionFailed()
         }
       }
     }

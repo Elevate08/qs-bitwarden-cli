@@ -20,7 +20,8 @@ ShellRoot {
     property var settings: ({ pinUnlock: true, fingerprintUnlock: false, fidoUnlock: false, rememberSession: Quickshell.env("QSBW_E2E_REMEMBER_SESSION") !== "0",
                               autoLockMinutes: 0, lockOnScreenLock: false, lockOnSuspend: false,
                               sshAgentEnabled: Quickshell.env("QSBW_E2E_SSH_AGENT") === "1",
-                              allowVaultWithoutHelper: Quickshell.env("QSBW_E2E_ALLOW_NO_HELPER") === "1" })
+                              allowVaultWithoutHelper: Quickshell.env("QSBW_E2E_ALLOW_NO_HELPER") === "1",
+                              bwCompileCache: Quickshell.env("QSBW_E2E_COMPILE_CACHE") === "1" })
     // Set by openAsking(): the next show asks pinentry inside it, before
     // `opened` reads true, as the unlock form does when a real popout shows.
     property bool askOnShow: false
@@ -80,6 +81,10 @@ ShellRoot {
         pinUnlockError: vault.pinUnlockError, logoutPending: vault.logoutPending, opened: vault.opened,
         logoutCliDone: vault.logoutCliDone, logoutCredentialsDone: vault.logoutCredentialsDone,
         clearPending: vault.allCredentialsClearPending,
+        // Node's compile cache for bw: the directory bw is given ("" for
+        // none) and what the last check came to.
+        compileCache: vault.bwCompileCacheDir, compileCacheState: vault.bwCompileCacheState,
+        compileCacheChecks: vault.bwCompileCacheProbeSeq,
         // What the shell itself holds: the vault helper keeps the rest.
         helper: vault.vaultHelperState, helperWarning: vault.vaultHelperWarning, sessionHeld: vault.session === vault.heldSessionMarker,
         // Typed into pinentry, the shell never holds them: these stay empty.
@@ -107,6 +112,11 @@ ShellRoot {
       })
     }
     function open(): void { vault.open() }
+    // The compile-cache setting changed, as the bar pushes a changed entry.
+    function setCompileCache(on: bool): void {
+      view.settings = Object.assign({}, view.settings, { bwCompileCache: on })
+      vault.updateSettings(view.settings)
+    }
     function close(): void { vault.close() }
     // The panel opened on a locked vault, whose unlock form asks pinentry as
     // the popout shows (#132).
