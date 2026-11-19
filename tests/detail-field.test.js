@@ -52,7 +52,7 @@ check("unbounded custom-field names wrap within the detail width",
 // VaultField is the panel's DetailField with its foreground and font set.
 check("the panel's VaultField is a DetailField",
   /component VaultField: DetailField \{\s*foreground: root\.fg\s*fontFamily: root\.fontFamily\s*\}/.test(panelSrc))
-const uses = panelSrc.match(/^( *)VaultField \{[\s\S]*?\n\1\}/gm) || []
+const uses = panelSrc.match(/^( *)(?:Vault|Detail)Field \{[\s\S]*?\n\1\}/gm) || []
 check("the detail screen draws its fields through the component",
   uses.length >= 14, `found ${uses.length} DetailField uses`)
 
