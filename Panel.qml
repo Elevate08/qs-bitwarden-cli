@@ -1625,29 +1625,12 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Column {
+          ScreenIntro {
+            panel: root
             width: parent.width
-            spacing: Style.space(4)
-
-            Text {
-              textFormat: Text.PlainText
-              text: "Accounts"
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
-              text: "Each account keeps its own sign-in and its own PIN, fingerprint and FIDO2 unlock. "
-                + "Only one is unlocked at a time: switching locks the current one."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
+            title: "Accounts"
+            body: "Each account keeps its own sign-in and its own PIN, fingerprint and FIDO2 unlock. "
+              + "Only one is unlocked at a time: switching locks the current one."
           }
 
           Repeater {
@@ -1724,28 +1707,11 @@ Panel {
 
             PanelSeparator { width: parent.width }
 
-            Column {
+            ScreenIntro {
+              panel: root
               width: parent.width
-              spacing: Style.space(4)
-
-              Text {
-                textFormat: Text.PlainText
-                text: "Enable fingerprint unlock"
-                color: root.fg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.title
-                font.bold: true
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                width: parent.width
-                text: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
-              }
+              title: "Enable fingerprint unlock"
+              body: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
 
               Text {
                 textFormat: Text.PlainText
@@ -2154,31 +2120,14 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Column {
+          ScreenIntro {
+            panel: root
             width: parent.width
-            spacing: Style.space(4)
-
-            Text {
-              textFormat: Text.PlainText
-              text: "Set an unlock PIN"
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
-              text: "Your master password is already stored encrypted and sealed to this machine; this adds a way for the PIN "
-                + "to open it, through a deliberately slow key derivation. Use " + Model.pinRecommendedLength()
-                + " digits or more; " + Model.pinMinLength()
-                + " is the floor, and every extra digit multiplies an attacker's work by ten."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
+            title: "Set an unlock PIN"
+            body: "Your master password is already stored encrypted and sealed to this machine; this adds a way for the PIN "
+              + "to open it, through a deliberately slow key derivation. Use " + Model.pinRecommendedLength()
+              + " digits or more; " + Model.pinMinLength()
+              + " is the floor, and every extra digit multiplies an attacker's work by ten."
           }
 
           Column {
@@ -2304,30 +2253,13 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Column {
+          ScreenIntro {
+            panel: root
             width: parent.width
-            spacing: Style.space(4)
-
-            Text {
-              textFormat: Text.PlainText
-              text: root.vault.missingRequired.length > 0 ? "One more step" : "All set"
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
-              text: root.vault.missingRequired.length > 0
-                ? "The plugin drives these tools rather than bundling them. Install the required ones below and the panel picks them up on its own -- no terminal work to come back from."
-                : "Every required tool is installed. Optional ones below unlock extra features."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
+            title: root.vault.missingRequired.length > 0 ? "One more step" : "All set"
+            body: root.vault.missingRequired.length > 0
+              ? "The plugin drives these tools rather than bundling them. Install the required ones below and the panel picks them up on its own -- no terminal work to come back from."
+              : "Every required tool is installed. Optional ones below unlock extra features."
           }
 
           Repeater {
