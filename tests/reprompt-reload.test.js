@@ -201,10 +201,12 @@ function makeVault(fallback) {
   eq("an action on another row is not this window's business", ran, 1)
 
   // The read lands with the flag unchanged: everything works again.
-  v.errorMessage = ""
+  v.liveTotp = "123456"                      // the code on screen when the read began; its half-minute passed meanwhile
+  v.errorMessage = NOTICE
   v.land(VAULT)
-  check("once the list is accepted the held-back code is fetched",
+  check("once the list is accepted the code is fetched afresh, an old one on screen or not",
     v.queries.length === asked + 1 && v.queries[asked].kind === "totp" && v.totpWanted(v.detailItem), v.kinds())
+  eq("and the notice comes down", v.errorMessage, "")
   v.copyDetailField("password", "Password")
   check("and the action repeated goes through, with no prompt",
     v.queries.length === asked + 2 && v.queries[asked + 1].kind === "copyField" && !v.repromptPending && v.errorMessage === "", v.kinds())
@@ -247,9 +249,20 @@ function makeVault(fallback) {
   // A snapshot held back for a save has replaced the helper's items unseen.
   const v = makeVault()
   v.openDetail(v.row("p1"))
-  v.listRereadOwed = true
+  v.listSnapshotUnseen = true
   v.copyDetailField("password", "Password")
-  check("a list read owed after a save holds the open item back too", v.queries.length === 0 && v.errorMessage === NOTICE, v.kinds())
+  check("a list answer the helper took and the panel did not show holds the open item back too",
+    v.queries.length === 0 && v.errorMessage === NOTICE, v.kinds())
+  v.reload(VAULT)
+  check("until a list is accepted, which also takes the notice down", v.listSnapshotUnseen === false && v.errorMessage === "", v.errorMessage)
+  v.copyDetailField("password", "Password")
+  eq("then the copy goes through", v.kinds(), "copyField")
+  // A list read stopped (cancelSshAgentLoad()) whose exit is still to come may have answered already.
+  const k = makeVault()
+  k.openDetail(k.row("p1"))
+  k.start(); k.listProc.running = false; k.listProc.runId = 7
+  k.copyDetailField("password", "Password")
+  check("a stopped list read still holds back until it has exited", k.queries.length === 0 && k.errorMessage === NOTICE, k.kinds())
   // A lock's scrub borrows the process; it reads nothing.
   const s = makeVault()
   s.openDetail(s.row("p1"))
@@ -274,8 +287,9 @@ check("an accepted list is checked against the open detail once its rows are in"
   finished.indexOf("items = vault.items") !== -1
     && finished.indexOf("items = vault.items") < finished.indexOf("reconcileOpenDetail()"), finished)
 check("every re-prompt gate goes through the one place that holds back",
-  /function withReprompt\(item, callback\) \{\s*if \(!item \|\| typeof callback !== "function"\) return[\s\S]{0,300}?if \(detailReadsOnHold\(item\)\) \{\s*errorMessage = "Refreshing the vault -- try again in a moment"\s*return\s*\}\s*if \(repromptSatisfied\(item\)\)/
+  /function withReprompt\(item, callback\) \{\s*if \(!item \|\| typeof callback !== "function"\) return[\s\S]{0,300}?if \(detailReadsOnHold\(item\)\) \{\s*errorMessage = refreshingNotice\s*return\s*\}\s*if \(repromptSatisfied\(item\)\)/
     .test(functionBody(service, "withReprompt")), functionBody(service, "withReprompt"))
+check("the notice is the one constant", new RegExp('readonly property string refreshingNotice: "' + NOTICE + '"').test(service))
 check("the code's refresh timer goes through totpWanted()",
   /root\.detailItem\.hasTotp\s*&& root\.totpWanted\(root\.detailItem\)\) \{\s*root\.fetchTotp\(root\.detailItem\.id\)/.test(service))
 

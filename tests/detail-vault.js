@@ -30,7 +30,7 @@ const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submit
   "beginVaultRead", "beginEpochOperation", "invalidateEpochOperation", "vaultReadIsStale", "vaultProcBusy",
   "startVaultRead", "supersededVaultRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem",
   "leaveProvisionalDetail", "settleOwedListRead", "listSnapshotOutdated", "listReadInFlight", "detailReadsOnHold",
-  "reconcileOpenDetail", "onListFinished"]
+  "reconcileOpenDetail", "onListFinished", "itemChangeRunning"]
 
 // `items`: the list (rows from Model.parseItems). `fallback`: no helper.
 function makeVault(items, fallback) {
@@ -50,7 +50,7 @@ function makeVault(items, fallback) {
     failedSave: null, itemsLoadedAt: 0, reloads: 0,
     refreshDerivedFromItems() {}, loadItems() { v.reloads++ },
     // The list read: `listProc.running` while one is in flight.
-    listProc: { running: false, command: [] }, listReadError: "", sshCapability: "", syncReloadPending: false,
+    listProc: { running: false, command: [] }, listSnapshotUnseen: false, refreshingNotice: "Refreshing the vault -- try again in a moment", listReadError: "", sshCapability: "", syncReloadPending: false,
     isSyncing: false, backgroundSync: false, metadataLoadPending: false, statusRefreshAfterItems: false,
     deferredMetadataTimer: { restart() {} }, maybeStartupLoad() {},
     pendingSave: null, formIsEditing: true, formItemId: "g1",

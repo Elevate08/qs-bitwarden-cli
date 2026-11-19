@@ -132,7 +132,9 @@
   open item that would read a secret without asking (copy, reveal, the TOTP
   code, password history, edit, auto-type, the action palette) is refused
   with "Refreshing the vault -- try again in a moment" and the code is not
-  refreshed. An item that already asks, or whose re-prompt was confirmed, is
+  refreshed; the notice comes down, and the code is fetched afresh, when the
+  list is in. The same holds after a list the helper took and the panel did
+  not show, until one is accepted. An item that already asks, or whose re-prompt was confirmed, is
   not held back, and an item whose setting did not change is as it was once
   the list is in.
 

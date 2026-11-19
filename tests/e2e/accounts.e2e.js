@@ -157,7 +157,12 @@ try {
   expect("a copy while the list read is in flight is refused with a notice",
     s => s.error === "Refreshing the vault -- try again in a moment")
   fs.rmSync(path.join(dataB, "fake-list-delay"))
-  // Asked for while that read runs: it waits for it, then reads the flag.
+  expect("the notice comes down when that list is in, and what was revealed stays (nothing changed)",
+    s => s.error === "" && s.revealed.join() === "password" && s.screen === "detail")
+  fs.rmSync(bwLog + ".clipboard", { force: true })
+  q("copyField", "password")
+  expect("and the copy, repeated, goes through", () => fs.existsSync(bwLog + ".clipboard"))
+  // A sync elsewhere turns the item's re-prompt on; the next list brings it.
   fs.writeFileSync(path.join(dataB, "fake-item-reprompt"), "1")
   q("reload")
   expect("a reload that turns the re-prompt on hides what was revealed and keeps the detail",

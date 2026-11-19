@@ -471,13 +471,16 @@ Item {
 
   // Whether the vault helper may already hold a newer copy of the vault than
   // the list here: a list read replaces the helper's items when `bw` answers,
-  // before the panel has the list (and a snapshot held back for a save has
-  // replaced them without being shown at all). In that window the open
+  // before the panel has the list (and a snapshot that was not shown, being
+  // from before a save or replaced by a newer request, has replaced them all
+  // the same: listSnapshotUnseen, until a list is accepted). In that window the open
   // item's re-prompt flag here is the old one.
   function listReadInFlight() {
     return vaultHelperActive
-      && ((listProc.running && !Model.isScrubCommand(listProc.command)) || listRereadOwed)
+      && ((vaultProcBusy(listProc) && !Model.isScrubCommand(listProc.command)) || listSnapshotUnseen)
   }
+
+  readonly property string refreshingNotice: "Refreshing the vault -- try again in a moment"
 
   // Whether an action on `item`, the item open in the detail, has to wait for
   // that read: its flag says "no master password", and the helper's copy may
@@ -495,7 +498,7 @@ Item {
     // Refused rather than held: the accepted list re-checks the open item
     // (reconcileOpenDetail()), and the action is one key press to repeat.
     if (detailReadsOnHold(item)) {
-      errorMessage = "Refreshing the vault -- try again in a moment"
+      errorMessage = refreshingNotice
       return
     }
     if (repromptSatisfied(item)) {
@@ -794,6 +797,9 @@ Item {
   // Such a snapshot arrived while a save or delete was still running: the
   // list is read again when that finishes (settleOwedListRead()).
   property bool listRereadOwed: false
+  // A list answer the helper took and the panel did not show; cleared by the
+  // next list that is accepted (listReadInFlight()).
+  property bool listSnapshotUnseen: false
   // A new item's detail, covered by an SSH approval when its save answered:
   // { from: provisional id, to: saved id }, taken up when the detail is back
   // (resumeCreatedItem()).
@@ -6764,6 +6770,7 @@ Item {
     readEpochs = ({})
     queuedReads = ({})
     listRereadOwed = false
+    listSnapshotUnseen = false
     createdItemHandoff = null
     masterPassword = ""
     itemsLoadedAt = 0
@@ -7074,7 +7081,8 @@ Item {
   function onListFinished(rawJson) {
     isLoading = false
     if (vaultReadIsStale("items")) return
-    if (errorMessage === listReadError) errorMessage = ""
+    listSnapshotUnseen = false
+    if (errorMessage === listReadError || errorMessage === refreshingNotice) errorMessage = ""
     listReadError = ""
     // One parse for both: parsing the list once per consumer cost several
     // whole-vault parses on the GUI thread per load.
@@ -7106,9 +7114,12 @@ Item {
     listAgentBranchActive = false
     listReadEarly = false
     endSshAgentLoad(exitCode === 0)
-    // A read asked for since this run started replaces its answer.
+    // A read asked for since this run started replaces its answer, which the
+    // helper has taken all the same.
+    var tookEffect = exitCode === 0 && !vaultReadIsStale("items")
     if (supersededVaultRead("items")) {
       listRetriedWithoutAgent = false
+      if (tookEffect) listSnapshotUnseen = true
       return
     }
 
@@ -7119,7 +7130,8 @@ Item {
       // (whose items this read has already replaced): read again instead.
       // What an accepted list settles (the sync, the spinner) waits for that.
       if (!vaultReadIsStale("items") && listSnapshotOutdated()) {
-        if (pendingSave || pendingDelete) listRereadOwed = true
+        listSnapshotUnseen = true
+        if (itemChangeRunning()) listRereadOwed = true
         else startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
         return
       }
@@ -7150,6 +7162,7 @@ Item {
     backgroundSync = false
     metadataLoadPending = false
     metadataForceRefresh = false
+    if (errorMessage === refreshingNotice) errorMessage = ""
     if (statusRefreshAfterItems) {
       statusRefreshAfterItems = false
     }
@@ -7164,14 +7177,20 @@ Item {
   // Whether the list read that just ended started before a save or delete
   // finished, or one is still running.
   function listSnapshotOutdated() {
-    return listReadChanges !== vaultChanges || !!pendingSave || !!pendingDelete
+    return listReadChanges !== vaultChanges || itemChangeRunning()
+  }
+
+  // A save or delete of the open vault still running. One left over from a
+  // vault since dropped is not this vault's business: its answer is refused.
+  function itemChangeRunning() {
+    return (!!pendingSave && !vaultReadIsStale("itemSave")) || (!!pendingDelete && !vaultReadIsStale("itemDelete"))
   }
 
   // A save or delete has finished: a list read still going is from before
   // it, and the read a snapshot was held back for runs now, after it.
   function settleOwedListRead() {
     vaultChanges += 1
-    if (!listRereadOwed || pendingSave || pendingDelete) return
+    if (!listRereadOwed || itemChangeRunning()) return
     listRereadOwed = false
     loadItems(false)
   }
@@ -7676,10 +7695,9 @@ Item {
     var row = Model.findItemById(items, id)
     var newlyProtected = !!row && itemNeedsReprompt(row) && !itemNeedsReprompt(detailItem)
     if (row && !newlyProtected) {
-      // The code held back while the read ran (totpWanted()).
-      if (currentScreen === "detail" && detailItem.hasTotp && liveTotp === "" && totpWanted(detailItem)) {
-        fetchTotp(detailItem.id)
-      }
+      // The code was held back while the read ran (totpWanted()), a refresh
+      // at the half-minute included.
+      if (currentScreen === "detail" && detailItem.hasTotp && totpWanted(detailItem)) fetchTotp(detailItem.id)
       return
     }
     // Gone while its edit form is open: the save says so and keeps the form.

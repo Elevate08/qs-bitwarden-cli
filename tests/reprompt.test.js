@@ -36,13 +36,14 @@ check("so do SSH key rows and their details",
 // --- the gate, run against a stand-in vault ------------------------------------------
 
 const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submitReprompt", "cancelReprompt",
-  "clearRepromptGrant", "withholdDetailSecrets", "detailReadsOnHold", "listReadInFlight"]
+  "clearRepromptGrant", "withholdDetailSecrets", "detailReadsOnHold", "listReadInFlight", "vaultProcBusy"]
 function makeVault() {
   const v = {
     repromptPending: false, repromptItemId: "", repromptItemName: "", repromptError: "", repromptBusy: false,
     repromptCallback: null, repromptEpoch: -1, repromptVerifiedId: "", repromptActionId: "",
     detailItem: null, status: "unlocked", vaultEpoch: 7, vaultHelperActive: false,
-    Model, currentScreen: "main", listProc: { running: false, command: [] }, listRereadOwed: false,
+    Model, currentScreen: "main", listProc: { running: false, command: [] }, listSnapshotUnseen: false,
+    refreshingNotice: "Refreshing the vault -- try again in a moment",
     checks: [], answer: null,
     // The password check answers when the test says so.
     verifyMasterPassword(pw, done) { v.checks.push(pw); v.answer = done }
