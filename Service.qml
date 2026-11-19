@@ -6995,11 +6995,14 @@ Item {
     beginInitialVaultLoad(false, false)
   }
 
-  // For every way the list is about to be read anew for another reason (a
-  // sync, a new session): neither the stamp nor a stat from before counts.
+  // For every way the list stops being what a read returned (a save or a
+  // delete, done or undone, changes it here) or is about to be read anew for
+  // another reason (a sync, a new session): neither the stamp, nor a stat
+  // from before, nor a read in flight counts.
   function forgetItemsFileStamp() {
     itemsFileStamp = ""
     itemsFileStampNext = ""
+    listReadStamp = ""
   }
 
   // `showSpinner` defaults to true; background refreshes pass false.
@@ -8272,6 +8275,7 @@ Item {
     if (optimistic) {
       items = Model.replaceItemById(items, rowId, optimistic)
       itemsLoadedAt = Date.now()
+      forgetItemsFileStamp()
       refreshDerivedFromItems()
     }
     currentScreen = "main"
@@ -8292,6 +8296,7 @@ Item {
       if (save) {
         items = Model.replaceItemById(items, save.id, save.previous)
         itemsLoadedAt = Date.now()
+        forgetItemsFileStamp()
         refreshDerivedFromItems()
         failedSave = { name: save.name, form: save.form }
         errorMessage = "Could not save " + save.name + ". " + (stderrText || "")
@@ -8310,12 +8315,14 @@ Item {
     if (!spliced) {
       // A provisional row must never survive a reload it is not part of.
       if (save && save.isCreate) items = Model.replaceItemById(items, save.id, null)
+      forgetItemsFileStamp()
       loadItems()
       return
     }
     var before = items
     items = spliced
     itemsLoadedAt = Date.now()
+    forgetItemsFileStamp()
     refreshDerivedFromItems()
     if (save && save.isCreate) followCreatedItem(save.id, before)
   }
@@ -8374,6 +8381,7 @@ Item {
     showDeleteConfirm = false
     items = Model.replaceItemById(items, id, null)
     itemsLoadedAt = Date.now()
+    forgetItemsFileStamp()
     refreshDerivedFromItems()
     currentScreen = "main"
   }
@@ -8399,6 +8407,7 @@ Item {
     if (removal && removal.previous) {
       items = Model.replaceItemById(items, removal.id, removal.previous)
       itemsLoadedAt = Date.now()
+      forgetItemsFileStamp()
       refreshDerivedFromItems()
       errorMessage = "Could not delete " + removal.name + ". " + (stderrText || "")
     } else {

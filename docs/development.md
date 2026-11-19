@@ -103,7 +103,9 @@ Opening the panel on a list more than a minute old used to start
 `bw list items` every time (the 1.6 s above, plus the filter pipeline). It
 now runs `Model.bwDataStatCommand()` on the account's `data.json` first and
 skips the read when nothing about the file has moved since before the last
-read: that script took 5.7 ms (median of 21, a bare `stat` 1.8 ms). `bw
+read (the first stale open after an unlock, a sync or a save still reads,
+there being no such stat yet): that script took 5.7 ms (median of 21, a bare
+`stat` 1.8 ms). `bw
 status` and `bw --version` leave the file's stat as it was; whether `bw list
 items` does on a real vault was not checked here, and if it does not, every
 open reads as before. `tests/items-file-gate.test.js` and the end of

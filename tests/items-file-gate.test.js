@@ -322,13 +322,55 @@ function loaded() {
   check("a stat of another account's file decides nothing", d.reads === 2 && d.itemsFileStampNext === Model.bwDataStamp(4, "/home/u/.config/Bitwarden CLI/data.json", STAT_A))
 }
 
+// --- the list changed here, not in the file ---------------------------------------
+
+// A save or delete changes the list in memory; one that bw refuses puts the
+// row back without the file ever changing. The stamp says what a read
+// returned, so it cannot outlive any of them.
+{
+  const lines = source.split("\n")
+  const sites = []
+  lines.forEach((l, i) => { if (/^\s*(if \([^)]*\) )?items = /.test(l)) sites.push(i) })
+  const forgets = i => /forgetItemsFileStamp\(\)/.test(lines.slice(i + 1, i + 3).join("\n"))
+  const inFunction = (i, name) => { const b = body(name); return b !== "" && b.indexOf(lines[i].trim()) !== -1 }
+  const other = sites.filter(i => !inFunction(i, "onListFinished") && !inFunction(i, "dropVaultState"))
+  check("every place the list is changed outside a list read forgets the stamp",
+    sites.length === 8 && other.length === 6 && other.every(forgets),
+    other.filter(i => !forgets(i)).map(i => (i + 1) + ": " + lines[i].trim()).join(" | ") + " of " + sites.length)
+  check("...the optimistic row, a refused save, the saved item, a delete and a refused delete among them",
+    /items = Model\.replaceItemById\(items, rowId, optimistic\)\s+itemsLoadedAt = Date\.now\(\)\s+forgetItemsFileStamp\(\)/.test(source)
+      && /items = Model\.replaceItemById\(items, save\.id, save\.previous\)\s+itemsLoadedAt = Date\.now\(\)\s+forgetItemsFileStamp\(\)/.test(source)
+      && /items = Model\.replaceItemById\(items, save\.id, null\)\s+forgetItemsFileStamp\(\)\s+loadItems\(\)/.test(source)
+      && /items = spliced\s+itemsLoadedAt = Date\.now\(\)\s+forgetItemsFileStamp\(\)/.test(source)
+      && /items = Model\.replaceItemById\(items, id, null\)\s+itemsLoadedAt = Date\.now\(\)\s+forgetItemsFileStamp\(\)/.test(source)
+      && /items = Model\.replaceItemById\(items, removal\.id, removal\.previous\)\s+itemsLoadedAt = Date\.now\(\)\s+forgetItemsFileStamp\(\)/.test(source))
+
+  const c = loaded()
+  c.open(); c.statDone(STAT_A); c.listDone()
+  // As a refused save does: the previous row put back, bw having written nothing.
+  c.items = Model.replaceItemById(c.items, "a", c.items[0])
+  c.itemsLoadedAt = c.now
+  c.forgetItemsFileStamp()
+  c.open(); c.statDone(STAT_A)
+  check("after a refused save the next stale open reads, though the file is as it was", c.reads === 3)
+  c.listDone()
+  c.open(); c.statDone(STAT_A)
+  check("...and the opens after that read are skipped again", c.reads === 3 && c.itemsFileStamp !== "")
+
+  const d = loaded()
+  d.open(); d.statDone(STAT_A)
+  d.forgetItemsFileStamp()
+  d.listDone()
+  check("a read in flight while the list is changed here is remembered by nothing", d.itemsFileStamp === "")
+}
+
 // --- only the open is gated --------------------------------------------------------
 
 const callers = source.split("\n").filter(l => /\bprobeItemsFile\(\)/.test(l) && !/function probeItemsFile/.test(l))
 check("only ensureItemsFresh() asks, and only for a list it is already showing",
   callers.length === 1 && /if \(!stale\) return\s+(\/\/[^\n]*\n\s*)*if \(probeItemsFile\(\)\) return\s+\}\s+beginInitialVaultLoad\(!haveItems, false\)/.test(body("ensureItemsFresh")),
   body("ensureItemsFresh"))
-check("a manual sync, a save and an unlock still read without asking the file",
+check("a manual sync, a save's reload and an unlock still read without asking the file",
   !/probeItemsFile|itemsFileStamp ===/.test(body("syncVault") + body("loadItems") + body("beginInitialVaultLoad") + body("maybeAutoSync")))
 check("a session handed over from the terminal forgets the file too",
   /itemsLoadedAt = 0\s+forgetItemsFileStamp\(\)/.test(body("onSessionHandoff")), "")

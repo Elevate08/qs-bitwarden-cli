@@ -229,6 +229,7 @@ function saveStandIn(state) {
   const v = Object.assign({ Model, isLoading: true, itemPayloadJson: "x", errorMessage: "", failedSave: null,
     itemsLoadedAt: 0, currentScreen: "detail", opened: [], reloads: 0,
     vaultReadIsStale() { return false }, flashNotification() {}, refreshDerivedFromItems() {},
+    forgetItemsFileStamp() {},
     loadItems() { v.reloads++ },
     // What a click on the row does, as far as this test needs: the detail
     // becomes that row's item, through the function that gates and loads it.
