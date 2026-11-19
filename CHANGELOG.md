@@ -231,6 +231,15 @@
 
 ### Changed
 
+- **The release workflow takes less on trust.** The job that attests and
+  publishes now attaches only the reports and debug symbols the workflow
+  itself makes, each by name, and stops if the run's artifacts hold a file
+  more or a file fewer. It refuses to touch a release that is already
+  published (re-running it still refills a draft), and before uploading it
+  checks that the tag still names the commit the run built. The binaries it
+  attests are checked against a `SHA256SUMS` digest recorded by an earlier
+  job, not only against the file beside them, and a manual run publishes
+  only from a `v*` tag. A release has the same assets as before.
 - **Opening the panel works out its suggestions once, not twice.** An open
   matched the vault against the window it already knew and then again when
   the focused window was reported. It now matches only when the window, the

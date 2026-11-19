@@ -24,7 +24,7 @@ on:
     tags:
       - 'v*'
   # Every gate and report on any ref, without publishing (the release job
-  # refuses non-tags): a safe rehearsal.
+  # refuses anything but a `v*` tag): a safe rehearsal.
   workflow_dispatch:
 
 # Read-only by default; the release job raises its own.
@@ -50,6 +50,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      # The digest of the bin/SHA256SUMS this job checked every binary
+      # against. The release job compares its own checkout with it.
+      sums_sha256: ${{ steps.bytes.outputs.sums_sha256 }}
     defaults:
       run:
         # A container job defaults to `sh`; the steps below use bash arrays.
@@ -93,6 +97,7 @@ jobs:
           echo "version $VERSION agrees across the tag, manifest.json and CHANGELOG.md"
 
       - name: The committed bytes are the ones the committed checksum names
+        id: bytes
         # The panel's launch-time question: does the shipped SHA256SUMS still
         # describe each binary (the gates proved source -> bytes).
         # Every architecture the release ships, and the ELF machine `file`
@@ -121,6 +126,8 @@ jobs:
           # would ship unchecked.
           extra="$(cd bin && find . -type f ! -name SHA256SUMS ! -path './x86_64-linux/*' ! -path './aarch64-linux/*')"
           [ -z "$extra" ] || { echo "::error::unexpected files in bin/: $extra"; exit 1; }
+          # Recorded here, before this job installs or runs any build tool.
+          echo "sums_sha256=$(sha256sum bin/SHA256SUMS | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Collect the dependency and licence report
         # The gates' dependency policy, published as evidence.
@@ -348,13 +355,15 @@ jobs:
   release:
     name: attest and publish
     needs: [verify, symbols, host-run]
-    # Only a tag publishes; a dispatch run stops after verification.
-    if: github.ref_type == 'tag'
+    # Only a `v*` tag publishes, the pattern of `on:` above; a dispatch run on
+    # a branch, or on a tag of any other name, stops after verification.
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-24.04
     # The only job asking for more than read. No reviewer click: the work was
     # reviewed on the release branch, and this only makes a draft. The
-    # environment scopes these permissions, records the deployment, and only
-    # admits `v*` tags.
+    # environment scopes these permissions and records the deployment; its
+    # own `v*` tag rule is repository configuration, so the `if` above says
+    # the same in this file.
     environment:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
@@ -377,7 +386,8 @@ jobs:
           # artifact cannot replace another's files and the next step sees
           # which artifact brought what.
           pattern: release-*
-          path: dist
+          # Outside the checkout, whose bin/ is attested below.
+          path: ${{ runner.temp }}/dist
           merge-multiple: false
 
       - name: Only the files this workflow makes may be published
@@ -386,6 +396,7 @@ jobs:
         # release-something. So the artifacts must be exactly the three this
         # workflow uploads, each holding exactly the files its job makes, as
         # regular files: a missing one or one too many fails the release.
+        working-directory: ${{ runner.temp }}
         run: |
           helpers="qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault"
           expected="$(
@@ -435,6 +446,7 @@ jobs:
         #                        helper's own PEM labels are compiled in).
         #
         # Compressed artifacts are decompressed for the scan.
+        working-directory: ${{ runner.temp }}
         run: |
           found=0
           for f in dist/*; do
@@ -462,9 +474,21 @@ jobs:
           [ "$found" -eq 0 ] || exit 1
           ls -l dist/
 
-      - name: Check the bytes to attest against SHA256SUMS
+      - name: Check the bytes to attest against the digest verify recorded
         # Only the check: the binaries ran in host-run, without the token.
+        # SHA256SUMS sits beside the binaries, so by itself it shows nothing
+        # about a checkout something has written to since. It must first be
+        # the file verify hashed in its own checkout, where that job proved
+        # it has a line for every binary: that digest arrives as a job
+        # output, not as a file.
+        env:
+          SUMS_SHA256: ${{ needs.verify.outputs.sums_sha256 }}
         run: |
+          [[ "$SUMS_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::the verify job recorded no digest of bin/SHA256SUMS"
+            exit 1
+          }
+          echo "$SUMS_SHA256  bin/SHA256SUMS" | sha256sum -c -
           ( cd bin && sha256sum -c SHA256SUMS )
 
       - name: Attest the shipped bytes
@@ -491,18 +515,20 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           version="${TAG#v}"
+          # Where the reports and symbols were unpacked and checked.
+          dist="$RUNNER_TEMP/dist"
           # Only this version's changelog section.
           awk -v v="## [$version]" '
             index($0, v) == 1 { inside = 1; next }
             inside && /^## \[/ { exit }
             inside { print }
-          ' CHANGELOG.md > dist/release-notes.md
-          [ -s dist/release-notes.md ] || {
+          ' CHANGELOG.md > "$dist/release-notes.md"
+          [ -s "$dist/release-notes.md" ] || {
             echo "::error::no changelog section for $version"
             exit 1
           }
-          cp bin/SHA256SUMS dist/SHA256SUMS
-          notes=dist/release-notes.md
+          cp bin/SHA256SUMS "$dist/SHA256SUMS"
+          notes="$dist/release-notes.md"
           # How a reviewer checks the bundled binaries, under the changelog.
           # Placeholders, so the dynamic values never become shell source.
           section="$(cat <<'EOF'
@@ -530,23 +556,23 @@ jobs:
           binaries=()
           for arch in x86_64 aarch64; do
             for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
-              cp "bin/$arch-linux/$name" "dist/$name-$arch-linux"
-              cmp "bin/$arch-linux/$name" "dist/$name-$arch-linux"
-              binaries+=("dist/$name-$arch-linux")
+              cp "bin/$arch-linux/$name" "$dist/$name-$arch-linux"
+              cmp "bin/$arch-linux/$name" "$dist/$name-$arch-linux"
+              binaries+=("$dist/$name-$arch-linux")
             done
           done
           # Every asset by name, never by pattern: the reports and symbols
-          # checked above, and nothing else that may be lying in dist/.
-          assets=(dist/DEBUG-SYMBOLS.md dist/SHA256SUMS "${binaries[@]}")
+          # checked above, and nothing else that may be lying beside them.
+          assets=("$dist/DEBUG-SYMBOLS.md" "$dist/SHA256SUMS" "${binaries[@]}")
           for prefix in "" unlock-key- vault-; do
-            assets+=("dist/${prefix}dependency-licences.json")
+            assets+=("$dist/${prefix}dependency-licences.json")
           done
           for arch in x86_64 aarch64; do
             for prefix in "" unlock-key- vault-; do
-              assets+=("dist/${prefix}dependency-tree-$arch-linux.txt")
+              assets+=("$dist/${prefix}dependency-tree-$arch-linux.txt")
             done
             for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
-              assets+=("dist/$name-$arch-linux.cdx.json" "dist/$name-$arch-linux.debug.gz")
+              assets+=("$dist/$name-$arch-linux.cdx.json" "$dist/$name-$arch-linux.debug.gz")
             done
           done
           prerelease=()

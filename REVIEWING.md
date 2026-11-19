@@ -59,7 +59,11 @@ artifacts of the run's build jobs. It publishes them only if the artifacts are
 exactly the three the workflow uploads, holding exactly the files it makes,
 and attaches each by name. Before it uploads, the tag must still name the
 commit the run built, and a release that is already published is refused:
-only a draft is created or refilled.
+only a draft is created or refilled. What it attests is its own checkout's
+`bin/`: `SHA256SUMS` there must have the digest the earlier job recorded for
+it, passed as a job output, before the binaries are checked against it, and
+the artifacts are unpacked outside the checkout. A manual run publishes
+nothing unless it is on a `v*` tag.
 
 One CI path writes binaries: `.github/workflows/helper-rebuild.yml`. For a
 same-repository PR into a `release/**` branch whose Rust changes are only plain

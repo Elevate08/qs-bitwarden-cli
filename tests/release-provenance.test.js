@@ -39,9 +39,9 @@ check("a release is a tag, not a branch push",
 check("a dispatch run can rehearse the whole path",
   /workflow_dispatch:/.test(release),
   "verification cannot be run without creating a tag")
-check("only a tag reaches the publishing job",
-  /if: github\.ref_type == 'tag'/.test(jobs.get("release") || ""),
-  "a dispatch run could publish a release or sign an attestation")
+check("only a v* tag reaches the publishing job",
+  /^ {4}if: github\.ref_type == 'tag' && startsWith\(github\.ref_name, 'v'\)$/m.test(jobs.get("release") || ""),
+  "a dispatch run on a branch or another tag could publish a release or sign an attestation")
 check("a release in flight is never cancelled",
   /concurrency:[\s\S]{0,200}?cancel-in-progress: false/.test(release),
   "a second tag could cancel a half-published release")
@@ -141,9 +141,17 @@ const verify = jobs.get("verify") || ""
 check("the tag, the manifest and the changelog must agree",
   /manifest\.json says/.test(verify) && /CHANGELOG\.md has no/.test(verify),
   "a tag could name a version nothing else in the repository claims")
-check("the committed checksum is re-checked against the committed bytes",
-  (release.match(/sha256sum -c SHA256SUMS/g) || []).length >= 2,
-  "the binary and the checksum shipped beside it are never compared at release time")
+// The checksum file sits beside the binaries, so the publishing job first
+// holds it to the digest verify recorded in its own checkout, carried as a
+// job output; then the binaries to it.
+check("the bytes to attest are checked against the digest verify recorded, then SHA256SUMS",
+  /sha256sum -c SHA256SUMS/.test(verify)
+    && /id: bytes\n[\s\S]*?echo "sums_sha256=\$\(sha256sum bin\/SHA256SUMS \| cut -d' ' -f1\)" >> "\$GITHUB_OUTPUT"/.test(verify)
+    && /outputs:\n(?:\s*#[^\n]*\n)*\s*sums_sha256: \$\{\{ steps\.bytes\.outputs\.sums_sha256 \}\}/.test(verify)
+    && /SUMS_SHA256: \$\{\{ needs\.verify\.outputs\.sums_sha256 \}\}\n[\s\S]*?\[\[ "\$SUMS_SHA256" =~ \^\[0-9a-f\]\{64\}\$ \]\] \|\|[\s\S]*?echo "\$SUMS_SHA256  bin\/SHA256SUMS" \| sha256sum -c -\n\s*\( cd bin && sha256sum -c SHA256SUMS \)/.test(jobs.get("release") || "")
+    && (jobs.get("release") || "").indexOf("sha256sum -c -") < (jobs.get("release") || "").indexOf("attest-build-provenance@")
+    && /path: \$\{\{ runner\.temp \}\}\/dist/.test(jobs.get("release") || ""),
+  "what is attested is only compared with a file in the same checkout")
 const hostRun = jobs.get("host-run") || ""
 check("the helper's reported versions are checked against the panel's",
   /SSH_AGENT_CONTROL_VERSION/.test(hostRun) && /control protocol/.test(hostRun)
@@ -191,7 +199,7 @@ for (const arch of ["x86_64", "aarch64"]) {
 }
 // Each is attached as <name>-<arch>-linux, a copy checked against bin/.
 check("every architecture's helpers are published as release assets",
-  /for arch in x86_64 aarch64; do[\s\S]{0,200}?for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do[\s\S]{0,200}?cmp "bin\/\$arch-linux\/\$name" "dist\/\$name-\$arch-linux"[\s\S]{0,200}?binaries\+=/.test(releaseJob)
+  /for arch in x86_64 aarch64; do[\s\S]{0,200}?for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do[\s\S]{0,200}?cmp "bin\/\$arch-linux\/\$name" "\$dist\/\$name-\$arch-linux"[\s\S]{0,200}?binaries\+=/.test(releaseJob)
     && /assets=\([\s\S]*?"\$\{binaries\[@\]\}"\)/.test(releaseJob),
   "a binary that is attested but not attached cannot be verified by anyone")
 check("the verification command is written down where a reviewer will find it",
@@ -248,7 +256,7 @@ check("a published release is never rewritten, and the tag must still name the b
   "a re-run or a moved tag replaces the assets of a release people already have")
 check("the release notes carry a section on verifying the helpers",
   /^\s*## Verifying the helpers$/m.test(notesText)
-    && publishStep.indexOf("CHANGELOG.md > dist/release-notes.md") < publishStep.indexOf("## Verifying the helpers")
+    && publishStep.indexOf("CHANGELOG.md > \"$dist/release-notes.md\"") < publishStep.indexOf("## Verifying the helpers")
     && /printf '\\n%s\\n' "\$section" >> "\$notes"/.test(publishStep)
     && publishStep.indexOf(">> \"$notes\"") < publishStep.indexOf("gh release create"),
   "a reviewer of the published release is not told how to check the bundled binaries")
