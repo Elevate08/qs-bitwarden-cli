@@ -6775,35 +6775,67 @@ function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 // marks, bidi embeddings and isolates, the byte order mark, and the other
 // default-ignorable code points (soft hyphen, combining grapheme joiner,
 // Hangul and Khmer fillers, Mongolian and other variation selectors,
-// invisible operators, the specials before U+FFF9, and plane 14's tags and
-// selectors, which are surrogate pairs here). A process path or a key's name
-// containing one can pass for something else on a prompt.
-var SSH_AGENT_INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8]|[\udb40-\udb43][\udc00-\udfff]/g
+// invisible operators, the specials before U+FFF9, and beyond the first plane
+// -- surrogate pairs here -- the shorthand format controls, the musical
+// symbol controls and plane 14's tags and selectors). A process path or a
+// key's name containing one can pass for something else on a prompt.
+// tests/ssh-agent-ux.test.js checks it against the engine's own
+// Default_Ignorable_Code_Point.
+var SSH_AGENT_INVISIBLE_SOURCE = "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff0-\\ufff8]"
+  + "|\\ud82f[\\udca0-\\udca3]|\\ud834[\\udd73-\\udd7a]|[\\udb40-\\udb43][\\udc00-\\udfff]"
+// One step of the text: an invisible character (group 1), or any other whole
+// code point.
+var SSH_AGENT_TOKEN_RE = new RegExp("(" + SSH_AGENT_INVISIBLE_SOURCE + ")|[\\ud800-\\udbff][\\udc00-\\udfff]|[\\s\\S]", "g")
 
-// `value` as text, with each of those written out as \uXXXX (\u{XXXXX}
-// beyond the first plane) so the prompt shows them.
-function visibleText(value) {
+// `value` as the pieces a prompt draws: each invisible character written out
+// as \uXXXX (\u{XXXXX} beyond the first plane), every other code point as it
+// is. A piece is never cut, so a limit cannot leave half an escape or half a
+// surrogate pair.
+function visiblePieces(value) {
   var text = (value === undefined || value === null) ? "" : String(value)
-  return text.replace(SSH_AGENT_INVISIBLE_RE, function(c) {
-    if (c.length === 2) {
+  var pieces = []
+  text.replace(SSH_AGENT_TOKEN_RE, function(c, invisible) {
+    if (invisible === undefined || invisible === "") {
+      pieces.push(c)
+    } else if (c.length === 2) {
       var point = (c.charCodeAt(0) - 0xd800) * 0x400 + (c.charCodeAt(1) - 0xdc00) + 0x10000
-      return "\\u{" + point.toString(16) + "}"
+      pieces.push("\\u{" + point.toString(16) + "}")
+    } else {
+      pieces.push("\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4))
     }
-    return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
+    return ""
   })
+  return pieces
 }
 
-// Escaped first, so the limit bounds what is drawn.
+// `value` as text, with each of those written out so the prompt shows them.
+function visibleText(value) {
+  return visiblePieces(value).join("")
+}
+
+// Escaped first, so the limit bounds what is drawn; cut between pieces.
 function boundedText(value, limit) {
-  var text = visibleText(value)
-  return text.length > limit ? text.slice(0, limit) : text
+  var pieces = visiblePieces(value)
+  var out = ""
+  for (var i = 0; i < pieces.length; i++) {
+    if (out.length + pieces[i].length > limit) break
+    out += pieces[i]
+  }
+  return out
 }
 
 // A path cut from the left, so the end of it -- the executable -- is what
-// remains.
+// remains. The limit is on the escaped text, and the cut falls between pieces.
 function boundedPath(value, limit) {
-  var text = visibleText(value)
-  return text.length > limit ? "\u2026" + text.slice(text.length - (limit - 1)) : text
+  var pieces = visiblePieces(value)
+  var text = pieces.join("")
+  if (text.length <= limit) return text
+  var kept = ""
+  for (var i = pieces.length - 1; i >= 0; i--) {
+    if (kept.length + pieces[i].length > limit - 1) break
+    kept = pieces[i] + kept
+  }
+  return "…" + kept
 }
 
 function isRequestId(value) {

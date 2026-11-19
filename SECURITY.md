@@ -91,8 +91,9 @@ you to it.
   reads an item or changes a setting.
 - The desktop notification for an unanswered SSH request being answered by
   another program. A notification daemon lets any program running as you
-  press a notification's button, so the notification offers only **Deny**,
-  which denies the one signing request on the card at that moment (and
+  press a notification's button, so the only action on the notification that decides the request is
+  **Deny** (its other action, **Answer on the card**, which some daemons
+  draw as a second button, decides nothing). **Deny** denies the one signing request on the card at that moment (and
   counts toward the cooldown); it cannot reach a queued request or an unlock
   request, as `sshReply <id> deny` can. Activating the notification any
   other way, dismissing it or letting it expire decides nothing. Nothing a

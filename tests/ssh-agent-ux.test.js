@@ -162,7 +162,75 @@ check("no outcome approves",
     [{}, { sshPrompt: { requestId: 8 } }, { sshPrompt: null }, { sshNotifyRequestId: -1 }].every(state =>
       !notifyExit_(state, code, out).calls.includes("approve")))))
 
-// Characters that draw as nothing: two different paths must not look the same.
+// Every code point the engine's own Unicode data calls default-ignorable is
+// written out, so the list in BitwardenModel.js cannot fall behind unnoticed.
+{
+  const missed = []
+  let count = 0
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue
+    const c = String.fromCodePoint(cp)
+    if (!/\p{Default_Ignorable_Code_Point}/u.test(c)) continue
+    count++
+    const hex = cp.toString(16)
+    const want = "a" + (cp > 0xffff ? "\\u{" + hex + "}" : "\\u" + ("0000" + hex).slice(-4)) + "b"
+    if (Model.visibleText("a" + c + "b") !== want) missed.push("U+" + hex.toUpperCase())
+  }
+  check(`all ${count} Default_Ignorable_Code_Point characters (Unicode ${process.versions.unicode}) are written out`,
+    count > 4000 && missed.length === 0, missed.slice(0, 20).join(" "))
+  check("the shorthand format controls and musical symbol controls are among them",
+    ["\u{1bca0}", "\u{1bca3}", "\u{1d173}", "\u{1d17a}"].every(c =>
+      Model.visibleText(c) === "\\u{" + c.codePointAt(0).toString(16) + "}")
+    && Model.visibleText("\u{1bc9f}\u{1bca4}\u{1d172}\u{1d17b}") === "\u{1bc9f}\u{1bca4}\u{1d172}\u{1d17b}")
+}
+
+// The limits cut between whole characters and never inside a written-out one.
+{
+  const wellFormed = t => !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t)
+  const wholeEscapes = t => t.replace(/\\u\{[0-9a-f]+\}|\\u[0-9a-f]{4}/g, "").indexOf("\\u") === -1
+  const name = t => Model.sshAgentPromptView(Object.assign({}, raw, { keyName: t }), 120).keyName
+  const path = t => Model.sshAgentPromptView(Object.assign({}, raw, { processPath: t }), 120).processPath
+  const key = "\u{1f511}"
+
+  // The reviewer's cases: 252 units of name whose escapes push a pair across
+  // the 256 limit, and 511 units of path whose escape pushes one across 512.
+  const name252 = "\u00ad" + "a".repeat(249) + key
+  const path511 = "/" + key + "a".repeat(507) + "\u00ad"
+  check("a 252-unit key name with an escape does not end in half a surrogate pair",
+    name252.length === 252 && wellFormed(name(name252)) && name(name252) === "\\u00ad" + "a".repeat(249), JSON.stringify(name(name252).slice(-4)))
+  check("a 511-unit path with an escape does not start with half a surrogate pair",
+    path511.length === 511 && wellFormed(path(path511)) && path(path511) === "\u2026" + "a".repeat(505) + "\\u00ad",
+    JSON.stringify(path(path511).slice(0, 4)))
+  check("a pair that fits exactly is kept whole",
+    name("a".repeat(254) + key) === "a".repeat(254) + key && name("a".repeat(255) + key) === "a".repeat(255))
+
+  // An escape straddling the limit is dropped whole, at either end.
+  for (const [what, c, shown] of [["\\uXXXX", "\u00ad", "\\u00ad"], ["\\u{XXXXX}", "\u{e0001}", "\\u{e0001}"]]) {
+    for (let before = 256 - shown.length - 1; before <= 256; before++) {
+      const out = name("a".repeat(before) + c + "zzz")
+      if (!(out.length <= 256 && wholeEscapes(out) && wellFormed(out)
+        && out === ("a".repeat(before) + shown + "zzz").slice(0, before + shown.length <= 256 ? 256 : before))) {
+        check(`key name: ${what} after ${before} characters is kept or dropped whole`, false, JSON.stringify(out.slice(-12)))
+      }
+    }
+    check(`key name: a ${what} escape straddling the limit is never cut`, true)
+    for (let after = 511 - shown.length - 1; after <= 512; after++) {
+      const out = path("/zzz" + c + "a".repeat(after))
+      const whole = "/zzz" + shown + "a".repeat(after)
+      const want = whole.length <= 512 ? whole : "\u2026" + (shown.length + after <= 511 ? whole.slice(whole.length - 511) : "a".repeat(after).slice(-511))
+      if (out !== want || out.length > 512 || !wholeEscapes(out)) {
+        check(`path: ${what} before ${after} characters is kept or dropped whole`, false, JSON.stringify(out.slice(0, 14)))
+      }
+    }
+    check(`path: a ${what} escape straddling the limit is never cut`, true)
+  }
+  check("limits still bound the escaped text", name("\u00ad".repeat(300)).length <= 256 && name("\u00ad".repeat(300)).length === 252
+    && path("\u00ad".repeat(300)).length <= 512 && wholeEscapes(path("\u00ad".repeat(300))))
+  check("the notification body is cut the same way",
+    wellFormed(Model.sshAgentNotifyCommand(Model.sshAgentPromptView(Object.assign({}, raw, { processPath: path511 }), 120), 100).pop()))
+}
+
+// Characters that draw as nothing are written out wherever the prompt shows them.
 const ignorable = ["\u00ad", "\u034f", "\u061c", "\u115f", "\u1160", "\u17b4", "\u17b5", "\u180b", "\u180f", "\u200b", "\u200f",
   "\u202a", "\u202e", "\u2060", "\u2065", "\u206f", "\u3164", "\ufe00", "\ufe0f", "\ufeff", "\uffa0", "\ufff0", "\ufff8",
   "\u{e0000}", "\u{e0001}", "\u{e007f}", "\u{e0100}", "\u{e01ef}", "\u{e0fff}"]
@@ -196,7 +264,23 @@ check("SECURITY.md says sshReply can always deny, and that denials start the coo
 check("SECURITY.md says allowing from a terminal needs the opt-in",
   /`sshReply <id> allow` is refused unless/.test(policy) && /sshAgentTerminalApproval/.test(policy))
 check("SECURITY.md says the notification can only deny",
-  /notification offers only \*\*Deny\*\*/.test(policy) && /Nothing a notification returns approves/.test(policy))
+  /only action on the notification that decides the request is \*\*Deny\*\*/.test(policy)
+  && /\*\*Answer on the card\*\*, which some daemons draw as a second button, decides nothing/.test(policy)
+  && /Nothing a notification returns approves/.test(policy))
+const guide = readPluginSource("docs/ssh-agent.md")
+check("the guide counts the notification's actions as the command has them",
+  actions.length === 2 && /with two actions: \*\*Deny\*\*, the only one that decides the request, and \*\*Answer on the card\*\*/.test(guide)
+  && !/one button/.test(guide) && !/offers only \*\*Deny\*\*/.test(policy))
+check("the docs do not promise that different paths always look different",
+  /does not make every pair of different paths look different/.test(guide) && !/so two different paths do not look the same/.test(guide)
+  && !/full path/.test(guide + readPluginSource("CHANGELOG.md").split("## [Unreleased]")[1].split(/\n## \[/)[0]))
+// The two collisions the guide owns up to, as the code has them.
+check("a literal backslash spelling and the escaped character do read the same (documented, not changed)",
+  Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/tmp/a\\u00adb" }), 120).processPath
+    === Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/tmp/a\u00adb" }), 120).processPath)
+check("two long paths that differ only in the part cut off read the same (documented)",
+  Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/x" + "a".repeat(600) }), 120).processPath
+    === Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/y" + "a".repeat(600) }), 120).processPath)
 check("SECURITY.md separates what the notification's Deny and sshReply deny can reach",
   /denies the one signing request on the card/.test(policy) && /cannot reach a queued request or an unlock request/.test(policy)
   && /except a queued unlock request's/.test(policy))
@@ -218,7 +302,7 @@ for (const name of ipcNames) {
   check(`SECURITY.md names the IPC command ${name}`, new RegExp("`" + name + "[ `]").test(policy))
 }
 check("the docs say a long path is shortened from the left",
-  /longer than 512 characters is shortened from the left/.test(readPluginSource("docs/ssh-agent.md"))
+  /the path is shortened from the left past the display limit/.test(guide) && /The limit is 512 characters of the text as written out/.test(guide)
   && Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/" + "a".repeat(600) + "/ssh" }), 120).processPath.length === 512
   && Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/" + "a".repeat(600) + "/ssh" }), 120).processPath[0] === "\u2026")
 for (const [name, text] of [["README.md", readPluginSource("README.md")], ["docs/ssh-agent.md", readPluginSource("docs/ssh-agent.md")],

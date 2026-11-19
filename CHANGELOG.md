@@ -58,10 +58,12 @@
   were. It opens from the search box as well.
 - **A desktop notification for an SSH request nobody answered.** A signing
   request still waiting about eight seconds after its card appeared is repeated
-  through `notify-send` with a Deny button. It shows what the card shows
+  through `notify-send`. Deny is its only action that decides the request
+  (some daemons also draw its default action, Answer on the card, as a
+  button; it decides nothing). It shows what the card shows
   (the key, the program's name and path with the "not verified" note, what
   is being signed) and nothing secret; as on the card, a path longer than 512
-  characters is shortened from the left. It cannot approve: that stays on
+  characters, counted as displayed, is shortened from the left. It cannot approve: that stays on
   the card. Deny denies; clicking the notification itself, dismissing it or
   the notification expiring leaves the request on the card and does not count
   toward the cooldown. The request's own two-minute deadline still does.
@@ -83,10 +85,11 @@
   program running as you press a notification's buttons (`makoctl invoke`,
   `dunstctl action`, the Omarchy shell's `notifications` IPC), so a program
   could ask for a signature, wait for the notification and approve its own
-  request with nobody at the screen. The notification now has Deny only, and
-  nothing it returns approves; approving is done on the card. It also names
-  the program by its full path with the "not verified" note, as the card
-  does, where it showed only the file name. A notification that is
+  request with nobody at the screen. The notification's only deciding action is now
+  Deny, and nothing it returns approves; approving is done on the card. It
+  also shows the program's path with the "not verified" note, as the card
+  does (shortened from the left past the display limit), where it showed only
+  the file name. A notification that is
   dismissed, expires or is dropped by do-not-disturb used to deny the request
   and count toward the five-minute cooldown, which any program running as you
   could cause; it now leaves the request on the card. The notification
@@ -97,8 +100,12 @@
   direction and zero-width characters in a program path or key name as
   `\uXXXX`. A soft hyphen and the other default-ignorable characters
   (fillers, variation selectors, invisible operators, tag characters) went
-  through, so two different paths could draw identically. They are written
-  out too.
+  through, so a path containing one drew exactly like the path without it.
+  They are written out too, and the length limit now cuts between whole
+  characters, never through a written-out one or a surrogate pair. This shows
+  that such a character is there; it is not a promise that two different
+  paths always look different (a literal backslash is shown as it is, and a
+  long path is shortened from the left).
 - **The action palette acts on the item it was opened for.** On the list,
   as first written for this release (never shipped), a palette action ran on
   whichever row the cursor was on when Enter was pressed. A background sync
