@@ -76,7 +76,7 @@
 ### Security
 
 - **The SSH notification can no longer approve a signature.** As first
-  written on this branch (never released), the notification for an unanswered
+  written for this release (never shipped), the notification for an unanswered
   signing request had an Allow once button. A notification daemon lets any
   program running as you press a notification's buttons (`makoctl invoke`,
   `dunstctl action`, the Omarchy shell's `notifications` IPC), so a program
@@ -89,7 +89,7 @@
   and count toward the five-minute cooldown, which any program running as you
   could cause; it now leaves the request on the card.
 - **The action palette acts on the item it was opened for.** On the list,
-  as first written on this branch (never released), a palette action ran on
+  as first written for this release (never shipped), a palette action ran on
   whichever row the cursor was on when Enter was pressed. A background sync
   that added or removed an item while the palette was open could shift the
   rows, so "Copy password" copied another item's password. The palette now
