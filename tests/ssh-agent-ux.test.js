@@ -5,7 +5,7 @@
 //
 //   node tests/ssh-agent-ux.test.js
 
-const { createSuite, loadModule, readPluginSource } = require("./harness")
+const { createSuite, functionBody, loadModule, readPluginSource } = require("./harness")
 
 const Model = loadModule()
 const service = readPluginSource("Service.qml")
@@ -28,8 +28,15 @@ eq("uses notify-send", cmd[0], "notify-send")
 check("offers Deny", cmd.includes("--action=deny=Deny"))
 // Any program running as the user can press a notification action through the
 // daemon, so the notification must have nothing that approves.
-check("offers no action but Deny (nothing that approves)",
-  cmd.filter(a => /^(--action|-A)/.test(a)).join("|") === "--action=deny=Deny" && !/allow|approve/i.test(cmd.slice(0, cmd.indexOf("--")).join(" ")))
+const actions = cmd.filter(a => /^(--action|-A)/.test(a))
+check("offers Deny and the harmless default action, nothing that approves",
+  actions.join("|") === "--action=default=Answer on the card|--action=deny=Deny"
+  && !/allow|approve/i.test(cmd.slice(0, cmd.indexOf("--")).join(" ")))
+// "default" is the key the notification spec gives the action a daemon runs
+// when the notification itself is activated. Without it Dunst's middle click
+// runs the only action there is.
+check("generic activation has its own action, ahead of Deny, so it cannot land on Deny",
+  actions.length === 2 && actions[0].indexOf("--action=default=") === 0)
 check("waits for the answer", cmd.includes("--wait"))
 check("expires with the request", cmd.includes("--expire-time=100000"))
 const sep = cmd.indexOf("--")
@@ -62,6 +69,8 @@ eq("no elapsed time makes an allow count", Model.sshAgentNotifyDecision(0, "allo
 check("the decision is never an approval",
   ["allow", "allow\n", "Allow once", "approve", "default", "0", "", "deny\nallow"].every(out =>
     [0, 1, 2].every(code => ["deny", "none"].includes(Model.sshAgentNotifyDecision(code, out)))))
+eq("the default action (a click on the notification, Dunst's middle click) leaves the request pending",
+  Model.sshAgentNotifyDecision(0, "default\n"), "none")
 eq("deny action denies", Model.sshAgentNotifyDecision(0, "deny\n"), "deny")
 eq("dismiss, expiry or suppression (no output) leaves the request pending", Model.sshAgentNotifyDecision(0, ""), "none")
 eq("unknown output leaves the request pending", Model.sshAgentNotifyDecision(0, "0\n"), "none")
@@ -120,6 +129,58 @@ check("the setting says the notification cannot approve, in the schema and the m
   [Model.SETTINGS_SCHEMA.find(s => s.key === "sshAgentNotifyFallback").description,
     JSON.parse(readPluginSource("manifest.json")).barWidget.schema.find(s => s.key === "sshAgentNotifyFallback").description]
     .every(d => /Deny button/.test(d) && /Approving is done on the card/.test(d) && !/Allow once/.test(d)))
+check("the notify-send exit is wired to the handler, with its exit code and output",
+  /id: sshNotifyProc\s+stdout: StdioCollector \{ id: sshNotifyStdout; waitForEnd: true \}\s+onExited: function\(exitCode\) \{ root\.onSshNotifyExited\(exitCode, sshNotifyStdout\.text\) \}/.test(service))
+check("the timer shows the notification", /id: sshNotifyTimer[\s\S]{0,80}onTriggered: root\.showSshNotification\(\)/.test(service))
+
+// The real onSshNotifyExited(), run against a stand-in service: what each way
+// a notify-send can end does to the request.
+function notifyExit_(state, exitCode, stdout) {
+  const v = Object.assign({ Model, calls: [], sshNotifyRequestId: 7, sshPrompt: { requestId: 7 },
+    denyCurrentSshPrompt() { v.calls.push("deny") },
+    approveSshRequest() { v.calls.push("approve") },
+    expireSshRequest() { v.calls.push("expire") },
+    dismissSshApproval() { v.calls.push("dismiss") },
+    showSshNotification() { v.calls.push("show") } }, state)
+  v.root = v
+  new Function("root", "with (root) {\n" + functionBody(service, "onSshNotifyExited") + "\nreturn onSshNotifyExited }")(v)(exitCode, stdout)
+  return v
+}
+eq("Deny on the request that is up denies it, once", notifyExit_({}, 0, "deny\n").calls.join(), "deny")
+for (const [why, code, out] of [["dismissed, expired or suppressed", 0, ""], ["activated (the default action)", 0, "default\n"],
+  ["an allow from anywhere", 0, "allow\n"], ["unknown output", 0, "0\n"], ["notify-send failed", 1, ""],
+  ["notify-send failed after printing deny", 1, "deny\n"], ["killed", 15, ""]]) {
+  eq(`${why}: nothing is called, the request stays`, notifyExit_({}, code, out).calls.join(), "")
+}
+eq("Deny for a request that has been replaced by another does nothing",
+  notifyExit_({ sshNotifyRequestId: 7, sshPrompt: { requestId: 8 } }, 0, "deny\n").calls.join(), "")
+eq("Deny after the request was answered (no prompt) does nothing", notifyExit_({ sshPrompt: null }, 0, "deny\n").calls.join(), "")
+eq("Deny after the notification's claim was dropped does nothing", notifyExit_({ sshNotifyRequestId: -1 }, 0, "deny\n").calls.join(), "")
+eq("the handler gives up its claim whatever happened", notifyExit_({}, 0, "").sshNotifyRequestId, -1)
+check("no outcome approves",
+  [0, 1, 2, 15].every(code => ["allow", "allow\n", "Allow once", "approve", "default", "deny", "deny\n", "", "0", "1"].every(out =>
+    [{}, { sshPrompt: { requestId: 8 } }, { sshPrompt: null }, { sshNotifyRequestId: -1 }].every(state =>
+      !notifyExit_(state, code, out).calls.includes("approve")))))
+
+// Characters that draw as nothing: two different paths must not look the same.
+const ignorable = ["\u00ad", "\u034f", "\u061c", "\u115f", "\u1160", "\u17b4", "\u17b5", "\u180b", "\u180f", "\u200b", "\u200f",
+  "\u202a", "\u202e", "\u2060", "\u2065", "\u206f", "\u3164", "\ufe00", "\ufe0f", "\ufeff", "\uffa0", "\ufff0", "\ufff8",
+  "\u{e0000}", "\u{e0001}", "\u{e007f}", "\u{e0100}", "\u{e01ef}", "\u{e0fff}"]
+for (const c of ignorable) {
+  const hex = c.codePointAt(0).toString(16)
+  const shown = c.length === 2 ? "\\u{" + hex + "}" : "\\u" + ("0000" + hex).slice(-4)
+  const v = Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/usr/bin/s" + c + "sh", keyName: "k" + c }), 120)
+  const shownBody = Model.sshAgentNotifyCommand(v, 100).pop()
+  check(`U+${hex.toUpperCase()} is written out on the card and in the notification`,
+    v.processPath === "/usr/bin/s" + shown + "sh" && v.processName === "s" + shown + "sh" && v.keyName === "k" + shown
+    && shownBody.includes("/usr/bin/s" + shown + "sh") && !shownBody.includes(c), v.processPath)
+}
+check("a path with a soft hyphen no longer reads as the path without it",
+  Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/usr/bin/s\u00adsh" }), 120).processPath !== view.processPath)
+check("ordinary text is untouched, accents, CJK, emoji and the next plane-14 neighbour included",
+  ["/usr/bin/ssh", "caf\u00e9 \u4e2d\u6587", "\u{1f511} key", "a\ufff9b\ufffdc", "\u{e1000}", "\u{dffff}", "a\u00acb\u00aec"].every(t =>
+    Model.sshAgentPromptView(Object.assign({}, raw, { keyName: t }), 120).keyName === t))
+
 check("the notification command carries no secret state",
   !/masterPassword|pinEntry|session/i.test(body_("showSshNotification")))
 
@@ -136,6 +197,30 @@ check("SECURITY.md says allowing from a terminal needs the opt-in",
   /`sshReply <id> allow` is refused unless/.test(policy) && /sshAgentTerminalApproval/.test(policy))
 check("SECURITY.md says the notification can only deny",
   /notification offers only \*\*Deny\*\*/.test(policy) && /Nothing a notification returns approves/.test(policy))
+check("SECURITY.md separates what the notification's Deny and sshReply deny can reach",
+  /denies the one signing request on the card/.test(policy) && /cannot reach a queued request or an unlock request/.test(policy)
+  && /except a queued unlock request's/.test(policy))
+// What the policy says about which denials count, against the code.
+const reply = functionBody(service, "replySshRequest")
+const queuedUnlock = reply.slice(reply.indexOf("var unlockLeft"))
+check("a queued unlock denial is the one sshReply deny that does not count toward the cooldown",
+  queuedUnlock !== "" && !/sshCooldown/.test(queuedUnlock)
+  && (reply.slice(0, reply.indexOf("var unlockLeft")).match(/sshAgentCooldownAfter\(root\.sshCooldown, "denied"/g) || []).length === 2
+  && /sshAgentCooldownAfter\(root\.sshCooldown, "denied"/.test(functionBody(service, "denyCurrentSshPrompt")))
+check("the request's own deadline counts toward the cooldown, as the docs say",
+  /sshAgentCooldownAfter\(root\.sshCooldown, "timeout"/.test(functionBody(service, "expireSshRequest"))
+  && Model.sshAgentCooldownAfter(Model.sshAgentCooldownInitial(), "timeout", 1).refusals === 1
+  && /two-minute deadline is separate/.test(readPluginSource("docs/ssh-agent.md")))
+const ipc = service.slice(service.indexOf("IpcHandler {"))
+const ipcNames = (ipc.match(/^    function [A-Za-z]+\(/gm) || []).map(f => f.trim().slice(9, -1))
+check("the IPC target has the commands this test knows", ipcNames.length >= 16 && ipcNames.includes("sshReply"))
+for (const name of ipcNames) {
+  check(`SECURITY.md names the IPC command ${name}`, new RegExp("`" + name + "[ `]").test(policy))
+}
+check("the docs say a long path is shortened from the left",
+  /longer than 512 characters is shortened from the left/.test(readPluginSource("docs/ssh-agent.md"))
+  && Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/" + "a".repeat(600) + "/ssh" }), 120).processPath.length === 512
+  && Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/" + "a".repeat(600) + "/ssh" }), 120).processPath[0] === "\u2026")
 for (const [name, text] of [["README.md", readPluginSource("README.md")], ["docs/ssh-agent.md", readPluginSource("docs/ssh-agent.md")],
   ["CHANGELOG.md [Unreleased] Added", readPluginSource("CHANGELOG.md").split("## [Unreleased]")[1].split("### Security")[0]]]) {
   check(`${name} does not describe an Allow once notification`, !/Allow once/.test(text))

@@ -58,15 +58,31 @@ you to it.
   same key, so that program can open the later copies too until the envelope
   is deleted: turning fingerprint unlock off deletes it, and so does logging
   out of the account; the methods are then set up again under a new key.
-- What the IPC target lets any program running as you do: open, close and
-  toggle the panel, lock, sync, switch the active account, read which accounts
-  exist (their emails and servers) and, with auto-type on, trigger an armed
-  type. With the SSH agent on, `sshPending` lists the SSH requests waiting
-  for an answer (each one's id, key name and fingerprint, the requesting
-  program's path and pid, what is being signed, a login's server host key,
-  whether it was forwarded, and whether terminal approval is on), and
-  `sshReply <id> deny` denies one, signing or unlock; two denials in a row
-  start the five-minute signing cooldown, so such a program can stop the
+- What the IPC target lets any program running as you do. Its commands are:
+  - the panel: `open`, `close`, `toggle`; `settings` opens it on the settings
+    screen and `setup` on the setup screen, running the dependency check
+    again. Neither changes a setting;
+  - the vault: `lock`, `sync`, and `status` (locked, unlocked and so on);
+  - accounts: `accounts` reads which exist (their emails and servers, and
+    which is active) and `switchAccount <email>` makes another one active,
+    locking the current one;
+  - auto-type: `autoType` triggers an armed type, only with auto-type on;
+  - diagnostics, read-only: `vaultHost` (which screens show the panel and
+    which is focused), `desktopState` (vault status, the current screen,
+    whether an unlock or PIN entry is under way and which unlock methods are
+    ready) and `sshAgentStatus` (the agent's state, how many keys and
+    approvals it holds, whether a prompt is showing, the screen-lock reading
+    and the cooldown; no key, fingerprint or path);
+  - SSH requests, below.
+
+  With the SSH agent on, `sshPending` lists the SSH requests waiting for an
+  answer (each one's id, key name and fingerprint, the requesting program's
+  path and pid, what is being signed, a login's server host key, whether it
+  was forwarded, and whether terminal approval is on). `sshReply <id> deny`
+  denies any one of them: the signing request on the card, one queued behind
+  it, the unlock request showing, or a queued unlock request. Each of those
+  denials counts toward the five-minute signing cooldown except a queued
+  unlock request's, and two in a row start it, so such a program can stop the
   agent signing. `sshReply <id> allow` is refused unless you turned on
   **Allow approving from a terminal** (`sshAgentTerminalApproval`, off by
   default); with it on, any program running as you can approve a signing
@@ -75,9 +91,12 @@ you to it.
   reads an item or changes a setting.
 - The desktop notification for an unanswered SSH request being answered by
   another program. A notification daemon lets any program running as you
-  press a notification's button, so the notification offers only **Deny**
-  (the same power as `sshReply <id> deny`). Nothing a notification returns
-  approves a signature; if it does, that is in scope.
+  press a notification's button, so the notification offers only **Deny**,
+  which denies the one signing request on the card at that moment (and
+  counts toward the cooldown); it cannot reach a queued request or an unlock
+  request, as `sshReply <id> deny` can. Activating the notification any
+  other way, dismissing it or letting it expire decides nothing. Nothing a
+  notification returns approves a signature; if it does, that is in scope.
 - What auto-type, when you turn it on, documents it gives away: the focused
   window gets the password; while a login is armed any program running as
   you can make it type, since the IPC cannot tell who calls it; and `wtype`'s

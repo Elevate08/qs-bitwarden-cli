@@ -6772,15 +6772,23 @@ function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 
 // Characters that draw as nothing or change how their neighbours are drawn:
 // C0 and C1 controls, line and paragraph separators, zero-width and direction
-// marks, bidi embeddings and isolates, and the byte order mark. A process path
-// or a key's name containing one can pass for something else on a prompt.
-var SSH_AGENT_INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g
+// marks, bidi embeddings and isolates, the byte order mark, and the other
+// default-ignorable code points (soft hyphen, combining grapheme joiner,
+// Hangul and Khmer fillers, Mongolian and other variation selectors,
+// invisible operators, the specials before U+FFF9, and plane 14's tags and
+// selectors, which are surrogate pairs here). A process path or a key's name
+// containing one can pass for something else on a prompt.
+var SSH_AGENT_INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8]|[\udb40-\udb43][\udc00-\udfff]/g
 
-// `value` as text, with each of those written out as \uXXXX so the prompt
-// shows them.
+// `value` as text, with each of those written out as \uXXXX (\u{XXXXX}
+// beyond the first plane) so the prompt shows them.
 function visibleText(value) {
   var text = (value === undefined || value === null) ? "" : String(value)
   return text.replace(SSH_AGENT_INVISIBLE_RE, function(c) {
+    if (c.length === 2) {
+      var point = (c.charCodeAt(0) - 0xd800) * 0x400 + (c.charCodeAt(1) - 0xdc00) + 0x10000
+      return "\\u{" + point.toString(16) + "}"
+    }
     return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
   })
 }
@@ -6945,7 +6953,10 @@ function notifyEscape(text) {
 // operation), nothing else. No secret exists at this point and none is added.
 // Everything after "--" is data, never an option. It offers Deny and no way
 // to approve: a notification daemon lets any program running as you press an
-// action, so approving stays on the card.
+// action, so approving stays on the card. "default" is the action a daemon
+// runs when the notification itself is activated (a click on its body, Dunst's
+// middle click); without one, a daemon may run the only action there is, which
+// would be Deny. It decides nothing (see sshAgentNotifyDecision()).
 function sshAgentNotifyCommand(view, remainingSec) {
   if (!view || !isRequestId(view.requestId)) return []
   var lines = []
@@ -6963,7 +6974,7 @@ function sshAgentNotifyCommand(view, remainingSec) {
   if (!isFinite(seconds) || seconds < 5) seconds = 5
   return ["notify-send", "--app-name=Bitwarden", "--urgency=normal", "--icon=dialog-password",
     "--expire-time=" + (seconds * 1000),
-    "--action=deny=Deny", "--wait",
+    "--action=default=Answer on the card", "--action=deny=Deny", "--wait",
     "--", "SSH signing request", lines.join("\n")]
 }
 

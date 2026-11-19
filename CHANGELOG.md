@@ -59,10 +59,12 @@
 - **A desktop notification for an SSH request nobody answered.** A signing
   request still waiting about eight seconds after its card appeared is repeated
   through `notify-send` with a Deny button. It shows what the card shows
-  (the key, the program's name and full path with the "not verified" note,
-  what is being signed) and nothing secret. It cannot approve: that stays on
-  the card. Deny denies; dismissing it or letting it expire leaves the request
-  on the card and does not count toward the cooldown.
+  (the key, the program's name and path with the "not verified" note, what
+  is being signed) and nothing secret; as on the card, a path longer than 512
+  characters is shortened from the left. It cannot approve: that stays on
+  the card. Deny denies; clicking the notification itself, dismissing it or
+  the notification expiring leaves the request on the card and does not count
+  toward the cooldown. The request's own two-minute deadline still does.
   **Notify when a prompt goes unanswered** (`sshAgentNotifyFallback`, on by
   default) turns it off.
 - **Answering SSH requests from a terminal.** `omarchy-shell
@@ -87,15 +89,27 @@
   does, where it showed only the file name. A notification that is
   dismissed, expires or is dropped by do-not-disturb used to deny the request
   and count toward the five-minute cooldown, which any program running as you
-  could cause; it now leaves the request on the card.
+  could cause; it now leaves the request on the card. The notification
+  carries a default action that decides nothing, so a daemon that runs "the"
+  action on a click or a middle click (Dunst) does not land on Deny.
+- **Invisible characters in an SSH request are written out.** The approval
+  card, the notification and the approvals list already showed control,
+  direction and zero-width characters in a program path or key name as
+  `\uXXXX`. A soft hyphen and the other default-ignorable characters
+  (fillers, variation selectors, invisible operators, tag characters) went
+  through, so two different paths could draw identically. They are written
+  out too.
 - **The action palette acts on the item it was opened for.** On the list,
   as first written for this release (never shipped), a palette action ran on
   whichever row the cursor was on when Enter was pressed. A background sync
   that added or removed an item while the palette was open could shift the
   rows, so "Copy password" copied another item's password. The palette now
   remembers the item's id and runs the action on that item; if a sync removed
-  it, or another item is open in its place, the action does nothing. A
-  master-password re-prompt item still asks first, as its letter does.
+  it, or another item is open in its place, the action does nothing; the
+  same holds on the detail screen, where an action also does nothing if a
+  sync changed whether the item asks for the master password since it was
+  opened. A master-password re-prompt item still asks first, as its letter
+  does.
 
 ### Fixed
 
