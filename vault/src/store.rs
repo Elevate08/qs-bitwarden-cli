@@ -226,16 +226,14 @@ impl Store {
         self.staged = None;
     }
 
-    /// Drops one item, from search as well as from `item`. A staged read is
-    /// from before the delete and is dropped with it.
+    /// Drops one item, from search as well as from `item`, and from a
+    /// staged read, which may be from before the delete. An id neither holds
+    /// (a delete that finished after its vault was closed) changes nothing:
+    /// the staged read stays as it is, and can still be committed.
     pub fn forget_item(&mut self, id: &str) {
-        self.staged = None;
-        let Some(at) = self.index.remove(id) else {
-            return;
-        };
-        self.items.remove(at);
-        for (position, held) in self.items.iter().enumerate().skip(at) {
-            self.index.insert(held.id.clone(), position);
+        remove_held(&mut self.items, &mut self.index, id);
+        if let Some(staged) = self.staged.as_mut() {
+            remove_held(&mut staged.items, &mut staged.index, id);
         }
     }
 
@@ -379,7 +377,7 @@ impl Store {
         }
     }
 
-    /// Drops whatever is staged (a staged read that failed).
+    /// Drops whatever is staged (another staged read has been asked for).
     pub fn unstage(&mut self) {
         self.staged = None;
     }
@@ -420,6 +418,16 @@ fn strip_into(
     let out = serde_json::to_string(&vault).ok().map(Zeroizing::new);
     wipe_value(&mut vault);
     out
+}
+
+fn remove_held(items: &mut Vec<Held>, index: &mut HashMap<String, usize>, id: &str) {
+    let Some(at) = index.remove(id) else {
+        return;
+    };
+    items.remove(at);
+    for (position, held) in items.iter().enumerate().skip(at) {
+        index.insert(held.id.clone(), position);
+    }
 }
 
 fn hold(items: &mut Vec<Held>, index: &mut HashMap<String, usize>, item: &mut Map<String, Value>) {
@@ -1033,7 +1041,14 @@ mod tests {
         let (stale, _) = store.stage_vault(&read("staged-3")).unwrap();
         store.strip_vault(&read("saved"), false).unwrap();
         assert!(!store.commit_staged(stale) && holds(&store, "saved"));
-        // So does a lock, and the next id is a new one.
+        // A delete takes its item out of a staged read too, and one for an
+        // item of a vault since closed leaves the read committable.
+        let (kept, _) = store.stage_vault(&vault()).unwrap();
+        store.forget_item("a");
+        store.forget_item("not-in-this-vault");
+        assert!(store.commit_staged(kept) && store.item("a").is_none());
+        assert!(store.item("c").is_some());
+        // A lock ends a staged read, and the next id is a new one.
         let (locked, _) = store.stage_vault(&read("staged-4")).unwrap();
         store.forget(&[]);
         assert!(!store.commit_staged(locked) && store.item("a").is_none());

@@ -57,28 +57,42 @@ key until it finishes.
 
 A list read does not become the helper's items when `bw` prints it. The
 helper sets it aside (one read at a time, under an id it tells the panel) and
-goes on answering searches, reveals, copies, auto-type and TOTP from the items
-it held. Only when the panel accepts that list and shows it does it tell the
-helper to take the read, by that id. When the panel refuses a list snapshot
-(one started before a save, delete or sync finished) or a newer read replaces
-it, the helper drops what it set aside, wiped as its items are; so does a
-newer list read, a save or delete that finishes meanwhile, and a lock, logout
-or account switch. If the read that should replace a refused snapshot fails or
-cannot start, the helper and the panel both stay on the last list they
-accepted, with what was saved or deleted since: an edited item's old password
-is not served. The panel shows the list error; after a failed read it also
-treats its list as stale and reads it again the next time it is wanted, but a
-replacement read that could not start (a missing dependency), or a save that
-succeeds afterwards, leaves the list counted as fresh, and then the next read
-is the next sync or refresh.
+goes on answering searches, reveals, copies, auto-type and its TOTP codes from
+the items it held. When the panel accepts that list it tells the helper to
+take the read, by that id, and shows the list only once the helper has
+answered that it did. When the panel refuses a list snapshot (one started
+before a save, delete or sync finished) or a newer read replaces it, the
+helper drops what it set aside, wiped as its items are; so does the next
+staged read being asked for, a save that finishes meanwhile, and a lock,
+logout or account switch (a delete that finishes meanwhile takes its item out
+of both). If the read that should replace a refused snapshot fails or cannot
+start, the helper stays on the last list both sides accepted, with what was
+saved or deleted since: it does not serve an edited item's old password. If
+the helper refuses to take a list (the read is no longer the one it set
+aside), the panel does not show it and reads the list again, once; refused
+again, that is a failed read.
 
-A vault helper from before this (it does not say `staged-lists` in its
-`--version`, which is where the panel's check of the helper looks) is asked
-the old way and takes each list read as `bw` prints it, so with such a helper
-a refused snapshot whose replacement fails is held, an edited item's old
-password included, until the next list read succeeds. The helper shipped with
-a release is the one built with it; this arises only with an older one built
-locally.
+This is about what the helper serves. The panel can still copy a TOTP code it
+fetched earlier and still holds, and when the helper has no code for an item
+it falls back to `bw get totp`, which asks Bitwarden's own data.
+
+After a failed read the panel shows the list error, treats its list as stale
+and reads it again the next time it is wanted. A replacement read that could
+not start (a missing dependency), or a save that succeeds afterwards, leaves
+the list counted as fresh, and then the next read is the next sync or
+refresh; and when the read owed is an automatic sync's reload that a missing
+dependency is holding back, no list error is shown: the reload stays owed
+until the dependency is back.
+
+Whether a helper sets reads aside is what it says in its `--version`
+(`staged-lists`, which the panel's check of the helper looks for). One that
+does not say so is asked the old way and takes each list read as `bw` prints
+it, so a refused snapshot whose replacement fails is then held, an edited
+item's old password included, until the next list read succeeds. That is a
+helper built locally from before this, never the one shipped with a release;
+and a helper restarted after it stopped ([below](#if-the-helper-is-missing-or-fails)),
+which may be another executable than the one checked, until the helper is
+checked again (the banner's "check again", or a shell restart).
 
 ## How the shell talks to it
 

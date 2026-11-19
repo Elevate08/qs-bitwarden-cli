@@ -284,31 +284,38 @@ if (!fs.existsSync(binary)) {
   const parsed = Model.parseVaultHelperInspection(inspection)
   eq("the panel's inspection accepts the built helper", parsed.state + "/" + parsed.protocol, "ok/1")
   {
-    // Whether it stages list reads is what its own --version says, seen by
-    // the same inspection: the build made here does, and a helper that does
-    // not say so (the one in bin/ until it is rebuilt) is never asked to.
+    // Whether a helper stages list reads is what its own --version says, seen
+    // by the same inspection, and holds for the process started from that
+    // inspection only: one restarted after it stopped may be another
+    // executable and is asked the old way, as is one that does not say so
+    // (the one in bin/ until it is rebuilt).
     const os = require("os")
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-stage-"))
     fs.mkdirSync(path.join(root, "vault/target/debug"), { recursive: true })
     fs.symlinkSync(binary, path.join(root, "vault/target/debug/qs-bitwarden-vault"))
     const built = require("child_process").execFileSync(...(c => [c[0], c.slice(1)])(Model.vaultHelperInspectCommand(root))).toString()
     fs.rmSync(root, { recursive: true, force: true })
-    check("the inspection sees that the built helper stages list reads, and that one which does not say so does not",
-      Model.parseVaultHelperInspection(built).staging === true
-        && Model.parseVaultHelperInspection(built.replace("capability=1", "capability=0")).staging === false
-        && Model.parseVaultHelperInspection(built.replace("capability=1\n", "")).staging === false, built)
-  }
-  {
-    // The capture is chosen as the request is written, for the helper in use.
-    const capture = staging => {
-      const written = []
-      const v = { Model, vaultHelperState: "active", vaultHelperActive: true, vaultHelperStaging: staging, vaultRunSeq: 0, vaultRuns: {},
-        vaultWaiting: [], bwEnvAtStart() {}, vaultHelperProc: { running: true, write: line => written.push(JSON.parse(line)) } }
-      new Function("scope", "with (scope) {\n" + body("vaultStart") + "\nreturn vaultStart }")(v)(
-        { capture: "vault", session: true, inject: {}, environment: {}, command: ["bw"], stdinText: "", started() {} })
-      return written[0].capture
+    const written = []
+    const v = { Model, console: { warn() {} }, Qt: { callLater() {} }, vaultHelperState: "active", vaultHelperActive: true,
+      vaultHelperStaging: false, vaultHelper: null, vaultRunSeq: 0, vaultRuns: {}, vaultQueries: {}, vaultWaiting: [],
+      vaultHelperRestarts: 0, vaultHelperMaxRestarts: 3, vaultHelperReadyTimedOut: false, shuttingDown: false, session: "",
+      heldSessionMarker: "held", vaultHelperReadyTimer: { stop() {} }, vaultHelperSettleTimer: { stop() {} },
+      bwEnvAtStart() {}, startVaultHelper() {}, useVaultFallback() {},
+      vaultHelperProc: { running: true, write: line => written.push(JSON.parse(line)) } }
+    const names = ["vaultStart", "onVaultHelperInspected", "onVaultHelperExited"]
+    Object.assign(v, new Function("scope", "with (scope) {\n" + names.map(body).join("\n") + "\nreturn { " + names.join(", ") + " } }")(v))
+    const capture = () => {
+      v.vaultHelperState = "active"
+      v.vaultStart({ capture: "vault", session: true, inject: {}, environment: {}, command: ["bw"], stdinText: "", started() {}, finish() {} })
+      return written.pop().capture
     }
-    eq("a list read is staged only by a helper that stages", capture(true) + "," + capture(false), "vaultStage,vault")
+    v.onVaultHelperInspected(built)
+    const inspected = capture()
+    v.onVaultHelperExited(1)
+    const restarted = capture()
+    v.onVaultHelperInspected(built.replace("capability=1\n", ""))
+    eq("a list read is staged only by a helper whose own inspection said it stages: not one restarted since, nor one that does not say so",
+      [inspected, restarted, capture()].join(), "vaultStage,vault,vault")
   }
 
   const child = spawn(binary, [], { stdio: ["pipe", "pipe", "inherit"] })
@@ -412,18 +419,17 @@ if (!fs.existsSync(binary)) {
     }
     send(Model.vaultExecLine(4, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("111")))
     const first = await reply(m => m.type === "exit" && m.id === 4)
+    const unanswered = first.staged > 0 && !/111/.test(first.out) && await cardCode() === "987"
     send(Model.vaultExecLine(5, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("222")))
     const second = await reply(m => m.type === "exit" && m.id === 5)
-    check("a staged read is handed on without secrets and is not answered from",
-      first.staged > 0 && second.staged > first.staged && !/111|222/.test(first.out + second.out) && await cardCode() === "987",
-      JSON.stringify(first))
-    check("a read replaced by a newer one cannot be committed", await commit(first.staged) === false && await cardCode() === "987", "")
-    check("the staged read's own id commits it, once",
-      await commit(second.staged) === true && await cardCode() === "222" && await commit(second.staged) === false, "")
+    const replaced = await commit(first.staged) === false && await cardCode() === "987"
+    const committed = await commit(second.staged) === true && await cardCode() === "222" && await commit(second.staged) === false
     send(Model.vaultExecLine(6, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("333")))
     const third = await reply(m => m.type === "exit" && m.id === 6)
     send(Model.vaultHelperLine("discardVault", { stage: third.staged }))
-    check("a discarded read is gone", await commit(third.staged) === false && await cardCode() === "222", "")
+    const discarded = await commit(third.staged) === false && await cardCode() === "222"
+    check("the helper answers from a staged read only once its own id is committed: not before, not a replaced or discarded one",
+      unanswered && replaced && committed && discarded, JSON.stringify({ unanswered, replaced, committed, discarded }))
 
     child.stdin.end()
     child.on("exit", () => done())

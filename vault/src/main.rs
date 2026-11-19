@@ -454,6 +454,11 @@ impl Helper {
         let Some(capture) = Capture::parse(capture) else {
             return refuse("unknown capture");
         };
+        // Asking for a staged read ends the one staged before it, here:
+        // whatever becomes of this run, one that cannot start included.
+        if capture == Capture::VaultStage {
+            self.store.lock().unwrap().unstage();
+        }
         if argv.is_empty()
             || env.iter().any(|(k, _)| !control::valid_env_name(k))
             || inject.keys().any(|k| !control::valid_env_name(k))
@@ -707,10 +712,6 @@ fn keep(
                 refused = replace && stripped.is_none();
                 stripped
             } else {
-                // A staged read that failed still ends the one before it.
-                if current && *capture == Capture::VaultStage {
-                    store.unstage();
-                }
                 None
             };
             // Anything else could be a truncated read full of secrets: only
@@ -1201,12 +1202,26 @@ mod tests {
             serde_json::from_str(&exit_line(1, 0, &shown, "", false, false, staged)).unwrap();
         assert_eq!(line["staged"], staged);
 
-        // Refused, failed, or from before a lock: nothing is staged, and the
-        // first two end the read staged before them.
+        // Refused, or from before a lock: nothing is staged, and a refused
+        // read ends the one staged before it.
         let (_, _, _, refused, none) = keep(&store, now, &Capture::VaultStage, 0, &text("[]"));
         assert!(refused && none == 0 && !store.lock().unwrap().commit_staged(staged));
-        let (_, _, _, _, none) = keep(&store, now, &Capture::VaultStage, 1, &read("new"));
-        assert_eq!(none, 0);
+        // So does one that is asked for and cannot start.
+        let (_, _, _, _, staged) = keep(&store, now, &Capture::VaultStage, 0, &read("new"));
+        let (out, lines) = mpsc::channel();
+        let helper = Helper {
+            store: Arc::clone(&store),
+            runs: Arc::default(),
+            detached: Arc::default(),
+            typing: Arc::default(),
+            typing_group: Arc::default(),
+            out,
+        };
+        let argv = vec!["/nonexistent/qsbw-no-such-program".to_owned()];
+        let (env, inject) = (BTreeMap::new(), BTreeMap::new());
+        helper.exec(9, argv, env, inject, Some("vaultStage"), None, false);
+        assert!(lines.recv().unwrap().contains(r#""code":127"#));
+        assert!(staged != 0 && !store.lock().unwrap().commit_staged(staged));
         store.lock().unwrap().forget(&[]);
         let (shown, _, _, _, none) = keep(&store, now, &Capture::VaultStage, 0, &read("new"));
         assert!(none == 0 && shown.is_empty());
