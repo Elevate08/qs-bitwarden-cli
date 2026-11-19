@@ -53,7 +53,7 @@ function vault(errorMessage) {
   // wake refresh; the old lock reason must not outlive that unlock.
   const v = vault(notice)
   for (const name of ["cancelAuthPrewarm", "abandonAuthSecrets", "storeCurrentSession",
-    "beginInitialVaultLoad", "resetAutoLockTimer", "focusAppropriateField"]) v[name] = () => {}
+    "beginInitialVaultLoad", "resetAutoLockTimer", "focusAppropriateField", "forgetItemsFileStamp"]) v[name] = () => {}
   v.flashNotification = text => { v.flash = text }
   v.epochOperationIsStale = () => false
   v.vaultEpoch = 0

@@ -138,6 +138,58 @@ function accountAppDataDir(slot, xdgDataHome, home) {
   return base.replace(/\/+$/, "") + "/" + ACCOUNTS_SUBDIR + "/" + s
 }
 
+// The file bw keeps an account's local vault in, as bw itself finds it (its
+// ServiceContainer, read in 2026.2.0): the directory in
+// BITWARDENCLI_APPDATA_DIR -- a slot's own, or for the default slot whatever
+// the shell's environment carries -- else "$XDG_CONFIG_HOME/Bitwarden CLI",
+// else "~/.config/Bitwarden CLI". "" when that is not an absolute path this
+// can be sure of; nothing is then decided from the file.
+var BW_DATA_FILE = "data.json"
+var BW_DEFAULT_DATA_SUBDIR = "Bitwarden CLI"
+
+function bwDataFilePath(slot, slotDir, inheritedAppDataDir, xdgConfigHome, home) {
+  var dir = ""
+  if (accountSlot(slot) !== DEFAULT_ACCOUNT_SLOT) {
+    dir = String(slotDir || "")
+  } else if (inheritedAppDataDir) {
+    dir = String(inheritedAppDataDir)
+  } else if (xdgConfigHome) {
+    dir = String(xdgConfigHome).charAt(0) === "/" ? String(xdgConfigHome).replace(/\/+$/, "") + "/" + BW_DEFAULT_DATA_SUBDIR : ""
+  } else {
+    var h = String(home || "")
+    dir = h.charAt(0) === "/" ? h.replace(/\/+$/, "") + "/.config/" + BW_DEFAULT_DATA_SUBDIR : ""
+  }
+  if (dir.charAt(0) !== "/") return ""
+  return dir.replace(/\/+$/, "") + "/" + BW_DATA_FILE
+}
+
+// Prints the file's device, inode, size, and modification and change times
+// to the nanosecond: what moves when anything writes it. The contents are not
+// read. bw uses a `bw-data` directory beside its executable instead, when
+// there is one; the file named here is then not bw's, and this exits 1.
+function bwDataStatCommand(file) {
+  var script = "case \"$1\" in /*) ;; *) exit 1 ;; esac; "
+    + "for __b in node bw; do __x=\"$(command -v \"$__b\" 2>/dev/null)\" || continue; "
+    + "__x=\"$(readlink -f -- \"$__x\")\" || exit 1; "
+    + "[ ! -e \"${__x%/*}/bw-data\" ] || exit 1; done; "
+    + "exec stat -L -c '%d:%i:%s:%.9Y:%.9Z' -- \"$1\""
+  return ["bash", "-c", script, "_", String(file || "")]
+}
+
+// The one line bwDataStatCommand() prints, or "" for anything else.
+function bwDataStat(line) {
+  var text = String(line || "").trim()
+  return /^\d{1,20}:\d{1,20}:\d{1,20}:\d{1,20}\.\d{9}:\d{1,20}\.\d{9}$/.test(text) ? text : ""
+}
+
+// What a list read is remembered by: the stat, for this file, in this vault
+// epoch. "" without a stat, which matches nothing.
+function bwDataStamp(epoch, file, stat) {
+  var s = bwDataStat(stat)
+  if (s === "" || !file) return ""
+  return String(epoch) + "|" + String(file) + "|" + s
+}
+
 // For scripts not started with the vault's environment (a terminal login):
 // the same directory, derived in the shell.
 function accountAppDataExport(slot) {

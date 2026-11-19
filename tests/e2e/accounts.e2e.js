@@ -141,6 +141,35 @@ try {
   expect("and deletes the older one's directory", () => !addedDirs().includes(oldB))
   check("and its keyring entries", !fs.readdirSync(keyring).some(n => n.endsWith("@" + oldB)), fs.readdirSync(keyring).join())
 
+  // --- opening the panel re-reads the list only if bw's data file changed ---
+  const listReads = () => fs.readFileSync(bwLog, "utf8").split("\n").filter(l => /\tlist items$/.test(l)).length
+  const dataFile = path.join(accountsDir, state().slot, "data.json")
+  const reopenStale = () => { q("close"); q("ageList"); q("open") }
+  let reads = listReads()
+  reopenStale()
+  expect("a stale list is read again on open, nothing being known of the file yet", () => listReads() === reads + 1)
+  expect("and that read is remembered by the file's stat", s => s.stamped && s.items.join() === "Login of b@x")
+  reads = listReads()
+  reopenStale()
+  sleep(2000)
+  check("with the file unchanged the next stale open runs no bw", listReads() === reads && state().stamped,
+    String(listReads() - reads))
+  fs.appendFileSync(dataFile, "x")
+  reopenStale()
+  expect("a change to B's data file, as another bw would make, is read", () => listReads() === reads + 1)
+  expect("and remembered in turn", s => s.stamped)
+  reads = listReads()
+  product("sync")
+  expect("a sync reads the list as it always did", () => listReads() === reads + 1)
+  expect("and what was known of the file is forgotten", s => !s.stamped && s.status === "unlocked")
+  reopenStale()
+  expect("so the open after it reads", () => listReads() === reads + 2)
+  expect("and is remembered again", s => s.stamped)
+  q("lock")
+  expect("a lock forgets the file", s => s.status === "locked" && !s.stamped)
+  q("unlock", "pw-b@x")
+  expect("B unlocks again, its list read fresh", s => s.status === "unlocked" && !s.stamped && s.items.join() === "Login of b@x")
+
   q("logout")
   expect("logging out of B moves to A", s => s.slot === "default" && s.status === "locked" && s.accounts.length === 1)
   q("logout")

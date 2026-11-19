@@ -151,6 +151,13 @@
   and `bw --version` from 645 ms to 533 ms, with the same output. It holds
   compiled code only, nothing of the vault, and is used only if the
   directory is yours and no one else can write to it.
+- **Opening the panel no longer re-reads an unchanged vault.** A list more
+  than a minute old was read again (`bw list items`, about 1.6 s of work
+  behind the panel) on every open. The panel now compares the size, inode
+  and times of `bw`'s data file (a `stat`, about 6 ms; the contents are not
+  read) with what they were before the list was last read, and skips the
+  read when they match. A sync, a save, unlocking and switching account read
+  as before, and so does an open when the file cannot be checked.
 
 ### Fixed
 

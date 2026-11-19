@@ -257,6 +257,17 @@ Item {
   property double orgsLoadedAt: 0
   property double foldersLoadedAt: 0
   readonly property int itemsFreshMs: 60000
+  // bw's data file as it was before the read the list came from
+  // (Model.bwDataStamp()): while a stat still says the same, a re-read on
+  // opening the panel would return the same list and is skipped. "" when not
+  // known. `itemsFileStampNext` is the latest stat, for the next read to take;
+  // one taken before a read starts stays true for it however long before.
+  property string itemsFileStamp: ""
+  property string itemsFileStampNext: ""
+  property string listReadStamp: ""
+  // The stat in flight: { epoch, file }, null if none or abandoned.
+  property var itemsFileProbe: null
+  property string itemsFileStatLine: ""
   // Organizations and folders outlive an item refresh many times over.
   readonly property int metaFreshMs: 600000
   property var filteredItems: []
@@ -2093,6 +2104,9 @@ Item {
   // The active slot's bw data directory; "" for bw's own.
   readonly property string accountAppDataDir: Model.accountAppDataDir(activeSlot,
     Quickshell.env("XDG_DATA_HOME") || "", Quickshell.env("HOME") || "")
+  // The file bw keeps the active account's vault in; "" if not known.
+  readonly property string bwDataFile: Model.bwDataFilePath(activeSlot, accountAppDataDir,
+    Quickshell.env(Model.appDataEnvVar()) || "", Quickshell.env("XDG_CONFIG_HOME") || "", Quickshell.env("HOME") || "")
   // An "Add account" sign-in not finished yet, and the account Cancel returns to.
   property bool addingAccount: false
   property string slotBeforeAdd: ""
@@ -3712,6 +3726,7 @@ Item {
       status = "unlocked"
       currentScreen = "main"
       itemsLoadedAt = 0
+      forgetItemsFileStamp()
       statusRefreshAfterItems = true
       beginInitialVaultLoad(true, false)
       resetAutoLockTimer()
@@ -6733,6 +6748,11 @@ Item {
     readEpochs = ({})
     masterPassword = ""
     itemsLoadedAt = 0
+    itemsFileStamp = ""
+    itemsFileStampNext = ""
+    listReadStamp = ""
+    itemsFileProbe = null
+    itemsFileStatLine = ""
     orgsLoadedAt = 0
     foldersLoadedAt = 0
     items = []
@@ -6922,9 +6942,64 @@ Item {
       if (activeWindowData) handleActiveWindowDetected(activeWindowData)
       else rebuildFilter()
       if (!stale) return
+      // The re-read waits for a stat of bw's data file, and is not made if
+      // the file is as it was before the read this list came from.
+      if (probeItemsFile()) return
     }
 
     beginInitialVaultLoad(!haveItems, false)
+  }
+
+  // A list read is also what hands the SSH agent its keys, so one it still
+  // lacks (no load for this vault yet, or the last one failed) is never
+  // skipped.
+  function sshAgentOwedKeys() {
+    return sshAgentGateOpen && (sshAgentLoadedForVaultEpoch !== vaultEpoch || sshAgentLoadFailStreak > 0)
+  }
+
+  // Whether a stat was started; its answer decides the re-read
+  // (onItemsFileProbed()). false, and the caller reads as it always did, when
+  // the file is not known, the last read failed, the agent is owed its keys,
+  // or a stat has not answered since the last time: that one is given up on.
+  function probeItemsFile() {
+    if (itemsFileStatProc.running) {
+      itemsFileProbe = null
+      return false
+    }
+    if (bwDataFile === "" || listReadError !== "" || sshAgentOwedKeys()) return false
+    itemsFileProbe = { epoch: vaultEpoch, file: bwDataFile }
+    itemsFileStatLine = ""
+    itemsFileStatProc.command = Model.bwDataStatCommand(bwDataFile)
+    itemsFileStatProc.running = true
+    return true
+  }
+
+  function onItemsFileProbed(exitCode) {
+    var probe = itemsFileProbe
+    var line = itemsFileStatLine
+    itemsFileProbe = null
+    itemsFileStatLine = ""
+    // Given up on, or for a vault that has since locked or changed hands.
+    if (!probe || probe.epoch !== vaultEpoch || probe.file !== bwDataFile || !session) return
+    var stamp = exitCode === 0 ? Model.bwDataStamp(probe.epoch, probe.file, line) : ""
+    itemsFileStampNext = stamp
+    if (stamp !== "" && stamp === itemsFileStamp && listReadError === "" && items.length > 0
+        && !sshAgentOwedKeys()) {
+      // Unchanged: the list stands. Organizations and folders keep their own
+      // clock, as in beginInitialVaultLoad().
+      metadataLoadPending = true
+      metadataForceRefresh = false
+      loadPendingMetadata()
+      return
+    }
+    beginInitialVaultLoad(false, false)
+  }
+
+  // For every way the list is about to be read anew for another reason (a
+  // sync, a new session): neither the stamp nor a stat from before counts.
+  function forgetItemsFileStamp() {
+    itemsFileStamp = ""
+    itemsFileStampNext = ""
   }
 
   // `showSpinner` defaults to true; background refreshes pass false.
@@ -6979,6 +7054,9 @@ Item {
       }
     }
     listAgentBranchActive = useAgent
+    // A stat from before this read starts: the read sees the file no older.
+    // A read already running started before it, and is remembered by none.
+    listReadStamp = listProc.running ? "" : itemsFileStampNext
     listProc.environment = root.vaultListEnv(useAgent ? sshAgentLoadId : "")
     listProc.command = Model.sanitizedListCommand({ agentBranch: useAgent })
     listProc.running = true
@@ -7003,6 +7081,7 @@ Item {
     items = vault.items
     vault = null
     itemsLoadedAt = Date.now()
+    itemsFileStamp = listReadStamp
     refreshDerivedFromItems()
     if (syncReloadPending) {
       syncReloadPending = false
@@ -7457,6 +7536,7 @@ Item {
     if (exitCode === 0) {
       if (errorMessage === autoSyncError) errorMessage = ""
       itemsLoadedAt = 0
+      forgetItemsFileStamp()
       if (backgroundSync) {
         isSyncing = false
         autoSyncReloadPending = true
@@ -9950,6 +10030,15 @@ Item {
   }
 
   // ---- Accounts ----
+
+  // Not a VaultProcess: it runs no `bw` and is given no session.
+  Process {
+    id: itemsFileStatProc
+    stdout: SplitParser {
+      onRead: function(line) { root.itemsFileStatLine = line }
+    }
+    onExited: function(exitCode) { root.onItemsFileProbed(exitCode) }
+  }
 
   Process {
     id: bwCompileCacheProc

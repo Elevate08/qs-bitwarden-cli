@@ -92,6 +92,16 @@ commands were timed; the saving is in Node loading `bw`'s 1,600 modules, which
 every `bw` command does first. `tests/bw-compile-cache.test.js` covers the
 directory check and that the cache works beside the preloads.
 
+Opening the panel on a list more than a minute old used to start
+`bw list items` every time (the 1.6 s above, plus the filter pipeline). It
+now runs `Model.bwDataStatCommand()` on the account's `data.json` first and
+skips the read when nothing about the file has moved since before the last
+read: that script took 5.7 ms (median of 21, a bare `stat` 1.8 ms). `bw
+status` and `bw --version` leave the file's stat as it was; whether `bw list
+items` does on a real vault was not checked here, and if it does not, every
+open reads as before. `tests/items-file-gate.test.js` and the end of
+`tests/e2e/accounts.e2e.js` cover it.
+
 `bw-login-code.js`, the other preload, gives `bw login` the two-step code from
 `QSBW_CODE` in place of the `--qsbw-code-from-env` placeholder, so the code is
 in `bw`'s parsed arguments but not in `/proc/<pid>/cmdline`.

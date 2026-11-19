@@ -80,6 +80,8 @@ ShellRoot {
         pinUnlockError: vault.pinUnlockError, logoutPending: vault.logoutPending, opened: vault.opened,
         logoutCliDone: vault.logoutCliDone, logoutCredentialsDone: vault.logoutCredentialsDone,
         clearPending: vault.allCredentialsClearPending,
+        // Whether the list is remembered by a stat of bw's data file.
+        stamped: vault.itemsFileStamp !== "",
         // What the shell itself holds: the vault helper keeps the rest.
         helper: vault.vaultHelperState, helperWarning: vault.vaultHelperWarning, sessionHeld: vault.session === vault.heldSessionMarker,
         // Typed into pinentry, the shell never holds them: these stay empty.
@@ -107,6 +109,8 @@ ShellRoot {
       })
     }
     function open(): void { vault.open() }
+    // The list as if read over a minute ago, so the next open would re-read it.
+    function ageList(): void { vault.itemsLoadedAt = 1 }
     function close(): void { vault.close() }
     // The panel opened on a locked vault, whose unlock form asks pinentry as
     // the popout shows (#132).

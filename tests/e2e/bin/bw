@@ -29,6 +29,8 @@ case "$1" in
     pw="$(read_pw "$@")"
     [ "$pw" = "$(want_pw "$email")" ] || { echo "Username or password is incorrect. Try again." >&2; exit 1; }
     printf 'email=%s\nid=id-%s\n' "$email" "$(printf '%s' "$email" | md5sum | cut -c1-12)" > "$state"
+    # Where the real one keeps the local vault; the panel stats it.
+    date +%s%N > "$d/data.json"
     new_session ;;
   unlock)
     shift
@@ -41,7 +43,7 @@ case "$1" in
     new_session ;;
   lock) rm -f "$sess"; echo "Your vault is locked." ;;
   logout) rm -f "$sess" "$state"; echo "You have logged out." ;;
-  sync) echo "Syncing complete." ;;
+  sync) date +%s%N > "$d/data.json"; echo "Syncing complete." ;;
   config) exit 0 ;;
   list)
     case "$2" in

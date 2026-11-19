@@ -8,7 +8,8 @@ const Model = loadModule()
 const source = read("Service.qml")
 const functions = ["autoSyncIdle", "maybeAutoSync", "syncVault", "onSyncFinished",
   "onListFinished", "dropVaultState", "beginVaultRead", "vaultReadIsStale",
-  "beginEpochOperation", "epochOperationIsStale", "loadItems", "abandonSyncReload"]
+  "beginEpochOperation", "epochOperationIsStale", "loadItems", "abandonSyncReload",
+  "forgetItemsFileStamp"]
 const deps = Model.parseDependencies("bw=1\njq=1\nomarchy=1", null, {})
 const noJq = Model.parseDependencies("bw=1\njq=0\nomarchy=1", null, {})
 
@@ -23,6 +24,7 @@ function fixture() {
     autoSyncReloadPending: false, backgroundSync: false,
     autoSyncError: "Automatic sync failed. The local vault may be out of date.",
     errorMessage: "", listReadError: "", vaultEpoch: 1, readEpochs: {}, itemsLoadedAt: 100,
+    itemsFileStamp: "", itemsFileStampNext: "", listReadStamp: "", itemsFileProbe: null, itemsFileStatLine: "",
     statusRefreshAfterItems: false, loadCalls: [], flashes: [], closedFilters: 0,
     dependencies: deps, listReadEarly: false, listReadMode: "", listReads: 0,
     Model, authAttemptInFlight: () => false,

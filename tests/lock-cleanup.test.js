@@ -151,6 +151,20 @@ check("and so does closing the panel",
   /rotationOldPassword = ""/.test(body("abandonAuthSecrets")), body("abandonAuthSecrets"))
 check("a lock, logout or switch drops a refused save's form",
   /failedSave = null/.test(body("dropVaultState")), body("dropVaultState"))
+// What is remembered of bw's data file (its inode, size and times) to skip a
+// re-read on open is the account's, and goes with the vault.
+check("a lock, logout or switch forgets the data file's stamp, the stat kept for the next read and the one in flight",
+  /itemsFileStamp = ""/.test(body("dropVaultState")) && /itemsFileStampNext = ""/.test(body("dropVaultState"))
+    && /listReadStamp = ""/.test(body("dropVaultState")) && /itemsFileProbe = null/.test(body("dropVaultState"))
+    && /itemsFileStatLine = ""/.test(body("dropVaultState")), body("dropVaultState"))
+check("nothing else keeps a stat: every property that holds one is among those",
+  (src.match(/property (?:string|var) \w*(?:[Ss]tamp|itemsFile)\w*:/g) || []).sort().join()
+    === ["property string itemsFileStamp:", "property string itemsFileStampNext:", "property string itemsFileStatLine:",
+      "property string listReadStamp:", "property var itemsFileProbe:"].join(), "")
+check("a stat that answers after the lock is dropped by its epoch",
+  /if \(!probe \|\| probe\.epoch !== vaultEpoch \|\| probe\.file !== bwDataFile \|\| !session\) return/.test(body("onItemsFileProbed"))
+    && body("onItemsFileProbed").indexOf("itemsFileStatLine = \"\"") < body("onItemsFileProbed").indexOf("if (!probe"),
+  body("onItemsFileProbed"))
 check("a refused save's form reopens only in an unlocked vault",
   /if \(status !== "unlocked"\) return/.test(body("reopenFailedSave")), body("reopenFailedSave"))
 
