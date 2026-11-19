@@ -207,8 +207,10 @@
   directly on the data, so how long it took depended only on that data and
   the key, which is what the `rsa` crate's open timing advisory
   (RUSTSEC-2023-0071) is about. Each signature is now computed on the data
-  multiplied by a fresh random factor from the kernel (`/dev/urandom`), which
-  is divided out after; the signature is byte for byte the same. The advisory
+  multiplied by a fresh random factor, which is divided out after; the
+  signature is byte for byte the same. The factor comes from 64 bytes read
+  from the kernel (`/dev/urandom`) before the key is touched, and a request
+  fails, alone, if they cannot be read. The advisory
   has no fixed release and stays listed in `deny.toml`. Ed25519 keys never
   had the problem. This needs the rebuilt SSH agent helper.
 - **A forwarded login's server is shown as the remote host's claim when
