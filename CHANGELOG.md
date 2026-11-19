@@ -80,18 +80,27 @@
 ### Security
 
 - **The vault helper refuses a vault read it does not recognise.** It used
-  to remove secrets only from items sitting where it expected them, and hand
-  anything else back to the shell as it came: a read with another top-level
-  key, an item list that was not a list, a `login` that was not an object, a
-  hidden custom field whose type was written as text. An SSH private key was
-  not on its list of secrets at all. The panel's own filter never produces
-  any of these, so nothing is known to have leaked; the helper no longer
-  relies on that. A read of another shape now gives the shell an empty
-  answer and leaves what the helper held in place, a secret's place holding
-  something unexpected is dropped, SSH key records are cut down to their
-  public fields, and an SSH private key is removed from what the shell gets
-  and from what the helper keeps. The SSH agent still gets its keys from its
-  own branch of the vault read. This needs the rebuilt vault helper.
+  to remove secrets only from items sitting where it expected them and hand
+  the rest back to the shell as it came. Two kinds of thing got through.
+  The first the panel's own filter never writes, so only a broken filter
+  would have shown it: a read with another top-level key, an item list that
+  was not a list, a whole SSH item among the key records, an SSH private key
+  (which was not on the helper's list of secrets). The second the filter
+  passes on exactly as `bw` wrote it, because it hands ordinary items over
+  whole: a `login` that is not an object, a hidden custom field whose type
+  is written as text, and, on servers that send them (Vaultwarden does), an
+  attachment's signed download link and key. Nothing is known to have
+  leaked. A list read of another shape now fails like any failed read: the
+  rows on screen stay, the panel says it could not safely read the vault,
+  and nothing of the read is passed on. Inside an item, a secret's place
+  holding something unexpected is dropped; a custom field keeps its value
+  only as plain text or a boolean; an attachment keeps its id, name and
+  size; a password-history date that is not a date is blanked; SSH key
+  records are cut down to their public fields; and an item whose re-prompt
+  flag is anything but a plain "no" has its notes left out of search. SSH
+  private keys go to the SSH agent from an earlier branch of the vault read
+  and normally never reach this helper; one that does is discarded as the
+  read is parsed. This needs the rebuilt vault helper.
 
 ## [1.13.1] - 2026-11-18
 

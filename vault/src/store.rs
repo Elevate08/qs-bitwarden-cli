@@ -42,6 +42,11 @@ const SSH_RECORD_KEYS: &[&str] = &[
     "fingerprint",
 ];
 
+/// What the panel reads of an attachment (BitwardenModel.js
+/// parseAttachments). A download names the item and the attachment by id, so
+/// the rest (a signed download `url`, the attachment's `key`) stays here.
+const ATTACHMENT_KEYS: &[&str] = &["id", "fileName", "size", "sizeName"];
+
 /// A value the panel may ask for one at a time (`field`, `copyField`): the
 /// secrets of `SECRET_PATHS` it shows or copies, and hidden custom fields. The
 /// TOTP key and passkeys are not on the list: the code is computed here, and
@@ -425,6 +430,47 @@ fn present(item: &Map<String, Value>, path: &[&str]) -> bool {
     }
 }
 
+/// Whether the item is to be treated as one that asks for the master
+/// password. Only a plain "no" says it is not: absent, null, 0 or "0". The
+/// panel reads "1" as a yes (BitwardenModel.js repromptValue), and anything
+/// less clear is taken as a yes here too.
+fn asks_for_master_password(item: &Map<String, Value>) -> bool {
+    match item.get("reprompt") {
+        Some(Value::Null) | None => false,
+        Some(Value::Number(number)) => number.as_u64() != Some(0),
+        Some(Value::String(text)) => text != "0",
+        Some(_) => true,
+    }
+}
+
+/// A date and time as `bw` writes one (RFC 3339): `2024-05-01T10:00:00Z`,
+/// with or without a fraction of a second, ending in `Z` or an offset.
+fn is_timestamp(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let shape = |part: &[u8], pattern: &[u8]| {
+        part.len() == pattern.len()
+            && part
+                .iter()
+                .zip(pattern)
+                .all(|(byte, expected)| match expected {
+                    b'0' => byte.is_ascii_digit(),
+                    other => byte == other,
+                })
+    };
+    if bytes.len() < 20 || !shape(&bytes[..19], b"0000-00-00T00:00:00") {
+        return false;
+    }
+    let mut rest = &bytes[19..];
+    if let [b'.', tail @ ..] = rest {
+        let digits = tail.iter().take_while(|byte| byte.is_ascii_digit()).count();
+        if digits == 0 || digits > 9 {
+            return false;
+        }
+        rest = &tail[digits..];
+    }
+    rest == b"Z" || shape(rest, b"+00:00") || shape(rest, b"-00:00")
+}
+
 /// What matchesQuery() compares, lowercased: name, username, notes (not for an
 /// item that asks for the master password, whose notes the detail view hides
 /// behind that prompt), the public key and fingerprint of an SSH record, card
@@ -434,7 +480,7 @@ fn haystack(item: &Map<String, Value>) -> Zeroizing<String> {
     let mut parts: Vec<&str> = vec![
         text(item, &["name"]),
         text(item, &["login", "username"]),
-        if item.get("reprompt").and_then(Value::as_u64) == Some(1) {
+        if asks_for_master_password(item) {
             ""
         } else {
             text(item, &["notes"])
@@ -493,10 +539,13 @@ fn strip_item(item: &mut Map<String, Value>) {
         let dates = history
             .iter()
             .map(|entry| {
+                // Anything but a date is blanked, not skipped: the position
+                // is what `passwordHistory:<n>` names.
                 Value::String(
                     entry
                         .get("lastUsedDate")
                         .and_then(Value::as_str)
+                        .filter(|date| is_timestamp(date))
                         .unwrap_or("")
                         .to_owned(),
                 )
@@ -534,21 +583,50 @@ fn strip_item(item: &mut Map<String, Value>) {
         // Not a list of fields, so nothing says which of it is hidden.
         Some(_) => remove(item, &["fields"]),
     }
+    match item.get_mut("attachments") {
+        Some(Value::Array(attachments)) => attachments.iter_mut().for_each(strip_attachment),
+        Some(Value::Null) | None => {}
+        Some(_) => remove(item, &["attachments"]),
+    }
     item.insert("qsbwHeld".into(), Value::Object(held));
 }
 
-/// A custom field keeps its value only if it is plainly text (type 0), a
-/// boolean (2) or linked (3). A hidden one (1) loses it, and so does one
-/// whose type is missing or written any other way; an entry that is not a
-/// field at all is blanked in place, so the ones after it keep the positions
-/// `customField:<n>` names.
+/// An attachment keeps `ATTACHMENT_KEYS`, as plain values. An entry that is
+/// not an attachment is blanked in place, as a custom field is.
+fn strip_attachment(attachment: &mut Value) {
+    let Value::Object(map) = attachment else {
+        wipe_value(attachment);
+        *attachment = Value::Null;
+        return;
+    };
+    map.retain(|key, value| {
+        let keep =
+            ATTACHMENT_KEYS.contains(&key.as_str()) && !value.is_object() && !value.is_array();
+        if !keep {
+            wipe_value(value);
+        }
+        keep
+    });
+}
+
+/// A custom field keeps its value only if it is plainly text (type 0) or a
+/// boolean (2), and the value is text or null: `bw` writes both kinds as
+/// text. A hidden one (1) loses it, and so does a linked one (3), whose value
+/// the panel works out from `linkedId`, and one whose type is missing or
+/// written any other way. An entry that is not a field at all is blanked in
+/// place, so the ones after it keep the positions `customField:<n>` names.
 fn strip_field(field: &mut Value) {
     let Value::Object(map) = field else {
         wipe_value(field);
         *field = Value::Null;
         return;
     };
-    if matches!(map.get("type").and_then(Value::as_u64), Some(0 | 2 | 3)) {
+    if matches!(map.get("type").and_then(Value::as_u64), Some(0 | 2))
+        && matches!(
+            map.get("value"),
+            Some(Value::String(_) | Value::Null) | None
+        )
+    {
         return;
     }
     if let Some(mut value) = map.remove("value") {
@@ -902,7 +980,10 @@ mod tests {
                 { "name": "hidden as float", "value": "SECRET-FLOAT-TYPE", "type": 1.0 },
                 { "name": "untyped", "value": "SECRET-UNTYPED" },
                 "SECRET-BARE",
-                { "name": "linked", "type": 3, "linkedId": 101 }
+                { "name": "linked", "type": 3, "linkedId": 101, "value": "SECRET-LINKED" },
+                { "name": "nested", "type": 2, "value": { "password": "SECRET-NESTED" } },
+                { "name": "listed", "type": 0, "value": ["SECRET-LISTED"] },
+                { "name": "empty", "type": 0, "value": null }
             ] },
             { "id": "g", "type": 1, "name": "Field map",
               "fields": { "0": { "name": "pin", "value": "SECRET-MAP", "type": 1 } } },
@@ -920,7 +1001,9 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         let fields = &parsed["items"][4]["fields"];
         // Positions hold, since `customField:<n>` counts them.
-        assert_eq!(fields.as_array().unwrap().len(), 7);
+        assert_eq!(fields.as_array().unwrap().len(), 10);
+        assert_eq!(fields[7]["name"], "nested");
+        assert_eq!(fields[9]["value"], Value::Null);
         assert_eq!(fields[0]["value"], "plain");
         assert_eq!(fields[1]["value"], "true");
         assert_eq!(fields[2]["name"], "hidden as text");
@@ -933,6 +1016,119 @@ mod tests {
             .as_object()
             .unwrap()
             .contains_key("number"));
+    }
+
+    #[test]
+    fn an_attachment_keeps_only_what_the_panel_shows() {
+        let mut store = Store::default();
+        let read = serde_json::json!({ "items": [
+            { "id": "a", "type": 1, "name": "Files", "attachments": [
+                { "id": "att1", "fileName": "scan.pdf", "size": "1024", "sizeName": "1 KB",
+                  "url": "https://vault.example/attachments/a/att1?token=SECRET-URL", "key": "SECRET-KEY",
+                  "extra": { "nested": "SECRET-EXTRA" } },
+                "SECRET-BARE",
+                { "id": "att2", "fileName": { "name": "SECRET-NAME" }, "size": 7 }
+            ] },
+            { "id": "b", "type": 1, "name": "Odd", "attachments": { "url": "SECRET-MAP" } },
+            { "id": "n", "type": 1, "name": "None", "attachments": null }
+        ] })
+        .to_string();
+        let out = store.strip_vault(&read, true).unwrap();
+        assert!(
+            !out.contains("SECRET"),
+            "reached the panel: {}",
+            out.as_str()
+        );
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["items"][0]["attachments"],
+            serde_json::json!([
+                { "id": "att1", "fileName": "scan.pdf", "size": "1024", "sizeName": "1 KB" },
+                null,
+                { "id": "att2", "size": 7 }
+            ])
+        );
+        assert!(parsed["items"][1].get("attachments").is_none());
+        assert_eq!(parsed["items"][2]["attachments"], Value::Null);
+        // An edit sends the whole item back to `bw`, so the held copy keeps it.
+        assert!(store.item("a").unwrap().contains("SECRET-KEY"));
+    }
+
+    #[test]
+    fn a_history_date_that_is_not_a_date_is_blanked_in_place() {
+        for (date, ok) in [
+            ("2024-05-01T10:00:00.000Z", true),
+            ("2024-05-01T10:00:00Z", true),
+            ("2024-05-01T10:00:00.123456789+02:00", true),
+            ("2024-05-01T10:00:00-05:30", true),
+            ("", false),
+            ("2024-05-01", false),
+            ("2024-05-01 10:00:00Z", false),
+            ("2024-05-01T10:00:00", false),
+            ("2024-05-01T10:00:00.Z", false),
+            ("2024-05-01T10:00:00.000Zhunter2", false),
+            ("2024-05-01T10:00:00+0200", false),
+            ("hunter2", false),
+            ("２０２４-05-01T10:00:00Z", false),
+        ] {
+            assert_eq!(is_timestamp(date), ok, "{date:?}");
+        }
+        let mut store = Store::default();
+        let read = serde_json::json!({ "items": [{ "id": "a", "type": 1, "name": "Bank",
+            "passwordHistory": [
+                { "password": "one", "lastUsedDate": "SECRET-DATE" },
+                { "password": "two", "lastUsedDate": "2024-05-01T10:00:00.000Z" },
+                { "password": "three", "lastUsedDate": { "password": "SECRET-NESTED" } },
+                "SECRET-BARE"
+            ] }] })
+        .to_string();
+        let out = store.strip_vault(&read, true).unwrap();
+        assert!(
+            !out.contains("SECRET"),
+            "reached the panel: {}",
+            out.as_str()
+        );
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["items"][0]["qsbwHeld"]["passwordHistory"],
+            serde_json::json!(["", "2024-05-01T10:00:00.000Z", "", ""])
+        );
+        let second = store.item_secret("a", &SecretField::History(1)).unwrap();
+        assert_eq!(second.as_str(), "two");
+    }
+
+    #[test]
+    fn notes_are_searched_only_when_the_item_plainly_asks_for_no_password() {
+        let item = |id: &str, reprompt: Value| {
+            let mut item =
+                serde_json::json!({ "id": id, "type": 2, "name": id, "notes": "findme" });
+            if !reprompt.is_null() || id == "null" {
+                item["reprompt"] = reprompt;
+            }
+            item
+        };
+        let read = serde_json::json!({ "items": [
+            item("absent", Value::Null),
+            item("null", Value::Null),
+            item("zero", serde_json::json!(0)),
+            item("zero-text", serde_json::json!("0")),
+            item("one", serde_json::json!(1)),
+            item("one-text", serde_json::json!("1")),
+            item("one-float", serde_json::json!(1.0)),
+            item("two", serde_json::json!(2)),
+            item("true", serde_json::json!(true)),
+            item("false", serde_json::json!(false)),
+            item("text", serde_json::json!("no")),
+            item("list", serde_json::json!([0])),
+        ] })
+        .to_string();
+        let mut store = Store::default();
+        store.strip_vault(&read, true).unwrap();
+        assert_eq!(
+            store.search("findme"),
+            ["absent", "null", "zero", "zero-text"]
+        );
+        assert_eq!(store.search("one-text"), ["one-text"]);
     }
 
     #[test]

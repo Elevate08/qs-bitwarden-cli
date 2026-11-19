@@ -64,19 +64,26 @@ output is handed back as it is, except:
   by the helper and replaced by a placeholder;
 - the item list and a saved item are kept, and handed back with their
   secrets removed (the shell then asks for one value at a time: `field` to
-  show it, `copyField` to copy it, `item` to edit). A read that is not
-  exactly the shape the panel's filter writes -- another top-level key, or
-  an item list that is not a list of items -- is refused whole: the shell
-  gets an empty answer, as for a failed read, and what the helper held stays.
-  Inside an item, a secret's place holding something unexpected (a `login`
-  that is a list, a custom field with no recognisable type) is dropped
-  rather than passed on. The helper knows the secret fields listed above; a
-  field Bitwarden adds later is not among them until the helper learns it;
-- an SSH private key is removed from that read, and is not kept by this
-  helper either: the SSH agent gets its keys from a separate branch of the
-  same `bw` pipeline ([docs/ssh-agent.md](ssh-agent.md)), which writes them
-  straight to the agent, so they are never in this helper's memory or the
-  shell's;
+  show it, `copyField` to copy it, `item` to edit). A list read that is
+  not exactly the shape the panel's filter writes -- another top-level key,
+  or an item list that is not a list of items -- is refused whole and
+  reported as a failed read: the panel keeps the rows it had and says it
+  could not safely read the vault, and what the helper held stays. A save
+  whose answer is refused makes the panel read the list again. Inside an
+  item, a secret's place holding something unexpected (a `login` that is a
+  list) is dropped rather than passed on; a custom field keeps its value
+  only if it is plainly text or a boolean, and a linked one is shown from
+  the field it links to; an attachment keeps its id, file name and size, not
+  a download link or key; a password-history date that is not a date is
+  blanked. The helper knows the secret fields listed above; a field
+  Bitwarden adds later is not among them until the helper learns it;
+- SSH private keys normally never reach this helper: the vault read splits
+  before the panel's filter, and that branch writes them straight to the SSH
+  agent ([docs/ssh-agent.md](ssh-agent.md)), while the filter leaves only
+  public key records in the half that comes here. If one arrives all the
+  same, it is in the helper's read buffer until the read has been parsed,
+  then discarded: it is not kept with the item, not handed to the shell, and
+  no request reads it back;
 - the master password a quick-unlock method opens is kept, and the shell gets
   a reference to it;
 - a password or PIN typed into pinentry (below) is kept, and the shell gets
