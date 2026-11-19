@@ -3532,6 +3532,15 @@ Item {
     learnedIds = ({})
   }
 
+  // The compositor's answer was empty or could not be read: the window is
+  // not known, so nothing is suggested for it, the last one's rows leave
+  // the list, and a later refresh has no old window to match again.
+  function windowDetectionFailed() {
+    activeWindowData = null
+    clearContextMatch()
+    rebuildFilter()
+  }
+
   function handleActiveWindowDetected(data) {
     activeWindowData = data
     if (!suggestOnOpen) {
@@ -10381,10 +10390,10 @@ Item {
             var data = JSON.parse(text)
             root.handleActiveWindowDetected(data)
           } catch (e) {
-            root.contextMatchKey = ""
-            root.suggestedItems = []
-            root.detectedContext = null
+            root.windowDetectionFailed()
           }
+        } else {
+          root.windowDetectionFailed()
         }
       }
     }

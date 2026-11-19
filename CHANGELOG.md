@@ -182,8 +182,9 @@
   made: while the vault and the learned picks are unchanged, once for an
   open from another window (5,000 items: 14.8 ms to 6.9 ms on one machine;
   500 items: 1.2 ms to 0.6 ms) and not at all for an open from the same one.
-  The first open after a pick was learned, or after the list changed, still
-  matches twice. The suggestions are the same, except that an emptied vault
+  Two passes still happen only when both hold: the suggestions for the
+  window last seen are out of date (a pick was learned since) and the open
+  is from a different window. The suggestions are the same, except that an emptied vault
   and a locked one no longer keep showing the last ones.
 - **Internal cleanup, no behaviour change.** Unused ids, properties and
   test-only model functions are gone, and repeated panel markup and model
