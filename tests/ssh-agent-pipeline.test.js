@@ -275,7 +275,7 @@ for (const [label, contents] of [
     JSON.stringify({ v: 1, type: "key_load_end", epoch: 7, status: "failed" }) + "\n")
   const panelSrc = readPluginSource("Panel.qml")
   check("the panel closes every load window with the read's real outcome",
-    /endSshAgentLoad\(exitCode === 0\)/.test(panelSrc), "the exit handler does not close the load window")
+    /endSshAgentLoad\(exitCode === 0 && !discarded\)/.test(panelSrc), "the exit handler does not close the load window")
   check("the panel closes the window on paths that abandon a load",
     /endSshAgentLoad\(false\)/.test(panelSrc), "no path reports a failed load")
   check("closing the window writes the versioned key_load_end line",

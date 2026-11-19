@@ -516,6 +516,88 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
     /if \(currentScreen === "detail"\) resumeCreatedItem\(\)/.test(screenChanged), screenChanged)
 }
 
+// --- the SSH agent's keys from a list that is not shown -----------------------------------
+// A list read hands the agent its keys on the way. One whose answer is not
+// shown (a newer read was waiting, or it is from before a sync) must not
+// publish them, and the keys stay owed until a list that is shown brings them.
+{
+  const LOAD_ID = "ab".repeat(16)
+  const keyed = () => {
+    const c = fixture()
+    Object.assign(c, { sshAgentGateOpen: true, sshAgentNextLoadId: LOAD_ID, ended: [], lifecycle: [], primed: 0,
+      sshPendingCount: 0, endSshAgentLoad: ok => { c.ended.push(ok); c.sshAgentLoadActive = false },
+      applySshAgentLifecycle: e => c.lifecycle.push(e), primeSshAgentLoadId: () => { c.primed++ } })
+    vm.runInContext(functionBody(source, "maybeStartupLoad"), c)
+    return c
+  }
+  const c = keyed()
+  c.loadItems(false)
+  check("premise: the read carries the agent's keys and marks them loaded for this vault",
+    c.listAgentBranchActive && c.sshAgentLoadActive && c.sshAgentLoadedForVaultEpoch === c.vaultEpoch)
+  c.vaultChanges += 1; c.loadItems(false)      // a save finished: a newer read waits
+  c.exit("listProc", 0, vaultOf("old"), "")
+  eq("a superseded list's key batch is ended as failed, so the agent discards it", c.ended.join(), "false")
+  check("the waiting read starts without keys, and the keys are owed again",
+    c.runsOf("listProc").length === 2 && !c.listAgentBranchActive && c.sshAgentLoadedForVaultEpoch === -1)
+  c.sshAgentNextLoadId = LOAD_ID                // the next nonce is in by the time it lands
+  c.exit("listProc", 0, vaultOf("new"), "")
+  check("the list that is shown is followed by the key load that was owed",
+    names(c) === "new" && c.lifecycle.join() === "startup" && c.sshAgentLoadedForVaultEpoch === c.vaultEpoch, c.lifecycle.join())
+
+  const o = keyed()
+  o.loadItems(false)
+  o.vaultChanges += 1                           // a manual sync finished meanwhile
+  o.exit("listProc", 0, vaultOf("old"), "")
+  check("a snapshot from before a sync does not publish its keys either",
+    o.ended.join() === "false" && o.sshAgentLoadedForVaultEpoch === -1 && o.runsOf("listProc").length === 2, o.ended.join())
+
+  const f = keyed()
+  f.loadItems(false)
+  f.vaultChanges += 1; f.loadItems(false)
+  f.exit("listProc", 1, "", "failed")
+  check("a superseded read that failed leaves the keys owed to the read that replaces it",
+    f.ended.join() === "false" && f.sshAgentLoadedForVaultEpoch === -1 && f.runsOf("listProc").length === 2)
+
+  const k = keyed()
+  k.loadItems(false)
+  k.exit("listProc", 0, vaultOf("only"), "")
+  check("a list that is shown publishes its keys, once",
+    k.ended.join() === "true" && k.sshAgentLoadedForVaultEpoch === k.vaultEpoch && k.lifecycle.length === 0, k.ended.join())
+
+  const p = keyed()
+  p.sshPendingCount = 1
+  p.maybeStartupLoad()
+  check("a key load that is owed waits for a pending SSH approval", p.lifecycle.length === 0 && p.sshAgentLoadedForVaultEpoch === -1)
+  p.sshPendingCount = 0
+  p.maybeStartupLoad()
+  eq("and runs once it is answered", p.lifecycle.join(), "startup")
+  check("the answer is what asks again", /onSshPendingCountChanged: if \(sshPendingCount === 0\) maybeStartupLoad\(\)/.test(source))
+}
+
+// --- an automatic sync's reload and a list from before it ---------------------------------
+// The reload an automatic sync owes waits for an idle vault (maybeAutoSync():
+// not over an edit, not over an SSH approval, which a key load would fail).
+// A list from before the sync is not shown, and is not read again past that gate.
+{
+  const synced = () => {
+    const c = fixture()
+    c.idleChecks = 0
+    c.maybeAutoSync = () => { c.idleChecks++ }
+    c.loadItems(false)
+    c.vaultChanges += 1; c.autoSyncReloadPending = true      // onSyncFinished(0), in the background
+    return c
+  }
+  const c = synced()
+  c.exit("listProc", 0, vaultOf("old"), "")
+  check("a list from before an automatic sync is not shown, and its re-read is left to the idle gate",
+    names(c) === "" && c.runsOf("listProc").length === 1 && c.idleChecks === 1 && c.autoSyncReloadPending === true,
+    c.runsOf("listProc").length + " " + c.idleChecks)
+  const u = synced()
+  u.isLoading = true                             // the user asked for this read, and is watching a spinner
+  u.exit("listProc", 0, vaultOf("old"), "")
+  check("a read the user is waiting for is read again at once", u.runsOf("listProc").length === 2 && u.idleChecks === 0)
+}
+
 check("the waiting reads are per-vault state a lock drops", /queuedReads = \(\{\}\)/.test(functionBody(source, "dropVaultState")))
 for (const id of ["listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"]) {
   // The scrub is recognised by the process's command, which a waiting read's

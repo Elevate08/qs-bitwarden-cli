@@ -3219,6 +3219,8 @@ Item {
     // calls back when it lands.
     if (sshAgentLoadActive || listProc.running) return
     if (sshAgentLoadedForVaultEpoch === root.vaultEpoch) return
+    // A load fails every signing request waiting for approval: after them.
+    if (sshPendingCount > 0) return
     // No nonce yet: onSshAgentLoadIdRead() calls back when it is ready.
     if (!Model.isValidLoadId(sshAgentNextLoadId)) {
       primeSshAgentLoadId()
@@ -3233,6 +3235,7 @@ Item {
     promoteUnlockToApproval()
     maybeStartupLoad()
   }
+  onSshPendingCountChanged: if (sshPendingCount === 0) maybeStartupLoad()
 
   // Unlocked but keys still loading: ask for approval now. The companion
   // applies it once the keys land, re-checking the key is present.
@@ -7079,7 +7082,14 @@ Item {
     var wasEarly = listReadEarly
     listAgentBranchActive = false
     listReadEarly = false
-    endSshAgentLoad(exitCode === 0)
+    // An answer that will not be shown (a newer read is waiting, or it is a
+    // snapshot from before a save, delete or sync) does not give the SSH
+    // agent its keys either: the agent discards the batch, and the keys are
+    // owed until a list that is shown brings them (maybeStartupLoad()).
+    var discarded = !!queuedReads["items"]
+      || (exitCode === 0 && !vaultReadIsStale("items") && listSnapshotOutdated())
+    endSshAgentLoad(exitCode === 0 && !discarded)
+    if (hadAgentBranch && discarded && !vaultReadIsStale("items")) sshAgentLoadedForVaultEpoch = -1
     // A read asked for since this run started replaces its answer.
     if (supersededVaultRead("items")) {
       listRetriedWithoutAgent = false
@@ -7094,6 +7104,9 @@ Item {
       // What an accepted list settles (the sync, the spinner) waits for that.
       if (!vaultReadIsStale("items") && listSnapshotOutdated()) {
         if (itemChangeRunning()) listRereadOwed = true
+        // An automatic sync's reload is already owed, and starts when the
+        // vault is idle: not over an edit, nor over an SSH approval.
+        else if (autoSyncReloadPending && !isLoading) maybeAutoSync()
         else startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
         return
       }
