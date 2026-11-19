@@ -142,26 +142,19 @@ try {
   check("and its keyring entries", !fs.readdirSync(keyring).some(n => n.endsWith("@" + oldB)), fs.readdirSync(keyring).join())
 
   // --- the open item across a reload of the list ---
-  // The helper replaces its items when `bw` answers, before the list is
-  // here: while a list read is in flight nothing secret is read for the open
-  // item, and a list that turns its master-password re-prompt on closes what
-  // was revealed and puts the item behind the prompt.
+  // The detail is a copy made when the item was opened: a list that turns
+  // its master-password re-prompt on closes what was revealed and puts the
+  // item behind the prompt.
   const dataB = path.join(accountsDir, state().accounts.find(a => a.email === "b@x").slot)
   q("openFirst")
   q("reveal", "password")
   expect("B's item is open with its password revealed, no prompt asked",
     s => s.screen === "detail" && s.revealed.join() === "password" && !s.reprompt.pending)
-  fs.writeFileSync(path.join(dataB, "fake-list-delay"), "3")
   q("reload")
-  q("copyField", "password")
-  expect("a copy while the list read is in flight is refused with a notice",
-    s => s.error === "Refreshing the vault -- try again in a moment")
-  fs.rmSync(path.join(dataB, "fake-list-delay"))
-  expect("the notice comes down when that list is in, and what was revealed stays (nothing changed)",
-    s => s.error === "" && s.revealed.join() === "password" && s.screen === "detail")
   fs.rmSync(bwLog + ".clipboard", { force: true })
   q("copyField", "password")
-  expect("and the copy, repeated, goes through", () => fs.existsSync(bwLog + ".clipboard"))
+  expect("a reload that changes nothing leaves it revealed, and a copy goes through",
+    s => s.error === "" && s.revealed.join() === "password" && s.screen === "detail" && fs.existsSync(bwLog + ".clipboard"))
   // A sync elsewhere turns the item's re-prompt on; the next list brings it.
   fs.writeFileSync(path.join(dataB, "fake-item-reprompt"), "1")
   q("reload")

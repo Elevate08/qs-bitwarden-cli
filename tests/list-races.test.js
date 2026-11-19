@@ -22,7 +22,7 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "loadOrgCollections", "onOrgCollectionsLoaded", "loadSends", "onSendsLoaded",
   "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
-  "onDeleteItemFinished", "reconcileOpenDetail", "listReadInFlight", "detailReadsOnHold", "totpWanted",
+  "onDeleteItemFinished", "reconcileOpenDetail", "totpWanted",
   "isFieldRevealed", "itemChangeRunning"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
@@ -72,7 +72,7 @@ function fixture() {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
     vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, createdItemHandoff: null,
-    pendingSave: null, pendingDelete: null, listSnapshotUnseen: false, refreshingNotice: "Refreshing the vault -- try again in a moment",
+    pendingSave: null, pendingDelete: null,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
     itemsLoadedAt: 0, orgsLoadedAt: 0, foldersLoadedAt: 0, metaFreshMs: 0,
@@ -449,32 +449,26 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
   c.loadItems(false)
   c.exit("listProc", 0, listOf(stored("id-b", "B")), "")
   check("the next vault's list is shown, not held back for the old vault's save",
-    names(c) === "B" && c.listRereadOwed === false && c.listSnapshotUnseen === false, names(c) + " " + c.listRereadOwed)
+    names(c) === "B" && c.listRereadOwed === false, names(c) + " " + c.listRereadOwed)
   finishSave(c, 0, savedAnswer)
   check("and that save's late answer changes nothing in it", names(c) === "B" && c.runsOf("listProc").length === 2 && !c.listRereadOwed, names(c))
 }
 {
-  // What the helper took and the panel did not show stays marked until a list is accepted.
+  // A snapshot not shown is read again, and a later read still gets its list in.
   const c = saving(false)
   c.loadItems(false)
   finishSave(c, 0, savedAnswer)
   c.exit("listProc", 0, listOf(stored(oldId, "Old")), "")
-  check("a snapshot not shown is remembered as unseen while the list is read again", c.listSnapshotUnseen === true && c.listProc.running)
+  check("a snapshot from before the save is not shown while the list is read again", c.listProc.running)
   c.exit("listProc", 1, "", "Could not safely read vault items.")
-  check("and still is if that read fails: the helper is ahead of the list here", c.listSnapshotUnseen === true && c.errorMessage !== "")
+  check("that read failing says so", c.errorMessage !== "")
   c.loadItems(false)
   c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "New login")), "")
-  check("an accepted list clears it", c.listSnapshotUnseen === false && c.items.length === 2)
+  check("and the next list is accepted", c.items.length === 2)
   const q = fixture()
   q.loadItems(false); q.vaultChanges += 1; q.loadItems(false)
   q.exit("listProc", 0, vaultOf("old"), "")
-  check("an answer replaced by a newer request counts too", q.listSnapshotUnseen === true && names(q) === "")
-  q.dropVaultState()
-  eq("a lock clears the mark", q.listSnapshotUnseen, false)
-  const f = fixture()
-  f.loadItems(false); f.vaultChanges += 1; f.loadItems(false)
-  f.exit("listProc", 1, "", "failed")
-  eq("a failed run the helper took nothing from leaves no mark", f.listSnapshotUnseen, false)
+  check("an answer replaced by a newer request is not shown", names(q) === "")
 }
 {
   // Nothing saved or deleted: a refresh is accepted as before, once.

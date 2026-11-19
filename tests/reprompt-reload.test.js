@@ -4,9 +4,8 @@
 // replaces its items before the panel has the new list. So: the list that is
 // accepted is checked against the open detail (gone: back to the list; asks
 // now and did not: what was revealed is dropped and the detail is opened
-// again, behind the prompt), and while a list read is in flight nothing
-// secret is read for an open item that does not ask. An item whose flag did
-// not change, or whose re-prompt was confirmed, behaves as it did.
+// again, behind the prompt). An item whose flag did not change, or whose
+// re-prompt was confirmed, behaves as it did.
 //
 // The service's functions run against the stand-in of detail-vault.js.
 //
@@ -23,7 +22,6 @@ const stripped = (id, name, reprompt, totp) => ({ id, type: 1, name, reprompt,
 const VAULT = [stripped("n1", "Mail", 0, true), stripped("g1", "Bank", 1, false), stripped("p1", "Plain", 0, false)]
 const envelope = rows => JSON.stringify({ sshCapability: "unconfirmed", sshKeys: [], items: rows })
 const withFlag = (id, reprompt) => VAULT.map(r => r.id === id ? Object.assign({}, r, { reprompt }) : r)
-const NOTICE = "Refreshing the vault -- try again in a moment"
 
 function makeVault(fallback) {
   const v = makeStandIn(Model.parseItems(VAULT), fallback)
@@ -34,7 +32,7 @@ function makeVault(fallback) {
     set(next) { if (next === screen) return; screen = next; v.goTo(next) }
   })
   v.row = id => Model.findItemById(v.items, id)
-  // A list read: in flight from start() until land(), which is what the
+  // A list read: running from start() until land(), which is what the
   // exit handler does with a good answer.
   v.start = () => { v.listProc.command = Model.sanitizedListCommand({ agentBranch: false }); v.listProc.running = true }
   v.land = rows => { v.listProc.running = false; v.readEpochs.items = v.vaultEpoch; v.onListFinished(envelope(rows)) }
@@ -172,112 +170,58 @@ function makeVault(fallback) {
   check("a detail on a provisional row is left for its save", v.currentScreen === "detail" && v.detailItem.id === provisional)
 }
 
-// --- (b) while a list read is in flight -------------------------------------------------------
+// --- (b) what the accepted list leaves alone, and what it re-gates ----------------------------
 {
+  // The list lands with the flag unchanged: the open item is as it was.
   const v = makeVault()
   v.openDetail(v.row("n1"))
   answer(v, 0, true, { code: "123456", period: 30 })
   const asked = v.queries.length
-  v.start()
-  const refused = (what, run) => {
-    v.errorMessage = ""
-    run()
-    check(`in flight: ${what} is refused with a notice and asks the helper nothing`,
-      v.queries.length === asked && v.errorMessage === NOTICE && !v.repromptPending && v.copied.length === 0 && v.edits.length === 0,
-      v.kinds() + " | " + v.errorMessage)
-  }
-  refused("a copy", () => v.copyDetailField("password", "Password"))
-  refused("a reveal", () => v.toggleFieldReveal("password"))
-  refused("a TOTP copy", () => { v.liveTotp = ""; v.copyDetailTotp() })
-  refused("a password-history copy", () => v.copyDetailField("passwordHistory:0", "Old password"))
-  refused("a password-history reveal", () => { v.currentScreen = "history"; v.toggleFieldReveal("passwordHistory:0"); v.currentScreen = "detail" })
-  refused("an edit (the whole item)", () => v.startEditItem(v.detailItem))
-  refused("the same item's row beside the detail", () => v.withReprompt(v.row("n1"), () => v.queries.push({ kind: "row action" })))
-  check("in flight: the code is neither refreshed nor shown", v.totpWanted(v.detailItem) === false)
-  v.applyTotpCode("n1", "654321")
-  eq("in flight: a code arriving is not put on screen", v.liveTotp, "")
-  let ran = 0
-  v.withReprompt(v.row("p1"), () => { ran++ })
-  eq("an action on another row is not this window's business", ran, 1)
-
-  // The read lands with the flag unchanged: everything works again.
-  v.liveTotp = "123456"                      // the code on screen when the read began; its half-minute passed meanwhile
-  v.errorMessage = NOTICE
-  v.land(VAULT)
-  check("once the list is accepted the code is fetched afresh, an old one on screen or not",
+  v.reload(VAULT)
+  check("an accepted list fetches the open item's code afresh, from the vault the helper has now",
     v.queries.length === asked + 1 && v.queries[asked].kind === "totp" && v.totpWanted(v.detailItem), v.kinds())
-  eq("and the notice comes down", v.errorMessage, "")
+  eq("the code on screen stays until that answer", v.liveTotp, "123456")
   v.copyDetailField("password", "Password")
-  check("and the action repeated goes through, with no prompt",
+  check("and a copy goes through, with no prompt",
     v.queries.length === asked + 2 && v.queries[asked + 1].kind === "copyField" && !v.repromptPending && v.errorMessage === "", v.kinds())
 }
 {
-  // Opening an item during the read: its code waits for the list.
+  // An item opened while a list read runs has its code asked for as ever;
+  // the list that says it asks first takes the code down.
   const v = makeVault()
   v.start()
   v.openDetail(v.row("n1"))
-  check("an item opened in flight shows, but its code is not asked for yet", v.detailItem.id === "n1" && v.queries.length === 0, v.kinds())
+  check("an item opened during a list read is not held back", v.detailItem.id === "n1" && v.kinds() === "totp", v.kinds())
   v.land(withFlag("n1", 1))
-  check("and never is, when the list says it asks first", v.queries.length === 0 && v.detailItem.reprompt === 1 && v.liveTotp === "", v.kinds())
+  check("the list that protects it re-gates it: no code wanted, none on screen",
+    v.detailItem.reprompt === 1 && v.totpWanted(v.detailItem) === false && v.liveTotp === "", v.kinds())
+  answer(v, 0, true, { code: "654321", period: 30 })
+  eq("and the code asked for before the list, answering late, is not shown", v.liveTotp, "")
 }
 {
-  // The window, closed: the copy that would have read the newly protected secret.
+  // A copy while the read runs is not refused; once the list is in, it asks.
   const v = makeVault()
   v.openDetail(v.row("p1"))
-  v.start()                                  // the helper may hold the new vault from here on
+  v.start()
   v.copyDetailField("password", "Password")
-  check("a copy under the old flag does not reach a helper that may hold the new one", v.queries.length === 0 && v.errorMessage === NOTICE, v.kinds())
+  check("a copy during a list read goes to the helper as ever", v.kinds() === "copyField" && v.errorMessage === "", v.kinds() + " | " + v.errorMessage)
   v.land(withFlag("p1", 1))
   v.copyDetailField("password", "Password")
-  check("after the list it asks for the master password", v.repromptPending && v.queries.length === 0, v.kinds())
+  check("after the list it asks for the master password", v.repromptPending && v.kinds() === "copyField", v.kinds())
 }
 {
-  // A flagged item is not held back: its prompt, or its confirmation, stands either way.
+  // A flagged item: its prompt, or its confirmation, stands across a reload.
   const v = makeVault()
   v.openDetail(v.row("g1"))
   v.toggleFieldReveal("password"); confirm(v); answer(v, 0, true, "hunter2")
-  v.start()
+  v.reload(VAULT)
   v.copyDetailField("password", "Password")
-  check("in flight: a confirmed re-prompt item copies as ever", v.queries.length === 2 && v.queries[1].kind === "copyField" && v.errorMessage === "", v.errorMessage)
+  check("a confirmed re-prompt item copies as ever", v.queries.length === 2 && v.queries[1].kind === "copyField" && v.errorMessage === "", v.errorMessage)
   const u = makeVault()
   u.openDetail(u.row("g1"))
-  u.start()
+  u.reload(VAULT)
   u.copyDetailField("password", "Password")
-  check("in flight: an unconfirmed one asks for the master password as ever", u.repromptPending && u.queries.length === 0 && u.errorMessage === "", u.errorMessage)
-}
-{
-  // A snapshot held back for a save has replaced the helper's items unseen.
-  const v = makeVault()
-  v.openDetail(v.row("p1"))
-  v.listSnapshotUnseen = true
-  v.copyDetailField("password", "Password")
-  check("a list answer the helper took and the panel did not show holds the open item back too",
-    v.queries.length === 0 && v.errorMessage === NOTICE, v.kinds())
-  v.reload(VAULT)
-  check("until a list is accepted, which also takes the notice down", v.listSnapshotUnseen === false && v.errorMessage === "", v.errorMessage)
-  v.copyDetailField("password", "Password")
-  eq("then the copy goes through", v.kinds(), "copyField")
-  // A list read stopped (cancelSshAgentLoad()) whose exit is still to come may have answered already.
-  const k = makeVault()
-  k.openDetail(k.row("p1"))
-  k.start(); k.listProc.running = false; k.listProc.runId = 7
-  k.copyDetailField("password", "Password")
-  check("a stopped list read still holds back until it has exited", k.queries.length === 0 && k.errorMessage === NOTICE, k.kinds())
-  // A lock's scrub borrows the process; it reads nothing.
-  const s = makeVault()
-  s.openDetail(s.row("p1"))
-  s.listProc.command = Model.scrubCommand(); s.listProc.running = true
-  s.copyDetailField("password", "Password")
-  check("a scrub run is not a list read", s.queries.length === 1 && s.errorMessage === "", s.errorMessage)
-}
-{
-  // Without the helper the list and its secrets arrive together: no window.
-  const v = makeVault(true)
-  v.items = Model.parseItems([{ id: "f1", type: 1, name: "Local", reprompt: 0, login: { username: "me", password: "hunter2" } }])
-  v.openDetail(v.row("f1"))
-  v.start()
-  v.copyDetailField("password", "Password")
-  check("with no helper nothing is held back", v.copied.length === 1 && v.copied[0][0] === "hunter2" && v.errorMessage === "", v.errorMessage)
+  check("an unconfirmed one asks for the master password as ever", u.repromptPending && u.queries.length === 0 && u.errorMessage === "", u.errorMessage)
 }
 
 // --- wiring -----------------------------------------------------------------------------------
@@ -286,10 +230,6 @@ const finished = functionBody(service, "onListFinished")
 check("an accepted list is checked against the open detail once its rows are in",
   finished.indexOf("items = vault.items") !== -1
     && finished.indexOf("items = vault.items") < finished.indexOf("reconcileOpenDetail()"), finished)
-check("every re-prompt gate goes through the one place that holds back",
-  /function withReprompt\(item, callback\) \{\s*if \(!item \|\| typeof callback !== "function"\) return[\s\S]{0,300}?if \(detailReadsOnHold\(item\)\) \{\s*errorMessage = refreshingNotice\s*return\s*\}\s*if \(repromptSatisfied\(item\)\)/
-    .test(functionBody(service, "withReprompt")), functionBody(service, "withReprompt"))
-check("the notice is the one constant", new RegExp('readonly property string refreshingNotice: "' + NOTICE + '"').test(service))
 check("the code's refresh timer goes through totpWanted()",
   /root\.detailItem\.hasTotp\s*&& root\.totpWanted\(root\.detailItem\)\) \{\s*root\.fetchTotp\(root\.detailItem\.id\)/.test(service))
 

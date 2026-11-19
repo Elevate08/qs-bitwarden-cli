@@ -97,8 +97,7 @@ check("and asked again when it is turned on or off",
 
 const flowNames = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "autoTypeArmed", "disarmAutoType",
   "stopAutoType", "copyPasswordAndArm", "requestAutoType", "onAutoTypeRead", "typeHere", "onAutoTypeExited",
-  "finishAutoType", "screenLockReadingFresh", "armTotpFollowup", "copyTotpAfterAutoType", "notifyTotpCopied",
-  "detailReadsOnHold", "listReadInFlight", "vaultProcBusy"]
+  "finishAutoType", "screenLockReadingFresh", "armTotpFollowup", "copyTotpAfterAutoType", "notifyTotpCopied"]
 function makeVault() {
   const calls = []
   const timer = name => ({ running: false, interval: 0, restart() { this.running = true; calls.push(name + ".restart") },

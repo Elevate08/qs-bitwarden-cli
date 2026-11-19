@@ -344,10 +344,7 @@ Item {
   // Whether the detail shows (and keeps refreshing) its TOTP code: always,
   // except that a re-prompt item's code waits for its eye.
   function totpWanted(item) {
-    if (!item) return false
-    if (itemNeedsReprompt(item)) return isFieldRevealed("totp")
-    // Not while a list read may have changed that answer (detailReadsOnHold()).
-    return !detailReadsOnHold(item)
+    return !!item && (!itemNeedsReprompt(item) || isFieldRevealed("totp"))
   }
 
   // The list row of an item whose secrets the helper holds, else null.
@@ -469,38 +466,8 @@ Item {
     return id === repromptVerifiedId && detailItem !== null && String(detailItem.id) === id
   }
 
-  // Whether the vault helper may already hold a newer copy of the vault than
-  // the list here: a list read replaces the helper's items when `bw` answers,
-  // before the panel has the list (and a snapshot that was not shown, being
-  // from before a save or replaced by a newer request, has replaced them all
-  // the same: listSnapshotUnseen, until a list is accepted). In that window the open
-  // item's re-prompt flag here is the old one.
-  function listReadInFlight() {
-    return vaultHelperActive
-      && ((vaultProcBusy(listProc) && !Model.isScrubCommand(listProc.command)) || listSnapshotUnseen)
-  }
-
-  readonly property string refreshingNotice: "Refreshing the vault -- try again in a moment"
-
-  // Whether an action on `item`, the item open in the detail, has to wait for
-  // that read: its flag says "no master password", and the helper's copy may
-  // say otherwise by now. An item already flagged asks (or was confirmed) as
-  // ever; the new copy can only make it ask less.
-  function detailReadsOnHold(item) {
-    return !!item && !itemNeedsReprompt(item) && detailItem !== null
-      && String(detailItem.id) === String(item.id)
-      && (currentScreen === "detail" || currentScreen === "history")
-      && listReadInFlight()
-  }
-
   function withReprompt(item, callback) {
     if (!item || typeof callback !== "function") return
-    // Refused rather than held: the accepted list re-checks the open item
-    // (reconcileOpenDetail()), and the action is one key press to repeat.
-    if (detailReadsOnHold(item)) {
-      errorMessage = refreshingNotice
-      return
-    }
     if (repromptSatisfied(item)) {
       callback()
       return
@@ -797,9 +764,6 @@ Item {
   // Such a snapshot arrived while a save or delete was still running: the
   // list is read again when that finishes (settleOwedListRead()).
   property bool listRereadOwed: false
-  // A list answer the helper took and the panel did not show; cleared by the
-  // next list that is accepted (listReadInFlight()).
-  property bool listSnapshotUnseen: false
   // A new item's detail, covered by an SSH approval when its save answered:
   // { from: provisional id, to: saved id }, taken up when the detail is back
   // (resumeCreatedItem()).
@@ -6770,7 +6734,6 @@ Item {
     readEpochs = ({})
     queuedReads = ({})
     listRereadOwed = false
-    listSnapshotUnseen = false
     createdItemHandoff = null
     masterPassword = ""
     itemsLoadedAt = 0
@@ -7081,8 +7044,7 @@ Item {
   function onListFinished(rawJson) {
     isLoading = false
     if (vaultReadIsStale("items")) return
-    listSnapshotUnseen = false
-    if (errorMessage === listReadError || errorMessage === refreshingNotice) errorMessage = ""
+    if (errorMessage === listReadError) errorMessage = ""
     listReadError = ""
     // One parse for both: parsing the list once per consumer cost several
     // whole-vault parses on the GUI thread per load.
@@ -7114,12 +7076,9 @@ Item {
     listAgentBranchActive = false
     listReadEarly = false
     endSshAgentLoad(exitCode === 0)
-    // A read asked for since this run started replaces its answer, which the
-    // helper has taken all the same.
-    var tookEffect = exitCode === 0 && !vaultReadIsStale("items")
+    // A read asked for since this run started replaces its answer.
     if (supersededVaultRead("items")) {
       listRetriedWithoutAgent = false
-      if (tookEffect) listSnapshotUnseen = true
       return
     }
 
@@ -7130,7 +7089,6 @@ Item {
       // (whose items this read has already replaced): read again instead.
       // What an accepted list settles (the sync, the spinner) waits for that.
       if (!vaultReadIsStale("items") && listSnapshotOutdated()) {
-        listSnapshotUnseen = true
         if (itemChangeRunning()) listRereadOwed = true
         else startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
         return
@@ -7162,7 +7120,6 @@ Item {
     backgroundSync = false
     metadataLoadPending = false
     metadataForceRefresh = false
-    if (errorMessage === refreshingNotice) errorMessage = ""
     if (statusRefreshAfterItems) {
       statusRefreshAfterItems = false
     }
@@ -7670,7 +7627,7 @@ Item {
     // The TOTP is time-based, so it is fetched alongside. The helper computes
     // it; the key does not come here. A re-prompt item's code is fetched when
     // it is revealed or copied.
-    if (item.hasTotp && !itemNeedsReprompt(item) && !detailReadsOnHold(item)) {
+    if (item.hasTotp && !itemNeedsReprompt(item)) {
       fetchTotp(item.id)
     }
   }
@@ -7695,8 +7652,7 @@ Item {
     var row = Model.findItemById(items, id)
     var newlyProtected = !!row && itemNeedsReprompt(row) && !itemNeedsReprompt(detailItem)
     if (row && !newlyProtected) {
-      // The code was held back while the read ran (totpWanted()), a refresh
-      // at the half-minute included.
+      // Its code is the helper's answer for the new vault.
       if (currentScreen === "detail" && detailItem.hasTotp && totpWanted(detailItem)) fetchTotp(detailItem.id)
       return
     }
