@@ -239,6 +239,13 @@ check("the release notes are the changelog section for this version",
 const publishStep = releaseJob.slice(releaseJob.indexOf("- name: Publish the release"))
 const notesSection = /section="\$\(cat <<'EOF'\n([\s\S]*?)\n\s*EOF\n/.exec(publishStep)
 const notesText = notesSection ? notesSection[1] : ""
+// A release goes by tag name and the jobs by commit; a re-run refills a draft.
+check("a published release is never rewritten, and the tag must still name the built commit",
+  /\[ "\$tagged" = "\$GITHUB_SHA" \] \|\| \{/.test(publishStep) && /refs\/tags\/\$TAG\^\{\}/.test(publishStep)
+    && /--json isDraft --jq \.isDraft\)" = "true" \] \|\| \{\n[^\n]*\n\s*exit 1/.test(publishStep)
+    && publishStep.indexOf('"$tagged" = "$GITHUB_SHA"') < publishStep.indexOf("gh release view")
+    && publishStep.indexOf("isDraft") < publishStep.indexOf("--clobber"),
+  "a re-run or a moved tag replaces the assets of a release people already have")
 check("the release notes carry a section on verifying the helpers",
   /^\s*## Verifying the helpers$/m.test(notesText)
     && publishStep.indexOf("CHANGELOG.md > dist/release-notes.md") < publishStep.indexOf("## Verifying the helpers")

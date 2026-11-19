@@ -553,10 +553,32 @@ jobs:
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           # A draft: the tag is on a release branch not yet merged to master.
           # publish-on-master.yml publishes it when the commit lands there.
+          # Every job checked, built and attested GITHUB_SHA, but a release
+          # goes by tag name: the tag must still name that commit. Asked of
+          # the remote without credentials (the repository is public); an
+          # annotated tag's commit is on its ^{} line.
+          refs="$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"
+          tagged=""
+          while read -r sha ref; do
+            case "$ref" in
+              "refs/tags/$TAG^{}") tagged="$sha"; break ;;
+              "refs/tags/$TAG")    tagged="$sha" ;;
+            esac
+          done <<< "$refs"
+          [ "$tagged" = "$GITHUB_SHA" ] || {
+            echo "::error::tag $TAG names ${tagged:-no commit}, not the $GITHUB_SHA this run built"
+            exit 1
+          }
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::notice::release $TAG exists; uploading assets to it"
+            # Only a draft is refilled, which is what re-running this job
+            # does. A published release is never rewritten.
+            [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ] || {
+              echo "::error::release $TAG is already published; its assets are not replaced"
+              exit 1
+            }
+            echo "::notice::draft release $TAG exists; uploading assets to it"
             gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$TAG" "${assets[@]}" --draft \
+            gh release create "$TAG" "${assets[@]}" --draft --verify-tag \
               --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
           fi

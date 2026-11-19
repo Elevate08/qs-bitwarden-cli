@@ -57,7 +57,9 @@ dependency reports and debug symbols.
 The reports and symbols reach that job as
 artifacts of the run's build jobs. It publishes them only if the artifacts are
 exactly the three the workflow uploads, holding exactly the files it makes,
-and attaches each by name.
+and attaches each by name. Before it uploads, the tag must still name the
+commit the run built, and a release that is already published is refused:
+only a draft is created or refilled.
 
 One CI path writes binaries: `.github/workflows/helper-rebuild.yml`. For a
 same-repository PR into a `release/**` branch whose Rust changes are only plain
