@@ -444,7 +444,9 @@ fn asks_for_master_password(item: &Map<String, Value>) -> bool {
 }
 
 /// A date and time as `bw` writes one (RFC 3339): `2024-05-01T10:00:00Z`,
-/// with or without a fraction of a second, ending in `Z` or an offset.
+/// with or without a fraction of a second, ending in `Z` or an offset, and
+/// a moment that exists: no 30 February, no 25 o'clock. A second may be 60,
+/// as RFC 3339 allows for a leap second.
 fn is_timestamp(text: &str) -> bool {
     let bytes = text.as_bytes();
     let shape = |part: &[u8], pattern: &[u8]| {
@@ -460,6 +462,24 @@ fn is_timestamp(text: &str) -> bool {
     if bytes.len() < 20 || !shape(&bytes[..19], b"0000-00-00T00:00:00") {
         return false;
     }
+    // Digits, as `shape` has just checked.
+    let number = |at: usize, len: usize| {
+        bytes[at..at + len]
+            .iter()
+            .fold(0u32, |sum, byte| sum * 10 + u32::from(byte - b'0'))
+    };
+    let (year, month, day) = (number(0, 4), number(5, 2), number(8, 2));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    if day == 0 || day > days || number(11, 2) > 23 || number(14, 2) > 59 || number(17, 2) > 60 {
+        return false;
+    }
     let mut rest = &bytes[19..];
     if let [b'.', tail @ ..] = rest {
         let digits = tail.iter().take_while(|byte| byte.is_ascii_digit()).count();
@@ -468,7 +488,13 @@ fn is_timestamp(text: &str) -> bool {
         }
         rest = &tail[digits..];
     }
-    rest == b"Z" || shape(rest, b"+00:00") || shape(rest, b"-00:00")
+    if rest == b"Z" {
+        return true;
+    }
+    let at = bytes.len() - rest.len();
+    (shape(rest, b"+00:00") || shape(rest, b"-00:00"))
+        && number(at + 1, 2) <= 23
+        && number(at + 4, 2) <= 59
 }
 
 /// What matchesQuery() compares, lowercased: name, username, notes (not for an
@@ -1061,6 +1087,22 @@ mod tests {
             ("2024-05-01T10:00:00Z", true),
             ("2024-05-01T10:00:00.123456789+02:00", true),
             ("2024-05-01T10:00:00-05:30", true),
+            ("2024-02-29T23:59:60Z", true),
+            ("2000-02-29T00:00:00Z", true),
+            ("2024-12-31T00:00:00+23:59", true),
+            ("2024-02-30T03:04:05.678Z", false),
+            ("2023-02-29T03:04:05Z", false),
+            ("1900-02-29T03:04:05Z", false),
+            ("2024-04-31T03:04:05Z", false),
+            ("2024-00-10T03:04:05Z", false),
+            ("2024-13-10T03:04:05Z", false),
+            ("2024-05-00T03:04:05Z", false),
+            ("2024-05-32T03:04:05Z", false),
+            ("2024-05-01T24:00:00Z", false),
+            ("2024-05-01T10:60:00Z", false),
+            ("2024-05-01T10:00:61Z", false),
+            ("2024-05-01T10:00:00+24:00", false),
+            ("2024-05-01T10:00:00-05:60", false),
             ("", false),
             ("2024-05-01", false),
             ("2024-05-01 10:00:00Z", false),
@@ -1079,7 +1121,8 @@ mod tests {
                 { "password": "one", "lastUsedDate": "SECRET-DATE" },
                 { "password": "two", "lastUsedDate": "2024-05-01T10:00:00.000Z" },
                 { "password": "three", "lastUsedDate": { "password": "SECRET-NESTED" } },
-                "SECRET-BARE"
+                "SECRET-BARE",
+                { "password": "five", "lastUsedDate": "2024-02-30T03:04:05.678Z" }
             ] }] })
         .to_string();
         let out = store.strip_vault(&read, true).unwrap();
@@ -1091,10 +1134,13 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             parsed["items"][0]["qsbwHeld"]["passwordHistory"],
-            serde_json::json!(["", "2024-05-01T10:00:00.000Z", "", ""])
+            serde_json::json!(["", "2024-05-01T10:00:00.000Z", "", "", ""])
         );
         let second = store.item_secret("a", &SecretField::History(1)).unwrap();
         assert_eq!(second.as_str(), "two");
+        let fifth = store.item_secret("a", &SecretField::History(4)).unwrap();
+        assert_eq!(fifth.as_str(), "five");
+        assert!(!out.contains("2024-02-30"));
     }
 
     #[test]

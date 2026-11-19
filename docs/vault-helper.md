@@ -73,8 +73,10 @@ output is handed back as it is, except:
   item, a secret's place holding something unexpected (a `login` that is a
   list) is dropped rather than passed on; a custom field keeps its value
   only if it is plainly text or a boolean, and a linked one is shown from
-  the field it links to; an attachment keeps its id, file name and size, not
-  a download link or key; a password-history date that is not a date is
+  the field it links to; an attachment keeps its id, file name and size: the
+  signed download link `bw` prints for some servers is dropped, and so is
+  anything else an entry carries (`bw` prints no attachment key; one would
+  go the same way); a password-history date that is not a date is
   blanked. The helper knows the secret fields listed above; a field
   Bitwarden adds later is not among them until the helper learns it;
 - SSH private keys normally never reach this helper: the vault read splits
