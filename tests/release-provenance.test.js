@@ -146,7 +146,7 @@ check("the tag, the manifest and the changelog must agree",
 // job output; then the binaries to it.
 check("the bytes to attest are checked against the digest verify recorded, then SHA256SUMS",
   /sha256sum -c SHA256SUMS/.test(verify)
-    && /id: bytes\n[\s\S]*?echo "sums_sha256=\$\(sha256sum bin\/SHA256SUMS \| cut -d' ' -f1\)" >> "\$GITHUB_OUTPUT"/.test(verify)
+    && /id: bytes\n[\s\S]*?sums="\$\(sha256sum bin\/SHA256SUMS\)"\n[\s\S]*?\[\[ "\$sums" =~ \^\[0-9a-f\]\{64\}\$ \]\] \|\| \{[\s\S]*?echo "sums_sha256=\$sums" >> "\$GITHUB_OUTPUT"/.test(verify)
     && /outputs:\n(?:\s*#[^\n]*\n)*\s*sums_sha256: \$\{\{ steps\.bytes\.outputs\.sums_sha256 \}\}/.test(verify)
     && /SUMS_SHA256: \$\{\{ needs\.verify\.outputs\.sums_sha256 \}\}\n[\s\S]*?\[\[ "\$SUMS_SHA256" =~ \^\[0-9a-f\]\{64\}\$ \]\] \|\|[\s\S]*?echo "\$SUMS_SHA256  bin\/SHA256SUMS" \| sha256sum -c -\n\s*\( cd bin && sha256sum -c SHA256SUMS \)/.test(jobs.get("release") || "")
     && (jobs.get("release") || "").indexOf("sha256sum -c -") < (jobs.get("release") || "").indexOf("attest-build-provenance@")

@@ -127,7 +127,15 @@ jobs:
           extra="$(cd bin && find . -type f ! -name SHA256SUMS ! -path './x86_64-linux/*' ! -path './aarch64-linux/*')"
           [ -z "$extra" ] || { echo "::error::unexpected files in bin/: $extra"; exit 1; }
           # Recorded here, before this job installs or runs any build tool.
-          echo "sums_sha256=$(sha256sum bin/SHA256SUMS | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          # A command of its own, so a failed sha256sum fails this step, and
+          # with it a rehearsal, not only the release job that reads this.
+          sums="$(sha256sum bin/SHA256SUMS)"
+          sums="${sums%% *}"
+          [[ "$sums" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::no digest of bin/SHA256SUMS to record"
+            exit 1
+          }
+          echo "sums_sha256=$sums" >> "$GITHUB_OUTPUT"
 
       - name: Collect the dependency and licence report
         # The gates' dependency policy, published as evidence.
