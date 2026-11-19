@@ -54,5 +54,22 @@ pub fn self_test() -> Result<(), &'static str> {
     if out.contains("secret-") || vault.item("x").is_none() {
         return Err("a secret would reach the panel");
     }
+    // Not the shape of a vault read: nothing of it may be handed on, and
+    // what is held stays.
+    let other = r#"{"items":[],"sshKeys":[],"data":[{"login":{"password":"secret-d"}}]}"#;
+    if vault.strip_vault(other, true).is_some() || vault.item("x").is_none() {
+        return Err("an unrecognised vault read was not refused");
+    }
+    let key = r#"{"items":[{"id":"k","sshKey":{"privateKey":"secret-e"}}],"sshKeys":[{"id":"s","privateKey":"secret-f"}]}"#;
+    let out = vault
+        .strip_vault(key, true)
+        .ok_or("a vault read was not understood")?;
+    if out.contains("secret-")
+        || [vault.item("k"), vault.item("s")]
+            .iter()
+            .any(|held| held.is_none_or(|item| item.contains("secret-")))
+    {
+        return Err("an SSH private key would reach the panel");
+    }
     Ok(())
 }

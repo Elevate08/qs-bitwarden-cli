@@ -774,6 +774,9 @@ Item {
   property bool autoSyncReloadPending: false
   readonly property string autoSyncError: "Automatic sync failed. The local vault may be out of date."
   property string errorMessage: ""
+  // The message a failed or blocked list read put in errorMessage, so the
+  // next list that is accepted can take down that message and no other.
+  property string listReadError: ""
   // Why a lock happened without the user asking. Outlives the SSH popup's
   // cleanup, which would otherwise wipe it when a request from before the
   // lock is cancelled afterwards.
@@ -6919,7 +6922,10 @@ Item {
     if (listReadMode === "blocked") {
       isLoading = false
       abandonSyncReload()
-      if (!vaultReadIsStale("items")) errorMessage = Model.vaultListBlockedMessage(dependencies)
+      if (!vaultReadIsStale("items")) {
+        errorMessage = Model.vaultListBlockedMessage(dependencies)
+        listReadError = errorMessage
+      }
       return
     }
     startVaultListRead(false)
@@ -6969,6 +6975,8 @@ Item {
   function onListFinished(rawJson) {
     isLoading = false
     if (vaultReadIsStale("items")) return
+    if (errorMessage === listReadError) errorMessage = ""
+    listReadError = ""
     // One parse for both: parsing the list once per consumer cost several
     // whole-vault parses on the GUI thread per load.
     var vault = Model.readSanitizedVault(rawJson)
@@ -7032,6 +7040,7 @@ Item {
     // which the status will report as locked.
     if (!vaultReadIsStale("items") && !wasEarly) {
       errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
+      listReadError = errorMessage
     }
   }
 

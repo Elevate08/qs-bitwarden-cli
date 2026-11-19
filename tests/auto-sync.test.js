@@ -22,7 +22,7 @@ function fixture() {
     autoLockMinutes: 15, autoLockArmedAt: 1000000, suspendLockPending: false, syncReloadPending: false,
     autoSyncReloadPending: false, backgroundSync: false,
     autoSyncError: "Automatic sync failed. The local vault may be out of date.",
-    errorMessage: "", vaultEpoch: 1, readEpochs: {}, itemsLoadedAt: 100,
+    errorMessage: "", listReadError: "", vaultEpoch: 1, readEpochs: {}, itemsLoadedAt: 100,
     statusRefreshAfterItems: false, loadCalls: [], flashes: [], closedFilters: 0,
     dependencies: deps, listReadEarly: false, listReadMode: "", listReads: 0,
     Model, authAttemptInFlight: () => false,
@@ -245,6 +245,29 @@ for (const code of [0, 1]) {
   check("a failed list read releases the background flag with the sync guard",
     /isSyncing = false\s*syncReloadPending = false\s*backgroundSync = false/.test(functionBody(source, "onListProcessExited")),
     functionBody(source, "onListProcessExited"))
+}
+{
+  // A list read that failed leaves its message up until a list is accepted;
+  // it used to stay over the "synced" notice of the read that worked.
+  const blocked = Model.vaultListBlockedMessage(noJq)
+  const c = fixture(); c.dependencies = noJq; c.loadItems(false)
+  eq("a blocked list read says why", c.errorMessage, blocked)
+  c.dependencies = deps; c.syncReloadPending = true; c.beginVaultRead("items"); c.onListFinished("[]")
+  eq("the next accepted list takes its message down", c.errorMessage, "")
+  check("under the success notice", c.flashes.includes("Vault synced with Bitwarden"), JSON.stringify(c.flashes))
+  const u = fixture(); u.dependencies = noJq; u.loadItems(false)
+  u.errorMessage = "An unrelated edit failed"
+  u.dependencies = deps; u.beginVaultRead("items"); u.onListFinished("[]")
+  eq("but not a message something else put up since", u.errorMessage, "An unrelated edit failed")
+  u.errorMessage = blocked; u.beginVaultRead("items"); u.onListFinished("[]")
+  eq("nor one it no longer owns", u.errorMessage, blocked)
+  const exited = functionBody(source, "onListProcessExited")
+  check("a failed list read records the message it showed",
+    /errorMessage = Model\.vaultListFailureMessage\(stderrText, dependencies, listReadMode\)\s*listReadError = errorMessage/.test(exited),
+    exited)
+  const finished = functionBody(source, "onListFinished")
+  check("a stale list result clears nothing",
+    finished.indexOf('vaultReadIsStale("items")) return') < finished.indexOf("listReadError"), finished)
 }
 check("timer belongs to the shared service", /id: autoSyncTimer/.test(source)
   && !/id: autoSyncTimer/.test(read("Panel.qml")), "one timer across monitors")

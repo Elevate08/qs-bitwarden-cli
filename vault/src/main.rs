@@ -26,6 +26,10 @@ const MAX_STDERR: usize = 64 * 1024;
 /// What the save pipeline prints when the save worked but its output could
 /// not be sanitized (BitwardenModel.js SAVED_UNSANITIZED_MARKER).
 const SAVED_UNSANITIZED: &str = "__QSBW_SAVED_UNSANITIZED__";
+/// What the panel is told of a list read the helper would not hand on. The
+/// panel's own words for a failed read (BitwardenModel.js
+/// SANITIZED_LIST_ERROR), and nothing of the read.
+const VAULT_READ_REFUSED: &str = "Could not safely read vault items.\n";
 /// Detached commands at once (the lock the panel starts as it unloads); more
 /// are dropped, as there is no reply to refuse them with.
 const MAX_DETACHED: usize = 8;
@@ -606,8 +610,16 @@ fn run(
     } else {
         Zeroizing::new(String::from_utf8_lossy(&stdout).into_owned())
     };
-    let (forwarded, session, held) = keep(&store, generation, &capture, code, &text);
-    let err = Zeroizing::new(String::from_utf8_lossy(&err).into_owned());
+    let (forwarded, session, held, refused) = keep(&store, generation, &capture, code, &text);
+    // A refused list read is a failed one. Reported as a success it would be
+    // an empty vault to the panel, while the items of the last good read are
+    // still held here.
+    let err = Zeroizing::new(if refused {
+        code = 1;
+        VAULT_READ_REFUSED.to_owned()
+    } else {
+        String::from_utf8_lossy(&err).into_owned()
+    });
     let _ = out.send(exit_line(id, code, &forwarded, &err, session, held));
 }
 
@@ -616,16 +628,19 @@ fn run(
 /// store's current generation may change the store: one that outlived a
 /// lock, logout or account switch gets its output cleaned up the same way
 /// but keeps nothing, or it would put the old vault back after the panel
-/// has forgotten it.
+/// has forgotten it. The last flag: a list read that ran to the end under
+/// the current generation and was not a vault read (`Store::strip_vault`).
+/// A save is not flagged: its empty answer already makes the panel reload.
 fn keep(
     store: &Shared<Store>,
     generation: u64,
     capture: &Capture,
     code: i32,
     text: &Zeroizing<String>,
-) -> (Zeroizing<String>, bool, bool) {
+) -> (Zeroizing<String>, bool, bool, bool) {
     let mut session = false;
     let mut held = false;
+    let mut refused = false;
     let mut store = store.lock().unwrap();
     let current = store.generation() == generation;
     let forwarded: Zeroizing<String> = match capture {
@@ -666,7 +681,9 @@ fn keep(
         Capture::Vault | Capture::VaultMerge => {
             let replace = *capture == Capture::Vault;
             let stripped = if code == 0 && current {
-                store.strip_vault(text, replace)
+                let stripped = store.strip_vault(text, replace);
+                refused = replace && stripped.is_none();
+                stripped
             } else {
                 None
             };
@@ -681,7 +698,7 @@ fn keep(
             })
         }
     };
-    (forwarded, session, held)
+    (forwarded, session, held, refused)
 }
 
 /// A piece of a reply line (see `json_line`).
@@ -1056,13 +1073,13 @@ mod tests {
         let store = shared();
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
-        let (shown, session, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
+        let (shown, session, _, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
         assert_eq!(shown.as_str(), HELD_SESSION);
         assert!(!session);
         assert!(store.lock().unwrap().session().is_none());
 
         let now = store.lock().unwrap().generation();
-        let (_, session, _) = keep(&store, now, &Capture::Session, 0, &text(KEY));
+        let (_, session, _, _) = keep(&store, now, &Capture::Session, 0, &text(KEY));
         assert!(session);
         assert_eq!(store.lock().unwrap().session(), Some(KEY));
     }
@@ -1073,7 +1090,7 @@ mod tests {
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
         let capture = Capture::Secret("pw".to_owned());
-        let (shown, _, held) = keep(&store, started, &capture, 0, &text("hunter2"));
+        let (shown, _, held, _) = keep(&store, started, &capture, 0, &text("hunter2"));
         assert!(shown.is_empty());
         assert!(!held);
         assert!(store.lock().unwrap().secret("pw").is_none());
@@ -1084,19 +1101,19 @@ mod tests {
         let store = shared();
         let now = store.lock().unwrap().generation();
         let capture = Capture::Pinentry("pin".to_owned());
-        let (shown, session, held) = keep(&store, now, &capture, 0, &text("a%25%0Ab+c\n"));
+        let (shown, session, held, _) = keep(&store, now, &capture, 0, &text("a%25%0Ab+c\n"));
         assert!(shown.is_empty() && !session && held);
         assert_eq!(store.lock().unwrap().secret("pin"), Some("a%\nb+c"));
 
         // A cancel, an empty answer, malformed data and a crash keep
         // nothing, and do not replace what is held.
         for (code, answer) in [(1, "x"), (0, ""), (0, "%zz"), (4, "x")] {
-            let (shown, _, held) = keep(&store, now, &capture, code, &text(answer));
+            let (shown, _, held, _) = keep(&store, now, &capture, code, &text(answer));
             assert!(shown.is_empty() && !held, "{code} {answer}");
         }
         assert_eq!(store.lock().unwrap().secret("pin"), Some("a%\nb+c"));
         store.lock().unwrap().forget(&[]);
-        let (_, _, held) = keep(&store, now, &capture, 0, &text("late"));
+        let (_, _, held, _) = keep(&store, now, &capture, 0, &text("late"));
         assert!(!held);
         assert!(store.lock().unwrap().secret("pin").is_none());
     }
@@ -1107,12 +1124,12 @@ mod tests {
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
         let vault = r#"{"items":[{"id":"a","name":"n","login":{"password":"p"}}]}"#;
-        let (shown, _, _) = keep(&store, started, &Capture::Vault, 0, &text(vault));
+        let (shown, _, _, _) = keep(&store, started, &Capture::Vault, 0, &text(vault));
         assert!(shown.is_empty());
         assert!(store.lock().unwrap().item("a").is_none());
 
         // The save pipeline's marker still passes.
-        let (shown, _, _) = keep(
+        let (shown, _, _, _) = keep(
             &store,
             started,
             &Capture::VaultMerge,
@@ -1123,11 +1140,54 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_list_read_is_a_failure_and_a_refused_save_a_reload() {
+        let store = shared();
+        let now = store.lock().unwrap().generation();
+        let good = r#"{"items":[{"id":"a","name":"n","login":{"password":"p"}}]}"#;
+        let (shown, _, _, refused) = keep(&store, now, &Capture::Vault, 0, &text(good));
+        assert!(!refused && shown.contains("\"a\"") && !shown.contains("\"p\""));
+
+        // Not a vault read: nothing is handed on, the run is to be reported
+        // as failed, and the last good read is still held.
+        for bad in [
+            r#"{"items":[],"data":[{"login":{"password":"hunter2"}}]}"#,
+            r#"[{"id":"a","login":{"password":"hunter2"}}]"#,
+            "",
+        ] {
+            let (shown, _, _, refused) = keep(&store, now, &Capture::Vault, 0, &text(bad));
+            assert!(refused && shown.is_empty(), "{bad}");
+            assert!(store.lock().unwrap().item("a").is_some(), "{bad}");
+        }
+        assert!(!VAULT_READ_REFUSED.contains("hunter2"));
+
+        // A save answers with nothing (the panel reloads) or the marker.
+        let bad = r#"{"items":[],"data":[]}"#;
+        let (shown, _, _, refused) = keep(&store, now, &Capture::VaultMerge, 0, &text(bad));
+        assert!(!refused && shown.is_empty());
+        let (shown, _, _, refused) = keep(
+            &store,
+            now,
+            &Capture::VaultMerge,
+            0,
+            &text(SAVED_UNSANITIZED),
+        );
+        assert!(!refused);
+        assert_eq!(shown.as_str(), SAVED_UNSANITIZED);
+
+        // A read that already failed, or outlived a lock, is not relabelled.
+        let (_, _, _, refused) = keep(&store, now, &Capture::Vault, 1, &text(""));
+        assert!(!refused);
+        store.lock().unwrap().forget(&[]);
+        let (_, _, _, refused) = keep(&store, now, &Capture::Vault, 0, &text(bad));
+        assert!(!refused);
+    }
+
+    #[test]
     fn a_forget_that_keeps_secrets_still_ends_the_runs_before_it() {
         let store = shared();
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&["pw".to_owned()]);
-        let (_, session, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
+        let (_, session, _, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
         assert!(!session);
     }
 

@@ -118,6 +118,30 @@
   opened. A master-password re-prompt item still asks first, as its letter
   does.
 
+- **The vault helper refuses a vault read it does not recognise.** It used
+  to remove secrets only from items sitting where it expected them and hand
+  the rest back to the shell as it came. Two kinds of thing got through.
+  The first the panel's own filter never writes, so only a broken filter
+  would have shown it: a read with another top-level key, an item list that
+  was not a list, a whole SSH item among the key records, an SSH private key
+  (which was not on the helper's list of secrets). The second the filter
+  passes on exactly as `bw` wrote it, because it hands ordinary items over
+  whole: a `login` that is not an object, a hidden custom field whose type
+  is written as text, and, on servers that send one (Vaultwarden does), an
+  attachment's signed download link, which `bw` prints with the item and so
+  reached the panel. Nothing else is known to have got through. A list read of another shape now fails like any failed read: the
+  rows on screen stay, the panel says it could not safely read the vault,
+  and nothing of the read is passed on. Inside an item, a secret's place
+  holding something unexpected is dropped; a custom field keeps its value
+  only as plain text or a boolean; an attachment keeps its id, name and
+  size, losing the link and, as a precaution, anything else an entry
+  carries (`bw` prints no attachment key, and one would be dropped too); a password-history date that is not a date is blanked; SSH key
+  records are cut down to their public fields; and an item whose re-prompt
+  flag is anything but a plain "no" has its notes left out of search. SSH
+  private keys go to the SSH agent from an earlier branch of the vault read
+  and normally never reach this helper; one that does is discarded as the
+  read is parsed. This needs the rebuilt vault helper.
+
 ### Fixed
 
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
