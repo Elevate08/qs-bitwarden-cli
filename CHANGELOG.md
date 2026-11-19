@@ -228,6 +228,14 @@
   open nor use a grant. With a helper from before this change the panel
   treats every forwarded login's server as claimed. This needs the rebuilt
   SSH agent helper.
+- **The unlock prompt opens on Wayland or not at all.** The prompt the
+  master password and PIN are typed into is a Quickshell of its own, which
+  took its display platform from the session: commonly `wayland;xcb`, and
+  the same when unset. Had it failed to reach the compositor it would have
+  opened as an X11 window under Xwayland, where every X11 program can read
+  what is typed. It is now started with `QT_QPA_PLATFORM=wayland`; where
+  Wayland cannot be reached the prompt fails, and the panel says so and
+  offers its own field.
 
 ### Changed
 
