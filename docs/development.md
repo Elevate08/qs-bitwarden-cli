@@ -90,7 +90,9 @@ changed, from two passes to none (0.01 ms). Two passes remain only when
 both hold: the answer for the window last seen is stale (the learned picks
 were replaced since; a list reload refreshes it at once) and the open is
 from a different window, the stale one being matched first. A window whose data JSON cannot spell exactly (a number
-that is not finite) is given no key and matched on every pass, and an empty
+that is not finite) is given no key and matched on every pass in which it is
+the window being matched (so once, when only the newly focused window is
+such a one and the answer for the window last seen is current), and an empty
 list clears the suggestions, as the vault purge does. The list is still
 rebuilt on both passes. The suite's two `open` columns report this, and
 `tests/context-match.test.js` checks the counts and, over 400 random opens,
