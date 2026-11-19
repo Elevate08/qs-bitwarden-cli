@@ -95,7 +95,7 @@ check("and asked again when it is turned on or off",
 
 // --- arming --------------------------------------------------------------------------
 
-const flowNames = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "autoTypeArmed", "disarmAutoType",
+const flowNames = ["itemNeedsReprompt", "repromptSatisfied", "repromptConfirmedFor", "withReprompt", "autoTypeArmed", "disarmAutoType",
   "stopAutoType", "copyPasswordAndArm", "requestAutoType", "onAutoTypeRead", "typeHere", "onAutoTypeExited",
   "finishAutoType", "screenLockReadingFresh", "armTotpFollowup", "copyTotpAfterAutoType", "notifyTotpCopied",
   "recheckArmedAutoType", "recheckTotpFollowup"]
@@ -224,6 +224,67 @@ const reloaded = (v, id, reprompt) => { v.items = v.items.map(i => i.id === id ?
   eq("and the arm remembers the list's answer, not the stale row's", v.autoTypeArmReprompt, false)
   reloaded(v, "a", 1)
   check("so a list that turns the prompt on disarms it", !v.autoTypeArmed())
+}
+{
+  // The other way round: the item asks, and a list refresh takes its
+  // re-prompt away while the prompt is open. The user confirms all the same.
+  // What is armed was confirmed, so a later list that asks again must not
+  // undo it: neither the arm nor the TOTP follow-up.
+  const setReprompt = (v, id, reprompt) => { v.items = v.items.map(i => i.id === id ? Object.assign({}, i, { reprompt }) : i) }
+  // submitReprompt(), once the password is accepted.
+  const confirm = (v, id) => { v.repromptPending = false; v.repromptActionId = id; try { v.repromptCallback() } finally { v.repromptActionId = "" } }
+  const v = makeVault()
+  setReprompt(v, "t", 1)
+  v.copyPasswordAndArm(item(v, "t"))
+  check("premise: the item asks, so nothing is armed before the prompt is answered",
+    v.repromptPending && !v.autoTypeArmed() && v.totpFollowupItem === null)
+  setReprompt(v, "t", 0)                       // a refresh while the prompt is open
+  confirm(v, "t")
+  check("premise: the confirmed copy arms and starts the follow-up",
+    v.autoTypeArmed() && v.autoTypeItemId === "t" && v.totpFollowupActive && v.totpFollowupItem !== null)
+  eq("an arm confirmed with the master password is remembered as that, whatever the row says now", v.autoTypeArmReprompt, true)
+  check("and so is its TOTP follow-up", v.itemNeedsReprompt(v.totpFollowupItem) && v.totpFollowupItem.id === "t"
+    && v.totpFollowupItem.hasTotp === true, JSON.stringify(v.totpFollowupItem))
+  check("the list's own row is not written to", item(v, "t").reprompt === 0 && v.totpFollowupItem !== item(v, "t"))
+  setReprompt(v, "t", 1)                       // the next refresh asks again
+  v.recheckArmedAutoType(); v.recheckTotpFollowup()
+  check("a list that asks again does not disarm what was confirmed", v.autoTypeArmed() && v.autoTypeItemId === "t" && v.autoTypeArmTimer.running)
+  check("nor end its TOTP follow-up", v.totpFollowupActive && v.totpFollowupItem !== null
+    && v.totpFollowupTimer.running && v.autoTotpTimer.running, JSON.stringify(v.totpFollowupItem))
+
+  // The same from an open detail that passed its prompt: no new prompt is
+  // shown for it, and the copy still counts as confirmed.
+  const d = makeVault()
+  d.detailItem = { id: "t" }; d.repromptVerifiedId = "t"
+  d.copyPasswordAndArm(item(d, "t"))
+  check("a copy from a detail that passed the prompt is remembered as confirmed",
+    !d.repromptPending && d.autoTypeArmed() && d.autoTypeArmReprompt === true && d.itemNeedsReprompt(d.totpFollowupItem))
+  setReprompt(d, "t", 1)
+  d.recheckArmedAutoType(); d.recheckTotpFollowup()
+  check("and survives a list that asks", d.autoTypeArmed() && d.totpFollowupActive && d.totpFollowupItem !== null)
+  // A detail verified for another item, or one no longer open, confirms nothing.
+  for (const [label, detail, verified] of [["another item's detail", { id: "a" }, "a"], ["a detail since closed", null, "t"]]) {
+    const o = makeVault()
+    o.detailItem = detail; o.repromptVerifiedId = verified
+    o.copyPasswordAndArm(item(o, "t"))
+    check(`${label} confirms nothing for this one`, o.autoTypeArmed() && o.autoTypeArmReprompt === false
+      && !o.itemNeedsReprompt(o.totpFollowupItem) && o.totpFollowupItem === item(o, "t"))
+    setReprompt(o, "t", 1)
+    o.recheckArmedAutoType(); o.recheckTotpFollowup()
+    check(`${label}: a list that asks ends the arm and the follow-up`, !o.autoTypeArmed() && o.totpFollowupItem === null && !o.totpFollowupActive)
+  }
+  // Enter's copy arms the follow-up through the same function.
+  const e = makeVault()
+  setReprompt(e, "t", 0)
+  e.repromptActionId = "t"; e.armTotpFollowup(item(e, "t")); e.repromptActionId = ""
+  setReprompt(e, "t", 1); e.recheckTotpFollowup()
+  check("a follow-up armed by a confirmed copy of any kind is kept", e.totpFollowupActive && e.totpFollowupItem !== null)
+  const u = makeVault()
+  u.armTotpFollowup(item(u, "t"))
+  check("one armed with nothing confirmed holds the list's row itself", u.totpFollowupItem === item(u, "t"))
+  setReprompt(u, "t", 1); u.recheckTotpFollowup()
+  check("and is ended by a list that asks", u.totpFollowupItem === null && !u.totpFollowupActive)
+  eq("no id confirms nothing", makeVault().repromptConfirmedFor(""), false)
 }
 {
   const v = makeVault()

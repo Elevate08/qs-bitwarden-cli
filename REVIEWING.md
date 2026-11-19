@@ -258,10 +258,18 @@ choice without building anything; it only runs those probes.
     for that, private parent or not; `chmod -R go-w` on the cache directory,
     or a umask of 022 or 077 for the shell, puts that right.
   - *`BW_PASSWORD`.* The plugin never sets `BW_PASSWORD` for a launch that
-    may use the cache. One already exported in the session that started the
-    shell is inherited as before by every `bw` launch that the plugin does
-    not hand its own password to (unlock and login replace it), cached or
-    not.
+    may use the cache. It sets it, replacing one already exported in the
+    session that started the shell, for two launches only, neither cached.
+    One is the API-key login's script (`authEnv` with the password, from
+    `loginProcessEnv`), whose `bw login --apikey` and `bw unlock
+    --passwordenv BW_PASSWORD` both get the plugin's value. The other is
+    the FIFO writer (`authPasswordWriterProc`: a `bash` that execs
+    `timeout`, which runs a second `bash` whose `printf` writes the value
+    into the FIFO), and no `bw` at all. For unlocking and for an email login
+    the `bw` process is started earlier with `authEnv("")`, which leaves the
+    variable alone, and reads the password from that FIFO through
+    `--passwordfile`: that `bw` still inherits an exported `BW_PASSWORD`,
+    as does every other `bw` launch, cached or not, and makes no use of it.
   - *Which launches use it.* Only `bw` itself, and only where it is given no
     password: status, lock, logout, sync, the list, get, create, edit,
     delete, send and generate commands, attachment download, and the

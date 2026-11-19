@@ -168,10 +168,14 @@ Column {
   }
 
   // A login's server, as the client bound it; a login grant covers only it.
+  // One that only the remote host of a forwarded connection named is drawn
+  // as the warning it is.
   SshCaption {
     panel: screen.panel
     visible: vault.sshPrompt && vault.sshPrompt.destinationLabel !== ""
     text: vault.sshPrompt ? vault.sshPrompt.destinationLabel : ""
+    color: screen.vault.sshPrompt && screen.vault.sshPrompt.hostKeyClaimed === true
+      ? screen.panel.urgent : screen.panel.dim
     wrapMode: Text.WrapAnywhere
   }
 

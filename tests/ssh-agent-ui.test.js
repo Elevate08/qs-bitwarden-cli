@@ -125,6 +125,124 @@ check("a login with no reported server says so",
 eq("a host key of any other shape is dropped", loginTo("SHA256:x\nforged").hostKey, "")
 eq("a Git signature has no server", loginTo(HOST, "sshsig").hostKey, "")
 eq("and no destination line", loginTo(HOST, "sshsig").destinationLabel, "")
+// On a forwarded connection the remote host can send a bind of its own, so a
+// server named only by one is its claim. The helper says which
+// (hostKeyClaimed); the prompt, the notification and the terminal listing
+// say so instead of showing it as the client's report.
+{
+  const login = extra => Model.sshAgentPromptView(Object.assign({}, request,
+    { operation: "ssh-auth", operationDetail: "git", hostKey: HOST }, extra), 120)
+  const plain = "Server host key " + HOST
+  const claimedLabel = "Server claimed by the remote host, not verified: " + HOST
+  const claimed = login({ forwarded: true, hostKeyClaimed: true })
+  eq("a server only the remote host named is marked", claimed.hostKeyClaimed, true)
+  eq("and the prompt says whose word it is", claimed.destinationLabel, claimedLabel)
+  eq("the fingerprint is still carried", claimed.hostKey, HOST)
+  eq("such a login offers no grant", claimed.grantOffered, false)
+  check("and keeps the forwarding warning", claimed.forwardedWarning.length > 0)
+
+  const hostbound = login({ forwarded: true, hostKeyClaimed: false })
+  eq("a forwarded login whose server the helper vouches for is not marked", hostbound.hostKeyClaimed, false)
+  eq("and reads as before", hostbound.destinationLabel, plain)
+  eq("a local login is not marked", login({ forwarded: false, hostKeyClaimed: false }).destinationLabel, plain)
+  eq("nor one from a helper that does not send the field", login({ forwarded: false }).destinationLabel, plain)
+  eq("the existing label is unchanged", loginTo(HOST).destinationLabel, plain)
+
+  // A helper from before the field cannot say, so a forwarded host key is
+  // taken for a claim; only the boolean false is believed.
+  eq("a forwarded login from a helper without the field is marked",
+    login({ forwarded: true }).destinationLabel, claimedLabel)
+  for (const odd of [null, 0, "", "false", "no", {}, []]) {
+    eq(`hostKeyClaimed ${JSON.stringify(odd)} on a forwarded login is not a "no"`,
+      login({ forwarded: true, hostKeyClaimed: odd }).hostKeyClaimed, true)
+    eq(`hostKeyClaimed ${JSON.stringify(odd)} on a local login is not a "yes"`,
+      login({ forwarded: false, hostKeyClaimed: odd }).hostKeyClaimed, false)
+  }
+  eq("a claim is marked even if the helper did not say forwarded",
+    login({ forwarded: false, hostKeyClaimed: true }).destinationLabel, claimedLabel)
+
+  // Nothing is claimed where there is no server to show.
+  const none = login({ forwarded: true, hostKeyClaimed: true, hostKey: "" })
+  eq("no host key, nothing claimed", none.hostKeyClaimed, false)
+  check("and the line says none was reported", /not reported/i.test(none.destinationLabel), none.destinationLabel)
+  const badShape = login({ forwarded: true, hostKeyClaimed: true, hostKey: HOST + "\nServer host key SHA256:forged" })
+  eq("a host key of another shape is dropped from a claim too", badShape.hostKey, "")
+  check("and nothing of it is drawn", !/forged/.test(badShape.destinationLabel), badShape.destinationLabel)
+  const signature = Model.sshAgentPromptView(Object.assign({}, request,
+    { operation: "sshsig", operationDetail: "git", hostKey: HOST, forwarded: true, hostKeyClaimed: true }), 120)
+  eq("a Git signature has no server to claim", signature.hostKeyClaimed, false)
+  eq("and still no destination line", signature.destinationLabel, "")
+
+  // The label is fixed text and the one fingerprint shape: its length is
+  // bounded and it holds nothing else of the request.
+  check("the claimed line is bounded", claimedLabel.length < 110, String(claimedLabel.length))
+  const hostile = login({ forwarded: true, hostKeyClaimed: "<b>yes</b>\n" + "x".repeat(5000) })
+  eq("a hostKeyClaimed that is text adds nothing to the line", hostile.destinationLabel, claimedLabel)
+
+  // The notification and the terminal listing carry the same line.
+  const body = Model.sshAgentNotifyCommand(claimed, 60).pop()
+  check("the notification says the server is claimed", body.split("\n").indexOf(claimedLabel) >= 0, body)
+  check("and never the unmarked line", body.indexOf(plain) < 0, body)
+  const raw = Object.assign({}, request, { requestId: 5, operation: "ssh-auth", operationDetail: "git",
+    hostKey: HOST, forwarded: true, hostKeyClaimed: true })
+  const listed = Model.sshAgentPendingRequests(raw, [Object.assign({}, raw, { requestId: 6, hostKeyClaimed: false })],
+    Object.assign({}, raw, { requestId: 7 }), [])
+  eq("sshPending says a signing request's server is claimed", listed[0].destination, claimedLabel)
+  eq("and not one the helper vouches for", listed[1].destination, plain)
+  eq("an unlock request's too", listed[2].destination, claimedLabel)
+
+  // The release of a held request matches its unlock prompt only if both
+  // say the same about the server.
+  const unlock = Object.assign({}, raw, { type: "unlock_required" })
+  eq("the same claim is the same request", Model.sshAgentSameRequest(unlock, Object.assign({}, raw, { requestId: 9 })), true)
+  eq("a different one is not",
+    Model.sshAgentSameRequest(unlock, Object.assign({}, raw, { requestId: 9, hostKeyClaimed: false })), false)
+
+  // From the helper's stdout to the prompt: a line as the rebuilt helper
+  // prints it (its field order, the new field included) goes through the
+  // supervisor's own parser unchanged, for both kinds of prompt, and the
+  // view reads the helper's answer either way.
+  {
+    let state = Model.sshAgentReduce(Model.sshAgentInitialState(), { kind: "enabled", value: true, nowMs: 1 }).state
+    state = Model.sshAgentReduce(state, { kind: "started", nowMs: 2 }).state
+    state = Model.sshAgentReduce(state, { kind: "line", nowMs: 3, line: JSON.stringify({ type: "ready", v: 1,
+      socketPath: "/run/user/1000/qs-bitwarden-cli/ssh-agent.sock", fifoPath: "/run/user/1000/qs-bitwarden-cli/load.fifo",
+      agentVersion: "0.1.0" }) + "\n" }).state
+    eq("premise: the supervisor is ready", state.phase, "ready")
+    const printed = (type, claimed) => (type === "approval_required"
+      ? `{"type":"approval_required","v":1,"requestId":7,"keyId":"item","keyName":"key","fingerprint":"SHA256:x",`
+      : `{"type":"unlock_required","v":1,"requestId":7,"reason":"sign","keyName":"key","fingerprint":"SHA256:x",`)
+      + `"pid":4242,"processPath":"/usr/bin/ssh","operation":"ssh-auth","operationDetail":"git","hostKey":"${HOST}",`
+      + `"hostKeyClaimed":${claimed},"forwarded":true,"grantOffered":false}\n`
+    for (const type of ["approval_required", "unlock_required"]) {
+      for (const claimed of [true, false]) {
+        const step = Model.sshAgentReduce(state, { kind: "line", line: printed(type, claimed), nowMs: 4 })
+        const message = step.action.message
+        check(`${type} with hostKeyClaimed ${claimed} is accepted as the helper printed it`,
+          step.state.phase === "ready" && message && message.type === type && message.hostKeyClaimed === claimed,
+          JSON.stringify(step))
+        const shown = Model.sshAgentPromptView(message, type === "approval_required" ? 120 : 0)
+        eq(`and its prompt says ${claimed ? "the server is claimed" : "what the helper vouches for"}`,
+          shown.destinationLabel, claimed ? claimedLabel : plain)
+        eq(`${type}, ${claimed}: the terminal listing agrees`, Model.sshAgentPendingRequests(
+          type === "approval_required" ? message : null, [], type === "unlock_required" ? message : null, [])[0].destination,
+          claimed ? claimedLabel : plain)
+      }
+    }
+  }
+  // Nothing between the parser and the view rebuilds the message from a
+  // list of fields: the prompt is made from the message as it arrived.
+  const service = read("Service.qml")
+  check("the card's view is made from the helper's message itself",
+    /root\.sshPromptRaw = message/.test(service)
+      && /root\.sshPrompt = Model\.sshAgentPromptView\(message, root\.sshAgentApprovalWindowSec\)/.test(service)
+      && /root\.sshUnlockRequest = Model\.sshAgentPromptView\(message, 0\)/.test(service))
+
+  // The card draws a claimed server as a warning.
+  const screen = read("SshApprovalScreen.qml")
+  check("the card colours a claimed server as urgent",
+    /text: vault\.sshPrompt \? vault\.sshPrompt\.destinationLabel : ""\s+color: screen\.vault\.sshPrompt && screen\.vault\.sshPrompt\.hostKeyClaimed === true\s+\? screen\.panel\.urgent : screen\.panel\.dim/.test(screen))
+}
 eq("a login grant shows its server",
   Model.sshAgentGrantViews([{ grantId: 12, keyName: "k", fingerprint: "SHA256:z", pid: 7,
     processPath: "/usr/bin/ssh", operation: "ssh-auth", operationDetail: "git", hostKey: HOST,

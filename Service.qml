@@ -473,6 +473,18 @@ Item {
     return id === repromptVerifiedId && detailItem !== null && String(detailItem.id) === id
   }
 
+  // Whether what is running now was let through by a confirmed re-prompt for
+  // this id: the action a prompt just accepted, or one on the open detail
+  // that passed it (the two cases repromptSatisfied() accepts). The row may
+  // have stopped asking while the prompt was up; the answer was given all
+  // the same, and what the action arms remembers that.
+  function repromptConfirmedFor(itemId) {
+    var id = String(itemId || "")
+    if (id === "") return false
+    if (id === repromptActionId) return true
+    return id === repromptVerifiedId && detailItem !== null && String(detailItem.id) === id
+  }
+
   function withReprompt(item, callback) {
     if (!item || typeof callback !== "function") return
     if (repromptSatisfied(item)) {
@@ -9080,7 +9092,8 @@ Item {
 
   // The TOTP follow-up to a password copy (armTotpFollowup()) against the
   // list just accepted. It copies the code with no prompt, as part of a copy
-  // that passed any; `totpFollowupItem` is the row as it was then. An item
+  // that passed any; `totpFollowupItem` is the row as it was then (held as
+  // one that asks if the copy was confirmed, armTotpFollowup()). An item
   // gone, or one that asks for the master password now and did not then,
   // ends it: both timers, the code it held and a copy still being fetched.
   function recheckTotpFollowup() {
@@ -9120,8 +9133,11 @@ Item {
     withReprompt(item, function() {
       root.autoTypeItemId = String(item.id)
       root.autoTypeArmEpoch = root.vaultEpoch
-      // By the row the gate went by, not the one handed in.
-      root.autoTypeArmReprompt = root.itemNeedsReprompt(Model.findItemById(root.items, item.id) || item)
+      // Confirmed with the master password, or the row asks for it: by the
+      // row the gate went by, not the one handed in. A row that stopped
+      // asking while its prompt was up was confirmed all the same.
+      root.autoTypeArmReprompt = root.repromptConfirmedFor(item.id)
+        || root.itemNeedsReprompt(Model.findItemById(root.items, item.id) || item)
       autoTypeArmTimer.restart()
       // The poll runs while armed; a reading now is normally in before the
       // key can be pressed, so the first type is not refused as stale.
@@ -9305,8 +9321,13 @@ Item {
   function armTotpFollowup(item) {
     if (!item || !item.hasTotp) return
     // The current row, as the gate went by: recheckTotpFollowup() compares
-    // a later list with what was true when this was armed.
-    totpFollowupItem = Model.findItemById(items, item.id) || item
+    // a later list with what was true when this was armed. A copy that was
+    // confirmed with the master password is held as a row that asks, even if
+    // the list stopped saying so while the prompt was up: a later list that
+    // asks again must not end what was confirmed.
+    var row = Model.findItemById(items, item.id) || item
+    totpFollowupItem = repromptConfirmedFor(item.id) && !itemNeedsReprompt(row)
+      ? Object.assign({}, row, { reprompt: 1 }) : row
     totpFollowupActive = true
     fetchTotp(item.id)
     totpFollowupTimer.restart()

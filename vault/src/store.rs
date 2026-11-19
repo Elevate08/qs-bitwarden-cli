@@ -445,8 +445,10 @@ fn asks_for_master_password(item: &Map<String, Value>) -> bool {
 
 /// A date and time as `bw` writes one (RFC 3339): `2024-05-01T10:00:00Z`,
 /// with or without a fraction of a second, ending in `Z` or an offset, and
-/// a moment that exists: no 30 February, no 25 o'clock. A second may be 60,
-/// as RFC 3339 allows for a leap second.
+/// a moment that exists: no 30 February, no 25 o'clock, no second 60. RFC
+/// 3339 allows a 60 for a leap second, but `bw` writes these dates from a
+/// JavaScript `Date`, which has none and cannot read one back, so the panel
+/// could not show it as a date either.
 fn is_timestamp(text: &str) -> bool {
     let bytes = text.as_bytes();
     let shape = |part: &[u8], pattern: &[u8]| {
@@ -477,7 +479,7 @@ fn is_timestamp(text: &str) -> bool {
         2 => 28,
         _ => return false,
     };
-    if day == 0 || day > days || number(11, 2) > 23 || number(14, 2) > 59 || number(17, 2) > 60 {
+    if day == 0 || day > days || number(11, 2) > 23 || number(14, 2) > 59 || number(17, 2) > 59 {
         return false;
     }
     let mut rest = &bytes[19..];
@@ -1087,7 +1089,8 @@ mod tests {
             ("2024-05-01T10:00:00Z", true),
             ("2024-05-01T10:00:00.123456789+02:00", true),
             ("2024-05-01T10:00:00-05:30", true),
-            ("2024-02-29T23:59:60Z", true),
+            ("2024-02-29T23:59:59Z", true),
+            ("2024-12-31T23:59:59.999999999+23:59", true),
             ("2000-02-29T00:00:00Z", true),
             ("2024-12-31T00:00:00+23:59", true),
             ("2024-02-30T03:04:05.678Z", false),
@@ -1101,6 +1104,14 @@ mod tests {
             ("2024-05-01T24:00:00Z", false),
             ("2024-05-01T10:60:00Z", false),
             ("2024-05-01T10:00:61Z", false),
+            // A leap second, real (the end of 2016) or not, with or
+            // without a fraction or an offset: `bw` never writes one.
+            ("2016-12-31T23:59:60Z", false),
+            ("2024-02-29T23:59:60Z", false),
+            ("2024-05-01T10:00:60Z", false),
+            ("2024-05-01T10:00:60.000Z", false),
+            ("2024-05-01T10:00:60+02:00", false),
+            ("2024-05-01T10:00:99Z", false),
             ("2024-05-01T10:00:00+24:00", false),
             ("2024-05-01T10:00:00-05:60", false),
             ("", false),
@@ -1122,7 +1133,8 @@ mod tests {
                 { "password": "two", "lastUsedDate": "2024-05-01T10:00:00.000Z" },
                 { "password": "three", "lastUsedDate": { "password": "SECRET-NESTED" } },
                 "SECRET-BARE",
-                { "password": "five", "lastUsedDate": "2024-02-30T03:04:05.678Z" }
+                { "password": "five", "lastUsedDate": "2024-02-30T03:04:05.678Z" },
+                { "password": "six", "lastUsedDate": "2016-12-31T23:59:60Z" }
             ] }] })
         .to_string();
         let out = store.strip_vault(&read, true).unwrap();
@@ -1134,13 +1146,17 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             parsed["items"][0]["qsbwHeld"]["passwordHistory"],
-            serde_json::json!(["", "2024-05-01T10:00:00.000Z", "", "", ""])
+            serde_json::json!(["", "2024-05-01T10:00:00.000Z", "", "", "", ""])
         );
         let second = store.item_secret("a", &SecretField::History(1)).unwrap();
         assert_eq!(second.as_str(), "two");
         let fifth = store.item_secret("a", &SecretField::History(4)).unwrap();
         assert_eq!(fifth.as_str(), "five");
         assert!(!out.contains("2024-02-30"));
+        // A blanked date takes nothing else with it.
+        assert!(!out.contains("23:59:60"));
+        let sixth = store.item_secret("a", &SecretField::History(5)).unwrap();
+        assert_eq!(sixth.as_str(), "six");
     }
 
     #[test]

@@ -176,7 +176,9 @@
   the TOTP code that follows a password copy, stayed armed if a sync then
   brought the item back with "ask for the master password" turned on. The
   refreshed list now ends both (the follow-up also when the item is gone);
-  an item that asked when it was armed stays armed.
+  an item that asked when it was armed stays armed, and so does one you
+  confirmed with the master password even if a refresh had stopped it asking
+  while the prompt was open.
 
 - **The vault helper refuses a vault read it does not recognise.** It used
   to remove secrets only from items sitting where it expected them and hand
@@ -201,6 +203,31 @@
   private keys go to the SSH agent from an earlier branch of the vault read
   and normally never reach this helper; one that does is discarded as the
   read is parsed. This needs the rebuilt vault helper.
+- **RSA signatures are blinded.** The SSH agent computed an RSA signature
+  directly on the data, so how long it took depended only on that data and
+  the key, which is what the `rsa` crate's open timing advisory
+  (RUSTSEC-2023-0071) is about. Each signature is now computed on the data
+  multiplied by a fresh random factor, which is divided out after; the
+  signature is byte for byte the same. The factor comes from 64 bytes read
+  from the kernel (`/dev/urandom`) before the key is touched, and a request
+  fails, alone, if they cannot be read. The advisory
+  has no fixed release and stays listed in `deny.toml`. Ed25519 keys never
+  had the problem. This needs the rebuilt SSH agent helper.
+- **A forwarded login's server is shown as the remote host's claim when
+  that is all it is.** With agent forwarding (`ssh -A`), everything after
+  your own `ssh`'s forwarding bind is written by the remote host, and it
+  could send a session bind of its own naming any server. The prompt showed
+  that as "Server host key SHA256:…", a fingerprint that checks out with
+  `ssh-keygen -lF` and proves nothing. The helper now records which binds
+  came from the remote host, never lets one replace a bind your own `ssh`
+  sent for the same session, and marks a login whose server only such a bind
+  names (`hostKeyClaimed`); the card (in the warning colour), the
+  notification and `sshPending` then read "Server claimed by the remote
+  host, not verified: SHA256:…". A host-bound login, whose host key is in
+  the signed data, is not marked. Forwarded requests could already neither
+  open nor use a grant. With a helper from before this change the panel
+  treats every forwarded login's server as claimed. This needs the rebuilt
+  SSH agent helper.
 
 ### Changed
 
@@ -211,10 +238,13 @@
   made: while the vault and the learned picks are unchanged, once for an
   open from another window (5,000 items: 14.8 ms to 6.9 ms on one machine;
   500 items: 1.2 ms to 0.6 ms) and not at all for an open from the same one.
-  Two passes still happen only when both hold: the suggestions for the
+  Two passes still happen when both hold: the suggestions for the
   window last seen are out of date (a pick was learned since) and the open
-  is from a different window, or the window's data cannot be keyed exactly
-  (a number that is not finite). The suggestions are the same, except that an emptied vault
+  is from a different window. A window whose data cannot be keyed exactly
+  (a number that is not finite) is matched on each pass in which it is the
+  window being matched: once when only the newly focused window is such a
+  one and the suggestions for the window last seen are current, twice when
+  the open is from that same window. The suggestions are the same, except that an emptied vault
   and a locked one no longer keep showing the last ones.
 - **Internal cleanup, no behaviour change.** Unused ids, properties and
   test-only model functions are gone, and repeated panel markup and model
@@ -290,6 +320,11 @@
   collections were still being read, could offer those collections, and
   pre-select a single one, in the item being edited. A read still waiting
   is dropped and an answer is shown only for the organization the form has.
+- **A password-history date with a second of 60 is not passed on as a
+  date.** The vault helper's check of those dates allowed a leap second
+  (`23:59:60`), which `bw` never writes and the panel cannot read as a date.
+  Such a value is now blanked like any other that is not a date, and the
+  entry shows "Unknown date". This needs the rebuilt vault helper.
 - **A lock's cleanup after a cancelled list read.** A list read stopped by
   the lock, whose exit had not arrived yet, was handed the cleanup command
   without it running, and that read's exit then counted as the cleanup:

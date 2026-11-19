@@ -408,7 +408,7 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
   // Each field that tells two requests apart is compared.
   const differing = [["fingerprint", "SHA256:Z"], ["pid", 99], ["processPath", "/tmp/x"],
     ["operation", "ssh-auth"], ["operationDetail", "file"], ["hostKey", "SHA256:" + "h".repeat(43)],
-    ["forwarded", true], ["grantOffered", false]]
+    ["hostKeyClaimed", true], ["forwarded", true], ["grantOffered", false]]
   for (const [field, value] of differing) {
     const w = makeVault({ requestId: 1, raw: a })
     w.onSshAgentMessage(approvalOf(30, Object.assign({}, a, { [field]: value })))

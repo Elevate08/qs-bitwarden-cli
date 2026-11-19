@@ -7183,13 +7183,29 @@ function sshAgentHostKey(operation, hostKey) {
   return SSH_HOST_KEY_RE.test(hostKey) ? hostKey : ""
 }
 
+// Whether a login's host key is only what the remote host of a forwarded
+// connection said (the helper's `hostKeyClaimed`): after the forwarding bind
+// everything on the connection is the remote host's, a further bind naming
+// any server it likes included. A helper from before the field says nothing,
+// and then every forwarded login's host key is taken for a claim; `false` is
+// believed only as the boolean. Nothing to claim without a host key.
+function sshAgentHostKeyClaimed(request, hostKey) {
+  if (!hostKey || !request) return false
+  if (request.hostKeyClaimed === true) return true
+  return request.forwarded === true && request.hostKeyClaimed !== false
+}
+
 // Where a login goes. A login grant covers that one server, so the prompt
-// names it, or says the client did not (older OpenSSH, other clients).
-function sshAgentDestinationLabel(operation, hostKey) {
+// names it, or says the client did not (older OpenSSH, other clients). A
+// claimed one is shown as that: checking it against known_hosts proves
+// nothing. The text is fixed but for the fingerprint, which
+// sshAgentHostKey() has already held to its one shape.
+function sshAgentDestinationLabel(operation, hostKey, claimed) {
   if (operation !== "ssh-auth") return ""
-  return hostKey
-    ? "Server host key " + hostKey
-    : "Server not reported by the SSH client"
+  if (!hostKey) return "Server not reported by the SSH client"
+  return claimed === true
+    ? "Server claimed by the remote host, not verified: " + hostKey
+    : "Server host key " + hostKey
 }
 
 // An approval_required message reduced to what the prompt draws, with every
@@ -7204,6 +7220,7 @@ function sshAgentPromptView(message, approvalWindowSec) {
   var grantOffered = request.grantOffered === true && window > 0 && !forwarded
   var operation = sshAgentOperation(request.operation)
   var hostKey = sshAgentHostKey(operation, request.hostKey)
+  var hostKeyClaimed = sshAgentHostKeyClaimed(request, hostKey)
   return {
     requestId: isRequestId(request.requestId) ? request.requestId : -1,
     keyId: boundedText(request.keyId, SSH_AGENT_MAX_NAME_CHARS),
@@ -7215,7 +7232,8 @@ function sshAgentPromptView(message, approvalWindowSec) {
     operation: operation,
     operationLabel: sshAgentOperationLabel(operation, request.operationDetail),
     hostKey: hostKey,
-    destinationLabel: sshAgentDestinationLabel(operation, hostKey),
+    hostKeyClaimed: hostKeyClaimed,
+    destinationLabel: sshAgentDestinationLabel(operation, hostKey, hostKeyClaimed),
     grantOffered: grantOffered,
     grantSeconds: grantOffered ? window : 0,
     // A grant covers the program (path + key + kind of signature, and for a
@@ -7322,7 +7340,7 @@ function sshAgentSameRequest(unlockMessage, approvalMessage) {
   var b = approvalMessage
   if (!a || !b) return false
   var fields = ["fingerprint", "pid", "processPath", "operation", "operationDetail",
-    "hostKey", "forwarded", "grantOffered"]
+    "hostKey", "hostKeyClaimed", "forwarded", "grantOffered"]
   for (var i = 0; i < fields.length; i++) {
     if (a[fields[i]] !== b[fields[i]]) return false
   }

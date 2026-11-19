@@ -55,6 +55,16 @@ Locking, logging out and switching accounts tell the helper to forget
 everything. A lock that is still running `bw lock` keeps its own copy of the
 key until it finishes.
 
+The helper takes each list read as its items when `bw` prints it, before the
+panel decides whether to show it. When the panel refuses a list snapshot (one
+started before a save, delete or sync finished) and the read that should
+replace it fails, the helper holds that refused snapshot, an edited item's
+old password included, until the next list read succeeds. The panel shows the
+list error; after a failed read it also treats its list as stale and reads it
+again the next time it is wanted, but a replacement read that could not start
+(a missing dependency), or a save that succeeds afterwards, leaves the list
+counted as fresh, and then the next read is the next sync or refresh.
+
 ## How the shell talks to it
 
 The shell starts the helper as its own child process and talks to it only on
