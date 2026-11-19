@@ -176,7 +176,9 @@
   the TOTP code that follows a password copy, stayed armed if a sync then
   brought the item back with "ask for the master password" turned on. The
   refreshed list now ends both (the follow-up also when the item is gone);
-  an item that asked when it was armed stays armed.
+  an item that asked when it was armed stays armed, and so does one you
+  confirmed with the master password even if a refresh had stopped it asking
+  while the prompt was open.
 
 - **The vault helper refuses a vault read it does not recognise.** It used
   to remove secrets only from items sitting where it expected them and hand
