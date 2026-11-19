@@ -147,6 +147,9 @@
 - **Internal cleanup, no behaviour change.** Unused ids, properties and
   test-only model functions are gone, and repeated panel markup and model
   script builders are shared. The helper binaries are untouched.
+- **Suggestions for the focused window cost less on a large vault.** Matching
+  5,000 items against a window title took about 14.5 ms and takes about
+  9 ms (2,000 items: 6.7 ms to 5.3 ms); the suggestions are the same.
 
 ### Fixed
 
