@@ -59,7 +59,15 @@ One CI path writes binaries: `.github/workflows/helper-rebuild.yml`. For a
 same-repository PR into a `release/**` branch whose Rust changes are only plain
 source under `agent/src/`, `unlock-key/src/` or `vault/src/`, it commits the pinned-image rebuild to the PR branch.
 Fork PRs are excluded, and so are runs triggered by Dependabot (`github.actor`). `scripts/helper-autocommit-eligible.sh`,
-taken from the base branch, decides which PRs qualify. The workflow itself runs
+taken from the base branch, decides which PRs qualify. It runs first, in a
+read-only job of its own ("decide whether CI may commit rebuilt helpers") that
+runs nothing from the pull request; the build job checks the PR out and builds
+it only on that job's `yes`, and the job that pushes requires the same `yes`.
+For such a PR the build compiles the PR's Rust source and runs none of it (no
+tests, no built binary, and nothing the gate lets through runs during a build).
+The pushing job checks each uploaded binary against the checksum file uploaded
+with it; the two builds that must match each other and the committed bytes are
+`agent-build.yml`'s, which the push dispatches. The workflow itself runs
 on `pull_request`, so a same-repository PR that edits `helper-rebuild.yml`
 could bypass that gate; such an edit is visible in the PR's diff. Changes to
 Cargo files, the toolchain, `build.rs`, `.cargo` or the build script are always

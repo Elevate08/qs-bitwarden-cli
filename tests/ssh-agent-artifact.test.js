@@ -369,6 +369,24 @@ const eligible = read("scripts/helper-autocommit-eligible.sh")
 const rebuildJobs = rebuild.split(/\n  (?=\w[\w-]*:\n)/)
 const buildJob = rebuildJobs.find(j => /^build:/.test(j)) || ""
 const commitJob = rebuildJobs.find(j => /^commit:/.test(j)) || ""
+const gateJob = rebuildJobs.find(j => /^gate:/.test(j)) || ""
+// The verdict is a job of its own that runs nothing of the pull request's,
+// and it is the only place the gate runs: in the build job it ran after the
+// PR's build had, where that build could have answered for it.
+check("the commit gate is decided from the base branch's copy before any PR code runs",
+  /git show "origin\/\$\{GITHUB_BASE_REF\}:scripts\/helper-autocommit-eligible\.sh" 2>\/dev\/null \| bash/.test(gateJob)
+    && !/\.\/|build-agent|cargo |container:|write|needs:/.test(gateJob)
+    && /outputs:\n\s*eligible: \$\{\{ steps\.verdict\.outputs\.eligible \}\}/.test(gateJob)
+    && !/helper-autocommit-eligible/.test(buildJob + commitJob),
+  gateJob.slice(0, 300))
+const gated = "if: needs.gate.outputs.eligible == 'yes'"
+check("nothing of the PR is checked out, built or committed unless that verdict is yes",
+  /\n    needs: gate\n/.test(buildJob)
+    && buildJob.split(/\n      - /).slice(1).filter(step => /uses: actions\/checkout|\.\/scripts\//.test(step))
+      .every(step => step.includes(`\n        ${gated}\n`))
+    && /\n    needs: \[gate, build\]\n/.test(commitJob)
+    && commitJob.includes(`\n    ${gated} && needs.build.result == 'success'\n`),
+  "the build or the commit no longer waits for the gate job's own output")
 check("the helper rebuild is read-only by default",
   /^permissions:\n\s*contents: read\s*$/m.test(rebuild), "top-level permissions are not read-only")
 check("the job that builds holds no write token",
