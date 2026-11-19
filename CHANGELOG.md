@@ -313,6 +313,11 @@
   collections were still being read, could offer those collections, and
   pre-select a single one, in the item being edited. A read still waiting
   is dropped and an answer is shown only for the organization the form has.
+- **A password-history date with a second of 60 is not passed on as a
+  date.** The vault helper's check of those dates allowed a leap second
+  (`23:59:60`), which `bw` never writes and the panel cannot read as a date.
+  Such a value is now blanked like any other that is not a date, and the
+  entry shows "Unknown date". This needs the rebuilt vault helper.
 - **A lock's cleanup after a cancelled list read.** A list read stopped by
   the lock, whose exit had not arrived yet, was handed the cleanup command
   without it running, and that read's exit then counted as the cleanup:
