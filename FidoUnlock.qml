@@ -488,7 +488,6 @@ Item {
     session: false
     stdout: VaultCollector {
       id: assertStdout
-      waitForEnd: true
     }
     onExited: function(exitCode) { fido.onAssertExited(exitCode) }
   }
