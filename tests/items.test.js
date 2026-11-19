@@ -462,11 +462,16 @@ check("finding an item by id returns null rather than throwing when absent",
   check("...removing one leaves 4,999, and a non-list is an empty list",
     Model.replaceItemById(arrayLike, "id-4999", null).length === 4999
       && Model.replaceItemById(null, "id-1", null).length === 0
-      && Model.replaceItemById({ length: -1 }, "id-1", null).length === 0)
+      && Model.replaceItemById({ length: -1 }, "id-1", null).length === 0
+      && Model.replaceItemById({ length: Infinity }, "id-1", null).length === 0
+      && Model.replaceItemById({ length: 9007199254740992 }, "id-1", { id: "id-1", name: "n" }).length === 1)
   check("finding an item by id in something that is not a list is null",
     Model.findItemById(null, "id-1") === null && Model.findItemById("id-1", "id-1") === null
       && Model.findItemById({ length: -1 }, "id-1") === null
       && Model.findItemById({ length: 1.5 }, "id-1") === null
+      && Model.findItemById({ length: Infinity }, "id-1") === null
+      && Model.findItemById({ length: 9007199254740992, 0: { id: "id-1" } }, "id-1") === null
+      && Model.findItemById({ length: NaN }, "id-1") === null
       && Model.findItemById({ length: "2", 0: { id: "id-1" } }, "id-1") === null
       && Model.findItemById([null, undefined, 3], "id-1") === null)
   check("the lookup does not go through toList",
