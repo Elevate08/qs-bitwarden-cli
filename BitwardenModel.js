@@ -1217,7 +1217,6 @@ var SLEEP_ACK_TIMEOUT_S = 4
 function sleepSignalToken() { return SLEEP_SIGNAL_TOKEN }
 function wakeSignalToken() { return WAKE_SIGNAL_TOKEN }
 function sleepAckLine() { return SLEEP_ACK_TOKEN + "\n" }
-function sleepAckTimeoutS() { return SLEEP_ACK_TIMEOUT_S }
 
 function sleepMonitorCommand() {
   var monitor = "gdbus monitor --system --dest org.freedesktop.login1"
@@ -1559,8 +1558,6 @@ function autoTypeBindLine(chord) {
   return "o.bind(\"" + parsed.chord + "\", \"" + AUTO_TYPE_BIND_DESCRIPTION + "\", \""
     + AUTO_TYPE_IPC_COMMAND + "\")"
 }
-
-function autoTypeBindComment() { return AUTO_TYPE_BIND_COMMENT }
 
 // What bindings.lua holds: every o.bind() with a plain string chord and
 // command, and the line(s) that run the autoType IPC. Comment lines are
@@ -3501,10 +3498,6 @@ function baseName(path) {
 // in /proc, and the vault helper passes argv through unchanged.
 var ATTACHMENT_NAME_ENV = "QSBW_ATTACHMENT_NAME"
 
-function attachmentNameEnvVar() {
-  return ATTACHMENT_NAME_ENV
-}
-
 function attachmentDownloadEnv(fileName) {
   var env = {}
   env[ATTACHMENT_NAME_ENV] = safeAttachmentFileName(fileName)
@@ -4041,15 +4034,8 @@ function spliceSavedItem(items, raw, replacingId) {
   return replaceItemById(items, replacingId ? String(replacingId) : one.id, one)
 }
 
-function parseSanitizedItems(raw) {
-  var envelope = parseSanitizedEnvelope(raw)
-  return envelope ? envelope.items : []
-}
-
 // The item list and the SSH capability from one parse of the sanitized vault
-// read. The panel calls this once per load; inspectSanitizedVault() and
-// parseSanitizedItems() each parse on their own and are kept for callers that
-// need only one of the two.
+// read. The panel calls this once per load.
 function readSanitizedVault(raw) {
   var envelope = parseSanitizedEnvelope(raw)
   return {
@@ -5669,10 +5655,6 @@ function defaultSshCapability() {
   }
 }
 
-function inspectSanitizedVault(raw) {
-  return sshCapabilityOf(parseSanitizedEnvelope(raw))
-}
-
 // The SSH capability of an already-parsed sanitized envelope (null: unread).
 function sshCapabilityOf(parsed) {
   if (!parsed) return defaultSshCapability()
@@ -5742,8 +5724,6 @@ var SSH_AGENT_EVENT_TYPES = [
   "keys_loaded", "public_key", "locked", "load_failed", "grants_changed", "state_changed", "error"
 ]
 
-function sshAgentMaxLineBytes() { return SSH_AGENT_MAX_LINE_BYTES }
-function sshAgentMaxRestarts() { return SSH_AGENT_MAX_RESTARTS }
 function sshAgentHandshakeTimeoutMs() { return SSH_AGENT_HANDSHAKE_TIMEOUT_MS }
 
 // The plugin directory from QML's `file://` URL. It is the base of the only
@@ -5921,7 +5901,6 @@ function runtimeFilePath(runtimeDir, name) {
 }
 
 function sshAgentSocketPath(runtimeDir) { return runtimeFilePath(runtimeDir, "ssh-agent.sock") }
-function sshAgentFifoPath(runtimeDir) { return runtimeFilePath(runtimeDir, "ssh-keys.fifo") }
 
 // Per-load nonce, so no other same-UID process can inject keys into the FIFO.
 // Sent to the companion on stdin and to jq in the environment, never argv.

@@ -25,7 +25,7 @@ const fixturePath = path.join(tempDir, "items.json")
 const runtimeDir = path.join(tempDir, "run")
 fs.mkdirSync(runtimeDir, { mode: 0o700 })
 fs.mkdirSync(path.join(runtimeDir, "qs-bitwarden-cli"), { mode: 0o700 })
-const fifoPath = Model.sshAgentFifoPath(runtimeDir)
+const fifoPath = Model.runtimeFilePath(runtimeDir, "ssh-keys.fifo")
 
 fs.writeFileSync(path.join(tempDir, "bw"), [
   "#!/usr/bin/env bash",

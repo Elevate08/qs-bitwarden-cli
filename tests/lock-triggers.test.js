@@ -182,23 +182,23 @@ const suspendChecks = (async () => {
     // No ack at all: the cap releases it, well inside logind's
     // InhibitDelayMaxSec (5 s by default), so a stuck lock cannot hold up the
     // suspend, and the loop still comes round.
-    const unacked = await runMonitor(Model.sleepAckTimeoutS() * 1000 + 1500, null)
+    const unacked = await runMonitor(Model.SLEEP_ACK_TIMEOUT_S * 1000 + 1500, null)
     const capHolds = held(unacked.entries)
     check("without an ack the inhibitor is released at the cap",
-      capHolds.length >= 1 && capHolds[0] >= Model.sleepAckTimeoutS() * 1000 - 200
-        && capHolds[0] < Model.sleepAckTimeoutS() * 1000 + 1500,
+      capHolds.length >= 1 && capHolds[0] >= Model.SLEEP_ACK_TIMEOUT_S * 1000 - 200
+        && capHolds[0] < Model.SLEEP_ACK_TIMEOUT_S * 1000 + 1500,
       `${capHolds.join(", ")}ms`)
     check("the cap stays inside logind's default delay limit",
-      Model.sleepAckTimeoutS() < 5, String(Model.sleepAckTimeoutS()))
+      Model.SLEEP_ACK_TIMEOUT_S < 5, String(Model.SLEEP_ACK_TIMEOUT_S))
 
     // An ack left over from an earlier cycle cannot release the next one
     // early: it is drained before the token goes out. The first cycle gets
     // two acks, the second none, so the second must run to the cap.
-    const stale = await runMonitor(Model.sleepAckTimeoutS() * 1000 + 2500, 100, n => n === 0 ? 2 : 0)
+    const stale = await runMonitor(Model.SLEEP_ACK_TIMEOUT_S * 1000 + 2500, 100, n => n === 0 ? 2 : 0)
     const staleHolds = held(stale.entries)
     check("a spare ack from one cycle does not release the next",
       staleHolds.length >= 2 && staleHolds[0] < 2000
-        && staleHolds[1] >= Model.sleepAckTimeoutS() * 1000 - 200,
+        && staleHolds[1] >= Model.SLEEP_ACK_TIMEOUT_S * 1000 - 200,
       `${staleHolds.join(", ")}ms`)
   } finally {
     fs.rmSync(work, { recursive: true, force: true })

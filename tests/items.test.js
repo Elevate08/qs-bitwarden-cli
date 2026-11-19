@@ -58,7 +58,7 @@ const identity = {
 const sshPublic = { id: "ssh-1", name: "Work SSH", type: 5, organizationId: "org-1",
   folderId: "folder-1", favorite: true, reprompt: 1,
   sshKey: { publicKey: "ssh-ed25519 AAAATEST", fingerprint: "SHA256:public" } }
-const sanitized = Model.parseSanitizedItems(JSON.stringify({ items: [login], sshKeys: [sshPublic] }))
+const sanitized = Model.readSanitizedVault(JSON.stringify({ items: [login], sshKeys: [sshPublic] })).items
 check("sanitized envelope adds a public SSH item", sanitized.length === 2
   && sanitized.some(i => i.typeCode === 5 && i.publicKey === "ssh-ed25519 AAAATEST"), JSON.stringify(sanitized))
 const ssh = sanitized.find(i => i.typeCode === 5)

@@ -116,10 +116,6 @@ check("setup hands off to Omarchy's own FIDO2 installer in a floating terminal",
     && setup[5] === "presentation"
     && setup.slice(6).join(" ") === "omarchy setup security fido2",
   setup.join(" "))
-const remove = Fido.fidoRemoveCommand()
-check("removal hands off to Omarchy too, so the system's own prompts are unwired with it",
-  remove.slice(6).join(" ") === "omarchy remove security fido2",
-  remove.join(" "))
 
 // --- the keyring entry, and the vault wiring --------------------------------
 

@@ -99,9 +99,9 @@ eq("a non-object line fails closed", Model.parseAgentEvent('"ready"').code, "MAL
 eq("a ready missing its socket path fails closed",
   Model.parseAgentEvent('{"v":1,"type":"ready","fifoPath":"/f","agentVersion":"1"}').code, "MALFORMED")
 
-const overlong = '{"v":1,"type":"error","message":"' + "x".repeat(Model.sshAgentMaxLineBytes()) + '"}'
+const overlong = '{"v":1,"type":"error","message":"' + "x".repeat(Model.SSH_AGENT_MAX_LINE_BYTES) + '"}'
 eq("an overlong line fails closed before parsing", Model.parseAgentEvent(overlong).code, "LINE_TOO_LONG")
-const multibyte = '{"v":1,"type":"error","message":"' + "é".repeat(Model.sshAgentMaxLineBytes() - 100) + '"}'
+const multibyte = '{"v":1,"type":"error","message":"' + "é".repeat(Model.SSH_AGENT_MAX_LINE_BYTES - 100) + '"}'
 eq("the line cap counts bytes, not characters", Model.parseAgentEvent(multibyte).code, "LINE_TOO_LONG")
 const justUnder = JSON.stringify({ v: 1, type: "error", code: "X", message: "y".repeat(1024), recoverable: true })
 eq("a line under the cap still parses", Model.parseAgentEvent(justUnder).ok, true)
@@ -246,7 +246,7 @@ let loop = Model.sshAgentInitialState()
 let loopActions = []
 let clock = 0
 loop = Model.sshAgentReduce(loop, { kind: "enabled", value: true, nowMs: clock }).state
-for (let i = 0; i < Model.sshAgentMaxRestarts() + 2; i++) {
+for (let i = 0; i < Model.SSH_AGENT_MAX_RESTARTS + 2; i++) {
   clock += 10
   loop = Model.sshAgentReduce(loop, { kind: "started", nowMs: clock }).state
   clock += 10
@@ -262,7 +262,7 @@ eq("a crash loop is reported", loop.errorCode, "CRASH_LOOP")
 check("a crash loop leaves the gate closed", loop.gateOpen === false, JSON.stringify(loop))
 eq("a crash loop schedules no further restart", loopActions[loopActions.length - 1].restartInMs, -1)
 check("a crash loop is bounded by the restart cap",
-  loopActions.filter(a => a.restartInMs > 0).length === Model.sshAgentMaxRestarts(),
+  loopActions.filter(a => a.restartInMs > 0).length === Model.SSH_AGENT_MAX_RESTARTS,
   String(loopActions.filter(a => a.restartInMs > 0).length))
 
 const failedIgnores = drive(loop, [
@@ -280,7 +280,7 @@ check("a failed supervisor starts nothing", failedIgnores.actions.every(a => !a.
   let scheduled = 0
   let t = 0
   crashy = Model.sshAgentReduce(crashy, { kind: "enabled", value: true, nowMs: t }).state
-  for (let i = 0; i < Model.sshAgentMaxRestarts() + 3; i++) {
+  for (let i = 0; i < Model.SSH_AGENT_MAX_RESTARTS + 3; i++) {
     t += 10
     crashy = Model.sshAgentReduce(crashy, { kind: "started", nowMs: t }).state
     t += 10
@@ -296,7 +296,7 @@ check("a failed supervisor starts nothing", failedIgnores.actions.every(a => !a.
   }
   eq("a helper that handshakes then dies still trips the bound", crashy.phase, "failed")
   eq("that loop is reported as a crash loop", crashy.errorCode, "CRASH_LOOP")
-  eq("that loop is bounded by the same restart cap", scheduled, Model.sshAgentMaxRestarts())
+  eq("that loop is bounded by the same restart cap", scheduled, Model.SSH_AGENT_MAX_RESTARTS)
   check("that loop leaves the gate closed", crashy.gateOpen === false, JSON.stringify(crashy))
 }
 
@@ -323,7 +323,7 @@ check("the gate stays closed and nothing is claimed", elsewhere.state.gateOpen =
   && elsewhere.state.socketPath === "" && elsewhere.state.fifoPath === "", JSON.stringify(elsewhere.state))
 
 let patient = elsewhere.state
-for (let i = 0; i < Model.sshAgentMaxRestarts() * 3; i++) {
+for (let i = 0; i < Model.SSH_AGENT_MAX_RESTARTS * 3; i++) {
   patient = Model.sshAgentReduce(patient, { kind: "restartTimer", nowMs: 10 + i * 2 }).state
   patient = Model.sshAgentReduce(patient, { kind: "started", nowMs: 11 + i * 2 }).state
   patient = Model.sshAgentReduce(patient, { kind: "exited", exitCode: 1, lockHeld: true, nowMs: 12 + i * 2 }).state
