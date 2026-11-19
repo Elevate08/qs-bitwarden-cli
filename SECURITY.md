@@ -115,6 +115,13 @@ you to it.
   it, so it is an argument to `xdg-open` and, when that starts the browser,
   to the browser for as long as it runs, where other local users can read it.
   Keep tokens and passwords out of the URIs you open, or open them by hand.
+- What **Show website icons** (on by default) tells the icon service: the
+  host name of each login's first URI, your IP address, and so which sites
+  you have saved. The service is your account's server (`icons.bitwarden.net`
+  or `.eu` on Bitwarden's cloud); it can also redirect the request to
+  another `http` or `https` address, and what it sends back is decoded as an
+  image in the shell. Turn the setting off to make no request. A site name
+  reaching the journal or a file this way is in scope.
 - Your account email and server address in the arguments of `bw login` and
   `bw config server`, which take them only that way, while you sign in.
 - The remembered two-step method of a guessed address. It is stored, and passed
