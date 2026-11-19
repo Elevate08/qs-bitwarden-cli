@@ -16,7 +16,7 @@ const Model = loadModule()
 const source = read("Service.qml")
 
 const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaultRead", "vaultReadIsStale",
-  "vaultProcBusy", "startVaultRead", "supersededVaultRead", "finishScrubRun",
+  "vaultProcBusy", "vaultReadRunning", "startVaultRead", "supersededVaultRead", "finishScrubRun",
   "loadItems", "abandonSyncReload", "startVaultListRead", "vaultListEnv", "onListFinished", "onListProcessExited",
   "loadOrganizations", "onListOrgsFinished", "loadFolders", "onListFoldersFinished",
   "loadOrgCollections", "onOrgCollectionsLoaded", "loadSends", "onSendsLoaded",
@@ -71,7 +71,7 @@ function fixture() {
   const c = {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
-    itemMutations: 0, listReadMutations: 0, listRereadOwed: false, createdItemHandoff: null,
+    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, createdItemHandoff: null,
     pendingSave: null, pendingDelete: null,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
@@ -201,18 +201,36 @@ const names = c => Array.from(c.items).map(i => i.name).join()
 
 // --- within one vault, and what a lock drops ------------------------------------------
 {
+  // Asked again while a read of this vault is running (the panel opened, then
+  // `bw status` answered): that read serves both, as it did.
   const c = fixture()
-  c.loadItems(false); c.loadItems(false); c.loadItems(false)
-  eq("a refresh asked for during a refresh runs once, after it", c.runsOf("listProc").length, 1)
-  c.exit("listProc", 0, vaultOf("old"), "")
-  check("the earlier snapshot is not shown; the read asked for since replaces it",
-    names(c) === "" && c.runsOf("listProc").length === 2, names(c))
-  c.exit("listProc", 0, vaultOf("new"), "")
-  check("and nothing is left waiting", names(c) === "new" && c.runsOf("listProc").length === 2 && !c.listProc.running, names(c))
+  c.loadItems(false); c.loadItems(false); c.loadItems(true)
+  check("a second request during a read of the same vault starts nothing and waits for nothing",
+    c.runsOf("listProc").length === 1 && !c.queuedReads.items, JSON.stringify(c.queuedReads))
+  c.exit("listProc", 0, vaultOf("A"), "")
+  check("and takes that read's answer", names(c) === "A" && c.runsOf("listProc").length === 1 && !c.listProc.running, names(c))
+}
+{
+  // A sync finishes while a list read is going: that read is from before it.
+  const c = fixture()
+  c.syncProc = { running: false }; c.lastSyncAttemptAt = 0; c.maybeAutoSync = () => {}
+  c.beginInitialVaultLoad = spinner => c.loadItems(spinner)
+  vm.runInContext(functionBody(source, "onSyncFinished"), c)
+  c.loadItems(false)
+  c.isSyncing = true; c.readEpochs.sync = c.vaultEpoch
+  c.onSyncFinished(0)
+  check("the reload a sync ends with waits for a read that started before the sync finished",
+    c.runsOf("listProc").length === 1 && !!c.queuedReads.items && c.syncReloadPending, JSON.stringify(c.queuedReads))
+  c.exit("listProc", 0, vaultOf("before the sync"), "")
+  check("the earlier snapshot is not shown as the synced vault; the reload replaces it",
+    names(c) === "" && c.runsOf("listProc").length === 2 && c.syncReloadPending && c.flashes.length === 0, names(c))
+  c.exit("listProc", 0, vaultOf("synced"), "")
+  check("and nothing is left waiting", names(c) === "synced" && c.runsOf("listProc").length === 2 && !c.listProc.running
+    && !c.syncReloadPending && c.flashes.indexOf("Vault synced with Bitwarden") !== -1, names(c))
 }
 {
   const c = fixture()
-  c.loadItems(false); c.loadItems(false)
+  c.loadItems(false); c.vaultChanges += 1; c.loadItems(false)
   check("premise: a read is waiting", !!c.queuedReads.items)
   c.dropVaultState()
   eq("dropping the vault drops every waiting read", JSON.stringify(c.queuedReads), "{}")
@@ -243,9 +261,17 @@ for (const [name, id, out, starter] of READERS) {
     c[name].length === 0 && c.runsOf(id).length === 2 && c.readEpochs[name] === c.vaultEpoch, JSON.stringify(c[name]))
   c.exit(id, 0, JSON.stringify([{ id: "y", name: "of the new account", object: "folder", type: 0, text: { text: "t" } }]), "")
   check(`${starter}(): the new run's answer is accepted`, c[name].length === 1 && c[name][0].id === "y", JSON.stringify(c[name]))
+  if (name !== "sends") {
+    c[starter](true); c[starter](false)
+    check(`${starter}(): asked again without force while its own read runs, that read serves it`,
+      c.runsOf(id).length === 3 && !c.queuedReads[name], JSON.stringify(c.queuedReads))
+    c.exit(id, 0, "[]", "")
+  } else {
+    c[starter](true); c.exit(id, 0, "[]", "")
+  }
   c[starter](true); c[starter](true); c.dropVaultState()
   c.exit(id, 0, "[]", "")
-  eq(`${starter}(): a lock drops the waiting read`, c.runsOf(id).length, 3)
+  eq(`${starter}(): a lock drops the waiting read`, c.runsOf(id).length, 4)
 }
 
 // --- an organization's collections: keyed by the organization --------------------------
@@ -338,7 +364,7 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
   check("the open detail moves to the id the save answered with",
     c.detailItem && c.detailItem.id === savedId && c.currentScreen === "detail", JSON.stringify(c.detailItem && c.detailItem.id))
   check("and the list is read again, after the save", c.runsOf("listProc").length === 3 && !c.listRereadOwed
-    && c.listReadMutations === c.itemMutations, JSON.stringify(c.runs.length))
+    && c.listReadChanges === c.vaultChanges, JSON.stringify(c.runs.length))
   c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "New login")), "")
   check("whose answer is accepted", c.items.length === 2 && c.runsOf("listProc").length === 3 && !c.listProc.running, ids(c))
 }

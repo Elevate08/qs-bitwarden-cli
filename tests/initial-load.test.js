@@ -35,8 +35,11 @@ check("an early read never feeds the SSH agent",
     && /useAgent\s*=\s*!retrying\s*&&\s*!listReadEarly/.test(startRead),
   startRead)
 const loadItemsBody = bodyOf("loadItems")
+// The early read is one case of a read already running for this vault
+// (vaultReadRunning()); tests/list-races.test.js runs it.
 check("a confirmed load waits on the early read instead of starting another",
-  /listProc\.running\s*&&\s*listReadEarly\s*&&\s*!vaultReadIsStale\("items"\)\)\s*return/.test(loadItemsBody),
+  /if \(vaultReadRunning\("items", listProc\) && listReadChanges === vaultChanges\) return/.test(loadItemsBody)
+    && /return proc\.running && !Model\.isScrubCommand\(proc\.command\) && !vaultReadIsStale\(name\)/.test(bodyOf("vaultReadRunning")),
   loadItemsBody)
 const statusDone = bodyOf("onStatusFinished")
 check("a confirmed unlock starts the metadata the early read held back",

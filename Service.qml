@@ -786,11 +786,11 @@ Item {
   // Reads waiting for their process: { name: { epoch, launch } }
   // (startVaultRead()). Holds no vault data.
   property var queuedReads: ({})
-  // Saves and deletes that have finished, and the count when the list read
-  // in flight started: a list read that started before one of them finished
-  // is a snapshot from before it (listSnapshotOutdated()).
-  property int itemMutations: 0
-  property int listReadMutations: 0
+  // Saves, deletes and syncs that have finished, and the count when the list
+  // read in flight started: a list read that started before one of them
+  // finished is a snapshot from before it (listSnapshotOutdated()).
+  property int vaultChanges: 0
+  property int listReadChanges: 0
   // Such a snapshot arrived while a save or delete was still running: the
   // list is read again when that finishes (settleOwedListRead()).
   property bool listRereadOwed: false
@@ -6934,6 +6934,12 @@ Item {
     return proc.running || (proc.runId !== undefined && proc.runId !== 0)
   }
 
+  // Whether `proc` is running reader `name` for the open vault. A request
+  // that needs nothing newer than that run will bring is served by it.
+  function vaultReadRunning(name, proc) {
+    return proc.running && !Model.isScrubCommand(proc.command) && !vaultReadIsStale(name)
+  }
+
   // Starts reader `name` on its shared process: `launch()` sets the command
   // and runs it. The generation is stamped here, when the run starts, so the
   // answer is judged against the vault it was started for. While an earlier
@@ -7006,8 +7012,9 @@ Item {
       return
     }
     if (showSpinner !== false) isLoading = true
-    // The early read for this vault is still running: it serves this request.
-    if (listProc.running && listReadEarly && !vaultReadIsStale("items")) return
+    // A read of this vault as it is now is already running (the early read
+    // included): it serves this request.
+    if (vaultReadRunning("items", listProc) && listReadChanges === vaultChanges) return
     listReadMode = Model.vaultListMode(dependencies)
     if (listReadMode === "blocked") {
       isLoading = false
@@ -7016,8 +7023,9 @@ Item {
       listReadError = errorMessage
       return
     }
-    // Behind a run still going (an account just left, a lock's scrub, an
-    // older refresh), this read waits for it to exit.
+    // Behind a run still going (an account just left, a lock's scrub, a
+    // read from before a save, delete or sync), this read waits for it to
+    // exit.
     startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
   }
 
@@ -7050,7 +7058,7 @@ Item {
       }
     }
     listAgentBranchActive = useAgent
-    listReadMutations = itemMutations
+    listReadChanges = vaultChanges
     listProc.environment = root.vaultListEnv(useAgent ? sshAgentLoadId : "")
     listProc.command = Model.sanitizedListCommand({ agentBranch: useAgent })
     listProc.running = true
@@ -7156,13 +7164,13 @@ Item {
   // Whether the list read that just ended started before a save or delete
   // finished, or one is still running.
   function listSnapshotOutdated() {
-    return listReadMutations !== itemMutations || !!pendingSave || !!pendingDelete
+    return listReadChanges !== vaultChanges || !!pendingSave || !!pendingDelete
   }
 
-  // A save or delete has finished: the list read its snapshot was held back
-  // for runs now, after it.
+  // A save or delete has finished: a list read still going is from before
+  // it, and the read a snapshot was held back for runs now, after it.
   function settleOwedListRead() {
-    itemMutations += 1
+    vaultChanges += 1
     if (!listRereadOwed || pendingSave || pendingDelete) return
     listRereadOwed = false
     loadItems(false)
@@ -7172,6 +7180,7 @@ Item {
   function loadOrganizations(force) {
     if (!session) return
     if (!force && organizations.length > 0 && (Date.now() - orgsLoadedAt) < metaFreshMs) return
+    if (!force && vaultReadRunning("organizations", listOrgsProc)) return
     startVaultRead("organizations", listOrgsProc, function() {
       listOrgsProc.command = Model.listOrganizationsCommand()
       listOrgsProc.running = true
@@ -7187,6 +7196,7 @@ Item {
   function loadFolders(force) {
     if (!session) return
     if (!force && folders.length > 0 && (Date.now() - foldersLoadedAt) < metaFreshMs) return
+    if (!force && vaultReadRunning("folders", listFoldersProc)) return
     startVaultRead("folders", listFoldersProc, function() {
       listFoldersProc.command = Model.listFoldersCommand()
       listFoldersProc.running = true
@@ -7568,6 +7578,8 @@ Item {
     if (exitCode === 0) {
       if (errorMessage === autoSyncError) errorMessage = ""
       itemsLoadedAt = 0
+      // A list read still going started before this sync finished.
+      vaultChanges += 1
       if (backgroundSync) {
         isSyncing = false
         autoSyncReloadPending = true

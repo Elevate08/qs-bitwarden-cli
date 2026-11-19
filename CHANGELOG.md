@@ -184,12 +184,14 @@
   one's.** Each of the panel's readers (items, folders, organizations,
   collections, Sends, a single item) runs one command at a time. A read
   asked for while the previous run was still going (an account just left, a
-  lock's cleanup run, an older refresh) started nothing, and the previous
+  lock's cleanup run, a refresh from before a sync) started nothing, and the previous
   run's answer was then accepted as the new read's: after an account switch
   that could be an empty list shown as the vault, with the list error
   cleared. A read now waits for the run before it to exit and that run's
   answer is dropped; the same goes for a second organization's collections
-  or a second item asked for while the first is being read.
+  or a second item asked for while the first is being read. A refresh
+  asked for again while one of the same vault is running is still served by
+  that one, unless a sync has finished since it started.
 - **SSH prompt text is cut at whole escapes, and long text costs no more
   than short.** The agent writes control characters out as `\uXXXX` before
   the panel gets the text, and the panel cut that text one character at a
