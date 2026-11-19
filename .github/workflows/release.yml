@@ -376,11 +376,6 @@ jobs:
     environment:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
-    # One group for everything that changes a release, in this workflow and
-    # in publish-on-master.yml: a refill and a publish never interleave.
-    concurrency:
-      group: release-publication
-      cancel-in-progress: false
     permissions:
       contents: write       # create the release and upload its assets
       id-token: write       # mint the OIDC token the attestation is signed with

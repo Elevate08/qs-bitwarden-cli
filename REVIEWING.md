@@ -79,8 +79,20 @@ on the server still names the commit the draft records; that commit is on
 master; and the draft's assets are exactly the names in that commit's
 `.github/release-assets.txt`, each fully uploaded. So an asset added to the
 draft, an upload that was cut short, or a tag moved since the build is not
-published. The two workflows share one concurrency group, so a draft is not
-published while it is being filled.
+published.
+
+The two workflows do not lock each other out, so one interleaving is left to
+the checks: the release job re-run by hand while the merge to master
+publishes. If the release is already published when the re-run looks, the
+re-run stops and changes nothing. If the publisher looks while the re-run is
+replacing assets, it finds one missing or not fully uploaded and stops; run
+it again from the Actions tab once the re-run has finished. If the publisher
+looked just before the re-run began and publishes during it, the re-run goes
+on replacing assets of a release that is now public: each is briefly absent
+and comes back under the same name from the same commit's run, and a re-run
+that fails part-way leaves a published release short of an asset, which no
+later run repairs because a published release is refused. Do not re-run the
+release job while its merge is landing.
 
 What this does not do:
 

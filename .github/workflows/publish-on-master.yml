@@ -20,9 +20,11 @@ permissions:
   contents: write
 
 concurrency:
-  # Never race or cancel a publish. The group is release.yml's release job's
-  # too, so a draft is never published while that job is filling it.
-  group: release-publication
+  # Never race or cancel a publish. Not shared with release.yml: a waiting
+  # publish that a newer run replaced would leave a finished draft
+  # unpublished, and every later push would skip its tag. What keeps a
+  # half-filled draft from being published is the check of its assets below.
+  group: publish-on-master
   cancel-in-progress: false
 
 jobs:
