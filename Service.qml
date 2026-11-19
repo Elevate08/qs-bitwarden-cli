@@ -7923,6 +7923,10 @@ Item {
       errorMessage = "Vault is locked or session expired. Please unlock your vault."
       return
     }
+    // A cancelled download still holds the process until its exit arrives:
+    // starting now would start nothing, and that run's answer would be taken
+    // for this one's. The job waits in the queue; the exit pumps again.
+    if (vaultProcBusy(attachmentProc)) return
     var next = attachmentQueue.slice()
     var job = next.shift()
     attachmentQueue = next
@@ -7937,6 +7941,12 @@ Item {
     var id = attachmentBusyId
     attachmentBusyId = ""
     attachmentBusyName = ""
+    // The exit of a cancelled download: nobody's answer. One asked for
+    // meanwhile starts now.
+    if (id === "") {
+      pumpAttachmentQueue()
+      return
+    }
     if (vaultReadIsStale("attachment")) return
     var path = String(savedPath || "").trim()
 
@@ -10007,7 +10017,10 @@ Item {
     stdout: VaultCollector { id: attachmentStdout }
     stderr: VaultCollector { id: attachmentStderr }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(attachmentProc)) return
+      if (root.finishScrubRun(attachmentProc)) {
+        root.pumpAttachmentQueue()
+        return
+      }
       root.onAttachmentDownloaded(exitCode, attachmentStdout.text, attachmentStderr.text)
     }
   }

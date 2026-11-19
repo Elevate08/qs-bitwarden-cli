@@ -334,6 +334,12 @@
   vault helper, a `bw` run that could not be started at all never reported
   an exit, so that reader (the item list, say) started nothing again until
   the shell was restarted. It now ends as a command that was not found.
+- **A download started right after another was cancelled.** Closing the
+  panel (or locking) stops an attachment that is still downloading; a
+  download asked for before that stopped one had ended started nothing and
+  took the stopped one's answer for its own: usually "Could not save the
+  attachment", rarely a row marked saved that opened the other file. It now
+  waits for the stopped download to end, whose answer is nobody's.
 
 ## [1.13.1] - 2026-11-18
 
