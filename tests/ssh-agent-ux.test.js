@@ -124,6 +124,24 @@ check("the notification command carries no secret state",
   !/masterPassword|pinEntry|session/i.test(body_("showSshNotification")))
 
 // -------------------------------------------------------------------------
+// The security policy states what these doors give a program running as you
+// -------------------------------------------------------------------------
+
+const policy = readPluginSource("SECURITY.md").replace(/\s+/g, " ")
+check("SECURITY.md names sshPending and what it lists",
+  /`sshPending` lists/.test(policy) && /fingerprint/.test(policy) && /path and pid/.test(policy))
+check("SECURITY.md says sshReply can always deny, and that denials start the cooldown",
+  /`sshReply <id> deny` denies/.test(policy) && /cooldown/.test(policy))
+check("SECURITY.md says allowing from a terminal needs the opt-in",
+  /`sshReply <id> allow` is refused unless/.test(policy) && /sshAgentTerminalApproval/.test(policy))
+check("SECURITY.md says the notification can only deny",
+  /notification offers only \*\*Deny\*\*/.test(policy) && /Nothing a notification returns approves/.test(policy))
+for (const [name, text] of [["README.md", readPluginSource("README.md")], ["docs/ssh-agent.md", readPluginSource("docs/ssh-agent.md")],
+  ["CHANGELOG.md [Unreleased] Added", readPluginSource("CHANGELOG.md").split("## [Unreleased]")[1].split("### Security")[0]]]) {
+  check(`${name} does not describe an Allow once notification`, !/Allow once/.test(text))
+}
+
+// -------------------------------------------------------------------------
 // Idle timer: listing identities is not activity
 // -------------------------------------------------------------------------
 

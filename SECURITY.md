@@ -61,7 +61,23 @@ you to it.
 - What the IPC target lets any program running as you do: open, close and
   toggle the panel, lock, sync, switch the active account, read which accounts
   exist (their emails and servers) and, with auto-type on, trigger an armed
-  type. It never unlocks, reads an item or changes a setting.
+  type. With the SSH agent on, `sshPending` lists the SSH requests waiting
+  for an answer (each one's id, key name and fingerprint, the requesting
+  program's path and pid, what is being signed, a login's server host key,
+  whether it was forwarded, and whether terminal approval is on), and
+  `sshReply <id> deny` denies one, signing or unlock; two denials in a row
+  start the five-minute signing cooldown, so such a program can stop the
+  agent signing. `sshReply <id> allow` is refused unless you turned on
+  **Allow approving from a terminal** (`sshAgentTerminalApproval`, off by
+  default); with it on, any program running as you can approve a signing
+  request once, its own included, which is what that setting documents. An
+  unlock request is never allowed this way. The IPC target never unlocks,
+  reads an item or changes a setting.
+- The desktop notification for an unanswered SSH request being answered by
+  another program. A notification daemon lets any program running as you
+  press a notification's button, so the notification offers only **Deny**
+  (the same power as `sshReply <id> deny`). Nothing a notification returns
+  approves a signature; if it does, that is in scope.
 - What auto-type, when you turn it on, documents it gives away: the focused
   window gets the password; while a login is armed any program running as
   you can make it type, since the IPC cannot tell who calls it; and `wtype`'s
