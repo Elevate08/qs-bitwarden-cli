@@ -135,6 +135,9 @@ Item {
   readonly property bool sideBySide: Model.boolSetting("sideBySide", setting("sideBySide", true))
   // One request a day to GitHub's releases API; off makes none.
   readonly property bool checkForUpdates: Model.boolSetting("checkForUpdates", setting("checkForUpdates", true))
+  // Node's compile cache for `bw`, off unless asked for; see
+  // probeBwCompileCache().
+  readonly property bool bwCompileCache: Model.boolSetting("bwCompileCache", setting("bwCompileCache", false))
   // { checkedAt, latest } of the last release check, kept in update-check.json
   // in the plugin's state directory (not shell.json: writing a setting reloads
   // the shell) and read when Settings opens.
@@ -953,6 +956,8 @@ Item {
     root.inspectUnlockKey()
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
+    // Only with the setting on: off, it runs nothing and makes no directory.
+    root.probeBwCompileCache()
   }
 
   readonly property var categories: [
@@ -3212,6 +3217,9 @@ Item {
   }
 
   onStatusChanged: {
+    // First: the reads an open vault starts must not get a directory whose
+    // check is old.
+    recheckBwCompileCacheOnOpen()
     promoteUnlockToApproval()
     maybeStartupLoad()
   }
@@ -4452,7 +4460,8 @@ Item {
     // Opens the window in which a handed-over session key is accepted. See
     // refreshStatus().
     terminalLoginStartedAt = Date.now()
-    Quickshell.execDetached(Model.terminalLoginCommand(mode, serverUrl, activeSlot))
+    Quickshell.execDetached({ command: Model.terminalLoginCommand(mode, serverUrl, activeSlot),
+      environment: Model.withoutCompileCache({}) })
   }
 
   // Signs the active account out and forgets it; other accounts keep their
@@ -4702,10 +4711,87 @@ Item {
   // Read once: the shell's own NODE_OPTIONS plus the early-exit preload.
   readonly property string bwNodeOptions: Model.bwNodeOptions(sshAgentPluginDir, Quickshell.env("NODE_OPTIONS"))
 
+  // Node's compile cache for `bw`, with the `bwCompileCache` setting on: the
+  // directory the last check printed once it had passed it
+  // (Model.bwCompileCacheCommand()). "" with the setting off, while a check
+  // is running and after one that failed, and `bw` then starts with no cache.
+  readonly property string bwCompileCacheHome: Model.bwCompileCacheHome(
+    Quickshell.env("XDG_CACHE_HOME") || "", Quickshell.env("HOME") || "")
+  property string bwCompileCacheDir: ""
+  // "off", "pending", "accepted" or "refused": what the last check came to.
+  property string bwCompileCacheState: "off"
+  // Moves with every question put to the check, so an answer to an earlier
+  // one (the setting since turned off, or asked again) is not taken.
+  property int bwCompileCacheProbeSeq: 0
+  property bool bwCompileCacheProbeWaiting: false
+  // When the check in effect was started (wall clock); 0 for none.
+  property double bwCompileCacheProbedAt: 0
+
+  // The directory is checked when the shell starts with the setting on, when
+  // the setting is turned on, when an unlock is submitted, and when the vault
+  // opens some other way unless a check was started in the last two minutes
+  // (Model.bwCompileCacheCheckIsRecent()). Nothing is believed meanwhile: a
+  // new check withdraws the last one's directory until it has answered, so a
+  // `bw` started in that moment runs without the cache. Between checks the
+  // directory is not looked at again (see docs/development.md).
+  onBwCompileCacheChanged: probeBwCompileCache()
+  onIsUnlockingChanged: if (isUnlocking) probeBwCompileCache()
+
+  // Called when the status changes (onStatusChanged).
+  function recheckBwCompileCacheOnOpen() {
+    if (status === "unlocked" && bwCompileCache
+        && !Model.bwCompileCacheCheckIsRecent(bwCompileCacheProbedAt, Date.now())) probeBwCompileCache()
+  }
+
+  function probeBwCompileCache() {
+    bwCompileCacheDir = ""
+    bwCompileCacheProbeSeq += 1
+    bwCompileCacheProbedAt = 0
+    if (!started || !bwCompileCache || bwCompileCacheHome === "") {
+      bwCompileCacheState = bwCompileCache && started ? "refused" : "off"
+      return
+    }
+    bwCompileCacheState = "pending"
+    bwCompileCacheProbedAt = Date.now()
+    startBwCompileCacheProbe()
+  }
+
+  function startBwCompileCacheProbe() {
+    // One still running answers an earlier question: its exit starts this one.
+    if (bwCompileCacheProc.running) {
+      bwCompileCacheProbeWaiting = true
+      return
+    }
+    bwCompileCacheProbeWaiting = false
+    bwCompileCacheProc.probeSeq = bwCompileCacheProbeSeq
+    bwCompileCacheProc.running = true
+  }
+
+  function onBwCompileCacheProbed(seq, exitCode, output) {
+    if (seq !== bwCompileCacheProbeSeq || !bwCompileCache) {
+      if (bwCompileCacheProbeWaiting && bwCompileCacheState === "pending") Qt.callLater(startBwCompileCacheProbe)
+      bwCompileCacheProbeWaiting = false
+      return
+    }
+    bwCompileCacheDir = Model.bwCompileCacheAccepted(exitCode, output)
+    bwCompileCacheState = bwCompileCacheDir !== "" ? "accepted" : "refused"
+    if (bwCompileCacheDir === "") {
+      console.warn("qs-bitwarden-cli: the compile cache directory did not pass its check (exit " + exitCode + "); bw runs without it")
+    }
+  }
+
+  // NODE_COMPILE_CACHE for a `bw`: the accepted directory, or null, which
+  // removes one the shell inherited (Process and the vault helper both unset
+  // a null). The setting is read here too: off wins whatever was accepted.
+  function bwCompileCacheEnvValue() {
+    return bwCompileCache && bwCompileCacheDir !== "" ? bwCompileCacheDir : null
+  }
+
   // No session here: a VaultProcess adds it (vaultStart()).
   function bwEnv(extra) {
     var env = accountAppDataEnv()
     if (bwNodeOptions) env.NODE_OPTIONS = bwNodeOptions
+    env[Model.bwCompileCacheEnvVar()] = bwCompileCacheEnvValue()
     if (extra) for (var k in extra) env[k] = extra[k]
     return env
   }
@@ -4964,6 +5050,7 @@ Item {
     var env = accountAppDataEnv()
     env[Model.sessionEnvVar()] = null
     env[Model.noInteractionEnvVar()] = "true"
+    env[Model.bwCompileCacheEnvVar()] = bwCompileCacheEnvValue()
     return env
   }
 
@@ -5574,6 +5661,9 @@ Item {
   // rows say so.
   function settingNote(entry) {
     if (entry && entry.confirm && settingConfirmKey === entry.key) return entry.confirm
+    if (entry && entry.key === "bwCompileCache") {
+      return Model.bwCompileCacheNote(bwCompileCache, bwCompileCacheHome, bwCompileCacheState)
+    }
     if (entry && entry.key === "autoTypeEnabled" && autoTypeEnabled && depsChecked
         && !Model.dependencyInstalled(dependencies, "wtype")) {
       return "wtype is not installed, so nothing can be typed yet: install it from Dependencies below."
@@ -5769,6 +5859,7 @@ Item {
       case "showWebsiteIcons": return showWebsiteIcons
       case "sideBySide": return sideBySide
       case "checkForUpdates": return checkForUpdates
+      case "bwCompileCache": return bwCompileCache
       case "rememberSession": return rememberSession
       case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored
       case "fidoUnlock": return fidoUnlock && fidoStored
@@ -7609,7 +7700,7 @@ Item {
     var path = attachmentSaved[id]
     if (!path) return
     resetAutoLockTimer()
-    var env = {}
+    var env = Model.withoutCompileCache({})
     env[Model.openPathEnvVar()] = String(path)
     Quickshell.execDetached({ command: Model.attachmentOpenCommand(), environment: env })
   }
@@ -9233,6 +9324,7 @@ Item {
   Process {
     id: sshExportProc
     command: Model.sshExportCommand()
+    environment: Model.withoutCompileCache({})
     stdinEnabled: true
     stdout: StdioCollector { id: sshExportStdout; waitForEnd: true }
     onExited: function(exitCode) {
@@ -9674,6 +9766,7 @@ Item {
 
   Process {
     id: pinentryProbeProc
+    environment: Model.withoutCompileCache({})
     stdout: StdioCollector { id: pinentryProbeOut; waitForEnd: true }
     onExited: function(exitCode) { root.pinentryMissing = Model.pinentryProbeMissing(exitCode, pinentryProbeOut.text) }
   }
@@ -9726,6 +9819,7 @@ Item {
     id: bwVersionProc
     property string probeId: ""
     command: Model.bwVersionCommand()
+    environment: Model.withoutCompileCache({})
     stdout: StdioCollector {
       id: bwVersionStdout
       waitForEnd: true
@@ -9912,6 +10006,18 @@ Item {
 
   // ---- Accounts ----
 
+  // Not a VaultProcess: it runs no `bw` and is given no session, nor
+  // anything else of the shell's environment but PATH.
+  Process {
+    id: bwCompileCacheProc
+    property int probeSeq: 0
+    command: Model.bwCompileCacheCommand(root.bwCompileCacheHome)
+    clearEnvironment: true
+    environment: Model.plainProbeEnv(Quickshell.env("PATH") || "")
+    stdout: StdioCollector { id: bwCompileCacheOut; waitForEnd: true }
+    onExited: function(exitCode) { root.onBwCompileCacheProbed(probeSeq, exitCode, bwCompileCacheOut.text) }
+  }
+
   Process {
     id: accountsReadProc
     command: Model.accountRegistryReadCommand()
@@ -9930,6 +10036,7 @@ Item {
 
   Process {
     id: slotRemovalProc
+    environment: Model.withoutCompileCache({})
     onExited: function(exitCode) {
       if (exitCode !== 0) console.warn("qs-bitwarden-cli: could not remove a signed-out account (exit " + exitCode + ")")
       Qt.callLater(root.pumpSlotRemovals)

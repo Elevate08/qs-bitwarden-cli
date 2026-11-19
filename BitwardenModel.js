@@ -414,6 +414,156 @@ function bwNodeOptions(pluginDir, existing) {
   return base ? base + " " + option : option
 }
 
+// Node's compile cache for `bw` (NODE_COMPILE_CACHE, Node 22.1+): V8's code
+// cache of the modules bw loads, about a sixth of each start. Off unless the
+// `bwCompileCache` setting is on. It holds compiled code, nothing of the
+// vault, and is shared by every account. It is code Node will run in a
+// process that sees the master password, so the variable is set only to the
+// directory bwCompileCacheCommand() accepted, only for `bw` itself, and is
+// otherwise taken out of the environment of every `bw` and `node` the plugin
+// starts: a value the shell was started with has been checked by no one.
+var BW_COMPILE_CACHE_ENV = "NODE_COMPILE_CACHE"
+var BW_COMPILE_CACHE_PARENT = "qs-bitwarden-cli"
+var BW_COMPILE_CACHE_SUBDIR = BW_COMPILE_CACHE_PARENT + "/node-compile-cache"
+
+function bwCompileCacheEnvVar() { return BW_COMPILE_CACHE_ENV }
+
+// `node` for the plugin's own `node -e` checks, which share a script (and so
+// an environment) with `bw`: started without the variable, cache on or off.
+var NODE_UNCACHED = "env -u " + BW_COMPILE_CACHE_ENV + " node"
+
+// For a script that runs where the plugin's environment does not reach (a
+// terminal started through the session manager has the user manager's).
+var BW_COMPILE_CACHE_UNSET = "unset " + BW_COMPILE_CACHE_ENV + "; "
+
+// A directory from the environment that can be taken at its word: absolute,
+// with no `..` to be read one way by a shell and another by Node, and no
+// control character (a trailing newline is dropped by `$(...)`).
+function plainAbsoluteDir(value) {
+  var dir = String(value || "")
+  if (dir.charAt(0) !== "/" || /[\x00-\x1f\x7f]/.test(dir)) return ""
+  var parts = dir.split("/")
+  for (var i = 0; i < parts.length; i++) if (parts[i] === "..") return ""
+  return dir.replace(/\/+$/, "") || "/"
+}
+
+// The cache home the cache directory goes under: XDG_CACHE_HOME, or ~/.cache
+// when that is unset or empty. "" leaves the cache off, which is also what
+// an XDG_CACHE_HOME that is set but not usable does: it is not second-guessed.
+function bwCompileCacheHome(xdgCacheHome, home) {
+  if (xdgCacheHome) return plainAbsoluteDir(xdgCacheHome)
+  var h = plainAbsoluteDir(home)
+  return h === "" ? "" : h.replace(/\/+$/, "") + "/.cache"
+}
+
+// The environment of a probe that needs no secret and no setting: only PATH,
+// with a fixed locale (so a `[ -~]` range means bytes). Used with
+// `clearEnvironment: true`, so no BW_SESSION and no BASH_ENV reach it.
+function plainProbeEnv(path) {
+  return { PATH: String(path || "") || "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C" }
+}
+
+// How long the look inside the cache directory may take before the probe
+// gives up and the cache goes unused.
+var BW_COMPILE_CACHE_SCAN_TIMEOUT_S = 5
+
+// Prints the cache directory and exits 0 only when it may be used. `home` is
+// bwCompileCacheHome(). Everything is checked on the canonical path (symlinks
+// resolved), and that path is what is printed, so what was checked is what
+// Node is given:
+// - every directory from the cache home up to / belongs to this user or root
+//   and is writable by no one else (a shared directory such as /tmp above it
+//   would let another user swap the path);
+// - the plugin's directory and the cache directory in it are real
+//   directories of this user's that no one else can write to, created mode
+//   0700 if missing (by mode, not umask, and checked again once made);
+// - the path is printable ASCII, so the text QML reads back is the bytes
+//   that were checked (Qt would put U+FFFD for a byte that is not UTF-8);
+// - everything already in the cache directory is a regular file or a
+//   directory of this user's that no one else can write to: Node follows a
+//   symlink it finds there. One `find`, stopping at the first that is not.
+// Nothing is repaired: a path that fails is left alone and `bw` runs without
+// the cache. The one exception is the mode of a cache directory that passed
+// (no one else could write to it), which is set to 0700: Node recreates a
+// deleted one with the default umask.
+function bwCompileCacheCommand(home) {
+  var script = "exec 2>/dev/null; LC_ALL=C; case \"$1\" in /*) ;; *) exit 1 ;; esac; __u=\"$(id -u)\" || exit 1; "
+    // $1: a directory; $2: `root` if root may own it too.
+    + "__ok() { [ -d \"$1\" ] && [ ! -L \"$1\" ] || return 1; "
+    + "__s=\"$(stat -c '%u %a' -- \"$1\" 2>/dev/null)\" || return 1; "
+    + "case \"${__s#* }\" in *[0145][0145]) ;; *) return 1 ;; esac; "
+    + "[ \"${__s%% *}\" = \"$__u\" ] || { [ \"$2\" = root ] && [ \"${__s%% *}\" = 0 ]; }; }; "
+    // Sets __c to the canonical form of $1 and checks it up to /. The
+    // trailing x keeps `$(...)` from eating a newline that is the path's.
+    + "__chain() { __c=\"$(realpath -e -- \"$1\" && printf x)\" || return 1; __c=\"${__c%x}\"; __c=\"${__c%?}\"; "
+    + "case \"$__c\" in *$'\\n'*) return 1 ;; /*) ;; *) return 1 ;; esac; "
+    + "__a=\"$__c\"; while :; do __ok \"$__a\" root || return 1; [ \"$__a\" = / ] && break; "
+    + "__a=\"${__a%/*}\"; [ -n \"$__a\" ] || __a=/; done; }; "
+    // A cache home not there yet is made only inside a directory that passes.
+    + "if [ ! -e \"$1\" ] && [ ! -L \"$1\" ]; then __h=\"${1%/}\"; "
+    + "__chain \"${__h%/*}/\" || exit 1; [ \"$__c\" = / ] && __c=''; "
+    + "mkdir -m 700 -- \"$__c/${__h##*/}\" || exit 1; fi; "
+    + "__chain \"$1\" || exit 1; "
+    + "[ \"$__c\" = / ] && __c=''; "
+    // Before anything is made under it: a path QML could not read back.
+    + "case \"$__c\" in *[!\\ -~]*) exit 1 ;; esac; "
+    + "for __x in \"$__c/" + BW_COMPILE_CACHE_PARENT + "\" \"$__c/" + BW_COMPILE_CACHE_SUBDIR + "\"; do "
+    + "[ -e \"$__x\" ] || [ -L \"$__x\" ] || mkdir -m 700 -- \"$__x\" || exit 1; "
+    + "__ok \"$__x\" || exit 1; "
+    + "done; "
+    + "chmod 700 -- \"$__x\" || exit 1; "
+    + "[ \"$(realpath -e -- \"$__x\" && printf x)\" = \"$__x\"$'\\n'x ] || exit 1; "
+    + "case \"$__x\" in *[!\\ -~]*) exit 1 ;; esac; "
+    // What is already inside. No -L: a symlink is reported, not followed.
+    + "__bad=\"$(timeout " + BW_COMPILE_CACHE_SCAN_TIMEOUT_S + " find \"$__x\" -mindepth 1 "
+    + "\\( ! \\( -type f -o -type d \\) -o ! -uid \"$__u\" -o -perm /022 \\) -printf x -quit)\" || exit 1; "
+    + "[ -z \"$__bad\" ] || exit 1; "
+    + "printf '%s\\n' \"$__x\""
+  return ["bash", "-c", script, "_", String(home || "")]
+}
+
+// For a `bw` or `node` the plugin starts outside bwEnv() (the pinentry,
+// which is typed the master password; `bw login` in a terminal; `bw -v`;
+// the signed-out slot's `bw logout`; the `node -e` of the SSH export and of
+// opening an attachment): `env` with an inherited NODE_COMPILE_CACHE
+// removed, so none of them loads compiled code nobody checked.
+function withoutCompileCache(env) {
+  var out = env || {}
+  out[BW_COMPILE_CACHE_ENV] = null
+  return out
+}
+
+// The directory the probe printed, if it exited 0 and printed exactly one
+// line that is plainly the cache directory, in printable ASCII; ""
+// otherwise. `output` is all of the probe's stdout. This, not a path put
+// together again here, is what `bw` is given.
+function bwCompileCacheAccepted(exitCode, output) {
+  var text = String(output === undefined || output === null ? "" : output)
+  if (exitCode !== 0 || !/^[\x20-\x7e]+\n$/.test(text)) return ""
+  var dir = text.slice(0, -1)
+  if (plainAbsoluteDir(dir) !== dir) return ""
+  var tail = "/" + BW_COMPILE_CACHE_SUBDIR
+  if (dir.length < tail.length || dir.slice(-tail.length) !== tail) return ""
+  return dir.indexOf("/./") === -1 && dir.indexOf("//") === -1 ? dir : ""
+}
+
+// How long a check is still taken as said when the vault opens by a way that
+// submits no unlock (a terminal sign-in, a session found open): past it, the
+// directory is checked again first.
+var BW_COMPILE_CACHE_TRUST_MS = 2 * 60 * 1000
+
+function bwCompileCacheCheckIsRecent(startedAt, now) {
+  return windowOpen(startedAt, now, BW_COMPILE_CACHE_TRUST_MS)
+}
+
+// What the setting's row says when the cache is on but not in use.
+function bwCompileCacheNote(on, home, state) {
+  if (!on) return ""
+  if (home === "") return "Not in use: XDG_CACHE_HOME is not a plain absolute path, or HOME is not set, so there is nowhere to keep it."
+  if (state === "refused") return "Not in use: the cache directory, one above it or something in it is not yours alone, or its path has characters other than printable ASCII. bw starts without it."
+  return ""
+}
+
 function passwordEnvVar() {
   return PASSWORD_ENV
 }
@@ -1107,7 +1257,10 @@ var HANDOFF_BASENAME = "session-handoff"
 function terminalLoginCommand(mode, serverUrl, slot) {
   var verb = (mode === "unlock") ? "unlock" : "login"
   var configureServer = verb === "login" ? serverConfigPrefix(serverUrl) : ""
-  var inner = "set -u; " + accountAppDataExport(slot) + appDataDirPrelude()
+  // The terminal may be started by the session manager with the user
+  // manager's environment, not this launcher's: the script itself drops a
+  // NODE_COMPILE_CACHE before any `bw`. No cache here, setting on or off.
+  var inner = "set -u; " + BW_COMPILE_CACHE_UNSET + accountAppDataExport(slot) + appDataDirPrelude()
     + "d=\"${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR -- refusing to write a session key}/"
     + RUNTIME_SUBDIR + "\"; f=\"$d/" + HANDOFF_BASENAME + "\"; "
     // umask before mkdir so the dir is created 0700; a failed chmod means the
@@ -2039,7 +2192,7 @@ function agentBranchScript() {
     + "if [ -p \"$__qsbw_fifo\" ]; then "
     // The nonce is read from the environment, not argv, where ps could see it.
     + "timeout 10 jq -c "
-    + shellQuote(AGENT_KEYS_FILTER) + " 2>/dev/null | timeout 10 node -e "
+    + shellQuote(AGENT_KEYS_FILTER) + " 2>/dev/null | timeout 10 " + NODE_UNCACHED + " -e "
     + shellQuote(fifoWriter) + " \"$__qsbw_fifo\" 2>/dev/null || true; "
     + "fi; "
     + "cat >/dev/null 2>&1 || true"
@@ -2054,7 +2207,7 @@ function sanitizedListCommand(opts) {
   var maxPlusOne = MAX_ITEMS_BYTES + 1
   var script = "export LC_ALL=C BW_NOINTERACTION=true; set -o pipefail; "
   script += "__qsbw_items=$({ bw list items | head -c " + maxPlusOne
-    + " | node -e " + shellQuote(STRICT_JSON_PASSTHROUGH) + " " + MAX_ITEMS_BYTES
+    + " | " + NODE_UNCACHED + " -e " + shellQuote(STRICT_JSON_PASSTHROUGH) + " " + MAX_ITEMS_BYTES
     // After the validator, so the agent only sees a strict JSON array.
     + " | " + (agentBranch ? agentBranchScript() : "")
     + "jq -c " + shellQuote(SANITIZED_ITEMS_FILTER)
@@ -2205,7 +2358,7 @@ function savePipelineScript(saveCommand) {
   script += "if [ \"$__rc\" -ne 0 ]; then exit \"$__rc\"; fi\n"
   // Saved. From here nothing may turn a stored item into a reported failure.
   script += "__qsbw_env=$({ printf '%s' \"$__qsbw_saved\""
-    + " | node -e " + shellQuote(STRICT_JSON_ONE_OBJECT) + " " + MAX_MISC_BYTES
+    + " | " + NODE_UNCACHED + " -e " + shellQuote(STRICT_JSON_ONE_OBJECT) + " " + MAX_MISC_BYTES
     + " | jq -c " + shellQuote(SANITIZED_ITEMS_FILTER)
     + " | head -c " + maxPlusOne + "; } 2>/dev/null)\n"
   script += "if [ $? -ne 0 ] || [ -z \"$__qsbw_env\" ] || [ \"${#__qsbw_env}\" -gt " + MAX_MISC_BYTES + " ]; then\n"
@@ -2527,7 +2680,7 @@ function pinentryEnvironment(opts) {
   var env = {}
   env[PINENTRY_DESC_ENV] = pinentryText(o.description)
   env[PINENTRY_ERR_ENV] = pinentryText(o.error)
-  return env
+  return withoutCompileCache(env)
 }
 
 // Prints "found" or "missing": whether the frontend at `frontend` (as for
@@ -3645,7 +3798,7 @@ function attachmentDownloadCommand(attachmentId, itemId, declaredSize) {
     "  echo 'Attachment exceeded the " + maxMb + " MB download limit.' >&2; exit 1",
     "fi",
 
-    "out=$(node -e " + shellQuote(ATTACHMENT_CLAIM_SCRIPT) + " \"$dir\" \"$tmp\")",
+    "out=$(" + NODE_UNCACHED + " -e " + shellQuote(ATTACHMENT_CLAIM_SCRIPT) + " \"$dir\" \"$tmp\")",
     "printf %s \"$out\" | head -c 4096"
   ].join("\n")
   // Its own process group, so cancelling on lock reaches bw, timeout and the
@@ -3684,7 +3837,7 @@ function attachmentOpenCommand() {
   var script = "set -e; umask 077; test -n \"${XDG_RUNTIME_DIR:-}\"; "
   script += "__dir=\"$XDG_RUNTIME_DIR/" + RUNTIME_SUBDIR + "\"; " + privateDirScript("__dir")
   script += "__open=\"$__dir/open\"; " + privateDirScript("__open")
-  script += "__link=$(node -e " + shellQuote(OPEN_LINK_SCRIPT) + " \"$__open\"); "
+  script += "__link=$(" + NODE_UNCACHED + " -e " + shellQuote(OPEN_LINK_SCRIPT) + " \"$__open\"); "
   script += "if command -v gio >/dev/null 2>&1; then exec env -u " + OPEN_PATH_ENV + " gio open \"$__link\"; fi; "
   script += "exec env -u " + OPEN_PATH_ENV + " xdg-open \"$__link\""
   return ["bash", "-c", script]
@@ -6725,7 +6878,7 @@ function sshExportCommand() {
     + "  [ -d \"$__dir\" ] || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
     + "else (umask 077 && mkdir -- \"$__dir\") || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; fi; "
     + "chmod 700 -- \"$__dir\" || exit " + SSH_EXPORT_EXIT_UNSAFE_DIR + "; "
-    + "node -e " + shellQuote(SSH_EXPORT_WRITE_SCRIPT) + " \"$__dir\" || exit "
+    + NODE_UNCACHED + " -e " + shellQuote(SSH_EXPORT_WRITE_SCRIPT) + " \"$__dir\" || exit "
     + SSH_EXPORT_EXIT_WRITE + "; "
     + "echo exported"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
@@ -7716,6 +7869,8 @@ var SETTINGS_SCHEMA = [
     description: "Open items in a pane beside the vault list, as Bitwarden desktop does. Off keeps the compact panel, where an item replaces the list." },
   { key: "checkForUpdates", group: "general", type: "bool", label: "Check for updates", defaultValue: true,
     description: "Once a day, ask GitHub for the latest release and say in Settings when a newer one exists. GitHub sees your IP address and that you asked. Off makes no request at all." },
+  { key: "bwCompileCache", group: "general", type: "bool", label: "Start bw faster with Node's compile cache", defaultValue: false,
+    description: "Off by default. Lets Node keep the compiled form of bw's code in ~/.cache/qs-bitwarden-cli/node-compile-cache (under XDG_CACHE_HOME if that is set), so each bw start takes about a sixth less time. It holds compiled code, nothing of your vault. A program running as you that can write there can run code inside bw, as it already can by editing the plugin's own files; the directory is used only after a check that it is yours alone. Turning this off stops using the cache and leaves the directory: docs/uninstall.md says how to remove it." },
   { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
     min: 0, max: 30, step: 1, zeroLabel: "Off", defaultValue: 3,
     description: "Replace the clipboard with the 2FA code this long after the password." },

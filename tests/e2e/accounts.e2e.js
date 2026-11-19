@@ -156,6 +156,167 @@ try {
   if (failedToRun || failures.length) console.error("--- shell log (tail) ---\n" + shell.logTail())
   shell.cleanup()
 }
+
+// --- Node's compile cache for bw: off unless the setting is on ---
+// What matters is what reaches `bw`, so the stand-in logs the variable it was
+// started with (bw.log.cache: "<variable or <unset>>\t<data dir>\t<args>").
+// Both shells below are started with a NODE_COMPILE_CACHE of someone else's
+// choosing, as a shell that inherited one would be.
+const cacheLines = sh => {
+  const file = sh.bwLog + ".cache"
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map(l => {
+    const [cache, dir, args] = l.split("\t")
+    return { cache, dir, args }
+  }) : []
+}
+const seen = (sh, pattern) => cacheLines(sh).filter(l => pattern.test(l.args))
+// A cache home that would pass the check: the user's own runtime directory
+// is theirs up to /. Where there is none, the default (under /tmp, which the
+// check refuses) still shows the setting-off case.
+const runtimeDir = process.env.XDG_RUNTIME_DIR
+const trustedRoot = runtimeDir && path.isAbsolute(runtimeDir) && fs.existsSync(runtimeDir)
+  ? fs.mkdtempSync(path.join(fs.realpathSync(runtimeDir), "qsbw-e2e-cache-")) : ""
+if (!failedToRun) {
+  const inherited = path.join(fs.mkdtempSync("/tmp/qsbw-e2e-inherited-"), "cache")
+  const cacheHome = trustedRoot ? path.join(trustedRoot, "off") : ""
+  if (cacheHome) fs.mkdirSync(cacheHome, { mode: 0o700 })
+  const second = createShell("e2e-accounts-cache-off", check,
+    { env: Object.assign({ NODE_COMPILE_CACHE: inherited }, cacheHome ? { XDG_CACHE_HOME: cacheHome } : {}) })
+  try {
+    second.start()
+    second.q("open")
+    second.q("login", "a@x", "pw-a@x")
+    second.expect("setting off, inherited cache variable: the account logs in and its list is read",
+      s => s.status === "unlocked" && s.items.join() === "Login of a@x")
+    second.q("lock")
+    second.expect("it locks", s => s.status === "locked")
+    second.q("unlock", "pw-a@x")
+    second.expect("and unlocks", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
+    second.product("sync")
+    second.expect("and syncs", () => seen(second, /^sync$/).length === 1)
+    const lines = cacheLines(second)
+    check("bw ran for the version probe, status, login, the list, lock, unlock and sync",
+      [/^-v$/, /^status$/, /^login /, /^list items$/, /^lock$/, /^unlock /, /^sync$/].every(p => lines.some(l => p.test(l.args))),
+      lines.map(l => l.args).join(" | "))
+    check("and not one of them saw a NODE_COMPILE_CACHE", lines.length > 0 && lines.every(l => l.cache === "<unset>"),
+      JSON.stringify(lines.filter(l => l.cache !== "<unset>")))
+    check("the service never accepted a directory, nor checked one",
+      second.state().compileCache === "" && second.state().compileCacheState === "off", JSON.stringify(second.state().compileCacheState))
+    check("nothing was created in the cache home, though this one would have passed the check",
+      !fs.existsSync(path.join(second.env.XDG_CACHE_HOME, "qs-bitwarden-cli")),
+      fs.existsSync(second.env.XDG_CACHE_HOME) ? fs.readdirSync(second.env.XDG_CACHE_HOME).join() : "")
+    check("and nothing at the inherited path", !fs.existsSync(inherited))
+    const errors = second.scriptErrors()
+    check("that shell logged no script errors", errors.length === 0, errors.join("\n"))
+  } catch (e) {
+    failedToRun = e
+  } finally {
+    if (failedToRun) console.error("--- shell log (tail) ---\n" + second.logTail())
+    second.cleanup()
+    fs.rmSync(path.dirname(inherited), { recursive: true, force: true })
+  }
+}
+if (!failedToRun && !trustedRoot) {
+  console.log("e2e-accounts: SKIPPED the compile cache's setting-on scenario: no $XDG_RUNTIME_DIR to hold a cache home the check would accept")
+}
+if (!failedToRun && trustedRoot) {
+  const inherited = path.join(trustedRoot, "inherited")
+  const cacheHome = path.join(trustedRoot, "on")
+  const wanted = path.join(cacheHome, "qs-bitwarden-cli", "node-compile-cache")
+  const third = createShell("e2e-accounts-cache-on", check,
+    { env: { NODE_COMPILE_CACHE: inherited, XDG_CACHE_HOME: cacheHome, QSBW_E2E_COMPILE_CACHE: "1" } })
+  const since = n => cacheLines(third).slice(n)
+  try {
+    third.start()
+    third.expect("setting on: a cache home of the user's own is accepted, as the path the check printed",
+      s => s.compileCache === wanted && s.compileCacheState === "accepted")
+    check("and made private", (fs.statSync(wanted).mode & 0o7777) === 0o700 && (fs.statSync(path.dirname(wanted)).mode & 0o7777) === 0o700)
+    third.q("open")
+    third.q("login", "a@x", "pw-a@x")
+    third.expect("the account logs in with it", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
+    third.product("sync")
+    third.expect("and syncs", () => seen(third, /^sync$/).length === 1)
+    third.expect("the check made when the vault opened has answered", s => s.compileCacheState === "accepted")
+    check("the login and the sync saw exactly the accepted directory",
+      seen(third, /^login /).length >= 1 && seen(third, /^login |^sync$/).every(l => l.cache === wanted),
+      JSON.stringify(seen(third, /^login |^sync$/)))
+    check("no bw saw anything else: the accepted directory, or none while a check was running",
+      cacheLines(third).every(l => l.cache === wanted || l.cache === "<unset>") && !fs.existsSync(inherited),
+      JSON.stringify(cacheLines(third).filter(l => l.cache !== wanted && l.cache !== "<unset>")))
+    check("the version probe never gets it, setting on or not",
+      seen(third, /^-v$/).length >= 1 && seen(third, /^-v$/).every(l => l.cache === "<unset>"), JSON.stringify(seen(third, /^-v$/)))
+
+    // A second account, signed out again: its slot is retired by a `bw
+    // logout` of its own, which never gets the cache.
+    third.q("addAccount")
+    third.expect("a second account can be added", s => s.adding && s.status === "unauthenticated")
+    third.q("login", "b@x", "pw-b@x")
+    third.expect("and signs in", s => s.status === "unlocked" && s.items.join() === "Login of b@x" && s.accounts.length === 2)
+    const slotB = third.state().slot
+    third.q("logout")
+    third.expect("logging out of it returns to the first", s => s.slot === "default" && s.accounts.length === 1)
+    third.expect("its slot is retired by a logout of its own",
+      () => seen(third, /^logout$/).filter(l => l.dir.endsWith("/" + slotB)).length >= 2)
+    const logouts = seen(third, /^logout$/).filter(l => l.dir.endsWith("/" + slotB))
+    check("the retiring logout ran without the cache",
+      logouts.some(l => l.cache === "<unset>") && logouts.every(l => l.cache === wanted || l.cache === "<unset>"),
+      JSON.stringify(logouts))
+    third.q("unlock", "pw-a@x")
+    third.expect("the first account unlocks again", s => s.status === "unlocked" && s.compileCacheState === "accepted")
+
+    // Off: the next bw has none, and the directory stays.
+    let mark = cacheLines(third).length
+    third.q("setCompileCache", "false")
+    third.expect("turned off, no directory is on offer", s => s.compileCache === "" && s.compileCacheState === "off")
+    third.product("sync")
+    third.expect("the next bw runs", () => since(mark).some(l => l.args === "sync"))
+    check("and sees no NODE_COMPILE_CACHE", since(mark).every(l => l.cache === "<unset>"), JSON.stringify(since(mark)))
+    check("the directory is left where it was", fs.existsSync(wanted))
+
+    // On again: checked again, then used.
+    third.q("setCompileCache", "true")
+    third.expect("turned on again, the directory is checked and accepted", s => s.compileCache === wanted)
+    mark = cacheLines(third).length
+    third.product("sync")
+    third.expect("the next bw runs", () => since(mark).some(l => l.args === "sync"))
+    check("and sees the accepted directory", since(mark).every(l => l.cache === wanted), JSON.stringify(since(mark)))
+
+    // Something planted in the cache while the vault was locked: the unlock's
+    // check refuses it, and bw goes without.
+    third.q("lock")
+    third.expect("it locks", s => s.status === "locked")
+    fs.symlinkSync("/etc/hostname", path.join(wanted, "planted"))
+    mark = cacheLines(third).length
+    third.q("unlock", "pw-a@x")
+    third.expect("after a symlink was put in the cache, the unlock's check refuses the directory",
+      s => s.status === "unlocked" && s.compileCacheState === "refused" && s.compileCache === "")
+    third.product("sync")
+    third.expect("a bw runs after it", () => since(mark).some(l => l.args === "sync"))
+    check("and none since the unlock was submitted saw the cache",
+      since(mark).filter(l => !/^unlock /.test(l.args)).every(l => l.cache === "<unset>"), JSON.stringify(since(mark)))
+    fs.unlinkSync(path.join(wanted, "planted"))
+    third.q("lock")
+    third.expect("it locks again", s => s.status === "locked")
+    mark = cacheLines(third).length
+    // The real bw takes about a second over an unlock (its key derivation);
+    // the stand-in answers at once unless told to take as long.
+    fs.writeFileSync(path.join(third.env.HOME, ".config", "Bitwarden CLI", "fake-unlock-delay"), "0.5")
+    third.q("unlock", "pw-a@x")
+    third.expect("with the symlink gone the next unlock's check accepts it again",
+      s => s.status === "unlocked" && s.compileCache === wanted && s.items.join() === "Login of a@x")
+    check("and the list read that unlock started saw the directory: the check, begun when the unlock was submitted, answered before bw did",
+      since(mark).filter(l => l.args === "list items").length >= 1
+        && since(mark).filter(l => l.args === "list items").every(l => l.cache === wanted), JSON.stringify(since(mark)))
+    const errors = third.scriptErrors()
+    check("that shell logged no script errors either", errors.length === 0, errors.join("\n"))
+  } catch (e) {
+    failedToRun = e
+  } finally {
+    if (failedToRun) console.error("--- shell log (tail) ---\n" + third.logTail())
+    third.cleanup()
+  }
+}
+if (trustedRoot) fs.rmSync(trustedRoot, { recursive: true, force: true })
 if (failedToRun) {
   console.error("e2e-accounts: " + failedToRun.message)
   process.exit(1)

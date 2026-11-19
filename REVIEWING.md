@@ -152,6 +152,65 @@ choice without building anything; it only runs those probes.
   `NODE_OPTIONS`: `bw-login-code.js` (hands bw the two-step code without an
   argv) and `bw-fast-exit.js` (skips bw's idle time after it answers). They load
   in any Node process in those commands but act only inside bw.
+- Node's compile cache for `bw` (`NODE_COMPILE_CACHE`, Node 22.1+) is an
+  opt-in setting, `bwCompileCache`, **off by default**. Off, the plugin runs
+  no check, creates no directory, and removes the variable from the
+  environment of every `bw` and `node` it starts (`bwEnv`,
+  `generatorServeEnv`, `withoutCompileCache`), so a value the shell inherited
+  is never honoured. On:
+  - *What is written.* Node, not the plugin, writes V8's compiled form of the
+    JavaScript files `bw` loads (its bundle, its modules and the two
+    preloads) to `<cache home>/qs-bitwarden-cli/node-compile-cache/`, about
+    11 MB in 1,630 files for bw 2026.2.0, when a `bw` exits. The cache home is
+    `XDG_CACHE_HOME`, or `~/.cache` when that is unset or empty; one that is
+    relative or has a `..` or a control character in it means no cache. No
+    account, item or session data goes into it, and every account shares it.
+    The plugin itself only creates the two directories (and the cache home,
+    if that one level is missing), mode 0700.
+  - *Why it matters.* Node loads that code into `bw`, which is given the
+    master password and the session key. A program running as the user that
+    can write there can run code in `bw`, as it already can by changing the
+    preloads in the plugin's directory or putting another `bw` on `PATH`.
+  - *How it is checked* (`bwCompileCacheCommand`, run with a cleared
+    environment and the path as an argument): on the path with symlinks
+    resolved, every directory up to `/` must belong to the user or root and
+    be writable by no one else; the plugin's directory and the cache
+    directory must be real directories of the user's that no one else can
+    write to (made with `mkdir -m 700` and checked again); the path must be
+    printable ASCII (the cache is not used when the path has non-ASCII
+    characters: QML could not read such bytes back reliably); and everything
+    already inside must be a regular file or directory owned by the user and
+    not group- or world-writable, with no symlink (one `find`, no `-L`,
+    stopped at the first offender, given 5 seconds). The exact line the check
+    printed is what `bw` is given (`bwCompileCacheAccepted`); nothing is
+    repaired, and a failed check means `bw` runs without the cache, with a
+    note on the setting's row.
+  - *When.* At shell start with the setting on, when the setting is turned
+    on, when an unlock is submitted, and when the vault opens another way (a
+    terminal sign-in, a session found open) unless a check started in the
+    last two minutes. A new check withdraws the previous answer until it has
+    its own, so a `bw` started in those ~20 ms runs without the cache.
+    Between checks the directory is not looked at again: if it is deleted
+    meanwhile, Node recreates it with the default umask, inside the plugin's
+    0700 directory if that is still there, and the next check judges it.
+  - *Which launches use it.* Only `bw` itself, in the commands started with
+    `bwEnv()`: status, login, unlock, lock, logout, sync, the list, get,
+    create, edit, delete, send and generate commands, attachment download,
+    and the generator's `bw serve`. These never do, setting on or off: the
+    pinentry and its probe (`pinentryEnvironment`); the `bw -v` version probe;
+    `bw login`/`bw unlock` in the terminal hand-off (the launcher's
+    environment has the variable removed and the script the terminal runs
+    starts with `unset NODE_COMPILE_CACHE`, since a terminal started by the
+    session manager does not get the launcher's environment); the `bw logout`
+    that retires a signed-out account's slot; and every `node -e` check the
+    plugin's scripts run (the list and save validators, the writer that hands
+    SSH keys to the agent, the attachment claim and open checks, the SSH
+    public-key export), which are started as `env -u NODE_COMPILE_CACHE node`
+    even where they share a script with a cached `bw`.
+    `tests/bw-compile-cache.test.js` holds this inventory and fails when a
+    script that starts `bw` or `node` is not in it.
+  - Turning the setting off stops using the cache at the next `bw` start and
+    leaves the directory; [docs/uninstall.md](docs/uninstall.md) removes it.
 
 ## What the plugin does not do
 
@@ -190,4 +249,7 @@ outside system paths:
   appended on enable, creating the file if hyprland.lua loads it and it is
   missing; removed by rewriting through a temporary file renamed into place), the Downloads directory
   (`xdg-user-dir DOWNLOAD`, else `~/Downloads`) for attachments, staged in a
-  `.qsbw-*` directory, and `~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent`.
+  `.qsbw-*` directory, `~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent`, and,
+  with the `bwCompileCache` setting on, `<cache home>/qs-bitwarden-cli/`
+  (two directories made by the plugin; the compiled code in them is written
+  by Node, see above).

@@ -4,6 +4,32 @@
 
 ### Added
 
+- **Start `bw` faster with Node's compile cache, if you choose to.** A new
+  setting, **Start bw faster with Node's compile cache** (`bwCompileCache`),
+  **off by default**. On, the `bw` commands the panel runs through its vault
+  environment (status, login, unlock, lock, sync, lists, saves, the
+  generator) use Node's compile cache (`NODE_COMPILE_CACHE`, Node 22.1+) in
+  `~/.cache/qs-bitwarden-cli/node-compile-cache` (about 11 MB; under
+  `XDG_CACHE_HOME` if that is set). On one machine with bw 2026.2.0, `bw
+  status` took 545 ms instead of 659 ms (17%, median of 11) and `bw
+  --version` 525 ms instead of 645 ms. The cache holds compiled code,
+  nothing of the vault, but Node runs that code inside `bw`, which sees the
+  master password: a program running as you that can write there can run
+  code in `bw`, as it already can by editing the plugin's own files. So the
+  directory is used only after a check (about 17 ms) that it, everything in
+  it and every directory above it are yours (or root's, above it) and
+  writable by no one else, with no symlink inside and a path of printable
+  ASCII; the check runs at shell start, when the setting is turned on and at
+  each unlock, and its row in Settings says when it failed. The pinentry, the
+  `bw -v` version probe, `bw login` in a terminal, the `bw logout` that
+  retires a signed-out account and the plugin's own `node -e` checks never
+  use the cache. Turning the setting off leaves the directory;
+  docs/uninstall.md removes it.
+- **An inherited `NODE_COMPILE_CACHE` is never passed on.** Whether the new
+  setting is on or off, a `NODE_COMPILE_CACHE` the shell was started with is
+  removed from the environment of every `bw` and `node` the plugin starts
+  (the terminal sign-in's script unsets it itself), so `bw` only ever loads
+  cached code from the directory the plugin checked.
 - **Taking over Omarchy's password-manager key.** The README's Global hotkey
   section now shows the two `bindings.lua` lines that make
   `SUPER + SHIFT + SLASH` toggle the panel instead of launching 1Password,

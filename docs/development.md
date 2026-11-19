@@ -90,6 +90,56 @@ instead of 2.7-3.0 s, and `get item`/`password`/`totp` 1.25 s instead of
 3.1 s, each with identical output and exit code. `tests/bw-fast-exit.test.js`
 covers the guard that keeps the preload to `bw` itself.
 
+Node's compile cache (`NODE_COMPILE_CACHE`) is the opt-in `bwCompileCache`
+setting, off by default. With it on, `bwEnv()` gives `bw` the directory
+`Model.bwCompileCacheCommand()` printed once it had checked it; with it off,
+while a check is running and after one that failed, `bwEnv()` removes the
+variable instead, so an inherited one is never used. Measured through that
+path on 2026-11-19 (same machine, CLI 2026.2.0, Node 22.23.3, vault locked,
+both preloads, no `BW_SESSION`, a scratch cache home on the runtime tmpfs,
+11 interleaved runs each, medians): `bw status` as `Model.statusCommand()`
+runs it took 659 ms without and 545 ms with (114 ms, 17%), `bw --version`
+645 ms and 525 ms (120 ms, 19%), with identical output and exit code. The
+run that fills an empty cache took 741 ms. Only those two commands were
+timed; the saving is in Node loading `bw`'s 1,600 modules, which every `bw`
+command does first. (The production version probe, `bw -v` in
+`bwVersionCommand()`, is one of the launches that never gets the cache;
+`--version` is here only as a second benchmark.)
+
+Which launches get it, and which never do (the pinentry, `bw -v`, the
+terminal hand-off, the slot-removal `bw logout`, every `node -e` check), is
+listed in [REVIEWING.md](../REVIEWING.md) and held by the inventory in
+`tests/bw-compile-cache.test.js`: a model function whose script starts `bw`
+or `node` and is not listed there fails the suite. Add a new one to the
+inventory with the environment it runs in; a `node -e` goes through
+`NODE_UNCACHED`.
+
+The check itself (`bash`, `id`, `realpath`, a `stat` per directory up to `/`,
+one `find` over the contents) took 17 ms over a filled cache of 1,631
+entries (median of 21, same tmpfs) and 25 ms the first time, when it makes
+the directories. It runs at shell start, when the setting is turned on, when
+an unlock is submitted, and when the vault opens some other way more than two
+minutes after the last check; a new check withdraws the last answer until it
+has its own. An unlock takes `bw` about a second after it is submitted, so
+the check has answered before the reads that follow it start; a `bw` started
+within those ~20 ms runs without the cache. Checking before every `bw` start
+was not done: each start would wait on a process of its own, and the
+directory could still change between that check and Node opening it. Instead
+the directory is not looked at between checks. If it is deleted in that time
+Node makes it again with the default umask (inside the plugin's 0700
+directory when only the inner one went), and the next check refuses it if
+that left it group- or world-writable.
+
+`tests/bw-compile-cache.test.js` needs a directory whose whole ancestor chain
+is the user's or root's for its filesystem cases: it uses `$XDG_RUNTIME_DIR`,
+else the tests directory, and where neither qualifies it skips those cases
+with a line saying so (`QSBW_TEST_NO_TRUSTED_DIR=1` forces that). The
+end-to-end shells' home is under `/tmp`, which the check refuses, so
+`tests/e2e/accounts.e2e.js` gives two extra shells a cache home under
+`$XDG_RUNTIME_DIR` (setting off, then on) and reads what the stand-in `bw`
+was started with from `bw.log.cache`; without `$XDG_RUNTIME_DIR` the
+setting-on shell is skipped, also with a line.
+
 `bw-login-code.js`, the other preload, gives `bw login` the two-step code from
 `QSBW_CODE` in place of the `--qsbw-code-from-env` placeholder, so the code is
 in `bw`'s parsed arguments but not in `/proc/<pid>/cmdline`.

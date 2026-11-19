@@ -2,6 +2,9 @@
 # Fake bw: one account per data directory, like the real one.
 d="${BITWARDENCLI_APPDATA_DIR:-$HOME/.config/Bitwarden CLI}"
 printf '%s\t%s\n' "${BITWARDENCLI_APPDATA_DIR:-<own>}" "$*" >> "$FAKE_BW_LOG"
+# What reached this `bw` as Node's compile cache, in a log of its own (the
+# call log's lines are matched to their end): "<unset>" for none.
+printf '%s\t%s\t%s\n' "${NODE_COMPILE_CACHE-<unset>}" "${BITWARDENCLI_APPDATA_DIR:-<own>}" "$*" >> "$FAKE_BW_LOG.cache"
 mkdir -p "$d"
 state="$d/fake-state"; sess="$d/fake-session"
 logged_in() { [ -f "$state" ]; }
@@ -34,6 +37,9 @@ case "$1" in
     shift
     logged_in || { echo "You are not logged in." >&2; exit 1; }
     pw="$(read_pw "$@")"
+    # fake-unlock-delay: seconds the key derivation takes, as the real one's
+    # does (about a second); without it this answers at once.
+    if [ -s "$d/fake-unlock-delay" ]; then sleep "$(cat "$d/fake-unlock-delay")"; fi
     # As bw 2026.2 says it: the SDK's log line, then its error.
     [ "$pw" = "$(want_pw "$(field email)")" ] || {
       printf '%s\n' "ERROR bitwarden_crypto::keys::master_key: error=The decryption operation failed" \
