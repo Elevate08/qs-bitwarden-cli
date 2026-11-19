@@ -647,7 +647,18 @@ jobs:
                 echo "::error::draft release $TAG was made for $built, not for $GITHUB_SHA; delete the draft and run again"
                 exit 1
               }
-              extra="$(jq -r '.[0].assets[].name' <<< "$mine" | grep -vxF -e "$names" || true)"
+              # A jq or grep that fails stops the job. Only grep's "nothing
+              # selected" (status 1) means the draft holds no other asset.
+              have="$(jq -r '.[0].assets[].name' <<< "$mine")"
+              extra=""
+              if [ -n "$have" ]; then
+                status=0
+                extra="$(grep -vxF -e "$names" <<< "$have")" || status=$?
+                [ "$status" -le 1 ] || {
+                  echo "::error::could not compare draft release $TAG's assets with the list (grep status $status)"
+                  exit 1
+                }
+              fi
               [ -z "$extra" ] || {
                 echo "::error::draft release $TAG holds assets this workflow does not make: $(tr '\n' ' ' <<< "$extra")"
                 exit 1
