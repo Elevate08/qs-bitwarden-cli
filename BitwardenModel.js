@@ -4008,14 +4008,18 @@ function optimisticItem(payload, itemId) {
 // Replace-or-insert by id (or remove, with no replacement), then sort.
 function replaceItemById(items, id, replacement) {
   var out = []
-  var existing = toList(items)
+  // Like findItemById(): the panel's own list, walked whole. toList() would
+  // drop every row past MAX_LIST_ENTRIES from the list a save leaves behind.
+  var n = (items && typeof items === "object") ? items.length : 0
+  if (typeof n !== "number" || n < 0 || n !== Math.floor(n)) n = 0
   var replaced = false
-  for (var i = 0; i < existing.length; i++) {
-    if (existing[i] && existing[i].id === id) {
+  for (var i = 0; i < n; i++) {
+    var existing = items[i]
+    if (existing && existing.id === id) {
       if (replacement) out.push(replacement)
       replaced = true
     } else {
-      out.push(existing[i])
+      out.push(existing)
     }
   }
   if (!replaced && replacement) out.push(replacement)

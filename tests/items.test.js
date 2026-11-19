@@ -454,6 +454,15 @@ check("finding an item by id returns null rather than throwing when absent",
   for (let i = 0; i < 5000; i++) arrayLike[i] = big[i]
   check("...and in the array-like a QML var hands back",
     Model.findItemById(arrayLike, "id-4999") === big[4999])
+  const swapped = Model.replaceItemById(big, "id-10", { id: "id-10", name: "Item changed" })
+  check("replacing a row keeps all 5,000 rows",
+    swapped.length === 5000 && Model.findItemById(swapped, "id-4999") === big[4999]
+      && Model.findItemById(swapped, "id-10").name === "Item changed",
+    "a save or delete cut the list to 4,096 rows until the next reload")
+  check("...removing one leaves 4,999, and a non-list is an empty list",
+    Model.replaceItemById(arrayLike, "id-4999", null).length === 4999
+      && Model.replaceItemById(null, "id-1", null).length === 0
+      && Model.replaceItemById({ length: -1 }, "id-1", null).length === 0)
   check("finding an item by id in something that is not a list is null",
     Model.findItemById(null, "id-1") === null && Model.findItemById("id-1", "id-1") === null
       && Model.findItemById({ length: -1 }, "id-1") === null
