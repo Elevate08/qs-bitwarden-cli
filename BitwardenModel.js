@@ -331,10 +331,7 @@ function accountSlotRetireCommand(slot) {
 }
 
 function accountRegistryReadCommand() {
-  var script = "d=\"" + ACCOUNTS_DIR + "\"; f=\"$d/registry.json\"; "
-    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
-    + "head -c " + MAX_ACCOUNTS_BYTES + " \"$f\" 2>/dev/null || printf '{}'; else printf '{}'; fi"
-  return ["bash", "-c", script]
+  return privateFileReadCommand(ACCOUNTS_DIR, "registry.json", MAX_ACCOUNTS_BYTES, "printf '{}'")
 }
 
 // Payload in the environment; written to a private temp file and renamed,
@@ -638,6 +635,31 @@ function privateDirScript(name) {
   var d = "\"$" + name + "\""
   return "if [ -e " + d + " ]; then [ -d " + d + " ] && [ ! -L " + d + " ] || exit 1; "
     + "else (umask 077 && mkdir -p -- " + d + ") || exit 1; fi; chmod 700 -- " + d + " || exit 1; "
+}
+
+// Reads at most `maxBytes` of `file` in `dir`, following no symlink at either.
+// `missing` is the shell command that stands in for a file that is not there
+// or cannot be read; without one, nothing is printed.
+function privateFileReadCommand(dir, file, maxBytes, missing) {
+  var script = "d=\"" + dir + "\"; f=\"$d/" + file + "\"; "
+    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
+    + "head -c " + maxBytes + " \"$f\" 2>/dev/null || "
+    + (missing ? missing + "; else " + missing : "true") + "; fi"
+  return ["bash", "-c", script]
+}
+
+// Writes stdin to `file` in `dir` through a private temp file and a rename,
+// so a symlink is replaced, not followed, and the file is always 0600. A
+// payload over `maxBytes` is refused rather than written truncated.
+function privateFileWriteCommand(dir, file, tmpPrefix, maxBytes) {
+  var script = "set -e; d=\"" + dir + "\"; "
+    + privateDirScript("d")
+    + "umask 077; tmp=$(mktemp -- \"$d/." + tmpPrefix + ".XXXXXXXX\"); "
+    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
+    + "head -c " + (maxBytes + 1) + " > \"$tmp\"; "
+    + "[ \"$(wc -c < \"$tmp\")\" -le " + maxBytes + " ]; chmod 600 \"$tmp\"; "
+    + "mv -fT -- \"$tmp\" \"$d/" + file + "\"; trap - EXIT HUP INT TERM"
+  return ["bash", "-c", script]
 }
 
 function authFifoPrelude(channel) {
@@ -2072,6 +2094,16 @@ function parseJsonArray(raw) {
   }
 }
 
+// The parsed object (arrays included), or null for anything else.
+function parseJsonObject(raw) {
+  try {
+    var parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" ? parsed : null
+  } catch (e) {
+    return null
+  }
+}
+
 function compareNames(a, b) {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
 }
@@ -3189,13 +3221,8 @@ function keyringClearAllCommand(slot) {
 // -------------------------------------------------------------------------
 
 function parseStatus(raw) {
-  var st = null
-  try {
-    st = JSON.parse(raw)
-  } catch (e) {
-    return null
-  }
-  if (!st || typeof st !== "object") return null
+  var st = parseJsonObject(raw)
+  if (!st) return null
   return {
     authenticated: st.status !== "unauthenticated",
     locked: st.status === "locked",
@@ -4032,13 +4059,7 @@ function readSanitizedVault(raw) {
 }
 
 function parseItemDetail(raw) {
-  var it = null
-  try {
-    it = JSON.parse(raw)
-  } catch (e) {
-    return null
-  }
-  return itemDetailFromObject(it)
+  return itemDetailFromObject(parseJsonObject(raw))
 }
 
 // The list already holds each full cipher as `rawObject`, so the detail view
@@ -5154,10 +5175,7 @@ function associationsFileName(slot) {
 }
 
 function associationsReadCommand(slot) {
-  var script = "d=\"" + ASSOC_DIR + "\"; f=\"$d/" + associationsFileName(slot) + "\"; "
-    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
-    + "head -c " + MAX_ASSOC_BYTES + " \"$f\" 2>/dev/null || printf '{}'; else printf '{}'; fi"
-  return ["bash", "-c", script]
+  return privateFileReadCommand(ASSOC_DIR, associationsFileName(slot), MAX_ASSOC_BYTES, "printf '{}'")
 }
 
 // The payload arrives on stdin, which the panel closes after writing
@@ -5167,16 +5185,7 @@ function associationsReadCommand(slot) {
 // cap is refused rather than written truncated (which would read back as
 // no store at all).
 function associationsWriteCommand(slot) {
-  // Write a private temp file and rename it, so a symlink is replaced, not
-  // followed, and the file is always 0600.
-  var script = "set -e; d=\"" + ASSOC_DIR + "\"; "
-    + privateDirScript("d")
-    + "umask 077; tmp=$(mktemp -- \"$d/.associations.XXXXXXXX\"); "
-    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
-    + "head -c " + (MAX_ASSOC_BYTES + 1) + " > \"$tmp\"; "
-    + "[ \"$(wc -c < \"$tmp\")\" -le " + MAX_ASSOC_BYTES + " ]; chmod 600 \"$tmp\"; "
-    + "mv -fT -- \"$tmp\" \"$d/" + associationsFileName(slot) + "\"; trap - EXIT HUP INT TERM"
-  return ["bash", "-c", script]
+  return privateFileWriteCommand(ASSOC_DIR, associationsFileName(slot), "associations", MAX_ASSOC_BYTES)
 }
 
 // Cleared on logout: it records the sites the account has credentials for.
@@ -8003,22 +8012,12 @@ var UPDATE_CHECK_FILE = "update-check.json"
 var MAX_UPDATE_STATE_BYTES = 1024
 
 function updateCheckReadCommand() {
-  var script = "d=\"" + ASSOC_DIR + "\"; f=\"$d/" + UPDATE_CHECK_FILE + "\"; "
-    + "if [ -d \"$d\" ] && [ ! -L \"$d\" ] && [ -f \"$f\" ] && [ ! -L \"$f\" ]; then "
-    + "head -c " + MAX_UPDATE_STATE_BYTES + " \"$f\" 2>/dev/null || true; fi"
-  return ["bash", "-c", script]
+  return privateFileReadCommand(ASSOC_DIR, UPDATE_CHECK_FILE, MAX_UPDATE_STATE_BYTES, "")
 }
 
 // The record arrives on stdin (see updateCheckRecord()), never in the script.
 function updateCheckWriteCommand() {
-  var script = "set -e; d=\"" + ASSOC_DIR + "\"; "
-    + privateDirScript("d")
-    + "umask 077; tmp=$(mktemp -- \"$d/.update-check.XXXXXXXX\"); "
-    + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
-    + "head -c " + (MAX_UPDATE_STATE_BYTES + 1) + " > \"$tmp\"; "
-    + "[ \"$(wc -c < \"$tmp\")\" -le " + MAX_UPDATE_STATE_BYTES + " ]; chmod 600 \"$tmp\"; "
-    + "mv -fT -- \"$tmp\" \"$d/" + UPDATE_CHECK_FILE + "\"; trap - EXIT HUP INT TERM"
-  return ["bash", "-c", script]
+  return privateFileWriteCommand(ASSOC_DIR, UPDATE_CHECK_FILE, "update-check", MAX_UPDATE_STATE_BYTES)
 }
 
 // Stored text in, { checkedAt, latest } out; null for anything unusable.
@@ -8292,12 +8291,7 @@ function generateServeUrl(opts) {
 
 // { success: true, data: { data: "<password>" } } on the way out.
 function parseServeGenerated(raw) {
-  var parsed = null
-  try {
-    parsed = JSON.parse(raw)
-  } catch (e) {
-    return ""
-  }
+  var parsed = parseJsonObject(raw)
   if (!parsed || parsed.success !== true || !parsed.data) return ""
   return String(parsed.data.data || "")
 }
