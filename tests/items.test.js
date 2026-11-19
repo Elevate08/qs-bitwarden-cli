@@ -442,6 +442,72 @@ check("a failed edit puts the previous row back",
 check("finding an item by id returns null rather than throwing when absent",
   Model.findItemById(listed3, "nope") === null, "expected null")
 
+// A vault past toList()'s 4096-entry cap: the lookup must reach every row, and
+// must not copy the list to do it.
+{
+  const big = []
+  for (let i = 0; i < 5000; i++) big.push({ id: "id-" + i, name: "Item " + i })
+  check("finding an item by id reaches the last of 5,000",
+    Model.findItemById(big, "id-4999") === big[4999] && Model.findItemById(big, "id-4096") === big[4096],
+    "items past index 4095 could not be opened, edited, deleted or auto-typed")
+  const arrayLike = { length: 5000 }
+  for (let i = 0; i < 5000; i++) arrayLike[i] = big[i]
+  check("...and in the array-like a QML var hands back",
+    Model.findItemById(arrayLike, "id-4999") === big[4999])
+  const swapped = Model.replaceItemById(big, "id-10", { id: "id-10", name: "Item changed" })
+  check("replacing a row keeps all 5,000 rows",
+    swapped.length === 5000 && Model.findItemById(swapped, "id-4999") === big[4999]
+      && Model.findItemById(swapped, "id-10").name === "Item changed",
+    "a save or delete cut the list to 4,096 rows until the next reload")
+  {
+    const holed = big.slice(0, 4100)
+    holed[4096] = null
+    holed[4097] = 7
+    check("replacing a row drops what is not a row and still sorts",
+      Model.replaceItemById(holed, "id-1", null).length === 4097,
+      "a null past the old cap reached the comparator and threw")
+    // An index read must never happen for a length that is no list's:
+    // each function, for an endless length and for a finite unsafe one.
+    const trap = length => new Proxy({}, { get: (t, k) => {
+      if (k === "length") return length
+      throw new Error("read index " + String(k))
+    } })
+    for (const length of [Infinity, 9007199254740992]) {
+      for (const [name, run] of [["replaceItemById", l => Model.replaceItemById(l, "id-1", null)],
+        ["findItemById", l => Model.findItemById(l, "id-1")]]) {
+        let trapped = "none"
+        try { run(trap(length)) } catch (e) { trapped = e.message }
+        check(name + " refuses length " + length + " before any row is read", trapped === "none", trapped)
+      }
+    }
+    // A match at the front is returned without reading the rest: no copy.
+    const lazy = { length: 2, 0: big[0] }
+    Object.defineProperty(lazy, 1, { get() { throw new Error("read past the match") } })
+    let read = "none"
+    let hit = null
+    try { hit = Model.findItemById(lazy, "id-0") } catch (e) { read = e.message }
+    check("a lookup stops at its match and copies nothing", hit === big[0] && read === "none", read)
+  }
+  check("...removing one leaves 4,999, and a non-list is an empty list",
+    Model.replaceItemById(arrayLike, "id-4999", null).length === 4999
+      && Model.replaceItemById(null, "id-1", null).length === 0
+      && Model.replaceItemById({ length: -1 }, "id-1", null).length === 0
+      && Model.replaceItemById({ length: Infinity }, "id-1", null).length === 0
+      && Model.replaceItemById({ length: 9007199254740992 }, "id-1", { id: "id-1", name: "n" }).length === 1)
+  check("finding an item by id in something that is not a list is null",
+    Model.findItemById(null, "id-1") === null && Model.findItemById("id-1", "id-1") === null
+      && Model.findItemById({ length: -1 }, "id-1") === null
+      && Model.findItemById({ length: 1.5 }, "id-1") === null
+      && Model.findItemById({ length: Infinity }, "id-1") === null
+      && Model.findItemById({ length: 9007199254740992, 0: { id: "id-1" } }, "id-1") === null
+      && Model.findItemById({ length: NaN }, "id-1") === null
+      && Model.findItemById({ length: "2", 0: { id: "id-1" } }, "id-1") === null
+      && Model.findItemById([null, undefined, 3], "id-1") === null)
+  check("the lookup does not go through toList",
+    !/toList\(/.test(functionBody(readPluginSource("BitwardenModel.js"), "findItemById")),
+    "toList() copies and truncates at MAX_LIST_ENTRIES")
+}
+
 // --- the fallback path still has to behave ----------------------------------
 
 check("a missing raw object yields null rather than a broken detail",

@@ -147,12 +147,21 @@
 - **Internal cleanup, no behaviour change.** Unused ids, properties and
   test-only model functions are gone, and repeated panel markup and model
   script builders are shared. The helper binaries are untouched.
+- **Suggestions for the focused window cost less on a large vault.** Matching
+  5,000 items against a window title took about 14.5 ms and takes about
+  9 ms (2,000 items: 6.7 ms to 5.3 ms); the suggestions are the same.
 
 ### Fixed
 
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.
+- **Vaults with more than 4,096 items.** Looking an item up by id stopped
+  at the 4,096th, so whatever finds its item that way (auto-type, an edit or
+  delete already under way, a detail reopened by id) found nothing for a
+  later one. A save or delete also dropped the rows past that point from the
+  list on screen until the next reload. Both now work over the whole list,
+  without copying it.
 
 ## [1.13.1] - 2026-11-18
 

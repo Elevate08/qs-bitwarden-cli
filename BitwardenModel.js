@@ -3981,10 +3981,19 @@ var PENDING_ID_PREFIX = "qsbw-pending:"
 function pendingItemId(seed) { return PENDING_ID_PREFIX + String(seed) }
 function isPendingItemId(id) { return String(id || "").indexOf(PENDING_ID_PREFIX) === 0 }
 
+// The largest length a list can truthfully have (Number.MAX_SAFE_INTEGER):
+// Infinity is its own floor, and would be walked forever.
+var MAX_SAFE_LENGTH = 9007199254740991
+
+// Scans the list it is given: toList() would copy it and stop at
+// MAX_LIST_ENTRIES, and this is the panel's own list, not a server's claim.
 function findItemById(items, id) {
-  var existing = toList(items)
-  for (var i = 0; i < existing.length; i++) {
-    if (existing[i] && existing[i].id === id) return existing[i]
+  if (!items || typeof items !== "object") return null
+  var n = items.length
+  if (typeof n !== "number" || n < 0 || n > MAX_SAFE_LENGTH || n !== Math.floor(n)) return null
+  for (var i = 0; i < n; i++) {
+    var item = items[i]
+    if (item && item.id === id) return item
   }
   return null
 }
@@ -4003,14 +4012,19 @@ function optimisticItem(payload, itemId) {
 // Replace-or-insert by id (or remove, with no replacement), then sort.
 function replaceItemById(items, id, replacement) {
   var out = []
-  var existing = toList(items)
+  // Like findItemById(): the panel's own list, walked whole. toList() would
+  // drop every row past MAX_LIST_ENTRIES from the list a save leaves behind.
+  var n = (items && typeof items === "object") ? items.length : 0
+  if (typeof n !== "number" || n < 0 || n > MAX_SAFE_LENGTH || n !== Math.floor(n)) n = 0
   var replaced = false
-  for (var i = 0; i < existing.length; i++) {
-    if (existing[i] && existing[i].id === id) {
+  for (var i = 0; i < n; i++) {
+    var existing = items[i]
+    if (existing && existing.id === id) {
       if (replacement) out.push(replacement)
       replaced = true
-    } else {
-      out.push(existing[i])
+    } else if (existing && typeof existing === "object") {
+      // Not a row: compareItems() would throw on it.
+      out.push(existing)
     }
   }
   if (!replaced && replacement) out.push(replacement)
@@ -4750,6 +4764,13 @@ function escapeRegExp(text) {
 
 function hasWholeWord(haystack, word) {
   if (!haystack || !word) return false
+  // Most items are not in the title, and a RegExp per item is most of a pass
+  // over a large vault. A lowercase ASCII word can only match where it, or
+  // its ASCII capitals, stand in the text, so its absence from the lowercased
+  // text settles it. Any other word goes to the expression as before.
+  // Only for two strings: anything else is the expression's to coerce.
+  if (typeof haystack === "string" && typeof word === "string" && /^[a-z0-9-]+$/.test(word)
+      && haystack.toLowerCase().indexOf(word) === -1) return false
   var escaped = escapeRegExp(word)
   return new RegExp("(?:^|[^a-z0-9])" + escaped + "(?:$|[^a-z0-9])", "i").test(haystack)
 }
