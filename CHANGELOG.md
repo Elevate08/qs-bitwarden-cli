@@ -201,6 +201,14 @@
   private keys go to the SSH agent from an earlier branch of the vault read
   and normally never reach this helper; one that does is discarded as the
   read is parsed. This needs the rebuilt vault helper.
+- **RSA signatures are blinded.** The SSH agent computed an RSA signature
+  directly on the data, so how long it took depended only on that data and
+  the key, which is what the `rsa` crate's open timing advisory
+  (RUSTSEC-2023-0071) is about. Each signature is now computed on the data
+  multiplied by a fresh random factor from the kernel (`/dev/urandom`), which
+  is divided out after; the signature is byte for byte the same. The advisory
+  has no fixed release and stays listed in `deny.toml`. Ed25519 keys never
+  had the problem. This needs the rebuilt SSH agent helper.
 
 ### Changed
 
