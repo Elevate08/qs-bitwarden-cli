@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The release path: elevated permissions confined to one job, actions pinned,
-// bytes re-checked before publishing, versions that agree. No release is run;
-// only the definition is checked.
+// bytes re-checked before publishing, versions that agree. No release is run:
+// the definition is checked, and the publishing steps' shell is run on fixtures.
 //
 //   node tests/release-provenance.test.js
 
@@ -198,11 +198,6 @@ for (const arch of ["x86_64", "aarch64"]) {
       "the provenance attestation does not bind these tracked bytes")
   }
 }
-// Each is attached as <name>-<arch>-linux, a copy checked against bin/.
-check("every architecture's helpers are published as release assets",
-  /for arch in x86_64 aarch64; do[\s\S]{0,200}?for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do[\s\S]{0,200}?cmp "bin\/\$arch-linux\/\$name" "\$dist\/\$name-\$arch-linux"/.test(releaseJob)
-    && /names="\$\(awk '!\/\^#\/ && NF == 2 \{ print \$2 \}' \.github\/release-assets\.txt\)"/.test(releaseJob),
-  "a binary that is attested but not attached cannot be verified by anyone")
 check("the verification command is written down where a reviewer will find it",
   /gh attestation verify/.test(release),
   "users are given provenance with no documented way to check it")
@@ -231,16 +226,6 @@ check("release artifacts are scanned for key material before publication",
   /PRIVATE KEY/.test(releaseJob) && /BW_SESSION/.test(releaseJob)
     && releaseJob.indexOf("Refuse to publish anything that looks like key material") < releaseJob.indexOf("gh release create"),
   "nothing checks that a report or symbol file is free of secrets")
-// Any job of the run can upload a release-* artifact; only the files this
-// workflow makes are published, each by name.
-check("only the reports and symbols the workflow makes are published, by name",
-  /merge-multiple: false/.test(releaseJob) && /if ! cmp -s expected\.list actual\.list; then/.test(releaseJob)
-    && releaseJob.indexOf("Only the files this workflow makes may be published") < releaseJob.indexOf("Refuse to publish anything")
-    && !/dist\/\*\.(json|txt|gz)/.test(releaseJob),
-  "a build step that adds a file to an artifact chooses a release asset")
-check("the release notes are the changelog section for this version",
-  /release-notes\.md/.test(releaseJob) && /no changelog section for/.test(releaseJob),
-  "a release could publish empty notes or the entire changelog")
 // The published release is what a reviewer sees, so it says how to check the
 // helpers: the gates run that rebuilt them, the attestation command, the
 // local script. Written after the changelog section, with the run link and
@@ -248,12 +233,6 @@ check("the release notes are the changelog section for this version",
 const publishStep = releaseJob.slice(releaseJob.indexOf("- name: Publish the release"))
 const notesSection = /section="\$\(cat <<'EOF'\n([\s\S]*?)\n\s*EOF\n/.exec(publishStep)
 const notesText = notesSection ? notesSection[1] : ""
-// A release goes by tag name and the jobs by commit; a re-run refills a draft.
-check("a published release is never rewritten, and the tag must still name the built commit",
-  /\[ "\$tagged" = "\$GITHUB_SHA" \] \|\| \{/.test(publishStep) && /refs\/tags\/\$TAG\^\{\}/.test(publishStep)
-    && /published\)\n(?:\s*#[^\n]*\n)*[^\n]*already published[^\n]*\n\s*exit 1/.test(publishStep)
-    && publishStep.indexOf('"$tagged" = "$GITHUB_SHA"') < publishStep.indexOf("gh api --paginate"),
-  "a re-run or a moved tag replaces the assets of a release people already have")
 check("the release notes carry a section on verifying the helpers",
   /^\s*## Verifying the helpers$/m.test(notesText)
     && publishStep.indexOf("CHANGELOG.md > \"$dist/release-notes.md\"") < publishStep.indexOf("## Verifying the helpers")
@@ -277,6 +256,214 @@ check("the notes give the attestation command and the local verification script"
 check("no expression is expanded inside the notes text",
   notesSection !== null && !/\$\{\{/.test(notesText),
   "a workflow expression in the script body is injected as shell source")
+
+// -------------------------------------------------------------------------
+// The publishing shell, run
+// -------------------------------------------------------------------------
+//
+// The steps that decide what is uploaded and what goes public are taken out
+// of the two workflows and run here, against fixture artifact directories, a
+// scratch git remote and a stub `gh` that records its calls.
+
+const fs = require("fs")
+const os = require("os")
+const { spawnSync } = require("child_process")
+
+const publisher = read(".github/workflows/publish-on-master.yml")
+// The `run: |` body of the step with that name.
+function stepShell(workflow, name) {
+  const lines = workflow.slice(workflow.indexOf(`      - name: ${name}\n`)).split("\n")
+  const from = lines.indexOf("        run: |") + 1
+  let to = from
+  while (to < lines.length && (lines[to] === "" || lines[to].startsWith("          "))) to++
+  return lines.slice(from, to).map(line => line.slice(10)).join("\n")
+}
+const listingShell = stepShell(release, "Only the files this workflow makes may be published")
+const publishShell = stepShell(release, "Publish the release")
+const publisherShell = stepShell(publisher, "Publish the release this merge brought in")
+
+// What a release holds, written out here and not read from the workflows.
+const HELPERS = ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key", "qs-bitwarden-vault"]
+const ARCHES = ["x86_64", "aarch64"]
+const PACKAGES = ["", "unlock-key-", "vault-"]
+const artifacts = {
+  "release-reports": [
+    ...PACKAGES.map(p => `${p}dependency-licences.json`),
+    ...ARCHES.flatMap(a => PACKAGES.map(p => `${p}dependency-tree-${a}-linux.txt`)),
+    ...ARCHES.flatMap(a => HELPERS.map(h => `${h}-${a}-linux.cdx.json`))],
+  "release-symbols-x86_64": ["DEBUG-SYMBOLS.md", ...HELPERS.map(h => `${h}-x86_64-linux.debug.gz`)],
+  "release-symbols-aarch64": HELPERS.map(h => `${h}-aarch64-linux.debug.gz`),
+}
+const ASSETS = ["SHA256SUMS", ...ARCHES.flatMap(a => HELPERS.map(h => `${h}-${a}-linux`)),
+  ...Object.values(artifacts).flat()].sort()
+
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-release-"))
+const stubs = path.join(scratch, "stubs")
+fs.mkdirSync(stubs)
+fs.writeFileSync(path.join(stubs, "gh"), `#!/usr/bin/env node
+const fs = require("fs"), args = process.argv.slice(2)
+fs.appendFileSync(process.env.GH_LOG, JSON.stringify(args) + "\\n")
+if (args[0] === "api") {
+  if (!fs.existsSync(process.env.GH_RELEASES)) { console.error("gh: Server Error (HTTP 502)"); process.exit(1) }
+  process.stdout.write(fs.readFileSync(process.env.GH_RELEASES))
+} else if (args[0] !== "release") process.exit(3)
+`, { mode: 0o755 })
+const baseEnv = {
+  PATH: `${stubs}:${process.env.PATH}`, HOME: scratch, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+  GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@example.invalid", GH_TOKEN: "x", REPO: "o/r", RUN_URL: "https://example.invalid/run",
+  GH_LOG: path.join(scratch, "gh.log"), GH_RELEASES: path.join(scratch, "releases.json"),
+}
+const sh = (script, cwd, env = {}, flags = "-e") =>
+  spawnSync("bash", ["--noprofile", "--norc", flags, "-c", script], { cwd, env: { ...baseEnv, ...env }, encoding: "utf8" })
+const git = (cwd, ...args) => {
+  const run = spawnSync("git", args, { cwd, env: baseEnv, encoding: "utf8" })
+  if (run.status !== 0) throw new Error(`git ${args.join(" ")}: ${run.stderr}`)
+  return run.stdout.trim()
+}
+
+// The tagged checkout: v9.9.9, annotated as this repository's tags are, on a
+// commit that master then moves past; `stale` is a lightweight tag on that
+// later commit.
+const origin = path.join(scratch, "origin.git")
+const checkout = path.join(scratch, "checkout")
+git(scratch, "init", "-q", "--bare", "-b", "master", origin)
+git(scratch, "init", "-q", "-b", "master", checkout)
+fs.mkdirSync(path.join(checkout, ".github"))
+fs.writeFileSync(path.join(checkout, ".github/release-assets.txt"), read(".github/release-assets.txt"))
+for (const arch of ARCHES) {
+  fs.mkdirSync(path.join(checkout, "bin", `${arch}-linux`), { recursive: true })
+  for (const helper of HELPERS) fs.writeFileSync(path.join(checkout, "bin", `${arch}-linux`, helper), `${helper} ${arch}\n`)
+}
+fs.writeFileSync(path.join(checkout, "bin/SHA256SUMS"), "sums\n")
+fs.writeFileSync(path.join(checkout, "CHANGELOG.md"), "# Changelog\n\n## [9.9.9] - today\n\n- This release.\n\n## [9.9.8]\n\n- The one before.\n")
+git(checkout, "add", "-A")
+git(checkout, "commit", "-q", "-m", "release")
+const built = git(checkout, "rev-parse", "HEAD")
+git(checkout, "tag", "-a", "v9.9.9", "-m", "v9.9.9")
+git(checkout, "commit", "-q", "--allow-empty", "-m", "merge")
+const later = git(checkout, "rev-parse", "HEAD")
+git(checkout, "remote", "add", "origin", origin)
+git(checkout, "push", "-q", "origin", "master", "v9.9.9")
+
+const runnerTemp = path.join(scratch, "temp")
+// The run's artifacts as download-artifact leaves them, then the listing step.
+function listing(change = () => {}) {
+  fs.rmSync(runnerTemp, { recursive: true, force: true })
+  for (const [artifact, files] of Object.entries(artifacts)) {
+    fs.mkdirSync(path.join(runnerTemp, "dist", artifact), { recursive: true })
+    for (const file of files) fs.writeFileSync(path.join(runnerTemp, "dist", artifact, file), `${file}\n`)
+  }
+  change(path.join(runnerTemp, "dist"))
+  return sh(listingShell, runnerTemp, { GITHUB_WORKSPACE: checkout })
+}
+const releaseEntry = (fields = {}) => ({
+  tag_name: "v9.9.9", draft: true, target_commitish: built,
+  assets: ASSETS.map(name => ({ name, state: "uploaded" })), ...fields })
+// What `gh api` answers: one page per array, or a failed call for null.
+function serverHolds(...pages) {
+  fs.rmSync(baseEnv.GH_RELEASES, { force: true })
+  if (pages[0] !== null) fs.writeFileSync(baseEnv.GH_RELEASES, pages.map(page => JSON.stringify(page)).join("\n"))
+  fs.writeFileSync(baseEnv.GH_LOG, "")
+}
+const ghCalls = verb => fs.readFileSync(baseEnv.GH_LOG, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line))
+  .filter(args => args[0] === "release" && verb.includes(args[1]))
+const runPublish = (sha = built) =>
+  sh(publishShell, checkout, { RUNNER_TEMP: runnerTemp, GITHUB_WORKSPACE: checkout, TAG: "v9.9.9", GITHUB_SHA: sha })
+const uploaded = call => call.filter((arg, at) => arg.startsWith(runnerTemp) && call[at - 1] !== "--notes-file")
+  .map(arg => path.basename(arg)).sort()
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+const listed = listing()
+serverHolds([{ tag_name: "v9.9.8", draft: false, target_commitish: "master", assets: [] }])
+const first = runPublish()
+const created = ghCalls(["create", "upload"])
+const createArgs = created.length === 1 ? created[0] : []
+const notesAt = createArgs[createArgs.indexOf("--notes-file") + 1] || "/nonexistent"
+const notes = fs.existsSync(notesAt) ? fs.readFileSync(notesAt, "utf8") : ""
+serverHolds([releaseEntry()])
+const rerun = runPublish()
+const refilled = ghCalls(["create", "upload"])
+check("a tagged run makes a draft of exactly the 29 assets, and a re-run refills that draft",
+  listed.status === 0 && first.status === 0 && ASSETS.length === 29
+    && createArgs[1] === "create" && createArgs[2] === "v9.9.9" && same(uploaded(createArgs), ASSETS)
+    && createArgs.includes("--draft") && createArgs.includes("--verify-tag")
+    && createArgs[createArgs.indexOf("--target") + 1] === built
+    && ARCHES.every(a => HELPERS.every(h =>
+      fs.readFileSync(path.join(runnerTemp, "dist", `${h}-${a}-linux`), "utf8") === `${h} ${a}\n`))
+    && /- This release\./.test(notes) && !/The one before/.test(notes) && /## Verifying the helpers/.test(notes)
+    && rerun.status === 0 && refilled.length === 1 && refilled[0][1] === "upload"
+    && same(uploaded(refilled[0]), ASSETS) && refilled[0].includes("--clobber"),
+  `listing ${listed.status}, publish ${first.status} ${first.stderr}, calls ${JSON.stringify(created.map(c => c.slice(0, 3)))}, re-run ${rerun.status} ${rerun.stderr}`)
+
+const badListings = {
+  "a file more": dist => fs.writeFileSync(path.join(dist, "release-reports", "install.txt"), "x"),
+  "a file fewer": dist => fs.rmSync(path.join(dist, "release-symbols-aarch64", `${HELPERS[0]}-aarch64-linux.debug.gz`)),
+  "an artifact more": dist => fs.mkdirSync(path.join(dist, "release-extra")),
+  "a link for a file": dist => {
+    fs.rmSync(path.join(dist, "release-reports", "dependency-licences.json"))
+    fs.symlinkSync("/etc/hostname", path.join(dist, "release-reports", "dependency-licences.json"))
+  },
+  "one artifact's file in another": dist =>
+    fs.renameSync(path.join(dist, "release-symbols-x86_64", "DEBUG-SYMBOLS.md"), path.join(dist, "release-symbols-aarch64", "DEBUG-SYMBOLS.md")),
+}
+const passedListings = Object.entries(badListings).filter(([, change]) => listing(change).status === 0).map(([name]) => name)
+check("artifacts that are not exactly the workflow's own stop the release",
+  passedListings.length === 0, `accepted: ${passedListings.join(", ")}`)
+
+listing()
+const refusals = {
+  "a published release": [[releaseEntry({ draft: false })], built],
+  "a tag that names another commit": [[], later],
+  "a draft made for another commit": [[releaseEntry({ target_commitish: later })], built],
+  "a draft holding another asset": [[releaseEntry({ assets: [{ name: "install.txt", state: "uploaded" }] })], built],
+  "two releases for the tag": [[releaseEntry(), releaseEntry()], built],
+  "a failed lookup": [null, built],
+}
+const wrote = Object.entries(refusals).filter(([, [page, sha]]) => {
+  serverHolds(page)
+  return runPublish(sha).status === 0 || ghCalls(["create", "upload", "edit"]).length > 0
+}).map(([name]) => name)
+check("the publish step uploads nothing to a release it should not touch",
+  wrote.length === 0, `uploaded despite: ${wrote.join(", ")}`)
+
+// master: a clone at the later commit, as actions/checkout leaves it.
+const master = path.join(scratch, "master")
+git(scratch, "clone", "-q", origin, master)
+function publisherStep() {
+  fs.writeFileSync(path.join(scratch, "output"), "")
+  return sh(publisherShell, master, { RUNNER_TEMP: scratch, BEFORE: "", GITHUB_OUTPUT: path.join(scratch, "output") }, "-e")
+}
+serverHolds([releaseEntry()])
+const goesPublic = publisherStep()
+const edits = ghCalls(["edit"])
+const announced = fs.readFileSync(path.join(scratch, "output"), "utf8")
+serverHolds([releaseEntry({ draft: false })])
+const alreadyPublic = publisherStep()
+check("master takes a draft public when its tag, commit and assets are the built ones, and only then edits it",
+  goesPublic.status === 0 && edits.length === 1 && same(edits[0], ["release", "edit", "v9.9.9", "--draft=false"])
+    && /^tags=v9\.9\.9$/m.test(announced)
+    && alreadyPublic.status === 0 && ghCalls(["edit"]).length === 0,
+  `status ${goesPublic.status} ${goesPublic.stderr}, edits ${JSON.stringify(edits)}`)
+
+const without = name => ASSETS.filter(asset => asset !== name).map(asset => ({ name: asset, state: "uploaded" }))
+const unpublishable = {
+  "an asset more": [releaseEntry({ assets: [...releaseEntry().assets, { name: "install.txt", state: "uploaded" }] })],
+  "an asset fewer": [releaseEntry({ assets: without("SHA256SUMS") })],
+  "an upload cut short": [releaseEntry({ assets: [...without("SHA256SUMS"), { name: "SHA256SUMS", state: "starter" }] })],
+  "no recorded commit": [releaseEntry({ target_commitish: "master" })],
+  "a tag that names another commit than the built one": [releaseEntry({ target_commitish: later })],
+  "two drafts for the tag": [releaseEntry(), releaseEntry()],
+  "a failed lookup": null,
+}
+const wentPublic = Object.entries(unpublishable).filter(([, page]) => {
+  serverHolds(page)
+  return publisherStep().status === 0 || ghCalls(["edit", "create", "upload"]).length > 0
+}).map(([name]) => name)
+check("master does not take a draft public when the server's state is not what was built",
+  wentPublic.length === 0, `published despite: ${wentPublic.join(", ")}`)
+
+fs.rmSync(scratch, { recursive: true, force: true })
 
 // -------------------------------------------------------------------------
 // Who has to look at it
