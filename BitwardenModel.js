@@ -5444,9 +5444,10 @@ function parseAssociations(raw) {
   } catch (e) {
     return emptyAssociations()
   }
-  var version = Number(parsed && parsed.version === undefined ? ASSOC_VERSION : parsed.version)
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
-      || version !== ASSOC_VERSION || !parsed.keys
+  // Before anything is read from it: `null` parses, and is not an object.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return emptyAssociations()
+  var version = Number(parsed.version === undefined ? ASSOC_VERSION : parsed.version)
+  if (version !== ASSOC_VERSION || !parsed.keys
       || typeof parsed.keys !== "object" || Array.isArray(parsed.keys)) {
     return emptyAssociations()
   }

@@ -340,6 +340,12 @@
   took the stopped one's answer for its own: usually "Could not save the
   attachment", rarely a row marked saved that opened the other file. It now
   waits for the stopped download to end, whose answer is nobody's.
+- **A learned-picks file holding `null`.** A suggestions file
+  (`associations.json`) whose whole content was the word `null` made its
+  reader throw instead of starting from an empty store: the store was left
+  as it stood and the suggestions for the focused window were not worked
+  out again. Anything that is not an object now reads as empty, as broken
+  JSON already did.
 
 ## [1.13.1] - 2026-11-18
 
