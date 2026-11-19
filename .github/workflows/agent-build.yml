@@ -182,6 +182,37 @@ jobs:
           echo "::error::The compare step's log names which helper drifted, or is not tracked yet."
           exit 1
 
+  # The path REVIEWING.md gives reviewers: from a plain host (no container:),
+  # build-agent.sh re-enters the pinned image itself. The job above
+  # already runs inside the image, so without this nothing in CI exercises
+  # that re-exec. x86_64 only; the bytes are the same ones checked above.
+  reviewer-rebuild:
+    name: reviewer rebuild (container re-exec)
+    # Skip a bare branch cut; see `on.push` above.
+    if: ${{ !(github.workflow == 'agent build' && github.event_name == 'push' && github.event.created && github.event.commits[0] == null) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # As above: the build exports HEAD with `git archive`.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # GitHub's runner user can use docker without sudo, which is what
+      # build-agent.sh tries first. Pushes and tags only: on a PR, drift can
+      # be expected (helper-rebuild.yml commits the fix, and forks cannot
+      # receive it), and the job above already reports it there.
+      - name: Rebuild in the pinned image and compare with the tracked helpers
+        if: github.event_name != 'pull_request'
+        run: scripts/verify-helpers.sh --rebuild --arch x86_64
+      - name: Note that a PR skips the reviewer rebuild
+        if: github.event_name == 'pull_request'
+        run: echo "::notice::the reviewer rebuild runs on pushes to release branches and on release tags"
+
   gates:
     name: tests, format and lint
     # Skip a bare branch cut; see `on.push` above.
@@ -352,9 +383,15 @@ jobs:
         # the runner's own mirrors (provenance comes from `Signed-By`); nothing
         # here reaches the shipped binary, and the job holds no secrets or
         # write token. Error-Mode=any makes a failed index fail here instead of
-        # later as a missing package.
+        # later as a missing package. A mirror answering 429 or timing out is
+        # retried, up to three updates, rather than failing the job.
         run: |
-          sudo apt-get update -o APT::Update::Error-Mode=any
+          for attempt in 1 2 3; do
+            sudo apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=3 && break
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::apt-get update failed (attempt $attempt); retrying"
+            sleep $((attempt * 20))
+          done
           sudo apt-get install -y -qq --no-install-recommends jq openssh-client argon2
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

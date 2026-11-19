@@ -101,6 +101,8 @@ gh attestation verify bin/x86_64-linux/qs-bitwarden-ssh-agent \
 
 On an ARM64 machine, the same with `bin/aarch64-linux/`. Releases from `v1.13.0` on attest both architectures' binaries.
 
+`scripts/verify-helpers.sh` runs this for all six helpers, checks `bin/SHA256SUMS`, and rebuilds this checkout's helpers in the pinned image (`--attestations` or `--rebuild` runs just one check). See [REVIEWING.md](../REVIEWING.md).
+
 `gh` is not an Omarchy dependency, so this is a check you run if you want it, not one the plugin can assume. Worth re-running after a plugin update, when the binary has changed.
 
 **When the check fails.** The panel disables SSH support, names the reason, and leaves the rest of the plugin working. If a locally built helper is present it falls back to that instead and says so on a banner -- which is the state to be careful about, because signing carries on with a binary that has no recorded digest and no provenance behind it. Either way the fix is to restore the shipped artifact:

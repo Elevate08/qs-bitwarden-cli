@@ -442,6 +442,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           version="${TAG#v}"
           # Only this version's changelog section.
@@ -456,6 +458,27 @@ jobs:
           }
           cp bin/SHA256SUMS dist/SHA256SUMS
           notes=dist/release-notes.md
+          # How a reviewer checks the bundled binaries, under the changelog.
+          # Placeholders, so the dynamic values never become shell source.
+          section="$(cat <<'EOF'
+          ## Verifying the helpers
+
+          The helper binaries in `bin/` are byte-identical to the `<name>-<arch>-linux` files attached to this release, and every one is listed in `SHA256SUMS`.
+
+          Before anything was published, this release's [`gates` run](@RUN_URL@) rebuilt each helper from this tag's source in the digest-pinned build image, natively on x86_64 and on aarch64, and would have failed had any rebuilt byte differed from the committed binary.
+
+          Each binary has a build-provenance attestation binding its digest to this repository, workflow and commit. Check one with:
+
+          ```
+          gh attestation verify bin/<arch>-linux/<name> --repo @REPO@
+          ```
+
+          From a checkout of this tag, `scripts/verify-helpers.sh --attestations` checks all six attestations and `scripts/verify-helpers.sh --rebuild` repeats the pinned rebuild and byte comparison locally. `REVIEWING.md` describes the full source review and provenance path.
+          EOF
+          )"
+          section="${section//@RUN_URL@/$RUN_URL}"
+          section="${section//@REPO@/$REPO}"
+          printf '\n%s\n' "$section" >> "$notes"
           # A release asset is named by its file name alone, and every
           # architecture's helper has the same one, so each is attached as
           # <name>-<arch>-linux: the same bytes as bin/<arch>-linux/<name>.
