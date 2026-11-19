@@ -375,6 +375,11 @@
   number, so its **Deny** was ignored and the request stayed on the card.
   The notification now follows its request. It still cannot approve, and a
   notification never answers for any request but the one it was shown for.
+  A **Deny**, there or on the card, given in the moment between the two
+  numbers is kept and reaches the request under its final one, where it
+  used to be lost and the request shown again. Where two waiting requests
+  cannot be told apart (same key, program and operation), the notification
+  answers for neither, and the card is the way to answer.
 
 ## [1.13.1] - 2026-11-18
 

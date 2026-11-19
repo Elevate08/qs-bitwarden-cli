@@ -365,7 +365,7 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
 
 {
   const service = readPluginSource("Service.qml")
-  const names = ["adoptSshPrompt", "onSshAgentMessage"]
+  const names = ["adoptSshPrompt", "onSshAgentMessage", "keepSshHandoffDeny", "applySshHandoffDeny", "denyCurrentSshPrompt"]
   const unlockMessage = (requestId, extra) => Object.assign({
     type: "unlock_required", requestId: requestId, reason: "sign", keyName: "k",
     fingerprint: "SHA256:A", pid: 10, processPath: "/usr/bin/ssh-keygen",
@@ -380,6 +380,8 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
       Model: Model, sshPromotedOldId: shown.requestId, sshPromotedRaw: shown.raw,
       sshPrompt: { requestId: shown.requestId }, sshPromptQueue: [], writes: [], shownNew: [],
       sshNotifyRequestId: shown.requestId,       // its notification is up
+      sshPromotedAmbiguous: false, sshHandoffDeny: null, sshCooldown: null, noteSshCooldown() {},
+      advanceSshPrompt() { v.sshPrompt = null },
       sshAgentMayPrompt() { return true },
       sshAgentWrite(line) { v.writes.push(line) },
       showSshApproval(message) { v.shownNew.push(message) }
@@ -406,6 +408,24 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
   eq("and the promotion is finished", v.sshPromotedOldId, null)
   eq("the notification shown for it is still its own, so its Deny is not dropped", v.sshNotifyRequestId, 21)
   eq("the other request stays queued", v.sshPromptQueue.length, 1)
+
+  // Deny pressed after the helper retired the old id, before the new one is
+  // known: the request that comes back is denied, not shown again. And where
+  // another held request looked the same, the notification is left nobody's.
+  {
+    const d = makeVault({ requestId: 1, raw: a })
+    d.denyCurrentSshPrompt()
+    d.onSshAgentMessage(approvalOf(20, b))
+    d.onSshAgentMessage(approvalOf(21, a))
+    d.onSshAgentMessage(approvalOf(22, a))               // a later one that looks the same is asked about
+    const twin = makeVault({ requestId: 1, raw: a })
+    twin.sshPromotedAmbiguous = true
+    twin.onSshAgentMessage(approvalOf(21, a))
+    eq("a Deny given during the renumbering reaches the request once; an ambiguous one keeps no notification",
+      JSON.stringify([d.writes, d.shownNew.map(m => m.requestId), d.sshHandoffDeny, twin.sshPrompt.requestId, twin.sshNotifyRequestId,
+        /sshHandoffDeny = null/.test(functionBody(service, "dropVaultState"))]),
+      JSON.stringify([[Model.sshAgentDenyLine(1), Model.sshAgentDenyLine(21)], [20, 22], null, 21, -1, true]))
+  }
 
   // Each field that tells two requests apart is compared.
   const differing = [["fingerprint", "SHA256:Z"], ["pid", 99], ["processPath", "/tmp/x"],
