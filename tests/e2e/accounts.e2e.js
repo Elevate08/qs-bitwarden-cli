@@ -230,17 +230,31 @@ if (!failedToRun && trustedRoot) {
     third.start()
     third.expect("setting on: a cache home of the user's own is accepted, as the path the check printed",
       s => s.compileCache === wanted && s.compileCacheState === "accepted")
+    const checksAtStart = third.state().compileCacheChecks
     check("and made private", (fs.statSync(wanted).mode & 0o7777) === 0o700 && (fs.statSync(path.dirname(wanted)).mode & 0o7777) === 0o700)
     third.q("open")
     third.q("login", "a@x", "pw-a@x")
     third.expect("the account logs in", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
     third.expect("the check made as the vault opened has answered", s => s.compileCacheState === "accepted" && s.compileCache === wanted)
+    check("logging in, the vault opened once, and was checked once for it",
+      third.state().compileCacheChecks === checksAtStart + 1, `${checksAtStart} -> ${third.state().compileCacheChecks}`)
     third.product("sync")
     third.expect("and syncs", () => seen(third, /^sync$/).length === 1)
+    const statusBefore = seen(third, /^status$/).length
+    third.q("refresh")
+    third.expect("a status check runs after it", () => seen(third, /^status$/).length > statusBefore)
+    check("with the directory", seen(third, /^status$/).slice(statusBefore).every(l => l.cache === wanted),
+      JSON.stringify(seen(third, /^status$/).slice(statusBefore)))
+    check("a sync and a status check of an open vault are not openings: no check, and the directory stays on offer",
+      third.state().compileCacheChecks === checksAtStart + 1 && third.state().compileCache === wanted,
+      String(third.state().compileCacheChecks))
     check("the login, which is given the password, ran without the cache though one was accepted",
       seen(third, /^login /).length >= 1 && seen(third, /^login /).every(l => l.cache === "<unset>"), JSON.stringify(seen(third, /^login /)))
-    check("the list read the opening started ran without it too: its check had not answered yet",
-      seen(third, /^list items$/).length >= 1 && seen(third, /^list items$/)[0].cache === "<unset>", JSON.stringify(seen(third, /^list items$/)))
+    // Started in the moment the vault opened, so normally before that
+    // opening's check has answered; either way never an unchecked directory.
+    check("the list read the opening started saw no directory, or the checked one",
+      seen(third, /^list items$/).length >= 1 && seen(third, /^list items$/).every(l => l.cache === "<unset>" || l.cache === wanted),
+      JSON.stringify(seen(third, /^list items$/)))
     check("the sync after it saw exactly the accepted directory",
       seen(third, /^sync$/).every(l => l.cache === wanted), JSON.stringify(seen(third, /^sync$/)))
     check("no bw saw anything else: the accepted directory, or none",
@@ -304,9 +318,12 @@ if (!failedToRun && trustedRoot) {
     fs.unlinkSync(path.join(wanted, "planted"))
     third.q("lock")
     third.expect("it locks again", s => s.status === "locked")
+    const checksLocked = third.state().compileCacheChecks
     third.q("unlock", "pw-a@x")
     third.expect("with the symlink gone the next opening's check accepts it again",
       s => s.status === "unlocked" && s.compileCache === wanted && s.items.join() === "Login of a@x")
+    check("a lock is not checked; the unlock that follows is, once",
+      third.state().compileCacheChecks === checksLocked + 1, `${checksLocked} -> ${third.state().compileCacheChecks}`)
     mark = cacheLines(third).length
     third.product("sync")
     third.expect("the next bw runs", () => since(mark).some(l => l.args === "sync"))

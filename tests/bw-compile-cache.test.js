@@ -55,8 +55,11 @@ if (!trusted) {
   const trial = path.join(tmp, "trial")
   fs.mkdirSync(trial, { mode: 0o700 })
   const r = run(trial)
+  const accepted = r.rc === 0 && r.dir === path.join(trial, "qs-bitwarden-cli", "node-compile-cache")
   check("the check accepts a cache home that is private by this suite's own reading of the filesystem (" + tmp + ")",
-    r.rc === 0 && r.dir === path.join(trial, "qs-bitwarden-cli", "node-compile-cache"), JSON.stringify(r))
+    accepted, JSON.stringify(r))
+  // Everything below builds on that: stop here, with the reason.
+  if (!accepted) { done(); process.exit(1) }
 }
 let n = 0
 // A fresh cache home, mode 0700 unless told otherwise.

@@ -84,6 +84,7 @@ ShellRoot {
         // Node's compile cache for bw: the directory bw is given ("" for
         // none) and what the last check came to.
         compileCache: vault.bwCompileCacheDir, compileCacheState: vault.bwCompileCacheState,
+        compileCacheChecks: vault.bwCompileCacheProbeSeq,
         // What the shell itself holds: the vault helper keeps the rest.
         helper: vault.vaultHelperState, helperWarning: vault.vaultHelperWarning, sessionHeld: vault.session === vault.heldSessionMarker,
         // Typed into pinentry, the shell never holds them: these stay empty.
