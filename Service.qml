@@ -788,6 +788,8 @@ Item {
   property bool listRereadOwed: false
   // The helper refused the commit of a list it had staged and the list is
   // being read again: a second refusal is a failed read, not a third read.
+  // Over when a list is shown, and when a read is asked for by anything else
+  // (loadItems()).
   property bool listCommitRetried: false
   // A new item's detail, covered by an SSH approval when its save answered:
   // { from: provisional id, to: saved id }, taken up when the detail is back
@@ -1393,31 +1395,38 @@ Item {
   }
 
   // The list read the helper staged under `stage` was accepted. The helper
-  // takes it as its items, and the list is shown (onListFinished()) only
-  // once it has answered that it did: the rows on screen are never ones the
-  // helper cannot answer for. A commit it refuses (that read is no longer
-  // the one staged) shows nothing and the list is read again, once; refused
-  // again, it is a failed read.
+  // takes it as its items, and the list is shown (onListFinished()) once it
+  // has answered that it did, and then always: what the helper has taken is
+  // what the panel shows. Until it answers the list reader counts as busy
+  // (vaultProcBusy()), so a read asked for meanwhile waits and runs after.
+  // A save or delete begun or finished meanwhile makes the list just shown
+  // one from before it: it is read again, as in onListProcessExited().
+  // A commit the helper refuses (that read is no longer the one staged)
+  // shows nothing and the list is read again, once; refused again, it is a
+  // failed read.
   function commitStagedList(stage, rawJson) {
     var epoch = vaultEpoch
     var changes = vaultChanges
+    listProc.committing = true
     vaultQuery("commitVault", { stage: stage }, function(ok) {
       if (epoch !== root.vaultEpoch) return
+      listProc.committing = false
+      var spinner = root.isLoading
+      if (ok) root.onListFinished(rawJson)
+      // A read that waited for this answer runs now, whatever it was.
+      if (root.supersededVaultRead("items")) {
+        root.isLoading = spinner
+        return
+      }
       if (!ok) {
-        root.listCommitRetried = !root.listCommitRetried
-        if (root.listCommitRetried) root.loadItems(false)
+        var again = !root.listCommitRetried
+        if (again) root.loadItems(false)
         else root.listReadFailed("", false)
+        root.listCommitRetried = again
         return
       }
-      root.listCommitRetried = false
-      // A save or delete begun or finished while the helper answered: this
-      // list is from before it, as in onListProcessExited().
-      if (changes !== root.vaultChanges || root.itemChangeRunning()) {
-        if (root.itemChangeRunning()) root.listRereadOwed = true
-        else root.loadItems(false)
-        return
-      }
-      root.onListFinished(rawJson)
+      if (root.itemChangeRunning()) root.listRereadOwed = true
+      else if (changes !== root.vaultChanges) root.loadItems(false)
     })
   }
 
@@ -6944,6 +6953,7 @@ Item {
     listRereadOwed = false
     // The helper drops what it had staged with the rest (forgetVault()).
     listProc.staged = 0
+    listProc.committing = false
     listCommitRetried = false
     createdItemHandoff = null
     masterPassword = ""
@@ -7118,7 +7128,7 @@ Item {
   // included), or stopped with its exit still to come. Setting `running`
   // again then starts nothing, and that run's answer is the next to arrive.
   function vaultProcBusy(proc) {
-    return proc.running || (proc.runId !== undefined && proc.runId !== 0)
+    return proc.running || (proc.runId !== undefined && proc.runId !== 0) || proc.committing === true
   }
 
   // Whether `proc` is running reader `name` for the open vault. A request
@@ -7199,6 +7209,7 @@ Item {
       return
     }
     if (showSpinner !== false) isLoading = true
+    listCommitRetried = false
     // A read of this vault as it is now is already running (the early read
     // included): it serves this request.
     if (vaultReadRunning("items", listProc) && listReadChanges === vaultChanges) return
@@ -7261,6 +7272,7 @@ Item {
   function onListFinished(rawJson) {
     isLoading = false
     if (vaultReadIsStale("items")) return
+    listCommitRetried = false
     if (errorMessage === listReadError) errorMessage = ""
     listReadError = ""
     // One parse for both: parsing the list once per consumer cost several
@@ -8771,10 +8783,13 @@ Item {
 
     var removal = pendingDelete
     pendingDelete = null
-    // Gone from the vault, whatever the panel has done since: no reload
-    // follows, so the helper would keep its secrets and go on serving them.
-    if (exitCode === 0 && removal) forgetVaultItem(removal.id)
+    // A delete from a vault since closed tells the helper nothing: it has
+    // forgotten that vault, and what it holds or has staged is another's.
     if (vaultReadIsStale("itemDelete")) return
+    // Gone from this vault, whatever list the panel has read since: no
+    // reload follows, so the helper would keep its secrets and go on
+    // serving them. It takes the item out of a read it has staged as well.
+    if (exitCode === 0 && removal) forgetVaultItem(removal.id)
     settleOwedListRead()
 
     if (exitCode === 0) {

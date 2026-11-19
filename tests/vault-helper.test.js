@@ -173,8 +173,10 @@ check("a lock drops the helper's key and items",
 check("each queued lock keeps its own copy of the key until it has run",
   /holdSession\(name\)/.test(body("requestBwLock")) && /"secret:" \+ run\.key/.test(body("runBwLockStep"))
     && /forgetVaultSecret\(lockRun\.key\)/.test(body("finishBwLock")), body("requestBwLock"))
-check("a deleted item is dropped from the helper once the delete succeeded, even if the panel moved on",
-  /exitCode === 0 && removal\) forgetVaultItem\(removal\.id\)[\s\S]*?vaultReadIsStale\("itemDelete"\)/.test(body("onDeleteItemFinished"))
+// For this vault, whatever list the panel has read since; a delete left over
+// from a vault since closed is not sent on (tests/list-races.test.js runs it).
+check("a deleted item is dropped from the helper once the delete succeeded, unless its vault has since closed",
+  /vaultReadIsStale\("itemDelete"\)\) return[\s\S]{0,300}?exitCode === 0 && removal\) forgetVaultItem\(removal\.id\)\s*settleOwedListRead\(\)/.test(body("onDeleteItemFinished"))
     && /vaultHelperLine\("forgetItem", \{ id: id \}\)/.test(body("forgetVaultItem")), body("onDeleteItemFinished"))
 check("quick unlock's master password stays in the helper",
   /holdOutput: true/.test(body("submitPinUnlock")) && /holdOutput: true/.test(body("openEnvelopeForFingerprint"))

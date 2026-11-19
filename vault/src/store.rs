@@ -180,8 +180,9 @@ pub struct Store {
     /// one, and nothing is answered from it. It becomes `items` only when
     /// the panel commits it by its id.
     staged: Option<Staged>,
-    /// The last id given to a staged read. Never reset, so an id is not
-    /// reused after a `forget`.
+    /// The last staged read asked for (`request_stage`); its number is the
+    /// id it is staged under. Never reset, so an id is not reused after a
+    /// `forget`.
     stage_seq: u64,
     /// Counts `forget`s. A run remembers the count it started under, and
     /// what it captured is dropped if the count has moved on: it belongs to
@@ -339,18 +340,28 @@ impl Store {
         }
     }
 
-    /// As a replacing `strip_vault`, but the items are set aside under the
-    /// id returned, and the store answers from what it held until
-    /// `commit_staged` is given that id. One read is staged at a time: this
-    /// drops the one before, whether or not this read is understood.
-    pub fn stage_vault(&mut self, raw: &str) -> Option<(u64, Zeroizing<String>)> {
+    /// A staged read is asked for: the one staged before it ends here,
+    /// whatever becomes of this one, and the number returned is the id this
+    /// one is staged under (never 0).
+    pub fn request_stage(&mut self) -> u64 {
+        self.staged = None;
+        self.stage_seq = self.stage_seq.wrapping_add(1).max(1);
+        self.stage_seq
+    }
+
+    /// As a replacing `strip_vault`, but the items are set aside under
+    /// `id`, and the store answers from what it held until `commit_staged`
+    /// is given that id. Only the newest read asked for is staged: one that
+    /// was still running when a newer one was asked for stages nothing.
+    pub fn stage_vault(&mut self, id: u64, raw: &str) -> Option<Zeroizing<String>> {
+        if id != self.stage_seq {
+            return None;
+        }
         self.staged = None;
         let (mut items, mut index) = (Vec::new(), HashMap::new());
         let out = strip_into(raw, &mut items, &mut index)?;
-        self.stage_seq = self.stage_seq.wrapping_add(1).max(1);
-        let id = self.stage_seq;
         self.staged = Some(Staged { id, items, index });
-        Some((id, out))
+        Some(out)
     }
 
     /// The staged read `id` becomes the store's items. False, and nothing
@@ -375,11 +386,6 @@ impl Store {
         if self.staged.as_ref().is_some_and(|staged| staged.id == id) {
             self.staged = None;
         }
-    }
-
-    /// Drops whatever is staged (another staged read has been asked for).
-    pub fn unstage(&mut self) {
-        self.staged = None;
     }
 }
 
@@ -1014,11 +1020,15 @@ mod tests {
         let holds = |store: &Store, password: &str| {
             store.item("a").is_some_and(|item| item.contains(password))
         };
+        let stage = |store: &mut Store, raw: &str| {
+            let id = store.request_stage();
+            (id, store.stage_vault(id, raw).unwrap())
+        };
         let mut store = Store::default();
         store.strip_vault(&vault(), true).unwrap();
 
         // Staged: handed on without secrets, and not answered from.
-        let (first, shown) = store.stage_vault(&read("staged-1")).unwrap();
+        let (first, shown) = stage(&mut store, &read("staged-1"));
         assert!(!shown.contains("staged-1"));
         assert!(holds(&store, "hunter2") && store.search("  ").len() == 5);
         assert_eq!(
@@ -1030,7 +1040,7 @@ mod tests {
         );
         // A newer read takes its place: the older id commits nothing, and
         // neither does a discarded one.
-        let (second, _) = store.stage_vault(&read("staged-2")).unwrap();
+        let (second, _) = stage(&mut store, &read("staged-2"));
         assert!(second != first && !store.commit_staged(first));
         store.discard_staged(first);
         assert!(holds(&store, "hunter2"));
@@ -1038,24 +1048,27 @@ mod tests {
         assert!(store.item("c").is_none() && !store.commit_staged(second));
 
         // A save lands in the committed items and ends a read staged before it.
-        let (stale, _) = store.stage_vault(&read("staged-3")).unwrap();
+        let (stale, _) = stage(&mut store, &read("staged-3"));
         store.strip_vault(&read("saved"), false).unwrap();
         assert!(!store.commit_staged(stale) && holds(&store, "saved"));
         // A delete takes its item out of a staged read too, and one for an
         // item of a vault since closed leaves the read committable.
-        let (kept, _) = store.stage_vault(&vault()).unwrap();
+        let (kept, _) = stage(&mut store, &vault());
         store.forget_item("a");
         store.forget_item("not-in-this-vault");
         assert!(store.commit_staged(kept) && store.item("a").is_none());
         assert!(store.item("c").is_some());
         // A lock ends a staged read, and the next id is a new one.
-        let (locked, _) = store.stage_vault(&read("staged-4")).unwrap();
+        let (locked, _) = stage(&mut store, &read("staged-4"));
         store.forget(&[]);
         assert!(!store.commit_staged(locked) && store.item("a").is_none());
-        let (next, _) = store.stage_vault(&read("staged-5")).unwrap();
+        let (next, _) = stage(&mut store, &read("staged-5"));
         assert!(next != locked);
-        // A read that is refused still ends the one staged before it.
-        assert!(store.stage_vault("not json").is_none() && !store.commit_staged(next));
+        // Asking for another ends the one staged, and a read still running
+        // from before that request stages nothing afterwards.
+        let newer = store.request_stage();
+        assert!(store.stage_vault(next, &read("late")).is_none());
+        assert!(!store.commit_staged(next) && !store.commit_staged(newer));
     }
 
     #[test]

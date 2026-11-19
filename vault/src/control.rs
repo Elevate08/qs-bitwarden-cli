@@ -166,7 +166,9 @@ pub enum Capture {
     Vault,
     /// As `Vault`, but the items are staged: the store is replaced only when
     /// the panel commits the read (`Request::CommitVault`).
-    VaultStage,
+    /// With the id the read is staged under, given when it is asked for
+    /// (0 as parsed).
+    VaultStage(u64),
     /// A saved item: as `Vault`, but updates only the items it names.
     VaultMerge,
     /// Keep stdout as a named secret.
@@ -183,7 +185,7 @@ impl Capture {
             "plain" => Some(Self::Plain),
             "session" => Some(Self::Session),
             "vault" => Some(Self::Vault),
-            "vaultStage" => Some(Self::VaultStage),
+            "vaultStage" => Some(Self::VaultStage(0)),
             "vaultMerge" => Some(Self::VaultMerge),
             other => other
                 .strip_prefix("secret:")

@@ -113,11 +113,14 @@ function fixture() {
     return helper.seq
   }
   helper.merge = rows => { helper.staged = null; helper.held = helper.held.filter(id => !rows.includes(id)).concat(rows) }
+  // `defer`: it has dealt with a request, and its answer is still on the
+  // way to the panel until answer().
   c.vaultQuery = (type, fields, done) => {
     helper.lines.push(type)
     const ok = type === "commitVault" && !!helper.staged && helper.staged.id === fields.stage
     if (ok) { helper.held = helper.staged.rows; helper.staged = null }
-    done(ok, ok ? true : null)
+    helper.answer = () => done(ok, ok ? true : null)
+    if (!helper.defer) helper.answer()
   }
   c.vaultHelperProc = { write(line) {
     const m = JSON.parse(line)
@@ -572,9 +575,42 @@ const finishSave = (c, code, out) => {
   check("a list whose commit the helper refuses is not shown: it is read again once, and then is a failed read",
     reread && names(r) === "" && r.runsOf("listProc").length === 2 && r.errorMessage !== "" && r.itemsLoadedAt === 0 && !r.isSyncing,
     JSON.stringify({ reread, runs: r.runsOf("listProc").length, error: r.errorMessage }))
-  u.listCommitRetried = true; u.listProc.staged = 7
+  // The helper has taken the list and its answer is on the way: what it
+  // took is shown whatever happens meanwhile, and nothing reads the list
+  // until then.
+  const w = fixture()
+  w.helper.defer = true
+  w.loadItems(false)
+  w.exit("listProc", 0, listOf(stored("id-a", "a"), stored("id-b", "b")), "")
+  w.pendingDelete = { id: "id-a", name: "a", previous: null }; w.readEpochs.itemDelete = w.vaultEpoch
+  w.onDeleteItemFinished(0, "", "")                      // a delete in this vault finishes meanwhile
+  const before = names(w) === "" && w.runsOf("listProc").length === 1
+  w.helper.answer()
+  const shown = names(w) === "a,b" && w.forgotten.join() === "id-a" && w.runsOf("listProc").length === 2
+  w.exit("listProc", 0, listOf(stored("id-b", "b")), ""); w.helper.answer()
+  check("a list the helper has taken is always shown, and a delete finished meanwhile has it read again",
+    before && shown && names(w) === "b" && w.helper.held.join() === "id-b", JSON.stringify({ before, shown, now: names(w) }))
+  const g = fixture()
+  g.helper.defer = true
+  g.loadItems(false); g.exit("listProc", 0, vaultOf("a"), "")
+  g.loadItems(true)                                      // a refresh asked for meanwhile
+  const waited = g.runsOf("listProc").length === 1
+  g.helper.answer()
+  check("a read asked for while the helper's answer is awaited waits for it, then runs",
+    waited && names(g) === "a" && g.runsOf("listProc").length === 2 && g.isLoading, JSON.stringify({ waited, runs: g.runsOf("listProc").length }))
+  // The account before had a delete running, of an item this account has
+  // too; it ends while this account's list is staged.
+  const d = fixture()
+  d.pendingDelete = { id: "id-shared", name: "shared", previous: null }; d.readEpochs.itemDelete = d.vaultEpoch
+  d.reopenAs("session-b")
+  d.loadItems(false)
+  d.exit("listProc", 0, vaultOf("shared"), "", () => d.onDeleteItemFinished(0, "", ""))
+  check("a delete left over from the vault before tells the helper nothing: the row shown is one it holds",
+    d.forgotten.length === 0 && d.helper.held.join() === "id-shared" && names(d) === "shared", JSON.stringify(d.helper) + names(d))
+  Object.assign(u.listProc, { staged: 7, committing: true }); u.listCommitRetried = true
   u.dropVaultState()
-  check("a lock drops the staged read's id and the commit retry", u.listProc.staged === 0 && !u.listCommitRetried)
+  check("a lock drops the staged read's id, the commit awaited and its retry",
+    u.listProc.staged === 0 && !u.listProc.committing && !u.listCommitRetried)
   const q = fixture()
   q.loadItems(false); q.vaultChanges += 1; q.loadItems(false)
   q.exit("listProc", 0, vaultOf("old"), "")

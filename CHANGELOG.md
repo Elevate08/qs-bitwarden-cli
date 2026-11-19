@@ -236,9 +236,10 @@
   start, the helper went on serving the refused one: an edited item's old
   password could be copied, revealed or typed. A list read is now set aside in
   the helper, one at a time and under an id, and becomes its items only when
-  the panel accepts that list, which it shows only once the helper has taken
-  it; a refused or replaced one is dropped and wiped, as it is by a save that
-  finishes meanwhile and by a lock, logout or account switch. What the helper
+  the panel accepts that list, which it shows once the helper has taken it
+  (and then always, reading it again if a save or delete finished
+  meanwhile); a refused or replaced one is dropped and wiped, as it is by a
+  save that finishes meanwhile and by a lock, logout or account switch. What the helper
   serves (searches, reveals, copies, auto-type, its TOTP codes) comes only
   from the last list both sides accepted; the panel can still copy a TOTP
   code it already holds, or get one from `bw get totp`. This needs the

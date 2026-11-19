@@ -59,13 +59,18 @@ A list read does not become the helper's items when `bw` prints it. The
 helper sets it aside (one read at a time, under an id it tells the panel) and
 goes on answering searches, reveals, copies, auto-type and its TOTP codes from
 the items it held. When the panel accepts that list it tells the helper to
-take the read, by that id, and shows the list only once the helper has
-answered that it did. When the panel refuses a list snapshot (one started
+take the read, by that id, and shows the list once the helper has answered
+that it did: always then, and not before, and no other list read starts
+until it has answered. If a save or delete began or finished while that
+answer was on its way, the list just shown is from before it and is read
+again. When the panel refuses a list snapshot (one started
 before a save, delete or sync finished) or a newer read replaces it, the
 helper drops what it set aside, wiped as its items are; so does the next
 staged read being asked for, a save that finishes meanwhile, and a lock,
 logout or account switch (a delete that finishes meanwhile takes its item out
-of both). If the read that should replace a refused snapshot fails or cannot
+of both; one left over from a vault since closed is not passed to the helper
+at all). A staged read that was still running when a newer one was asked for
+sets nothing aside. If the read that should replace a refused snapshot fails or cannot
 start, the helper stays on the last list both sides accepted, with what was
 saved or deleted since: it does not serve an edited item's old password. If
 the helper refuses to take a list (the read is no longer the one it set

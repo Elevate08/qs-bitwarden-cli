@@ -456,9 +456,14 @@ impl Helper {
         };
         // Asking for a staged read ends the one staged before it, here:
         // whatever becomes of this run, one that cannot start included.
-        if capture == Capture::VaultStage {
-            self.store.lock().unwrap().unstage();
-        }
+        // The id it is staged under is given out here too, so a read still
+        // running from before a newer request cannot stage after it.
+        let capture = match capture {
+            Capture::VaultStage(_) => {
+                Capture::VaultStage(self.store.lock().unwrap().request_stage())
+            }
+            other => other,
+        };
         if argv.is_empty()
             || env.iter().any(|(k, _)| !control::valid_env_name(k))
             || inject.keys().any(|k| !control::valid_env_name(k))
@@ -696,16 +701,13 @@ fn keep(
             }
             Zeroizing::new(String::new())
         }
-        Capture::Vault | Capture::VaultMerge | Capture::VaultStage => {
+        Capture::Vault | Capture::VaultMerge | Capture::VaultStage(_) => {
             let replace = *capture != Capture::VaultMerge;
             let stripped = if code == 0 && current {
-                let stripped = if *capture == Capture::VaultStage {
+                let stripped = if let Capture::VaultStage(id) = *capture {
                     // Set aside: the store answers from what it held until
                     // the panel commits this read.
-                    store.stage_vault(text).map(|(id, stripped)| {
-                        staged = id;
-                        stripped
-                    })
+                    store.stage_vault(id, text).inspect(|_| staged = id)
                 } else {
                     store.strip_vault(text, replace)
                 };
@@ -1190,12 +1192,12 @@ mod tests {
                 r#"{{"items":[{{"id":"a","name":"n","login":{{"password":"{password}"}}}}]}}"#
             ))
         };
+        let stage = || Capture::VaultStage(store.lock().unwrap().request_stage());
         // As a panel from before staging asks: taken at once.
         let (_, _, _, _, staged) = keep(&store, now, &Capture::Vault, 0, &read("old"));
         assert!(staged == 0 && store.lock().unwrap().item("a").unwrap().contains("old"));
 
-        let (shown, _, _, refused, staged) =
-            keep(&store, now, &Capture::VaultStage, 0, &read("new"));
+        let (shown, _, _, refused, staged) = keep(&store, now, &stage(), 0, &read("new"));
         assert!(staged != 0 && !refused && shown.contains("\"a\"") && !shown.contains("new"));
         assert!(store.lock().unwrap().item("a").unwrap().contains("old"));
         let line: Value =
@@ -1204,10 +1206,10 @@ mod tests {
 
         // Refused, or from before a lock: nothing is staged, and a refused
         // read ends the one staged before it.
-        let (_, _, _, refused, none) = keep(&store, now, &Capture::VaultStage, 0, &text("[]"));
+        let (_, _, _, refused, none) = keep(&store, now, &stage(), 0, &text("[]"));
         assert!(refused && none == 0 && !store.lock().unwrap().commit_staged(staged));
         // So does one that is asked for and cannot start.
-        let (_, _, _, _, staged) = keep(&store, now, &Capture::VaultStage, 0, &read("new"));
+        let (_, _, _, _, staged) = keep(&store, now, &stage(), 0, &read("new"));
         let (out, lines) = mpsc::channel();
         let helper = Helper {
             store: Arc::clone(&store),
@@ -1223,7 +1225,7 @@ mod tests {
         assert!(lines.recv().unwrap().contains(r#""code":127"#));
         assert!(staged != 0 && !store.lock().unwrap().commit_staged(staged));
         store.lock().unwrap().forget(&[]);
-        let (shown, _, _, _, none) = keep(&store, now, &Capture::VaultStage, 0, &read("new"));
+        let (shown, _, _, _, none) = keep(&store, now, &stage(), 0, &read("new"));
         assert!(none == 0 && shown.is_empty());
     }
 
