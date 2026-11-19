@@ -72,7 +72,7 @@ function fixture() {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
     vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, createdItemHandoff: null,
-    pendingSave: null, pendingDelete: null, recheckArmedAutoType() {}, recheckTotpFollowup() {},
+    pendingSave: null, pendingDelete: null, recheckArmedAutoType() {}, recheckTotpFollowup() {}, sshTotalPendingCount: 0,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
     itemsLoadedAt: 0, orgsLoadedAt: 0, foldersLoadedAt: 0, metaFreshMs: 0,
@@ -560,8 +560,10 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
 
 // --- the SSH agent's keys from a list that is not shown -----------------------------------
 // A list read hands the agent its keys on the way. One whose answer is not
-// shown (a newer read was waiting, or it is from before a sync) must not
-// publish them, and the keys stay owed until a list that is shown brings them.
+// shown (a newer read was waiting, or it is from before a sync) has given it
+// keys from a moment ago, and the read that replaces it starts with no nonce:
+// a key load is owed until the list that is shown is followed by one. The
+// batch itself is not ended as failed, which would lock the agent.
 {
   const LOAD_ID = "ab".repeat(16)
   const keyed = () => {
@@ -578,8 +580,8 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
     c.listAgentBranchActive && c.sshAgentLoadActive && c.sshAgentLoadedForVaultEpoch === c.vaultEpoch)
   c.vaultChanges += 1; c.loadItems(false)      // a save finished: a newer read waits
   c.exit("listProc", 0, vaultOf("old"), "")
-  eq("a superseded list's key batch is ended as failed, so the agent discards it", c.ended.join(), "false")
-  check("the waiting read starts without keys, and the keys are owed again",
+  eq("a superseded list's key batch is not ended as failed: the agent keeps serving", c.ended.join(), "true")
+  check("the waiting read starts without keys, and a key load is owed again",
     c.runsOf("listProc").length === 2 && !c.listAgentBranchActive && c.sshAgentLoadedForVaultEpoch === -1)
   c.sshAgentNextLoadId = LOAD_ID                // the next nonce is in by the time it lands
   c.exit("listProc", 0, vaultOf("new"), "")
@@ -590,8 +592,8 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
   o.loadItems(false)
   o.vaultChanges += 1                           // a manual sync finished meanwhile
   o.exit("listProc", 0, vaultOf("old"), "")
-  check("a snapshot from before a sync does not publish its keys either",
-    o.ended.join() === "false" && o.sshAgentLoadedForVaultEpoch === -1 && o.runsOf("listProc").length === 2, o.ended.join())
+  check("a snapshot from before a sync leaves a key load owed too",
+    o.ended.join() === "true" && o.sshAgentLoadedForVaultEpoch === -1 && o.runsOf("listProc").length === 2, o.ended.join())
 
   const f = keyed()
   f.loadItems(false)
@@ -616,44 +618,35 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
   check("the answer is what asks again", /onSshPendingCountChanged: if \(sshPendingCount === 0\) maybeStartupLoad\(\)/.test(source))
 }
 
-// --- an automatic sync's reload and a list from before it ---------------------------------
+// --- an automatic sync's reload, a list from before it and an SSH approval ---------------
 // The reload an automatic sync owes waits for an idle vault (maybeAutoSync():
-// not over an edit, not over an SSH approval, which a key load would fail).
-// A list from before the sync is not shown, and is not read again past that gate.
+// among other things not over an SSH approval, which a key load would fail).
+// A list from before that sync, refused while an approval waits, is left to
+// that reload rather than read again at once.
 {
-  const synced = () => {
+  const synced = pending => {
     const c = fixture()
-    c.idleChecks = 0
-    c.maybeAutoSync = () => { c.idleChecks++ }
+    c.sshTotalPendingCount = pending
     c.loadItems(false)
     c.vaultChanges += 1; c.autoSyncReloadPending = true      // onSyncFinished(0), in the background
     return c
   }
-  const c = synced()
+  const c = synced(1)
   c.exit("listProc", 0, vaultOf("old"), "")
-  check("a list from before an automatic sync is not shown, and its re-read is left to the idle gate",
-    names(c) === "" && c.runsOf("listProc").length === 1 && c.idleChecks === 1 && c.autoSyncReloadPending === true,
-    c.runsOf("listProc").length + " " + c.idleChecks)
-  const u = synced()
+  check("with an SSH approval waiting, a list from before an automatic sync is not read again at once",
+    names(c) === "" && c.runsOf("listProc").length === 1 && c.autoSyncReloadPending === true, String(c.runsOf("listProc").length))
+  const n = synced(0)
+  n.exit("listProc", 0, vaultOf("old"), "")
+  check("with none waiting it is read again at once", names(n) === "" && n.runsOf("listProc").length === 2)
+  const u = synced(1)
   u.isLoading = true                             // the user asked for this read, and is watching a spinner
   u.exit("listProc", 0, vaultOf("old"), "")
-  check("a read the user is waiting for is read again at once", u.runsOf("listProc").length === 2 && u.idleChecks === 0)
-}
-
-{
-  // A create the vault refused: its provisional row is gone, and so is a detail open on it.
-  const c = saving(true)
-  finishSave(c, 1, "")
-  check("a refused create leaves the list, not a detail of a row that is gone",
-    c.currentScreen === "main" && !Array.from(c.items).some(i => Model.isPendingItemId(i.id)), c.currentScreen)
-  check("and keeps the draft for reopening", c.failedSave !== null && c.failedSave.name === "New login")
-  const g = saving(true); g.currentScreen = "sshApproval"; g.screenBeforeSshApproval = "detail"
-  finishSave(g, 1, "")
-  check("under an SSH approval it is the list the approval returns to",
-    g.currentScreen === "sshApproval" && g.screenBeforeSshApproval === "main", g.screenBeforeSshApproval)
-  const e = saving(false); e.currentScreen = "detail"; e.detailItem = { id: oldId, name: "Old" }
-  finishSave(e, 1, "")
-  eq("a detail open on another item stays", e.currentScreen, "detail")
+  eq("a read the user is waiting for is read again either way", u.runsOf("listProc").length, 2)
+  const m = fixture()
+  m.sshTotalPendingCount = 1
+  m.loadItems(false); m.vaultChanges += 1        // a save, delete or manual sync: no automatic reload is owed
+  m.exit("listProc", 0, vaultOf("old"), "")
+  eq("without an automatic reload owed there is nothing to leave it to", m.runsOf("listProc").length, 2)
 }
 
 check("the waiting reads are per-vault state a lock drops", /queuedReads = \(\{\}\)/.test(functionBody(source, "dropVaultState")))

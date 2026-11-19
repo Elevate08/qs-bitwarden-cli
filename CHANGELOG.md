@@ -232,12 +232,14 @@
   the vault refuses also returns that detail to the list, with the draft
   kept for reopening.
 - **SSH keys from a list that was not shown.** A list read replaced by a
-  newer one, or taken before a save, delete or sync finished, still handed
-  the SSH agent its keys, and the keys of the list that was shown were then
-  not loaded. Such a batch is now discarded and the keys are loaded after
-  the list that is shown, once no SSH approval is waiting. A list from
-  before an automatic sync is read again when the vault is idle, as that
-  sync's own reload is, so it cannot fail a signing request being approved.
+  newer one, or taken before a save, delete or sync finished, handed the
+  SSH agent its keys, and the keys of the list that was shown were then not
+  loaded. They are now loaded after the list that is shown, once no SSH
+  approval is waiting. While one is waiting, a list from before an
+  automatic sync is not read again at once but with that sync's own
+  reload, so it cannot fail the signing request being approved. A list
+  read that fails also leaves the list due to be read again the next time
+  the panel wants it.
 - **Collections of an organization the form no longer has.** Choosing an
   organization, then "personal" (or another one) while the first one's
   collections were still being read, could offer those collections, and
