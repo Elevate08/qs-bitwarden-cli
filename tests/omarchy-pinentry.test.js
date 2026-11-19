@@ -64,8 +64,10 @@ s.on("error", () => process.exit(1))
 setInterval(() => {}, 1000)
 `, { mode: 0o755 })
 
+// The platform a session commonly hands down, whatever this run inherited.
 const baseEnv = Object.assign({}, process.env, {
-  XDG_RUNTIME_DIR: runtime, QSBW_PINENTRY_TEST_UI: fakeUi, FAKE_UI_LOG: uiLog, FAKE_UI_ANSWER: answerFile
+  XDG_RUNTIME_DIR: runtime, QSBW_PINENTRY_TEST_UI: fakeUi, FAKE_UI_LOG: uiLog, FAKE_UI_ANSWER: answerFile,
+  QT_QPA_PLATFORM: "wayland;xcb"
 })
 
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)

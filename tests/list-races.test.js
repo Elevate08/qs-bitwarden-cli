@@ -665,8 +665,17 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
     c.attachmentSaved["att-b"] === undefined && c.errorMessage === "" && c.flashes.length === 0
       && c.attachmentBusyId === "att-b" && c.runsOf("attachmentProc").length === 2,
     JSON.stringify([c.attachmentSaved, c.errorMessage, c.attachmentBusyId, c.runsOf("attachmentProc").length]))
+  // A lock's scrub holds the process the same way: the download asked for
+  // after the next unlock starts when the scrub ends, and is the one shown.
   c.exit("attachmentProc", 0, "/dl/b.txt", "")
-  eq("the next download's own answer is the one shown", c.attachmentSaved["att-b"], "/dl/b.txt")
+  c.attachmentProc.command = Model.scrubCommand(); c.attachmentProc.running = true; c.scrubPending = [c.attachmentProc]
+  c.queueAttachment({ id: "att-c", fileName: "c.txt", size: 1 })
+  const held = c.runsOf("attachmentProc").length
+  c.exit("attachmentProc", 0, "", "")
+  const started = c.runsOf("attachmentProc").length
+  c.exit("attachmentProc", 0, "/dl/c.txt", "")
+  eq("a download asked for behind a lock's scrub starts when the scrub ends, and each answer is its own",
+    [c.attachmentSaved["att-b"], held, started, c.attachmentSaved["att-c"]].join(), "/dl/b.txt,3,4,/dl/c.txt")
 }
 
 check("the waiting reads are per-vault state a lock drops", /queuedReads = \(\{\}\)/.test(functionBody(source, "dropVaultState")))
