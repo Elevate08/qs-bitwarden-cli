@@ -31,7 +31,8 @@ const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submit
   "startVaultRead", "supersededVaultRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem",
   "leaveProvisionalDetail", "settleOwedListRead", "listSnapshotOutdated",
   "reconcileOpenDetail", "onListFinished", "itemChangeRunning",
-  "recheckArmedAutoType", "autoTypeArmed", "disarmAutoType"]
+  "recheckArmedAutoType", "autoTypeArmed", "disarmAutoType", "recheckTotpFollowup",
+  "closeAccounts", "closeSettings", "reopenFailedSave"]
 
 // `items`: the list (rows from Model.parseItems). `fallback`: no helper.
 function makeVault(items, fallback) {
@@ -51,6 +52,8 @@ function makeVault(items, fallback) {
     failedSave: null, itemsLoadedAt: 0, reloads: 0,
     refreshDerivedFromItems() {}, loadItems() { v.reloads++ },
     autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeArmReprompt: false, autoTypeArmTimer: { stop() {} },
+    totpFollowupTimer: { stop() {} }, autoTotpTimer: { stop() {} },
+    screenBeforeAccounts: "main", screenBeforeSettings: "main", restored: [], restoreItemForm(f) { v.restored.push(f) },
     // The list read: `listProc.running` while one is in flight.
     listProc: { running: false, command: [] }, listReadError: "", sshCapability: "", syncReloadPending: false,
     isSyncing: false, backgroundSync: false, metadataLoadPending: false, statusRefreshAfterItems: false,

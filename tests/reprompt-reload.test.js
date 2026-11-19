@@ -122,6 +122,18 @@ function makeVault(fallback) {
   check("an item the reload no longer lists goes back to the list, with nothing revealed left",
     v.currentScreen === "main" && JSON.stringify(v.revealedFields) === "{}" && v.detailPassword === ""
       && v.flashes.indexOf("That item is no longer in the vault") !== -1, v.currentScreen)
+  eq("and its detail is not kept behind the list", v.detailItem, null)
+  // Its code, asked for before the list, answers after.
+  const t = makeVault()
+  t.openDetail(t.row("n1"))
+  t.reload(VAULT.filter(r => r.id !== "n1"))
+  answer(t, 0, true, { code: "123456", period: 30 })
+  eq("a code answering after its item is gone is not kept", t.liveTotp, "")
+  const e = makeVault()
+  e.openDetail(e.row("n1"))
+  e.currentScreen = "main"                       // left with Escape: the detail object stays behind
+  answer(e, 0, true, { code: "123456", period: 30 })
+  check("nor is one answering after its detail was left", e.liveTotp === "" && e.detailItem !== null, e.liveTotp)
   const h = makeVault()
   h.openDetail(h.row("p1")); h.currentScreen = "history"
   h.reload(VAULT.filter(r => r.id !== "p1"))
@@ -143,7 +155,9 @@ function makeVault(fallback) {
   const g = makeVault()
   g.openDetail(g.row("p1")); g.formIsEditing = true; g.formItemId = "p1"; g.currentScreen = "edit"
   g.reload(VAULT.filter(r => r.id !== "p1"))
-  eq("an item gone under its edit form is left to the save, which keeps the form", g.currentScreen, "edit")
+  check("an item gone under its edit form closes the form too: back to the list, nothing of it kept",
+    g.currentScreen === "main" && g.detailItem === null && g.formResets > 0
+      && g.flashes.indexOf("That item is no longer in the vault") !== -1, g.currentScreen)
   // A new-item form, with an older detail still in memory behind it.
   const n = makeVault()
   n.openDetail(n.row("p1")); n.formIsEditing = false; n.formItemId = ""; n.currentScreen = "edit"
@@ -160,6 +174,105 @@ function makeVault(fallback) {
   check("under an SSH approval nothing revealed is left and the approval keeps the screen",
     JSON.stringify(v.revealedFields) === "{}" && v.detailPassword === "" && v.currentScreen === "sshApproval", JSON.stringify(v.revealedFields))
   eq("which then returns to the list, not to the old detail", v.screenBeforeSshApproval, "main")
+  eq("and the old detail is not kept under it", v.detailItem, null)
+  const f = makeVault()
+  f.openDetail(f.row("p1")); f.formIsEditing = true; f.formItemId = "p1"; f.currentScreen = "edit"
+  f.screenBeforeSshApproval = "edit"; f.currentScreen = "sshApproval"
+  const resets = f.formResets
+  f.reload(withFlag("p1", 1))
+  check("an edit form under the approval is emptied at once, not when the approval is answered",
+    f.formResets > resets && f.screenBeforeSshApproval === "main" && f.detailItem === null && f.currentScreen === "sshApproval", String(f.formResets))
+}
+{
+  // Accounts and Settings cover the detail too, and a list accepted under
+  // them is not checked against it: returning to it is.
+  for (const [cover, saved, close] of [["accounts", "screenBeforeAccounts", "closeAccounts"], ["settings", "screenBeforeSettings", "closeSettings"]]) {
+    const v = makeVault()
+    v.openDetail(v.row("p1"))
+    v.toggleFieldReveal("password"); answer(v, 0, true, "hunter2")
+    v[saved] = "detail"; v.currentScreen = cover
+    v.reload(withFlag("p1", 1))
+    check(`premise: under ${cover} the old detail is still what is held`, v.detailItem.reprompt === 0 && v.currentScreen === cover)
+    v[close]()
+    check(`returning from ${cover} re-gates a detail that asks now`,
+      v.currentScreen === "detail" && v.detailItem.reprompt === 1 && v.detailItem.secretsWithheld === true
+        && JSON.stringify(v.revealedFields) === "{}", JSON.stringify(v.detailItem))
+    const asked = v.queries.length
+    v.copyDetailField("password", "Password")
+    check(`and a copy there asks first (${cover})`, v.repromptPending && v.queries.length === asked, v.kinds())
+    const g = makeVault()
+    g.openDetail(g.row("p1"))
+    g[saved] = "detail"; g.currentScreen = cover
+    g.reload(VAULT.filter(r => r.id !== "p1"))
+    g[close]()
+    check(`returning from ${cover} to an item that is gone lands on the list`,
+      g.currentScreen === "main" && g.detailItem === null, g.currentScreen)
+  }
+}
+{
+  // The gate goes by the row the list has now, whatever object it is handed.
+  const v = makeVault()
+  const old = v.row("p1")                        // a row still drawn from before the refresh (a search waiting for the helper)
+  v.reload(withFlag("p1", 1))
+  let ran = 0
+  v.withReprompt(old, () => { ran++ })
+  check("a row from before the refresh asks, by the flag the list has now", ran === 0 && v.repromptPending && v.repromptItemId === "p1")
+  v.cancelReprompt()
+  check("and is not satisfied for a helper's late answer either", v.repromptSatisfied(old) === false && v.repromptSatisfied(v.row("p1")) === false)
+  v.withReprompt({ id: Model.pendingItemId(9), name: "New", reprompt: 0 }, () => { ran++ })
+  eq("an item in no list (one being created) goes by its own flag: no prompt", ran, 1)
+  v.withReprompt({ id: Model.pendingItemId(9), name: "New", reprompt: 1 }, () => { ran++ })
+  check("or a prompt, if that is what it says", ran === 1 && v.repromptPending)
+  v.cancelReprompt()
+  v.withReprompt(v.row("n1"), () => { ran++ })
+  eq("an unflagged row runs at once, as ever", ran, 2)
+}
+{
+  // "Reopen" after a refused save: the draft holds the password and TOTP key.
+  const draft = id => ({ isEditing: true, itemId: id, name: "Plain", password: "hunter2", totp: "SEED" })
+  const refused = (id, rows) => {
+    const v = makeVault()
+    v.failedSave = { name: "Plain", form: draft(id) }
+    v.errorMessage = "Could not save Plain. refused"
+    if (rows) v.reload(rows)
+    v.reopenFailedSave()
+    return v
+  }
+  const same = refused("p1", null)
+  check("a refused edit reopens with its draft", same.restored.length === 1 && same.restored[0].password === "hunter2"
+    && same.failedSave === null && same.errorMessage === "", same.errorMessage)
+  const gone = refused("p1", VAULT.filter(r => r.id !== "p1"))
+  check("not for an item a later list no longer has: the draft is discarded",
+    gone.restored.length === 0 && gone.failedSave === null && gone.flashes.indexOf("That item is no longer in the vault") !== -1, String(gone.restored.length))
+  const asks = refused("p1", withFlag("p1", 1))
+  check("and behind the prompt for one a later list protects",
+    asks.restored.length === 0 && asks.repromptPending && asks.repromptItemId === "p1" && asks.failedSave !== null, String(asks.restored.length))
+  confirm(asks)
+  check("which reopens it once confirmed", asks.restored.length === 1 && asks.failedSave === null)
+  const created = makeVault()
+  created.failedSave = { name: "New", form: { isEditing: false, itemId: "", name: "New", password: "pw" } }
+  created.reopenFailedSave()
+  eq("a refused create has no item to check: its draft reopens", created.restored.length, 1)
+}
+{
+  // The TOTP follow-up to a password copy, across a reload.
+  const followed = id => {
+    const v = makeVault()
+    v.totpFollowupItem = v.row(id); v.totpFollowupActive = true; v.totpFollowupCode = "123456"; v.totpCopyItemId = id
+    return v
+  }
+  const v = followed("n1")
+  v.reload(VAULT)
+  check("a reload that changes nothing keeps the follow-up", v.totpFollowupActive && v.totpFollowupItem !== null && v.totpCopyItemId === "n1")
+  v.reload(withFlag("n1", 1))
+  check("one that turns the item's re-prompt on ends it: no code held, no copy on its way",
+    v.totpFollowupItem === null && v.totpFollowupActive === false && v.totpFollowupCode === "" && v.totpCopyItemId === "", v.totpCopyItemId)
+  const g = followed("n1")
+  g.reload(VAULT.filter(r => r.id !== "n1"))
+  check("so does one that no longer has the item", g.totpFollowupItem === null && g.totpCopyItemId === "")
+  const p = followed("g1")                       // armed after its prompt
+  p.reload(VAULT)
+  check("a follow-up armed for an item that asked then is kept", p.totpFollowupActive && p.totpFollowupItem !== null)
 }
 {
   // A new item's detail, still on its provisional row: followCreatedItem()'s business.

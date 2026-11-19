@@ -458,8 +458,12 @@ Item {
     return !!item && Number(item.reprompt) === 1
   }
 
+  // The row the list has now for this id decides, whatever was handed in: a
+  // row still drawn from before a refresh, or a detail opened before it, may
+  // say otherwise. An item in no list (one being created) goes by its own.
   function repromptSatisfied(item) {
-    if (!itemNeedsReprompt(item)) return true
+    var row = item ? Model.findItemById(items, item.id) : null
+    if (!itemNeedsReprompt(row || item)) return true
     var id = String(item.id || "")
     if (id === "") return false
     if (id === repromptActionId) return true
@@ -2394,6 +2398,8 @@ Item {
     if (back === "accounts" || back === "") back = "main"
     if (status !== "unlocked") back = status === "unauthenticated" ? "login" : "locked"
     currentScreen = back
+    // A list accepted meanwhile did not see the detail this returns to.
+    reconcileOpenDetail()
   }
 
   // After a logout: the next most recent account, or a clean sign-in. The
@@ -5706,6 +5712,8 @@ Item {
 
   function closeSettings() {
     currentScreen = (screenBeforeSettings === "settings" ? "main" : screenBeforeSettings)
+    // A list accepted meanwhile did not see the detail this returns to.
+    reconcileOpenDetail()
   }
 
   // Via `omarchy bar set`; the shell reloads, so setting() sees the change.
@@ -7062,6 +7070,7 @@ Item {
     refreshDerivedFromItems()
     reconcileOpenDetail()
     recheckArmedAutoType()
+    recheckTotpFollowup()
     if (syncReloadPending) {
       syncReloadPending = false
       isSyncing = false
@@ -7678,20 +7687,24 @@ Item {
       if (currentScreen === "detail" && detailItem.hasTotp && totpWanted(detailItem)) fetchTotp(detailItem.id)
       return
     }
-    // Gone while its edit form is open: the save says so and keeps the form.
-    if (!row && !onDetail) return
     clearRepromptGrant()
     liveTotp = ""
     detailPassword = ""
     if (covered) {
-      // An SSH approval has the screen: the list is what it returns to.
+      // An SSH approval has the screen: the list is what it returns to, and
+      // what would have gone on leaving the item goes now.
       screenBeforeSshApproval = "main"
+      resetItemForm()
+      detailItem = null
       return
     }
     if (row) {
       openDetail(row, true)
     } else {
+      // As leaving it does (onCurrentScreenChanged: an edit form of it goes
+      // too), and nothing of it is kept.
       currentScreen = "main"
+      detailItem = null
       flashNotification("That item is no longer in the vault")
     }
   }
@@ -7916,7 +7929,11 @@ Item {
 
   function applyTotpCode(itemId, code) {
     var c = String(code || "").trim()
-    if (detailItem && detailItem.id === itemId && totpWanted(detailItem)) liveTotp = c
+    // Shown only on the detail of that item, while it is up (an SSH approval
+    // may cover it): an answer arriving after it was left is not kept.
+    var screen = currentScreen === "sshApproval" ? screenBeforeSshApproval : currentScreen
+    if (detailItem && detailItem.id === itemId && totpWanted(detailItem)
+        && (screen === "detail" || screen === "history" || screen === "edit")) liveTotp = c
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
       totpFollowupCode = c
     }
@@ -8244,9 +8261,24 @@ Item {
     if (status !== "unlocked") return
     if (!failedSave) return
     var f = failedSave.form
-    failedSave = null
-    errorMessage = ""
-    restoreItemForm(f)
+    // The draft holds the item's password and TOTP key as they were typed or
+    // loaded. An edit goes back to it as an edit of that item would start
+    // now: not at all if the item is gone, behind the prompt if it asks.
+    var row = f && f.isEditing ? Model.findItemById(items, String(f.itemId)) : null
+    if (f && f.isEditing && !row) {
+      failedSave = null
+      errorMessage = ""
+      flashNotification("That item is no longer in the vault")
+      return
+    }
+    var reopen = function() {
+      if (root.failedSave === null || root.failedSave.form !== f) return
+      root.failedSave = null
+      root.errorMessage = ""
+      root.restoreItemForm(f)
+    }
+    if (row) withReprompt(row, reopen)
+    else reopen()
   }
 
   function startEditItem(item) {
@@ -8892,6 +8924,24 @@ Item {
     if (!autoTypeArmed() || autoTypeArmReprompt) return
     var row = Model.findItemById(items, autoTypeItemId)
     if (row && itemNeedsReprompt(row)) disarmAutoType()
+  }
+
+  // The TOTP follow-up to a password copy (armTotpFollowup()) against the
+  // list just accepted. It copies the code with no prompt, as part of a copy
+  // that passed any; `totpFollowupItem` is the row as it was then. An item
+  // gone, or one that asks for the master password now and did not then,
+  // ends it: both timers, the code it held and a copy still being fetched.
+  function recheckTotpFollowup() {
+    var held = totpFollowupItem
+    if (!held) return
+    var row = Model.findItemById(items, held.id)
+    if (row && (!itemNeedsReprompt(row) || itemNeedsReprompt(held))) return
+    if (totpCopyItemId === String(held.id)) totpCopyItemId = ""
+    totpFollowupItem = null
+    totpFollowupActive = false
+    totpFollowupCode = ""
+    totpFollowupTimer.stop()
+    autoTotpTimer.stop()
   }
 
   // Ends a type in flight without a report: the helper's late answer is

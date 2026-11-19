@@ -72,7 +72,7 @@ function fixture() {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
     vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, createdItemHandoff: null,
-    pendingSave: null, pendingDelete: null, recheckArmedAutoType() {},
+    pendingSave: null, pendingDelete: null, recheckArmedAutoType() {}, recheckTotpFollowup() {},
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
     itemsLoadedAt: 0, orgsLoadedAt: 0, foldersLoadedAt: 0, metaFreshMs: 0,

@@ -41,7 +41,7 @@ function makeVault() {
   const v = {
     repromptPending: false, repromptItemId: "", repromptItemName: "", repromptError: "", repromptBusy: false,
     repromptCallback: null, repromptEpoch: -1, repromptVerifiedId: "", repromptActionId: "",
-    detailItem: null, status: "unlocked", vaultEpoch: 7, vaultHelperActive: false,
+    detailItem: null, status: "unlocked", vaultEpoch: 7, vaultHelperActive: false, Model, items: [],
     checks: [], answer: null,
     // The password check answers when the test says so.
     verifyMasterPassword(pw, done) { v.checks.push(pw); v.answer = done }

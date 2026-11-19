@@ -32,7 +32,7 @@ function fixture() {
     startVaultListRead: () => { c.listReads += 1; c.listProc.running = true },
     closeFilterGroup: () => c.closedFilters++,
     flashNotification: message => c.flashes.push(message),
-    refreshDerivedFromItems() {}, reconcileOpenDetail() {}, recheckArmedAutoType() {}, maybeStartupLoad() {},
+    refreshDerivedFromItems() {}, reconcileOpenDetail() {}, recheckArmedAutoType() {}, recheckTotpFollowup() {}, maybeStartupLoad() {},
     deferredMetadataTimer: { restart() {} }
   }
   for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemProc",

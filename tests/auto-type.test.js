@@ -98,7 +98,7 @@ check("and asked again when it is turned on or off",
 const flowNames = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "autoTypeArmed", "disarmAutoType",
   "stopAutoType", "copyPasswordAndArm", "requestAutoType", "onAutoTypeRead", "typeHere", "onAutoTypeExited",
   "finishAutoType", "screenLockReadingFresh", "armTotpFollowup", "copyTotpAfterAutoType", "notifyTotpCopied",
-  "recheckArmedAutoType"]
+  "recheckArmedAutoType", "recheckTotpFollowup"]
 function makeVault() {
   const calls = []
   const timer = name => ({ running: false, interval: 0, restart() { this.running = true; calls.push(name + ".restart") },
@@ -107,7 +107,7 @@ function makeVault() {
     Model, calls, autoTypeEnabled: true, status: "unlocked", session: "held", vaultEpoch: 3, closeOnCopy: true,
     autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeArmReprompt: false, autoTypeBusy: false, autoTypeSeq: 0, autoTypePendingText: "",
     autoTypeTypedItemId: "", autoTypeTypedEpoch: -1, autoCopyTotpSec: 3, fetches: [],
-    totpFollowupItem: null, totpFollowupActive: false,
+    totpFollowupItem: null, totpFollowupActive: false, totpFollowupCode: "", totpCopyItemId: "",
     opened: false, sshPrompt: null, pinentryActive: false, vaultHelperActive: true,
     // A screen-lock reading from just now.
     screenIsLocked: false, screenLockCheckedAt: Date.now(), screenLockStateProc: { running: false },
@@ -221,6 +221,14 @@ const reloaded = (v, id, reprompt) => { v.items = v.items.map(i => i.id === id ?
   const w = makeVault()
   w.items = w.items.map(i => i.id === "a" ? Object.assign({}, i, { reprompt: 1 }) : i)
   w.recheckArmedAutoType()
+  const t = makeVault()
+  t.copyPasswordAndArm(item(t, "t"))
+  check("premise: the copy armed the TOTP follow-up and its timers", t.totpFollowupActive && t.totpFollowupTimer.running && t.autoTotpTimer.running)
+  t.items = t.items.map(i => i.id === "t" ? Object.assign({}, i, { reprompt: 1 }) : i)
+  t.recheckArmedAutoType(); t.recheckTotpFollowup()
+  check("a list that protects the item stops the follow-up's timers with the arm",
+    !t.autoTypeArmed() && t.totpFollowupItem === null && !t.totpFollowupActive
+      && t.totpFollowupTimer.running === false && t.autoTotpTimer.running === false, JSON.stringify(t.totpFollowupItem))
   check("with nothing armed there is nothing to do", w.autoTypeItemId === "" && w.calls.length === 0, w.calls.join())
   const finished = body("onListFinished")
   check("every accepted list is checked against the arm, once its rows are in",

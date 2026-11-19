@@ -127,14 +127,23 @@
   for the master password and did not when it was opened, whatever was
   revealed or loaded of it is dropped and it is shown again behind the
   prompt (an edit form of it closes); if it is gone, the panel returns to
-  the list. An item whose re-prompt was already confirmed, or whose setting
-  did not change, is as it was. Until that list has arrived the open item
-  still goes by the setting it was opened with.
-- **An armed auto-type does not outlast a re-prompt turned on elsewhere.**
-  A password armed for auto-type with no prompt stayed armed if a sync then
+  the list, and neither the detail nor an edit form of it is kept (under an
+  SSH approval too). The same check runs on returning to a detail from
+  Accounts or Settings. An item whose re-prompt was already confirmed, or
+  whose setting did not change, is as it was. Until that list has arrived
+  the open item still goes by the setting it was opened with.
+- **The re-prompt goes by the list as it is now.** Whether an action asks
+  for the master password was read from the row or detail it was started
+  on, which could be older than the list: rows still drawn while a search
+  waited for its answer, for one. It is now read from the item's row in
+  the current list. "Reopen" after a refused edit asks first too if the
+  item asks now, and discards the draft if the item is gone.
+- **An armed auto-type or TOTP follow-up does not outlast a re-prompt
+  turned on elsewhere.** A password armed for auto-type with no prompt, and
+  the TOTP code that follows a password copy, stayed armed if a sync then
   brought the item back with "ask for the master password" turned on. The
-  refreshed list now disarms it; an item that asked when it was armed stays
-  armed.
+  refreshed list now ends both (the follow-up also when the item is gone);
+  an item that asked when it was armed stays armed.
 
 - **The vault helper refuses a vault read it does not recognise.** It used
   to remove secrets only from items sitting where it expected them and hand
@@ -220,6 +229,13 @@
   as the save answers, the move happens once the detail is back. A create
   the vault refuses also returns that detail to the list, with the draft
   kept for reopening.
+- **SSH keys from a list that was not shown.** A list read replaced by a
+  newer one, or taken before a save, delete or sync finished, still handed
+  the SSH agent its keys, and the keys of the list that was shown were then
+  not loaded. Such a batch is now discarded and the keys are loaded after
+  the list that is shown, once no SSH approval is waiting. A list from
+  before an automatic sync is read again when the vault is idle, as that
+  sync's own reload is, so it cannot fail a signing request being approved.
 - **Collections of an organization the form no longer has.** Choosing an
   organization, then "personal" (or another one) while the first one's
   collections were still being read, could offer those collections, and
