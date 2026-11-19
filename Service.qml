@@ -6862,7 +6862,7 @@ Item {
   }
 
   function vaultReadIsStale(name) {
-    return epochOperationIsStale(name) || !session
+    return Model.vaultReadIsStale(readEpochs[name], vaultEpoch, !!session)
   }
 
   // Items, organizations and folders together: each is its own bw start, and
