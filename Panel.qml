@@ -580,6 +580,12 @@ Panel {
     fontFamily: root.fontFamily
   }
 
+  // FormPickerRow in the bar's foreground and font.
+  component PickerRow: FormPickerRow {
+    foreground: root.fg
+    fontFamily: root.fontFamily
+  }
+
   // A form row: label, optional caption note, and a NumberEntry.
   component NumberRow: Row {
     id: numberRow
@@ -5341,10 +5347,8 @@ Panel {
                     width: folderPickList.width - root.scrollGutter
                     spacing: Style.space(2)
 
-                    FormPickerRow {
+                    PickerRow {
                       width: parent.width
-                      foreground: root.fg
-                      fontFamily: root.fontFamily
                       label: "No Folder"
                       glyph: "\u{F0256}"
                       picked: !root.vault.formFolderId
@@ -5353,11 +5357,9 @@ Panel {
 
                     Repeater {
                       model: root.vault.folders
-                      delegate: FormPickerRow {
+                      delegate: PickerRow {
                         required property var modelData
                         width: parent.width
-                        foreground: root.fg
-                        fontFamily: root.fontFamily
                         label: modelData.name
                         glyph: "\u{F024B}"
                         picked: root.vault.formFolderId === modelData.id
@@ -5433,10 +5435,8 @@ Panel {
                     width: orgPickList.width - root.scrollGutter
                     spacing: Style.space(2)
 
-                    FormPickerRow {
+                    PickerRow {
                       width: parent.width
-                      foreground: root.fg
-                      fontFamily: root.fontFamily
                       label: "My Vault"
                       glyph: "\u{F0004}"
                       picked: !root.vault.formOrgId || root.vault.formOrgId === "personal"
@@ -5445,11 +5445,9 @@ Panel {
 
                     Repeater {
                       model: root.vault.organizations
-                      delegate: FormPickerRow {
+                      delegate: PickerRow {
                         required property var modelData
                         width: parent.width
-                        foreground: root.fg
-                        fontFamily: root.fontFamily
                         label: modelData.name
                         glyph: "\u{F0991}"
                         picked: root.vault.formOrgId === modelData.id
@@ -5522,11 +5520,9 @@ Panel {
 
                       Repeater {
                         model: root.vault.formCollections
-                        delegate: FormPickerRow {
+                        delegate: PickerRow {
                           required property var modelData
                           width: parent.width
-                          foreground: root.fg
-                          fontFamily: root.fontFamily
                           label: modelData.name
                           glyph: "\u{F0290}"
                           picked: root.vault.isFormCollectionSelected(modelData.id)
