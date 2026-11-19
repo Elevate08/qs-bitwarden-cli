@@ -502,7 +502,8 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
   c.exit("listProc", 0, listOf(stored(oldId, "Old")), "")
   check("a snapshot from before the save is not shown while the list is read again", c.listProc.running)
   c.exit("listProc", 1, "", "Could not safely read vault items.")
-  check("that read failing says so", c.errorMessage !== "")
+  check("that read failing says so, and leaves the list due for another read",
+    c.errorMessage !== "" && c.listReadError === c.errorMessage && c.itemsLoadedAt === 0, String(c.itemsLoadedAt))
   c.loadItems(false)
   c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "New login")), "")
   check("and the next list is accepted", c.items.length === 2)

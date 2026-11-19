@@ -7157,6 +7157,11 @@ Item {
     if (!vaultReadIsStale("items") && !wasEarly) {
       errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
       listReadError = errorMessage
+      // The list on screen is not known to be current (this may have been
+      // the re-read of a snapshot that was refused, which the vault helper
+      // has taken all the same): the next time it is wanted it is read
+      // again (ensureItemsFresh()).
+      itemsLoadedAt = 0
     }
   }
 
