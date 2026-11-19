@@ -5416,6 +5416,14 @@ function associationKeyWeight(key) {
   return 0
 }
 
+// A number field of the learned-picks file: a number, or digits in a string
+// (as a hand-edited file might hold); NaN for anything else. Never coerced:
+// Number() of an object calls its toString, which the file can set to null.
+function associationNumber(value) {
+  if (typeof value === "number") return value
+  return typeof value === "string" && /^[0-9]{1,9}$/.test(value) ? Number(value) : NaN
+}
+
 function cleanAssociationEntry(key, entry) {
   var weight = associationKeyWeight(key)
   if (!weight || !entry || typeof entry !== "object" || Array.isArray(entry)) return null
@@ -5424,7 +5432,7 @@ function cleanAssociationEntry(key, entry) {
       || entry.itemId.length === 0 || entry.itemId.length > 256
       || /[\x00-\x1f\x7f]/.test(entry.itemId)) return null
 
-  var count = Number(entry.count)
+  var count = associationNumber(entry.count)
   if (!isFinite(count) || count < 1) count = 1
   count = Math.min(1000000, Math.floor(count))
 
@@ -5446,7 +5454,7 @@ function parseAssociations(raw) {
   }
   // Before anything is read from it: `null` parses, and is not an object.
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return emptyAssociations()
-  var version = Number(parsed.version === undefined ? ASSOC_VERSION : parsed.version)
+  var version = parsed.version === undefined ? ASSOC_VERSION : associationNumber(parsed.version)
   if (version !== ASSOC_VERSION || !parsed.keys
       || typeof parsed.keys !== "object" || Array.isArray(parsed.keys)) {
     return emptyAssociations()

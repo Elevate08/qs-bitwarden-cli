@@ -361,7 +361,9 @@
   reader throw instead of starting from an empty store: the store was left
   as it stood and the suggestions for the focused window were not worked
   out again. Anything that is not an object now reads as empty, as broken
-  JSON already did.
+  JSON already did, and so does a file whose version is not a number (an
+  object there threw the same way, and `true` passed for version 1); a
+  pick's count that is not a number counts as one.
 - **A failure to write the SSH public key files is shown.** When the
   `.pub` files Git signs with could not be written or removed (something
   that is not a directory, or a symlink, at

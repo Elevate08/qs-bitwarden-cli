@@ -235,6 +235,18 @@ check("associations survive a save/load round trip",
   })
   check("a corrupt association file, or one holding anything but an object, degrades to empty",
     emptied.every(got => got === JSON.stringify(Model.emptyAssociations())), emptied.join(" | "))
+  // A field of the wrong type is not coerced: an object there can make
+  // Number() throw, and `true` is not version 1.
+  const entry = count => `{"version":1,"keys":{"word:w":{"itemId":"x","count":${count}}}}`
+  const counts = [entry('{"toString":null}'), entry("true"), entry('"7"')].map(raw => {
+    try { return Model.parseAssociations(raw).keys["word:w"].count } catch (e) { return "threw" }
+  })
+  const versions = ['{"toString":null}', "true", '"1"'].map(version => {
+    try { return Object.keys(Model.parseAssociations(`{"version":${version},"keys":{"word:w":{"itemId":"x"}}}`).keys).length }
+    catch (e) { return "threw" }
+  })
+  check("a version or count of the wrong type reads as none; digits in a string still count",
+    counts.join() + " " + versions.join() === "1,1,7 0,0,1", counts.join() + " " + versions.join())
 }
 
 const hostileAssociations = Model.parseAssociations(
