@@ -80,7 +80,56 @@ check("Ctrl+K handled in the interceptor", /Key_K[\s\S]{0,300}openActionPalette/
 check("Ctrl+K handled in the search box", /id: searchField[\s\S]*?Key_K[\s\S]{0,300}openActionPalette/.test(panel))
 check("catcher blocked while the palette is open", /blocked: repromptConfirm\.shown[\s\S]{0,900}\|\| actionPalette\.shown/.test(panel))
 check("palette builds from the model", panel.includes("Model.itemActions(") && panel.includes("Model.filterActions("))
-check("letters run through the existing handlers", panel.includes("runDetailShortcut(action.key)") && panel.includes("root.vault.runShortcut(action.key)"))
+const fnBody = name => {
+  const start = panel.indexOf("  function " + name + "(")
+  return start < 0 ? "" : panel.slice(start, panel.indexOf("\n  }\n", start))
+}
+const runPalette = fnBody("runPaletteAction")
+const paletteItem = fnBody("paletteItem")
+const listBranch = runPalette.slice(runPalette.indexOf('if (screen !== "detail")'), runPalette.indexOf('action.id === "delete"'))
+check("detail letters run through the existing handler", runPalette.includes("root.runDetailShortcut(action.key)"))
+check("list actions run through the letters' own gated handlers, on the palette's item",
+  ["root.vault.copyPassword(item)", "root.vault.copyUsername(item)", "root.vault.copyTotpCode(item)",
+    "root.vault.openUrl(item.uris[0])", "root.vault.openDetail(item)"].every(call => listBranch.includes(call)))
+check("list actions keep the letters' guards (TOTP only where there is one, a website only with a link)",
+  /if \(item\.hasTotp\) root\.vault\.copyTotpCode\(item\)/.test(listBranch)
+  && /if \(item\.uris && item\.uris\.length > 0\) root\.vault\.openUrl/.test(listBranch))
+check("every list action the model offers has a case",
+  Model.itemActions(login, LIST).every(a => listBranch.includes('case "' + a.id + '":')))
+// The re-prompt lives in copyPassword()/copyTotpCode(); the *Now variants skip it.
+check("the palette never calls an ungated copy", !/Now\(/.test(runPalette))
+
+// --- bound to the item it was opened for, by id --------------------------------------
+
+const openFor = panel.slice(panel.indexOf("function openFor()"), panel.indexOf("// Back to where it was opened."))
+const runAt = panel.slice(panel.indexOf("function runAt(index)"), panel.indexOf("// Closed when the vault locks"))
+check("the palette remembers the id of the item it was opened for",
+  /property string itemId: ""/.test(panel) && /actionPalette\.itemId = String\(item\.id \|\| ""\)/.test(openFor))
+check("the id is read before the palette closes and handed to the action",
+  /var itemId = actionPalette\.itemId[\s\S]*actionPalette\.close\(\)[\s\S]*root\.runPaletteAction\(action, screen, itemId\)/.test(runAt))
+check("closing forgets the id", /actionPalette\.itemId = ""/.test(panel.slice(panel.indexOf("// Back to where it was opened."), panel.indexOf("function move(delta)"))))
+check("an action resolves its item by id first and does nothing without it",
+  /^  function runPaletteAction\(action, screen, itemId\) \{\n    var item = root\.paletteItem\(screen, itemId\)\n    if \(!item\) return\n/.test(runPalette))
+check("no palette action re-reads the selected row", !/runShortcut|getSelectedItem|selectedIndex|filteredItems/.test(runPalette + paletteItem))
+check("the item is looked up by id among the vault's items",
+  /String\(list\[i\]\.id\) === itemId/.test(paletteItem) && /root\.vault\.items/.test(paletteItem)
+  && /if \(itemId === ""\) return null/.test(paletteItem))
+check("on the detail screen the open item must still be the palette's",
+  /String\(detail\.id\) === itemId \? detail : null/.test(paletteItem))
+check("delete asks only for the palette's own item", /if \(item\.typeCode !== 5\) root\.vault\.showDeleteConfirm = true/.test(runPalette)
+  && !/root\.vault\.detailItem/.test(runPalette))
+
+// paletteItem() uses nothing of QML but root.vault, so it runs here as written.
+const lookup = new Function("root", "screen", "itemId",
+  paletteItem.slice(paletteItem.indexOf("{") + 1))
+const A = { id: "a" }, B = { id: "b" }
+check("finds the item wherever a sync moved it", lookup({ vault: { items: [B, A] } }, "main", "a") === A)
+check("an item a sync removed resolves to nothing", lookup({ vault: { items: [B] } }, "main", "a") === null)
+check("an empty id resolves to nothing", lookup({ vault: { items: [{ id: "" }, A] } }, "main", "") === null)
+check("detail: the same item resolves", lookup({ vault: { detailItem: A, items: [] } }, "detail", "a") === A)
+check("detail: another item in its place resolves to nothing",
+  lookup({ vault: { detailItem: B, items: [A, B] } }, "detail", "a") === null
+  && lookup({ vault: { detailItem: null, items: [A] } }, "detail", "a") === null)
 check("onTextKey uses runDetailShortcut", /onTextKey[\s\S]*?root\.runDetailShortcut\(lower\)/.test(panel))
 check("README documents Ctrl+K", (read("README.md").match(/<kbd>Ctrl<\/kbd>\+<kbd>K<\/kbd>/g) || []).length >= 2)
 check("CHANGELOG mentions the palette", /action palette/i.test(read("CHANGELOG.md").split("## [Unreleased]")[1].split(/\n## \[/)[0]))

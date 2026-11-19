@@ -88,6 +88,14 @@
   dismissed, expires or is dropped by do-not-disturb used to deny the request
   and count toward the five-minute cooldown, which any program running as you
   could cause; it now leaves the request on the card.
+- **The action palette acts on the item it was opened for.** On the list,
+  as first written on this branch (never released), a palette action ran on
+  whichever row the cursor was on when Enter was pressed. A background sync
+  that added or removed an item while the palette was open could shift the
+  rows, so "Copy password" copied another item's password. The palette now
+  remembers the item's id and runs the action on that item; if a sync removed
+  it, or another item is open in its place, the action does nothing. A
+  master-password re-prompt item still asks first, as its letter does.
 
 ### Fixed
 
