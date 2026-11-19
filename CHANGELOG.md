@@ -64,8 +64,8 @@
   cards their brand mark. The glyph stays until an icon has loaded and
   comes back if it fails. Only a login's first URI is used, and only a plain
   host name or IPv4 address from it goes into the request. **Show website
-  icons** (`showWebsiteIcons`, on by default as in Bitwarden) turns them
-  off, and with it nothing is fetched.
+  icons** (`showWebsiteIcons`) turns them on; it is off by default, and
+  off nothing is fetched (see Security below).
 - **The vault list and an item side by side.** An item opens in a pane
   beside the list, as in Bitwarden desktop, half each in a 470 px panel
   with the filter bar under both; the list drops its hover buttons and
@@ -236,6 +236,14 @@
   what is typed. It is now started with `QT_QPA_PLATFORM=wayland`; where
   Wayland cannot be reached the prompt fails, and the panel says so and
   offers its own field.
+- **Website icons are off by default.** The icon is loaded by handing Qt
+  the icon service's URL, which holds the site's name. Turning **Show
+  website icons** on therefore tells the icon service which sites you have
+  saved, and for every login the service has no icon for, or whose icon Qt
+  cannot read, Qt writes that URL to the system journal. What the service
+  sends is decoded by whichever image plugin Qt has installed claims it.
+  The setting's text now says so, and nothing is fetched until you turn it
+  on.
 
 ### Changed
 

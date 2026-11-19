@@ -129,7 +129,7 @@ Item {
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   // Bitwarden's "Show website icons", on by default as there; see
   // websiteIconUrl() in BitwardenModel.js.
-  readonly property bool showWebsiteIcons: Model.boolSetting("showWebsiteIcons", setting("showWebsiteIcons", true))
+  readonly property bool showWebsiteIcons: Model.boolSetting("showWebsiteIcons", setting("showWebsiteIcons", false))
   // The vault list and an item's detail side by side (the view decides
   // whether the screen is wide enough).
   readonly property bool sideBySide: Model.boolSetting("sideBySide", setting("sideBySide", true))

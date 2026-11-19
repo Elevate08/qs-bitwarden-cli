@@ -149,9 +149,9 @@ choice without building anything; it only runs those probes.
 
 - Item URLs open with `xdg-open`, http and https only (`normalizeOpenableUrl`).
 - Besides `bw` (not bundled), two things in the plugin reach the network,
-  each behind a setting that is on by default and makes no request when off:
-  - *Website icons* (`showWebsiteIcons`). The shell process itself fetches
-    `<icon service>/<host>/icon.png` with QML's `XMLHttpRequest`
+  each behind a setting and making no request when it is off:
+  - *Website icons* (`showWebsiteIcons`, off by default). A Qt `Image` in
+    the shell process is given `<icon service>/<host>/icon.png`
     (`ItemIcon.qml`), for logins only. `iconServiceUrl` gives the service:
     `icons.bitwarden.net` or `.eu` for Bitwarden's cloud, `<server>/icons`
     for the account's own server (over `http` if that is how the server is
@@ -160,18 +160,21 @@ choice without building anything; it only runs those probes.
     item, so the request names a saved site (internal names and private
     addresses included) and can be shaped by a vault entry no further. No
     URL is ever built from a vault value alone, so an item cannot make the
-    panel request a `file:`, `qrc:` or LAN address. The service can: Qt
-    follows its redirects to any `http` or `https` address (not from
-    `https` to `http`, and not to `file:`), so a self-hosted or
-    impersonated icon endpoint can make the panel send one blind `GET`
-    elsewhere. Qt sends its stock `User-Agent` (`Mozilla/5.0`) and keeps
-    the service's cookies in memory until the shell exits; there is no
-    disk cache. The answer is drawn only if it is a PNG, JPEG, GIF, ICO or
-    WebP of at most 128 KiB by its first bytes (`websiteIconDataUrl`), is
-    kept in memory for the open vault and dropped at lock
-    (`forgetWebsiteIcons`), and a missing icon logs nothing. The bytes are
-    a website's own favicon passed on by the service, decoded in the shell
-    process by Qt's decoder for that format.
+    panel request a `file:`, `qrc:` or LAN address. The rest is Qt's own
+    loader, which the plugin does not configure: it follows the service's
+    redirects under Qt's default policy (to other hosts, not from `https`
+    to `http`, not to `file:`), so a self-hosted or impersonated icon
+    endpoint can make the panel send a blind `GET` elsewhere; it sends its
+    stock `User-Agent` (`Mozilla/5.0`), keeps the service's cookies in
+    memory until the shell exits, and has no disk cache. It reads the whole
+    answer, picks the decoder by the bytes, not by the `.png` in the URL,
+    among every image plugin Qt has installed (SVG, PDF and others where
+    present), and keeps the scaled picture in its in-memory
+    pixmap cache under the URL; that cache is Qt's, is not emptied at
+    lock, and goes with the shell process. When the service has no icon
+    (a 404) or sends something Qt cannot decode, Qt logs the URL, and so
+    the site's name, to the journal and to Quickshell's log. All of this
+    is why the setting is opt-in and says so in its text.
   - *The update check* (`checkForUpdates`): one `curl` a day to
     `api.github.com`, HTTPS only also across redirects, a fixed URL, nothing
     of the vault (`updateCheckCommand`).
