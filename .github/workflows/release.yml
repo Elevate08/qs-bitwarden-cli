@@ -421,6 +421,8 @@ jobs:
         # regular files: a missing one or one too many fails the release.
         working-directory: ${{ runner.temp }}
         run: |
+          # A find that fails must not leave a shorter listing that passes.
+          set -o pipefail
           helpers="qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault"
           expected="$(
             {
@@ -442,11 +444,16 @@ jobs:
               echo "f release-symbols-x86_64/DEBUG-SYMBOLS.md"
             } | LC_ALL=C sort
           )"
-          actual="$(cd dist && find . -mindepth 1 -printf '%y %P\n' | LC_ALL=C sort)"
-          if [ "$actual" != "$expected" ]; then
+          # Compared as NUL-ended records in files: a name with a newline in
+          # it stays one record and matches nothing expected.
+          printf '%s\n' "$expected" | tr '\n' '\0' > expected.list
+          ( cd dist && find . -mindepth 1 -printf '%y %P\0' ) | LC_ALL=C sort -z > actual.list
+          if ! cmp -s expected.list actual.list; then
             echo "::error::the run's release-* artifacts are not exactly the reports and symbols this workflow makes"
             # "<" is expected and missing, ">" is present and unexpected.
-            diff <(echo "$expected") <(echo "$actual") || true
+            # Shown with every character outside a plain path's as "?".
+            show() { LC_ALL=C tr -c 'A-Za-z0-9._/ \0-' '?' < "$1" | tr '\0' '\n'; }
+            diff <(show expected.list) <(show actual.list) || true
             exit 1
           fi
           # One flat directory from here on: every name is known and no two

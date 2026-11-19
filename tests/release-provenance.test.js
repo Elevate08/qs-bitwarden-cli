@@ -234,7 +234,7 @@ check("release artifacts are scanned for key material before publication",
 // Any job of the run can upload a release-* artifact; only the files this
 // workflow makes are published, each by name.
 check("only the reports and symbols the workflow makes are published, by name",
-  /merge-multiple: false/.test(releaseJob) && /\[ "\$actual" != "\$expected" \]/.test(releaseJob)
+  /merge-multiple: false/.test(releaseJob) && /if ! cmp -s expected\.list actual\.list; then/.test(releaseJob)
     && releaseJob.indexOf("Only the files this workflow makes may be published") < releaseJob.indexOf("Refuse to publish anything")
     && !/dist\/\*\.(json|txt|gz)/.test(releaseJob),
   "a build step that adds a file to an artifact chooses a release asset")
