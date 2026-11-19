@@ -265,8 +265,11 @@ Item {
   property string itemsFileStamp: ""
   property string itemsFileStampNext: ""
   property string listReadStamp: ""
-  // The stat in flight: { epoch, file }, null if none or abandoned.
+  // The stat in flight: { epoch, file, gen }, null if none or abandoned.
   property var itemsFileProbe: null
+  // Moves with every forgetItemsFileStamp(): a stat begun before one tells
+  // nothing about a read begun after it.
+  property int itemsFileStampGen: 0
   property string itemsFileStatLine: ""
   // Organizations and folders outlive an item refresh many times over.
   readonly property int metaFreshMs: 600000
@@ -6968,11 +6971,22 @@ Item {
       return false
     }
     if (bwDataFile === "" || listReadError !== "" || sshAgentOwedKeys()) return false
-    itemsFileProbe = { epoch: vaultEpoch, file: bwDataFile }
+    itemsFileProbe = { epoch: vaultEpoch, file: bwDataFile, gen: itemsFileStampGen }
     itemsFileStatLine = ""
     itemsFileStatProc.command = Model.bwDataStatCommand(bwDataFile)
     itemsFileStatProc.running = true
+    itemsFileStatDeadline.restart()
     return true
+  }
+
+  // The stat has not answered in time (a stalled filesystem): the open that
+  // asked gets its read now, and the stat's answer, if any, is not waited for.
+  function onItemsFileStatOverdue() {
+    var probe = itemsFileProbe
+    itemsFileProbe = null
+    itemsFileStatProc.running = false
+    if (!probe || probe.epoch !== vaultEpoch || probe.file !== bwDataFile || !session) return
+    beginInitialVaultLoad(false, false)
   }
 
   function onItemsFileProbed(exitCode) {
@@ -6980,12 +6994,18 @@ Item {
     var line = itemsFileStatLine
     itemsFileProbe = null
     itemsFileStatLine = ""
+    itemsFileStatDeadline.stop()
     // Given up on, or for a vault that has since locked or changed hands.
     if (!probe || probe.epoch !== vaultEpoch || probe.file !== bwDataFile || !session) return
-    var stamp = exitCode === 0 ? Model.bwDataStamp(probe.epoch, probe.file, line) : ""
+    // A stat from before the list was changed here, or a sync ended, is not
+    // one to remember the next read by; the open still gets its read.
+    var stamp = exitCode === 0 && probe.gen === itemsFileStampGen
+      ? Model.bwDataStamp(probe.epoch, probe.file, line) : ""
     itemsFileStampNext = stamp
     if (stamp !== "" && stamp === itemsFileStamp && listReadError === "" && items.length > 0
-        && !sshAgentOwedKeys()) {
+        && !sshAgentOwedKeys()
+        // Not for ever on a stat's word: past this age the list is read again.
+        && (Date.now() - itemsLoadedAt) < Model.itemsFileSkipMaxMs(autoSyncMinutes)) {
       // Unchanged: the list stands. Organizations and folders keep their own
       // clock, as in beginInitialVaultLoad().
       metadataLoadPending = true
@@ -6998,12 +7018,14 @@ Item {
 
   // For every way the list stops being what a read returned (a save or a
   // delete, done or undone, changes it here) or is about to be read anew for
-  // another reason (a sync, a new session): neither the stamp, nor a stat
-  // from before, nor a read in flight counts.
+  // another reason (a sync, whether it worked or not, or a new session):
+  // neither the stamp, nor a stat from before or still in flight, nor a read
+  // in flight counts.
   function forgetItemsFileStamp() {
     itemsFileStamp = ""
     itemsFileStampNext = ""
     listReadStamp = ""
+    itemsFileStampGen += 1
   }
 
   // `showSpinner` defaults to true; background refreshes pass false.
@@ -7552,6 +7574,8 @@ Item {
     } else {
       isSyncing = false
       syncReloadPending = false
+      // A sync that failed may still have written: the next open reads.
+      forgetItemsFileStamp()
       if (!backgroundSync) errorMessage = "Sync failed"
       else if (!errorMessage || errorMessage === autoSyncError) errorMessage = autoSyncError
       backgroundSync = false
@@ -10027,13 +10051,22 @@ Item {
 
   // ---- Accounts ----
 
-  // Not a VaultProcess: it runs no `bw` and is given no session.
+  // Not a VaultProcess: it runs no `bw` and is given no session, nor anything
+  // else of the shell's environment but PATH.
   Process {
     id: itemsFileStatProc
+    clearEnvironment: true
+    environment: Model.plainProbeEnv(Quickshell.env("PATH") || "")
     stdout: SplitParser {
       onRead: function(line) { root.itemsFileStatLine = line }
     }
     onExited: function(exitCode) { root.onItemsFileProbed(exitCode) }
+  }
+
+  Timer {
+    id: itemsFileStatDeadline
+    interval: Model.itemsFileStatDeadlineMs()
+    onTriggered: root.onItemsFileStatOverdue()
   }
 
   Process {

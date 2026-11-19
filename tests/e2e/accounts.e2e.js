@@ -144,7 +144,7 @@ try {
   // --- opening the panel re-reads the list only if bw's data file changed ---
   const listReads = () => fs.readFileSync(bwLog, "utf8").split("\n").filter(l => /\tlist items$/.test(l)).length
   const dataFile = path.join(accountsDir, state().slot, "data.json")
-  const reopenStale = () => { q("close"); q("ageList"); q("open") }
+  const reopenStale = age => { q("close"); q("ageList", String(age || 61)); q("open") }
   let reads = listReads()
   reopenStale()
   expect("a stale list is read again on open, nothing being known of the file yet", () => listReads() === reads + 1)
@@ -154,10 +154,26 @@ try {
   sleep(2000)
   check("with the file unchanged the next stale open runs no bw", listReads() === reads && state().stamped,
     String(listReads() - reads))
+  const stampBefore = state().stamp
+  // As another bw in the same directory would leave it: the item renamed,
+  // and the data file written.
+  fs.writeFileSync(path.join(path.dirname(dataFile), "fake-item-name"), "Renamed elsewhere")
   fs.appendFileSync(dataFile, "x")
   reopenStale()
   expect("a change to B's data file, as another bw would make, is read", () => listReads() === reads + 1)
-  expect("and remembered in turn", s => s.stamped)
+  expect("the changed row is shown", s => s.items.join() === "Renamed elsewhere")
+  expect("and that read is remembered by a new stamp, not the old one",
+    s => s.stamped && stampBefore !== "" && s.stamp !== stampBefore)
+  fs.rmSync(path.join(path.dirname(dataFile), "fake-item-name"))
+  reads = listReads()
+  reopenStale()
+  sleep(2000)
+  check("unchanged again, the stale open runs no bw", listReads() === reads, String(listReads() - reads))
+  // The automatic sync is every 15 minutes here: a list that old is read
+  // again on open, whatever the file's stat says.
+  reopenStale(15 * 60 + 1)
+  expect("a list as old as the sync interval is read again though the file is unchanged", () => listReads() === reads + 1)
+  expect("and remembered again", s => s.stamped)
   reads = listReads()
   product("sync")
   expect("a sync reads the list as it always did", () => listReads() === reads + 1)

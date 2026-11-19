@@ -38,18 +38,28 @@ check("a path that is not certain is no path: bw resolves these against its own 
     && Model.bwDataFilePath("default", "", "", "relative", "/home/u") === ""
     && Model.bwDataFilePath("default", "", "", "", "") === ""
     && Model.bwDataFilePath("default", "", "", "", "home") === "")
+check("a path bw would rewrite before using it is no path either: bw normalizes as text, stat follows links",
+  Model.bwDataFilePath("default", "", "/srv/link/../bw", "", "/home/u") === ""
+    && Model.bwDataFilePath("default", "", "/srv/./bw", "", "/home/u") === ""
+    && Model.bwDataFilePath("default", "", "/srv//bw", "", "/home/u") === ""
+    && Model.bwDataFilePath("default", "", "", "/home/u/link/..", "/home/u") === ""
+    && Model.bwDataFilePath("default", "", "", "", "/home/u/../v") === ""
+    && Model.bwDataFilePath("default", "", "/srv/bw\n", "", "/home/u") === ""
+    && Model.bwDataFilePath(slot, "/home/u/x/../accounts/" + slot, "", "", "/home/u") === ""
+    && Model.bwDataFilePath("default", "", "/srv/..bw/a.b", "", "") === "/srv/..bw/a.b/data.json")
 check("the panel resolves it for the active account, from the same directory it hands bw",
   /bwDataFile: Model\.bwDataFilePath\(activeSlot, accountAppDataDir,\s*Quickshell\.env\(Model\.appDataEnvVar\(\)\) \|\| "", Quickshell\.env\("XDG_CONFIG_HOME"\) \|\| "", Quickshell\.env\("HOME"\) \|\| ""\)/.test(source))
 
 // --- the stat ----------------------------------------------------------------------
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-items-file-"))
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-items-file-")))
 const file = path.join(tmp, "Bitwarden CLI", "data.json")
 fs.mkdirSync(path.dirname(file))
 fs.writeFileSync(file, "{\"a\":\"0123456789\"}")
 const statOf = (f, env) => {
   const cmd = Model.bwDataStatCommand(f)
-  const r = spawnSync(cmd[0], cmd.slice(1), { encoding: "utf8", env: env || process.env })
+  // As the panel runs it: nothing of the caller's environment but PATH.
+  const r = spawnSync(cmd[0], cmd.slice(1), { encoding: "utf8", env: env || Model.plainProbeEnv(process.env.PATH) })
   return { rc: r.status, stat: Model.bwDataStat(r.stdout), out: r.stdout }
 }
 const first = statOf(file)
@@ -85,12 +95,31 @@ check("the path is an argument, not part of the script",
   const bin = path.join(tmp, "bin")
   fs.mkdirSync(bin)
   for (const name of ["node", "bw"]) fs.writeFileSync(path.join(bin, name), "#!/bin/sh\n", { mode: 0o755 })
-  const env = { ...process.env, PATH: bin + ":" + process.env.PATH }
+  const env = Model.plainProbeEnv(bin + ":" + process.env.PATH)
   const plain = statOf(file, env)
   fs.mkdirSync(path.join(bin, "bw-data"))
   const portable = statOf(file, env)
   check("with a bw-data directory beside node or bw the file is not bw's, and there is no stat",
     plain.rc === 0 && plain.stat !== "" && portable.rc !== 0 && portable.stat === "", JSON.stringify([plain, portable]))
+}
+{
+  // A symlink on the way to the file: bw may be reading another file by the
+  // time it runs, so there is nothing to remember a read by.
+  const real = path.join(tmp, "real-dir")
+  fs.mkdirSync(real)
+  fs.writeFileSync(path.join(real, "data.json"), "{}")
+  fs.symlinkSync(real, path.join(tmp, "linked-dir"))
+  fs.symlinkSync(path.join(real, "data.json"), path.join(tmp, "linked.json"))
+  check("a file reached through a symlinked directory, or that is itself a symlink, gives no stat",
+    statOf(path.join(real, "data.json")).stat !== ""
+      && statOf(path.join(tmp, "linked-dir", "data.json")).rc !== 0 && statOf(path.join(tmp, "linked-dir", "data.json")).stat === ""
+      && statOf(path.join(tmp, "linked.json")).rc !== 0)
+  check("...nor does a path that is not written the canonical way",
+    statOf(real + "/./data.json").rc !== 0 && statOf(real + "//data.json").rc !== 0
+      && statOf(path.join(tmp, "linked-dir") + "/../real-dir/data.json").rc !== 0)
+  check("the stat runs with PATH and a fixed locale, whatever the shell's own environment holds",
+    /id: itemsFileStatProc\s+clearEnvironment: true\s+environment: Model\.plainProbeEnv\(Quickshell\.env\("PATH"\) \|\| ""\)/.test(source)
+      && Object.keys(Model.plainProbeEnv("/usr/bin")).join() === "PATH,LC_ALL" && Model.plainProbeEnv("/usr/bin").LC_ALL === "C")
 }
 check("only the one line the stat prints is a stat",
   Model.bwDataStat("") === "" && Model.bwDataStat("1:2:3:4:5") === "" && Model.bwDataStat("1:2:3:4.000000000:5.000000000\n") !== ""
@@ -106,7 +135,7 @@ fs.rmSync(tmp, { recursive: true, force: true })
 const STAT_A = "1:2:300:10.000000001:10.000000001"
 const STAT_B = "1:2:300:20.000000002:20.000000002"
 const listJson = JSON.stringify({ items: [{ object: "item", id: "a", type: 1, name: "A", login: {} }], sshKeys: [] })
-const functions = ["ensureItemsFresh", "probeItemsFile", "onItemsFileProbed", "forgetItemsFileStamp",
+const functions = ["ensureItemsFresh", "probeItemsFile", "onItemsFileProbed", "onItemsFileStatOverdue", "forgetItemsFileStamp",
   "sshAgentOwedKeys", "beginInitialVaultLoad", "loadPendingMetadata", "loadItems", "startVaultListRead",
   "onListFinished", "onSyncFinished", "dropVaultState", "abandonSyncReload", "beginVaultRead",
   "vaultReadIsStale", "beginEpochOperation", "epochOperationIsStale"]
@@ -116,7 +145,8 @@ function fixture() {
     now: 1000000, session: "test-session", status: "unlocked", vaultEpoch: 4, readEpochs: {},
     bwDataFile: "/home/u/.config/Bitwarden CLI/data.json", itemsFreshMs: 60000,
     items: [], itemsLoadedAt: 0, itemsFileStamp: "", itemsFileStampNext: "", listReadStamp: "",
-    itemsFileProbe: null, itemsFileStatLine: "", listReadError: "", errorMessage: "",
+    itemsFileProbe: null, itemsFileStatLine: "", itemsFileStampGen: 0, autoSyncMinutes: 15,
+    deadline: false, listReadError: "", errorMessage: "",
     activeWindowData: null, isLoading: false, isSyncing: false, syncReloadPending: false,
     backgroundSync: false, autoSyncReloadPending: false, autoSyncError: "x",
     metadataLoadPending: false, metadataForceRefresh: false, statusRefreshAfterItems: false,
@@ -130,6 +160,7 @@ function fixture() {
     vaultListEnv: () => ({}), refreshDerivedFromItems() {}, maybeStartupLoad() {}, flashNotification() {},
     maybeAutoSync() {}, deferredMetadataTimer: { restart() {} },
     itemsFileStatProc: { running: false, command: [] },
+    itemsFileStatDeadline: { restart() { c.deadline = true }, stop() { c.deadline = false } },
     listProc: { command: [], environment: {} }
   }
   // Like a VaultProcess: starting one that runs is not a second run.
@@ -364,6 +395,91 @@ function loaded() {
   check("a read in flight while the list is changed here is remembered by nothing", d.itemsFileStamp === "")
 }
 
+// --- a stat from before does not outlive what made it stale -------------------------
+
+{
+  const c = loaded()
+  c.open(); c.statDone(STAT_A); c.listDone()
+  c.open()                      // the stat is in flight
+  c.forgetItemsFileStamp()      // a save begins, or a sync ends
+  c.statDone(STAT_A)
+  check("a stat begun before the list was changed still gets that open its read",
+    c.reads === 3)
+  check("...but is not what that read, or any later one, is remembered by",
+    c.listReadStamp === "" && c.itemsFileStampNext === "" && (c.listDone(), c.itemsFileStamp === ""))
+  c.open(); c.statDone(STAT_A); c.listDone()
+  check("the stat of the next open is", c.itemsFileStamp === Model.bwDataStamp(4, c.bwDataFile, STAT_A) && c.reads === 4)
+}
+{
+  const c = loaded()
+  c.open(); c.statDone(STAT_A); c.listDone()
+  c.isSyncing = true
+  c.readEpochs.sync = 4
+  const loadedAt = c.itemsLoadedAt
+  c.onSyncFinished(1)
+  check("a sync that failed forgets the file too, without making the list look freshly read",
+    c.itemsFileStamp === "" && c.itemsFileStampNext === "" && c.itemsLoadedAt === loadedAt && !c.isSyncing)
+  c.open(); c.statDone(STAT_A)
+  check("...so the next stale open reads, though the stat is what it was", c.reads === 3)
+}
+
+// --- a match is not believed for ever ----------------------------------------------
+
+check("the cap is the automatic sync's interval, or 15 minutes when that is off",
+  Model.itemsFileSkipMaxMinutes() === 15 && Model.itemsFileSkipMaxMs(5) === 5 * 60000 && Model.itemsFileSkipMaxMs(60) === 60 * 60000
+    && Model.itemsFileSkipMaxMs(0) === 15 * 60000 && Model.itemsFileSkipMaxMs(-1) === 15 * 60000
+    && Model.itemsFileSkipMaxMs(undefined) === 15 * 60000 && Model.itemsFileSkipMaxMs(Infinity) === 15 * 60000
+    && Model.itemsFileSkipMaxMs("x") === 15 * 60000)
+for (const [minutes, cap] of [[15, 15], [5, 5], [0, 15]]) {
+  const c = loaded()
+  c.autoSyncMinutes = minutes
+  c.open(); c.statDone(STAT_A); c.listDone()
+  const readAt = c.now
+  c.now = readAt + cap * 60000 - 1000
+  c.ensureItemsFresh(); c.statDone(STAT_A)
+  check(`auto-sync ${minutes}: just under ${cap} minutes after the read, a matching stat still skips`, c.reads === 2)
+  c.now = readAt + cap * 60000
+  c.ensureItemsFresh(); c.statDone(STAT_A)
+  check(`auto-sync ${minutes}: at ${cap} minutes the list is read again, whatever the stat says`, c.reads === 3)
+  c.listDone()
+  c.open(); c.statDone(STAT_A)
+  check(`auto-sync ${minutes}: ...and that read starts the clock again`, c.reads === 3 && c.itemsLoadedAt === readAt + cap * 60000)
+}
+
+// --- a stat that does not answer ----------------------------------------------------
+
+{
+  check("the deadline is a second",
+    Model.itemsFileStatDeadlineMs() === 1000
+      && /id: itemsFileStatDeadline\s+interval: Model\.itemsFileStatDeadlineMs\(\)\s+onTriggered: root\.onItemsFileStatOverdue\(\)/.test(source))
+  const c = loaded()
+  c.open(); c.statDone(STAT_A); c.listDone()
+  c.open()
+  check("a stat starts its deadline", c.deadline === true && c.reads === 2)
+  c.onItemsFileStatOverdue()
+  check("past the deadline the same open gets its read, and the stat is stopped",
+    c.reads === 3 && c.itemsFileStatProc.running === false && c.itemsFileProbe === null && !c.isLoading)
+  c.itemsFileStatLine = STAT_A
+  c.onItemsFileProbed(0)
+  check("...its answer, should it still come, starts nothing more and is kept by nothing",
+    c.reads === 3 && c.itemsFileStatLine === "")
+  c.listDone()
+  const d = loaded()
+  d.open(); d.statDone(STAT_A); d.listDone()
+  d.open(); d.statDone(STAT_A)
+  check("a stat that answers in time stops the deadline", d.deadline === false)
+  d.open()
+  d.dropVaultState()
+  d.onItemsFileStatOverdue()
+  check("a deadline that passes after a lock reads nothing", d.reads === 2)
+  const e = loaded()
+  e.open(); e.statDone(STAT_A); e.listDone()
+  e.open()
+  e.vaultEpoch += 1
+  e.onItemsFileStatOverdue()
+  check("...nor one for another vault epoch", e.reads === 2)
+}
+
 // --- only the open is gated --------------------------------------------------------
 
 const callers = source.split("\n").filter(l => /\bprobeItemsFile\(\)/.test(l) && !/function probeItemsFile/.test(l))
@@ -375,7 +491,7 @@ check("a manual sync, a save's reload and an unlock still read without asking th
 check("a session handed over from the terminal forgets the file too",
   /itemsLoadedAt = 0\s+forgetItemsFileStamp\(\)/.test(body("onSessionHandoff")), "")
 check("the stat runs outside the vault helper, with no session and no bw",
-  /\/\/ Not a VaultProcess[^\n]*\n\s*Process \{\s+id: itemsFileStatProc\s+stdout: SplitParser \{\s+onRead: function\(line\) \{ root\.itemsFileStatLine = line \}\s+\}\s+onExited: function\(exitCode\) \{ root\.onItemsFileProbed\(exitCode\) \}\s+\}/.test(source)
+  /\/\/ Not a VaultProcess[^\n]*\n[^\n]*\n\s*Process \{\s+id: itemsFileStatProc\s+clearEnvironment: true\s+environment: [^\n]+\s+stdout: SplitParser \{\s+onRead: function\(line\) \{ root\.itemsFileStatLine = line \}\s+\}\s+onExited: function\(exitCode\) \{ root\.onItemsFileProbed\(exitCode\) \}\s+\}/.test(source)
     && !/\bbw\b(?!-data)/.test(Model.bwDataStatCommand("/f")[2].replace(/for __b in node bw/, "")))
 
 done()

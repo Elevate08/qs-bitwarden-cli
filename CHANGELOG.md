@@ -154,8 +154,11 @@
 - **Opening the panel reads the vault again less often.** A list over a
   minute old was re-read (`bw list items`) on every open. Now a `stat` of
   `bw`'s data file (about 6 ms; its contents are not read) is compared with
-  one taken before the last read, and the read is skipped while they match.
-  The first such open after an unlock, sync or save still reads.
+  one taken before the last read, and the read is skipped while they match
+  and the list is younger than the automatic sync's interval (15 minutes
+  when that is off). The first such open after an unlock, a sync (failed
+  ones too) or a save still reads, and so does every open when the file is
+  reached through a symlink or the `stat` takes over a second.
 - **Window-title suggestions cost less on a large vault**: about 9 ms
   instead of 14.5 ms for 5,000 items on the same machine, same suggestions.
 - **Internal cleanup, no behaviour change.** Unused ids, properties and

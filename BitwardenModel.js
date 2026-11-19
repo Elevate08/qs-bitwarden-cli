@@ -142,36 +142,66 @@ function accountAppDataDir(slot, xdgDataHome, home) {
 // ServiceContainer, read in 2026.2.0): the directory in
 // BITWARDENCLI_APPDATA_DIR -- a slot's own, or for the default slot whatever
 // the shell's environment carries -- else "$XDG_CONFIG_HOME/Bitwarden CLI",
-// else "~/.config/Bitwarden CLI". "" when that is not an absolute path this
-// can be sure of; nothing is then decided from the file.
+// else "~/.config/Bitwarden CLI". bw normalizes that path as text, so one
+// with a `.`, a `..` or an empty component could mean another file to bw
+// than to stat. "" for those and for anything not absolute: nothing is then
+// decided from the file.
 var BW_DATA_FILE = "data.json"
 var BW_DEFAULT_DATA_SUBDIR = "Bitwarden CLI"
+
+// plainAbsoluteDir(), and nothing a path normalizer would rewrite.
+function exactAbsoluteDir(value) {
+  var dir = plainAbsoluteDir(value)
+  if (dir === "" || dir === "/") return dir
+  var parts = dir.split("/")
+  for (var i = 1; i < parts.length; i++) if (parts[i] === "" || parts[i] === ".") return ""
+  return dir
+}
 
 function bwDataFilePath(slot, slotDir, inheritedAppDataDir, xdgConfigHome, home) {
   var dir = ""
   if (accountSlot(slot) !== DEFAULT_ACCOUNT_SLOT) {
-    dir = String(slotDir || "")
+    dir = exactAbsoluteDir(slotDir)
   } else if (inheritedAppDataDir) {
-    dir = String(inheritedAppDataDir)
-  } else if (xdgConfigHome) {
-    dir = String(xdgConfigHome).charAt(0) === "/" ? String(xdgConfigHome).replace(/\/+$/, "") + "/" + BW_DEFAULT_DATA_SUBDIR : ""
+    dir = exactAbsoluteDir(inheritedAppDataDir)
   } else {
-    var h = String(home || "")
-    dir = h.charAt(0) === "/" ? h.replace(/\/+$/, "") + "/.config/" + BW_DEFAULT_DATA_SUBDIR : ""
+    var base = xdgConfigHome ? exactAbsoluteDir(xdgConfigHome) : exactAbsoluteDir(home)
+    if (base !== "") dir = (base === "/" ? "" : base) + (xdgConfigHome ? "/" : "/.config/") + BW_DEFAULT_DATA_SUBDIR
   }
-  if (dir.charAt(0) !== "/") return ""
-  return dir.replace(/\/+$/, "") + "/" + BW_DATA_FILE
+  if (dir === "") return ""
+  return (dir === "/" ? "" : dir) + "/" + BW_DATA_FILE
 }
+
+// How long a list may stand on the file's stat alone before an open reads
+// it again whatever the stat says: the automatic sync's interval, or this
+// many minutes when that is off.
+var ITEMS_FILE_SKIP_MAX_MINUTES = 15
+
+function itemsFileSkipMaxMinutes() { return ITEMS_FILE_SKIP_MAX_MINUTES }
+
+function itemsFileSkipMaxMs(autoSyncMinutes) {
+  var minutes = Number(autoSyncMinutes)
+  if (!(minutes > 0) || !isFinite(minutes)) minutes = ITEMS_FILE_SKIP_MAX_MINUTES
+  return minutes * 60 * 1000
+}
+
+// How long the stat is waited for before the list is read without it.
+var ITEMS_FILE_STAT_DEADLINE_MS = 1000
+
+function itemsFileStatDeadlineMs() { return ITEMS_FILE_STAT_DEADLINE_MS }
 
 // Prints the file's device, inode, size, and modification and change times
 // to the nanosecond: what moves when anything writes it. The contents are not
 // read. bw uses a `bw-data` directory beside its executable instead, when
-// there is one; the file named here is then not bw's, and this exits 1.
+// there is one; the file named here is then not bw's, and this exits 1. So
+// it does when the path is not its own canonical form: a symlink anywhere on
+// it could be pointed elsewhere between this stat and bw's read.
 function bwDataStatCommand(file) {
   var script = "case \"$1\" in /*) ;; *) exit 1 ;; esac; "
     + "for __b in node bw; do __x=\"$(command -v \"$__b\" 2>/dev/null)\" || continue; "
     + "__x=\"$(readlink -f -- \"$__x\")\" || exit 1; "
     + "[ ! -e \"${__x%/*}/bw-data\" ] || exit 1; done; "
+    + "[ \"$(realpath -e -- \"$1\" 2>/dev/null && printf x)\" = \"$1\"$'\\n'x ] || exit 1; "
     + "exec stat -L -c '%d:%i:%s:%.9Y:%.9Z' -- \"$1\""
   return ["bash", "-c", script, "_", String(file || "")]
 }

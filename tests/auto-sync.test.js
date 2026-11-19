@@ -24,7 +24,7 @@ function fixture() {
     autoSyncReloadPending: false, backgroundSync: false,
     autoSyncError: "Automatic sync failed. The local vault may be out of date.",
     errorMessage: "", listReadError: "", vaultEpoch: 1, readEpochs: {}, itemsLoadedAt: 100,
-    itemsFileStamp: "", itemsFileStampNext: "", listReadStamp: "", itemsFileProbe: null, itemsFileStatLine: "",
+    itemsFileStamp: "", itemsFileStampNext: "", listReadStamp: "", itemsFileProbe: null, itemsFileStatLine: "", itemsFileStampGen: 0,
     statusRefreshAfterItems: false, loadCalls: [], flashes: [], closedFilters: 0,
     dependencies: deps, listReadEarly: false, listReadMode: "", listReads: 0,
     Model, authAttemptInFlight: () => false,
