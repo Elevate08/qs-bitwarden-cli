@@ -1311,7 +1311,6 @@ Panel {
               spacing: Style.space(8)
 
               Text {
-                id: sshCooldownBannerText
                 textFormat: Text.PlainText
                 text: root.vault.sshCooldownStatus.message
                 color: root.fg
@@ -2828,7 +2827,6 @@ Panel {
             }
 
             Column {
-              id: versionInfo
               width: parent.width
               spacing: Style.space(4)
 
@@ -3911,7 +3909,6 @@ Panel {
                         }
 
                         Text {
-                          id: rowSubtitle
                           textFormat: Text.PlainText
                           text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
                           color: root.dim
@@ -5005,7 +5002,6 @@ Panel {
 
         // The filter bar, under both panes when they are side by side.
         Column {
-          id: vaultFilterBar
           // Wherever the list is drawn. Stated outright: reading the panes'
           // own `visible` made a binding loop.
           visible: root.vault.status === "unlocked"
@@ -5023,7 +5019,6 @@ Panel {
 
           // The open group: a pinned header, then up to five scrolling rows.
           Column {
-            id: filterDrawer
             width: parent.width
             height: root.vault.filterDrawerHeight
             visible: height > 0

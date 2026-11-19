@@ -9184,7 +9184,6 @@ Item {
   Process {
     id: sshAgentHelperProc
     stdout: StdioCollector {
-      id: sshAgentHelperStdout
       waitForEnd: true
       onStreamFinished: root.onSshAgentHelperInspected(text)
     }
@@ -9259,7 +9258,6 @@ Item {
     id: loadIdProc
     command: Model.loadIdCommand()
     stdout: StdioCollector {
-      id: loadIdStdout
       waitForEnd: true
       onStreamFinished: root.onSshAgentLoadIdRead(text)
     }
@@ -9269,7 +9267,6 @@ Item {
     id: uwsmInspectProc
     command: Model.uwsmInspectCommand()
     stdout: StdioCollector {
-      id: uwsmInspectStdout
       waitForEnd: true
       onStreamFinished: {
         root.uwsmFragment = Model.parseUwsmInspection(text)
@@ -9296,7 +9293,6 @@ Item {
     id: autoTypeKeybindInspectProc
     command: Model.autoTypeKeybindInspectCommand()
     stdout: StdioCollector {
-      id: autoTypeKeybindInspectStdout
       waitForEnd: true
       onStreamFinished: root.onAutoTypeKeybindInspected(text)
     }
@@ -9340,7 +9336,6 @@ Item {
 
   // Handshake bound: a helper without `ready` in time is stopped and retried.
   Timer {
-    id: sshAgentHandshakeTimer
     interval: Model.sshAgentHandshakeTimeoutMs()
     repeat: false
     running: root.sshAgentPhase === "starting" || root.sshAgentPhase === "handshaking"
@@ -9753,7 +9748,6 @@ Item {
   // An install runs in a terminal we do not own, so re-probe while the setup
   // screen is open; the moment `bw` appears the panel moves on.
   Timer {
-    id: setupPollTimer
     interval: 2500
     running: root.opened && root.currentScreen === "setup" && root.setupActionsPending
     repeat: true
@@ -9763,7 +9757,6 @@ Item {
   // If the dependency probe never reports (broken PATH), probe status anyway
   // after a few seconds rather than sit on "checking".
   Timer {
-    id: statusProbeFallbackTimer
     interval: 4000
     running: root.live && !root.statusProbeStarted
     repeat: false
@@ -10041,7 +10034,6 @@ Item {
   // Polled on the wall clock, like the auto-lock, so a login pending across a
   // suspend expires on real time.
   Timer {
-    id: pendingLoginTimer
     interval: 1000
     repeat: true
     running: root.secondFactorStartedAt > 0

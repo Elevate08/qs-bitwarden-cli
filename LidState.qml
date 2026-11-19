@@ -22,7 +22,6 @@ Item {
   }
 
   Timer {
-    id: lidPoll
     interval: lid.pollMs
     repeat: true
     // Only in a live vault, and only while something is on screen.
