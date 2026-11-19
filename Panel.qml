@@ -6209,6 +6209,13 @@ Panel {
           target: root.vault
           function onStatusChanged() { if (root.vault.status !== "unlocked") actionPalette.close() }
           function onCurrentScreenChanged() { if (root.vault.currentScreen !== actionPalette.fromScreen) actionPalette.close() }
+          // The open item was replaced (a new item's saved copy, a browse):
+          // its actions were listed for the item before.
+          function onDetailItemChanged() {
+            if (!actionPalette.shown || actionPalette.fromScreen !== "detail") return
+            var detail = root.vault.detailItem
+            if (!detail || String(detail.id) !== actionPalette.itemId) actionPalette.close()
+          }
         }
 
         Rectangle {

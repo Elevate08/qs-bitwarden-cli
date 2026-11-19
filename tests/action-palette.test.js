@@ -220,6 +220,89 @@ for (const action of listActions) {
   }
 }
 check("onTextKey uses runDetailShortcut", /onTextKey[\s\S]*?root\.runDetailShortcut\(lower\)/.test(panel))
+// --- a new item's detail, opened while its save runs ---------------------------------
+// The real onSaveItemFinished() and followCreatedItem(): the open detail moves
+// from the provisional row to the saved item, so the palette (bound by id)
+// has an item to act on, and a palette listed for the provisional one closes.
+
+function saveStandIn(state) {
+  const v = Object.assign({ Model, isLoading: true, itemPayloadJson: "x", errorMessage: "", failedSave: null,
+    itemsLoadedAt: 0, currentScreen: "detail", opened: [], reloads: 0,
+    vaultReadIsStale() { return false }, flashNotification() {}, refreshDerivedFromItems() {},
+    loadItems() { v.reloads++ },
+    // What a click on the row does, as far as this test needs: the detail
+    // becomes that row's item, through the function that gates and loads it.
+    openDetail(item, browsing) { v.opened.push([item, browsing]); v.detailItem = { id: item.id, name: item.name } }
+  }, state)
+  v.root = v
+  Object.assign(v, new Function("root", "with (root) {\n" + functionBody(serviceSrc, "onSaveItemFinished") + "\n"
+    + functionBody(serviceSrc, "followCreatedItem") + "\nreturn { onSaveItemFinished, followCreatedItem } }")(v))
+  return v
+}
+const draft = { type: 1, name: "New login", notes: "", favorite: false, login: { username: "me", password: "pw", uris: [] } }
+const provisionalId = Model.pendingItemId(777)
+const provisionalRow = Model.optimisticItem(draft, provisionalId)
+const existingRow = Model.optimisticItem(Object.assign({}, draft, { name: "Old" }), "11111111-1111-1111-1111-111111111111")
+const savedId = "55555555-5555-5555-5555-555555555555"
+const savedEnvelope = id => JSON.stringify({ sshCapability: "unconfirmed", items: [Object.assign({}, draft, { object: "item", id })], sshKeys: [] })
+{
+  const v = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
+    detailItem: { id: provisionalId, name: "New login" }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  // Before the save lands the palette acts on the provisional row's detail.
+  const before = makePanel(v.items, v.detailItem)
+  before.runPaletteAction({ id: "copyUsername", key: "u" }, "detail", provisionalId)
+  check("new item: the palette works in the provisional detail", before.calls.length === 1)
+  v.onSaveItemFinished(0, savedEnvelope(savedId), "")
+  check("new item: the open detail follows the save to the saved item, opened as a row is (browsing, so not learned as a pick)",
+    v.opened.length === 1 && v.opened[0][0].id === savedId && v.opened[0][0] === Model.findItemById(v.items, savedId)
+    && v.opened[0][1] === true && !v.opened[0][0].pending, JSON.stringify(v.opened.map(o => o[0].id)))
+  const after = makePanel(v.items, v.detailItem)
+  after.runPaletteAction({ id: "copyUsername", key: "u" }, "detail", String(v.detailItem.id))
+  check("new item: a palette opened on the saved detail acts", after.calls.length === 1 && after.calls[0][0] === "runDetailShortcut")
+  after.runPaletteAction({ id: "copyUsername", key: "u" }, "detail", provisionalId)
+  check("new item: a palette still holding the provisional id does nothing", after.calls.length === 1)
+}
+{
+  const v = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
+    detailItem: { id: existingRow.id }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  v.onSaveItemFinished(0, savedEnvelope(savedId), "")
+  check("new item: a detail open on another item is left alone", v.opened.length === 0 && v.detailItem.id === existingRow.id)
+  const m = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow), currentScreen: "main",
+    detailItem: { id: provisionalId }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  m.onSaveItemFinished(0, savedEnvelope(savedId), "")
+  check("new item: nothing is opened when the detail is not on screen", m.opened.length === 0 && m.currentScreen === "main")
+  const f = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
+    detailItem: { id: provisionalId }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  f.onSaveItemFinished(1, "", "refused")
+  check("new item: a refused save opens nothing", f.opened.length === 0 && !Model.findItemById(f.items, provisionalId))
+}
+{
+  // An edit keeps its id: the saved row replaces the old one and the detail is not reopened.
+  const v = saveStandIn({ items: [existingRow], detailItem: { id: existingRow.id },
+    pendingSave: { id: existingRow.id, isCreate: false, name: "Old", previous: existingRow } })
+  v.onSaveItemFinished(0, savedEnvelope(existingRow.id), "")
+  check("an edit does not reopen the detail, and its id still resolves",
+    v.opened.length === 0 && v.items.length === 1 && v.items[0].id === existingRow.id
+    && makePanel(v.items, v.detailItem).paletteItem("detail", existingRow.id) === v.detailItem)
+}
+const paletteConn = panel.slice(panel.indexOf("// Closed when the vault locks"), panel.indexOf("color: Color.menu.scrim"))
+check("an open detail palette closes when the detail's item changes under it",
+  /function onDetailItemChanged\(\) \{\s+if \(!actionPalette\.shown \|\| actionPalette\.fromScreen !== "detail"\) return\s+var detail = root\.vault\.detailItem\s+if \(!detail \|\| String\(detail\.id\) !== actionPalette\.itemId\) actionPalette\.close\(\)/.test(paletteConn))
+{
+  // That handler, run: same id stays open, another id or none closes.
+  const run = (palette, detailItem) => {
+    let closed = 0
+    new Function("actionPalette", "root", functionBody(paletteConn, "onDetailItemChanged") + "\nonDetailItemChanged()")(
+      Object.assign({ close() { closed++ } }, palette), { vault: { detailItem } })
+    return closed
+  }
+  const open = { shown: true, fromScreen: "detail", itemId: "a" }
+  check("palette: a reload of the same item keeps it open", run(open, { id: "a" }) === 0)
+  check("palette: another item, or none, closes it", run(open, { id: "b" }) === 1 && run(open, null) === 1)
+  check("palette: a list palette ignores the detail changing", run({ shown: true, fromScreen: "main", itemId: "a" }, { id: "b" }) === 0
+    && run({ shown: false, fromScreen: "detail", itemId: "a" }, { id: "b" }) === 0)
+}
+
 check("README documents Ctrl+K", (read("README.md").match(/<kbd>Ctrl<\/kbd>\+<kbd>K<\/kbd>/g) || []).length >= 2)
 check("CHANGELOG mentions the palette", /action palette/i.test(read("CHANGELOG.md").split("## [Unreleased]")[1].split(/\n## \[/)[0]))
 

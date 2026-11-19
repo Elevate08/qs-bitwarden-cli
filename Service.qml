@@ -8205,9 +8205,29 @@ Item {
       loadItems()
       return
     }
+    var before = items
     items = spliced
     itemsLoadedAt = Date.now()
     refreshDerivedFromItems()
+    if (save && save.isCreate) followCreatedItem(save.id, before)
+  }
+
+  // A new item's provisional row can be opened while its save runs. Once the
+  // server has given it an id that row is gone, so a detail still open on it
+  // is opened again on the saved item (the one row `before` did not have),
+  // as a click on its row would: any re-prompt and on-demand read apply.
+  function followCreatedItem(provisionalId, before) {
+    if (currentScreen !== "detail" || !detailItem || String(detailItem.id) !== String(provisionalId)) return
+    var known = ({})
+    for (var i = 0; i < before.length; i++) if (before[i]) known[String(before[i].id)] = true
+    var created = null
+    for (var j = 0; j < items.length; j++) {
+      if (!items[j] || known[String(items[j].id)]) continue
+      // More than one new row: no telling which is this save's.
+      if (created) return
+      created = items[j]
+    }
+    if (created) openDetail(created, true)
   }
 
   // The row disappears at once; if the vault refuses, it comes back. A
