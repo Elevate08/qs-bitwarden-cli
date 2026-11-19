@@ -710,6 +710,15 @@ const finishSave = (c, code, out) => {
   r.sshApprovalsCleared()
   check("a key load the agent refused is not asked for again at once, but when the last request is answered",
     quiet && r.lifecycle.join() === "startup", r.lifecycle.join())
+  // A lock or logout cancels the load in flight; the agent may still answer
+  // it (a refused one), after the vault it was for has gone.
+  const x = keyed()
+  vm.runInContext(functionBody(source, "cancelSshAgentLoad"), x)
+  x.loadItems(false)
+  const cancelled = x.sshAgentEpoch
+  x.cancelSshAgentLoad()
+  x.onSshAgentMessage({ type: "load_failed", epoch: cancelled, refused: true })
+  check("a late answer to a key load that a lock cancelled leaves nothing owed", x.ended.join() === "false" && !x.sshAgentLoadRefused)
   const v = keyed()
   v.loadItems(false); v.exit("listProc", 0, vaultOf("a"), "")
   v.sshAgentNextLoadId = LOAD_ID; v.sshPendingCount = 1
