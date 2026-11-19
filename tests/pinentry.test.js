@@ -17,6 +17,14 @@ const { spawn, spawnSync } = require("child_process")
 const { check, eq, done } = createSuite("pinentry")
 const Model = loadModule()
 
+// A null in a Process environment removes the variable (Quickshell and the
+// vault helper both apply it so); spawnSync would pass the word "null".
+function applied(env) {
+  const out = {}
+  for (const k in env) if (env[k] !== null && env[k] !== undefined) out[k] = env[k]
+  return out
+}
+
 const fake = path.join(repoRoot, "tests", "e2e", "bin", "pinentry")
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-pinentry-"))
 const answers = path.join(dir, "answers")
@@ -31,7 +39,7 @@ function run(answer, opts = {}, program = fake, env = {}) {
   const r = spawnSync(argv[0], argv.slice(1), {
     encoding: "utf8", timeout: 20000,
     // The description and error travel in the environment, as the panel runs it.
-    env: Object.assign({}, process.env, Model.pinentryEnvironment(opts), { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log }, env)
+    env: applied(Object.assign({}, process.env, Model.pinentryEnvironment(opts), { FAKE_PINENTRY_ANSWERS: answers, FAKE_PINENTRY_LOG: log }, env))
   })
   return { code: r.status, out: r.stdout, err: r.stderr, log: fs.readFileSync(log, "utf8").split("\n").filter(Boolean) }
 }
@@ -120,7 +128,9 @@ check("the script takes its text from its input, not from its own source",
   const text = JSON.stringify(Model.pinentryCommand(fake, Object.assign({ title: "Bitwarden", prompt: "p" }, opts)))
   check("the account and error text are in no argv", !/you@example|Unlock Bitwarden|Wrong/.test(text), text)
   eq("they are in the environment instead", JSON.stringify(Model.pinentryEnvironment(opts)),
-    JSON.stringify({ QSBW_PE_DESC: opts.description, QSBW_PE_ERR: opts.error }))
+    JSON.stringify({ QSBW_PE_DESC: opts.description, QSBW_PE_ERR: opts.error, NODE_COMPILE_CACHE: null }))
+  check("and an inherited Node compile cache is taken out of it: pinentry is typed the master password",
+    applied(Object.assign({ NODE_COMPILE_CACHE: "/somewhere" }, Model.pinentryEnvironment(opts))).NODE_COMPILE_CACHE === undefined)
 }
 
 // --- the descriptions ----------------------------------------------------------

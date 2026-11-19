@@ -85,7 +85,8 @@ Item {
     runId = -1
     localStarted = false
     local.command = cmd
-    local.environment = env
+    // Built before this start, perhaps well before (vault.bwEnvAtStart()).
+    local.environment = vault.bwEnvAtStart(env)
     local.stdinEnabled = stdinText !== ""
     local.running = true
   }

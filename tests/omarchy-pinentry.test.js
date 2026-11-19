@@ -21,6 +21,14 @@ const { spawn, spawnSync } = require("child_process")
 const { check, eq, done } = createSuite("omarchy-pinentry")
 const Model = loadModule()
 
+// A null in a Process environment removes the variable (Quickshell and the
+// vault helper both apply it so); spawnSync would pass the word "null".
+function applied(env) {
+  const out = {}
+  for (const k in env) if (env[k] !== null && env[k] !== undefined) out[k] = env[k]
+  return out
+}
+
 const frontend = path.join(repoRoot, "pinentry", "omarchy-pinentry")
 const scratch = fs.mkdtempSync(path.join(os.platform() === "linux" ? "/tmp" : os.tmpdir(), "qsbw-ope-"))
 const runtime = path.join(scratch, "run")
@@ -299,7 +307,7 @@ function script(answer, opts = {}, program = frontend) {
   fs.writeFileSync(uiLog, "")
   const argv = Model.pinentryCommand(program, Object.assign({ title: "Bitwarden", prompt: "PIN:" }, opts))
   const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", timeout: 20000,
-    env: Object.assign({}, baseEnv, Model.pinentryEnvironment(opts)) })
+    env: applied(Object.assign({}, baseEnv, Model.pinentryEnvironment(opts))) })
   return { code: r.status, out: r.stdout, starts: uiStarts() }
 }
 

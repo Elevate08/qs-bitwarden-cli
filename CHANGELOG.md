@@ -4,6 +4,39 @@
 
 ### Added
 
+- **Start `bw` faster with Node's compile cache, if you choose to.** A new
+  setting, **Start bw faster with Node's compile cache** (`bwCompileCache`),
+  **off by default**. On, the `bw` commands that are not handed a password
+  (status, sync, lists, item reads, saves and deletes, sends, attachment
+  downloads, the generator, lock and logout) use Node's compile cache
+  (`NODE_COMPILE_CACHE`, Node 22.1+) in
+  `~/.cache/qs-bitwarden-cli/node-compile-cache` (about 11 MB; under
+  `XDG_CACHE_HOME` if that is set). On one machine with bw 2026.2.0, `bw
+  status` took 543 ms instead of 656 ms (17%, median of 11) and `bw
+  --version` 529 ms instead of 647 ms: about a tenth of a second off each of
+  those waits. Unlocking and logging in are not faster: a `bw` that is given
+  the master password or a login's credentials never uses the cache, and
+  the first list read after an unlock runs before the cache has been
+  checked. The cache holds compiled code, nothing of the vault, but Node
+  runs that code inside `bw`, which holds the session key: a program running
+  as you that can write there can run code in `bw`, as it already can by
+  editing the plugin's own files. So the directory is used only after a
+  check (about 19 ms) that it, everything in it and every directory above it
+  are yours (or root's, above it) and writable by no one else, with no
+  symlink inside and a path of printable ASCII; the check runs at shell
+  start, when the setting is turned on and every time the vault is unlocked,
+  and its row in Settings says when it failed. The pinentry, the `bw -v`
+  version probe, `bw login` in a terminal, the `bw logout` that retires a
+  signed-out account and the plugin's own `node -e` checks never use the
+  cache either. Turning the setting off leaves the directory;
+  docs/uninstall.md says where it is.
+- **An inherited `NODE_COMPILE_CACHE` is not passed on.** Whether the new
+  setting is on or off, a `NODE_COMPILE_CACHE` the shell was started with is
+  removed from the environment the plugin gives each `bw` and `node` it
+  starts, and the terminal sign-in's script unsets it and starts its `bw`
+  through `env -u`. What the plugin cannot do is stop your own shell
+  startup file from setting it again: one named by `BASH_ENV` that exports
+  the variable still applies inside the plugin's `bash` scripts.
 - **Taking over Omarchy's password-manager key.** The README's Global hotkey
   section now shows the two `bindings.lua` lines that make
   `SUPER + SHIFT + SLASH` toggle the panel instead of launching 1Password,
@@ -171,6 +204,18 @@
 
 ### Changed
 
+- **Opening the panel works out its suggestions once, not twice.** An open
+  matched the vault against the window it already knew and then again when
+  the focused window was reported. It now matches only when the window, the
+  list or the learned picks have changed since the suggestions on show were
+  made: while the vault and the learned picks are unchanged, once for an
+  open from another window (5,000 items: 14.8 ms to 6.9 ms on one machine;
+  500 items: 1.2 ms to 0.6 ms) and not at all for an open from the same one.
+  Two passes still happen only when both hold: the suggestions for the
+  window last seen are out of date (a pick was learned since) and the open
+  is from a different window, or the window's data cannot be keyed exactly
+  (a number that is not finite). The suggestions are the same, except that an emptied vault
+  and a locked one no longer keep showing the last ones.
 - **Internal cleanup, no behaviour change.** Unused ids, properties and
   test-only model functions are gone, and repeated panel markup and model
   script builders are shared. The helper binaries are untouched.

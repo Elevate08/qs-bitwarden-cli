@@ -2,6 +2,9 @@
 # Fake bw: one account per data directory, like the real one.
 d="${BITWARDENCLI_APPDATA_DIR:-$HOME/.config/Bitwarden CLI}"
 printf '%s\t%s\n' "${BITWARDENCLI_APPDATA_DIR:-<own>}" "$*" >> "$FAKE_BW_LOG"
+# What reached this `bw` as Node's compile cache, in a log of its own (the
+# call log's lines are matched to their end): "<unset>" for none.
+printf '%s\t%s\t%s\n' "${NODE_COMPILE_CACHE-<unset>}" "${BITWARDENCLI_APPDATA_DIR:-<own>}" "$*" >> "$FAKE_BW_LOG.cache"
 mkdir -p "$d"
 state="$d/fake-state"; sess="$d/fake-session"
 logged_in() { [ -f "$state" ]; }

@@ -59,7 +59,9 @@ const vaultProcess = read("VaultProcess.qml")
 const deferredStart = () => {
   const later = []
   const local = { running: true }
-  const scope = { running: false, runId: 0, startSeq: 0, localStarted: false, command: [], stdinText: "", local }
+  // The vault's last word on the environment; tests/bw-compile-cache.test.js
+  // drives the real one.
+  const scope = { running: false, runId: 0, startSeq: 0, localStarted: false, command: [], stdinText: "", local, vault: { bwEnvAtStart: env => env } }
   const make = new Function("scope", "Qt", "local", "proc",
     "with (scope) { " + functionBody(vaultProcess, "runLocally") + "\n"
       + functionBody(vaultProcess, "launchLocal") + "\n"
