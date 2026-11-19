@@ -175,9 +175,12 @@
   matched the vault against the window it already knew and then again when
   the focused window was reported. It now matches only when the window, the
   list or the learned picks have changed since the suggestions on show were
-  made: once for an open from another window (5,000 items: 14.8 ms to 6.9 ms
-  on one machine; 500 items: 1.2 ms to 0.6 ms), not at all for an open from
-  the same one. The suggestions are the same.
+  made: while the vault and the learned picks are unchanged, once for an
+  open from another window (5,000 items: 14.8 ms to 6.9 ms on one machine;
+  500 items: 1.2 ms to 0.6 ms) and not at all for an open from the same one.
+  The first open after a pick was learned, or after the list changed, still
+  matches twice. The suggestions are the same, except that an emptied vault
+  and a locked one no longer keep showing the last ones.
 - **Internal cleanup, no behaviour change.** Unused ids, properties and
   test-only model functions are gone, and repeated panel markup and model
   script builders are shared. The helper binaries are untouched.

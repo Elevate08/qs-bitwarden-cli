@@ -86,8 +86,13 @@ answered. In Node, same machine and fixtures (2026-11-19, p95 of 40 opens,
 matching only): an open from another window than last time went from two
 passes to one, 14.8 ms to 6.9 ms at 5,000 items, 5.3 ms to 2.5 ms at 2,000
 and 1.2 ms to 0.6 ms at 500; an open from the same window, nothing having
-changed, from two passes to none (0.01 ms). The list is still rebuilt on both
-passes. The suite's two `open` columns report this, and
+changed, from two passes to none (0.01 ms). That is while the list and the
+learned picks stay as they were: the first open after either is replaced (a
+reload, a save, a pick learned) from another window still matches twice, the
+stale window first. A window whose data JSON cannot spell exactly (a number
+that is not finite) is given no key and matched every time, and an empty
+list clears the suggestions, as the vault purge does. The list is still
+rebuilt on both passes. The suite's two `open` columns report this, and
 `tests/context-match.test.js` checks the counts and, over 400 random opens,
 reloads, picks and toggles, that what is shown is what a fresh match gives.
 

@@ -5324,8 +5324,19 @@ function findContextualMatches(items, windowData, associations) {
 // spelled out. "" for a window that cannot be spelled, which equals nothing.
 function contextMatchKey(inputsGen, windowData) {
   var text
-  try { text = JSON.stringify(windowData) } catch (e) { return "" }
-  return typeof text === "string" ? String(inputsGen) + "|" + text : ""
+  // JSON writes a number that is not finite as null, and leaves out what it
+  // cannot write at all: two windows the matcher tells apart would then
+  // share a key. Such a window gets none, and is matched every time.
+  var exact = true
+  try {
+    text = JSON.stringify(windowData, function(name, value) {
+      var kind = typeof value
+      if ((kind === "number" && !isFinite(value)) || kind === "undefined" || kind === "function"
+          || kind === "symbol" || kind === "bigint") exact = false
+      return value
+    })
+  } catch (e) { return "" }
+  return exact && typeof text === "string" ? String(inputsGen) + "|" + text : ""
 }
 
 // -------------------------------------------------------------------------

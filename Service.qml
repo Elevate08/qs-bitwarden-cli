@@ -2261,10 +2261,7 @@ Item {
     // its own file.
     associationsWritePending = false
     associations = Model.emptyAssociations()
-    contextMatchKey = ""
-    suggestedItems = []
-    detectedContext = null
-    learnedIds = ({})
+    clearContextMatch()
     syncLoginFieldsToState()
   }
 
@@ -3529,16 +3526,24 @@ Item {
   onItemsChanged: contextInputsGen += 1
   onAssociationsChanged: contextInputsGen += 1
 
+  function clearContextMatch() {
+    contextMatchKey = ""
+    suggestedItems = []
+    detectedContext = null
+    learnedIds = ({})
+  }
+
   function handleActiveWindowDetected(data) {
     activeWindowData = data
     if (!suggestOnOpen) {
-      contextMatchKey = ""
-      suggestedItems = []
-      detectedContext = null
+      clearContextMatch()
       rebuildFilter()
       return
     }
     if (items.length === 0) {
+      // Nothing to suggest from: what an earlier list suggested goes too.
+      clearContextMatch()
+      rebuildFilter()
       return
     }
     var key = Model.contextMatchKey(contextInputsGen, data)
@@ -4694,9 +4699,7 @@ Item {
       associationsClearProc.running = true
     }
     associations = Model.emptyAssociations()
-    contextMatchKey = ""
-    suggestedItems = []
-    detectedContext = null
+    clearContextMatch()
     activeWindowData = null
     cancelFingerprintUnlock()
     fingerprintStored = false
@@ -6848,6 +6851,12 @@ Item {
     foldersLoadedAt = 0
     items = []
     filteredItems = []
+    // What the window suggested came from the list just dropped
+    // (clearContextMatch(), spelled out).
+    contextMatchKey = ""
+    suggestedItems = []
+    detectedContext = null
+    learnedIds = ({})
     organizations = []
     folders = []
     selectedOrg = "all"
