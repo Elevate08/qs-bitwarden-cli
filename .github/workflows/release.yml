@@ -376,6 +376,11 @@ jobs:
     environment:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+    # One group for everything that changes a release, in this workflow and
+    # in publish-on-master.yml: a refill and a publish never interleave.
+    concurrency:
+      group: release-publication
+      cancel-in-progress: false
     permissions:
       contents: write       # create the release and upload its assets
       id-token: write       # mint the OIDC token the attestation is signed with
@@ -419,31 +424,23 @@ jobs:
         # release-something. So the artifacts must be exactly the three this
         # workflow uploads, each holding exactly the files its job makes, as
         # regular files: a missing one or one too many fails the release.
+        # .github/release-assets.txt is the list; publish-on-master.yml holds
+        # the draft to the same file before it takes it public.
         working-directory: ${{ runner.temp }}
         run: |
           # A find that fails must not leave a shorter listing that passes.
           set -o pipefail
-          helpers="qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault"
-          expected="$(
-            {
-              echo "d release-reports"
-              for prefix in "" unlock-key- vault-; do
-                echo "f release-reports/${prefix}dependency-licences.json"
-                for arch in x86_64 aarch64; do
-                  echo "f release-reports/${prefix}dependency-tree-$arch-linux.txt"
-                done
-              done
-              for arch in x86_64 aarch64; do
-                echo "d release-symbols-$arch"
-                for name in $helpers; do
-                  echo "f release-reports/$name-$arch-linux.cdx.json"
-                  echo "f release-symbols-$arch/$name-$arch-linux.debug.gz"
-                done
-              done
-              # The note is the same on every architecture; x86_64 ships it.
-              echo "f release-symbols-x86_64/DEBUG-SYMBOLS.md"
-            } | LC_ALL=C sort
-          )"
+          # The expected listing comes from .github/release-assets.txt as
+          # checked out at the tag: "f <artifact>/<file>" for each line that
+          # names an artifact, and "d <artifact>" once for each artifact.
+          expected="$(awk '
+            /^#/ || !NF { next }
+            $0 !~ /^(checkout|release-[a-z0-9_-]+) [A-Za-z0-9._-]+$/ { exit 1 }
+            $1 != "checkout" { print "f " $1 "/" $2; print "d " $1 }
+          ' "$GITHUB_WORKSPACE/.github/release-assets.txt" | LC_ALL=C sort -u)" && [ -n "$expected" ] || {
+            echo "::error::.github/release-assets.txt is missing, empty or has a line that is not '<source> <name>'"
+            exit 1
+          }
           # Compared as NUL-ended records in files: a name with a newline in
           # it stays one record and matches nothing expected.
           printf '%s\n' "$expected" | tr '\n' '\0' > expected.list
@@ -583,32 +580,29 @@ jobs:
           # A release asset is named by its file name alone, and every
           # architecture's helper has the same one, so each is attached as
           # <name>-<arch>-linux: the same bytes as bin/<arch>-linux/<name>.
-          binaries=()
           for arch in x86_64 aarch64; do
             for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
               cp "bin/$arch-linux/$name" "$dist/$name-$arch-linux"
               cmp "bin/$arch-linux/$name" "$dist/$name-$arch-linux"
-              binaries+=("$dist/$name-$arch-linux")
             done
           done
-          # Every asset by name, never by pattern: the reports and symbols
-          # checked above, and nothing else that may be lying beside them.
-          assets=("$dist/DEBUG-SYMBOLS.md" "$dist/SHA256SUMS" "${binaries[@]}")
-          for prefix in "" unlock-key- vault-; do
-            assets+=("$dist/${prefix}dependency-licences.json")
+          # Every asset by name, never by pattern: the names in
+          # .github/release-assets.txt and nothing else that may be lying
+          # beside them. publish-on-master.yml requires the same names.
+          names="$(awk '!/^#/ && NF == 2 { print $2 }' .github/release-assets.txt)"
+          assets=()
+          for name in $names; do
+            [ -f "$dist/$name" ] || { echo "::error::$name is listed as an asset but was not made"; exit 1; }
+            assets+=("$dist/$name")
           done
-          for arch in x86_64 aarch64; do
-            for prefix in "" unlock-key- vault-; do
-              assets+=("$dist/${prefix}dependency-tree-$arch-linux.txt")
-            done
-            for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
-              assets+=("$dist/$name-$arch-linux.cdx.json" "$dist/$name-$arch-linux.debug.gz")
-            done
-          done
+          [ "${#assets[@]}" -gt 0 ] || { echo "::error::.github/release-assets.txt names no asset"; exit 1; }
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           # A draft: the tag is on a release branch not yet merged to master.
-          # publish-on-master.yml publishes it when the commit lands there.
+          # publish-on-master.yml publishes it when the commit lands there,
+          # after checking the draft again: its assets against the same list,
+          # and the tag against the commit recorded below as the draft's
+          # target.
           # Every job checked, built and attested GITHUB_SHA, but a release
           # goes by tag name: the tag must still name that commit. Asked of
           # the remote without credentials (the repository is public); an
@@ -637,12 +631,27 @@ jobs:
                           else "unknown" end' <<< "$mine")"
           case "$state" in
             absent)
+              # The target is unused for the tag, which exists; it records
+              # the commit these assets were built from, for the publisher.
               gh release create "$TAG" "${assets[@]}" --draft --verify-tag \
+                --target "$GITHUB_SHA" \
                 --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
               ;;
             draft)
               # Only a draft is refilled, which is what re-running this job
-              # does.
+              # does: one made for this commit, holding nothing this
+              # workflow does not make (--clobber replaces by name and would
+              # leave any other asset where it is).
+              built="$(jq -r '.[0].target_commitish' <<< "$mine")"
+              [ "$built" = "$GITHUB_SHA" ] || {
+                echo "::error::draft release $TAG was made for $built, not for $GITHUB_SHA; delete the draft and run again"
+                exit 1
+              }
+              extra="$(jq -r '.[0].assets[].name' <<< "$mine" | grep -vxF -e "$names" || true)"
+              [ -z "$extra" ] || {
+                echo "::error::draft release $TAG holds assets this workflow does not make: $(tr '\n' ' ' <<< "$extra")"
+                exit 1
+              }
               echo "::notice::draft release $TAG exists; uploading assets to it"
               gh release upload "$TAG" "${assets[@]}" --clobber
               ;;

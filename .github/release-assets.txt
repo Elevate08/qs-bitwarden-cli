@@ -1,0 +1,40 @@
+# The assets of a release, one per line: where the file comes from, then its
+# name. Both release workflows read this list and nothing else names an asset.
+#
+#   release-<artifact>  the run artifact that must hold the file; release.yml
+#                       fails unless the run's release-* artifacts are these
+#                       files exactly
+#   checkout            copied from the tagged commit's bin/ by release.yml
+#
+# release.yml uploads exactly these names to the draft. publish-on-master.yml
+# reads the list from the commit the draft was built from and takes the draft
+# public only if the draft holds exactly these names.
+checkout SHA256SUMS
+checkout qs-bitwarden-ssh-agent-x86_64-linux
+checkout qs-bitwarden-unlock-key-x86_64-linux
+checkout qs-bitwarden-vault-x86_64-linux
+checkout qs-bitwarden-ssh-agent-aarch64-linux
+checkout qs-bitwarden-unlock-key-aarch64-linux
+checkout qs-bitwarden-vault-aarch64-linux
+release-reports dependency-licences.json
+release-reports unlock-key-dependency-licences.json
+release-reports vault-dependency-licences.json
+release-reports dependency-tree-x86_64-linux.txt
+release-reports unlock-key-dependency-tree-x86_64-linux.txt
+release-reports vault-dependency-tree-x86_64-linux.txt
+release-reports dependency-tree-aarch64-linux.txt
+release-reports unlock-key-dependency-tree-aarch64-linux.txt
+release-reports vault-dependency-tree-aarch64-linux.txt
+release-reports qs-bitwarden-ssh-agent-x86_64-linux.cdx.json
+release-reports qs-bitwarden-unlock-key-x86_64-linux.cdx.json
+release-reports qs-bitwarden-vault-x86_64-linux.cdx.json
+release-reports qs-bitwarden-ssh-agent-aarch64-linux.cdx.json
+release-reports qs-bitwarden-unlock-key-aarch64-linux.cdx.json
+release-reports qs-bitwarden-vault-aarch64-linux.cdx.json
+release-symbols-x86_64 DEBUG-SYMBOLS.md
+release-symbols-x86_64 qs-bitwarden-ssh-agent-x86_64-linux.debug.gz
+release-symbols-x86_64 qs-bitwarden-unlock-key-x86_64-linux.debug.gz
+release-symbols-x86_64 qs-bitwarden-vault-x86_64-linux.debug.gz
+release-symbols-aarch64 qs-bitwarden-ssh-agent-aarch64-linux.debug.gz
+release-symbols-aarch64 qs-bitwarden-unlock-key-aarch64-linux.debug.gz
+release-symbols-aarch64 qs-bitwarden-vault-aarch64-linux.debug.gz

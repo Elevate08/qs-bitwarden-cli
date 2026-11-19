@@ -55,15 +55,46 @@ publish"), it creates a GitHub build-provenance attestation for all six
 binaries and attaches them to the release as `<name>-<arch>-linux` with SBOMs,
 dependency reports and debug symbols.
 The reports and symbols reach that job as
-artifacts of the run's build jobs. It publishes them only if the artifacts are
-exactly the three the workflow uploads, holding exactly the files it makes,
-and attaches each by name. Before it uploads, the tag must still name the
-commit the run built, and a release that is already published is refused:
-only a draft is created or refilled. What it attests is its own checkout's
-`bin/`: `SHA256SUMS` there must have the digest the earlier job recorded for
-it, passed as a job output, before the binaries are checked against it, and
-the artifacts are unpacked outside the checkout. A manual run publishes
-nothing unless it is on a `v*` tag.
+artifacts of the run's build jobs. `.github/release-assets.txt` lists every
+asset of a release and where it comes from, and both release workflows read
+it. The job publishes the reports and symbols only if the run's `release-*`
+artifacts are exactly the ones that file names, holding exactly those files,
+and uploads the listed names and no others. What it attests is its own
+checkout's `bin/`: `SHA256SUMS` there must have the digest the earlier job
+recorded for it, passed as a job output, before the binaries are checked
+against it, and the artifacts are unpacked outside the checkout. A manual run
+publishes nothing unless it is on a tag named `v` and a version.
+
+The release it makes is a draft, and the draft records the commit it was
+built from as its target. Before uploading, the job asks the server what the
+tag names and stops unless that is the commit it built. A release that is
+already published is never touched. A draft is refilled only by a re-run for
+the same commit, and only if it holds no asset outside the list. A failed
+lookup stops the job.
+
+`.github/workflows/publish-on-master.yml` takes the draft public when its
+commit reaches master. Just before it does, it reads the release from the
+API again and stops unless: there is exactly one release for the tag; the tag
+on the server still names the commit the draft records; that commit is on
+master; and the draft's assets are exactly the names in that commit's
+`.github/release-assets.txt`, each fully uploaded. So an asset added to the
+draft, an upload that was cut short, or a tag moved since the build is not
+published. The two workflows share one concurrency group, so a draft is not
+published while it is being filled.
+
+What this does not do:
+
+- It does not make a tag immutable. The tag is compared with the built commit
+  at upload and again at publication; nothing in the workflows stops a tag
+  being moved between that last check and the publish call a moment later, or
+  after publication. That control is a tag ruleset on `v*` (no update, no
+  deletion), which is repository configuration and cannot be read from these
+  files.
+- The publisher compares asset names and upload state, not asset bytes. The
+  six binaries can be checked against their attestations and `SHA256SUMS`;
+  the reports and symbols have no such check.
+- The commit a draft records is a field of the release. Someone who can edit
+  releases can change it, as they can change the assets.
 
 One CI path writes binaries: `.github/workflows/helper-rebuild.yml`. For a
 same-repository PR into a `release/**` branch whose Rust changes are only plain

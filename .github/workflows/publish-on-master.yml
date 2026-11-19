@@ -1,7 +1,10 @@
 # Publishes the draft release once its tagged commit reaches master, then asks
-# the Omarchy plugin marketplace to verify that commit. Nothing is rebuilt or
-# re-verified: release.yml already did that for this exact commit on the
-# release branch. No other workflow runs on master.
+# the Omarchy plugin marketplace to verify that commit. Nothing is rebuilt:
+# release.yml did that for this exact commit on the release branch. What is
+# checked again, from the server's state and just before publishing, is that
+# the tag still names the commit the draft was built from and that the draft
+# holds exactly the assets release.yml uploads. No other workflow runs on
+# master.
 
 name: publish on master
 
@@ -17,8 +20,9 @@ permissions:
   contents: write
 
 concurrency:
-  # Never race or cancel a publish.
-  group: publish-on-master
+  # Never race or cancel a publish. The group is release.yml's release job's
+  # too, so a draft is never published while that job is filling it.
+  group: release-publication
   cancel-in-progress: false
 
 jobs:
@@ -39,6 +43,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event.before }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -46,41 +51,97 @@ jobs:
           # reachable tags before and after. `git describe` picks the previous
           # release on a merge commit, and `--points-at HEAD` misses non
           # fast-forward merges.
-          git tag --merged HEAD --list 'v*' | sort > /tmp/tags-now
+          git tag --merged HEAD --list 'v*' | sort > "$RUNNER_TEMP"/tags-now
 
           if [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
              && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            git tag --merged "$BEFORE" --list 'v*' | sort > /tmp/tags-before
+            git tag --merged "$BEFORE" --list 'v*' | sort > "$RUNNER_TEMP"/tags-before
           else
             # No usable before-state (first push, force-push, dispatch):
             # consider every reachable tag; published ones are skipped anyway.
             echo "::notice::no usable before-state; considering every reachable tag"
-            : > /tmp/tags-before
+            : > "$RUNNER_TEMP"/tags-before
           fi
 
-          arrived="$(comm -23 /tmp/tags-now /tmp/tags-before)"
+          arrived="$(comm -23 "$RUNNER_TEMP"/tags-now "$RUNNER_TEMP"/tags-before)"
           if [ -z "$arrived" ]; then
             echo "::notice::this push brought no new v* tag onto master; nothing to publish"
             exit 0
           fi
           echo "tags newly on master: $(echo $arrived)"
 
+          # The repository's releases, drafts included, as the API lists
+          # them now. A failed call fails the step; it is never read as "no
+          # release" or as "published".
+          releases="$(gh api --paginate "repos/$REPO/releases?per_page=100")"
+
           published=0
           published_tags=""
           for tag in $arrived; do
-            if ! gh release view "$tag" >/dev/null 2>&1; then
-              # A tag without a release (old or hand-pushed) is skipped, never
-              # invented: releases are only made by release.yml.
-              echo "::notice::no release exists for $tag; skipping"
-              continue
-            fi
-            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" != "true" ]; then
-              echo "::notice::release $tag is already published; skipping"
-              continue
-            fi
-            # Belt and braces: the tagged commit must be on master.
-            if ! git merge-base --is-ancestor "$tag^{commit}" HEAD; then
+            mine="$(jq -cs --arg tag "$tag" '[.[][] | select(.tag_name == $tag)]' <<< "$releases")"
+            state="$(jq -r 'if length == 0 then "absent"
+                            elif length > 1 then "several"
+                            elif .[0].draft == true then "draft"
+                            elif .[0].draft == false then "published"
+                            else "unknown" end' <<< "$mine")"
+            case "$state" in
+              absent)
+                # A tag without a release (old or hand-pushed) is skipped,
+                # never invented: releases are only made by release.yml.
+                echo "::notice::no release exists for $tag; skipping"
+                continue
+                ;;
+              published)
+                echo "::notice::release $tag is already published; skipping"
+                continue
+                ;;
+              draft) ;;
+              *)
+                echo "::error::cannot tell whether release $tag is absent, a draft or published ($state)"
+                exit 1
+                ;;
+            esac
+
+            # The commit release.yml built the draft from: it creates the
+            # draft with that commit as its target. A release field, not an
+            # asset or anything in the tag.
+            built="$(jq -r '.[0].target_commitish' <<< "$mine")"
+            [[ "$built" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::draft release $tag does not record the commit it was built from; refusing to publish"
+              exit 1
+            }
+            # The tag, as the server has it now, must still name that commit
+            # (an annotated tag's commit is on its ^{} line).
+            refs="$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")"
+            tagged=""
+            while read -r sha ref; do
+              case "$ref" in
+                "refs/tags/$tag^{}") tagged="$sha"; break ;;
+                "refs/tags/$tag")    tagged="$sha" ;;
+              esac
+            done <<< "$refs"
+            [ "$tagged" = "$built" ] || {
+              echo "::error::tag $tag names ${tagged:-no commit}, but its draft release was built from $built; refusing to publish"
+              exit 1
+            }
+            # Belt and braces: that commit must be on master.
+            if ! git merge-base --is-ancestor "$built" HEAD; then
               echo "::error::$tag is not an ancestor of master; refusing to publish"
+              exit 1
+            fi
+            # The draft must hold exactly the assets release.yml uploads,
+            # each fully uploaded: the names in that commit's
+            # .github/release-assets.txt, the list release.yml read. One
+            # asset more, one fewer or one cut short is not published.
+            expected="$(git show "$built:.github/release-assets.txt" \
+                         | awk '!/^#/ && NF == 2 { print $2 }' | LC_ALL=C sort)"
+            actual="$(jq -r '.[0].assets[]
+                             | .name + (if .state == "uploaded" then "" else " (\(.state))" end)' <<< "$mine" \
+                       | LC_ALL=C sort)"
+            if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+              echo "::error::draft release $tag does not hold exactly the assets release.yml uploads; refusing to publish"
+              # "<" is expected and missing, ">" is present and unexpected.
+              diff <(echo "$expected") <(echo "$actual" | LC_ALL=C tr -c 'A-Za-z0-9._() \n-' '?') || true
               exit 1
             fi
             gh release edit "$tag" --draft=false

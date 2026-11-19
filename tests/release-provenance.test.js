@@ -200,8 +200,8 @@ for (const arch of ["x86_64", "aarch64"]) {
 }
 // Each is attached as <name>-<arch>-linux, a copy checked against bin/.
 check("every architecture's helpers are published as release assets",
-  /for arch in x86_64 aarch64; do[\s\S]{0,200}?for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do[\s\S]{0,200}?cmp "bin\/\$arch-linux\/\$name" "\$dist\/\$name-\$arch-linux"[\s\S]{0,200}?binaries\+=/.test(releaseJob)
-    && /assets=\([\s\S]*?"\$\{binaries\[@\]\}"\)/.test(releaseJob),
+  /for arch in x86_64 aarch64; do[\s\S]{0,200}?for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do[\s\S]{0,200}?cmp "bin\/\$arch-linux\/\$name" "\$dist\/\$name-\$arch-linux"/.test(releaseJob)
+    && /names="\$\(awk '!\/\^#\/ && NF == 2 \{ print \$2 \}' \.github\/release-assets\.txt\)"/.test(releaseJob),
   "a binary that is attested but not attached cannot be verified by anyone")
 check("the verification command is written down where a reviewer will find it",
   /gh attestation verify/.test(release),
