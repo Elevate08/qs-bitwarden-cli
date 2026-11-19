@@ -625,16 +625,34 @@ jobs:
             echo "::error::tag $TAG names ${tagged:-no commit}, not the $GITHUB_SHA this run built"
             exit 1
           }
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            # Only a draft is refilled, which is what re-running this job
-            # does. A published release is never rewritten.
-            [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ] || {
+          # One lookup: the repository's releases, drafts included, as the
+          # API lists them. A failed call fails the step here; it is never
+          # read as "no release" or as "published".
+          releases="$(gh api --paginate "repos/$REPO/releases?per_page=100")"
+          mine="$(jq -cs --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)]' <<< "$releases")"
+          state="$(jq -r 'if length == 0 then "absent"
+                          elif length > 1 then "several"
+                          elif .[0].draft == true then "draft"
+                          elif .[0].draft == false then "published"
+                          else "unknown" end' <<< "$mine")"
+          case "$state" in
+            absent)
+              gh release create "$TAG" "${assets[@]}" --draft --verify-tag \
+                --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
+              ;;
+            draft)
+              # Only a draft is refilled, which is what re-running this job
+              # does.
+              echo "::notice::draft release $TAG exists; uploading assets to it"
+              gh release upload "$TAG" "${assets[@]}" --clobber
+              ;;
+            published)
+              # A published release is never rewritten.
               echo "::error::release $TAG is already published; its assets are not replaced"
               exit 1
-            }
-            echo "::notice::draft release $TAG exists; uploading assets to it"
-            gh release upload "$TAG" "${assets[@]}" --clobber
-          else
-            gh release create "$TAG" "${assets[@]}" --draft --verify-tag \
-              --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
-          fi
+              ;;
+            *)
+              echo "::error::cannot tell whether release $TAG is absent, a draft or published (${state:-no answer})"
+              exit 1
+              ;;
+          esac
