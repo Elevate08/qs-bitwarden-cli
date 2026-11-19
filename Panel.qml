@@ -574,6 +574,18 @@ Panel {
     return self ? self.y + self.height : 0
   }
 
+  // DetailField in the bar's foreground and font.
+  component VaultField: DetailField {
+    foreground: root.fg
+    fontFamily: root.fontFamily
+  }
+
+  // FormPickerRow in the bar's foreground and font.
+  component PickerRow: FormPickerRow {
+    foreground: root.fg
+    fontFamily: root.fontFamily
+  }
+
   // A form row: label, optional caption note, and a NumberEntry.
   component NumberRow: Row {
     id: numberRow
@@ -1311,7 +1323,6 @@ Panel {
               spacing: Style.space(8)
 
               Text {
-                id: sshCooldownBannerText
                 textFormat: Text.PlainText
                 text: root.vault.sshCooldownStatus.message
                 color: root.fg
@@ -1626,29 +1637,12 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Column {
+          ScreenIntro {
+            panel: root
             width: parent.width
-            spacing: Style.space(4)
-
-            Text {
-              textFormat: Text.PlainText
-              text: "Accounts"
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
-              text: "Each account keeps its own sign-in and its own PIN, fingerprint and FIDO2 unlock. "
-                + "Only one is unlocked at a time: switching locks the current one."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
+            title: "Accounts"
+            body: "Each account keeps its own sign-in and its own PIN, fingerprint and FIDO2 unlock. "
+              + "Only one is unlocked at a time: switching locks the current one."
           }
 
           Repeater {
@@ -1725,28 +1719,11 @@ Panel {
 
             PanelSeparator { width: parent.width }
 
-            Column {
+            ScreenIntro {
+              panel: root
               width: parent.width
-              spacing: Style.space(4)
-
-              Text {
-                textFormat: Text.PlainText
-                text: "Enable fingerprint unlock"
-                color: root.fg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.title
-                font.bold: true
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                width: parent.width
-                text: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
-              }
+              title: "Enable fingerprint unlock"
+              body: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
 
               Text {
                 textFormat: Text.PlainText
@@ -2053,56 +2030,22 @@ Panel {
                 }
               }
 
-              Row {
+              NumberRow {
                 visible: root.vault.genOpts.numbers
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(170)
-                  text: "Minimum numbers"
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                NumberEntry {
-                  anchors.verticalCenter: parent.verticalCenter
-                  value: root.vault.genOpts.minNumber
-                  from: 0
-                  to: 9
-                  stepSize: 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.vault.setGenOpt("minNumber", v) }
-                }
+                label: "Minimum numbers"
+                value: root.vault.genOpts.minNumber
+                from: 0
+                to: 9
+                onModified: function(v) { root.vault.setGenOpt("minNumber", v) }
               }
 
-              Row {
+              NumberRow {
                 visible: root.vault.genOpts.special
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(170)
-                  text: "Minimum special"
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                NumberEntry {
-                  anchors.verticalCenter: parent.verticalCenter
-                  value: root.vault.genOpts.minSpecial
-                  from: 0
-                  to: 9
-                  stepSize: 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.vault.setGenOpt("minSpecial", v) }
-                }
+                label: "Minimum special"
+                value: root.vault.genOpts.minSpecial
+                from: 0
+                to: 9
+                onModified: function(v) { root.vault.setGenOpt("minSpecial", v) }
               }
             }
 
@@ -2189,31 +2132,14 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Column {
+          ScreenIntro {
+            panel: root
             width: parent.width
-            spacing: Style.space(4)
-
-            Text {
-              textFormat: Text.PlainText
-              text: "Set an unlock PIN"
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
-              text: "Your master password is already stored encrypted and sealed to this machine; this adds a way for the PIN "
-                + "to open it, through a deliberately slow key derivation. Use " + Model.pinRecommendedLength()
-                + " digits or more; " + Model.pinMinLength()
-                + " is the floor, and every extra digit multiplies an attacker's work by ten."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
+            title: "Set an unlock PIN"
+            body: "Your master password is already stored encrypted and sealed to this machine; this adds a way for the PIN "
+              + "to open it, through a deliberately slow key derivation. Use " + Model.pinRecommendedLength()
+              + " digits or more; " + Model.pinMinLength()
+              + " is the floor, and every extra digit multiplies an attacker's work by ten."
           }
 
           Column {
@@ -2339,30 +2265,13 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Column {
+          ScreenIntro {
+            panel: root
             width: parent.width
-            spacing: Style.space(4)
-
-            Text {
-              textFormat: Text.PlainText
-              text: root.vault.missingRequired.length > 0 ? "One more step" : "All set"
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              width: parent.width
-              text: root.vault.missingRequired.length > 0
-                ? "The plugin drives these tools rather than bundling them. Install the required ones below and the panel picks them up on its own -- no terminal work to come back from."
-                : "Every required tool is installed. Optional ones below unlock extra features."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
+            title: root.vault.missingRequired.length > 0 ? "One more step" : "All set"
+            body: root.vault.missingRequired.length > 0
+              ? "The plugin drives these tools rather than bundling them. Install the required ones below and the panel picks them up on its own -- no terminal work to come back from."
+              : "Every required tool is installed. Optional ones below unlock extra features."
           }
 
           Repeater {
@@ -2828,7 +2737,6 @@ Panel {
             }
 
             Column {
-              id: versionInfo
               width: parent.width
               spacing: Style.space(4)
 
@@ -3911,7 +3819,6 @@ Panel {
                         }
 
                         Text {
-                          id: rowSubtitle
                           textFormat: Text.PlainText
                           text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
                           color: root.dim
@@ -4351,15 +4258,13 @@ Panel {
                 }
 
                 // FIELD: Username
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && root.vault.detailItem.username !== ""
                   label: "Username / Email"
                   copyLabel: "Username"
                   shortcutHint: "u"
                   copyIcon: ""
                   value: root.vault.detailItem ? root.vault.detailItem.username : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailItem ? root.vault.detailItem.username : "", "Username")
                 }
 
@@ -4722,25 +4627,21 @@ Panel {
                 // FIELDS: Card
                 // -----------------------------------------------------------
                 // Expiry shown as one value.
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Cardholder Name"
                   value: root.vault.detailCard ? root.vault.detailCard.cardholderName : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.cardholderName : "", "Cardholder name")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Brand"
                   value: root.vault.detailCard ? root.vault.detailCard.brand : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.brand : "", "Brand")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Card Number"
                   copyLabel: "Card number"
@@ -4749,22 +4650,18 @@ Panel {
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("cardNumber")
                   value: root.vault.shownSecret("cardNumber", root.vault.detailCard ? root.vault.detailCard.number : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("cardNumber")
                   onCopyRequested: root.copyDetailSecret("cardNumber", "Card number")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Expires"
                   value: root.vault.detailCardExpiry
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailCardExpiry, "Expiry")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Security Code"
                   copyLabel: "Security code"
@@ -4772,8 +4669,6 @@ Panel {
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("cardCode")
                   value: root.vault.shownSecret("cardCode", root.vault.detailCard ? root.vault.detailCard.code : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("cardCode")
                   onCopyRequested: root.copyDetailSecret("cardCode", "Security code")
                 }
@@ -4782,89 +4677,73 @@ Panel {
                 // FIELDS: Identity
                 // -----------------------------------------------------------
                 // Every field is declared; DetailField hides the empty ones.
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Name"
                   value: root.vault.detailIdentityName
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentityName, "Name")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Username"
                   shortcutHint: "u"
                   value: root.vault.detailIdentity ? root.vault.detailIdentity.username : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.username : "", "Username")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Company"
                   value: root.vault.detailIdentity ? root.vault.detailIdentity.company : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.company : "", "Company")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Email"
                   shortcutHint: "c"
                   value: root.vault.detailIdentity ? root.vault.detailIdentity.email : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.email : "", "Email")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Phone"
                   value: root.vault.detailIdentity ? root.vault.detailIdentity.phone : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.phone : "", "Phone")
                 }
 
                 // Masked like a password (and unlike one, not rotatable).
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Social Security Number"
                   copyLabel: "SSN"
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("ssn")
                   value: root.vault.shownSecret("ssn", root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("ssn")
                   onCopyRequested: root.copyDetailSecret("ssn", "SSN")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Passport Number"
                   copyLabel: "Passport number"
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("passportNumber")
                   value: root.vault.shownSecret("passportNumber", root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("passportNumber")
                   onCopyRequested: root.copyDetailSecret("passportNumber", "Passport number")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Licence Number"
                   copyLabel: "Licence number"
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("licenseNumber")
                   value: root.vault.shownSecret("licenseNumber", root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("licenseNumber")
                   onCopyRequested: root.copyDetailSecret("licenseNumber", "Licence number")
                 }
@@ -4929,7 +4808,7 @@ Panel {
                     id: customFieldRepeater
                     model: root.vault.detailItem ? root.vault.detailItem.fields : []
 
-                    delegate: DetailField {
+                    delegate: VaultField {
                       required property var modelData
                       required property int index
                       // The helper names a field by its place in the item's own list.
@@ -4940,8 +4819,6 @@ Panel {
                       value: root.vault.shownSecret(revealKey, modelData.value)
                       sensitive: Boolean(modelData.sensitive)
                       revealed: root.vault.isFieldRevealed(revealKey)
-                      foreground: root.fg
-                      fontFamily: root.fontFamily
                       onRevealToggled: root.toggleProtectedReveal(revealKey)
                       // Hidden fields are protected; plain ones are not.
                       onCopyRequested: {
@@ -5005,7 +4882,6 @@ Panel {
 
         // The filter bar, under both panes when they are side by side.
         Column {
-          id: vaultFilterBar
           // Wherever the list is drawn. Stated outright: reading the panes'
           // own `visible` made a binding loop.
           visible: root.vault.status === "unlocked"
@@ -5023,7 +4899,6 @@ Panel {
 
           // The open group: a pinned header, then up to five scrolling rows.
           Column {
-            id: filterDrawer
             width: parent.width
             height: root.vault.filterDrawerHeight
             visible: height > 0
@@ -5472,10 +5347,8 @@ Panel {
                     width: folderPickList.width - root.scrollGutter
                     spacing: Style.space(2)
 
-                    FormPickerRow {
+                    PickerRow {
                       width: parent.width
-                      foreground: root.fg
-                      fontFamily: root.fontFamily
                       label: "No Folder"
                       glyph: "\u{F0256}"
                       picked: !root.vault.formFolderId
@@ -5484,11 +5357,9 @@ Panel {
 
                     Repeater {
                       model: root.vault.folders
-                      delegate: FormPickerRow {
+                      delegate: PickerRow {
                         required property var modelData
                         width: parent.width
-                        foreground: root.fg
-                        fontFamily: root.fontFamily
                         label: modelData.name
                         glyph: "\u{F024B}"
                         picked: root.vault.formFolderId === modelData.id
@@ -5564,10 +5435,8 @@ Panel {
                     width: orgPickList.width - root.scrollGutter
                     spacing: Style.space(2)
 
-                    FormPickerRow {
+                    PickerRow {
                       width: parent.width
-                      foreground: root.fg
-                      fontFamily: root.fontFamily
                       label: "My Vault"
                       glyph: "\u{F0004}"
                       picked: !root.vault.formOrgId || root.vault.formOrgId === "personal"
@@ -5576,11 +5445,9 @@ Panel {
 
                     Repeater {
                       model: root.vault.organizations
-                      delegate: FormPickerRow {
+                      delegate: PickerRow {
                         required property var modelData
                         width: parent.width
-                        foreground: root.fg
-                        fontFamily: root.fontFamily
                         label: modelData.name
                         glyph: "\u{F0991}"
                         picked: root.vault.formOrgId === modelData.id
@@ -5653,11 +5520,9 @@ Panel {
 
                       Repeater {
                         model: root.vault.formCollections
-                        delegate: FormPickerRow {
+                        delegate: PickerRow {
                           required property var modelData
                           width: parent.width
-                          foreground: root.fg
-                          fontFamily: root.fontFamily
                           label: modelData.name
                           glyph: "\u{F0290}"
                           picked: root.vault.isFormCollectionSelected(modelData.id)

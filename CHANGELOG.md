@@ -157,6 +157,9 @@
   The first such open after an unlock, sync or save still reads.
 - **Window-title suggestions cost less on a large vault**: about 9 ms
   instead of 14.5 ms for 5,000 items on the same machine, same suggestions.
+- **Internal cleanup, no behaviour change.** Unused ids, properties and
+  test-only model functions are gone, and repeated panel markup and model
+  script builders are shared. The helper binaries are untouched.
 
 ### Fixed
 

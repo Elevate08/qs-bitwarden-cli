@@ -134,8 +134,8 @@ check("the attachment id and item id are quoted, never interpolated bare",
 check("the decrypted file name never reaches argv, which /proc shows every local user",
   Model.attachmentDownloadCommand.length === 3 && !/codes|name=/.test(cmd.join("\n")), script)
 check("it travels in the environment, already sanitised",
-  Model.attachmentDownloadEnv("../../codes.txt")[Model.attachmentNameEnvVar()] === "codes.txt"
-    && Model.attachmentNameEnvVar() === "QSBW_ATTACHMENT_NAME",
+  Model.attachmentDownloadEnv("../../codes.txt")[Model.ATTACHMENT_NAME_ENV] === "codes.txt"
+    && Model.ATTACHMENT_NAME_ENV === "QSBW_ATTACHMENT_NAME",
   JSON.stringify(Model.attachmentDownloadEnv("../../codes.txt")))
 check("the panel hands the download its name only through the environment",
   /attachmentDownloadCommand\(job\.id, job\.itemId, job\.size\)/.test(bodyOf("pumpAttachmentQueue"))
@@ -198,7 +198,7 @@ check("a quote in the attachment id cannot break out of its quoting",
   hostile[2].indexOf("bw get attachment --itemid 'i'\\''d'") !== -1
     && hostile[2].indexOf("-- 'a'\\''1'") !== -1, hostile[2])
 check("a traversing name is sanitised before it reaches the environment",
-  Model.attachmentDownloadEnv("../../.bashrc")[Model.attachmentNameEnvVar()] === "bashrc",
+  Model.attachmentDownloadEnv("../../.bashrc")[Model.ATTACHMENT_NAME_ENV] === "bashrc",
   JSON.stringify(Model.attachmentDownloadEnv("../../.bashrc")))
 
 // --- path helpers the detail view uses ---------------------------------------

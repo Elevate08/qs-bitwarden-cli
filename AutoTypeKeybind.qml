@@ -72,7 +72,6 @@ Column {
   }
 
   LineField {
-    id: chordField
     visible: section.choosing
     width: parent.width
     placeholderText: Model.autoTypeChordSuggestions()[0]

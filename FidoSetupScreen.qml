@@ -29,28 +29,11 @@ Column {
 
   PanelSeparator { width: parent.width }
 
-  Column {
+  ScreenIntro {
+    panel: screen.panel
     width: parent.width
-    spacing: Style.space(4)
-
-    Text {
-      textFormat: Text.PlainText
-      text: "Enable FIDO2 unlock"
-      color: panel.fg
-      font.family: panel.fontFamily
-      font.pixelSize: Style.font.title
-      font.bold: true
-    }
-
-    Text {
-      textFormat: Text.PlainText
-      width: parent.width
-      text: "Your master password is already stored encrypted and sealed to this machine. A touch asks the key for a secret only it can produce, and enabling this lets that secret open the password, so unlocking needs the key itself."
-      color: panel.dim
-      font.family: panel.fontFamily
-      font.pixelSize: Style.font.bodySmall
-      wrapMode: Text.WordWrap
-    }
+    title: "Enable FIDO2 unlock"
+    body: "Your master password is already stored encrypted and sealed to this machine. A touch asks the key for a secret only it can produce, and enabling this lets that secret open the password, so unlocking needs the key itself."
   }
 
   // No key registered by Omarchy yet.

@@ -33,7 +33,7 @@ check("the setup screen reads the binding while auto-type is on",
 {
   const unbound = Model.autoTypeKeybindState(Model.parseAutoTypeKeybindInspection("home=1\nbinds=[]\nrequires=1\nfile=present\n---\n"))
   const boundState = Model.autoTypeKeybindState(Model.parseAutoTypeKeybindInspection(
-    "home=1\nbinds=\nrequires=1\nfile=present\n---\n" + Model.autoTypeBindComment() + "\n"
+    "home=1\nbinds=\nrequires=1\nfile=present\n---\n" + Model.AUTO_TYPE_BIND_COMMENT + "\n"
       + Model.autoTypeBindLine("SUPER + ALT + A") + "\n"))
   check("setup says to register a key, or which key it is",
     /^No keybinding yet: register one under Settings > General > Auto-type logins\.$/.test(unbound.setupNote)

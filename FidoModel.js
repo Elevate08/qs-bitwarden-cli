@@ -17,12 +17,6 @@ function fidoSetupCommand() {
     "omarchy setup security fido2"]
 }
 
-// The only supported removal: it also unwires the system's own prompts.
-function fidoRemoveCommand() {
-  return ["omarchy", "launch", "floating", "terminal", "with", "presentation",
-    "omarchy remove security fido2"]
-}
-
 // One capped round trip of `key=value` lines: libfido2 tools installed, a
 // registration present (regular non-empty file, not a symlink), a key plugged
 // in, and the rp. Then per registered credential of this user, which plugged-in

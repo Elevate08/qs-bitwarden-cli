@@ -17,7 +17,7 @@ const Model = loadModule()
 const { check, eq, done } = createSuite("auto-type-keybind")
 
 const COMMAND = "omarchy-shell io.github.elevate08.qs-bitwarden-cli autoType"
-const COMMENT = Model.autoTypeBindComment()
+const COMMENT = Model.AUTO_TYPE_BIND_COMMENT
 const lineFor = chord => `o.bind("${chord}", "Bitwarden auto-type", "${COMMAND}")`
 
 // --- the chord grammar --------------------------------------------------------
