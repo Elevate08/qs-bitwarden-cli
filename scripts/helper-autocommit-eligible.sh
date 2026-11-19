@@ -88,10 +88,13 @@ while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
     agent/*|unlock-key/*|vault/*) blocked+=("$path") ;;
   esac
 done <"$raw"
-# The names are the pull request's: shell-escaped (%q), so one cannot break
-# the line and start another that the runner would read as a command (`::`).
+# The names are the pull request's: every character outside a plain path's
+# is shown as `?`, so a name cannot break the line or spell a runner command
+# (`::`, `##[`) in the log.
+shown=""
+for path in "${blocked[@]}"; do shown+="${shown:+ }${path//[^A-Za-z0-9._\/@+-]/?}"; done
 [ "${#blocked[@]}" -eq 0 ] \
-  || no "dependencies, toolchain, build configuration, scripts or workflows changed ($(printf '%q ' "${blocked[@]}" | sed 's/ $//')); rebuild by hand"
+  || no "dependencies, toolchain, build configuration, scripts or workflows changed ($shown); rebuild by hand"
 
 echo "helper-autocommit: eligible" >&2
 echo yes

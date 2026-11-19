@@ -86,7 +86,9 @@ jobs:
         run: |
           set -o pipefail
           verdict="no"
-          if ! gate="$(git show "$BASE_SHA:scripts/helper-autocommit-eligible.sh")"; then
+          if ! [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::warning::not eligible: the event gave no base and head commit"
+          elif ! gate="$(git show "$BASE_SHA:scripts/helper-autocommit-eligible.sh")"; then
             echo "::warning::not eligible: the gate script could not be read from the base commit $BASE_SHA"
           elif ! answer="$(printf '%s\n' "$gate" | bash)"; then
             echo "::warning::not eligible: the gate script failed before it answered"

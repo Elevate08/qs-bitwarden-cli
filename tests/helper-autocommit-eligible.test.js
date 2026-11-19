@@ -135,10 +135,9 @@ verdict("an unfetched base is not eligible", { "agent/src/main.rs": "b\n" }, "no
 // The reason names the PR's files; a name must not be able to start a log
 // line of its own, where the runner reads `::` as a command.
 {
-  // (Unquoted, the first name is a glob that matches the second, whole.)
-  const { out, err } = gate({ "x*/Cargo.toml": "b\n", "x\n::error::forged/Cargo.toml": "b\n" })
+  const { out, err } = gate({ "x\n::error::forged/Cargo.toml": "b\n", "y##[warning]forged/Cargo.toml": "b\n" })
   check("a file name cannot put a workflow command in the gate's log",
-    out === "no" && /forged/.test(err) && !/^::/m.test(err), `got ${out}: ${err}`)
+    out === "no" && /forged/.test(err) && !/::|##\[|\n./.test(err.trim()), `got ${out}: ${err}`)
 }
 
 fs.rmSync(tmp, { recursive: true, force: true })
