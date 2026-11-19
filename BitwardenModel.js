@@ -4768,8 +4768,8 @@ function hasWholeWord(haystack, word) {
   // over a large vault. A lowercase ASCII word can only match where it, or
   // its ASCII capitals, stand in the text, so its absence from the lowercased
   // text settles it. Any other word goes to the expression as before.
-  // Only for a string: anything else is the expression's to coerce.
-  if (typeof haystack === "string" && /^[a-z0-9-]+$/.test(word)
+  // Only for two strings: anything else is the expression's to coerce.
+  if (typeof haystack === "string" && typeof word === "string" && /^[a-z0-9-]+$/.test(word)
       && haystack.toLowerCase().indexOf(word) === -1) return false
   var escaped = escapeRegExp(word)
   return new RegExp("(?:^|[^a-z0-9])" + escaped + "(?:$|[^a-z0-9])", "i").test(haystack)

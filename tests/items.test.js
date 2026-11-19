@@ -466,14 +466,27 @@ check("finding an item by id returns null rather than throwing when absent",
     check("replacing a row drops what is not a row and still sorts",
       Model.replaceItemById(holed, "id-1", null).length === 4097,
       "a null past the old cap reached the comparator and threw")
-    // An index read must never happen for a length that is no list's.
-    const trap = new Proxy({ length: Infinity }, { get: (t, k) => {
-      if (k === "length") return Infinity
+    // An index read must never happen for a length that is no list's:
+    // each function, for an endless length and for a finite unsafe one.
+    const trap = length => new Proxy({}, { get: (t, k) => {
+      if (k === "length") return length
       throw new Error("read index " + String(k))
     } })
-    let trapped = "none"
-    try { Model.replaceItemById(trap, "id-1", null); Model.findItemById(trap, "id-1") } catch (e) { trapped = e.message }
-    check("an impossible length is refused before any row is read", trapped === "none", trapped)
+    for (const length of [Infinity, 9007199254740992]) {
+      for (const [name, run] of [["replaceItemById", l => Model.replaceItemById(l, "id-1", null)],
+        ["findItemById", l => Model.findItemById(l, "id-1")]]) {
+        let trapped = "none"
+        try { run(trap(length)) } catch (e) { trapped = e.message }
+        check(name + " refuses length " + length + " before any row is read", trapped === "none", trapped)
+      }
+    }
+    // A match at the front is returned without reading the rest: no copy.
+    const lazy = { length: 2, 0: big[0] }
+    Object.defineProperty(lazy, 1, { get() { throw new Error("read past the match") } })
+    let read = "none"
+    let hit = null
+    try { hit = Model.findItemById(lazy, "id-0") } catch (e) { read = e.message }
+    check("a lookup stops at its match and copies nothing", hit === big[0] && read === "none", read)
   }
   check("...removing one leaves 4,999, and a non-list is an empty list",
     Model.replaceItemById(arrayLike, "id-4999", null).length === 4999

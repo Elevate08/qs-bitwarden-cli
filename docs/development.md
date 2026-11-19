@@ -71,7 +71,8 @@ machine.
 On 2026-11-19 (Node 22.23.3, three runs each) the contextual-match p95 went
 from 14.4-15.4 ms to 8.9-9.2 ms on the 5,000-item tier and from 6.7 ms to
 5.3 ms on the 2,000-item tier, when `hasWholeWord()` stopped building a
-RegExp for a word that is not in the title at all; the two smaller tiers moved
+RegExp for a word of lowercase ASCII letters, digits and hyphens that is
+not in the lowercased title (any other word still builds one); the two smaller tiers moved
 within their noise (about 2 ms and under 1 ms), and parse and filter did not
 change.
 

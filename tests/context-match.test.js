@@ -370,6 +370,15 @@ check("the newest lesson survives trimming",
     Model.hasWholeWord(123, "123") === true && Model.hasWholeWord(123, "12") === false
       && Model.hasWholeWord({ toString() { return "my site" } }, "site") === true
       && Model.hasWholeWord(["a", "site"], "site") === true)
+  {
+    // Coerced once, by the expression: a word that reads differently the
+    // second time must not be judged by the shortcut first.
+    let reads = 0
+    const shifty = { toString() { return reads++ === 0 ? "site" : "zzz" } }
+    check("a word that is not a string is the expression's to coerce as well",
+      Model.hasWholeWord("my site", shifty) === true && reads === 1
+        && Model.hasWholeWord("a 123 b", 123) === true && Model.hasWholeWord("a 123 b", 12) === false)
+  }
   // The point of the shortcut: no RegExp is built for a word that is absent.
   // Literals do not go through the constructor, so counting it counts those.
   const RealRegExp = RegExp

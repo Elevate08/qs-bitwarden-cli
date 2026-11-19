@@ -156,12 +156,12 @@
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.
-- **Items past the 4,096th can be opened.** In a vault with more than 4,096
-  items, looking a row up by id stopped at the 4,096th, so opening, editing,
-  deleting or auto-typing a later item found nothing. The lookup now scans
-  the whole list, without copying it. A save or delete in such a vault also
-  cut the list on screen to 4,096 rows until the next reload; it no longer
-  does.
+- **Vaults with more than 4,096 items.** Looking an item up by id stopped
+  at the 4,096th, so whatever finds its item that way (auto-type, an edit or
+  delete already under way, a detail reopened by id) found nothing for a
+  later one. A save or delete also dropped the rows past that point from the
+  list on screen until the next reload. Both now work over the whole list,
+  without copying it.
 
 ## [1.13.1] - 2026-11-18
 
