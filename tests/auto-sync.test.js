@@ -261,13 +261,24 @@ for (const code of [0, 1]) {
   eq("but not a message something else put up since", u.errorMessage, "An unrelated edit failed")
   u.errorMessage = blocked; u.beginVaultRead("items"); u.onListFinished("[]")
   eq("nor one it no longer owns", u.errorMessage, blocked)
+  // Dropping the vault (lock, logout, account switch) takes a list-read
+  // message and its marker with it, and nothing else.
+  const d = fixture(); d.dependencies = noJq; d.loadItems(false)
+  let dropped = "threw"
+  try { d.dropVaultState(); dropped = d.errorMessage + "|" + d.listReadError } catch (e) { dropped = "threw: " + e.message }
+  eq("dropping the vault drops its list-read message and the marker", dropped, "|")
+  const k = fixture(); k.dependencies = noJq; k.loadItems(false); k.errorMessage = "An unrelated edit failed"
+  try { k.dropVaultState() } catch (e) { k.errorMessage = "threw: " + e.message }
+  check("but keeps a message something else put up", k.errorMessage === "An unrelated edit failed" && k.listReadError === "",
+    k.errorMessage + "|" + k.listReadError)
   const exited = functionBody(source, "onListProcessExited")
   check("a failed list read records the message it showed",
     /errorMessage = Model\.vaultListFailureMessage\(stderrText, dependencies, listReadMode\)\s*listReadError = errorMessage/.test(exited),
     exited)
   const finished = functionBody(source, "onListFinished")
+  const staleAt = finished.indexOf('vaultReadIsStale("items")) return')
   check("a stale list result clears nothing",
-    finished.indexOf('vaultReadIsStale("items")) return') < finished.indexOf("listReadError"), finished)
+    staleAt >= 0 && staleAt < finished.indexOf("listReadError"), finished)
 }
 check("timer belongs to the shared service", /id: autoSyncTimer/.test(source)
   && !/id: autoSyncTimer/.test(read("Panel.qml")), "one timer across monitors")
