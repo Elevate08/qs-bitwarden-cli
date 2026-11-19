@@ -209,6 +209,21 @@
   is divided out after; the signature is byte for byte the same. The advisory
   has no fixed release and stays listed in `deny.toml`. Ed25519 keys never
   had the problem. This needs the rebuilt SSH agent helper.
+- **A forwarded login's server is shown as the remote host's claim when
+  that is all it is.** With agent forwarding (`ssh -A`), everything after
+  your own `ssh`'s forwarding bind is written by the remote host, and it
+  could send a session bind of its own naming any server. The prompt showed
+  that as "Server host key SHA256:…", a fingerprint that checks out with
+  `ssh-keygen -lF` and proves nothing. The helper now records which binds
+  came from the remote host, never lets one replace a bind your own `ssh`
+  sent for the same session, and marks a login whose server only such a bind
+  names (`hostKeyClaimed`); the card (in the warning colour), the
+  notification and `sshPending` then read "Server claimed by the remote
+  host, not verified: SHA256:…". A host-bound login, whose host key is in
+  the signed data, is not marked. Forwarded requests could already neither
+  open nor use a grant. With a helper from before this change the panel
+  treats every forwarded login's server as claimed. This needs the rebuilt
+  SSH agent helper.
 
 ### Changed
 

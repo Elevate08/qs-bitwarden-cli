@@ -49,7 +49,9 @@ pub enum AgentRequest {
     /// `is_forwarding` is true on one relaying a remote host's requests. The
     /// host key and session id name the server a later login on that session
     /// goes to. The server's signature over them is not checked, so the host
-    /// is what the client reports, shown as such.
+    /// is what the sender of the bind reports, shown as such: the local
+    /// client, or on a connection already forwarded the remote host
+    /// (`SessionBinding::relayed`).
     SessionBind {
         forwarding: bool,
         binding: SessionBinding,
@@ -62,6 +64,24 @@ pub enum AgentRequest {
 pub struct SessionBinding {
     pub session_id: Vec<u8>,
     pub host_key: String,
+    /// Arrived on a connection that was already forwarded (or had a bind
+    /// refused), so the remote host wrote it and may name any server it
+    /// likes. Set by the connection (`server::record_bind`); a bind is
+    /// decoded with it false.
+    pub relayed: bool,
+}
+
+/// What a sign request asks for, with what is known of where a login's
+/// server came from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Classified {
+    pub kind: SignKind,
+    /// The login's server is named only by a bind the remote host of a
+    /// forwarded connection sent: its claim, which nothing here checks. Never
+    /// set when the host key is in the signed data (the host-bound method),
+    /// since that signature is of no use on another server, nor when the
+    /// local client's own bind names it.
+    pub host_claimed: bool,
 }
 
 /// What a sign request asks for, read from the signed data. Grants are scoped
@@ -113,10 +133,22 @@ impl SignKind {
 /// length prefix exceeds the frame limit). `binds` are the connection's
 /// session binds, which name the server a login goes to.
 pub fn classify_sign(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> SignKind {
+    classify(public_blob, message, binds).kind
+}
+
+/// `classify_sign`, and whether a login's server is only the remote host's
+/// claim.
+pub fn classify(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Classified {
     if let Some(namespace) = sshsig_namespace(message) {
-        return SignKind::SshSig { namespace };
+        return Classified {
+            kind: SignKind::SshSig { namespace },
+            host_claimed: false,
+        };
     }
-    userauth(public_blob, message, binds).unwrap_or(SignKind::Other)
+    userauth(public_blob, message, binds).unwrap_or(Classified {
+        kind: SignKind::Other,
+        host_claimed: false,
+    })
 }
 
 /// SHA256 fingerprint of an SSH public key blob, as `ssh-keygen -l` prints it.
@@ -143,7 +175,12 @@ fn sshsig_namespace(message: &[u8]) -> Option<String> {
 /// the signing key, as OpenSSH's agent requires. The server is the host key
 /// of the bind for this session, or the host-bound method's own; if both are
 /// present they must agree, as OpenSSH's agent requires, or it is `Other`.
-fn userauth(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Option<SignKind> {
+///
+/// The bind is the newest for the session that the local client sent; only
+/// without one, the newest the remote host of a forwarded connection sent
+/// (`relayed`). So a remote host cannot rename a session its local client
+/// bound, and where it names one itself the result says so (`host_claimed`).
+fn userauth(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Option<Classified> {
     let mut fields = message;
     let session_id = Vec::<u8>::decode(&mut fields).ok()?;
     if u8::decode(&mut fields).ok()? != USERAUTH_REQUEST {
@@ -174,18 +211,25 @@ fn userauth(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Opt
     if !fields.is_empty() || key != public_blob {
         return None;
     }
-    let bound_host = binds
-        .iter()
-        .rev()
-        .find(|bind| bind.session_id == session_id)
-        .map(|bind| bind.host_key.clone());
+    let newest = |relayed: bool| {
+        binds
+            .iter()
+            .rev()
+            .find(|bind| bind.relayed == relayed && bind.session_id == session_id)
+    };
+    let bind = newest(false).or_else(|| newest(true));
+    let host_claimed = signed_host.is_none() && bind.is_some_and(|bind| bind.relayed);
+    let bound_host = bind.map(|bind| bind.host_key.clone());
     let host = match (bound_host, signed_host) {
         (Some(bound), Some(signed)) if bound != signed => return None,
         (bound, signed) => bound.or(signed).unwrap_or_default(),
     };
-    Some(SignKind::UserAuth {
-        user: display_detail(user)?,
-        host,
+    Some(Classified {
+        kind: SignKind::UserAuth {
+            user: display_detail(user)?,
+            host,
+        },
+        host_claimed,
     })
 }
 
@@ -286,6 +330,7 @@ fn decode_session_bind(mut fields: &[u8]) -> Option<AgentRequest> {
         binding: SessionBinding {
             session_id,
             host_key: host_key_fingerprint(&host_key),
+            relayed: false,
         },
     })
 }
@@ -362,8 +407,9 @@ fn response(payload: Vec<u8>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_sign, decode_request, failure_payload, host_key_fingerprint, response,
-        signature_payload, visible_text, AgentRequest, SessionBinding, SignKind, MAX_FRAME_LEN,
+        classify, classify_sign, decode_request, failure_payload, host_key_fingerprint, response,
+        signature_payload, visible_text, AgentRequest, Classified, SessionBinding, SignKind,
+        MAX_FRAME_LEN,
     };
     use crate::signing;
     use rand_core::OsRng;
@@ -657,6 +703,15 @@ mod tests {
         SessionBinding {
             session_id: session_id.to_vec(),
             host_key: host_key_fingerprint(host_key),
+            relayed: false,
+        }
+    }
+
+    /// A bind the remote host of a forwarded connection sent.
+    fn relayed(session_id: &[u8], host_key: &[u8]) -> SessionBinding {
+        SessionBinding {
+            relayed: true,
+            ..bound(session_id, host_key)
         }
     }
 
@@ -887,6 +942,140 @@ mod tests {
         assert_eq!(
             classify_sign(key, &hostbound(b"some other host key"), &binds),
             SignKind::Other
+        );
+    }
+
+    /// The forwarded-agent case: after the local client's forwarding bind
+    /// (for the hop), the hop sends a bind of its own naming a server and a
+    /// session of its choosing, then asks for a plain login on that session.
+    /// The host is still reported, as the remote host's claim.
+    #[test]
+    fn a_server_named_only_by_the_remote_host_is_marked_as_its_claim() {
+        let key = b"the requested key";
+        let login = userauth(b"git", b"publickey", key, None);
+        let github = host_key_fingerprint(b"github host key");
+        let as_git_to = |host: &str| SignKind::UserAuth {
+            user: "git".into(),
+            host: host.into(),
+        };
+        let binds = [
+            bound(&[9; 32], b"first hop host key"),
+            relayed(&[7; 32], b"github host key"),
+        ];
+        assert_eq!(
+            classify(key, &login, &binds),
+            Classified {
+                kind: as_git_to(&github),
+                host_claimed: true
+            }
+        );
+        // `classify_sign` is the same kind, without the mark.
+        assert_eq!(classify_sign(key, &login, &binds), as_git_to(&github));
+
+        // The local client's own bind for the session is its report, not a
+        // claim; so is no bind at all (nothing is named).
+        for local in [
+            vec![bound(&[7; 32], b"github host key")],
+            vec![bound(&[9; 32], b"first hop host key")],
+            vec![],
+        ] {
+            assert!(!classify(key, &login, &local).host_claimed);
+        }
+
+        // A host-bound login carries the host key in the data that is
+        // signed, so the signature works nowhere else: not a claim, whoever
+        // sent the bind, and none is needed.
+        let hostbound = |host: &[u8]| {
+            userauth(
+                b"git",
+                b"publickey-hostbound-v00@openssh.com",
+                key,
+                Some(host),
+            )
+        };
+        for with in [&binds[..], &[]] {
+            assert_eq!(
+                classify(key, &hostbound(b"github host key"), with),
+                Classified {
+                    kind: as_git_to(&github),
+                    host_claimed: false
+                }
+            );
+        }
+        // A relayed bind that disagrees with the signed host is still
+        // unrecognised data, as a local one is.
+        assert_eq!(
+            classify(key, &hostbound(b"some other host key"), &binds),
+            Classified {
+                kind: SignKind::Other,
+                host_claimed: false
+            }
+        );
+
+        // Nothing but a login has a server to claim.
+        let mut sshsig = b"SSHSIG".to_vec();
+        for field in [&b"git"[..], b"", b"sha512", &[0; 64]] {
+            string(field, &mut sshsig);
+        }
+        assert_eq!(
+            classify(key, &sshsig, &binds),
+            Classified {
+                kind: SignKind::SshSig {
+                    namespace: "git".into()
+                },
+                host_claimed: false
+            }
+        );
+        assert!(!classify(key, b"anything else", &binds).host_claimed);
+    }
+
+    /// The remote host cannot rename a session the local client bound: the
+    /// local bind is the one read, however many relayed ones follow it.
+    /// Among binds from the same side the newest still wins.
+    #[test]
+    fn a_relayed_bind_does_not_replace_the_local_clients_bind_for_a_session() {
+        let key = b"the requested key";
+        let login = userauth(b"git", b"publickey", key, None);
+        let to = |host: &[u8], host_claimed: bool| Classified {
+            kind: SignKind::UserAuth {
+                user: "git".into(),
+                host: host_key_fingerprint(host),
+            },
+            host_claimed,
+        };
+        assert_eq!(
+            classify(
+                key,
+                &login,
+                &[
+                    bound(&[7; 32], b"first hop host key"),
+                    relayed(&[7; 32], b"github host key"),
+                    relayed(&[7; 32], b"another host key"),
+                ]
+            ),
+            to(b"first hop host key", false)
+        );
+        assert_eq!(
+            classify(
+                key,
+                &login,
+                &[
+                    relayed(&[7; 32], b"github host key"),
+                    relayed(&[7; 32], b"another host key"),
+                ]
+            ),
+            to(b"another host key", true)
+        );
+        assert_eq!(
+            classify(
+                key,
+                &login,
+                &[
+                    bound(&[7; 32], b"first host key"),
+                    bound(&[7; 32], b"second host key"),
+                ]
+            ),
+            to(b"second host key", false)
         );
     }
 

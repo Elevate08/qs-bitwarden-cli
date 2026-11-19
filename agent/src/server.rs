@@ -26,7 +26,8 @@ pub struct ClientEvent {
     /// "not forwarded" bind to undo it.
     pub forwarded: bool,
     /// The connection's session binds so far, oldest first: which server a
-    /// login on each bound session goes to.
+    /// login on each bound session goes to, and whether the local client or
+    /// the remote host of a forwarded connection said so.
     pub binds: Vec<SessionBinding>,
     pub request: AgentRequest,
     pub reply: oneshot::Sender<Vec<u8>>,
@@ -94,16 +95,9 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
             binding,
         } = request
         {
-            let response = if binds.len() < MAX_SESSION_BINDS {
-                binds.push(binding);
-                forwarded |= forwarding;
+            let response = if record_bind(&mut binds, &mut forwarded, forwarding, binding) {
                 protocol::success_response()
             } else {
-                // A bind that cannot be recorded is refused like an
-                // unparseable one, and for the same reason marks the
-                // connection forwarded whatever its flag said: later logins
-                // on its session could not be matched to their server.
-                forwarded = true;
                 protocol::failure_response()
             };
             if write_response(&mut stream, response).await.is_err() {
@@ -157,6 +151,37 @@ async fn serve_client(mut stream: UnixStream, events: mpsc::Sender<ClientEvent>)
     }
 }
 
+/// Takes one decoded session bind into the connection's state; false if it
+/// is refused.
+///
+/// The local `ssh` sends the binds of a connection up to and including the
+/// one that says it is forwarding. Everything after that is written by the
+/// remote host, further binds included, so those are recorded as `relayed`:
+/// a login matched only to one of them shows its server as the remote
+/// host's claim. The same goes for binds after a refused one, which may have
+/// been the forwarding bind.
+///
+/// A bind that cannot be recorded is refused like an unparseable one, and
+/// for the same reason marks the connection forwarded whatever its flag
+/// said: later logins on its session could not be matched to their server.
+fn record_bind(
+    binds: &mut Vec<SessionBinding>,
+    forwarded: &mut bool,
+    forwarding: bool,
+    mut binding: SessionBinding,
+) -> bool {
+    if binds.len() >= MAX_SESSION_BINDS {
+        *forwarded = true;
+        return false;
+    }
+    // Read before this bind's own flag is taken: the forwarding bind itself
+    // is the local client's.
+    binding.relayed = *forwarded;
+    binds.push(binding);
+    *forwarded |= forwarding;
+    true
+}
+
 async fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
     let mut header = [0_u8; 4];
     timeout(CLIENT_IO_TIMEOUT, stream.read_exact(&mut header))
@@ -182,4 +207,86 @@ async fn write_response(stream: &mut UnixStream, response: Vec<u8>) -> std::io::
         .await
         .map_err(|_| std::io::ErrorKind::TimedOut)??;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{record_bind, MAX_SESSION_BINDS};
+    use crate::protocol::SessionBinding;
+
+    fn bind(session: u8) -> SessionBinding {
+        SessionBinding {
+            session_id: vec![session; 32],
+            host_key: format!("SHA256:{session}"),
+            relayed: false,
+        }
+    }
+
+    /// The local client's binds, the forwarding one included, are its own
+    /// report; whatever follows the forwarding bind is the remote host's.
+    #[test]
+    fn binds_after_the_forwarding_bind_are_recorded_as_relayed() {
+        let (mut binds, mut forwarded) = (Vec::new(), false);
+
+        assert!(record_bind(&mut binds, &mut forwarded, false, bind(1)));
+        assert!(!forwarded);
+        assert!(record_bind(&mut binds, &mut forwarded, true, bind(2)));
+        assert!(forwarded, "the forwarding bind marks the connection");
+        // "Not forwarding" from the remote end undoes nothing.
+        assert!(record_bind(&mut binds, &mut forwarded, false, bind(3)));
+        assert!(forwarded);
+        assert!(record_bind(&mut binds, &mut forwarded, true, bind(4)));
+
+        let relayed: Vec<bool> = binds.iter().map(|bind| bind.relayed).collect();
+        assert_eq!(relayed, [false, false, true, true]);
+        // What was decoded is kept as it was otherwise.
+        assert_eq!(binds[2].session_id, vec![3; 32]);
+        assert_eq!(binds[2].host_key, "SHA256:3");
+    }
+
+    /// A sender cannot mark its own bind either way: the connection decides.
+    #[test]
+    fn the_relayed_mark_comes_from_the_connection_not_the_bind() {
+        let (mut binds, mut forwarded) = (Vec::new(), false);
+        let mut claimed_local = bind(1);
+        claimed_local.relayed = true;
+        assert!(record_bind(
+            &mut binds,
+            &mut forwarded,
+            false,
+            claimed_local
+        ));
+        assert!(!binds[0].relayed);
+
+        let mut forwarded = true;
+        assert!(record_bind(&mut binds, &mut forwarded, false, bind(2)));
+        assert!(binds[1].relayed);
+    }
+
+    /// A bind past the limit is refused, not recorded, and marks the
+    /// connection forwarded; a connection whose bind was refused records the
+    /// next ones as relayed.
+    #[test]
+    fn a_refused_bind_marks_the_connection_and_what_follows() {
+        let (mut binds, mut forwarded) = (Vec::new(), false);
+        for session in 0..MAX_SESSION_BINDS {
+            assert!(record_bind(
+                &mut binds,
+                &mut forwarded,
+                false,
+                bind(session as u8)
+            ));
+        }
+        assert!(!forwarded);
+        assert!(!record_bind(&mut binds, &mut forwarded, false, bind(99)));
+        assert!(forwarded);
+        assert_eq!(binds.len(), MAX_SESSION_BINDS);
+        assert!(binds.iter().all(|bind| !bind.relayed));
+
+        // As after an unparseable bind, which sets the flag with nothing
+        // recorded.
+        let (mut binds, mut forwarded) = (Vec::new(), true);
+        assert!(record_bind(&mut binds, &mut forwarded, false, bind(1)));
+        assert!(binds[0].relayed);
+    }
 }

@@ -51,6 +51,10 @@ enum Output {
         /// the session to, unverified; "" when it reported none.
         #[serde(rename = "hostKey")]
         host_key: String,
+        /// The fingerprint is only what the remote host of a forwarded
+        /// connection said (`protocol::Classified::host_claimed`).
+        #[serde(rename = "hostKeyClaimed")]
+        host_key_claimed: bool,
         forwarded: bool,
         #[serde(rename = "grantOffered")]
         grant_offered: bool,
@@ -92,6 +96,10 @@ enum Output {
         /// the session to, unverified; "" when it reported none.
         #[serde(rename = "hostKey")]
         host_key: String,
+        /// The fingerprint is only what the remote host of a forwarded
+        /// connection said (`protocol::Classified::host_claimed`).
+        #[serde(rename = "hostKeyClaimed")]
+        host_key_claimed: bool,
         forwarded: bool,
         /// Whether approving may also open a grant, so the panel never assumes.
         #[serde(rename = "grantOffered")]
@@ -159,6 +167,9 @@ struct HeldSign {
     flags: u32,
     peer: qs_bitwarden_ssh_agent::peer::PeerContext,
     scope: SignScope,
+    /// As on the `unlock_required` sent for it, for the `approval_required`
+    /// that follows the load.
+    host_claimed: bool,
     deadline_ms: u64,
     /// The grant window, if the user approved before the load finished (the
     /// prompt needs only public data). Decides nothing by itself: the load
@@ -568,6 +579,7 @@ fn handle_client(
                             operation: "",
                             operation_detail: String::new(),
                             host_key: String::new(),
+                            host_key_claimed: false,
                             forwarded: event.forwarded,
                             grant_offered: false,
                         },
@@ -587,9 +599,15 @@ fn handle_client(
             message,
             flags,
         } => {
+            let classified = protocol::classify(&public_blob, &message, &event.binds);
+            // Only a forwarded connection has relayed binds (`server`), so a
+            // claimed server already means forwarded; said here as well, so
+            // that no such request can open or ride a grant whatever the
+            // connection reported.
+            let host_claimed = classified.host_claimed;
             let scope = SignScope {
-                kind: protocol::classify_sign(&public_blob, &message, &event.binds),
-                forwarded: event.forwarded,
+                kind: classified.kind,
+                forwarded: event.forwarded || host_claimed,
             };
             if !gate_open {
                 // Locked but the cache knows the key: ask the panel to unlock
@@ -627,6 +645,7 @@ fn handle_client(
                         operation: scope.kind.operation(),
                         operation_detail: scope.kind.detail().to_owned(),
                         host_key: scope.kind.host().to_owned(),
+                        host_key_claimed: host_claimed,
                         forwarded: scope.forwarded,
                         grant_offered: scope.grantable(),
                     },
@@ -640,6 +659,7 @@ fn handle_client(
                         flags,
                         peer: event.peer,
                         scope,
+                        host_claimed,
                         deadline_ms: elapsed_ms(started).saturating_add(HELD_LIFETIME_MS),
                         approved: None,
                     },
@@ -686,6 +706,7 @@ fn handle_client(
                             operation: scope.kind.operation(),
                             operation_detail: scope.kind.detail().to_owned(),
                             host_key: scope.kind.host().to_owned(),
+                            host_key_claimed: host_claimed,
                             forwarded: scope.forwarded,
                             grant_offered: scope.grantable(),
                         },
@@ -798,6 +819,7 @@ fn release_held(
                         operation: request.scope.kind.operation(),
                         operation_detail: request.scope.kind.detail().to_owned(),
                         host_key: request.scope.kind.host().to_owned(),
+                        host_key_claimed: request.host_claimed,
                         forwarded: request.scope.forwarded,
                         grant_offered: request.scope.grantable(),
                     },
@@ -1129,5 +1151,248 @@ mod tests {
             assert_eq!(answer.try_recv().unwrap(), protocol::failure_response());
             assert!(outputs.try_recv().is_err(), "gate open: {gate_open}");
         }
+    }
+    /// One Ed25519 key loaded at `epoch`, generated here.
+    fn load_key(store: &mut KeyStore, key: &ssh_key::PrivateKey, epoch: u64) {
+        use qs_bitwarden_ssh_agent::keystore::CandidateItem;
+        let mut load = store.begin_load(epoch, 4096).unwrap();
+        load.add(CandidateItem {
+            item_id: "item".to_owned(),
+            name: "key".to_owned(),
+            private_key_pem: Zeroizing::new(
+                key.to_openssh(Default::default())
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            public_key: key.public_key().to_openssh().unwrap(),
+            fingerprint: key
+                .public_key()
+                .fingerprint(ssh_key::HashAlg::Sha256)
+                .to_string(),
+            requires_reprompt: false,
+        })
+        .unwrap();
+        store.publish(load).unwrap();
+    }
+
+    /// A plain `publickey` login as `git` on session `[7; 32]`.
+    fn login(public_blob: &[u8]) -> Vec<u8> {
+        use ssh_encoding::Encode;
+        let mut data = Vec::new();
+        [7_u8; 32].as_slice().encode(&mut data).unwrap();
+        50_u8.encode(&mut data).unwrap();
+        for field in [&b"git"[..], b"ssh-connection", b"publickey"] {
+            field.encode(&mut data).unwrap();
+        }
+        1_u8.encode(&mut data).unwrap();
+        b"ssh-ed25519".as_slice().encode(&mut data).unwrap();
+        public_blob.encode(&mut data).unwrap();
+        data
+    }
+
+    fn bind(host_key: &[u8], relayed: bool) -> protocol::SessionBinding {
+        protocol::SessionBinding {
+            session_id: vec![7; 32],
+            host_key: protocol::host_key_fingerprint(host_key),
+            relayed,
+        }
+    }
+
+    fn login_event(
+        public_blob: &[u8],
+        forwarded: bool,
+        binds: Vec<protocol::SessionBinding>,
+    ) -> (ClientEvent, oneshot::Receiver<Vec<u8>>) {
+        let (reply, answer) = oneshot::channel();
+        let event = ClientEvent {
+            peer: PeerContext::new(1000, 4242, 1, "/usr/bin/ssh").unwrap(),
+            forwarded,
+            binds,
+            request: AgentRequest::Sign {
+                public_blob: public_blob.to_vec(),
+                message: login(public_blob),
+                flags: 0,
+            },
+            reply,
+        };
+        (event, answer)
+    }
+
+    /// The line the panel reads for the next message.
+    fn next(outputs: &mut mpsc::Receiver<Output>) -> serde_json::Value {
+        serde_json::to_value(outputs.try_recv().expect("a message was sent")).unwrap()
+    }
+
+    /// The prompt for a forwarded login whose server only the remote host
+    /// named says so (`hostKeyClaimed`), still carries the fingerprint, and
+    /// offers no grant. A server the local client bound, and one the client
+    /// did not report, are sent with the field false: always present, so the
+    /// panel can tell this helper's "no" from an older helper's silence.
+    #[test]
+    fn a_prompt_says_when_the_remote_host_named_the_server() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let blob = key.public_key().to_bytes().unwrap();
+        let mut store = KeyStore::new();
+        load_key(&mut store, &key, 1);
+        let github = protocol::host_key_fingerprint(b"github host key");
+
+        for (case, forwarded, binds, host, claimed, shown_forwarded) in [
+            (
+                "relayed bind",
+                true,
+                vec![bind(b"hop", false), bind(b"github host key", true)],
+                // The local client's bind for the session wins.
+                protocol::host_key_fingerprint(b"hop"),
+                false,
+                true,
+            ),
+            (
+                "only a relayed bind",
+                true,
+                vec![bind(b"github host key", true)],
+                github.clone(),
+                true,
+                true,
+            ),
+            (
+                // Not a state the server produces; a claim is forwarded
+                // whatever the connection said.
+                "a relayed bind on a connection not marked",
+                false,
+                vec![bind(b"github host key", true)],
+                github.clone(),
+                true,
+                true,
+            ),
+            (
+                "the local client's bind",
+                false,
+                vec![bind(b"github host key", false)],
+                github.clone(),
+                false,
+                false,
+            ),
+            ("no bind", false, vec![], String::new(), false, false),
+        ] {
+            let mut approvals = ApprovalManager::new(1000);
+            let (output, mut outputs) = mpsc::channel(8);
+            let (event, _answer) = login_event(&blob, forwarded, binds);
+            handle_client(
+                event,
+                true,
+                &store,
+                &mut approvals,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut None,
+                true,
+                Instant::now(),
+                &output,
+            )
+            .unwrap();
+            let prompt = next(&mut outputs);
+            assert_eq!(prompt["type"], "approval_required", "{case}");
+            assert_eq!(prompt["operation"], "ssh-auth", "{case}");
+            assert_eq!(prompt["hostKey"], host.as_str(), "{case}");
+            assert_eq!(prompt["hostKeyClaimed"], claimed, "{case}");
+            assert_eq!(prompt["forwarded"], shown_forwarded, "{case}");
+            assert_eq!(prompt["grantOffered"], !shown_forwarded, "{case}");
+        }
+    }
+
+    /// The same through a locked vault: the unlock prompt says it, and so
+    /// does the approval prompt the held request becomes after the load.
+    #[test]
+    fn a_held_request_keeps_the_claim_through_the_unlock() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let blob = key.public_key().to_bytes().unwrap();
+        let github = protocol::host_key_fingerprint(b"github host key");
+
+        for claimed in [true, false] {
+            let mut store = KeyStore::new();
+            load_key(&mut store, &key, 1);
+            store.lock(2);
+            let mut approvals = ApprovalManager::new(1000);
+            let (mut pending, mut held) = (HashMap::new(), HashMap::new());
+            let (output, mut outputs) = mpsc::channel(8);
+            let (event, _answer) =
+                login_event(&blob, true, vec![bind(b"github host key", claimed)]);
+            handle_client(
+                event,
+                false,
+                &store,
+                &mut approvals,
+                &mut pending,
+                &mut held,
+                &mut None,
+                true,
+                Instant::now(),
+                &output,
+            )
+            .unwrap();
+            let unlock = next(&mut outputs);
+            assert_eq!(unlock["type"], "unlock_required");
+            assert_eq!(unlock["hostKey"], github.as_str());
+            assert_eq!(unlock["hostKeyClaimed"], claimed);
+            assert_eq!(unlock["forwarded"], true);
+            assert_eq!(unlock["grantOffered"], false);
+
+            load_key(&mut store, &key, 3);
+            release_held(
+                &mut held,
+                &store,
+                &mut approvals,
+                &mut pending,
+                Instant::now(),
+                &output,
+            )
+            .unwrap();
+            assert_eq!(next(&mut outputs)["type"], "request_cancelled");
+            let prompt = next(&mut outputs);
+            assert_eq!(prompt["type"], "approval_required");
+            assert_eq!(prompt["hostKey"], github.as_str());
+            assert_eq!(prompt["hostKeyClaimed"], claimed);
+            assert_eq!(prompt["forwarded"], true);
+            assert_eq!(prompt["grantOffered"], false);
+        }
+    }
+
+    /// An identity listing's unlock prompt has no server, so nothing claimed.
+    #[test]
+    fn an_identity_listings_unlock_prompt_claims_no_server() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let mut store = KeyStore::new();
+        load_key(&mut store, &key, 1);
+        store.logout(2);
+        let mut approvals = ApprovalManager::new(1000);
+        let (output, mut outputs) = mpsc::channel(8);
+        let (reply, _answer) = oneshot::channel();
+        handle_client(
+            ClientEvent {
+                peer: PeerContext::new(1000, 4242, 1, "/usr/bin/ssh").unwrap(),
+                forwarded: true,
+                binds: vec![bind(b"github host key", true)],
+                request: AgentRequest::Identities,
+                reply,
+            },
+            false,
+            &store,
+            &mut approvals,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut None,
+            true,
+            Instant::now(),
+            &output,
+        )
+        .unwrap();
+        let unlock = next(&mut outputs);
+        assert_eq!(unlock["type"], "unlock_required");
+        assert_eq!(unlock["hostKey"], "");
+        assert_eq!(unlock["hostKeyClaimed"], false);
     }
 }
