@@ -422,10 +422,8 @@ check("agent build tolerates drift only where helper-rebuild fixes it",
     && gateInputs(gateJob).every(Boolean) && gateInputs(autofixStep).join() === gateInputs(gateJob).join()
     && workflow.indexOf(autofixStep) < workflow.indexOf("./scripts/build-agent.sh"),
   "the drift gate and the auto-commit disagree about which PRs are fixed")
-// Publishing from the tag announced a version before master contained it.
-check("the tag build leaves the release as a draft for master to publish",
-  /gh release create "\$TAG"[^\n]*--draft/.test(read(".github/workflows/release.yml")),
-  "release.yml publishes at tag time again, so master's merge is no longer what releases")
+// That the tag build leaves a draft for master to publish is run, not read:
+// tests/release-provenance.test.js.
 
 check("no paths filter decides which changes are checked",
   !/^\s*paths:/m.test(workflow),

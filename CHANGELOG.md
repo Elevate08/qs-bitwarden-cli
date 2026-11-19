@@ -231,6 +231,22 @@
 
 ### Changed
 
+- **The release workflows take less on trust.** One file,
+  `.github/release-assets.txt`, now names every asset of a release. The job
+  that attests and publishes stops unless the run's artifacts hold exactly
+  the reports and debug symbols on that list, and uploads the listed names
+  and no others. The binaries it attests are checked against a `SHA256SUMS`
+  digest recorded by an earlier job, not only against the file beside them.
+  It never touches a release that is already published; it refills a draft
+  only for the same commit and only if the draft holds nothing off the list;
+  and before uploading it checks that the tag still names the commit the run
+  built. A manual run publishes only from a tag named `v` and a version.
+  When the commit reaches master, the workflow that takes the draft public
+  first reads it back from GitHub and stops unless the tag still names the
+  commit the draft was built from and the draft holds exactly the listed
+  assets, each fully uploaded. A release has the same assets as before.
+  Moving a release tag is still not prevented by the workflows themselves:
+  that needs a tag ruleset in the repository's settings (see `REVIEWING.md`).
 - **Opening the panel works out its suggestions once, not twice.** An open
   matched the vault against the window it already knew and then again when
   the focused window was reported. It now matches only when the window, the
