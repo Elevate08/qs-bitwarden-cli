@@ -6686,6 +6686,10 @@ Item {
   // from `bw lock` and the keyring so a failed status can fail closed.
   function dropVaultState() {
     if (errorMessage === autoSyncError) errorMessage = ""
+    // A list-read failure belongs to the vault being dropped, and so does the
+    // note of which message it was.
+    if (listReadError !== "" && errorMessage === listReadError) errorMessage = ""
+    listReadError = ""
     lastSyncAttemptAt = 0
     backgroundSync = false
     autoSyncReloadPending = false

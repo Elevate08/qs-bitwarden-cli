@@ -46,6 +46,7 @@ function vault() {
     quickUnlockPurgeAttempts: {}, quickUnlockPurgePending: {}, quickUnlockPurgeMaxAttempts: 3,
     quickUnlockPurgeFailures: {}, errorMessage: "",
     autoSyncError: /readonly property string autoSyncError: "([^"]+)"/.exec(service)[1],
+    listReadError: "",
     lastSyncAttemptAt: 0, backgroundSync: false, autoSyncReloadPending: false,
     quickUnlockMethodGeneration: {}, quickUnlockAccountGeneration: {}, pendingPurges: [],
     settings: { pinUnlock: false, fingerprintUnlock: true, fidoUnlock: true },
