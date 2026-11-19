@@ -188,6 +188,12 @@
   cleared. A read now waits for the run before it to exit and that run's
   answer is dropped; the same goes for a second organization's collections
   or a second item asked for while the first is being read.
+- **A failed status check no longer wipes the only error on screen.** When
+  the item list could not be read and the status check after it failed too,
+  the vault was dropped for the sign-in screen and the list's message
+  ("Could not safely read vault items.") went with it, leaving no reason
+  on screen. That message now stays up there. A lock, a logout, an account
+  switch and a vault that `bw` reports locked still take it along.
 - **Saving a new item while the list refreshes.** If the refresh already
   listed the new item when its save answered, the item appeared twice and a
   detail opened on it stayed on its "saving" row, where nothing works; if a

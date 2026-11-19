@@ -3871,9 +3871,18 @@ Item {
     if (!st) {
       cancelAuthPrewarm()
       followVaultClosedInSshAgent("unauthenticated")
+      // The check itself failed, and says nothing. A list read that failed
+      // just before is then the only word on why the vault closed: its
+      // message stays up over the sign-in screen (still the list's, so the
+      // next list that is accepted, or the next drop, takes it down).
+      var listError = listReadError !== "" && errorMessage === listReadError ? listReadError : ""
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
         dropVaultState()
+      }
+      if (listError !== "" && errorMessage === "") {
+        errorMessage = listError
+        listReadError = listError
       }
       status = "unauthenticated"
       currentScreen = "login"

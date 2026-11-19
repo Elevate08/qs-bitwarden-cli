@@ -273,6 +273,55 @@ for (const code of [0, 1]) {
   try { k.dropVaultState() } catch (e) { k.errorMessage = "threw: " + e.message }
   check("but keeps a message something else put up", k.errorMessage === "An unrelated edit failed" && k.listReadError === "",
     k.errorMessage + "|" + k.listReadError)
+  // The reviewer's sequence: the list read fails and says so, then the
+  // status check fails too (it says nothing) and the vault is dropped for
+  // the sign-in screen. The list's message is the only reason on screen.
+  const s = fixture()
+  Object.assign(s, { items: [], organizations: [], folders: [], sends: [], detailItem: null, itemPayloadJson: "",
+    sendPayloadJson: "", statusCheckAuthoritative: true, listAgentBranchActive: false, listRetriedWithoutAgent: false,
+    metadataForceRefresh: false, accountId: "", userEmail: "", loginEmail: "", focused: 0, cleared: 0 })
+  for (const name of ["restartStaleStatusProbe", "cancelAuthPrewarm", "followVaultClosedInSshAgent", "endSshAgentLoad",
+    "noteActiveAccount", "maybeMigrateLegacyFingerprint"]) s[name] = () => {}
+  s.finishScrubRun = () => false
+  s.requestSessionCredentialClear = () => { s.cleared++ }
+  s.focusAppropriateField = () => { s.focused++ }
+  vm.runInContext(["onListProcessExited", "onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), s)
+  s.loadItems(false)
+  s.listProc.running = false
+  s.onListProcessExited(1, "", "Could not safely read vault items.\n")
+  const shown = s.errorMessage
+  check("premise: the failed list read shows its message", shown !== "" && s.listReadError === shown && s.status === "unlocked", shown)
+  s.beginEpochOperation("status")
+  s.onStatusFinished("")
+  check("a status check failing after it drops the vault for the sign-in screen",
+    s.status === "unauthenticated" && s.currentScreen === "login" && s.session === "" && s.cleared === 1,
+    s.status + " " + s.currentScreen)
+  eq("and the list read's message is still there to say why", s.errorMessage, shown)
+  eq("still marked as the list's, so the next accepted list takes it down", s.listReadError, shown)
+  s.session = "next-session"; s.beginVaultRead("items"); s.onListFinished("[]")
+  eq("which it does", s.errorMessage, "")
+  // A status that answers (locked elsewhere) explains itself: the message goes with the vault.
+  const l = fixture()
+  Object.assign(l, { items: [], organizations: [], folders: [], sends: [], detailItem: null, itemPayloadJson: "",
+    sendPayloadJson: "", statusCheckAuthoritative: true, accountId: "", userEmail: "", loginEmail: "", sshAuthSurfaceActive: false })
+  for (const name of ["restartStaleStatusProbe", "cancelAuthPrewarm", "followVaultClosedInSshAgent", "noteActiveAccount",
+    "maybeMigrateLegacyFingerprint", "requestSessionCredentialClear", "focusAppropriateField"]) l[name] = () => {}
+  vm.runInContext(["onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), l)
+  l.dependencies = noJq; l.loadItems(false); l.dependencies = deps
+  l.beginEpochOperation("status")
+  l.Qt = { callLater() {} }
+  l.onStatusFinished(JSON.stringify({ status: "locked", userEmail: "a@x", userId: "id-a", serverUrl: null }))
+  check("a vault the status reports locked takes its list-read message along, as a lock does",
+    l.status === "locked" && l.errorMessage === "" && l.listReadError === "", l.status + "|" + l.errorMessage)
+  // With no list error up, a failed status check puts nothing up.
+  const n = fixture()
+  Object.assign(n, { items: [], organizations: [], folders: [], sends: [], detailItem: null, itemPayloadJson: "",
+    sendPayloadJson: "", statusCheckAuthoritative: true })
+  for (const name of ["restartStaleStatusProbe", "cancelAuthPrewarm", "followVaultClosedInSshAgent",
+    "requestSessionCredentialClear", "focusAppropriateField"]) n[name] = () => {}
+  vm.runInContext(["onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), n)
+  n.errorMessage = "An unrelated edit failed"; n.beginEpochOperation("status"); n.onStatusFinished("")
+  eq("another message is left exactly as dropping the vault leaves it", n.errorMessage, "An unrelated edit failed")
   const exited = functionBody(source, "onListProcessExited")
   check("a failed list read records the message it showed",
     /errorMessage = Model\.vaultListFailureMessage\(stderrText, dependencies, listReadMode\)\s*listReadError = errorMessage/.test(exited),
