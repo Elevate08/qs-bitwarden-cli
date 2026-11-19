@@ -221,6 +221,7 @@ if (!failedToRun) {
     check("and the plugin's own directory, under a shared /tmp, was refused and never made",
       fs.statSync("/tmp").mode % 0o10000 !== 0o1777
         || !fs.existsSync(path.join(second.env.XDG_CACHE_HOME, "qs-bitwarden-cli")), "")
+    check("so bw was given none", second.state().compileCache === "", second.state().compileCache)
     const errors = second.scriptErrors()
     check("that shell logged no script errors", errors.length === 0, errors.join("\n"))
   } catch (e) {
@@ -229,6 +230,35 @@ if (!failedToRun) {
     if (failedToRun) console.error("--- shell log (tail) ---\n" + second.logTail())
     second.cleanup()
     fs.rmSync(inherited, { recursive: true, force: true })
+  }
+}
+// --- and a cache home that passes is used, at its canonical path ---
+// The user's own runtime directory is theirs up to /; where there is none,
+// there is nowhere here to show it.
+const trusted = process.env.XDG_RUNTIME_DIR
+if (!failedToRun && trusted && path.isAbsolute(trusted) && fs.existsSync(trusted)) {
+  const cacheHome = fs.mkdtempSync(path.join(fs.realpathSync(trusted), "qsbw-e2e-cache-"))
+  const inherited = path.join(cacheHome, "inherited")
+  const wanted = path.join(cacheHome, "home", "qs-bitwarden-cli", "node-compile-cache")
+  const third = createShell("e2e-accounts-cached", check,
+    { env: { NODE_COMPILE_CACHE: inherited, XDG_CACHE_HOME: path.join(cacheHome, "home") } })
+  try {
+    third.start()
+    third.expect("a cache home of the user's own is accepted, as the path the check printed",
+      s => s.compileCache === wanted)
+    check("and made private", (fs.statSync(wanted).mode & 0o7777) === 0o700 && (fs.statSync(path.dirname(wanted)).mode & 0o7777) === 0o700)
+    third.q("open")
+    third.q("login", "a@x", "pw-a@x")
+    third.expect("the account logs in with it", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
+    check("and the inherited directory is still not written", !fs.existsSync(inherited))
+    const errors = third.scriptErrors()
+    check("that shell logged no script errors either", errors.length === 0, errors.join("\n"))
+  } catch (e) {
+    failedToRun = e
+  } finally {
+    if (failedToRun) console.error("--- shell log (tail) ---\n" + third.logTail())
+    third.cleanup()
+    fs.rmSync(cacheHome, { recursive: true, force: true })
   }
 }
 if (failedToRun) {

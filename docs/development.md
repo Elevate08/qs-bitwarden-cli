@@ -101,7 +101,9 @@ every `bw` command does first. `tests/bw-compile-cache.test.js` covers the
 directory check and that the cache works beside the preloads. The check
 refuses a directory with a shared ancestor, so that suite works under
 `$XDG_RUNTIME_DIR` or beside itself rather than in `/tmp`, and the end-to-end
-shells, whose home is under `/tmp`, run with no cache.
+shells, whose home is under `/tmp`, run with no cache (one in
+`tests/e2e/accounts.e2e.js` is given a cache home under `$XDG_RUNTIME_DIR`
+to show the other case, where there is one).
 
 Opening the panel on a list more than a minute old used to start
 `bw list items` every time (the 1.6 s above, plus the filter pipeline). It

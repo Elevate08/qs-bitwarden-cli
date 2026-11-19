@@ -239,6 +239,17 @@ check("nothing else names the variable: pinentry, which runs no bw, starts witho
     && /id: pinentryProbeProc\s+environment: Model\.withoutCompileCache\(\{\}\)/.test(svc)
     && !/COMPILE_CACHE/.test(read("pinentry/omarchy-pinentry")))
 
+// Every other `bw` or `node` the plugin starts takes an inherited value out.
+{
+  const without = /Model\.withoutCompileCache\(\{\}\)/.source
+  check("bw -v, the signed-out slot's bw logout, the SSH export, bw login in a terminal and opening an attachment drop an inherited cache",
+    new RegExp("id: bwVersionProc\\s+property string probeId: \"\"\\s+command: Model\\.bwVersionCommand\\(\\)\\s+environment: " + without).test(svc)
+      && new RegExp("id: sshExportProc\\s+command: Model\\.sshExportCommand\\(\\)\\s+environment: " + without).test(svc)
+      && new RegExp("id: slotRemovalProc\\s+environment: " + without).test(svc)
+      && new RegExp("execDetached\\(\\{ command: Model\\.terminalLoginCommand\\(mode, serverUrl, activeSlot\\),\\s+environment: " + without + " \\}\\)").test(svc)
+      && new RegExp("var env = " + without + "\\s+env\\[Model\\.openPathEnvVar\\(\\)\\]").test(functionBody(svc, "openSavedAttachment")))
+}
+
 // The panel's own environment builders, run as they are written.
 function service(state) {
   const v = Object.assign({ Model, bwNodeOptions: "", bwCompileCacheDir: "", bwCompileCacheLine: "",

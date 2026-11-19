@@ -82,6 +82,8 @@ ShellRoot {
         clearPending: vault.allCredentialsClearPending,
         // Whether the list is remembered by a stat of bw's data file.
         stamped: vault.itemsFileStamp !== "", stamp: vault.itemsFileStamp,
+        // The Node compile cache directory bw is given: "" for none.
+        compileCache: vault.bwCompileCacheDir,
         // What the shell itself holds: the vault helper keeps the rest.
         helper: vault.vaultHelperState, helperWarning: vault.vaultHelperWarning, sessionHeld: vault.session === vault.heldSessionMarker,
         // Typed into pinentry, the shell never holds them: these stay empty.

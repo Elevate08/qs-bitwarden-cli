@@ -464,6 +464,9 @@ for (const [minutes, cap] of [[15, 15], [5, 5], [0, 15]]) {
   check("...its answer, should it still come, starts nothing more and is kept by nothing",
     c.reads === 3 && c.itemsFileStatLine === "")
   c.listDone()
+  check("a read begun past the deadline is remembered by no stat, so the next stale open asks again",
+    c.itemsFileStamp === "" && c.itemsFileStampNext === "" && (c.open(), c.itemsFileProbe !== null))
+  c.statDone(STAT_A)
   const d = loaded()
   d.open(); d.statDone(STAT_A); d.listDone()
   d.open(); d.statDone(STAT_A)

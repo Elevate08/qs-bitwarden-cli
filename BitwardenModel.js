@@ -579,9 +579,11 @@ function bwCompileCacheCommand(home) {
   return ["bash", "-c", script, "_", String(home || "")]
 }
 
-// For a Node program of the plugin's that gets no cache of its own (the
-// pinentry, which is typed the master password): `env` with an inherited
-// NODE_COMPILE_CACHE removed, so it loads no compiled code nobody checked.
+// For a `bw` or `node` the plugin starts outside bwEnv() (the pinentry,
+// which is typed the master password; `bw login` in a terminal; `bw -v`;
+// the signed-out slot's `bw logout`; the `node -e` of the SSH export and of
+// opening an attachment): `env` with an inherited NODE_COMPILE_CACHE
+// removed, so none of them loads compiled code nobody checked.
 function withoutCompileCache(env) {
   var out = env || {}
   out[BW_COMPILE_CACHE_ENV] = null

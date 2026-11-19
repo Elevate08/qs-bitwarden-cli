@@ -4471,7 +4471,8 @@ Item {
     // Opens the window in which a handed-over session key is accepted. See
     // refreshStatus().
     terminalLoginStartedAt = Date.now()
-    Quickshell.execDetached(Model.terminalLoginCommand(mode, serverUrl, activeSlot))
+    Quickshell.execDetached({ command: Model.terminalLoginCommand(mode, serverUrl, activeSlot),
+      environment: Model.withoutCompileCache({}) })
   }
 
   // Signs the active account out and forgets it; other accounts keep their
@@ -6985,6 +6986,8 @@ Item {
     var probe = itemsFileProbe
     itemsFileProbe = null
     itemsFileStatProc.running = false
+    // No stat came before this read, so it is remembered by none.
+    itemsFileStampNext = ""
     if (!probe || probe.epoch !== vaultEpoch || probe.file !== bwDataFile || !session) return
     beginInitialVaultLoad(false, false)
   }
@@ -7741,7 +7744,7 @@ Item {
     var path = attachmentSaved[id]
     if (!path) return
     resetAutoLockTimer()
-    var env = {}
+    var env = Model.withoutCompileCache({})
     env[Model.openPathEnvVar()] = String(path)
     Quickshell.execDetached({ command: Model.attachmentOpenCommand(), environment: env })
   }
@@ -9371,6 +9374,7 @@ Item {
   Process {
     id: sshExportProc
     command: Model.sshExportCommand()
+    environment: Model.withoutCompileCache({})
     stdinEnabled: true
     stdout: StdioCollector { id: sshExportStdout; waitForEnd: true }
     onExited: function(exitCode) {
@@ -9865,6 +9869,7 @@ Item {
     id: bwVersionProc
     property string probeId: ""
     command: Model.bwVersionCommand()
+    environment: Model.withoutCompileCache({})
     stdout: StdioCollector {
       id: bwVersionStdout
       waitForEnd: true
@@ -10098,6 +10103,7 @@ Item {
 
   Process {
     id: slotRemovalProc
+    environment: Model.withoutCompileCache({})
     onExited: function(exitCode) {
       if (exitCode !== 0) console.warn("qs-bitwarden-cli: could not remove a signed-out account (exit " + exitCode + ")")
       Qt.callLater(root.pumpSlotRemovals)
