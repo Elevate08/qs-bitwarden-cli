@@ -357,6 +357,61 @@ fn a_vault_read_reaches_the_panel_without_secrets() {
     );
 }
 
+#[test]
+fn a_refused_list_read_is_reported_as_a_failed_run() {
+    let mut helper = Helper::start();
+    let good = helper.exec(
+        1,
+        &format!("printf '%s' '{}'", vault_read()),
+        json!({ "capture": "vault" }),
+    );
+    assert_eq!(good["code"], 0);
+
+    // Valid JSON that is not a vault read, from a command that exited 0 and
+    // had its own complaint: the run fails, and nothing of it comes back.
+    let refused = helper.exec(
+        2,
+        r#"printf '%s' '{"items":[],"data":[{"login":{"password":"hunter3"}}]}'; echo 'hunter3 on stderr' >&2"#,
+        json!({ "capture": "vault" }),
+    );
+    assert_eq!(refused["code"], 1);
+    assert_eq!(refused["out"], "");
+    assert_eq!(refused["err"], "Could not safely read vault items.\n");
+    assert!(!refused.to_string().contains("hunter3"));
+    // An empty answer is no vault either.
+    let empty = helper.exec(3, "true", json!({ "capture": "vault" }));
+    assert_eq!(empty["code"], 1);
+    assert_eq!(empty["err"], "Could not safely read vault items.\n");
+    // The last good read is still held.
+    assert_eq!(
+        helper.query(10, json!({ "type": "item", "id": "a" }))["ok"],
+        true
+    );
+
+    // A save keeps its own contract: nothing or the marker, exit 0, and the
+    // panel reloads the list.
+    let save = helper.exec(
+        4,
+        r#"printf '%s' '{"items":[],"data":[{"login":{"password":"hunter3"}}]}'"#,
+        json!({ "capture": "vaultMerge" }),
+    );
+    assert_eq!(save["code"], 0);
+    assert_eq!(save["out"], "");
+    assert_eq!(save["err"], "");
+    let marker = helper.exec(
+        5,
+        "printf '__QSBW_SAVED_UNSANITIZED__'",
+        json!({ "capture": "vaultMerge" }),
+    );
+    assert_eq!(marker["code"], 0);
+    assert_eq!(marker["out"], "__QSBW_SAVED_UNSANITIZED__");
+    // A read that failed by itself keeps its own code and message.
+    let failed = helper.exec(6, "echo oops >&2; exit 7", json!({ "capture": "vault" }));
+    assert_eq!(failed["code"], 7);
+    assert_eq!(failed["out"], "");
+    assert_eq!(failed["err"], "oops\n");
+}
+
 fn wait_for_file(path: &std::path::Path, what: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
