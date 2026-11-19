@@ -54,6 +54,10 @@ plain runners. Then, in the only job with attestation permission ("attest and
 publish"), it creates a GitHub build-provenance attestation for all six
 binaries and attaches them to the release as `<name>-<arch>-linux` with SBOMs,
 dependency reports and debug symbols.
+The reports and symbols reach that job as
+artifacts of the run's build jobs. It publishes them only if the artifacts are
+exactly the three the workflow uploads, holding exactly the files it makes,
+and attaches each by name.
 
 One CI path writes binaries: `.github/workflows/helper-rebuild.yml`. For a
 same-repository PR into a `release/**` branch whose Rust changes are only plain

@@ -373,9 +373,54 @@ jobs:
       - name: Collect the reports and debug symbols
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          # Each artifact in a directory of its own name, so one job's
+          # artifact cannot replace another's files and the next step sees
+          # which artifact brought what.
           pattern: release-*
           path: dist
-          merge-multiple: true
+          merge-multiple: false
+
+      - name: Only the files this workflow makes may be published
+        # verify and symbols run dependency build scripts and tools fetched
+        # from crates.io, and any job of the run can upload an artifact named
+        # release-something. So the artifacts must be exactly the three this
+        # workflow uploads, each holding exactly the files its job makes, as
+        # regular files: a missing one or one too many fails the release.
+        run: |
+          helpers="qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault"
+          expected="$(
+            {
+              echo "d release-reports"
+              for prefix in "" unlock-key- vault-; do
+                echo "f release-reports/${prefix}dependency-licences.json"
+                for arch in x86_64 aarch64; do
+                  echo "f release-reports/${prefix}dependency-tree-$arch-linux.txt"
+                done
+              done
+              for arch in x86_64 aarch64; do
+                echo "d release-symbols-$arch"
+                for name in $helpers; do
+                  echo "f release-reports/$name-$arch-linux.cdx.json"
+                  echo "f release-symbols-$arch/$name-$arch-linux.debug.gz"
+                done
+              done
+              # The note is the same on every architecture; x86_64 ships it.
+              echo "f release-symbols-x86_64/DEBUG-SYMBOLS.md"
+            } | LC_ALL=C sort
+          )"
+          actual="$(cd dist && find . -mindepth 1 -printf '%y %P\n' | LC_ALL=C sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::the run's release-* artifacts are not exactly the reports and symbols this workflow makes"
+            # "<" is expected and missing, ">" is present and unexpected.
+            diff <(echo "$expected") <(echo "$actual") || true
+            exit 1
+          fi
+          # One flat directory from here on: every name is known and no two
+          # are the same.
+          for dir in dist/release-*/; do
+            mv "$dir"* dist/
+            rmdir "$dir"
+          done
 
       - name: Refuse to publish anything that looks like key material
         # Here, on exactly the files about to be published (the reports and
@@ -490,8 +535,20 @@ jobs:
               binaries+=("dist/$name-$arch-linux")
             done
           done
-          assets=(dist/*.json dist/*.txt dist/*.gz dist/DEBUG-SYMBOLS.md dist/SHA256SUMS
-                  "${binaries[@]}")
+          # Every asset by name, never by pattern: the reports and symbols
+          # checked above, and nothing else that may be lying in dist/.
+          assets=(dist/DEBUG-SYMBOLS.md dist/SHA256SUMS "${binaries[@]}")
+          for prefix in "" unlock-key- vault-; do
+            assets+=("dist/${prefix}dependency-licences.json")
+          done
+          for arch in x86_64 aarch64; do
+            for prefix in "" unlock-key- vault-; do
+              assets+=("dist/${prefix}dependency-tree-$arch-linux.txt")
+            done
+            for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
+              assets+=("dist/$name-$arch-linux.cdx.json" "dist/$name-$arch-linux.debug.gz")
+            done
+          done
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           # A draft: the tag is on a release branch not yet merged to master.
