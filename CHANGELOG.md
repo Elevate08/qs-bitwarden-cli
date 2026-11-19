@@ -236,6 +236,21 @@
   what is typed. It is now started with `QT_QPA_PLATFORM=wayland`; where
   Wayland cannot be reached the prompt fails, and the panel says so and
   offers its own field.
+- **Website icons no longer write site names to the journal, and only
+  images are decoded.** With **Show website icons** on (the default), the
+  icon was loaded by handing Qt the icon service's URL, which holds the
+  site's name. For every login the service has no icon for (a 404), and for
+  any answer Qt could not decode, Qt logged that URL: the shell's journal
+  and Quickshell's log collected the names of saved sites. Whatever the
+  service sent was also given to every image plugin Qt has installed (SVG,
+  PDF, EPS through Ghostscript, camera RAW and others, where present),
+  chosen by the bytes, not by the `.png` in the URL. The panel now fetches
+  the icon itself, draws it only when it is a PNG, JPEG, GIF, ICO or WebP
+  of at most 128 KiB by its first bytes, and logs nothing when there is
+  none. Fetched icons are kept in memory for the open vault and dropped
+  when it locks. What the icon service learns is unchanged, and entries
+  already in the journal stay there (`journalctl --user --vacuum-time=…`
+  removes old ones).
 
 ### Changed
 

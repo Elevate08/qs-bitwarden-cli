@@ -24,7 +24,38 @@ Item {
     : Model.websiteIconUrl(item, showWebsiteIcons, serverUrl)
   // The image's size in device pixels on this item's screen.
   readonly property int pixelSize: Math.ceil(size * Math.max(1, Screen.devicePixelRatio || 1))
-  readonly property bool imageShown: imageUrl !== "" && favicon.status === Image.Ready
+  // The icon itself, as a data URL, once fetched and checked; "" until then
+  // and where there is none. The Image is never given `imageUrl`: it would
+  // log that URL, which names the site, whenever the service has no icon,
+  // and decode whatever came back (Model.websiteIconDataUrl()).
+  property string imageData: ""
+  readonly property bool imageShown: imageData !== "" && favicon.status === Image.Ready
+
+  // Also at creation: the binding's first value is a change from "".
+  onImageUrlChanged: fetchIcon()
+
+  function fetchIcon() {
+    var url = imageUrl
+    var known = url === "" ? "" : Model.websiteIconCached(url)
+    imageData = known === undefined ? "" : known
+    if (known !== undefined) return
+    var generation = Model.websiteIconGenerationNow()
+    var xhr = new XMLHttpRequest()
+    xhr.responseType = "arraybuffer"
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      // No answer at all (offline) is not "no icon": asked again next time.
+      if (xhr.status === 0) return
+      var data = xhr.status === 200 ? Model.websiteIconDataUrl(xhr.response) : ""
+      Model.rememberWebsiteIcon(url, data, generation)
+      // This row may be gone, or showing another item, by now.
+      try {
+        if (icon.imageUrl === url && Model.websiteIconCached(url) === data) icon.imageData = data
+      } catch (e) {}
+    }
+    xhr.open("GET", url)
+    xhr.send()
+  }
 
   implicitWidth: size
   implicitHeight: size
@@ -60,7 +91,7 @@ Item {
     width: icon.size
     height: icon.size
     visible: icon.imageShown
-    source: icon.imageUrl
+    source: icon.imageData
     // Off the GUI thread, and kept: a list scrolls back past the same rows.
     asynchronous: true
     cache: true

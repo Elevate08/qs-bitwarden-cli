@@ -5,10 +5,10 @@
 //
 //   node tests/item-icons.test.js
 
-const { createSuite, loadModule, read, readPluginSource } = require("./harness")
+const { createSuite, functionBody, loadModule, read, readPluginSource } = require("./harness")
 const Model = loadModule()
 
-const { check, done } = createSuite("item-icons")
+const { check, eq, done } = createSuite("item-icons")
 
 const login = (uri, extra) => Object.assign({ typeCode: 1, type: "login", uris: uri === null ? [] : [uri] }, extra || {})
 const NET = "https://icons.bitwarden.net"
@@ -144,12 +144,37 @@ const panel = read("Panel.qml")
 const icon = read("ItemIcon.qml")
 check("list rows and the detail header draw ItemIcon with the setting and server",
   (panel.match(/ItemIcon \{[^}]*showWebsiteIcons: root\.vault\.showWebsiteIcons[^}]*serverUrl: root\.vault\.accountServer/g) || []).length === 2)
-check("ItemIcon draws only the URL websiteIconUrl() gives",
+check("ItemIcon fetches only the URL websiteIconUrl() gives, and its Image is given the checked bytes, never that URL",
   /Model\.websiteIconUrl\(item, showWebsiteIcons, serverUrl\)/.test(icon)
-    && (icon.match(/source:/g) || []).length === 1 && /source: icon\.imageUrl/.test(icon))
+    && (icon.match(/source:/g) || []).length === 1 && /source: icon\.imageData/.test(icon)
+    && (icon.match(/xhr\.open\(/g) || []).length === 1 && /xhr\.open\("GET", url\)/.test(icon))
 check("the glyph stays until the image has loaded",
-  /imageShown: imageUrl !== "" && favicon\.status === Image\.Ready/.test(icon)
+  /imageShown: imageData !== "" && favicon\.status === Image\.Ready/.test(icon)
     && /visible: !icon\.imageShown/.test(icon))
+
+// What the icon service sent becomes a data URL only when it is a small
+// image of a kind the service serves; the Image never sees anything else.
+{
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64")
+  const url = Model.websiteIconDataUrl(png.buffer.slice(png.byteOffset, png.byteOffset + png.length))
+  eq("a PNG from the icon service is drawn from its own bytes", url, "data:image/png;base64," + png.toString("base64"))
+  const refused = { svg: "<svg xmlns='http://www.w3.org/2000/svg'/>", pdf: "%PDF-1.7\n%\xe2\xe3\xcf\xd3", eps: "%!PS-Adobe-3.0 EPSF-3.0\n",
+    html: "<!doctype html><title>Not found</title>", empty: "",
+    "an oversized PNG": Buffer.concat([png, Buffer.alloc(Model.WEBSITE_ICON_MAX_BYTES)]) }
+  eq("anything else the service sends is not handed to Qt's image decoders",
+    Object.keys(refused).filter(k => Model.websiteIconDataUrl(new Uint8Array(Buffer.from(refused[k], "latin1"))) !== "").join(), "")
+  // The store's keys name the vault's sites: a lock drops it, and an answer
+  // asked for before the lock is not kept after it.
+  const asked = Model.websiteIconGenerationNow()
+  Model.rememberWebsiteIcon("https://icons.example/a.example/icon.png", url, asked)
+  const kept = Model.websiteIconCached("https://icons.example/a.example/icon.png")
+  Model.forgetWebsiteIcons()
+  Model.rememberWebsiteIcon("https://icons.example/b.example/icon.png", url, asked)
+  check("fetched icons are dropped with the vault, and a late answer is not kept",
+    kept === url && Model.websiteIconCached("https://icons.example/a.example/icon.png") === undefined
+      && Model.websiteIconCached("https://icons.example/b.example/icon.png") === undefined
+      && /Model\.forgetWebsiteIcons\(\)/.test(functionBody(service, "dropVaultState")))
+}
 check("icons load off the GUI thread", /asynchronous: true/.test(icon))
 check("icons are decoded at device pixels, not logical ones",
   /pixelSize: Math\.ceil\(size \* Math\.max\(1, Screen\.devicePixelRatio/.test(icon)

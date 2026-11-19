@@ -3573,6 +3573,74 @@ function websiteIconUrl(item, showWebsiteIcons, serverUrl) {
   return base ? base + "/" + host + "/icon.png" : ""
 }
 
+// What the icon service sent, as a `data:` URL for an Image, or "" for
+// anything that is not a small PNG, JPEG, GIF, ICO or WebP by its first
+// bytes. The panel fetches an icon itself (ItemIcon.qml) and draws only
+// this: an Image given the service's URL logs that URL, and so the site's
+// name, to the journal whenever the service has no icon (a 404) or sends
+// something Qt cannot decode, and hands the bytes to whichever of Qt's
+// image plugins claims them (SVG, PDF, EPS through Ghostscript, RAW and
+// the rest of kimageformats where installed).
+var WEBSITE_ICON_MAX_BYTES = 128 * 1024
+
+function websiteIconKind(bytes) {
+  var b = bytes
+  function at(i, values) {
+    for (var k = 0; k < values.length; k++) if (b[i + k] !== values[k]) return false
+    return true
+  }
+  if (!b || !(b.length >= 12)) return ""
+  if (at(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "png"
+  if (at(0, [0xff, 0xd8, 0xff])) return "jpeg"
+  if (at(0, [0x47, 0x49, 0x46, 0x38]) && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61) return "gif"
+  if (at(0, [0x00, 0x00, 0x01, 0x00])) return "x-icon"
+  if (at(0, [0x52, 0x49, 0x46, 0x46]) && at(8, [0x57, 0x45, 0x42, 0x50])) return "webp"
+  return ""
+}
+
+// `response`: an XMLHttpRequest's ArrayBuffer (or a Uint8Array).
+function websiteIconDataUrl(response) {
+  var bytes
+  try { bytes = new Uint8Array(response) } catch (e) { return "" }
+  if (bytes.length > WEBSITE_ICON_MAX_BYTES) return ""
+  var kind = websiteIconKind(bytes)
+  if (!kind) return ""
+  var A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  var out = []
+  for (var i = 0; i < bytes.length; i += 3) {
+    var n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0)
+    out.push(A.charAt(n >> 18), A.charAt((n >> 12) & 63),
+      i + 1 < bytes.length ? A.charAt((n >> 6) & 63) : "=", i + 2 < bytes.length ? A.charAt(n & 63) : "=")
+  }
+  return "data:image/" + kind + ";base64," + out.join("")
+}
+
+// The icons fetched for the open vault, by websiteIconUrl(): a data URL, or
+// "" where the service has none. One store for every view (this file is a
+// library), dropped with the vault (forgetWebsiteIcons(), from
+// dropVaultState()): its keys name the sites. An answer that was asked for
+// before the last drop is not kept.
+var websiteIconStore = {}
+var websiteIconGeneration = 0
+
+function websiteIconGenerationNow() {
+  return websiteIconGeneration
+}
+
+// undefined: not fetched yet.
+function websiteIconCached(url) {
+  return Object.prototype.hasOwnProperty.call(websiteIconStore, url) ? websiteIconStore[url] : undefined
+}
+
+function rememberWebsiteIcon(url, dataUrl, generation) {
+  if (generation === websiteIconGeneration && url) websiteIconStore[String(url)] = String(dataUrl || "")
+}
+
+function forgetWebsiteIcons() {
+  websiteIconStore = {}
+  websiteIconGeneration += 1
+}
+
 // -------------------------------------------------------------------------
 // Attachments
 // -------------------------------------------------------------------------
