@@ -30,7 +30,8 @@ const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submit
   "beginVaultRead", "beginEpochOperation", "invalidateEpochOperation", "vaultReadIsStale", "vaultProcBusy",
   "startVaultRead", "supersededVaultRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem",
   "leaveProvisionalDetail", "settleOwedListRead", "listSnapshotOutdated",
-  "reconcileOpenDetail", "onListFinished", "itemChangeRunning"]
+  "reconcileOpenDetail", "onListFinished", "itemChangeRunning",
+  "recheckArmedAutoType", "autoTypeArmed", "disarmAutoType"]
 
 // `items`: the list (rows from Model.parseItems). `fallback`: no helper.
 function makeVault(items, fallback) {
@@ -49,6 +50,7 @@ function makeVault(items, fallback) {
     createdItemHandoff: null, screenBeforeSshApproval: "main", pendingDelete: null, itemPayloadJson: "",
     failedSave: null, itemsLoadedAt: 0, reloads: 0,
     refreshDerivedFromItems() {}, loadItems() { v.reloads++ },
+    autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeArmReprompt: false, autoTypeArmTimer: { stop() {} },
     // The list read: `listProc.running` while one is in flight.
     listProc: { running: false, command: [] }, listReadError: "", sshCapability: "", syncReloadPending: false,
     isSyncing: false, backgroundSync: false, metadataLoadPending: false, statusRefreshAfterItems: false,

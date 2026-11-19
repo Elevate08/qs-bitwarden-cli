@@ -665,6 +665,9 @@ Item {
   // (dropVaultSecrets()).
   property string autoTypeItemId: ""
   property int autoTypeArmEpoch: -1
+  // Whether that item asked for the master password when it was armed (and
+  // so was asked): recheckArmedAutoType().
+  property bool autoTypeArmReprompt: false
   // From a type's start until wtype has finished, or the helper has not
   // answered in time; `autoTypeSeq` tells a late answer it was given up on.
   property bool autoTypeBusy: false
@@ -7055,6 +7058,7 @@ Item {
     itemsLoadedAt = Date.now()
     refreshDerivedFromItems()
     reconcileOpenDetail()
+    recheckArmedAutoType()
     if (syncReloadPending) {
       syncReloadPending = false
       isSyncing = false
@@ -8857,7 +8861,17 @@ Item {
   function disarmAutoType() {
     autoTypeItemId = ""
     autoTypeArmEpoch = -1
+    autoTypeArmReprompt = false
     autoTypeArmTimer.stop()
+  }
+
+  // The armed item against the list just accepted: one that asks for the
+  // master password now, and did not when it was armed, was armed with no
+  // prompt and is disarmed. The password already copied is the clipboard's.
+  function recheckArmedAutoType() {
+    if (!autoTypeArmed() || autoTypeArmReprompt) return
+    var row = Model.findItemById(items, autoTypeItemId)
+    if (row && itemNeedsReprompt(row)) disarmAutoType()
   }
 
   // Ends a type in flight without a report: the helper's late answer is
@@ -8884,6 +8898,7 @@ Item {
     withReprompt(item, function() {
       root.autoTypeItemId = String(item.id)
       root.autoTypeArmEpoch = root.vaultEpoch
+      root.autoTypeArmReprompt = root.itemNeedsReprompt(item)
       autoTypeArmTimer.restart()
       // The poll runs while armed; a reading now is normally in before the
       // key can be pressed, so the first type is not refused as stale.

@@ -224,6 +224,24 @@ function makeVault(fallback) {
   check("an unconfirmed one asks for the master password as ever", u.repromptPending && u.queries.length === 0 && u.errorMessage === "", u.errorMessage)
 }
 
+// --- (c) an auto-type armed before the reload ------------------------------------------------
+{
+  // Armed from the list (no detail open), with no prompt.
+  const v = makeVault()
+  const arm = id => { v.autoTypeItemId = id; v.autoTypeArmEpoch = v.vaultEpoch; v.autoTypeArmReprompt = false }
+  arm("p1")
+  v.reload(VAULT)
+  check("a reload that changes nothing keeps the arm", v.autoTypeArmed() && v.autoTypeItemId === "p1")
+  v.reload(withFlag("n1", 1))
+  check("as does one that protects another item", v.autoTypeArmed())
+  v.reload(withFlag("p1", 1))
+  check("a reload that turns the armed item's re-prompt on disarms it, with no detail open",
+    !v.autoTypeArmed() && v.autoTypeItemId === "" && v.detailItem === null, v.autoTypeItemId)
+  v.autoTypeItemId = "g1"; v.autoTypeArmEpoch = v.vaultEpoch; v.autoTypeArmReprompt = true
+  v.reload(VAULT)
+  check("an item that asked when it was armed stays armed", v.autoTypeArmed() && v.autoTypeItemId === "g1")
+}
+
 // --- wiring -----------------------------------------------------------------------------------
 const service = read("Service.qml")
 const finished = functionBody(service, "onListFinished")

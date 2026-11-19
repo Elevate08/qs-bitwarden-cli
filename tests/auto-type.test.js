@@ -97,14 +97,15 @@ check("and asked again when it is turned on or off",
 
 const flowNames = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "autoTypeArmed", "disarmAutoType",
   "stopAutoType", "copyPasswordAndArm", "requestAutoType", "onAutoTypeRead", "typeHere", "onAutoTypeExited",
-  "finishAutoType", "screenLockReadingFresh", "armTotpFollowup", "copyTotpAfterAutoType", "notifyTotpCopied"]
+  "finishAutoType", "screenLockReadingFresh", "armTotpFollowup", "copyTotpAfterAutoType", "notifyTotpCopied",
+  "recheckArmedAutoType"]
 function makeVault() {
   const calls = []
   const timer = name => ({ running: false, interval: 0, restart() { this.running = true; calls.push(name + ".restart") },
     stop() { this.running = false } })
   const v = {
     Model, calls, autoTypeEnabled: true, status: "unlocked", session: "held", vaultEpoch: 3, closeOnCopy: true,
-    autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeBusy: false, autoTypeSeq: 0, autoTypePendingText: "",
+    autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeArmReprompt: false, autoTypeBusy: false, autoTypeSeq: 0, autoTypePendingText: "",
     autoTypeTypedItemId: "", autoTypeTypedEpoch: -1, autoCopyTotpSec: 3, fetches: [],
     totpFollowupItem: null, totpFollowupActive: false,
     opened: false, sshPrompt: null, pinentryActive: false, vaultHelperActive: true,
@@ -181,6 +182,52 @@ const item = (v, id) => v.items.find(i => i.id === id)
   check("it lasts autoTypeArmMs, then is dropped",
     /id: autoTypeArmTimer\s*interval: Model\.autoTypeArmMs\(\)\s*repeat: false\s*onTriggered: root\.disarmAutoType\(\)/.test(service), "")
   check("turning auto-type off drops it", /onAutoTypeEnabledChanged: \{\s*if \(!autoTypeEnabled\) disarmAutoType\(\)/.test(service), "")
+}
+
+// --- an arm across a reload of the list ------------------------------------------------
+// A sync can turn an item's master-password re-prompt on after it was armed
+// with no prompt: the list that says so disarms it.
+const reloaded = (v, id, reprompt) => { v.items = v.items.map(i => i.id === id ? Object.assign({}, i, { reprompt }) : i); v.recheckArmedAutoType() }
+{
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "a"))
+  check("premise: armed with no prompt, and that is remembered", v.autoTypeArmed() && v.autoTypeArmReprompt === false && !v.repromptPending)
+  reloaded(v, "t", 1)
+  check("a list that protects another item leaves the arm", v.autoTypeArmed() && v.autoTypeItemId === "a")
+  reloaded(v, "a", 0)
+  check("so does one that changes nothing for it", v.autoTypeArmed() && v.autoTypeArmTimer.running)
+  reloaded(v, "a", 1)
+  check("a list that turns its re-prompt on disarms it, and stops the arm's timer",
+    !v.autoTypeArmed() && v.autoTypeItemId === "" && v.autoTypeArmEpoch === -1 && v.autoTypeArmTimer.running === false, v.autoTypeItemId)
+  eq("so the key types nothing", v.requestAutoType(), "not-armed")
+  check("and asks the helper nothing", v.queries.length === 0)
+}
+{
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "r"))
+  v.repromptVerifiedId = ""; v.repromptActionId = "r"; v.repromptCallback(); v.repromptActionId = ""
+  check("premise: armed after its prompt, and that is remembered", v.autoTypeArmed() && v.autoTypeArmReprompt === true)
+  reloaded(v, "r", 1)
+  check("an item that asked when it was armed stays armed", v.autoTypeArmed() && v.autoTypeItemId === "r")
+  v.disarmAutoType()
+  eq("disarming forgets how it was armed", v.autoTypeArmReprompt, false)
+}
+{
+  const v = makeVault()
+  v.copyPasswordAndArm(item(v, "a"))
+  v.items = v.items.filter(i => i.id !== "a")
+  v.recheckArmedAutoType()
+  check("an armed item gone from the list is left for the key press to report", v.autoTypeItemId === "a")
+  const w = makeVault()
+  w.items = w.items.map(i => i.id === "a" ? Object.assign({}, i, { reprompt: 1 }) : i)
+  w.recheckArmedAutoType()
+  check("with nothing armed there is nothing to do", w.autoTypeItemId === "" && w.calls.length === 0, w.calls.join())
+  const finished = body("onListFinished")
+  check("every accepted list is checked against the arm, once its rows are in",
+    finished.indexOf("items = vault.items") !== -1
+      && finished.indexOf("items = vault.items") < finished.indexOf("recheckArmedAutoType()"), finished)
+  check("a lock forgets how the arm was made, with the arm",
+    /autoTypeItemId = ""\s*autoTypeArmEpoch = -1\s*autoTypeArmReprompt = false/.test(body("disarmAutoType")), body("disarmAutoType"))
 }
 
 // --- the TOTP code, around a type --------------------------------------------------------

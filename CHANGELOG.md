@@ -130,6 +130,11 @@
   the list. An item whose re-prompt was already confirmed, or whose setting
   did not change, is as it was. Until that list has arrived the open item
   still goes by the setting it was opened with.
+- **An armed auto-type does not outlast a re-prompt turned on elsewhere.**
+  A password armed for auto-type with no prompt stayed armed if a sync then
+  brought the item back with "ask for the master password" turned on. The
+  refreshed list now disarms it; an item that asked when it was armed stays
+  armed.
 
 - **The vault helper refuses a vault read it does not recognise.** It used
   to remove secrets only from items sitting where it expected them and hand
