@@ -4022,7 +4022,8 @@ function replaceItemById(items, id, replacement) {
     if (existing && existing.id === id) {
       if (replacement) out.push(replacement)
       replaced = true
-    } else {
+    } else if (existing && typeof existing === "object") {
+      // Not a row: compareItems() would throw on it.
       out.push(existing)
     }
   }

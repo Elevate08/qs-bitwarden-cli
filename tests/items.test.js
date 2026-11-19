@@ -459,6 +459,22 @@ check("finding an item by id returns null rather than throwing when absent",
     swapped.length === 5000 && Model.findItemById(swapped, "id-4999") === big[4999]
       && Model.findItemById(swapped, "id-10").name === "Item changed",
     "a save or delete cut the list to 4,096 rows until the next reload")
+  {
+    const holed = big.slice(0, 4100)
+    holed[4096] = null
+    holed[4097] = 7
+    check("replacing a row drops what is not a row and still sorts",
+      Model.replaceItemById(holed, "id-1", null).length === 4097,
+      "a null past the old cap reached the comparator and threw")
+    // An index read must never happen for a length that is no list's.
+    const trap = new Proxy({ length: Infinity }, { get: (t, k) => {
+      if (k === "length") return Infinity
+      throw new Error("read index " + String(k))
+    } })
+    let trapped = "none"
+    try { Model.replaceItemById(trap, "id-1", null); Model.findItemById(trap, "id-1") } catch (e) { trapped = e.message }
+    check("an impossible length is refused before any row is read", trapped === "none", trapped)
+  }
   check("...removing one leaves 4,999, and a non-list is an empty list",
     Model.replaceItemById(arrayLike, "id-4999", null).length === 4999
       && Model.replaceItemById(null, "id-1", null).length === 0
