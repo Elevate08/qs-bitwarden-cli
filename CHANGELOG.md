@@ -169,7 +169,9 @@
 - **Items past the 4,096th can be opened.** In a vault with more than 4,096
   items, looking a row up by id stopped at the 4,096th, so opening, editing,
   deleting or auto-typing a later item found nothing. The lookup now scans
-  the whole list, without copying it.
+  the whole list, without copying it. A save or delete in such a vault also
+  cut the list on screen to 4,096 rows until the next reload; it no longer
+  does.
 
 ## [1.13.1] - 2026-11-18
 
