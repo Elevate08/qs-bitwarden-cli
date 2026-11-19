@@ -292,6 +292,14 @@ for (const code of [0, 1]) {
   s.onListProcessExited(1, "", "Could not safely read vault items.\n")
   const shown = s.errorMessage
   check("premise: the failed list read shows its message", shown !== "" && s.listReadError === shown && s.status === "unlocked", shown)
+  // The status check is asked for through its entry point, which clears an
+  // ordinary message; the probe behind it (dependencies, registry, session
+  // file, `bw status`) is not driven here, only its answer.
+  Object.assign(s, { vaultHelperLostMessage: "lost", logoutPending: false, depsChecked: false, probes: 0 })
+  s.checkDependencies = () => { s.probes++ }
+  vm.runInContext(functionBody(source, "refreshStatus"), s)
+  s.refreshStatus()
+  check("asking for a status check keeps the failed list read's message", s.errorMessage === shown && s.probes === 1, s.errorMessage)
   s.beginEpochOperation("status")
   s.onStatusFinished("")
   check("a status check failing after it drops the vault for the sign-in screen",
@@ -301,6 +309,15 @@ for (const code of [0, 1]) {
   eq("still marked as the list's, so the next accepted list takes it down", s.listReadError, shown)
   s.session = "next-session"; s.beginVaultRead("items"); s.onListFinished("[]")
   eq("which it does", s.errorMessage, "")
+  const o = fixture()
+  Object.assign(o, { vaultHelperLostMessage: "lost", logoutPending: false, depsChecked: false, checkDependencies() {} })
+  vm.runInContext(functionBody(source, "refreshStatus"), o)
+  o.errorMessage = "Sync failed"; o.listReadError = ""
+  o.refreshStatus()
+  eq("any other message is cleared by a status check, as before", o.errorMessage, "")
+  o.errorMessage = "Something newer"; o.listReadError = "Could not safely read vault items."
+  o.refreshStatus()
+  eq("as is one that replaced the list read's on screen", o.errorMessage, "")
   // A status that answers (locked elsewhere) explains itself: the message goes with the vault.
   const l = fixture()
   Object.assign(l, { items: [], organizations: [], folders: [], sends: [], detailItem: null, itemPayloadJson: "",

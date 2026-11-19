@@ -3647,8 +3647,11 @@ Item {
 
   function refreshStatus() {
     // A delayed probe or wake-up refresh must not erase why the vault locked
-    // or that its last automatic synchronization failed.
-    if (errorMessage !== vaultHelperLostMessage && errorMessage !== autoSyncError) errorMessage = ""
+    // or that its last automatic synchronization failed. Nor a failed list
+    // read's message: if this check fails too it is the only word on why
+    // (onStatusFinished()), and otherwise the next list or drop takes it.
+    if (errorMessage !== vaultHelperLostMessage && errorMessage !== autoSyncError
+        && !(listReadError !== "" && errorMessage === listReadError)) errorMessage = ""
     if (logoutPending) return
     // Wait for the dependency probe, which owns the first status transition.
     if (!depsChecked) {

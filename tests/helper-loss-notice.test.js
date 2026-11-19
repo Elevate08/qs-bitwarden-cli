@@ -16,7 +16,7 @@ function vault(errorMessage) {
     depsChecked: true, setupGated: false, accountsLoaded: true,
     statusRefreshPending: true, statusCheckQueued: false,
     statusProbeStarted: true, terminalLoginStartedAt: 0,
-    vaultHelperLostMessage: notice, probes: 0,
+    vaultHelperLostMessage: notice, probes: 0, listReadError: "",
     sessionHandoffProc: { running: false },
     beginEpochOperation() { this.probes++ },
     epochOperationIsStale() { return true }

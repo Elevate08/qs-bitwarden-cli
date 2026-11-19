@@ -6805,14 +6805,32 @@ function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 // Default_Ignorable_Code_Point.
 var SSH_AGENT_INVISIBLE_SOURCE = "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff0-\\ufff8]"
   + "|\\ud82f[\\udca0-\\udca3]|\\ud834[\\udd73-\\udd7a]|[\\udb40-\\udb43][\\udc00-\\udfff]"
-// One step of the text: an invisible character (group 1), an escape already
-// written out (the SSH agent writes control characters as \uXXXX before the
-// text gets here, and this file's own output can be bounded again), or any
-// other whole code point.
+// One step of the text: an invisible character (group 1), what may be an
+// escape already written out (the SSH agent writes control characters as
+// \uXXXX before the text gets here, and this file's own output can be bounded
+// again; isWrittenOutEscape() decides), or any other whole code point.
 var SSH_AGENT_TOKEN_RE = new RegExp("(" + SSH_AGENT_INVISIBLE_SOURCE + ")"
   + "|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]{1,6}\\}|[\\ud800-\\udbff][\\udc00-\\udfff]|[\\s\\S]", "g")
 // The longest step, in UTF-16 code units: \u{10ffff}.
 var SSH_AGENT_MAX_PIECE = 10
+var SSH_AGENT_INVISIBLE_ONE_RE = new RegExp("^(?:" + SSH_AGENT_INVISIBLE_SOURCE + ")$")
+
+// Whether `escape` (\uXXXX or \u{X...}) is spelled as the agent or this file
+// writes an invisible character out: lowercase hex, four digits in the first
+// plane and braces with no leading zero beyond it, naming a character that is
+// written out. Only those are kept whole at a cut. Anything else that merely
+// looks like an escape (a literal \u0041 in a file name) is ordinary text.
+function isWrittenOutEscape(escape) {
+  var braced = escape.charAt(2) === "{"
+  var hex = braced ? escape.slice(3, -1) : escape.slice(2)
+  if (hex !== hex.toLowerCase()) return false
+  var point = parseInt(hex, 16)
+  if (braced !== (point > 0xffff) || point > 0x10ffff || (braced && hex.charAt(0) === "0")) return false
+  var c = point > 0xffff
+    ? String.fromCharCode(0xd800 + ((point - 0x10000) >> 10), 0xdc00 + ((point - 0x10000) & 0x3ff))
+    : String.fromCharCode(point)
+  return SSH_AGENT_INVISIBLE_ONE_RE.test(c)
+}
 
 // The pieces a prompt draws of `text` from index `from` on, one call of
 // `each` per piece until it returns false: each invisible character written
@@ -6833,6 +6851,10 @@ function eachVisiblePiece(text, from, each) {
       } else {
         piece = "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
       }
+    } else if (c.length > 2 && c.charCodeAt(0) === 92 && !isWrittenOutEscape(c)) {
+      // Not an escape either formatter writes: its backslash is one character.
+      piece = "\\"
+      SSH_AGENT_TOKEN_RE.lastIndex = m.index + 1
     }
     if (each(piece) === false) break
   }
@@ -6920,7 +6942,11 @@ function sshAgentRevokeGrantLine(grantId) {
 
 // "/usr/bin/ssh" -> "ssh", for display beside the full path only.
 // The name is taken from the text as it came (escaping neither adds nor
-// removes a "/"), then escaped and cut in one step.
+// removes a "/"), then escaped and cut in one step. Finding its start is one
+// lastIndexOf, which reads back from the end as far as the last "/": the
+// whole text only when the name is all of it. That and the slice (no copy of
+// the text is walked here) are the only work not bounded by the limit; the
+// text itself is at most one line of the agent's protocol.
 function processNameFromPath(processPath) {
   var text = textOf(processPath)
   return boundedText(text.slice(text.lastIndexOf("/") + 1), SSH_AGENT_MAX_NAME_CHARS)

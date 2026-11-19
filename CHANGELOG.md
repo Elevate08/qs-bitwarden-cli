@@ -206,8 +206,9 @@
   the panel gets the text, and the panel cut that text one character at a
   time: a path could start with `…009` (the tail of a tab's `\u0009`), and a
   program's name, written out first and cut afterwards, could end in `\u`.
-  A written-out character already in the text is now kept or dropped whole,
-  and the name is written out and cut in one step. The limits (512 UTF-16
+  A written-out character already in the text, spelled as the agent or the
+  panel writes one (lowercase, and only for a character they write out), is
+  now kept or dropped whole, and the name is written out and cut in one step. The limits (512 UTF-16
   code units for a path, one of them the `…`; 256 for a name) also bound
   the work again: a 64,000-character path or key name was read to its end
   on every prompt, and now only the part that can be shown is.
@@ -215,7 +216,8 @@
   the item list could not be read and the status check after it failed too,
   the vault was dropped for the sign-in screen and the list's message
   ("Could not safely read vault items.") went with it, leaving no reason
-  on screen. That message now stays up there. A lock, a logout, an account
+  on screen. That message now stays up there, and asking for the status
+  check does not clear it either. A lock, a logout, an account
   switch and a vault that `bw` reports locked still take it along.
 - **Saving a new item while the list refreshes.** If the refresh already
   listed the new item when its save answered, the item appeared twice and a
