@@ -158,6 +158,9 @@
   read) with what they were before the list was last read, and skips the
   read when they match. A sync, a save, unlocking and switching account read
   as before, and so does an open when the file cannot be checked.
+- **Suggestions for the focused window cost less on a large vault.** Matching
+  5,000 items against a window title took about 14.5 ms and takes about
+  9 ms (2,000 items: 6.7 ms to 5.3 ms); the suggestions are the same.
 
 ### Fixed
 

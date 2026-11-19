@@ -328,4 +328,46 @@ check("the newest lesson survives trimming",
   Model.findContextualMatches(withAuthentik, authentikWindow, stillLearned).matches.map(m => m.id).join() === "auth-1",
   "expected the just-learned item to still be suggested")
 
+// --- whole words: the shortcut answers as the expression alone did ---------
+
+// hasWholeWord() refuses a word that is nowhere in the lowercased text before
+// building its RegExp. That must never change an answer, including where
+// case-insensitive matching and toLowerCase() disagree about a character.
+{
+  const reference = (haystack, word) => {
+    if (!haystack || !word) return false
+    return new RegExp("(?:^|[^a-z0-9])" + Model.escapeRegExp(word) + "(?:$|[^a-z0-9])", "i").test(haystack)
+  }
+  const texts = ["", "GitHub", "github", "Sign in to GITHUB - Mozilla Firefox", "mygithub", "github2", "git-hub",
+    "Home Assistant", "my-site login", "MY-SITE", "x my-site", "a1b2c3", "A1B2C3 d", "amazon.com: shopping",
+    "\u0130stanbul", "D\u0130YAN", "\u0131nfo", "\u212Aelvin k", "ma\u017Fs mass", "STRASSE stra\u00DFe",
+    "\u03A3\u039F\u03A6\u039F\u03A3 sofos", "SI\u0130 si", "\u00C9cole ecole", "caf\u00E9", "a.b", "a+b (c)", "tab\tsite\nline",
+    "site", " site ", "_site_", "site.", "SITE!", "websites", "\uD83D\uDD12 Secure \u2014 bank"]
+  const words = ["github", "git", "hub", "my-site", "site", "a1b2c3", "amazon", "istanbul", "i", "info", "k", "kelvin",
+    "mass", "strasse", "ss", "sofos", "si", "ecole", "cafe", "bank", "secure", "a.b", "a+b", "GitHub", "SITE",
+    "\u0131nfo", "caf\u00E9", "stra\u00DFe", "\u03C3", "-", "0", "(c)", "\\", "^", "$"]
+  let compared = 0
+  const wrong = []
+  const compare = (text, word) => {
+    compared += 1
+    if (Model.hasWholeWord(text, word) !== reference(text, word)) wrong.push(JSON.stringify([text, word]))
+  }
+  for (const text of texts) for (const word of words) compare(text, word)
+  // And at random, from an alphabet that mixes both cases with the characters
+  // whose case mappings are not one to one.
+  const alphabet = "abcABCxyzXYZ019- ._\u0130\u0131\u212A\u017F\u00DF\u03A3\u03C3\u03C2\u00E9\u00C9"
+  let seed = 20261119
+  const next = n => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  const random = max => {
+    let out = ""
+    for (let n = 1 + next(max); n > 0; n--) out += alphabet[next(alphabet.length)]
+    return out
+  }
+  for (let i = 0; i < 20000; i++) compare(random(14), random(3))
+  check("the whole-word shortcut never changes an answer",
+    wrong.length === 0 && compared > 21000, wrong.slice(0, 8).join(" ") + " of " + compared)
+  const hits = texts.filter(t => Model.hasWholeWord(t, "site")).length
+  check("...and both answers occur among those", hits > 3 && hits < texts.length, String(hits))
+}
+
 done()

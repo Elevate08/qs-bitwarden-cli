@@ -68,6 +68,13 @@ regressions. It measures only in-process work after `bw` returns, so network,
 server and CLI startup latency should be measured separately on the target
 machine.
 
+On 2026-11-19 (Node 22.23.3, three runs each) the contextual-match p95 went
+from 14.4-15.4 ms to 8.9-9.2 ms on the 5,000-item tier and from 6.7 ms to
+5.3 ms on the 2,000-item tier, when `hasWholeWord()` stopped building a
+RegExp for a word that is not in the title at all; the two smaller tiers moved
+within their noise (about 2 ms and under 1 ms), and parse and filter did not
+change.
+
 The 2026-08-24 auth benchmark used Bitwarden CLI 2026.2.0 and three runs with a
 deliberately invalid password. A normal unlock took 2,641 ms median from submit
 to result; after a three-second prewarm while the password screen was already
