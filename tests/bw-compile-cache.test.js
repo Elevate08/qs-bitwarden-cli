@@ -4,22 +4,24 @@
 // process that sees the master password. With the setting off nothing is
 // checked or created and the variable is removed wherever the plugin starts
 // `bw` or `node`. With it on, the directory must be the user's own and
-// private, contents included, before the variable is ever set; only `bw`
-// itself gets it; the cache must change nothing `bw` prints or returns, and
-// it must work beside the two NODE_OPTIONS preloads.
+// private, contents included, before the variable is ever set; only a `bw`
+// that is given no password gets it; the cache must change nothing `bw`
+// prints or returns, and it must work beside the two NODE_OPTIONS preloads.
 //
 //   node tests/bw-compile-cache.test.js
 //
 // The directory checks need somewhere whose every ancestor is the user's or
-// root's and writable by no one else: $XDG_RUNTIME_DIR, else this directory.
-// Where neither is (some CI runners), those checks are skipped, loudly, and
-// the rest still run.
+// root's and writable by no one else. Whether a directory is one is decided
+// here with plain filesystem calls (harness.privateScratchDir()), never by
+// the check under test: the check must then accept it, or the suite fails.
+// Only where this machine has no such directory at all are those checks
+// skipped, loudly, and the rest still run.
 
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
 const { spawnSync } = require("child_process")
-const { createSuite, functionBody, loadModule, read, repoRoot } = require("./harness")
+const { createSuite, functionBody, loadModule, privateScratchDir, read, repoRoot } = require("./harness")
 
 const Model = loadModule()
 const { check, done } = createSuite("bw-compile-cache")
@@ -28,9 +30,6 @@ const modelSrc = read("BitwardenModel.js")
 const VAR = Model.bwCompileCacheEnvVar()
 
 const underTmp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-compile-cache-"))
-// QSBW_TEST_NO_TRUSTED_DIR=1 runs the suite as such a runner would.
-const roots = process.env.QSBW_TEST_NO_TRUSTED_DIR === "1" ? []
-  : [process.env.XDG_RUNTIME_DIR, __dirname].filter(d => d && path.isAbsolute(d) && fs.existsSync(d))
 const mode = p => fs.lstatSync(p).mode & 0o7777
 const run = home => {
   const cmd = Model.bwCompileCacheCommand(home)
@@ -39,26 +38,25 @@ const run = home => {
   return { rc: r.status, out, line: out.replace(/\n$/, ""), dir: Model.bwCompileCacheAccepted(r.status, out) }
 }
 const probe = home => run(home).rc
-let tmp = ""
-for (const root of roots) {
-  let candidate = ""
-  try {
-    candidate = fs.mkdtempSync(path.join(root, ".qsbw-compile-cache-"))
-    fs.chmodSync(candidate, 0o700)
-    fs.mkdirSync(path.join(candidate, "trial"), { mode: 0o700 })
-    if (probe(path.join(candidate, "trial")) === 0) { tmp = fs.realpathSync(candidate); break }
-  } catch (e) {}
-  if (candidate) fs.rmSync(candidate, { recursive: true, force: true })
-}
+// QSBW_TEST_NO_TRUSTED_DIR=1 runs the suite as a machine with none would.
+const tmp = process.env.QSBW_TEST_NO_TRUSTED_DIR === "1" ? "" : privateScratchDir(".qsbw-compile-cache-")
 process.on("exit", () => {
   if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
   fs.rmSync(underTmp, { recursive: true, force: true })
 })
 const trusted = tmp !== ""
 if (!trusted) {
-  console.log("bw-compile-cache: SKIPPED the directory checks and the runs through Node: neither $XDG_RUNTIME_DIR nor "
-    + __dirname + " has an ancestor chain owned by this user or root that no one else can write to (tried: "
-    + (roots.join(", ") || "nothing") + "). The setting, environment and script-text checks still run.")
+  console.log("bw-compile-cache: SKIPPED the directory checks and the runs through Node: this user can write to no directory"
+    + " whose whole ancestor chain is its own or root's and closed to group and others (tried $XDG_RUNTIME_DIR, $RUNNER_TEMP,"
+    + " the account's home and " + __dirname + "). The setting, environment and script-text checks still run.")
+} else {
+  // The fixture is private by this suite's own reading of owners and modes:
+  // a check that refuses it is broken, and nothing below may hide that.
+  const trial = path.join(tmp, "trial")
+  fs.mkdirSync(trial, { mode: 0o700 })
+  const r = run(trial)
+  check("the check accepts a cache home that is private by this suite's own reading of the filesystem (" + tmp + ")",
+    r.rc === 0 && r.dir === path.join(trial, "qs-bitwarden-cli", "node-compile-cache"), JSON.stringify(r))
 }
 let n = 0
 // A fresh cache home, mode 0700 unless told otherwise.
@@ -154,22 +152,28 @@ check("the variable is Node's", VAR === "NODE_COMPILE_CACHE")
 {
   const script = Model.bwCompileCacheCommand("/x")[2]
   check("owner and mode are checked on every directory up to /, and strictly on the two the plugin makes",
-    /__ok\(\) \{ \[ -d "\$1" \] && \[ ! -L "\$1" \] \|\| return 1; __s="\$\(stat -c '%u %a' -- "\$1" 2>\/dev\/null\)" \|\| return 1; case "\$\{__s#\* \}" in \*\[0145\]\[0145\]\) ;; \*\) return 1 ;; esac; \[ "\$\{__s%% \*\}" = "\$__u" \] \|\| \{ \[ "\$2" = root \] && \[ "\$\{__s%% \*\}" = 0 \]; \}; \}/.test(script)
+    script.indexOf("__ok() { [ -d \"$1\" ] && [ ! -L \"$1\" ] || return 1; __s=\"$(stat -c '%u %a' -- \"$1\" 2>/dev/null)\" || return 1; "
+        + "case \"${__s#* }\" in *[0145][0145]) ;; *) return 1 ;; esac; [ \"${__s%% *}\" = \"$__u\" ] || { [ \"$2\" = root ] && [ \"${__s%% *}\" = 0 ]; }; }; ") !== -1
       && /while :; do __ok "\$__a" root \|\| return 1; \[ "\$__a" = \/ \] && break/.test(script)
-      && /mkdir -m 700 -- "\$__x" \|\| exit 1; __ok "\$__x" \|\| exit 1/.test(script),
+      && /for __d in "\$__p" "\$__x"; do __there "\$__d" \|\| mkdir -m 700 -- "\$__d" \|\| exit 1; __ok "\$__d" \|\| exit 1; done; /.test(script),
     script)
   check("directories are made by mode, never by umask, and no dirname is taken of the path",
     !/umask|dirname|mkdir -p/.test(script) && (script.match(/mkdir -m 700 -- /g) || []).length === 2, script)
   check("the path is an argument, not part of the script",
     Model.bwCompileCacheCommand("/a b/$(x)")[4] === "/a b/$(x)" && !/\/a b/.test(Model.bwCompileCacheCommand("/a b/$(x)")[2]))
-  check("the canonical path must be printable ASCII, by bytes, before anything is made under it and again before it is printed",
-    /^exec 2>\/dev\/null; LC_ALL=C; /.test(script)
-      && (script.match(/case "\$__(?:c|x)" in \*\[!\\ -~\]\*\) exit 1 ;; esac; /g) || []).length === 2
-      && script.indexOf("case \"$__c\" in *[!\\ -~]*") < script.indexOf("for __x in")
-      && script.indexOf("case \"$__x\" in *[!\\ -~]*") < script.indexOf("printf '%s\\n' \"$__x\""), script)
-  check("what is already inside is looked at in one bounded find that follows no symlink and stops at the first offender",
-    /__bad="\$\(timeout 5 find "\$__x" -mindepth 1 \\\( ! \\\( -type f -o -type d \\\) -o ! -uid "\$__u" -o -perm \/022 \\\) -printf x -quit\)" \|\| exit 1; \[ -z "\$__bad" \] \|\| exit 1; printf '%s\\n' "\$__x"$/.test(script)
-      && (script.match(/\bfind\b/g) || []).length === 1 && !/find -L|-follow/.test(script), script)
+  check("the path must be printable ASCII, by bytes, and plain: as given, before anything at all, and as resolved, before anything is made under it",
+    script.indexOf("exec 2>/dev/null; LC_ALL=C; case \"$1\" in *[!\\ -~]*|*/../*|*/..) exit 1 ;; /*) ;; *) exit 1 ;; esac; ") === 0
+      && script.indexOf("case \"$__c\" in *[!\\ -~]*) return 1 ;; /*) ;; *) return 1 ;; esac; ") !== -1
+      && script.indexOf("case \"$__c\" in *[!") < script.indexOf("__chain \"${__h%/*}/\" || exit 1")
+      && script.indexOf("__chain \"${__h%/*}/\" || exit 1") < script.indexOf("mkdir -m 700"), script)
+  const find = "__bad=\"$(timeout 5 find \"$__p\" -mindepth 1 \\( ! \\( -type f -o -type d \\) -o ! -uid \"$__u\" -o -perm /022 \\) -printf x -quit)\" || exit 1; [ -z \"$__bad\" ] || exit 1; fi; "
+  check("what is already in the plugin's directory is looked at in one bounded find that follows no symlink and stops at the first offender",
+    script.indexOf(find) !== -1 && (script.match(/\bfind\b/g) || []).length === 1 && !/find -L|-follow/.test(script), script)
+  check("a refusal changes nothing: what is there is judged before the two directories are made, and modes are set last, once everything has passed",
+    script.indexOf("if __there \"$__p\"; then __ok \"$__p\" || exit 1; if __there \"$__x\"; then __ok \"$__x\" || exit 1; fi; __bad=") !== -1
+      && script.indexOf(find) < script.indexOf("for __d in")
+      && (script.match(/\bchmod\b/g) || []).length === 1
+      && /done; \[ "\$\(realpath -e -- "\$__x" && printf x\)" = "\$__x"\$'\\n'x \] \|\| exit 1; chmod 700 -- "\$__p" "\$__x" \|\| exit 1; printf '%s\\n' "\$__x"$/.test(script), script)
   check("the probe runs with PATH and a fixed locale only, and its whole output is what is judged",
     JSON.stringify(Model.plainProbeEnv("/usr/bin")) === JSON.stringify({ PATH: "/usr/bin", LC_ALL: "C" })
       && Model.plainProbeEnv("").PATH === "/usr/local/bin:/usr/bin:/bin"
@@ -191,6 +195,9 @@ if (trusted) {
     fs.chmodSync(dir, 0o755)
     check("one Node recreated with the default umask is made private again",
       probe(base) === 0 && mode(dir) === 0o700, mode(dir).toString(8))
+    fs.chmodSync(path.dirname(dir), 0o755)
+    check("...and so is the plugin's directory above it, which holds nothing else: with it private, whatever is recreated inside is out of others' reach",
+      probe(base) === 0 && mode(path.dirname(dir)) === 0o700 && mode(dir) === 0o700, mode(path.dirname(dir)).toString(8))
     const old = process.umask(0)
     const open = home()
     const made = run(open)
@@ -214,9 +221,10 @@ if (trusted) {
     fs.chmodSync(dir, bad)
     check(`a ${what} cache directory is refused and left as it was`,
       probe(base) !== 0 && mode(dir) === bad, mode(dir).toString(8))
-    fs.chmodSync(dir, 0o700)
+    fs.chmodSync(dir, 0o755)
     fs.chmodSync(path.dirname(dir), bad)
-    check(`...and so is one inside a ${what} plugin directory`, probe(base) !== 0)
+    check(`...and so is one inside a ${what} plugin directory, with neither mode touched`,
+      probe(base) !== 0 && mode(path.dirname(dir)) === bad && mode(dir) === 0o755)
     const shared = home(bad)
     check(`...and one under a ${what} cache home, where nothing is created`,
       probe(shared) !== 0 && !fs.existsSync(path.dirname(cacheOf(shared))))
@@ -296,6 +304,10 @@ if (trusted) {
     fs.mkdirSync(accented, { mode: 0o700 })
     check("a cache home with a non-ASCII character is refused, and nothing is created in it",
       probe(accented) !== 0 && fs.readdirSync(accented).length === 0)
+    const missingAccented = path.join(home(), "caf\u00e9-not-there")
+    const underAccented = path.join(accented, "not-there")
+    check("...and one that does not exist yet is not created, by that name or under a parent with one",
+      probe(missingAccented) !== 0 && !fs.existsSync(missingAccented) && probe(underAccented) !== 0 && !fs.existsSync(underAccented))
     const viaAscii = path.join(home(), "plain")
     fs.symlinkSync(accented, viaAscii)
     check("...also when an ASCII symlink leads to it: the canonical path is the one that counts",
@@ -359,9 +371,23 @@ if (trusted) {
       const f = filled()
       plant(f)
       const before = fs.readdirSync(f.version).sort().join()
+      // As Node leaves them after recreating: a refusal must not tighten them.
+      fs.chmodSync(cacheOf(f.base), 0o755)
+      fs.chmodSync(path.dirname(cacheOf(f.base)), 0o755)
       const r = run(f.base)
-      check(`a cache with ${what} is refused, and left as it was`,
-        r.rc !== 0 && r.dir === "" && r.out === "" && fs.readdirSync(f.version).sort().join() === before, JSON.stringify(r))
+      check(`a cache with ${what} is refused, and left as it was, modes included`,
+        r.rc !== 0 && r.dir === "" && r.out === "" && fs.readdirSync(f.version).sort().join() === before
+          && mode(cacheOf(f.base)) === 0o755 && mode(path.dirname(cacheOf(f.base))) === 0o755, JSON.stringify(r))
+    }
+    {
+      const f = filled()
+      fs.symlinkSync(outside, path.join(path.dirname(cacheOf(f.base)), "beside"))
+      check("a symlink beside the cache directory, in the plugin's directory, is refused too: the whole of that directory is the plugin's",
+        probe(f.base) !== 0)
+      const fresh = home()
+      fs.mkdirSync(path.dirname(cacheOf(fresh)), { mode: 0o700 })
+      fs.symlinkSync(outside, path.join(path.dirname(cacheOf(fresh)), "beside"))
+      check("...and then the cache directory is not made either", probe(fresh) !== 0 && !fs.existsSync(cacheOf(fresh)))
     }
     // An unreadable directory inside: find fails, and so does the probe.
     const unread = filled()
@@ -398,23 +424,44 @@ if (trusted) {
 check("the directory offered to bw is the one the probe printed; a new check withdraws it first, and nothing else sets it",
   /property string bwCompileCacheDir: ""/.test(svc)
     && /bwCompileCacheDir = Model\.bwCompileCacheAccepted\(exitCode, output\)/.test(functionBody(svc, "onBwCompileCacheProbed"))
-    && /^function probeBwCompileCache\(forOpening\) \{\s+bwCompileCacheDir = ""/.test(functionBody(svc, "probeBwCompileCache"))
+    && /^function probeBwCompileCache\(\) \{\s+bwCompileCacheDir = ""/.test(functionBody(svc, "probeBwCompileCache"))
     && (svc.match(/\bbwCompileCacheDir = /g) || []).length === 2,
   functionBody(svc, "onBwCompileCacheProbed"))
-check("the check runs at start, when the setting changes, when an unlock is submitted and when the vault opens",
-  /root\.probeBwCompileCache\(true\)/.test(svc.slice(svc.indexOf("onLiveChanged: {"), svc.indexOf("readonly property var categories")))
-    && /\n  onBwCompileCacheChanged: probeBwCompileCache\(true\)\n/.test(svc)
-    && /\n  onIsUnlockingChanged: if \(isUnlocking\) probeBwCompileCache\(true\)\n/.test(svc)
-    && /onStatusChanged: \{[^}]*recheckBwCompileCacheOnOpen\(\)\s+promoteUnlockToApproval\(\)/.test(svc)
+check("the check runs at start, when the setting changes and every time the vault becomes unlocked, before that opening's reads start",
+  /root\.probeBwCompileCache\(\)/.test(svc.slice(svc.indexOf("onLiveChanged: {"), svc.indexOf("readonly property var categories")))
+    && /\n  onBwCompileCacheChanged: probeBwCompileCache\(\)\n/.test(svc)
+    && /onStatusChanged: \{\s+\/\/[^\n]*\n\s+if \(status === "unlocked"\) probeBwCompileCache\(\)\s+promoteUnlockToApproval\(\)\s+maybeStartupLoad\(\)/.test(svc)
+    // Those three and no other: the rest are the definition and a comment.
+    && (svc.match(/^[^/\n]*\bprobeBwCompileCache\(\)(?! \{)/gm) || []).length === 3
     && /bwCompileCacheHome: Model\.bwCompileCacheHome\(\s*Quickshell\.env\("XDG_CACHE_HOME"\) \|\| "", Quickshell\.env\("HOME"\) \|\| ""\)/.test(svc))
-check("only bwEnv(), the generator's server and the refresh of a queued environment name the variable; pinentry, which runs no bw, starts without an inherited one",
+check("that is all the feature keeps: the directory, what the last check came to, and the count that tells answers apart. No clock, no credit from one opening to the next",
+  svc.split("\n").filter(l => /^\s*(?:readonly )?property \w+ bwCompileCache\w*:/.test(l)).map(l => l.trim().split(":")[0]).join("; ")
+    === "readonly property bool bwCompileCache; readonly property string bwCompileCacheHome; property string bwCompileCacheDir; "
+      + "property string bwCompileCacheState; property int bwCompileCacheProbeSeq"
+    && !/Date\.now|Timer/.test(["probeBwCompileCache", "startBwCompileCacheProbe", "onBwCompileCacheProbed", "bwCompileCacheEnvValue", "bwEnvAtStart"]
+      .map(name => functionBody(svc, name)).join("\n"))
+    && !/isUnlocking/.test(svc.slice(svc.indexOf("property string bwCompileCacheDir"), svc.indexOf("function bwEnv(extra)")))
+    && !/CheckIsRecent|TRUST_MS/.test(modelSrc))
+check("only bwEnv(), the generator's server and the last word at a start name the variable; pinentry, which runs no bw, starts without an inherited one",
   (svc.match(/bwCompileCacheEnvVar\(\)/g) || []).length === 3
-    && /var name = Model\.bwCompileCacheEnvVar\(\)\s+if \(env && env\.hasOwnProperty\(name\)\) env\[name\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "refreshBwCompileCacheIn"))
+    && /var name = Model\.bwCompileCacheEnvVar\(\)\s+if \(env && env\[name\] !== undefined && env\[name\] !== null\) env\[name\] = bwCompileCacheEnvValue\(\)\s+return env/.test(functionBody(svc, "bwEnvAtStart"))
     && /env\[Model\.bwCompileCacheEnvVar\(\)\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "bwEnv"))
     && /env\[Model\.bwCompileCacheEnvVar\(\)\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "generatorServeEnv"))
     && Model.pinentryEnvironment({})[VAR] === null
     && /id: pinentryProbeProc\s+environment: Model\.withoutCompileCache\(\{\}\)/.test(svc)
     && !/COMPILE_CACHE/.test(read("pinentry/omarchy-pinentry")))
+check("a bw that is given the master password or a login's credentials never gets the cache: unlock and the process waiting for it, every login, the password check",
+  /^function bwSecretEnv\(extra\) \{\s+return Model\.withoutCompileCache\(bwEnv\(extra\)\)\s+\}$/.test(functionBody(svc, "bwSecretEnv"))
+    && /^function authEnv\(password, clientId, clientSecret, code\) \{\s+var env = bwSecretEnv\(\)/.test(functionBody(svc, "authEnv"))
+    && !/bwEnv\(/.test(functionBody(svc, "authEnv").replace(/bwSecretEnv\(/g, ""))
+    && !/bwEnv\(/.test(functionBody(svc, "loginProcessEnv").replace(/bwSecretEnv\(/g, ""))
+    && /var deviceEnv = bwSecretEnv\(\)/.test(functionBody(svc, "loginProcessEnv"))
+    && /command: Model\.bwVerifyPasswordCommand\(\),\s+env: bwSecretEnv\(env\)/.test(functionBody(svc, "verifyWithBw"))
+    && /id: unlockProc\s+vault: root\s+capture: "session"\s+command: Model\.unlockPrewarmCommand\(\)\s+environment: root\.authEnv\("", "", "", ""\)/.test(svc)
+    && /id: loginProc\s+vault: root\s+capture: "session"\s+environment: root\.loginProcessEnv\(\)/.test(svc)
+    && /id: authPasswordWriterProc\s+vault: root\s+session: false\s+environment: root\.authEnv\(/.test(svc)
+    // Nothing else is handed the password variable.
+    && (svc.match(/Model\.passwordEnvVar\(\)/g) || []).length === 1 && /Model\.passwordEnvVar\(\)/.test(functionBody(svc, "authEnv")))
 
 // Every other `bw` or `node` the plugin starts takes an inherited value out.
 {
@@ -455,9 +502,11 @@ check("only bwEnv(), the generator's server and the refresh of a queued environm
   // over Service.qml. "cached": bwEnv() (or one built on it), so the
   // accepted directory with the setting on and the variable removed
   // otherwise. "removed": always removed.
-  const bwEnvOf = id => new RegExp("id: " + id + "\\b[^}]*?environment: root\\.(?:bwEnv|itemEnv|folderEnv|sendEnv|loginProcessEnv|authEnv)\\(")
-  const builtOnBwEnv = ["itemEnv", "folderEnv", "sendEnv", "authEnv"].every(name => /bwEnv\(/.test(functionBody(svc, name)))
-    && /authEnv\(|bwEnv\(\)/.test(functionBody(svc, "loginProcessEnv")) && /root\.bwEnv\(\)/.test(functionBody(svc, "vaultListEnv"))
+  const bwEnvOf = id => new RegExp("id: " + id + "\\b[^}]*?environment: root\\.(?:bwEnv|itemEnv|folderEnv|sendEnv)\\(")
+  // "removed" for these: built on bwSecretEnv(), for a bw given a password.
+  const secretEnvOf = id => new RegExp("id: " + id + "\\b[^}]*?environment: root\\.(?:loginProcessEnv|authEnv)\\(")
+  const builtOnBwEnv = ["itemEnv", "folderEnv", "sendEnv"].every(name => /\bbwEnv\(/.test(functionBody(svc, name)))
+    && /root\.bwEnv\(\)/.test(functionBody(svc, "vaultListEnv"))
   const sites = {
     // bw itself, through bwEnv(): the cache when it is on and accepted.
     statusCommand: ["cached", bwEnvOf("statusProc"), /command: Model\.statusCommand\(\),\s+env: bwEnv\(\), session: true/,
@@ -466,11 +515,6 @@ check("only bwEnv(), the generator's server and the refresh of a queued environm
       /var env = bwEnv\(\)\s+env\[Model\.sessionEnvVar\(\)\] = String\(session\)\s+Quickshell\.execDetached\(\{ command: Model\.lockCommand\(\), environment: env \}\)/],
     logoutCommand: ["cached", bwEnvOf("logoutProc")],
     syncCommand: ["cached", bwEnvOf("syncProc")],
-    unlockPrewarmCommand: ["cached", bwEnvOf("unlockProc")],
-    emailLoginPrewarmCommand: ["cached", bwEnvOf("loginProc")],
-    deviceVerificationLoginCommand: ["cached", bwEnvOf("loginProc")],
-    apiKeyLoginCommand: ["cached", bwEnvOf("loginProc")],
-    bwVerifyPasswordCommand: ["cached", /command: Model\.bwVerifyPasswordCommand\(\),\s+env: bwEnv\(env\)/],
     listOrganizationsCommand: ["cached", bwEnvOf("listOrgsProc")],
     listFoldersCommand: ["cached", bwEnvOf("listFoldersProc")],
     listOrgCollectionsCommand: ["cached", bwEnvOf("orgCollectionsProc")],
@@ -490,7 +534,13 @@ check("only bwEnv(), the generator's server and the refresh of a queued environm
     createItemCommand: ["cached", bwEnvOf("createItemProc")],
     editItemCommand: ["cached", bwEnvOf("editItemProc")],
     attachmentDownloadCommand: ["cached", bwEnvOf("attachmentProc")],
-    // Never the cache, setting on or off.
+    // Never the cache, setting on or off. First the ones that are given the
+    // master password or a login's credentials.
+    unlockPrewarmCommand: ["removed", secretEnvOf("unlockProc")],
+    emailLoginPrewarmCommand: ["removed", secretEnvOf("loginProc")],
+    deviceVerificationLoginCommand: ["removed", secretEnvOf("loginProc")],
+    apiKeyLoginCommand: ["removed", secretEnvOf("loginProc")],
+    bwVerifyPasswordCommand: ["removed", /command: Model\.bwVerifyPasswordCommand\(\),\s+env: bwSecretEnv\(env\)/],
     bwVersionCommand: ["removed", /id: bwVersionProc\b[^}]*?environment: Model\.withoutCompileCache\(\{\}\)/],
     accountSlotRemoveCommand: ["removed", /id: slotRemovalProc\s+environment: Model\.withoutCompileCache\(\{\}\)/],
     accountSlotRetireCommand: ["removed", /id: slotRemovalProc\s+environment: Model\.withoutCompileCache\(\{\}\)/],
@@ -603,8 +653,7 @@ check("only bwEnv(), the generator's server and the refresh of a queued environm
 function service(state) {
   const v = Object.assign({ Model, bwNodeOptions: "", started: true, bwCompileCache: true,
     bwCompileCacheHome: "/h/.cache", bwCompileCacheDir: "", bwCompileCacheState: "off",
-    bwCompileCacheProbeSeq: 0, bwCompileCacheProbeWaiting: false, bwCompileCacheProbedAt: 0, bwCompileCacheStatusSeen: "",
-    status: "locked", warnings: [], later: [],
+    bwCompileCacheProbeSeq: 0, status: "locked", warnings: [], later: [],
     // The probe process: `running` set true is a start; its exit is answer().
     bwCompileCacheProc: { running: false, probeSeq: 0, starts: 0 },
     accountAppDataEnv: () => ({}) }, state)
@@ -614,9 +663,8 @@ function service(state) {
   })
   v.console = { warn: text => v.warnings.push(text) }
   v.Qt = { callLater: fn => v.later.push(fn) }
-  v.Date = { now: () => v.now || 1000000 }
   const names = ["bwEnv", "generatorServeEnv", "bwCompileCacheEnvValue", "onBwCompileCacheProbed",
-    "probeBwCompileCache", "startBwCompileCacheProbe", "recheckBwCompileCacheOnOpen", "refreshBwCompileCacheIn"]
+    "probeBwCompileCache", "startBwCompileCacheProbe", "bwEnvAtStart", "bwSecretEnv", "authEnv"]
   Object.assign(v, new Function("scope", "with (scope) {\n" + names.map(nm => functionBody(svc, nm)).join("\n")
     + "\nreturn { " + names.join(", ") + " } }")(v))
   // The running probe exits with `rc` and `out`.
@@ -717,7 +765,7 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
   again.probeBwCompileCache()
   again.probeBwCompileCache()
   check("a check asked for while one is running waits for it, and does not start a second process",
-    again.bwCompileCacheProc.starts === 1 && again.bwCompileCacheProbeWaiting === true && again.bwCompileCacheState === "pending")
+    again.bwCompileCacheProc.starts === 1 && again.bwCompileCacheState === "pending")
   again.answer(0, GOOD + "\n")
   check("...the first one's answer is for an earlier question and is not taken; the check runs again",
     again.bwCompileCacheDir === "" && again.bwCompileCacheProc.starts === 2 && again.bwCompileCacheState === "pending")
@@ -746,103 +794,174 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
   check("before the service has started (the setting's first value arriving) nothing runs; the start does it",
     early.bwCompileCacheProc.starts === 0 && early.bwCompileCacheState === "off")
 
-  // When the vault opens. `to(status)` is the status changing, as
-  // onStatusChanged sees it; `submit()` an unlock being submitted.
-  const minute = 60 * 1000
-  const vaultAt = (now, extra) => {
-    const v = service(Object.assign({ now }, extra))
-    v.to = status => { v.status = status; v.recheckBwCompileCacheOnOpen() }
-    v.submit = () => v.probeBwCompileCache(true)
-    v.to("locked")
+  // A check that answered an earlier question starts the next one later
+  // (Qt.callLater). `exit()` is the process ending; `runLater()` the event
+  // loop reaching what was put off.
+  const deferred = () => {
+    const v = service({})
+    v.exit = (rc, out) => { const seq = v.bwCompileCacheProc.probeSeq; v.bwCompileCacheProc.running = false; v.onBwCompileCacheProbed(seq, rc, out) }
+    v.runLater = () => v.later.splice(0).forEach(fn => fn())
+    v.probeBwCompileCache()
+    v.probeBwCompileCache()
+    v.exit(0, GOOD + "\n")
     return v
   }
-  const opened = vaultAt(10 * minute)
-  opened.submit()
-  opened.answer(0, GOOD + "\n")
-  opened.now += 1000
-  opened.to("unlocked")
-  check("the vault opening on an unlock that was submitted stands on the check that unlock started",
-    opened.bwCompileCacheProc.starts === 1 && opened.bwEnv()[VAR] === GOOD)
-  opened.to("locked")
-  opened.now += 5000
-  opened.to("unlocked")
-  check("...but that check served that opening only: locked and opened again seconds later with no unlock submitted (a terminal sign-in), it is checked again, with nothing believed meanwhile",
-    opened.bwCompileCacheProc.starts === 2 && opened.bwEnv()[VAR] === null && opened.bwCompileCacheState === "pending")
-  opened.answer(0, GOOD + "\n")
-  opened.to("locked")
-  opened.now += 5000
-  opened.to("unlocked")
-  check("...and the check an opening made for itself does not serve the next one either",
-    opened.bwCompileCacheProc.starts === 3 && opened.bwEnv()[VAR] === null)
-  opened.answer(0, GOOD + "\n")
-  opened.to("unlocked")
-  check("a status that was already unlocked is not an opening", opened.bwCompileCacheProc.starts === 3 && opened.bwEnv()[VAR] === GOOD)
+  const optedOut = deferred()
+  const putOff = optedOut.later.length
+  optedOut.bwCompileCache = false
+  optedOut.probeBwCompileCache()
+  optedOut.runLater()
+  check("the setting turned off between a check ending and the next one being started: nothing starts, so nothing is made",
+    putOff === 1 && optedOut.bwCompileCacheProc.starts === 1 && optedOut.bwCompileCacheProc.running === false
+      && optedOut.bwCompileCacheState === "off" && optedOut.bwCompileCacheDir === "")
+  const offNoHandler = deferred()
+  offNoHandler.bwCompileCache = false
+  offNoHandler.runLater()
+  check("...even before the setting's own handler has run", offNoHandler.bwCompileCacheProc.starts === 1)
+  const answered = deferred()
+  answered.bwCompileCacheState = "refused"
+  answered.runLater()
+  check("...and nothing starts for a question that is no longer open", answered.bwCompileCacheProc.starts === 1)
+  const asked = deferred()
+  asked.probeBwCompileCache()
+  asked.runLater()
+  check("asked again in that moment: what starts answers the newest question, once",
+    asked.bwCompileCacheProc.starts === 2 && asked.bwCompileCacheProc.probeSeq === asked.bwCompileCacheProbeSeq && asked.bwCompileCacheProbeSeq === 3)
+  asked.runLater()
+  asked.exit(0, GOOD + "\n")
+  check("...and its answer stands", asked.bwCompileCacheDir === GOOD && asked.bwCompileCacheProc.starts === 2)
+  const stale = service({ bwCompileCacheState: "accepted", bwCompileCacheDir: GOOD, bwCompileCacheProbeSeq: 4 })
+  stale.onBwCompileCacheProbed(4, 1, "")
+  check("an answer arriving when no question is open changes nothing", stale.bwCompileCacheDir === GOOD && stale.bwCompileCacheState === "accepted")
 
-  const slow = vaultAt(10 * minute)
-  slow.submit()
-  slow.answer(0, GOOD + "\n")
-  slow.now += 2 * minute + 1
-  slow.to("unlocked")
-  check("an opening more than two minutes after the last submitted unlock (it failed; this is another way in) is checked again first",
-    slow.bwCompileCacheProc.starts === 2 && slow.bwEnv()[VAR] === null && slow.bwCompileCacheState === "pending")
-  const back = vaultAt(10 * minute)
-  back.submit()
-  back.answer(0, GOOD + "\n")
-  back.now = 5 * minute
-  back.to("unlocked")
-  check("a clock set back does not make an old check recent", back.bwCompileCacheProc.starts === 2)
-  const atStart = vaultAt(10 * minute)
-  atStart.probeBwCompileCache(true)
-  atStart.answer(0, GOOD + "\n")
-  atStart.now += 3000
-  atStart.to("checking")
-  atStart.to("unlocked")
-  check("a session found open as the shell starts stands on the check made at start",
-    atStart.bwCompileCacheProc.starts === 1 && atStart.bwEnv()[VAR] === GOOD)
-  const lockedStill = vaultAt(100 * minute)
-  lockedStill.to("checking")
-  lockedStill.to("locked")
-  const offOpen = vaultAt(100 * minute, { bwCompileCache: false })
-  offOpen.to("unlocked")
-  check("no check for a status other than unlocked, or with the setting off",
-    lockedStill.bwCompileCacheProc.starts === 0 && offOpen.bwCompileCacheProc.starts === 0)
-  check("every unlock method ends in the one function that submits an unlock, which is what starts the check",
-    (svc.match(/\bisUnlocking = true\b/g) || []).length === 1 && /isUnlocking = true/.test(functionBody(svc, "unlockVaultWithPassword"))
-      && ["onEnvelopePinResult", "onPinUnlockResult", "onFingerprintPasswordRetrieved", "unlockWithPinentry", "unlockVault"]
-        .every(name => /unlockVaultWithPassword\(/.test(functionBody(svc, name)))
-      && /id: fidoUnlocker[\s\S]{0,1200}root\.unlockVaultWithPassword\(password\)/.test(svc))
+  // The vault opening: the status becoming "unlocked", by whatever way.
+  check("every opening is checked for itself, and nothing carries over from a check made before it",
+    (() => {
+      const v = service({})
+      // As onStatusChanged does.
+      const to = status => { v.status = status; if (status === "unlocked") v.probeBwCompileCache() }
+      v.probeBwCompileCache()
+      v.answer(0, GOOD + "\n")
+      const beforeOpening = v.bwEnv()[VAR]
+      to("unlocked")
+      const firstReads = v.bwEnv()[VAR]
+      const startsAtOpening = v.bwCompileCacheProc.starts
+      v.answer(0, GOOD + "\n")
+      const laterReads = v.bwEnv()[VAR]
+      to("locked")
+      const locked = v.bwCompileCacheProc.starts
+      to("unlocked")
+      const second = [v.bwCompileCacheProc.starts, v.bwEnv()[VAR]]
+      v.answer(1, "")
+      return beforeOpening === GOOD && firstReads === null && startsAtOpening === 2 && laterReads === GOOD
+        && locked === 2 && second[0] === 3 && second[1] === null && v.bwEnv()[VAR] === null && v.bwCompileCacheState === "refused"
+    })())
+  const offOpen = service({ bwCompileCache: false, status: "unlocked" })
+  offOpen.probeBwCompileCache()
+  check("with the setting off an opening starts nothing", offOpen.bwCompileCacheProc.starts === 0 && offOpen.bwCompileCacheState === "off")
 
-  // An environment built some time before its bw starts.
-  const queued = service({})
-  queued.probeBwCompileCache(true)
-  queued.answer(0, GOOD + "\n")
-  const lockEnv = queued.bwEnv()
-  const jobEnv = queued.bwEnv({ SECRET: "s" })
-  const other = { SECRET: "s" }
-  queued.bwCompileCache = false
-  queued.refreshBwCompileCacheIn(lockEnv)
-  queued.refreshBwCompileCacheIn(jobEnv)
-  queued.refreshBwCompileCacheIn(other)
-  queued.refreshBwCompileCacheIn(null)
-  check("a lock or an envelope job queued with the cache, and started after the setting was turned off, starts without it",
-    lockEnv[VAR] === null && jobEnv[VAR] === null && jobEnv.SECRET === "s", JSON.stringify([lockEnv, jobEnv]))
-  check("...an environment that never carried the variable is left exactly as it was",
-    JSON.stringify(other) === JSON.stringify({ SECRET: "s" }))
-  queued.bwCompileCache = true
-  queued.probeBwCompileCache(true)
-  const during = queued.bwEnv()
-  queued.refreshBwCompileCacheIn(lockEnv)
-  check("...and one started while a new check is running has none either", lockEnv[VAR] === null && during[VAR] === null)
-  queued.answer(0, GOOD + "\n")
-  queued.refreshBwCompileCacheIn(lockEnv)
-  check("...until that check has passed", lockEnv[VAR] === GOOD)
-  check("both queues set the variable again as the process starts, in place, before the environment is handed over",
-    /refreshBwCompileCacheIn\(run\.env\)\s+lockProc\.environment = run\.env/.test(functionBody(svc, "runBwLockStep"))
-      && /refreshBwCompileCacheIn\(job\.env\)\s+envelopeProc\.environment = Object\.assign\(\{\}, job\.accountEnv \|\| \{\}, job\.env \|\| \{\}\)\s*\n\s*job\.env = null/.test(functionBody(svc, "pumpEnvelopeJobs")))
-  check("how long a check counts as recent when the vault opens: two minutes, by the wall clock",
-    Model.bwCompileCacheCheckIsRecent(1000, 1000 + 2 * minute) === true
-      && Model.bwCompileCacheCheckIsRecent(1000, 1001 + 2 * minute) === false
-      && Model.bwCompileCacheCheckIsRecent(0, 1000) === false && Model.bwCompileCacheCheckIsRecent(5000, 1000) === false)
+  // A bw that is given a password.
+  const secret = service({})
+  secret.probeBwCompileCache()
+  secret.answer(0, GOOD + "\n")
+  const auth = secret.authEnv("pw", "", "", "")
+  check("accepted and in use, the unlock's and the login's environment still has the variable removed, and an inherited one with it",
+    secret.bwEnv()[VAR] === GOOD && VAR in auth && auth[VAR] === null && auth[Model.passwordEnvVar()] === "pw"
+      && childEnv({ NODE_COMPILE_CACHE: "/inherited" }, auth).NODE_COMPILE_CACHE === undefined
+      && secret.bwSecretEnv({ X: "1" })[VAR] === null && secret.bwSecretEnv({ X: "1" }).X === "1")
+  check("...and stays removed at the start: the last word never puts a directory where there was none",
+    secret.bwEnvAtStart(auth)[VAR] === null && secret.bwEnvAtStart(secret.bwSecretEnv())[VAR] === null
+      && JSON.stringify(secret.bwEnvAtStart({ A: "1" })) === JSON.stringify({ A: "1" }) && secret.bwEnvAtStart(null) === null)
+}
+
+// --- an environment built before its bw starts --------------------------------------
+// A queued lock or envelope job, a read waiting for the vault helper, a local
+// start put off behind the last run's cleanup: each was given its environment
+// earlier. Both ways a VaultProcess can start are driven here with the
+// service's and VaultProcess.qml's own functions: accepted, captured, the
+// setting turned off, started.
+{
+  const vaultProcess = read("VaultProcess.qml")
+  const route = helperActive => {
+    const v = service({ vaultHelperState: "pending", vaultHelperActive: false, vaultWaiting: [], vaultRuns: {}, vaultRunSeq: 0,
+      vaultLocalSecrets: {}, session: "sess", written: [], vaultHelperProc: { running: true, write: line => v.written.push(line) } })
+    const names = ["vaultStart", "flushVaultWaiting", "vaultLocalEnv"]
+    Object.assign(v, new Function("scope", "with (scope) {\n" + names.map(nm => functionBody(svc, nm)).join("\n")
+      + "\nreturn { " + names.join(", ") + " } }")(v))
+    // A VaultProcess: its own runLocally()/launchLocal() over a stand-in Process.
+    const local = { running: false, started: [] }
+    const proc = { vault: v, running: true, runId: 0, startSeq: 1, stdinText: "", capture: "plain", session: true, inject: {},
+      command: ["bw", "list"], environment: {}, local, started() {}, finish() {} }
+    Object.assign(proc, new Function("scope", "Qt", "local", "proc",
+      "with (scope) { " + functionBody(vaultProcess, "runLocally") + "\n" + functionBody(vaultProcess, "launchLocal")
+        + "\nreturn { runLocally: runLocally, launchLocal: launchLocal } }")(proc, v.Qt, local, proc))
+    v.probeBwCompileCache()
+    v.answer(0, GOOD + "\n")
+    // Captured with the cache accepted, and handed to a helper not ready yet.
+    proc.environment = v.bwEnv({ EXTRA: "1" })
+    v.vaultStart(proc)
+    const captured = proc.environment[VAR]
+    const waited = v.vaultWaiting.length === 1 && v.written.length === 0
+    return { v, proc, local, captured, waited,
+      // The helper comes up (or is found missing) and the run is dispatched.
+      dispatch() {
+        v.vaultHelperState = helperActive ? "active" : "unavailable"
+        v.vaultHelperActive = helperActive
+        v.flushVaultWaiting()
+      },
+      sent: () => v.written.map(line => JSON.parse(line).env),
+      runLater: () => v.later.splice(0).forEach(fn => fn()) }
+  }
+  check("both starts ask the service last: the helper dispatch once its environment is put together, the local start as it hands it to the process",
+    /else environment\[key\] = proc\.environment\[key\]\s+\}\s+bwEnvAtStart\(environment\)\s+if \(!vaultHelperActive\)/.test(functionBody(svc, "vaultStart"))
+      && /local\.environment = vault\.bwEnvAtStart\(env\)\s+local\.stdinEnabled = stdinText !== ""\s+local\.running = true/.test(functionBody(vaultProcess, "launchLocal"))
+      && (vaultProcess.match(/local\.environment = /g) || []).length === 2
+      && !/refreshBwCompileCacheIn/.test(svc))
+
+  const helper = route(true)
+  helper.v.bwCompileCache = false
+  helper.dispatch()
+  check("through the helper: accepted, captured, turned off, dispatched: the helper is told to remove the variable",
+    helper.captured === GOOD && helper.waited && helper.sent().length === 1 && helper.sent()[0][VAR] === null && helper.sent()[0].EXTRA === "1",
+    JSON.stringify(helper.sent()))
+  const helperOn = route(true)
+  helperOn.dispatch()
+  check("(left on, the same run is given the directory)", helperOn.sent().length === 1 && helperOn.sent()[0][VAR] === GOOD, JSON.stringify(helperOn.sent()))
+  const helperRecheck = route(true)
+  helperRecheck.v.probeBwCompileCache()
+  helperRecheck.dispatch()
+  check("through the helper, dispatched while a new check is running: removed", helperRecheck.sent()[0][VAR] === null)
+
+  const here = route(false)
+  here.v.bwCompileCache = false
+  here.dispatch()
+  check("run here instead: accepted, captured, turned off, started: the process gets the variable removed",
+    here.captured === GOOD && here.waited && here.local.running === true && here.local.environment[VAR] === null
+      && here.local.environment.EXTRA === "1" && here.local.environment[Model.sessionEnvVar()] === "sess", JSON.stringify(here.local.environment))
+  const hereOn = route(false)
+  hereOn.dispatch()
+  check("(left on, the same run is given the directory)", hereOn.local.environment[VAR] === GOOD)
+  // The local start itself put off: the previous run's process still busy.
+  const late = route(false)
+  late.local.running = true
+  late.dispatch()
+  const heldBack = late.local.environment === undefined && late.v.later.length === 1
+  late.v.bwCompileCache = false
+  late.local.running = false
+  late.runLater()
+  check("run here and put off once more behind the previous run: turned off in that moment too, it starts without the cache",
+    heldBack && late.local.running === true && late.local.environment[VAR] === null, JSON.stringify(late.local.environment))
+
+  check("the queues hand over what they were given, unchanged: the start is where it is settled",
+    /lockProc\.environment = run\.env/.test(functionBody(svc, "runBwLockStep"))
+      && /envelopeProc\.environment = Object\.assign\(\{\}, job\.accountEnv \|\| \{\}, job\.env \|\| \{\}\)\s*\n\s*job\.env = null/.test(functionBody(svc, "pumpEnvelopeJobs"))
+      && ["lockProc", "envelopeProc", "listProc"].every(id => new RegExp("VaultProcess \\{\\s*id: " + id + "\\b").test(svc)))
+  // What is not a VaultProcess reads its environment as a binding when it
+  // starts, so there is no earlier copy to go stale.
+  const plain = svc.split(/\n  (?=Process \{)/).slice(1).map(block => block.slice(0, block.indexOf("\n  }\n")))
+    .filter(block => /environment: root\.(?:bwEnv|generatorServeEnv)\(/.test(block)).map(block => (block.match(/id: (\w+)/) || [])[1])
+  check("the one plain Process that may use the cache (the generator's server) takes its environment from a binding",
+    plain.join() === "generateServeProc", plain.join())
 }
 
 // --- Node, with the preloads ------------------------------------------------------
@@ -933,8 +1052,10 @@ if (trusted) {
         check("(Node recreates a cache directory that was removed, group-writable under such a umask)",
           fs.existsSync(cacheOf(base)) && (mode(cacheOf(base)) & 0o020) !== 0, mode(cacheOf(base)).toString(8))
         const after = probed({}, base)
-        check("...which the next check (the next unlock) refuses: the cache goes unused until it is put right",
-          after.bwCompileCacheState === "refused" && after.bwEnv()[VAR] === null)
+        check("...inside the plugin's directory, which stayed private, so no one else could reach it",
+          (mode(path.dirname(cacheOf(base))) & 0o077) === 0, mode(path.dirname(cacheOf(base))).toString(8))
+        check("...and the next check (the next opening) refuses it as it stands: the cache goes unused until it is put right",
+          after.bwCompileCacheState === "refused" && after.bwEnv()[VAR] === null && (mode(cacheOf(base)) & 0o020) !== 0)
       }
     } else {
       check("the generator's server still gets no session",

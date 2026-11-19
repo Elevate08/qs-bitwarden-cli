@@ -155,7 +155,7 @@
         "key": "bwCompileCache",
         "type": "boolean",
         "label": "Start bw faster with Node's compile cache",
-        "description": "Off by default. Lets Node keep the compiled form of bw's code in ~/.cache/qs-bitwarden-cli/node-compile-cache (under XDG_CACHE_HOME if that is set), so each bw start takes about a sixth less time. It holds compiled code, nothing of your vault. A program running as you that can write there can run code inside bw, as it already can by editing the plugin's own files; the directory is used only after a check that it is yours alone. Turning this off stops using the cache and leaves the directory: docs/uninstall.md says how to remove it.",
+        "description": "Off by default. Lets Node keep the compiled form of bw's code in ~/.cache/qs-bitwarden-cli/node-compile-cache (under XDG_CACHE_HOME if that is set), so most bw starts take about a sixth less time. It holds compiled code, nothing of your vault. A program running as you that can write there can run code inside bw, as it already can by editing the plugin's own files; the directory is used only after a check that it is yours alone, and never by a bw that is given your master password (unlock and login). Turning this off stops using the cache and leaves the directory: docs/uninstall.md says how to remove it.",
         "defaultValue": false
       },
       {

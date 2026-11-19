@@ -37,9 +37,6 @@ case "$1" in
     shift
     logged_in || { echo "You are not logged in." >&2; exit 1; }
     pw="$(read_pw "$@")"
-    # fake-unlock-delay: seconds the key derivation takes, as the real one's
-    # does (about a second); without it this answers at once.
-    if [ -s "$d/fake-unlock-delay" ]; then sleep "$(cat "$d/fake-unlock-delay")"; fi
     # As bw 2026.2 says it: the SDK's log line, then its error.
     [ "$pw" = "$(want_pw "$(field email)")" ] || {
       printf '%s\n' "ERROR bitwarden_crypto::keys::master_key: error=The decryption operation failed" \

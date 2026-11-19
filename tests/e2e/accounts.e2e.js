@@ -13,7 +13,7 @@
 //
 //   node tests/e2e/accounts.e2e.js
 
-const { createSuite, loadModule } = require("../harness")
+const { createSuite, privateScratchDir } = require("../harness")
 const { createShell, sleep } = require("./shell")
 const fs = require("fs")
 const path = require("path")
@@ -170,24 +170,12 @@ const cacheLines = sh => {
   }) : []
 }
 const seen = (sh, pattern) => cacheLines(sh).filter(l => pattern.test(l.args))
-// A cache home that would pass the check: the user's own runtime directory
-// is theirs up to /. Where there is none, the default (under /tmp, which the
-// check refuses) still shows the setting-off case.
-const runtimeDir = process.env.XDG_RUNTIME_DIR
-let trustedRoot = runtimeDir && path.isAbsolute(runtimeDir) && fs.existsSync(runtimeDir)
-  ? fs.mkdtempSync(path.join(fs.realpathSync(runtimeDir), "qsbw-e2e-cache-")) : ""
-if (trustedRoot) {
-  // Having a runtime directory is not having one the check accepts (a
-  // container may put it under a shared directory): ask the check itself.
-  const Model = loadModule()
-  const trial = Model.bwCompileCacheCommand(path.join(trustedRoot, "trial"))
-  const r = require("child_process").spawnSync(trial[0], trial.slice(1),
-    { encoding: "utf8", env: Model.plainProbeEnv("/usr/local/bin:/usr/bin:/bin") })
-  if (Model.bwCompileCacheAccepted(r.status, r.stdout) === "") {
-    fs.rmSync(trustedRoot, { recursive: true, force: true })
-    trustedRoot = ""
-  }
-}
+// A cache home the check has to accept: one this suite itself found to be
+// the user's own up to / (harness.privateScratchDir(), plain filesystem
+// calls). The check is not asked: if it refuses this, the scenario fails.
+// Where the machine has no such directory, the default (under /tmp, which
+// the check refuses) still shows the setting-off case.
+const trustedRoot = privateScratchDir(".qsbw-e2e-cache-")
 if (!failedToRun) {
   const inherited = path.join(fs.mkdtempSync("/tmp/qsbw-e2e-inherited-"), "cache")
   const cacheHome = trustedRoot ? path.join(trustedRoot, "off") : ""
@@ -229,7 +217,7 @@ if (!failedToRun) {
   }
 }
 if (!failedToRun && !trustedRoot) {
-  console.log("e2e-accounts: SKIPPED the compile cache's setting-on scenario: there is no $XDG_RUNTIME_DIR, or the check does not accept a cache home in it (an ancestor someone else can write to)")
+  console.log("e2e-accounts: SKIPPED the compile cache's setting-on scenario: this user can write to no directory whose whole ancestor chain is its own or root's and closed to group and others ($XDG_RUNTIME_DIR, $RUNNER_TEMP, the account's home)")
 }
 if (!failedToRun && trustedRoot) {
   const inherited = path.join(trustedRoot, "inherited")
@@ -245,14 +233,17 @@ if (!failedToRun && trustedRoot) {
     check("and made private", (fs.statSync(wanted).mode & 0o7777) === 0o700 && (fs.statSync(path.dirname(wanted)).mode & 0o7777) === 0o700)
     third.q("open")
     third.q("login", "a@x", "pw-a@x")
-    third.expect("the account logs in with it", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
+    third.expect("the account logs in", s => s.status === "unlocked" && s.items.join() === "Login of a@x")
+    third.expect("the check made as the vault opened has answered", s => s.compileCacheState === "accepted" && s.compileCache === wanted)
     third.product("sync")
     third.expect("and syncs", () => seen(third, /^sync$/).length === 1)
-    third.expect("the check made when the vault opened has answered", s => s.compileCacheState === "accepted")
-    check("the login and the sync saw exactly the accepted directory",
-      seen(third, /^login /).length >= 1 && seen(third, /^login |^sync$/).every(l => l.cache === wanted),
-      JSON.stringify(seen(third, /^login |^sync$/)))
-    check("no bw saw anything else: the accepted directory, or none while a check was running",
+    check("the login, which is given the password, ran without the cache though one was accepted",
+      seen(third, /^login /).length >= 1 && seen(third, /^login /).every(l => l.cache === "<unset>"), JSON.stringify(seen(third, /^login /)))
+    check("the list read the opening started ran without it too: its check had not answered yet",
+      seen(third, /^list items$/).length >= 1 && seen(third, /^list items$/)[0].cache === "<unset>", JSON.stringify(seen(third, /^list items$/)))
+    check("the sync after it saw exactly the accepted directory",
+      seen(third, /^sync$/).every(l => l.cache === wanted), JSON.stringify(seen(third, /^sync$/)))
+    check("no bw saw anything else: the accepted directory, or none",
       cacheLines(third).every(l => l.cache === wanted || l.cache === "<unset>") && !fs.existsSync(inherited),
       JSON.stringify(cacheLines(third).filter(l => l.cache !== wanted && l.cache !== "<unset>")))
     check("the version probe never gets it, setting on or not",
@@ -275,6 +266,9 @@ if (!failedToRun && trustedRoot) {
       JSON.stringify(logouts))
     third.q("unlock", "pw-a@x")
     third.expect("the first account unlocks again", s => s.status === "unlocked" && s.compileCacheState === "accepted")
+    check("no unlock and no login, of either account, was given the cache",
+      seen(third, /^unlock /).length >= 1 && seen(third, /^unlock |^login /).every(l => l.cache === "<unset>"),
+      JSON.stringify(seen(third, /^unlock |^login /)))
 
     // Off: the next bw has none, and the directory stays.
     let mark = cacheLines(third).length
@@ -293,32 +287,30 @@ if (!failedToRun && trustedRoot) {
     third.expect("the next bw runs", () => since(mark).some(l => l.args === "sync"))
     check("and sees the accepted directory", since(mark).every(l => l.cache === wanted), JSON.stringify(since(mark)))
 
-    // Something planted in the cache while the vault was locked: the unlock's
-    // check refuses it, and bw goes without.
+    // Something planted in the cache while the vault was locked: the check
+    // made as the vault opens refuses it, and bw goes without.
     third.q("lock")
     third.expect("it locks", s => s.status === "locked")
     fs.symlinkSync("/etc/hostname", path.join(wanted, "planted"))
     mark = cacheLines(third).length
     third.q("unlock", "pw-a@x")
-    third.expect("after a symlink was put in the cache, the unlock's check refuses the directory",
-      s => s.status === "unlocked" && s.compileCacheState === "refused" && s.compileCache === "")
+    third.expect("after a symlink was put in the cache, the opening's check refuses the directory",
+      s => s.status === "unlocked" && s.compileCacheState === "refused" && s.compileCache === "" && s.items.join() === "Login of a@x")
     third.product("sync")
     third.expect("a bw runs after it", () => since(mark).some(l => l.args === "sync"))
-    check("and none since the unlock was submitted saw the cache",
-      since(mark).filter(l => !/^unlock /.test(l.args)).every(l => l.cache === "<unset>"), JSON.stringify(since(mark)))
+    check("and none since the vault opened saw the cache: not the unlock, not the reads, not the sync",
+      since(mark).filter(l => /^unlock |^list |^sync$/.test(l.args)).length >= 3
+        && since(mark).filter(l => !/^status$|^lock$/.test(l.args)).every(l => l.cache === "<unset>"), JSON.stringify(since(mark)))
     fs.unlinkSync(path.join(wanted, "planted"))
     third.q("lock")
     third.expect("it locks again", s => s.status === "locked")
-    mark = cacheLines(third).length
-    // The real bw takes about a second over an unlock (its key derivation);
-    // the stand-in answers at once unless told to take as long.
-    fs.writeFileSync(path.join(third.env.HOME, ".config", "Bitwarden CLI", "fake-unlock-delay"), "2")
     third.q("unlock", "pw-a@x")
-    third.expect("with the symlink gone the next unlock's check accepts it again",
+    third.expect("with the symlink gone the next opening's check accepts it again",
       s => s.status === "unlocked" && s.compileCache === wanted && s.items.join() === "Login of a@x")
-    check("and the list read that unlock started saw the directory: the check, begun when the unlock was submitted, answered before bw did",
-      since(mark).filter(l => l.args === "list items").length >= 1
-        && since(mark).filter(l => l.args === "list items").every(l => l.cache === wanted), JSON.stringify(since(mark)))
+    mark = cacheLines(third).length
+    third.product("sync")
+    third.expect("the next bw runs", () => since(mark).some(l => l.args === "sync"))
+    check("and sees the directory", since(mark).every(l => l.cache === wanted), JSON.stringify(since(mark)))
     const errors = third.scriptErrors()
     check("that shell logged no script errors either", errors.length === 0, errors.join("\n"))
   } catch (e) {

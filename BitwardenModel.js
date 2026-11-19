@@ -471,23 +471,30 @@ var BW_COMPILE_CACHE_SCAN_TIMEOUT_S = 5
 // bwCompileCacheHome(). Everything is checked on the canonical path (symlinks
 // resolved), and that path is what is printed, so what was checked is what
 // Node is given:
+// - the path is printable ASCII, as given and as resolved, so the text QML
+//   reads back is the bytes that were checked (Qt would put U+FFFD for a
+//   byte that is not UTF-8);
 // - every directory from the cache home up to / belongs to this user or root
 //   and is writable by no one else (a shared directory such as /tmp above it
 //   would let another user swap the path);
 // - the plugin's directory and the cache directory in it are real
 //   directories of this user's that no one else can write to, created mode
 //   0700 if missing (by mode, not umask, and checked again once made);
-// - the path is printable ASCII, so the text QML reads back is the bytes
-//   that were checked (Qt would put U+FFFD for a byte that is not UTF-8);
-// - everything already in the cache directory is a regular file or a
+// - everything already in the plugin's directory is a regular file or a
 //   directory of this user's that no one else can write to: Node follows a
 //   symlink it finds there. One `find`, stopping at the first that is not.
-// Nothing is repaired: a path that fails is left alone and `bw` runs without
-// the cache. The one exception is the mode of a cache directory that passed
-// (no one else could write to it), which is set to 0700: Node recreates a
-// deleted one with the default umask.
+// A path that fails is left exactly as it was found, and `bw` runs without
+// the cache: every check on what is already there comes before anything is
+// made or changed. Only a path that passed is touched: the two directories
+// are set to 0700. Both are the plugin's own (nothing else is kept in
+// them), and Node recreates a deleted one with the default umask; with the
+// outer one private, an inner one recreated under any umask is out of
+// reach of everyone else.
 function bwCompileCacheCommand(home) {
-  var script = "exec 2>/dev/null; LC_ALL=C; case \"$1\" in /*) ;; *) exit 1 ;; esac; __u=\"$(id -u)\" || exit 1; "
+  var script = "exec 2>/dev/null; LC_ALL=C; "
+    // Before anything is made: a path QML could not read back, or one that
+    // is not a plain absolute path.
+    + "case \"$1\" in *[!\\ -~]*|*/../*|*/..) exit 1 ;; /*) ;; *) exit 1 ;; esac; __u=\"$(id -u)\" || exit 1; "
     // $1: a directory; $2: `root` if root may own it too.
     + "__ok() { [ -d \"$1\" ] && [ ! -L \"$1\" ] || return 1; "
     + "__s=\"$(stat -c '%u %a' -- \"$1\" 2>/dev/null)\" || return 1; "
@@ -496,28 +503,30 @@ function bwCompileCacheCommand(home) {
     // Sets __c to the canonical form of $1 and checks it up to /. The
     // trailing x keeps `$(...)` from eating a newline that is the path's.
     + "__chain() { __c=\"$(realpath -e -- \"$1\" && printf x)\" || return 1; __c=\"${__c%x}\"; __c=\"${__c%?}\"; "
-    + "case \"$__c\" in *$'\\n'*) return 1 ;; /*) ;; *) return 1 ;; esac; "
+    + "case \"$__c\" in *[!\\ -~]*) return 1 ;; /*) ;; *) return 1 ;; esac; "
     + "__a=\"$__c\"; while :; do __ok \"$__a\" root || return 1; [ \"$__a\" = / ] && break; "
     + "__a=\"${__a%/*}\"; [ -n \"$__a\" ] || __a=/; done; }; "
+    + "__there() { [ -e \"$1\" ] || [ -L \"$1\" ]; }; "
     // A cache home not there yet is made only inside a directory that passes.
-    + "if [ ! -e \"$1\" ] && [ ! -L \"$1\" ]; then __h=\"${1%/}\"; "
+    + "if ! __there \"$1\"; then __h=\"${1%/}\"; "
     + "__chain \"${__h%/*}/\" || exit 1; [ \"$__c\" = / ] && __c=''; "
     + "mkdir -m 700 -- \"$__c/${__h##*/}\" || exit 1; fi; "
     + "__chain \"$1\" || exit 1; "
     + "[ \"$__c\" = / ] && __c=''; "
-    // Before anything is made under it: a path QML could not read back.
-    + "case \"$__c\" in *[!\\ -~]*) exit 1 ;; esac; "
-    + "for __x in \"$__c/" + BW_COMPILE_CACHE_PARENT + "\" \"$__c/" + BW_COMPILE_CACHE_SUBDIR + "\"; do "
-    + "[ -e \"$__x\" ] || [ -L \"$__x\" ] || mkdir -m 700 -- \"$__x\" || exit 1; "
-    + "__ok \"$__x\" || exit 1; "
-    + "done; "
-    + "chmod 700 -- \"$__x\" || exit 1; "
-    + "[ \"$(realpath -e -- \"$__x\" && printf x)\" = \"$__x\"$'\\n'x ] || exit 1; "
-    + "case \"$__x\" in *[!\\ -~]*) exit 1 ;; esac; "
-    // What is already inside. No -L: a symlink is reported, not followed.
-    + "__bad=\"$(timeout " + BW_COMPILE_CACHE_SCAN_TIMEOUT_S + " find \"$__x\" -mindepth 1 "
+    + "__p=\"$__c/" + BW_COMPILE_CACHE_PARENT + "\"; __x=\"$__c/" + BW_COMPILE_CACHE_SUBDIR + "\"; "
+    // What is already there, before anything is made. No -L: a symlink is
+    // reported, not followed.
+    + "if __there \"$__p\"; then __ok \"$__p\" || exit 1; "
+    + "if __there \"$__x\"; then __ok \"$__x\" || exit 1; fi; "
+    + "__bad=\"$(timeout " + BW_COMPILE_CACHE_SCAN_TIMEOUT_S + " find \"$__p\" -mindepth 1 "
     + "\\( ! \\( -type f -o -type d \\) -o ! -uid \"$__u\" -o -perm /022 \\) -printf x -quit)\" || exit 1; "
-    + "[ -z \"$__bad\" ] || exit 1; "
+    + "[ -z \"$__bad\" ] || exit 1; fi; "
+    + "for __d in \"$__p\" \"$__x\"; do "
+    + "__there \"$__d\" || mkdir -m 700 -- \"$__d\" || exit 1; "
+    + "__ok \"$__d\" || exit 1; "
+    + "done; "
+    + "[ \"$(realpath -e -- \"$__x\" && printf x)\" = \"$__x\"$'\\n'x ] || exit 1; "
+    + "chmod 700 -- \"$__p\" \"$__x\" || exit 1; "
     + "printf '%s\\n' \"$__x\""
   return ["bash", "-c", script, "_", String(home || "")]
 }
@@ -545,15 +554,6 @@ function bwCompileCacheAccepted(exitCode, output) {
   var tail = "/" + BW_COMPILE_CACHE_SUBDIR
   if (dir.length < tail.length || dir.slice(-tail.length) !== tail) return ""
   return dir.indexOf("/./") === -1 && dir.indexOf("//") === -1 ? dir : ""
-}
-
-// How long a check is still taken as said when the vault opens by a way that
-// submits no unlock (a terminal sign-in, a session found open): past it, the
-// directory is checked again first.
-var BW_COMPILE_CACHE_TRUST_MS = 2 * 60 * 1000
-
-function bwCompileCacheCheckIsRecent(startedAt, now) {
-  return windowOpen(startedAt, now, BW_COMPILE_CACHE_TRUST_MS)
 }
 
 // What the setting's row says when the cache is on but not in use.
@@ -7891,7 +7891,7 @@ var SETTINGS_SCHEMA = [
   { key: "checkForUpdates", group: "general", type: "bool", label: "Check for updates", defaultValue: true,
     description: "Once a day, ask GitHub for the latest release and say in Settings when a newer one exists. GitHub sees your IP address and that you asked. Off makes no request at all." },
   { key: "bwCompileCache", group: "general", type: "bool", label: "Start bw faster with Node's compile cache", defaultValue: false,
-    description: "Off by default. Lets Node keep the compiled form of bw's code in ~/.cache/qs-bitwarden-cli/node-compile-cache (under XDG_CACHE_HOME if that is set), so each bw start takes about a sixth less time. It holds compiled code, nothing of your vault. A program running as you that can write there can run code inside bw, as it already can by editing the plugin's own files; the directory is used only after a check that it is yours alone. Turning this off stops using the cache and leaves the directory: docs/uninstall.md says how to remove it." },
+    description: "Off by default. Lets Node keep the compiled form of bw's code in ~/.cache/qs-bitwarden-cli/node-compile-cache (under XDG_CACHE_HOME if that is set), so most bw starts take about a sixth less time. It holds compiled code, nothing of your vault. A program running as you that can write there can run code inside bw, as it already can by editing the plugin's own files; the directory is used only after a check that it is yours alone, and never by a bw that is given your master password (unlock and login). Turning this off stops using the cache and leaves the directory: docs/uninstall.md says how to remove it." },
   { key: "autoCopyTotpSec", group: "general", type: "int", label: "Auto-copy TOTP after", unit: "seconds",
     min: 0, max: 30, step: 1, zeroLabel: "Off", defaultValue: 3,
     description: "Replace the clipboard with the 2FA code this long after the password." },

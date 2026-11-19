@@ -6,26 +6,30 @@
 
 - **Start `bw` faster with Node's compile cache, if you choose to.** A new
   setting, **Start bw faster with Node's compile cache** (`bwCompileCache`),
-  **off by default**. On, the `bw` commands the panel runs through its vault
-  environment (status, login, unlock, lock, sync, lists, saves, the
-  generator) use Node's compile cache (`NODE_COMPILE_CACHE`, Node 22.1+) in
+  **off by default**. On, the `bw` commands that are not handed a password
+  (status, sync, lists, item reads, saves and deletes, sends, attachment
+  downloads, the generator, lock and logout) use Node's compile cache
+  (`NODE_COMPILE_CACHE`, Node 22.1+) in
   `~/.cache/qs-bitwarden-cli/node-compile-cache` (about 11 MB; under
   `XDG_CACHE_HOME` if that is set). On one machine with bw 2026.2.0, `bw
-  status` took 545 ms instead of 659 ms (17%, median of 11) and `bw
-  --version` 525 ms instead of 645 ms. The cache holds compiled code,
-  nothing of the vault, but Node runs that code inside `bw`, which sees the
-  master password: a program running as you that can write there can run
-  code in `bw`, as it already can by editing the plugin's own files. So the
-  directory is used only after a check (about 17 ms) that it, everything in
-  it and every directory above it are yours (or root's, above it) and
-  writable by no one else, with no symlink inside and a path of printable
-  ASCII; the check runs at shell start, when the setting is turned on and for
-  each unlock (when it is submitted, or as the vault opens if it opened some
-  other way), and its row in Settings says when it failed. The pinentry, the
-  `bw -v` version probe, `bw login` in a terminal, the `bw logout` that
-  retires a signed-out account and the plugin's own `node -e` checks never
-  use the cache. Turning the setting off leaves the directory;
-  docs/uninstall.md removes it.
+  status` took 543 ms instead of 656 ms (17%, median of 11) and `bw
+  --version` 529 ms instead of 647 ms: about a tenth of a second off each of
+  those waits. Unlocking and logging in are not faster: a `bw` that is given
+  the master password or a login's credentials never uses the cache, and
+  the first list read after an unlock runs before the cache has been
+  checked. The cache holds compiled code, nothing of the vault, but Node
+  runs that code inside `bw`, which holds the session key: a program running
+  as you that can write there can run code in `bw`, as it already can by
+  editing the plugin's own files. So the directory is used only after a
+  check (about 19 ms) that it, everything in it and every directory above it
+  are yours (or root's, above it) and writable by no one else, with no
+  symlink inside and a path of printable ASCII; the check runs at shell
+  start, when the setting is turned on and every time the vault is unlocked,
+  and its row in Settings says when it failed. The pinentry, the `bw -v`
+  version probe, `bw login` in a terminal, the `bw logout` that retires a
+  signed-out account and the plugin's own `node -e` checks never use the
+  cache either. Turning the setting off leaves the directory;
+  docs/uninstall.md says where it is.
 - **An inherited `NODE_COMPILE_CACHE` is never passed on.** Whether the new
   setting is on or off, a `NODE_COMPILE_CACHE` the shell was started with is
   removed from the environment of every `bw` and `node` the plugin starts

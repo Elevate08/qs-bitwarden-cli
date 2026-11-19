@@ -7,7 +7,7 @@ FIFO and routing file with it, and the button clears the keyring entries, the
 learned suggestions, the exported public keys and the sign-ins of any accounts
 added beside the first. (If you turned on **Start bw faster with Node's
 compile cache**, its directory of compiled code, which holds no account or
-vault data, stays; the last command below removes it.) Both have to happen before
+vault data, stays; the last command below shows where it is.) Both have to happen before
 the next step, because `omarchy plugin remove` has no uninstall hook -- once
 the folder is gone there is no code left to run.
 
@@ -40,17 +40,9 @@ rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh"
 rm -f ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
 
 # Node's compiled-code cache for bw, if you had that setting on (no account
-# or vault data). Only where the plugin itself would have used it: an
-# absolute cache home with no `..` and no control character, and a
-# qs-bitwarden-cli directory in it that is a real directory, not a symlink.
-( c="${XDG_CACHE_HOME:-$HOME/.cache}"; c="${c%/}"
-  case "$c" in
-    */../*|*/..|*[[:cntrl:]]*) ;;
-    /*) if [ -d "$c/qs-bitwarden-cli" ] && [ ! -L "$c/qs-bitwarden-cli" ]; then
-          rm -rf -- "$c/qs-bitwarden-cli/node-compile-cache"
-          rmdir -- "$c/qs-bitwarden-cli" 2>/dev/null
-        fi ;;
-  esac )
+# or vault data): the directory qs-bitwarden-cli in your cache home, which
+# holds nothing else. This prints where it is; look, then remove it yourself.
+ls -ld "${XDG_CACHE_HOME:-$HOME/.cache}/qs-bitwarden-cli"
 ```
 
 **Do not hand-edit `~/.config/omarchy/shell.json`.** On many setups it is not a

@@ -957,7 +957,7 @@ Item {
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
     // Only with the setting on: off, it runs nothing and makes no directory.
-    root.probeBwCompileCache(true)
+    root.probeBwCompileCache()
   }
 
   readonly property var categories: [
@@ -1269,6 +1269,7 @@ Item {
       if (held) inject[key] = "secret:" + held
       else environment[key] = proc.environment[key]
     }
+    bwEnvAtStart(environment)
     if (!vaultHelperActive) {
       // What was typed into pinentry would come back to the shell: not run.
       if (proc.capture.indexOf("pinentry:") === 0) {
@@ -1675,7 +1676,6 @@ Item {
     if (job.holdOutput) job.heldName = newHeldName()
     envelopeProc.capture = job.holdOutput ? "secret:" + job.heldName : (job.capture || "plain")
     envelopeProc.inject = job.inject || ({})
-    refreshBwCompileCacheIn(job.env)
     envelopeProc.environment = Object.assign({}, job.accountEnv || {}, job.env || {})
     job.env = null
     envelopeProc.running = true
@@ -1991,7 +1991,7 @@ Item {
     beginEpochOperation("bwVerify")
     queueEnvelopeJob({
       command: Model.bwVerifyPasswordCommand(),
-      env: bwEnv(env), secretOutput: true, capture: "session",
+      env: bwSecretEnv(env), secretOutput: true, capture: "session",
       onDone: function(code, out) {
         var s = code === 0 ? Model.extractSessionToken(out) : ""
         // Locked or logged out meanwhile: adopting the new session would
@@ -3216,9 +3216,8 @@ Item {
   }
 
   onStatusChanged: {
-    // First: the reads an open vault starts must not get a directory whose
-    // check is old.
-    recheckBwCompileCacheOnOpen()
+    // First: an opening's reads wait for its own check (uncached till then).
+    if (status === "unlocked") probeBwCompileCache()
     promoteUnlockToApproval()
     maybeStartupLoad()
   }
@@ -4746,69 +4745,45 @@ Item {
   // Moves with every question put to the check, so an answer to an earlier
   // one (the setting since turned off, or asked again) is not taken.
   property int bwCompileCacheProbeSeq: 0
-  property bool bwCompileCacheProbeWaiting: false
-  // When a check was started that the next opening of the vault may stand
-  // on (wall clock); 0 for none, and once an opening has used it.
-  property double bwCompileCacheProbedAt: 0
-  // The status the last change left, to tell the vault opening from the rest.
-  property string bwCompileCacheStatusSeen: ""
 
   // The directory is checked when the shell starts with the setting on, when
-  // the setting is turned on, when an unlock is submitted (every unlock
-  // method ends in unlockVaultWithPassword()), and when the vault opens with
-  // none of those in the two minutes before
-  // (Model.bwCompileCacheCheckIsRecent()): a terminal sign-in, a session
-  // found open, a login. One check serves one opening. Nothing is believed
-  // meanwhile: a new check withdraws the last one's directory until it has
-  // answered, so a `bw` started in that moment runs without the cache.
-  // Between checks the directory is not looked at again (see
-  // docs/development.md).
-  onBwCompileCacheChanged: probeBwCompileCache(true)
-  onIsUnlockingChanged: if (isUnlocking) probeBwCompileCache(true)
+  // the setting is turned on, and every time the vault becomes unlocked
+  // (onStatusChanged), whichever way it was opened. A new check withdraws
+  // the last one's directory until it has answered, so the first reads of an
+  // opening run without the cache. Nothing is remembered from one check to
+  // the next but the directory itself, and between checks the directory is
+  // not looked at again (see docs/development.md). A `bw` that is given the
+  // master password, or a login's credentials, never gets the cache
+  // (bwSecretEnv()).
+  onBwCompileCacheChanged: probeBwCompileCache()
 
-  // Called when the status changes (onStatusChanged).
-  function recheckBwCompileCacheOnOpen() {
-    var opened = status === "unlocked" && bwCompileCacheStatusSeen !== "unlocked"
-    bwCompileCacheStatusSeen = status
-    if (!opened || !bwCompileCache) return
-    var recent = Model.bwCompileCacheCheckIsRecent(bwCompileCacheProbedAt, Date.now())
-    // Used: the next opening needs a check of its own.
-    bwCompileCacheProbedAt = 0
-    if (!recent) probeBwCompileCache(false)
-  }
-
-  // `forOpening`: an opening of the vault within two minutes may stand on
-  // this check.
-  function probeBwCompileCache(forOpening) {
+  function probeBwCompileCache() {
     bwCompileCacheDir = ""
     bwCompileCacheProbeSeq += 1
-    bwCompileCacheProbedAt = 0
     if (!started || !bwCompileCache || bwCompileCacheHome === "") {
       bwCompileCacheState = bwCompileCache && started ? "refused" : "off"
       return
     }
     bwCompileCacheState = "pending"
-    if (forOpening === true) bwCompileCacheProbedAt = Date.now()
     startBwCompileCacheProbe()
   }
 
+  // Also run later, from the exit of a check that answered an earlier
+  // question: so it starts nothing (and so makes no directory) unless the
+  // setting is on and a question is still open, and what it starts answers
+  // the newest one.
   function startBwCompileCacheProbe() {
-    // One still running answers an earlier question: its exit starts this one.
-    if (bwCompileCacheProc.running) {
-      bwCompileCacheProbeWaiting = true
-      return
-    }
-    bwCompileCacheProbeWaiting = false
+    if (!bwCompileCache || bwCompileCacheState !== "pending" || bwCompileCacheProc.running) return
     bwCompileCacheProc.probeSeq = bwCompileCacheProbeSeq
     bwCompileCacheProc.running = true
   }
 
   function onBwCompileCacheProbed(seq, exitCode, output) {
-    if (seq !== bwCompileCacheProbeSeq || !bwCompileCache) {
-      if (bwCompileCacheProbeWaiting && bwCompileCacheState === "pending") Qt.callLater(startBwCompileCacheProbe)
-      bwCompileCacheProbeWaiting = false
+    if (seq !== bwCompileCacheProbeSeq) {
+      Qt.callLater(startBwCompileCacheProbe)
       return
     }
+    if (!bwCompileCache || bwCompileCacheState !== "pending") return
     bwCompileCacheDir = Model.bwCompileCacheAccepted(exitCode, output)
     bwCompileCacheState = bwCompileCacheDir !== "" ? "accepted" : "refused"
     if (bwCompileCacheDir === "") {
@@ -4823,14 +4798,23 @@ Item {
     return bwCompileCache && bwCompileCacheDir !== "" ? bwCompileCacheDir : null
   }
 
-  // For an environment built by bwEnv() some time before its `bw` starts (a
-  // queued lock, a queued envelope job): the variable is set again, in
-  // place, to what it is now, so a directory withdrawn since (the setting
-  // turned off, a new check) is not the one that `bw` gets. Nothing else in
-  // it is touched, and an environment without the variable is left alone.
-  function refreshBwCompileCacheIn(env) {
+  // Called for every VaultProcess as it is handed to the vault helper
+  // (vaultStart()) and again as it starts here instead
+  // (VaultProcess.launchLocal()): an environment may have been built some
+  // time before (a queued lock or envelope job, a run that waited for the
+  // helper), so a directory it names is replaced, in place, by what holds
+  // now. One with the variable removed keeps it removed.
+  function bwEnvAtStart(env) {
     var name = Model.bwCompileCacheEnvVar()
-    if (env && env.hasOwnProperty(name)) env[name] = bwCompileCacheEnvValue()
+    if (env && env[name] !== undefined && env[name] !== null) env[name] = bwCompileCacheEnvValue()
+    return env
+  }
+
+  // For a `bw` that is given the master password or a login's credentials
+  // (unlock and the process waiting for it, every login, the password
+  // check): never the cache, whatever was accepted.
+  function bwSecretEnv(extra) {
+    return Model.withoutCompileCache(bwEnv(extra))
   }
 
   // No session here: a VaultProcess adds it (vaultStart()).
@@ -4846,7 +4830,7 @@ Item {
   // FIFO by password flows), BW_CLIENTID and BW_CLIENTSECRET for API login.
   // Read as a binding by loginProc and unlockProc.
   function authEnv(password, clientId, clientSecret, code) {
-    var env = bwEnv()
+    var env = bwSecretEnv()
     env[Model.noInteractionEnvVar()] = "true"
     if (password) env[Model.passwordEnvVar()] = String(password)
     if (clientId) env[Model.clientIdEnvVar()] = String(clientId)
@@ -4868,7 +4852,7 @@ Item {
     // The one login allowed to prompt: BW_NOINTERACTION omitted (so not
     // authEnv()), and the code set for the command's printf.
     if (deviceVerificationAttempt) {
-      var deviceEnv = bwEnv()
+      var deviceEnv = bwSecretEnv()
       deviceEnv[Model.deviceCodeEnvVar()] = String(loginDeviceCode || "").trim()
       return deviceEnv
     }
@@ -6773,7 +6757,6 @@ Item {
       return
     }
     if (!run.checking) run.attempts += 1
-    refreshBwCompileCacheIn(run.env)
     lockProc.environment = run.env
     var inject = {}
     inject[Model.sessionEnvVar()] = "secret:" + run.key

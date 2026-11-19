@@ -157,7 +157,8 @@ choice without building anything; it only runs those probes.
   no check, creates no directory, and removes the variable from the
   environment of every `bw` and `node` it starts (`bwEnv`,
   `generatorServeEnv`, `withoutCompileCache`), so a value the shell inherited
-  is never honoured. On:
+  is never honoured. On, a `bw` that is handed the master password or a
+  login's credentials still never uses it; the rest may:
   - *What is written.* Node, not the plugin, writes V8's compiled form of the
     JavaScript files `bw` loads (its bundle, its modules and the two
     preloads) to `<cache home>/qs-bitwarden-cli/node-compile-cache/`, about
@@ -166,53 +167,90 @@ choice without building anything; it only runs those probes.
     relative or has a `..` or a control character in it means no cache. No
     account, item or session data goes into it, and every account shares it.
     The plugin itself only creates the two directories (and the cache home,
-    if that one level is missing), mode 0700.
-  - *Why it matters.* Node loads that code into `bw`, which is given the
-    master password and the session key. A program running as the user that
-    can write there can run code in `bw`, as it already can by changing the
-    preloads in the plugin's directory or putting another `bw` on `PATH`.
+    if that one level is missing), mode 0700, and sets that mode on the two
+    when a check passes.
+  - *Why it matters.* Node loads that code into `bw`. The `bw` runs that
+    use the cache are given the session key (or nothing); the ones given the
+    master password run without it. A program running as the user that can
+    write there can run code in those `bw` runs, as it already can by
+    changing the preloads in the plugin's directory or putting another `bw`
+    on `PATH`.
   - *How it is checked* (`bwCompileCacheCommand`, run with a cleared
-    environment and the path as an argument): on the path with symlinks
-    resolved, every directory up to `/` must belong to the user or root and
-    be writable by no one else; the plugin's directory and the cache
-    directory must be real directories of the user's that no one else can
-    write to (made with `mkdir -m 700` and checked again); the path must be
-    printable ASCII (the cache is not used when the path has non-ASCII
-    characters: QML could not read such bytes back reliably); and everything
-    already inside must be a regular file or directory owned by the user and
-    not group- or world-writable, with no symlink (one `find`, no `-L`,
-    stopped at the first offender, given 5 seconds). The exact line the check
-    printed is what `bw` is given (`bwCompileCacheAccepted`); nothing is
-    repaired, and a failed check means `bw` runs without the cache, with a
-    note on the setting's row.
+    environment and the path as an argument): the path as given, and again
+    with symlinks resolved, must be printable ASCII (the cache is not used
+    when the path has non-ASCII characters: QML could not read such bytes
+    back reliably); on the resolved path, every directory up to `/` must
+    belong to the user or root and be writable by no one else; the plugin's
+    directory and the cache directory must be real directories of the user's
+    that no one else can write to (made with `mkdir -m 700` if missing, and
+    checked again); and everything already in the plugin's directory must be
+    a regular file or directory owned by the user and not group- or
+    world-writable, with no symlink (one `find`, no `-L`, stopped at the
+    first offender, given 5 seconds). The exact line the check printed is
+    what `bw` is given (`bwCompileCacheAccepted`). A path that fails is left
+    exactly as it was found: what is already there is judged before anything
+    is made, and a failed check means `bw` runs without the cache, with a
+    note on the setting's row. A path that passed has its two directories
+    set to 0700. They are the plugin's own (nothing else is kept in
+    `qs-bitwarden-cli` under the cache home), so tightening them touches
+    nothing of anyone else's, and it is what keeps a cleared `~/.cache` from
+    switching the cache off for good: Node recreates the directories with
+    the default umask, and the next check makes them private again.
   - *When.* At shell start with the setting on, when the setting is turned
-    on, and when an unlock is submitted (password, PIN, fingerprint, FIDO2
-    and the pinentry all end in `unlockVaultWithPassword`). A vault that
-    opens with no unlock submitted (a terminal sign-in, a login, a session
-    found open) is checked as it opens, unless one of the three checks above
-    was started in the two minutes before and no opening has used it yet:
-    one check serves one opening (`recheckBwCompileCacheOnOpen`). A new check
-    withdraws the previous answer until it has its own, so a `bw` started in
-    those ~20 ms runs without the cache: after a submitted unlock that is
-    none of the reads that follow (`bw` takes about a second to unlock);
-    after an opening checked as it opens it is the first reads of the list,
-    organizations and folders. A lock or an envelope job queued earlier has
-    the variable set again as its process starts
-    (`refreshBwCompileCacheIn`), so a withdrawn directory is not used by it
-    either. Between checks the directory is not looked at again: if it is
-    deleted meanwhile, Node recreates it with the default umask, inside the
-    plugin's 0700 directory if that is still there, and the next check
-    judges it. Under a umask that leaves new directories group-writable
-    (002), the directory Node makes inside the cache for its own version is
-    one the next check refuses, so there the cache is used until the next
-    check and not after; `chmod -R go-w` on it, or a umask of 022 or 077 for
-    the shell, puts that right.
-  - *Which launches use it.* Only `bw` itself, in the commands started with
-    `bwEnv()`: status, login, unlock, lock, logout, sync, the list, get,
-    create, edit, delete, send and generate commands, attachment download,
-    and the generator's `bw serve`. These never do, setting on or off: the
-    pinentry and its probe (`pinentryEnvironment`); the `bw -v` version probe;
-    `bw login`/`bw unlock` in the terminal hand-off (the launcher's
+    on, and every time the vault becomes unlocked, whichever way
+    (`onStatusChanged`). That is all: nothing is carried from one check to
+    the next, and there is no timer or grace period. A new check withdraws
+    the previous answer until it has its own, so the first reads of an
+    opening (the list, organizations and folders, started in the same
+    moment) run without the cache, and what follows the ~20 ms check uses
+    it. A check that ends after the setting was turned off starts nothing
+    more (`startBwCompileCacheProbe` reads the setting and whether a
+    question is still open each time it runs, deferred or not).
+  - *State.* `bwCompileCacheDir` (the accepted path, or ""),
+    `bwCompileCacheState` (off, pending, accepted, refused: for the row's
+    note) and `bwCompileCacheProbeSeq` (tells a late answer from the current
+    one). The first two are reset by every new check and by the setting
+    turning off; none of them is per account or per vault, so a lock or an
+    account switch has nothing to clear, and the next opening checks afresh.
+  - *An environment built before its `bw` starts* (a queued lock or envelope
+    job, a run waiting for the vault helper, a local start put off behind
+    the previous run's cleanup) is settled at the start, in one place for
+    each way a `VaultProcess` can run: `vaultStart()` as it hands the run to
+    the helper, and `VaultProcess.launchLocal()` as it hands it to a local
+    process. Both call `bwEnvAtStart()`, which replaces a directory the
+    environment names with what holds at that moment (nothing, if the
+    setting was turned off or a check is running) and leaves a removed
+    variable removed. The generator's `bw serve`, the one plain `Process`
+    that may use the cache, reads its environment as a binding when it
+    starts.
+  - *Between checks* the directory is not looked at again. A device and
+    inode comparison before each `bw` start was considered and not done:
+    QML has no way to stat a path without starting a process, and a process
+    per `bw` start would cost what the cache saves while still leaving a gap
+    before Node opens the directory. What is left: if the cache directory is
+    deleted while the vault is open, Node recreates it with the default
+    umask inside the plugin's directory, which is 0700, so no one else can
+    reach it whatever the umask. If the plugin's directory is deleted too,
+    Node recreates both by umask, and until the next check (the next
+    opening, or the setting toggled) the cache is as private as the cache
+    home and the umask make it: under umask 022 others can read compiled
+    code and write nothing; under umask 002 with a cache home the group can
+    enter, group members could write there. The next check refuses a
+    directory or anything in it that is group- or world-writable, and
+    otherwise makes both private again.
+  - *umask 002.* Node makes its own per-version directory inside the cache
+    group-writable under such a umask, and the next check refuses the cache
+    for that, private parent or not; `chmod -R go-w` on the cache directory,
+    or a umask of 022 or 077 for the shell, puts that right.
+  - *Which launches use it.* Only `bw` itself, and only where it is given no
+    password: status, lock, logout, sync, the list, get, create, edit,
+    delete, send and generate commands, attachment download, and the
+    generator's `bw serve` (`bwEnv()`, `generatorServeEnv()`). These never
+    do, setting on or off: `bw unlock` and the process kept waiting for it,
+    every `bw login` (email, device verification, API key) and the password
+    check (`bwSecretEnv()`: `authEnv`, `loginProcessEnv`, `verifyWithBw`);
+    the pinentry and its probe (`pinentryEnvironment`); the `bw -v` version
+    probe; `bw login`/`bw unlock` in the terminal hand-off (the launcher's
     environment has the variable removed and the script the terminal runs
     starts with `unset NODE_COMPILE_CACHE`, since a terminal started by the
     session manager does not get the launcher's environment); the `bw logout`
@@ -223,8 +261,9 @@ choice without building anything; it only runs those probes.
     even where they share a script with a cached `bw`.
     `tests/bw-compile-cache.test.js` holds this inventory and fails when a
     script that starts `bw` or `node` is not in it.
-  - Turning the setting off stops using the cache at the next `bw` start and
-    leaves the directory; [docs/uninstall.md](docs/uninstall.md) removes it.
+  - Turning the setting off stops using the cache at the next `bw` start
+    (one already waiting to start included) and leaves the directory;
+    [docs/uninstall.md](docs/uninstall.md) says where it is.
 
 ## What the plugin does not do
 
