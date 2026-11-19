@@ -2260,6 +2260,7 @@ Item {
     // its own file.
     associationsWritePending = false
     associations = Model.emptyAssociations()
+    contextMatchKey = ""
     suggestedItems = []
     detectedContext = null
     learnedIds = ({})
@@ -3515,9 +3516,22 @@ Item {
     if (activeWindowData) handleActiveWindowDetected(activeWindowData)
   }
 
+  // What the suggestions on show were matched from
+  // (Model.contextMatchKey()): the window, and a count that moves whenever
+  // the list or the learned picks are replaced. "" when they are not a
+  // match's answer. Opening the panel asks twice, once with the window it
+  // already knew and once when the compositor has named the focused one;
+  // matching is a function of those three alone, so a question already
+  // answered is not worked out again.
+  property string contextMatchKey: ""
+  property int contextInputsGen: 0
+  onItemsChanged: contextInputsGen += 1
+  onAssociationsChanged: contextInputsGen += 1
+
   function handleActiveWindowDetected(data) {
     activeWindowData = data
     if (!suggestOnOpen) {
+      contextMatchKey = ""
       suggestedItems = []
       detectedContext = null
       rebuildFilter()
@@ -3526,10 +3540,14 @@ Item {
     if (items.length === 0) {
       return
     }
-    var res = Model.findContextualMatches(items, data, associations)
-    detectedContext = res.context
-    suggestedItems = res.matches
-    learnedIds = res.learnedIds || ({})
+    var key = Model.contextMatchKey(contextInputsGen, data)
+    if (key === "" || key !== contextMatchKey) {
+      var res = Model.findContextualMatches(items, data, associations)
+      detectedContext = res.context
+      suggestedItems = res.matches
+      learnedIds = res.learnedIds || ({})
+      contextMatchKey = key
+    }
     rebuildFilter()
   }
 
@@ -4675,6 +4693,7 @@ Item {
       associationsClearProc.running = true
     }
     associations = Model.emptyAssociations()
+    contextMatchKey = ""
     suggestedItems = []
     detectedContext = null
     activeWindowData = null
@@ -10345,6 +10364,7 @@ Item {
             var data = JSON.parse(text)
             root.handleActiveWindowDetected(data)
           } catch (e) {
+            root.contextMatchKey = ""
             root.suggestedItems = []
             root.detectedContext = null
           }

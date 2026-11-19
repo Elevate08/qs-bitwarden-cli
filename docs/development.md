@@ -76,6 +76,21 @@ not in the lowercased title (any other word still builds one); the two smaller t
 within their noise (about 2 ms and under 1 ms), and parse and filter did not
 change.
 
+Opening the panel used to run that match twice: once on the window the panel
+already knew (`ensureItemsFresh()`), and again when the compositor named the
+focused one. `handleActiveWindowDetected()` now keys an answer by its inputs
+(`Model.contextMatchKey()`: the window's data, and a count that
+`onItemsChanged` / `onAssociationsChanged` move whenever the list or the
+learned picks are replaced) and matches only for a question it has not just
+answered. In Node, same machine and fixtures (2026-11-19, p95 of 40 opens,
+matching only): an open from another window than last time went from two
+passes to one, 14.8 ms to 6.9 ms at 5,000 items, 5.3 ms to 2.5 ms at 2,000
+and 1.2 ms to 0.6 ms at 500; an open from the same window, nothing having
+changed, from two passes to none (0.01 ms). The list is still rebuilt on both
+passes. The suite's two `open` columns report this, and
+`tests/context-match.test.js` checks the counts and, over 400 random opens,
+reloads, picks and toggles, that what is shown is what a fresh match gives.
+
 The 2026-08-24 auth benchmark used Bitwarden CLI 2026.2.0 and three runs with a
 deliberately invalid password. A normal unlock took 2,641 ms median from submit
 to result; after a three-second prewarm while the password screen was already

@@ -170,6 +170,13 @@
 
 ### Changed
 
+- **Opening the panel works out its suggestions once, not twice.** An open
+  matched the vault against the window it already knew and then again when
+  the focused window was reported. It now matches only when the window, the
+  list or the learned picks have changed since the suggestions on show were
+  made: once for an open from another window (5,000 items: 14.8 ms to 6.9 ms
+  on one machine; 500 items: 1.2 ms to 0.6 ms), not at all for an open from
+  the same one. The suggestions are the same.
 - **Internal cleanup, no behaviour change.** Unused ids, properties and
   test-only model functions are gone, and repeated panel markup and model
   script builders are shared. The helper binaries are untouched.

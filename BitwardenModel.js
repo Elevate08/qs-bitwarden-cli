@@ -5318,6 +5318,16 @@ function findContextualMatches(items, windowData, associations) {
   return { matches: matches.slice(0, MAX_SUGGESTIONS), context: ctx, learnedIds: learned.ids }
 }
 
+// What one findContextualMatches() answer was worked out from, as a string
+// to compare: `inputsGen` stands for the list and the learned picks (the
+// panel moves it whenever either is replaced), and the window's data is
+// spelled out. "" for a window that cannot be spelled, which equals nothing.
+function contextMatchKey(inputsGen, windowData) {
+  var text
+  try { text = JSON.stringify(windowData) } catch (e) { return "" }
+  return typeof text === "string" ? String(inputsGen) + "|" + text : ""
+}
+
 // -------------------------------------------------------------------------
 // Learned associations
 // -------------------------------------------------------------------------

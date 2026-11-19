@@ -399,4 +399,126 @@ check("the newest lesson survives trimming",
   check("...and both answers occur among those", hits > 3 && hits < texts.length, String(hits))
 }
 
+// --- opening the panel matches once, not twice ------------------------------------
+// An open asks for suggestions with the window the panel already knew
+// (ensureItemsFresh()), then again when the compositor names the focused one.
+// The service's own functions, as written, over a counting matcher.
+{
+  const { functionBody, read } = require("./harness")
+  const svc = read("Service.qml")
+  function service(state) {
+    let itemsValue = [], associationsValue = Model.emptyAssociations()
+    const counting = Object.create(Model)
+    const v = Object.assign({ Model: counting, matches: 0, rebuilds: 0, loads: 0, suggestOnOpen: true,
+      activeWindowData: null, suggestedItems: [], detectedContext: null, learnedIds: {},
+      contextMatchKey: "", contextInputsGen: 0, itemsLoadedAt: Date.now(), itemsFreshMs: 60000,
+      rebuildFilter() { v.rebuilds++ }, beginInitialVaultLoad() { v.loads++ }, invalidateHelperSearch() {} }, state)
+    counting.findContextualMatches = function () { v.matches++; return Model.findContextualMatches.apply(Model, arguments) }
+    // As onItemsChanged / onAssociationsChanged do (tests/qml/tst_var_change.qml
+    // holds what they rest on): another array or object moves the count.
+    Object.defineProperty(v, "items", { get: () => itemsValue,
+      set(next) { if (next !== itemsValue) { itemsValue = next; v.contextInputsGen += 1 } } })
+    Object.defineProperty(v, "associations", { get: () => associationsValue,
+      set(next) { if (next !== associationsValue) { associationsValue = next; v.contextInputsGen += 1 } } })
+    const names = ["handleActiveWindowDetected", "ensureItemsFresh", "refreshDerivedFromItems"]
+    Object.assign(v, new Function("scope", "with (scope) {\n" + names.map(nm => functionBody(svc, nm)).join("\n")
+      + "\nreturn { " + names.join(", ") + " } }")(v))
+    // What the compositor's answer does: a fresh parse each time.
+    v.detected = win => v.handleActiveWindowDetected(JSON.parse(JSON.stringify(win)))
+    // One open: the stale-window pass, then the detection's answer.
+    v.open = win => { v.ensureItemsFresh(); v.detected(win) }
+    return v
+  }
+  const shown = v => JSON.stringify([v.suggestedItems.map(i => i.id), v.detectedContext, v.learnedIds])
+  const fresh = v => {
+    const res = v.suggestOnOpen && v.items.length ? Model.findContextualMatches(v.items, v.activeWindowData, v.associations)
+      : { matches: [], context: null, learnedIds: v.learnedIds }
+    return JSON.stringify([res.matches.map(i => i.id), res.context, res.learnedIds || {}])
+  }
+  const github = { class: "firefox", title: "GitHub - Mozilla Firefox", mapped: true }
+  const netflix = { class: "chromium", title: "Netflix - Chromium", mapped: true }
+
+  check("the service counts every replacement of the list and of the learned picks, and keys the match by it",
+    /\n  onItemsChanged: contextInputsGen \+= 1\n  onAssociationsChanged: contextInputsGen \+= 1\n/.test(svc)
+      && /var key = Model\.contextMatchKey\(contextInputsGen, data\)\s+if \(key === "" \|\| key !== contextMatchKey\) \{\s+var res = Model\.findContextualMatches\(items, data, associations\)/.test(functionBody(svc, "handleActiveWindowDetected"))
+      && (svc.match(/Model\.findContextualMatches\(/g) || []).length === 1)
+  check("the key spells the window out and carries the count; a window that cannot be spelled equals nothing",
+    Model.contextMatchKey(3, github) === "3|" + JSON.stringify(github)
+      && Model.contextMatchKey(3, github) !== Model.contextMatchKey(4, github)
+      && Model.contextMatchKey(3, github) !== Model.contextMatchKey(3, netflix)
+      && Model.contextMatchKey(3, undefined) === "" && Model.contextMatchKey(3, () => 1) === ""
+      && (() => { const loop = {}; loop.self = loop; return Model.contextMatchKey(3, loop) === "" })())
+
+  const v = service({})
+  v.items = items.slice()
+  v.detected(github)
+  check("the first answer is matched", v.matches === 1 && shown(v) === fresh(v) && v.suggestedItems.length > 0, shown(v))
+  v.matches = 0; v.rebuilds = 0
+  v.open(netflix)
+  check("an open from another window matches once (it used to be twice), and shows that window's suggestions",
+    v.matches === 1 && shown(v) === fresh(v) && v.suggestedItems[0].name === "Netflix", `${v.matches} ${shown(v)}`)
+  check("...and still rebuilds the list both times", v.rebuilds === 2, String(v.rebuilds))
+  v.matches = 0
+  v.open(netflix)
+  check("an open from the same window, with nothing changed, matches no more", v.matches === 0 && shown(v) === fresh(v), String(v.matches))
+  const before = v.suggestedItems
+  v.open(netflix)
+  check("...and leaves the very suggestions that were on show", v.suggestedItems === before)
+
+  // Whatever changes the answer is matched again, at once.
+  v.matches = 0
+  v.items = v.items.filter(i => i.name !== "Netflix")
+  v.refreshDerivedFromItems()
+  check("a list replaced is matched again by the refresh that follows it",
+    v.matches === 1 && shown(v) === fresh(v) && v.suggestedItems.every(i => i.name !== "Netflix"), shown(v))
+  v.matches = 0
+  v.items = v.items.slice()
+  v.open(netflix)
+  check("...and so is one replaced by an equal list: it is another list", v.matches === 1 && shown(v) === fresh(v))
+  v.matches = 0
+  const ctx = Model.findContextualMatches(items, github).context
+  v.associations = Model.recordAssociation(v.associations, ctx, "5", "2026-01-01T00:00:00Z", true)
+  v.open(github)
+  check("a pick learned since the last match shows on the next open, from the first of its two passes",
+    v.matches === 2 && shown(v) === fresh(v) && v.suggestedItems[0].id === "5", `${v.matches} ${shown(v)}`)
+  v.matches = 0
+  v.suggestOnOpen = false
+  v.open(github)
+  check("suggestions turned off: nothing is matched and nothing is suggested",
+    v.matches === 0 && v.suggestedItems.length === 0 && v.detectedContext === null && v.contextMatchKey === "")
+  v.suggestOnOpen = true
+  v.open(github)
+  check("...and turned on again, the same window is matched afresh, not taken from before",
+    v.matches === 1 && shown(v) === fresh(v) && v.suggestedItems.length > 0, `${v.matches}`)
+  check("whatever else clears the suggestions clears the key with them",
+    /root\.contextMatchKey = ""\s+root\.suggestedItems = \[\]/.test(svc)
+      && (svc.match(/contextMatchKey = ""\n\s+suggestedItems = \[\]/g) || []).length === 3
+      && (svc.match(/\bsuggestedItems = /g) || []).length === 5)
+
+  // Every sequence of opens and changes shows what a match made then would.
+  let seed = 7
+  const rnd = n => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  const windows = [github, netflix, { class: "kitty", title: "zsh", mapped: true },
+    { class: "firefox", title: "Reddit - Mozilla Firefox", mapped: true }, {}]
+  const r = service({})
+  r.items = items.slice()
+  let wrong = "", total = 0, opens = 0
+  for (let step = 0; step < 400 && !wrong; step++) {
+    const what = rnd(10)
+    if (what < 6) { opens++; r.open(windows[rnd(windows.length)]) }
+    else if (what === 6) { r.items = items.filter((_, i) => rnd(4) !== 0 || i < 3); r.refreshDerivedFromItems() }
+    else if (what === 7 && r.detectedContext) {
+      r.associations = Model.recordAssociation(r.associations, r.detectedContext, items[rnd(items.length)].id, "2026-01-0" + (1 + rnd(9)), rnd(2) === 0)
+      r.handleActiveWindowDetected(r.activeWindowData)
+    } else if (what === 8 && r.detectedContext) {
+      r.associations = Model.forgetAssociation(r.associations, r.detectedContext, "")
+      r.handleActiveWindowDetected(r.activeWindowData)
+    } else if (what === 9) { r.suggestOnOpen = !r.suggestOnOpen; if (r.activeWindowData) r.handleActiveWindowDetected(r.activeWindowData) }
+    if (r.suggestOnOpen && r.activeWindowData && r.items.length && shown(r) !== fresh(r)) wrong = `step ${step}: ${shown(r)} != ${fresh(r)}`
+  }
+  total = r.matches
+  check("over 400 random opens, reloads, picks and toggles the suggestions are always what a fresh match gives", wrong === "", wrong)
+  check("...with fewer matches than the two per open it used to take", opens > 100 && total < 2 * opens, `${total} matches for ${opens} opens`)
+}
+
 done()

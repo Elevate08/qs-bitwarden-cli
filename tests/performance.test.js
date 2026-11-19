@@ -5,9 +5,28 @@
 //   node tests/performance.test.js
 
 
-const { createSuite, loadModule } = require("./harness")
+const { createSuite, functionBody, loadModule, read } = require("./harness")
 
 const Model = loadModule()
+
+// The service's own open path, as written, for the contextual-match work one
+// panel open does: ensureItemsFresh() with the window the panel already
+// knew, then the compositor's answer. The list rebuild is left out, so the
+// time is the matching alone; `matches` counts the passes.
+function openPath(items) {
+  const svc = read("Service.qml")
+  const counting = Object.create(Model)
+  const v = { Model: counting, matches: 0, suggestOnOpen: true, items, associations: Model.emptyAssociations(),
+    activeWindowData: null, suggestedItems: [], detectedContext: null, learnedIds: {},
+    contextMatchKey: "", contextInputsGen: 1, itemsLoadedAt: Date.now(), itemsFreshMs: 60000,
+    rebuildFilter() {}, beginInitialVaultLoad() {} }
+  counting.findContextualMatches = function () { v.matches++; return Model.findContextualMatches.apply(Model, arguments) }
+  const names = ["handleActiveWindowDetected", "ensureItemsFresh"]
+  Object.assign(v, new Function("scope", "with (scope) {\n" + names.map(nm => functionBody(svc, nm)).join("\n")
+    + "\nreturn { " + names.join(", ") + " } }")(v))
+  v.open = win => { v.ensureItemsFresh(); v.handleActiveWindowDetected(JSON.parse(JSON.stringify(win))) }
+  return v
+}
 
 const MIB = 1024 * 1024
 const tiers = [
@@ -123,13 +142,36 @@ for (const tier of tiers) {
       { class: "firefox", title: "Service 42 login - Mozilla Firefox" }, {})).ms)
   }
 
+  // One panel open, from a window other than the last one and from the same
+  // one. Before the match was keyed by its inputs each took two passes.
+  const panel = openPath(parsed)
+  const windows = [{ class: "firefox", title: "Service 42 login - Mozilla Firefox" },
+    { class: "firefox", title: "Service 43 login - Mozilla Firefox" }]
+  panel.open(windows[0])
+  const openNewSamples = []
+  const openSameSamples = []
+  let openNewPasses = 0
+  let openSamePasses = 0
+  for (let sample = 0; sample < 20; sample++) {
+    panel.matches = 0
+    openNewSamples.push(timed(() => panel.open(windows[(sample + 1) % 2])).ms)
+    openNewPasses = Math.max(openNewPasses, panel.matches)
+    panel.matches = 0
+    openSameSamples.push(timed(() => panel.open(windows[(sample + 1) % 2])).ms)
+    openSamePasses = Math.max(openSamePasses, panel.matches)
+  }
+  check(`${tier.name}: an open from another window matches once`, openNewPasses === 1, `${openNewPasses} passes`)
+  check(`${tier.name}: an open from the same window does not match again`, openSamePasses === 0, `${openSamePasses} passes`)
+
   const row = {
     tier: tier.name,
     items: tier.items,
     mib: actualBytes / MIB,
     parse: p95(parseSamples),
     filter: p95(filterSamples),
-    context: p95(contextSamples)
+    context: p95(contextSamples),
+    openNew: p95(openNewSamples),
+    openSame: p95(openSameSamples)
   }
   results.push(row)
   check(`${tier.name}: parse p95`, row.parse <= tier.parseP95Ms,
@@ -172,11 +214,15 @@ for (const tier of tiers) {
     JSON.stringify(Model.readSanitizedVault("{not json")))
 }
 
-console.log("tier     items    MiB  parse p95  filter p95  context p95")
+// "open" columns: the matching one panel open does (p95), from another
+// window than last time and from the same one; it was two passes for both.
+console.log("tier     items    MiB  parse p95  filter p95  context p95  open (new window)  open (same window)")
 for (const row of results) {
   console.log(`${row.tier.padEnd(8)} ${String(row.items).padStart(5)}  ${row.mib.toFixed(2).padStart(5)}`
     + `  ${(row.parse.toFixed(2) + "ms").padStart(9)}`
     + `  ${(row.filter.toFixed(2) + "ms").padStart(10)}`
-    + `  ${(row.context.toFixed(2) + "ms").padStart(11)}`)
+    + `  ${(row.context.toFixed(2) + "ms").padStart(11)}`
+    + `  ${(row.openNew.toFixed(2) + "ms").padStart(17)}`
+    + `  ${(row.openSame.toFixed(2) + "ms").padStart(18)}`)
 }
 done()
