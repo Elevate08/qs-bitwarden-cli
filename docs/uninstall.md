@@ -5,8 +5,9 @@ Data** on the settings screen. Between them those clear everything this plugin
 put outside its own folder: the helper stops cleanly and takes its socket,
 FIFO and routing file with it, and the button clears the keyring entries, the
 learned suggestions, the exported public keys and the sign-ins of any accounts
-added beside the first. Both have to happen before
-the next step, because `omarchy plugin remove` has no uninstall hook -- once
+added beside the first. (Node's compiled-code cache for `bw`, which holds no
+account or vault data, stays; the last command below removes it.) Both have
+to happen before the next step, because `omarchy plugin remove` has no uninstall hook -- once
 the folder is gone there is no code left to run.
 
 ```bash
@@ -36,6 +37,9 @@ rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/accounts"
 # SSH agent, if you used it: the exported public keys and the routing file
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh"
 rm -f ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
+
+# Node's compiled-code cache for bw (no account or vault data)
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/qs-bitwarden-cli"
 ```
 
 **Do not hand-edit `~/.config/omarchy/shell.json`.** On many setups it is not a

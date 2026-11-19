@@ -82,6 +82,16 @@ instead of 2.7-3.0 s, and `get item`/`password`/`totp` 1.25 s instead of
 3.1 s, each with identical output and exit code. `tests/bw-fast-exit.test.js`
 covers the guard that keeps the preload to `bw` itself.
 
+With Node's compile cache on top (`NODE_COMPILE_CACHE`, set by `bwEnv()` once
+the directory has passed `bwCompileCacheCommand()`), on the same machine with
+CLI 2026.2.0 and Node 22.23.3 (2026-11-19, vault locked, both preloads, median
+of 9 runs each): `bw --version` 645 ms without and 533 ms with (112 ms, 17%),
+`bw status` 657 ms and 544 ms (113 ms, 17%), with identical output and exit
+code. The one run that fills an empty cache took 773 ms. Only those two
+commands were timed; the saving is in Node loading `bw`'s 1,600 modules, which
+every `bw` command does first. `tests/bw-compile-cache.test.js` covers the
+directory check and that the cache works beside the preloads.
+
 `bw-login-code.js`, the other preload, gives `bw login` the two-step code from
 `QSBW_CODE` in place of the `--qsbw-code-from-env` placeholder, so the code is
 in `bw`'s parsed arguments but not in `/proc/<pid>/cmdline`.

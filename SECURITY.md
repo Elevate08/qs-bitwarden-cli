@@ -123,6 +123,11 @@ you to it.
   arguments (other local users, through `/proc`) or `shell.json` and guesses
   the address can confirm it with one hash and see which two-step method it
   uses. The method is a small number, not a secret.
+- A program running as you changing Node's compile cache for `bw`
+  (`~/.cache/qs-bitwarden-cli/node-compile-cache`, compiled code that Node
+  loads into `bw`). It is private to you and checked for that before it is
+  used; such a program can already change the plugin's own files, which `bw`
+  loads the same way. Another user being able to write there is in scope.
 - Bugs in the Bitwarden server, `bw`, gnome-keyring, systemd, Quickshell or
   Omarchy. Report those upstream, and tell us if the plugin makes them worse.
 - An attacker who already controls your unlocked session or your user

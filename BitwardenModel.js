@@ -417,6 +417,50 @@ function bwNodeOptions(pluginDir, existing) {
   return base ? base + " " + option : option
 }
 
+// Node's compile cache for `bw` (NODE_COMPILE_CACHE, Node 22.1+): V8's code
+// cache of the modules bw loads, about a sixth of each start. It holds
+// compiled code, nothing of the vault, and is shared by every account. It is
+// code Node will run in a process that sees the master password, so the
+// variable is set only for a directory bwCompileCacheCommand() accepted.
+var BW_COMPILE_CACHE_ENV = "NODE_COMPILE_CACHE"
+var BW_COMPILE_CACHE_SUBDIR = "qs-bitwarden-cli/node-compile-cache"
+
+function bwCompileCacheEnvVar() { return BW_COMPILE_CACHE_ENV }
+
+// "" when neither base is an absolute path, which leaves the cache off.
+function bwCompileCacheDir(xdgCacheHome, home) {
+  var base = String(xdgCacheHome || "")
+  if (!base || base.charAt(0) !== "/") {
+    var h = String(home || "")
+    if (!h || h.charAt(0) !== "/") return ""
+    base = h.replace(/\/+$/, "") + "/.cache"
+  }
+  return base.replace(/\/+$/, "") + "/" + BW_COMPILE_CACHE_SUBDIR
+}
+
+// Exits 0 only when `dir` (bwCompileCacheDir()) may be used. The cache home
+// must be this user's and writable by no one else; the plugin's directory in
+// it and the cache directory are created mode 0700, and one already there is
+// accepted only as a real directory (not a symlink) that this user owns and
+// no one else can write to. Nothing is repaired: a directory that fails is
+// left alone and `bw` runs without the cache. Node recreates a deleted cache
+// directory with the default umask, hence the chmod of one that passed.
+function bwCompileCacheCommand(dir) {
+  var mine = "case \"$(stat -L -c %a -- \"$1\" 2>/dev/null)\" in *[0145][0145]) ;; *) return 1 ;; esac; "
+  var script = "__d=\"$1\"; case \"$__d\" in /*) ;; *) exit 1 ;; esac; umask 077; "
+    + "__own() { [ -d \"$1\" ] && [ -O \"$1\" ] || return 1; " + mine + "}; "
+    + "__p=\"$(dirname -- \"$__d\")\"; __b=\"$(dirname -- \"$__p\")\"; "
+    + "[ -e \"$__b\" ] || mkdir -p -- \"$__b\" || exit 1; "
+    + "__own \"$__b\" || exit 1; "
+    + "for __x in \"$__p\" \"$__d\"; do "
+    + "if [ -e \"$__x\" ] || [ -L \"$__x\" ]; then "
+    + "[ ! -L \"$__x\" ] && __own \"$__x\" || exit 1; "
+    + "else mkdir -- \"$__x\" || exit 1; fi; "
+    + "done; "
+    + "chmod 700 -- \"$__d\" || exit 1"
+  return ["bash", "-c", script, "_", String(dir || "")]
+}
+
 function passwordEnvVar() {
   return PASSWORD_ENV
 }

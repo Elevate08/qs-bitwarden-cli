@@ -182,6 +182,19 @@ outside system paths:
 - `~/.local/state/qs-bitwarden-cli/` and `~/.local/share/qs-bitwarden-cli/`,
   including bw's data for added accounts (`accounts/<slot>`, passed to bw as
   `BITWARDENCLI_APPDATA_DIR`);
+- `${XDG_CACHE_HOME:-~/.cache}/qs-bitwarden-cli/node-compile-cache/`, written
+  by Node, not the plugin: the plugin creates the directory (mode 0700) and
+  names it in `NODE_COMPILE_CACHE` for the `bw` commands it runs, so Node
+  keeps V8's compiled form of the JavaScript files it loads there (about
+  11 MB for bw 2026.2.0) and `bw` starts faster. It is compiled code of `bw`,
+  its modules, the two preloads and the panel's fixed `node -e` checks; no
+  account, item or session data goes into it, and it is shared by every
+  account. Node loads code from it into `bw`, so the variable is set only
+  after a check at shell start (`bwCompileCacheCommand`): the cache home, the
+  plugin's directory and the cache directory must each be owned by the user
+  and writable by no one else, and the last two must not be symlinks. A
+  program running as the user can still change the cache, as it can change
+  the preloads in the plugin's directory or put another `bw` on `PATH`;
 - `${XDG_DATA_HOME:-~/.local/share}/keyrings/Default_keyring.keyring`:
   `scripts/repair-keyring.sh --auto`, run at every start, rewrites it only when
   it holds an entry gnome-keyring refuses to load, keeping a

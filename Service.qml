@@ -953,6 +953,7 @@ Item {
     root.inspectUnlockKey()
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
+    root.probeBwCompileCache()
   }
 
   readonly property var categories: [
@@ -4711,10 +4712,27 @@ Item {
   // Read once: the shell's own NODE_OPTIONS plus the early-exit preload.
   readonly property string bwNodeOptions: Model.bwNodeOptions(sshAgentPluginDir, Quickshell.env("NODE_OPTIONS"))
 
+  // Node's compile cache for `bw`: the directory, once the probe at start
+  // has accepted it (Model.bwCompileCacheCommand()); "" until then and if it
+  // was refused, and `bw` then starts without the cache.
+  readonly property string bwCompileCachePath: Model.bwCompileCacheDir(
+    Quickshell.env("XDG_CACHE_HOME") || "", Quickshell.env("HOME") || "")
+  property string bwCompileCacheDir: ""
+
+  function probeBwCompileCache() {
+    if (bwCompileCachePath === "" || bwCompileCacheProc.running) return
+    bwCompileCacheProc.running = true
+  }
+
+  function onBwCompileCacheProbed(exitCode) {
+    bwCompileCacheDir = exitCode === 0 ? bwCompileCachePath : ""
+  }
+
   // No session here: a VaultProcess adds it (vaultStart()).
   function bwEnv(extra) {
     var env = accountAppDataEnv()
     if (bwNodeOptions) env.NODE_OPTIONS = bwNodeOptions
+    if (bwCompileCacheDir) env[Model.bwCompileCacheEnvVar()] = bwCompileCacheDir
     if (extra) for (var k in extra) env[k] = extra[k]
     return env
   }
@@ -4973,6 +4991,7 @@ Item {
     var env = accountAppDataEnv()
     env[Model.sessionEnvVar()] = null
     env[Model.noInteractionEnvVar()] = "true"
+    if (bwCompileCacheDir) env[Model.bwCompileCacheEnvVar()] = bwCompileCacheDir
     return env
   }
 
@@ -9931,6 +9950,12 @@ Item {
   }
 
   // ---- Accounts ----
+
+  Process {
+    id: bwCompileCacheProc
+    command: Model.bwCompileCacheCommand(root.bwCompileCachePath)
+    onExited: function(exitCode) { root.onBwCompileCacheProbed(exitCode) }
+  }
 
   Process {
     id: accountsReadProc

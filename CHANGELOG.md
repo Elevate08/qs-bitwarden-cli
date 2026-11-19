@@ -142,6 +142,16 @@
   and normally never reach this helper; one that does is discarded as the
   read is parsed. This needs the rebuilt vault helper.
 
+### Changed
+
+- **`bw` starts about a sixth faster.** Every `bw` the panel runs now uses
+  Node's compile cache (`NODE_COMPILE_CACHE`, Node 22.1 or newer), kept in
+  `~/.cache/qs-bitwarden-cli/node-compile-cache` (mode 0700, about 11 MB):
+  on one machine with bw 2026.2.0, `bw status` went from 657 ms to 544 ms
+  and `bw --version` from 645 ms to 533 ms, with the same output. It holds
+  compiled code only, nothing of the vault, and is used only if the
+  directory is yours and no one else can write to it.
+
 ### Fixed
 
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
