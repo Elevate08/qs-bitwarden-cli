@@ -22,7 +22,8 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "loadOrgCollections", "onOrgCollectionsLoaded", "loadSends", "onSendsLoaded",
   "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
-  "onDeleteItemFinished"]
+  "onDeleteItemFinished", "reconcileOpenDetail", "listReadInFlight", "detailReadsOnHold", "totpWanted",
+  "isFieldRevealed"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
 // a run only when none is held (runId 0); to false it asks for a kill, and
@@ -91,6 +92,7 @@ function fixture() {
     refreshDerivedFromItems() { c.derived++ }, flashNotification: m => c.flashes.push(m),
     closeFilterGroup() {}, clearRepromptGrant() {}, learnFromPick() {}, fetchTotp() {},
     itemPayloadJson: "", failedSave: null, screenBeforeSshApproval: "main", forgotten: [],
+    formIsEditing: false, formItemId: "", generatorReturnScreen: "main",
     forgetVaultItem: id => c.forgotten.push(id)
   }
   for (const id of ["listProc", "listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"])

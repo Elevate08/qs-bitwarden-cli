@@ -44,7 +44,13 @@ vault. Notes of an item that asks for the master password are not searched.
 
 An item that asks for the master password asks for it before a value is
 revealed, copied or edited, and its TOTP code is fetched only when you reveal
-or copy it.
+or copy it. The helper has a refreshed vault before the panel has its list,
+so an item that is open is checked again when the list arrives: one that
+asks for the master password now, and did not when it was opened, has what
+was revealed dropped and is shown again behind the prompt, and one that is
+gone closes. While the list is being read, an action on the open item that
+would read a secret without asking is refused ("Refreshing the vault -- try
+again in a moment").
 
 Locking, logging out and switching accounts tell the helper to forget
 everything. A lock that is still running `bw lock` keeps its own copy of the

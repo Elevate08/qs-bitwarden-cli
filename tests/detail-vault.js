@@ -29,7 +29,8 @@ const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submit
   "copyDetailTotp", "copyTotpCodeNow", "applyTotpCode", "fetchTotp", "localTotp", "saveItemForm",
   "beginVaultRead", "beginEpochOperation", "invalidateEpochOperation", "vaultReadIsStale", "vaultProcBusy",
   "startVaultRead", "supersededVaultRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem",
-  "leaveProvisionalDetail", "settleOwedListRead", "listSnapshotOutdated"]
+  "leaveProvisionalDetail", "settleOwedListRead", "listSnapshotOutdated", "listReadInFlight", "detailReadsOnHold",
+  "reconcileOpenDetail", "onListFinished"]
 
 // `items`: the list (rows from Model.parseItems). `fallback`: no helper.
 function makeVault(items, fallback) {
@@ -48,6 +49,10 @@ function makeVault(items, fallback) {
     createdItemHandoff: null, screenBeforeSshApproval: "main", pendingDelete: null, itemPayloadJson: "",
     failedSave: null, itemsLoadedAt: 0, reloads: 0,
     refreshDerivedFromItems() {}, loadItems() { v.reloads++ },
+    // The list read: `listProc.running` while one is in flight.
+    listProc: { running: false, command: [] }, listReadError: "", sshCapability: "", syncReloadPending: false,
+    isSyncing: false, backgroundSync: false, metadataLoadPending: false, statusRefreshAfterItems: false,
+    deferredMetadataTimer: { restart() {} }, maybeStartupLoad() {},
     pendingSave: null, formIsEditing: true, formItemId: "g1",
     queries: [], answers: [], copied: [], edits: [], flashes: [], formResets: 0, verify: null,
     closeFilterGroup() {}, learnFromPick() {},

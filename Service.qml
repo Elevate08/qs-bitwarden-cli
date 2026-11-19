@@ -344,7 +344,10 @@ Item {
   // Whether the detail shows (and keeps refreshing) its TOTP code: always,
   // except that a re-prompt item's code waits for its eye.
   function totpWanted(item) {
-    return !!item && (!itemNeedsReprompt(item) || isFieldRevealed("totp"))
+    if (!item) return false
+    if (itemNeedsReprompt(item)) return isFieldRevealed("totp")
+    // Not while a list read may have changed that answer (detailReadsOnHold()).
+    return !detailReadsOnHold(item)
   }
 
   // The list row of an item whose secrets the helper holds, else null.
@@ -367,7 +370,7 @@ Item {
     var epoch = vaultEpoch
     vaultQuery("field", { id: id, field: key }, function(ok, value) {
       if (epoch !== root.vaultEpoch || (root.currentScreen !== "detail" && root.currentScreen !== "history")
-          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(root.detailItem)) return
       if (!ok) {
         root.errorMessage = "Could not read this value"
         return
@@ -466,8 +469,35 @@ Item {
     return id === repromptVerifiedId && detailItem !== null && String(detailItem.id) === id
   }
 
+  // Whether the vault helper may already hold a newer copy of the vault than
+  // the list here: a list read replaces the helper's items when `bw` answers,
+  // before the panel has the list (and a snapshot held back for a save has
+  // replaced them without being shown at all). In that window the open
+  // item's re-prompt flag here is the old one.
+  function listReadInFlight() {
+    return vaultHelperActive
+      && ((listProc.running && !Model.isScrubCommand(listProc.command)) || listRereadOwed)
+  }
+
+  // Whether an action on `item`, the item open in the detail, has to wait for
+  // that read: its flag says "no master password", and the helper's copy may
+  // say otherwise by now. An item already flagged asks (or was confirmed) as
+  // ever; the new copy can only make it ask less.
+  function detailReadsOnHold(item) {
+    return !!item && !itemNeedsReprompt(item) && detailItem !== null
+      && String(detailItem.id) === String(item.id)
+      && (currentScreen === "detail" || currentScreen === "history")
+      && listReadInFlight()
+  }
+
   function withReprompt(item, callback) {
     if (!item || typeof callback !== "function") return
+    // Refused rather than held: the accepted list re-checks the open item
+    // (reconcileOpenDetail()), and the action is one key press to repeat.
+    if (detailReadsOnHold(item)) {
+      errorMessage = "Refreshing the vault -- try again in a moment"
+      return
+    }
     if (repromptSatisfied(item)) {
       callback()
       return
@@ -580,7 +610,7 @@ Item {
     var epoch = vaultEpoch
     vaultQuery("item", { id: id }, function(ok, full) {
       if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
-          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(root.detailItem)) return
       if (root.detailItem.secretsWithheld) {
         var parsed = ok ? Model.parseItemDetail(String(full)) : null
         if (!parsed) {
@@ -7037,6 +7067,7 @@ Item {
     vault = null
     itemsLoadedAt = Date.now()
     refreshDerivedFromItems()
+    reconcileOpenDetail()
     if (syncReloadPending) {
       syncReloadPending = false
       isSyncing = false
@@ -7599,8 +7630,52 @@ Item {
     // The TOTP is time-based, so it is fetched alongside. The helper computes
     // it; the key does not come here. A re-prompt item's code is fetched when
     // it is revealed or copied.
-    if (item.hasTotp && !itemNeedsReprompt(item)) {
+    if (item.hasTotp && !itemNeedsReprompt(item) && !detailReadsOnHold(item)) {
       fetchTotp(item.id)
+    }
+  }
+
+  // The open item against the list just accepted. The detail is a copy made
+  // when it was opened, and the helper already answers from the new vault.
+  // An item no longer there closes its detail. One that asks for the master
+  // password now, and did not when it was opened, loses what was revealed or
+  // loaded of it and is opened again as a click on its row would open it:
+  // the public view, each value behind the prompt. Anything else is left as
+  // it is, a confirmed re-prompt included.
+  function reconcileOpenDetail() {
+    var covered = currentScreen === "sshApproval"
+    var screen = covered ? screenBeforeSshApproval : currentScreen
+    if (!detailItem) return
+    var id = String(detailItem.id)
+    var onDetail = screen === "detail" || screen === "history"
+    var editing = (screen === "edit" || (screen === "generator" && generatorReturnScreen === "edit"))
+      && formIsEditing && String(formItemId) === id
+    // A new item still being saved is in no list yet (followCreatedItem()).
+    if ((!onDetail && !editing) || Model.isPendingItemId(id)) return
+    var row = Model.findItemById(items, id)
+    var newlyProtected = !!row && itemNeedsReprompt(row) && !itemNeedsReprompt(detailItem)
+    if (row && !newlyProtected) {
+      // The code held back while the read ran (totpWanted()).
+      if (currentScreen === "detail" && detailItem.hasTotp && liveTotp === "" && totpWanted(detailItem)) {
+        fetchTotp(detailItem.id)
+      }
+      return
+    }
+    // Gone while its edit form is open: the save says so and keeps the form.
+    if (!row && !onDetail) return
+    clearRepromptGrant()
+    liveTotp = ""
+    detailPassword = ""
+    if (covered) {
+      // An SSH approval has the screen: the list is what it returns to.
+      screenBeforeSshApproval = "main"
+      return
+    }
+    if (row) {
+      openDetail(row, true)
+    } else {
+      currentScreen = "main"
+      flashNotification("That item is no longer in the vault")
     }
   }
 

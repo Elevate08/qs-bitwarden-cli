@@ -117,6 +117,22 @@
   sync changed whether the item asks for the master password since it was
   opened. A master-password re-prompt item still asks first, as its letter
   does.
+- **A re-prompt turned on elsewhere holds for an item that is open.** While
+  an item's detail was open, a sync could bring it back with "ask for the
+  master password" turned on. The vault helper has the new vault as soon as
+  `bw` answers, before the panel has the list, and the open detail kept the
+  old answer, so a copy or reveal there read the now-protected value with no
+  prompt. When a list is accepted the open item is now checked against it:
+  if it asks for the master password and did not when it was opened,
+  whatever was revealed or loaded of it is dropped and it is shown again
+  behind the prompt (an edit form of it closes); if it is gone, the panel
+  returns to the list. And while a list read is in flight, an action on the
+  open item that would read a secret without asking (copy, reveal, the TOTP
+  code, password history, edit, auto-type, the action palette) is refused
+  with "Refreshing the vault -- try again in a moment" and the code is not
+  refreshed. An item that already asks, or whose re-prompt was confirmed, is
+  not held back, and an item whose setting did not change is as it was once
+  the list is in.
 
 - **The vault helper refuses a vault read it does not recognise.** It used
   to remove secrets only from items sitting where it expected them and hand
