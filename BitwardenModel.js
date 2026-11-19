@@ -3961,10 +3961,15 @@ var PENDING_ID_PREFIX = "qsbw-pending:"
 function pendingItemId(seed) { return PENDING_ID_PREFIX + String(seed) }
 function isPendingItemId(id) { return String(id || "").indexOf(PENDING_ID_PREFIX) === 0 }
 
+// Scans the list it is given: toList() would copy it and stop at
+// MAX_LIST_ENTRIES, and this is the panel's own list, not a server's claim.
 function findItemById(items, id) {
-  var existing = toList(items)
-  for (var i = 0; i < existing.length; i++) {
-    if (existing[i] && existing[i].id === id) return existing[i]
+  if (!items || typeof items !== "object") return null
+  var n = items.length
+  if (typeof n !== "number" || n < 0 || n !== Math.floor(n)) return null
+  for (var i = 0; i < n; i++) {
+    var item = items[i]
+    if (item && item.id === id) return item
   }
   return null
 }

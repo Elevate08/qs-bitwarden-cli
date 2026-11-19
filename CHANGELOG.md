@@ -147,6 +147,10 @@
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.
+- **Items past the 4,096th can be opened.** In a vault with more than 4,096
+  items, looking a row up by id stopped at the 4,096th, so opening, editing,
+  deleting or auto-typing a later item found nothing. The lookup now scans
+  the whole list, without copying it.
 
 ## [1.13.1] - 2026-11-18
 
