@@ -6802,53 +6802,83 @@ function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 // Default_Ignorable_Code_Point.
 var SSH_AGENT_INVISIBLE_SOURCE = "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff0-\\ufff8]"
   + "|\\ud82f[\\udca0-\\udca3]|\\ud834[\\udd73-\\udd7a]|[\\udb40-\\udb43][\\udc00-\\udfff]"
-// One step of the text: an invisible character (group 1), or any other whole
-// code point.
-var SSH_AGENT_TOKEN_RE = new RegExp("(" + SSH_AGENT_INVISIBLE_SOURCE + ")|[\\ud800-\\udbff][\\udc00-\\udfff]|[\\s\\S]", "g")
+// One step of the text: an invisible character (group 1), an escape already
+// written out (the SSH agent writes control characters as \uXXXX before the
+// text gets here, and this file's own output can be bounded again), or any
+// other whole code point.
+var SSH_AGENT_TOKEN_RE = new RegExp("(" + SSH_AGENT_INVISIBLE_SOURCE + ")"
+  + "|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]{1,6}\\}|[\\ud800-\\udbff][\\udc00-\\udfff]|[\\s\\S]", "g")
+// The longest step, in UTF-16 code units: \u{10ffff}.
+var SSH_AGENT_MAX_PIECE = 10
 
-// `value` as the pieces a prompt draws: each invisible character written out
-// as \uXXXX (\u{XXXXX} beyond the first plane), every other code point as it
-// is. A piece is never cut, so a limit cannot leave half an escape or half a
-// surrogate pair.
-function visiblePieces(value) {
-  var text = (value === undefined || value === null) ? "" : String(value)
-  var pieces = []
-  text.replace(SSH_AGENT_TOKEN_RE, function(c, invisible) {
-    if (invisible === undefined || invisible === "") {
-      pieces.push(c)
-    } else if (c.length === 2) {
-      var point = (c.charCodeAt(0) - 0xd800) * 0x400 + (c.charCodeAt(1) - 0xdc00) + 0x10000
-      pieces.push("\\u{" + point.toString(16) + "}")
-    } else {
-      pieces.push("\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4))
+// The pieces a prompt draws of `text` from index `from` on, one call of
+// `each` per piece until it returns false: each invisible character written
+// out as \uXXXX (\u{XXXXX} beyond the first plane), every other code point
+// and every escape already written out as it is. A piece is never cut, so a
+// limit cannot leave half an escape or half a surrogate pair. Stopping early
+// stops the scan: the cost is what was asked for, not the length of `text`.
+function eachVisiblePiece(text, from, each) {
+  SSH_AGENT_TOKEN_RE.lastIndex = from
+  var m
+  while ((m = SSH_AGENT_TOKEN_RE.exec(text)) !== null) {
+    var c = m[0]
+    var piece = c
+    if (m[1] !== undefined && m[1] !== "") {
+      if (c.length === 2) {
+        var point = (c.charCodeAt(0) - 0xd800) * 0x400 + (c.charCodeAt(1) - 0xdc00) + 0x10000
+        piece = "\\u{" + point.toString(16) + "}"
+      } else {
+        piece = "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
+      }
     }
-    return ""
-  })
-  return pieces
-}
-
-// `value` as text, with each of those written out so the prompt shows them.
-function visibleText(value) {
-  return visiblePieces(value).join("")
-}
-
-// Escaped first, so the limit bounds what is drawn; cut between pieces.
-function boundedText(value, limit) {
-  var pieces = visiblePieces(value)
-  var out = ""
-  for (var i = 0; i < pieces.length; i++) {
-    if (out.length + pieces[i].length > limit) break
-    out += pieces[i]
+    if (each(piece) === false) break
   }
+  SSH_AGENT_TOKEN_RE.lastIndex = 0
+}
+
+function textOf(value) {
+  return (value === undefined || value === null) ? "" : String(value)
+}
+
+// `value` as text, with each invisible character written out so the prompt
+// shows it. The whole text: for display, use the bounded forms below.
+function visibleText(value) {
+  var out = ""
+  eachVisiblePiece(textOf(value), 0, function(piece) { out += piece })
+  return out
+}
+
+// Escaped and cut in one pass, so the limit bounds what is drawn (in UTF-16
+// code units of the escaped text) and the cut falls between pieces. The scan
+// stops at the first piece that does not fit.
+function boundedText(value, limit) {
+  var out = ""
+  eachVisiblePiece(textOf(value), 0, function(piece) {
+    if (out.length + piece.length > limit) return false
+    out += piece
+  })
   return out
 }
 
 // A path cut from the left, so the end of it -- the executable -- is what
-// remains. The limit is on the escaped text, and the cut falls between pieces.
+// remains. The limit is on the escaped text, one unit of it for the "…", and
+// the cut falls between pieces. Only the end of a long path is read: every
+// unit of the text is at least one unit escaped, so what is kept comes from
+// the last `limit` units, and a text longer than that is cut for certain.
+// The window starts a longest piece earlier still, because it may open in
+// the middle of a pair or an escape; the pieces realign within that margin,
+// before anything that can be kept.
 function boundedPath(value, limit) {
-  var pieces = visiblePieces(value)
-  var text = pieces.join("")
-  if (text.length <= limit) return text
+  var text = textOf(value)
+  var span = limit + SSH_AGENT_MAX_PIECE + 1
+  var from = text.length > span ? text.length - span : 0
+  var pieces = []
+  var total = 0
+  eachVisiblePiece(text, from, function(piece) {
+    pieces.push(piece)
+    total += piece.length
+  })
+  if (from === 0 && total <= limit) return pieces.join("")
   var kept = ""
   for (var i = pieces.length - 1; i >= 0; i--) {
     if (kept.length + pieces[i].length > limit - 1) break
@@ -6886,11 +6916,11 @@ function sshAgentRevokeGrantLine(grantId) {
 }
 
 // "/usr/bin/ssh" -> "ssh", for display beside the full path only.
+// The name is taken from the text as it came (escaping neither adds nor
+// removes a "/"), then escaped and cut in one step.
 function processNameFromPath(processPath) {
-  var text = visibleText(processPath)
-  var cut = text.lastIndexOf("/")
-  var name = cut >= 0 ? text.slice(cut + 1) : text
-  return boundedText(name, SSH_AGENT_MAX_NAME_CHARS)
+  var text = textOf(processPath)
+  return boundedText(text.slice(text.lastIndexOf("/") + 1), SSH_AGENT_MAX_NAME_CHARS)
 }
 
 function formatDuration(seconds) {

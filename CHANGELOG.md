@@ -63,7 +63,7 @@
   button; it decides nothing). It shows what the card shows
   (the key, the program's name and path with the "not verified" note, what
   is being signed) and nothing secret; as on the card, a path longer than 512
-  characters, counted as displayed, is shortened from the left. It cannot approve: that stays on
+  UTF-16 code units of the text as written out (one of them the `…`) is shortened from the left. It cannot approve: that stays on
   the card. Deny denies; clicking the notification itself, dismissing it or
   the notification expiring leaves the request on the card and does not count
   toward the cooldown. The request's own two-minute deadline still does.
@@ -102,7 +102,9 @@
   (fillers, variation selectors, invisible operators, tag characters) went
   through, so a path containing one drew exactly like the path without it.
   They are written out too, and the length limit now cuts between whole
-  characters, never through a written-out one or a surrogate pair. This shows
+  characters, never through a written-out one (written out here, or by the
+  agent before the text arrives) or a surrogate pair, and reads no more of
+  an over-long text than the limit. This shows
   that such a character is there; it is not a promise that two different
   paths always look different (a literal backslash is shown as it is, and a
   long path is shortened from the left).
@@ -188,6 +190,16 @@
   cleared. A read now waits for the run before it to exit and that run's
   answer is dropped; the same goes for a second organization's collections
   or a second item asked for while the first is being read.
+- **SSH prompt text is cut at whole escapes, and long text costs no more
+  than short.** The agent writes control characters out as `\uXXXX` before
+  the panel gets the text, and the panel cut that text one character at a
+  time: a path could start with `…009` (the tail of a tab's `\u0009`), and a
+  program's name, written out first and cut afterwards, could end in `\u`.
+  A written-out character already in the text is now kept or dropped whole,
+  and the name is written out and cut in one step. The limits (512 UTF-16
+  code units for a path, one of them the `…`; 256 for a name) also bound
+  the work again: a 64,000-character path or key name was read to its end
+  on every prompt, and now only the part that can be shown is.
 - **A failed status check no longer wipes the only error on screen.** When
   the item list could not be read and the status check after it failed too,
   the vault was dropped for the sign-in screen and the list's message
