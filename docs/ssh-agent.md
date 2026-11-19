@@ -37,8 +37,6 @@ By default, that prompt appears in a transient card centered on your active scre
 
 When multiple SSH requests arrive concurrently (such as parallel `git fetch` or `git submodule` tasks), requests are queued in order (up to 4 deep, matching helper capacity). A badge indicates **1 of N** requests. Answering or denying advances to the next request in the queue. Clicking **Deny all (N)** or pressing `Shift+Escape` dismisses all pending requests immediately. If an SSH client aborts while queued, it is removed automatically.
 
-A reload of the keys (the list is read again after a sync, a refresh or a save) does not end a request that is waiting for your answer. While the panel shows a request it starts no reload: the list is read without the keys, and the reload is owed until the last request shown is answered, denied or gone. A request can also reach the helper a moment before a reload, with its prompt still on the way to the panel; the helper then refuses the reload and keeps serving the keys it has. A refused reload is not repeated at once (the helper may hold a request the panel no longer shows, and each try reads the whole list): it is tried again when the last request shown is answered, and otherwise by the next list read, whatever starts it. So one refusal costs at most one more list read per such event, and until then the keys served are the ones from before. A helper from before this change fails the waiting request instead.
-
 - **Approve once** signs this request and nothing further.
 - **Approve 2m** (the window's length; its tooltip spells out "for this program") also covers later requests from the same executable with the same key, for `sshAgentApprovalWindowSec` seconds (default `120`, maximum `900`, `0` to ask every time). Git spawns a fresh `ssh-keygen -Y sign` for every commit it signs, so this is what makes a twenty-commit rebase one prompt instead of twenty. The grant matches on your UID, the executable path captured at approval, the key, the kind of signature and, for a login, the server -- deliberately not the pid, which changes with every commit. Requests already queued behind the one you approve are covered too: approving the first of three `ssh -T git@github.com` answers the other two, by the same rule a new request would meet, and anything the grant does not cover stays queued.
 
@@ -117,6 +115,10 @@ omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 `omarchy plugin update` is not enough on its own: it pulls, and a pull will not overwrite a tracked file you have modified locally. Removing and re-adding gets you a clean checkout. Nothing you care about lives in the plugin folder -- the session key and stored password are in the keyring, learned suggestions in `~/.local/state` -- so this costs you your `shell.json` settings for the plugin and nothing else.
 
 `omarchy-shell io.github.elevate08.qs-bitwarden-cli sshAgentStatus` reports `helperSource`, `helperChecksum` and `helperState` if you want the verdict without opening the panel.
+
+#### Known limits
+
+When a list read's key batch failed and the read that replaces it fails as well, the agent has no keys until the next list read (a refresh, a sync or a save) succeeds. A signing request that arrives in the instant the last approval is answered can be failed by the key load that follows it, and has to be run again.
 
 #### What this does not defend against
 

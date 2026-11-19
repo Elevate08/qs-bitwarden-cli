@@ -572,10 +572,9 @@ const finishSave = (c, code, out) => {
   check("a list whose commit the helper refuses is not shown: it is read again once, and then is a failed read",
     reread && names(r) === "" && r.runsOf("listProc").length === 2 && r.errorMessage !== "" && r.itemsLoadedAt === 0 && !r.isSyncing,
     JSON.stringify({ reread, runs: r.runsOf("listProc").length, error: r.errorMessage }))
-  Object.assign(u, { listCommitRetried: true, sshAgentLoadRefused: true }); u.listProc.staged = 7
+  u.listCommitRetried = true; u.listProc.staged = 7
   u.dropVaultState()
-  check("a lock drops the staged read's id, the commit retry and the refused key load",
-    u.listProc.staged === 0 && !u.listCommitRetried && !u.sshAgentLoadRefused)
+  check("a lock drops the staged read's id and the commit retry", u.listProc.staged === 0 && !u.listCommitRetried)
   const q = fixture()
   q.loadItems(false); q.vaultChanges += 1; q.loadItems(false)
   q.exit("listProc", 0, vaultOf("old"), "")
@@ -635,19 +634,12 @@ const finishSave = (c, code, out) => {
 // batch itself is not ended as failed, which would lock the agent.
 {
   const LOAD_ID = "ab".repeat(16)
-  // `dispatch`: the startup load goes through the service's own
-  // applySshAgentLifecycle(), which starts the list read; otherwise it is
-  // only noted.
-  const keyed = dispatch => {
+  const keyed = () => {
     const c = fixture()
     Object.assign(c, { sshAgentGateOpen: true, sshAgentNextLoadId: LOAD_ID, ended: [], lifecycle: [], primed: 0,
-      sshPendingCount: 0, sshAgentLoadRefused: false, sshAgentLoadFailStreak: 0,
-      endSshAgentLoad: ok => { c.ended.push(ok); c.sshAgentLoadActive = false },
-      applySshAgentLifecycle: e => c.lifecycle.push(e), primeSshAgentLoadId: () => { c.primed++ },
-      sshAgentEnabled: true, sshAgentKeyCount: 1 })
-    c.sshAgentProc.running = false
-    vm.runInContext(["maybeStartupLoad", "sshApprovalsCleared", "onSshAgentMessage"].concat(
-      dispatch ? ["applySshAgentLifecycle", "sshAgentVaultContext"] : []).map(n => functionBody(source, n)).join("\n"), c)
+      sshPendingCount: 0, endSshAgentLoad: ok => { c.ended.push(ok); c.sshAgentLoadActive = false },
+      applySshAgentLifecycle: e => c.lifecycle.push(e), primeSshAgentLoadId: () => { c.primed++ } })
+    vm.runInContext(functionBody(source, "maybeStartupLoad"), c)
     return c
   }
   const c = keyed()
@@ -671,19 +663,12 @@ const finishSave = (c, code, out) => {
   check("a snapshot from before a sync leaves a key load owed too",
     o.ended.join() === "true" && o.sshAgentLoadedForVaultEpoch === -1 && o.runsOf("listProc").length === 2, o.ended.join())
 
-  const f = keyed(true)
+  const f = keyed()
   f.loadItems(false)
   f.vaultChanges += 1; f.loadItems(false)
   f.exit("listProc", 1, "", "failed")
   check("a superseded read that failed leaves the keys owed to the read that replaces it",
     f.ended.join() === "false" && f.sshAgentLoadedForVaultEpoch === -1 && f.runsOf("listProc").length === 2)
-  f.sshAgentNextLoadId = LOAD_ID; f.maybeStartupLoad()   // the nonce is in while that read runs: nothing to do yet
-  f.exit("listProc", 1, "", "failed")
-  const asked = f.runsOf("listProc").length === 3 && f.listAgentBranchActive
-  f.exit("listProc", 1, "", "failed")                    // the load it starts fails too
-  check("when that read fails too the owed key load is asked for: once, and with no plain read after a plain read just failed",
-    asked && f.runsOf("listProc").length === 3 && !f.listProc.running && f.errorMessage !== "",
-    JSON.stringify({ asked, runs: f.runsOf("listProc").length }))
 
   const k = keyed()
   k.loadItems(false)
@@ -698,37 +683,7 @@ const finishSave = (c, code, out) => {
   p.sshPendingCount = 0
   p.maybeStartupLoad()
   eq("and runs once it is answered", p.lifecycle.join(), "startup")
-  // The agent refuses a load begun over a signing request the panel has not
-  // seen yet (agent/src/main.rs open_load_window()), and says so at its end.
-  // The request may be one the panel never shows: the load is asked for
-  // again when the last visible request is answered, not at once.
-  const r = keyed()
-  r.loadItems(false); r.exit("listProc", 0, vaultOf("a"), "")
-  r.onSshAgentMessage({ type: "load_failed", epoch: r.sshAgentEpoch, refused: true })
-  r.sshAgentNextLoadId = LOAD_ID; r.maybeStartupLoad()   // the next nonce arriving asks too
-  const quiet = r.lifecycle.length === 0
-  r.sshApprovalsCleared()
-  check("a key load the agent refused is not asked for again at once, but when the last request is answered",
-    quiet && r.lifecycle.join() === "startup", r.lifecycle.join())
-  // A lock or logout cancels the load in flight; the agent may still answer
-  // it (a refused one), after the vault it was for has gone.
-  const x = keyed()
-  vm.runInContext(functionBody(source, "cancelSshAgentLoad"), x)
-  x.loadItems(false)
-  const cancelled = x.sshAgentEpoch
-  x.cancelSshAgentLoad()
-  x.onSshAgentMessage({ type: "load_failed", epoch: cancelled, refused: true })
-  check("a late answer to a key load that a lock cancelled leaves nothing owed", x.ended.join() === "false" && !x.sshAgentLoadRefused)
-  const v = keyed()
-  v.loadItems(false); v.exit("listProc", 0, vaultOf("a"), "")
-  v.sshAgentNextLoadId = LOAD_ID; v.sshPendingCount = 1
-  v.loadItems(false)                                     // a refresh while a request is shown
-  const without = !v.listAgentBranchActive && v.ended.length === 1
-  v.exit("listProc", 0, vaultOf("b"), "")
-  v.sshPendingCount = 0; v.sshApprovalsCleared()
-  check("no key load is begun while a signing request is shown: the read goes without, and the load follows the answer",
-    without && names(v) === "b" && v.lifecycle.join() === "startup", JSON.stringify({ without, lifecycle: v.lifecycle }))
-  check("the answer is what asks again", /onSshPendingCountChanged: if \(sshPendingCount === 0\) sshApprovalsCleared\(\)/.test(source))
+  check("the answer is what asks again", /onSshPendingCountChanged: if \(sshPendingCount === 0\) maybeStartupLoad\(\)/.test(source))
 }
 
 // --- an automatic sync's reload, a list from before it and an SSH approval ---------------

@@ -32,7 +32,7 @@ check("a remembered session reads the list alongside bw status",
 const startRead = bodyOf("startVaultListRead")
 check("an early read never feeds the SSH agent",
   /listReadEarly\s*=\s*status\s*!==\s*"unlocked"/.test(startRead)
-    && /mayLoad\s*=\s*!retrying\s*&&\s*!listReadEarly/.test(startRead) && /useAgent\s*=\s*mayLoad\s*&&/.test(startRead),
+    && /useAgent\s*=\s*!retrying\s*&&\s*!listReadEarly/.test(startRead),
   startRead)
 const loadItemsBody = bodyOf("loadItems")
 // The early read is one case of a read already running for this vault
