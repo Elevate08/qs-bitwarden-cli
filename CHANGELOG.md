@@ -346,6 +346,12 @@
   as it stood and the suggestions for the focused window were not worked
   out again. Anything that is not an object now reads as empty, as broken
   JSON already did.
+- **A failure to write the SSH public key files is shown.** When the
+  `.pub` files Git signs with could not be written or removed (something
+  that is not a directory, or a symlink, at
+  `~/.local/share/qs-bitwarden-cli/ssh`, or no data directory), the reason
+  was recorded and drawn nowhere. It is now added to the line under **SSH
+  agent status** in Settings until an export or a removal succeeds.
 
 ## [1.13.1] - 2026-11-18
 

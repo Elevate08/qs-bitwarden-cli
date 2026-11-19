@@ -7589,8 +7589,17 @@ function sshAgentLifecycleTransition(event, context) {
 //   error     stopped or backing off; the vault is unaffected
 //
 // Routing (SSH_AUTH_SOCK) does not affect it; see sshAuthSockDiagnostic().
+// `exportError` (parseSshExportResult()'s message: the public key files
+// could not be written or removed) is added to whichever message it is; the
+// export runs unattended and this line is the only place it is drawn.
 function sshAgentSetupState(opts) {
-  var o = opts || {}
+  var setup = sshAgentSetupOf(opts || {})
+  var exportError = String((opts && opts.exportError) || "")
+  if (exportError) setup.message += " " + exportError
+  return setup
+}
+
+function sshAgentSetupOf(o) {
   if (!o.enabled) {
     return {
       state: "disabled", busy: false,

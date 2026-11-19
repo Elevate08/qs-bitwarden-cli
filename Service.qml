@@ -3289,7 +3289,8 @@ Item {
     enabled: sshAgentEnabled,
     supervisable: sshAgentSupervisable,
     phase: sshAgentPhase,
-    errorCode: sshAgentErrorCode
+    errorCode: sshAgentErrorCode,
+    exportError: sshExportError
   })
 
   // -------------------------------------------------------------------------
