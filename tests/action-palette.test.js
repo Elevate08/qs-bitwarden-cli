@@ -4,7 +4,7 @@
 //
 //   node tests/action-palette.test.js
 
-const { createSuite, loadModule, read } = require("./harness")
+const { createSuite, functionBody, loadModule, read } = require("./harness")
 const Model = loadModule()
 
 const { check, done } = createSuite("action-palette")
@@ -80,8 +80,229 @@ check("Ctrl+K handled in the interceptor", /Key_K[\s\S]{0,300}openActionPalette/
 check("Ctrl+K handled in the search box", /id: searchField[\s\S]*?Key_K[\s\S]{0,300}openActionPalette/.test(panel))
 check("catcher blocked while the palette is open", /blocked: repromptConfirm\.shown[\s\S]{0,900}\|\| actionPalette\.shown/.test(panel))
 check("palette builds from the model", panel.includes("Model.itemActions(") && panel.includes("Model.filterActions("))
-check("letters run through the existing handlers", panel.includes("runDetailShortcut(action.key)") && panel.includes("root.vault.runShortcut(action.key)"))
+const fnBody = name => {
+  const start = panel.indexOf("  function " + name + "(")
+  return start < 0 ? "" : panel.slice(start, panel.indexOf("\n  }\n", start))
+}
+const runPalette = fnBody("runPaletteAction")
+const paletteItem = fnBody("paletteItem")
+const listBranch = runPalette.slice(runPalette.indexOf('if (screen !== "detail")'), runPalette.indexOf('action.id === "delete"'))
+check("detail letters run through the existing handler", runPalette.includes("root.runDetailShortcut(action.key)"))
+check("list actions run through the letters' own gated handlers, on the palette's item",
+  ["root.vault.copyPassword(item)", "root.vault.copyUsername(item)", "root.vault.copyTotpCode(item)",
+    "root.vault.openUrl(item.uris[0])", "root.vault.openDetail(item)"].every(call => listBranch.includes(call)))
+check("list actions keep the letters' guards (TOTP only where there is one, a website only with a link)",
+  /if \(item\.hasTotp\) root\.vault\.copyTotpCode\(item\)/.test(listBranch)
+  && /if \(item\.uris && item\.uris\.length > 0\) root\.vault\.openUrl/.test(listBranch))
+check("every list action the model offers has a case",
+  Model.itemActions(login, LIST).every(a => listBranch.includes('case "' + a.id + '":')))
+// The re-prompt lives in copyPassword()/copyTotpCode(); the *Now variants skip it.
+check("the palette never calls an ungated copy", !/Now\(/.test(runPalette))
+
+// --- bound to the item it was opened for, by id --------------------------------------
+
+const openFor = panel.slice(panel.indexOf("function openFor()"), panel.indexOf("// Back to where it was opened."))
+const runAt = panel.slice(panel.indexOf("function runAt(index)"), panel.indexOf("// Closed when the vault locks"))
+check("the palette remembers the id of the item it was opened for",
+  /property string itemId: ""/.test(panel) && /actionPalette\.itemId = String\(item\.id \|\| ""\)/.test(openFor))
+check("the id is read before the palette closes and handed to the action",
+  /var itemId = actionPalette\.itemId[\s\S]*actionPalette\.close\(\)[\s\S]*root\.runPaletteAction\(action, screen, itemId\)/.test(runAt))
+check("closing forgets the id", /actionPalette\.itemId = ""/.test(panel.slice(panel.indexOf("// Back to where it was opened."), panel.indexOf("function move(delta)"))))
+check("an action resolves its item by id first and does nothing without it",
+  /^  function runPaletteAction\(action, screen, itemId\) \{\n    var item = root\.paletteItem\(screen, itemId\)\n    if \(!item\) return\n/.test(runPalette))
+check("no palette action re-reads the selected row", !/runShortcut|getSelectedItem|selectedIndex|filteredItems/.test(runPalette + paletteItem))
+check("the item is looked up by id among the vault's items",
+  /String\(list\[i\]\.id\) === itemId/.test(paletteItem) && /root\.vault\.items/.test(paletteItem)
+  && /if \(itemId === ""\) return null/.test(paletteItem))
+check("on the detail screen the open item must still be the palette's",
+  /String\(detail\.id\) !== itemId\) return null/.test(paletteItem))
+check("delete asks only for the palette's own item", /if \(item\.typeCode !== 5\) root\.vault\.showDeleteConfirm = true/.test(runPalette)
+  && !/root\.vault\.detailItem/.test(runPalette))
+
+// --- the real paletteItem() and runPaletteAction(), run against a stand-in panel ------
+// Both use nothing of QML but root and root.vault. The vault's re-prompt test
+// is Service.qml's own.
+
+const serviceSrc = read("Service.qml")
+function makePanel(items, detailItem) {
+  const calls = []
+  const rec = name => (...args) => { calls.push([name, ...args]) }
+  const vault = {
+    items, detailItem: detailItem || null, selectedIndex: 0, showDeleteConfirm: false,
+    detailCard: null, detailIdentity: null,
+    copyPassword: rec("copyPassword"), copyUsername: rec("copyUsername"), copyTotpCode: rec("copyTotpCode"),
+    openUrl: rec("openUrl"), openDetail: rec("openDetail"), copyToClipboard: rec("copyToClipboard"),
+    // What the palette must never fall back to.
+    runShortcut: rec("runShortcut"),
+    getSelectedItem() { calls.push(["getSelectedItem"]); return vault.items[vault.selectedIndex] || null }
+  }
+  vault.itemNeedsReprompt = new Function(functionBody(serviceSrc, "itemNeedsReprompt") + "\nreturn itemNeedsReprompt")()
+  const root = { vault, calls, runDetailShortcut: rec("runDetailShortcut"), copyDetailSecret: rec("copyDetailSecret") }
+  Object.assign(root, new Function("root", functionBody(panel, "paletteItem") + "\n" + functionBody(panel, "runPaletteAction")
+    + "\nreturn { paletteItem: paletteItem, runPaletteAction: runPaletteAction }")(root))
+  return root
+}
+
+const A = { id: "a" }, B = { id: "b" }
+const lookup = (vault, screen, id) => {
+  const p = makePanel(vault.items, vault.detailItem)
+  return p.paletteItem(screen, id)
+}
+check("finds the item wherever a sync moved it", lookup({ items: [B, A] }, "main", "a") === A)
+check("an item a sync removed resolves to nothing", lookup({ items: [B] }, "main", "a") === null)
+check("an empty id resolves to nothing", lookup({ items: [{ id: "" }, A] }, "main", "") === null)
+check("detail: the open item resolves while the vault still has it", lookup({ detailItem: A, items: [B, { id: "a" }] }, "detail", "a") === A)
+check("detail: another item in its place resolves to nothing",
+  lookup({ detailItem: B, items: [A, B] }, "detail", "a") === null
+  && lookup({ detailItem: null, items: [A] }, "detail", "a") === null)
+check("detail: an open item a sync removed from the vault resolves to nothing",
+  lookup({ detailItem: A, items: [B] }, "detail", "a") === null && lookup({ detailItem: A, items: [] }, "detail", "a") === null)
+check("detail: a re-prompt a sync turned on, which the open copy does not have, resolves to nothing",
+  lookup({ detailItem: { id: "a", reprompt: 0 }, items: [{ id: "a", reprompt: 1 }] }, "detail", "a") === null
+  && lookup({ detailItem: { id: "a" }, items: [{ id: "a", reprompt: 1 }] }, "detail", "a") === null)
+check("detail: a re-prompt turned off since resolves to nothing too (the copy is stale either way)",
+  lookup({ detailItem: { id: "a", reprompt: 1 }, items: [{ id: "a", reprompt: 0 }] }, "detail", "a") === null)
+const guarded = { id: "a", reprompt: 1 }
+check("detail: agreeing re-prompt flags resolve to the open item",
+  lookup({ detailItem: guarded, items: [{ id: "a", reprompt: 1 }] }, "detail", "a") === guarded)
+
+// The list: the palette was opened on row 0 (the login); by the time the action
+// runs a sync has put another item there and moved the login down.
+const other = Object.assign({}, login, { id: "other", name: "Other", username: "them", uris: ["https://other.example/"] })
+const listActions = Model.itemActions(Object.assign({ id: "a" }, login), LIST)
+const expectCall = { copyPassword: "copyPassword", copyUsername: "copyUsername", copyTotp: "copyTotpCode",
+  openWebsite: "openUrl", openDetail: "openDetail" }
+check("the list offers the five actions the dispatch test covers",
+  listActions.map(a => a.id).sort().join() === Object.keys(expectCall).sort().join())
+for (const action of listActions) {
+  const fresh = Object.assign({ id: "a" }, login)
+  const p = makePanel([other, { id: "x" }, fresh])
+  p.vault.selectedIndex = 0
+  p.runPaletteAction(action, "main", "a")
+  const want = action.id === "openWebsite" ? fresh.uris[0] : fresh
+  check(`list ${action.id}: runs ${expectCall[action.id]} once, on the palette's item, not the selected row`,
+    p.calls.length === 1 && p.calls[0][0] === expectCall[action.id] && p.calls[0][1] === want && p.calls[0].length === 2,
+    JSON.stringify(p.calls.map(c => c[0])))
+  const gone = makePanel([other, { id: "x" }])
+  gone.runPaletteAction(action, "main", "a")
+  check(`list ${action.id}: does nothing once the item is gone`, gone.calls.length === 0, JSON.stringify(gone.calls.map(c => c[0])))
+}
+{
+  const p = makePanel([Object.assign({ id: "a" }, login, { hasTotp: false, uris: [] })])
+  p.runPaletteAction({ id: "copyTotp", key: "m" }, "main", "a")
+  p.runPaletteAction({ id: "openWebsite", key: "w" }, "main", "a")
+  check("list: a TOTP or website the item no longer has is not acted on", p.calls.length === 0)
+  p.runPaletteAction({ id: "noSuchAction", key: "p" }, "main", "a")
+  check("list: an unknown action runs nothing (no fall back to its letter)", p.calls.length === 0)
+}
+
+// The detail screen: letters go to runDetailShortcut, the rest by id, and all
+// of it only while the open item is still the vault's.
+{
+  const open = Object.assign({ id: "a" }, login)
+  const live = makePanel([other, Object.assign({ id: "a" }, login)], open)
+  live.runPaletteAction({ id: "copyPassword", key: "p" }, "detail", "a")
+  live.runPaletteAction({ id: "openWebsite", key: "" }, "detail", "a")
+  live.runPaletteAction({ id: "copyNotes", key: "" }, "detail", "a")
+  live.runPaletteAction({ id: "delete", key: "x" }, "detail", "a")
+  check("detail: letter, website, notes and delete reach their handlers",
+    JSON.stringify(live.calls) === JSON.stringify([["runDetailShortcut", "p"], ["openUrl", open.uris[0]], ["copyDetailSecret", "notes", "Notes"]])
+    && live.vault.showDeleteConfirm === true, JSON.stringify(live.calls))
+
+  for (const [why, items, detail] of [
+    ["a sync removed the item", [other], open],
+    ["another item is open", [other, Object.assign({ id: "a" }, login)], other],
+    ["the vault now asks for the master password and the open copy does not", [Object.assign({ id: "a", reprompt: 1 }, login)], open]]) {
+    const p = makePanel(items, detail)
+    for (const action of Model.itemActions(open, DETAIL)) p.runPaletteAction(action, "detail", "a")
+    check(`detail: no action runs when ${why}`, p.calls.length === 0 && p.vault.showDeleteConfirm === false,
+      JSON.stringify(p.calls.map(c => c[0])))
+  }
+}
 check("onTextKey uses runDetailShortcut", /onTextKey[\s\S]*?root\.runDetailShortcut\(lower\)/.test(panel))
+// --- a new item's detail, opened while its save runs ---------------------------------
+// The real onSaveItemFinished() and followCreatedItem(): the open detail moves
+// from the provisional row to the saved item, so the palette (bound by id)
+// has an item to act on, and a palette listed for the provisional one closes.
+
+function saveStandIn(state) {
+  const v = Object.assign({ Model, isLoading: true, itemPayloadJson: "x", errorMessage: "", failedSave: null,
+    itemsLoadedAt: 0, currentScreen: "detail", opened: [], reloads: 0,
+    vaultReadIsStale() { return false }, flashNotification() {}, refreshDerivedFromItems() {},
+    loadItems() { v.reloads++ },
+    // What a click on the row does, as far as this test needs: the detail
+    // becomes that row's item, through the function that gates and loads it.
+    openDetail(item, browsing) { v.opened.push([item, browsing]); v.detailItem = { id: item.id, name: item.name } }
+  }, state)
+  v.root = v
+  Object.assign(v, new Function("root", "with (root) {\n" + functionBody(serviceSrc, "onSaveItemFinished") + "\n"
+    + functionBody(serviceSrc, "followCreatedItem") + "\nreturn { onSaveItemFinished, followCreatedItem } }")(v))
+  return v
+}
+const draft = { type: 1, name: "New login", notes: "", favorite: false, login: { username: "me", password: "pw", uris: [] } }
+const provisionalId = Model.pendingItemId(777)
+const provisionalRow = Model.optimisticItem(draft, provisionalId)
+const existingRow = Model.optimisticItem(Object.assign({}, draft, { name: "Old" }), "11111111-1111-1111-1111-111111111111")
+const savedId = "55555555-5555-5555-5555-555555555555"
+const savedEnvelope = id => JSON.stringify({ sshCapability: "unconfirmed", items: [Object.assign({}, draft, { object: "item", id })], sshKeys: [] })
+{
+  const v = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
+    detailItem: { id: provisionalId, name: "New login" }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  // Before the save lands the palette acts on the provisional row's detail.
+  const before = makePanel(v.items, v.detailItem)
+  before.runPaletteAction({ id: "copyUsername", key: "u" }, "detail", provisionalId)
+  check("new item: the palette works in the provisional detail", before.calls.length === 1)
+  v.onSaveItemFinished(0, savedEnvelope(savedId), "")
+  check("new item: the open detail follows the save to the saved item, opened as a row is (browsing, so not learned as a pick)",
+    v.opened.length === 1 && v.opened[0][0].id === savedId && v.opened[0][0] === Model.findItemById(v.items, savedId)
+    && v.opened[0][1] === true && !v.opened[0][0].pending, JSON.stringify(v.opened.map(o => o[0].id)))
+  const after = makePanel(v.items, v.detailItem)
+  after.runPaletteAction({ id: "copyUsername", key: "u" }, "detail", String(v.detailItem.id))
+  check("new item: a palette opened on the saved detail acts", after.calls.length === 1 && after.calls[0][0] === "runDetailShortcut")
+  after.runPaletteAction({ id: "copyUsername", key: "u" }, "detail", provisionalId)
+  check("new item: a palette still holding the provisional id does nothing", after.calls.length === 1)
+}
+{
+  const v = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
+    detailItem: { id: existingRow.id }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  v.onSaveItemFinished(0, savedEnvelope(savedId), "")
+  check("new item: a detail open on another item is left alone", v.opened.length === 0 && v.detailItem.id === existingRow.id)
+  const m = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow), currentScreen: "main",
+    detailItem: { id: provisionalId }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  m.onSaveItemFinished(0, savedEnvelope(savedId), "")
+  check("new item: nothing is opened when the detail is not on screen", m.opened.length === 0 && m.currentScreen === "main")
+  const f = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
+    detailItem: { id: provisionalId }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  f.onSaveItemFinished(1, "", "refused")
+  check("new item: a refused save opens nothing", f.opened.length === 0 && !Model.findItemById(f.items, provisionalId))
+}
+{
+  // An edit keeps its id: the saved row replaces the old one and the detail is not reopened.
+  const v = saveStandIn({ items: [existingRow], detailItem: { id: existingRow.id },
+    pendingSave: { id: existingRow.id, isCreate: false, name: "Old", previous: existingRow } })
+  v.onSaveItemFinished(0, savedEnvelope(existingRow.id), "")
+  check("an edit does not reopen the detail, and its id still resolves",
+    v.opened.length === 0 && v.items.length === 1 && v.items[0].id === existingRow.id
+    && makePanel(v.items, v.detailItem).paletteItem("detail", existingRow.id) === v.detailItem)
+}
+const paletteConn = panel.slice(panel.indexOf("// Closed when the vault locks"), panel.indexOf("color: Color.menu.scrim"))
+check("an open detail palette closes when the detail's item changes under it",
+  /function onDetailItemChanged\(\) \{\s+if \(!actionPalette\.shown \|\| actionPalette\.fromScreen !== "detail"\) return\s+var detail = root\.vault\.detailItem\s+if \(!detail \|\| String\(detail\.id\) !== actionPalette\.itemId\) actionPalette\.close\(\)/.test(paletteConn))
+{
+  // That handler, run: same id stays open, another id or none closes.
+  const run = (palette, detailItem) => {
+    let closed = 0
+    new Function("actionPalette", "root", functionBody(paletteConn, "onDetailItemChanged") + "\nonDetailItemChanged()")(
+      Object.assign({ close() { closed++ } }, palette), { vault: { detailItem } })
+    return closed
+  }
+  const open = { shown: true, fromScreen: "detail", itemId: "a" }
+  check("palette: a reload of the same item keeps it open", run(open, { id: "a" }) === 0)
+  check("palette: another item, or none, closes it", run(open, { id: "b" }) === 1 && run(open, null) === 1)
+  check("palette: a list palette ignores the detail changing", run({ shown: true, fromScreen: "main", itemId: "a" }, { id: "b" }) === 0
+    && run({ shown: false, fromScreen: "detail", itemId: "a" }, { id: "b" }) === 0)
+}
+
 check("README documents Ctrl+K", (read("README.md").match(/<kbd>Ctrl<\/kbd>\+<kbd>K<\/kbd>/g) || []).length >= 2)
 check("CHANGELOG mentions the palette", /action palette/i.test(read("CHANGELOG.md").split("## [Unreleased]")[1].split(/\n## \[/)[0]))
 

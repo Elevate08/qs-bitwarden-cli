@@ -2818,9 +2818,10 @@ Item {
   // not drawn at all. (A shell that is not running has no agent either: the
   // helper is its child and exits with it, so there is nothing to ask.)
   // Only signing prompts get one; an unlock needs a secret typed, which a
-  // notification must never collect.
+  // notification must never collect. The notification can deny and nothing
+  // else: its actions can be pressed by any program running as the user
+  // (through the notification daemon), so approving stays on the card.
   property int sshNotifyRequestId: -1
-  property double sshNotifyStartedMs: 0
 
   function armSshNotifyFallback() {
     stopSshNotifyFallback()
@@ -2843,7 +2844,6 @@ Item {
     var command = Model.sshAgentNotifyCommand(root.sshPrompt, remaining)
     if (command.length === 0) return
     root.sshNotifyRequestId = root.sshPrompt.requestId
-    root.sshNotifyStartedMs = Date.now()
     sshNotifyProc.command = command
     sshNotifyProc.running = true
   }
@@ -2853,10 +2853,9 @@ Item {
     root.sshNotifyRequestId = -1
     // Answered elsewhere, or a different request is up now.
     if (id < 0 || !root.sshPrompt || root.sshPrompt.requestId !== id) return
-    var decision = Model.sshAgentNotifyDecision(exitCode, stdout, Date.now() - root.sshNotifyStartedMs)
-    if (decision === "allow") approveSshRequest(0)
-    else if (decision === "deny") denyCurrentSshPrompt()
-    else if (decision === "early") showSshNotification()
+    // Only the Deny action decides. Dismissed, expired or suppressed, the
+    // request stays on the card and nothing is counted toward the cooldown.
+    if (Model.sshAgentNotifyDecision(exitCode, stdout) === "deny") denyCurrentSshPrompt()
   }
 
   Timer {
@@ -8215,9 +8214,29 @@ Item {
       loadItems()
       return
     }
+    var before = items
     items = spliced
     itemsLoadedAt = Date.now()
     refreshDerivedFromItems()
+    if (save && save.isCreate) followCreatedItem(save.id, before)
+  }
+
+  // A new item's provisional row can be opened while its save runs. Once the
+  // server has given it an id that row is gone, so a detail still open on it
+  // is opened again on the saved item (the one row `before` did not have),
+  // as a click on its row would: any re-prompt and on-demand read apply.
+  function followCreatedItem(provisionalId, before) {
+    if (currentScreen !== "detail" || !detailItem || String(detailItem.id) !== String(provisionalId)) return
+    var known = ({})
+    for (var i = 0; i < before.length; i++) if (before[i]) known[String(before[i].id)] = true
+    var created = null
+    for (var j = 0; j < items.length; j++) {
+      if (!items[j] || known[String(items[j].id)]) continue
+      // More than one new row: no telling which is this save's.
+      if (created) return
+      created = items[j]
+    }
+    if (created) openDetail(created, true)
   }
 
   // The row disappears at once; if the vault refuses, it comes back. A

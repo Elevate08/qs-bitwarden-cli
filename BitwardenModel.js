@@ -6772,30 +6772,70 @@ function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 
 // Characters that draw as nothing or change how their neighbours are drawn:
 // C0 and C1 controls, line and paragraph separators, zero-width and direction
-// marks, bidi embeddings and isolates, and the byte order mark. A process path
-// or a key's name containing one can pass for something else on a prompt.
-var SSH_AGENT_INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g
+// marks, bidi embeddings and isolates, the byte order mark, and the other
+// default-ignorable code points (soft hyphen, combining grapheme joiner,
+// Hangul and Khmer fillers, Mongolian and other variation selectors,
+// invisible operators, the specials before U+FFF9, and beyond the first plane
+// -- surrogate pairs here -- the shorthand format controls, the musical
+// symbol controls and plane 14's tags and selectors). A process path or a
+// key's name containing one can pass for something else on a prompt.
+// tests/ssh-agent-ux.test.js checks it against the engine's own
+// Default_Ignorable_Code_Point.
+var SSH_AGENT_INVISIBLE_SOURCE = "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff0-\\ufff8]"
+  + "|\\ud82f[\\udca0-\\udca3]|\\ud834[\\udd73-\\udd7a]|[\\udb40-\\udb43][\\udc00-\\udfff]"
+// One step of the text: an invisible character (group 1), or any other whole
+// code point.
+var SSH_AGENT_TOKEN_RE = new RegExp("(" + SSH_AGENT_INVISIBLE_SOURCE + ")|[\\ud800-\\udbff][\\udc00-\\udfff]|[\\s\\S]", "g")
 
-// `value` as text, with each of those written out as \uXXXX so the prompt
-// shows them.
-function visibleText(value) {
+// `value` as the pieces a prompt draws: each invisible character written out
+// as \uXXXX (\u{XXXXX} beyond the first plane), every other code point as it
+// is. A piece is never cut, so a limit cannot leave half an escape or half a
+// surrogate pair.
+function visiblePieces(value) {
   var text = (value === undefined || value === null) ? "" : String(value)
-  return text.replace(SSH_AGENT_INVISIBLE_RE, function(c) {
-    return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
+  var pieces = []
+  text.replace(SSH_AGENT_TOKEN_RE, function(c, invisible) {
+    if (invisible === undefined || invisible === "") {
+      pieces.push(c)
+    } else if (c.length === 2) {
+      var point = (c.charCodeAt(0) - 0xd800) * 0x400 + (c.charCodeAt(1) - 0xdc00) + 0x10000
+      pieces.push("\\u{" + point.toString(16) + "}")
+    } else {
+      pieces.push("\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4))
+    }
+    return ""
   })
+  return pieces
 }
 
-// Escaped first, so the limit bounds what is drawn.
+// `value` as text, with each of those written out so the prompt shows them.
+function visibleText(value) {
+  return visiblePieces(value).join("")
+}
+
+// Escaped first, so the limit bounds what is drawn; cut between pieces.
 function boundedText(value, limit) {
-  var text = visibleText(value)
-  return text.length > limit ? text.slice(0, limit) : text
+  var pieces = visiblePieces(value)
+  var out = ""
+  for (var i = 0; i < pieces.length; i++) {
+    if (out.length + pieces[i].length > limit) break
+    out += pieces[i]
+  }
+  return out
 }
 
 // A path cut from the left, so the end of it -- the executable -- is what
-// remains.
+// remains. The limit is on the escaped text, and the cut falls between pieces.
 function boundedPath(value, limit) {
-  var text = visibleText(value)
-  return text.length > limit ? "\u2026" + text.slice(text.length - (limit - 1)) : text
+  var pieces = visiblePieces(value)
+  var text = pieces.join("")
+  if (text.length <= limit) return text
+  var kept = ""
+  for (var i = pieces.length - 1; i >= 0; i--) {
+    if (kept.length + pieces[i].length > limit - 1) break
+    kept = pieces[i] + kept
+  }
+  return "…" + kept
 }
 
 function isRequestId(value) {
@@ -6928,13 +6968,10 @@ function sshAgentPromptView(message, approvalWindowSec) {
 // -------------------------------------------------------------------------
 
 // How long a prompt may sit unanswered before a desktop notification repeats
-// it, and how soon after a notification appears its actions are ignored (the
-// card's armDelayMs, for the same reason: a click meant for another window).
+// it.
 var SSH_AGENT_NOTIFY_DELAY_MS = 8000
-var SSH_AGENT_NOTIFY_ARM_MS = 800
 
 function sshAgentNotifyDelayMs() { return SSH_AGENT_NOTIFY_DELAY_MS }
-function sshAgentNotifyArmMs() { return SSH_AGENT_NOTIFY_ARM_MS }
 
 // Notification bodies are markup on most daemons; the text is already stripped
 // of invisible characters (visibleText), so only the markup characters remain.
@@ -6944,8 +6981,14 @@ function notifyEscape(text) {
 }
 
 // The notify-send argv for one signing prompt: what the card shows (key,
-// fingerprint, program, operation), nothing else. No secret exists at this
-// point and none is added. Everything after "--" is data, never an option.
+// fingerprint, program name and path with the "not verified" note,
+// operation), nothing else. No secret exists at this point and none is added.
+// Everything after "--" is data, never an option. It offers Deny and no way
+// to approve: a notification daemon lets any program running as you press an
+// action, so approving stays on the card. "default" is the action a daemon
+// runs when the notification itself is activated (a click on its body, Dunst's
+// middle click); without one, a daemon may run the only action there is, which
+// would be Deny. It decides nothing (see sshAgentNotifyDecision()).
 function sshAgentNotifyCommand(view, remainingSec) {
   if (!view || !isRequestId(view.requestId)) return []
   var lines = []
@@ -6953,28 +6996,28 @@ function sshAgentNotifyCommand(view, remainingSec) {
   lines.push(notifyEscape(key) + (view.fingerprint ? " (" + notifyEscape(view.fingerprint) + ")" : ""))
   var program = view.processName || view.processPath || "unknown program"
   lines.push("Program: " + notifyEscape(program))
+  if (view.processPath) lines.push(notifyEscape(view.processPath))
+  if (view.provenanceNote) lines.push(notifyEscape(view.provenanceNote))
   if (view.operationLabel) lines.push(notifyEscape(view.operationLabel))
   if (view.destinationLabel) lines.push(notifyEscape(view.destinationLabel))
   if (view.forwardedWarning) lines.push(notifyEscape(view.forwardedWarning))
+  lines.push("To approve, answer on the Bitwarden card.")
   var seconds = Math.floor(Number(remainingSec))
   if (!isFinite(seconds) || seconds < 5) seconds = 5
   return ["notify-send", "--app-name=Bitwarden", "--urgency=normal", "--icon=dialog-password",
     "--expire-time=" + (seconds * 1000),
-    "--action=allow=Allow once", "--action=deny=Deny", "--wait",
+    "--action=default=Answer on the card", "--action=deny=Deny", "--wait",
     "--", "SSH signing request", lines.join("\n")]
 }
 
-// What a finished notify-send means. Only the "allow" action approves, and not
-// within the arm delay of its appearing ("early": show it again). A deny
-// action, a dismissal or an expiry (empty output, exit 0) all deny. A failed
-// notify-send (no daemon, no libnotify) decides nothing: "none".
-function sshAgentNotifyDecision(exitCode, stdout, elapsedMs) {
+// What a finished notify-send means: "deny" for the Deny action, and "none"
+// for everything else. A dismissal, an expiry, a suppressed notification
+// (empty output, exit 0), any other output and a failed notify-send (no
+// daemon, no libnotify) decide nothing; the request stays on the card until
+// its own deadline. Nothing a notification returns approves.
+function sshAgentNotifyDecision(exitCode, stdout) {
   if (exitCode !== 0) return "none"
-  var action = String(stdout || "").trim()
-  if (action === "allow") {
-    return Number(elapsedMs) >= SSH_AGENT_NOTIFY_ARM_MS ? "allow" : "early"
-  }
-  return "deny"
+  return String(stdout || "").trim() === "deny" ? "deny" : "none"
 }
 
 // The requests a terminal may list, from the raw companion messages. Signing
@@ -7640,7 +7683,7 @@ var SETTINGS_SCHEMA = [
   { key: "sshAgentApprovalPopup", group: "sshAgent", type: "bool", label: "Use centered approval popup", defaultValue: true,
     description: "Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show them in the panel." },
   { key: "sshAgentNotifyFallback", group: "sshAgent", type: "bool", label: "Notify when a prompt goes unanswered", defaultValue: true,
-    description: "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with Allow once and Deny buttons. Dismissing or ignoring the notification denies the request. Needs notify-send." },
+    description: "If a signing request is still waiting a few seconds after the card appeared, repeat it as a desktop notification with a Deny button. Approving is done on the card; dismissing or ignoring the notification leaves the request waiting there. Needs notify-send." },
   { key: "sshAgentTerminalApproval", group: "sshAgent", type: "bool", label: "Allow approving from a terminal", defaultValue: false,
     description: "Let 'sshReply <id> allow' (omarchy-shell IPC) approve a signing request. Off by default: any program running as you could then approve its own request. Listing requests and denying them is always allowed." },
   { key: "sshAgentApprovalWindowSec", group: "sshAgent", type: "int", label: "Approve for this long", unit: "seconds",

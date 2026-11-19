@@ -58,9 +58,15 @@
   were. It opens from the search box as well.
 - **A desktop notification for an SSH request nobody answered.** A signing
   request still waiting about eight seconds after its card appeared is repeated
-  through `notify-send` with Allow once and Deny. It shows what the card shows
-  and nothing secret; Allow once opens no grant and is ignored within the
-  card's arming delay; dismissing, expiring or Deny denies.
+  through `notify-send`. Deny is its only action that decides the request
+  (some daemons also draw its default action, Answer on the card, as a
+  button; it decides nothing). It shows what the card shows
+  (the key, the program's name and path with the "not verified" note, what
+  is being signed) and nothing secret; as on the card, a path longer than 512
+  characters, counted as displayed, is shortened from the left. It cannot approve: that stays on
+  the card. Deny denies; clicking the notification itself, dismissing it or
+  the notification expiring leaves the request on the card and does not count
+  toward the cooldown. The request's own two-minute deadline still does.
   **Notify when a prompt goes unanswered** (`sshAgentNotifyFallback`, on by
   default) turns it off.
 - **Answering SSH requests from a terminal.** `omarchy-shell
@@ -71,13 +77,46 @@
   could otherwise approve its own request); deny is always available and an
   unlock request can only be denied.
 
-### Fixed
-
-- **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
-  only ask for identities never move the auto-lock deadline; a test now holds
-  that. Approving a signature, a person's own action, does.
-
 ### Security
+
+- **The SSH notification can no longer approve a signature.** As first
+  written for this release (never shipped), the notification for an unanswered
+  signing request had an Allow once button. A notification daemon lets any
+  program running as you press a notification's buttons (`makoctl invoke`,
+  `dunstctl action`, the Omarchy shell's `notifications` IPC), so a program
+  could ask for a signature, wait for the notification and approve its own
+  request with nobody at the screen. The notification's only deciding action is now
+  Deny, and nothing it returns approves; approving is done on the card. It
+  also shows the program's path with the "not verified" note, as the card
+  does (shortened from the left past the display limit), where it showed only
+  the file name. A notification that is
+  dismissed, expires or is dropped by do-not-disturb used to deny the request
+  and count toward the five-minute cooldown, which any program running as you
+  could cause; it now leaves the request on the card. The notification
+  carries a default action that decides nothing, so a daemon that runs "the"
+  action on a click or a middle click (Dunst) does not land on Deny.
+- **Invisible characters in an SSH request are written out.** The approval
+  card, the notification and the approvals list already showed control,
+  direction and zero-width characters in a program path or key name as
+  `\uXXXX`. A soft hyphen and the other default-ignorable characters
+  (fillers, variation selectors, invisible operators, tag characters) went
+  through, so a path containing one drew exactly like the path without it.
+  They are written out too, and the length limit now cuts between whole
+  characters, never through a written-out one or a surrogate pair. This shows
+  that such a character is there; it is not a promise that two different
+  paths always look different (a literal backslash is shown as it is, and a
+  long path is shortened from the left).
+- **The action palette acts on the item it was opened for.** On the list,
+  as first written for this release (never shipped), a palette action ran on
+  whichever row the cursor was on when Enter was pressed. A background sync
+  that added or removed an item while the palette was open could shift the
+  rows, so "Copy password" copied another item's password. The palette now
+  remembers the item's id and runs the action on that item; if a sync removed
+  it, or another item is open in its place, the action does nothing; the
+  same holds on the detail screen, where an action also does nothing if a
+  sync changed whether the item asks for the master password since it was
+  opened. A master-password re-prompt item still asks first, as its letter
+  does.
 
 - **The vault helper refuses a vault read it does not recognise.** It used
   to remove secrets only from items sitting where it expected them and hand
@@ -102,6 +141,12 @@
   private keys go to the SSH agent from an earlier branch of the vault read
   and normally never reach this helper; one that does is discarded as the
   read is parsed. This needs the rebuilt vault helper.
+
+### Fixed
+
+- **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
+  only ask for identities never move the auto-lock deadline; a test now holds
+  that. Approving a signature, a person's own action, does.
 
 ## [1.13.1] - 2026-11-18
 
