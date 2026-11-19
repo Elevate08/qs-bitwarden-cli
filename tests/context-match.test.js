@@ -366,6 +366,26 @@ check("the newest lesson survives trimming",
   for (let i = 0; i < 20000; i++) compare(random(14), random(3))
   check("the whole-word shortcut never changes an answer",
     wrong.length === 0 && compared > 21000, wrong.slice(0, 8).join(" ") + " of " + compared)
+  check("a haystack that is not a string is still the expression's to coerce",
+    Model.hasWholeWord(123, "123") === true && Model.hasWholeWord(123, "12") === false
+      && Model.hasWholeWord({ toString() { return "my site" } }, "site") === true
+      && Model.hasWholeWord(["a", "site"], "site") === true)
+  // The point of the shortcut: no RegExp is built for a word that is absent.
+  // Literals do not go through the constructor, so counting it counts those.
+  const RealRegExp = RegExp
+  let built = 0
+  const counting = fn => {
+    built = 0
+    global.RegExp = function (...args) { built += 1; return new RealRegExp(...args) }
+    global.RegExp.prototype = RealRegExp.prototype
+    try { return [fn(), built] } finally { global.RegExp = RealRegExp }
+  }
+  check("an absent word is refused without building a RegExp",
+    counting(() => Model.hasWholeWord("Sign in to GitHub - Mozilla Firefox", "amazon")).join() === "false,0"
+      && counting(() => Model.hasWholeWord("Sign in to GitHub - Mozilla Firefox", "github")).join() === "true,1"
+      && counting(() => Model.hasWholeWord("mygithub", "github")).join() === "false,1"
+      && counting(() => Model.hasWholeWord("caf\u00E9", "caf\u00E9")).join() === "true,1",
+    String(built))
   const hits = texts.filter(t => Model.hasWholeWord(t, "site")).length
   check("...and both answers occur among those", hits > 3 && hits < texts.length, String(hits))
 }
