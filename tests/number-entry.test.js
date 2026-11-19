@@ -61,7 +61,15 @@ check("NumberEntry swallows middle-click",
   /acceptedButtons: Qt\.MiddleButton/.test(entry))
 check("NumberEntry never calls the clipboard",
   !/clipboard\(|\.paste\(\)|mimeData/.test(entry))
+const panel = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
 check("Panel uses NumberEntry",
-  (fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8").match(/\bNumberEntry \{/g) || []).length === 2)
+  (panel.match(/\bNumberEntry \{/g) || []).length === 2)
+// The generator's minimum rows are NumberRow instances: each keeps its
+// label, its value binding and the handler that stores the edit.
+for (const [label, opt] of [["Minimum numbers", "minNumber"], ["Minimum special", "minSpecial"]]) {
+  const row = new RegExp("NumberRow \\{[^}]*?label: \"" + label + "\"[^}]*?value: root\\.vault\\.genOpts\\." + opt
+    + "\\b[^}]*?onModified: function\\(v\\) \\{ root\\.vault\\.setGenOpt\\(\"" + opt + "\", v\\) \\}")
+  check("generator keeps the " + label + " row", row.test(panel))
+}
 
 done()
