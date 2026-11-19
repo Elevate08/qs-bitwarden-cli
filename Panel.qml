@@ -574,6 +574,12 @@ Panel {
     return self ? self.y + self.height : 0
   }
 
+  // DetailField in the bar's foreground and font.
+  component VaultField: DetailField {
+    foreground: root.fg
+    fontFamily: root.fontFamily
+  }
+
   // A form row: label, optional caption note, and a NumberEntry.
   component NumberRow: Row {
     id: numberRow
@@ -4246,15 +4252,13 @@ Panel {
                 }
 
                 // FIELD: Username
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsLoginLike && Boolean(root.vault.detailItem) && root.vault.detailItem.username !== ""
                   label: "Username / Email"
                   copyLabel: "Username"
                   shortcutHint: "u"
                   copyIcon: ""
                   value: root.vault.detailItem ? root.vault.detailItem.username : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailItem ? root.vault.detailItem.username : "", "Username")
                 }
 
@@ -4617,25 +4621,21 @@ Panel {
                 // FIELDS: Card
                 // -----------------------------------------------------------
                 // Expiry shown as one value.
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Cardholder Name"
                   value: root.vault.detailCard ? root.vault.detailCard.cardholderName : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.cardholderName : "", "Cardholder name")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Brand"
                   value: root.vault.detailCard ? root.vault.detailCard.brand : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.brand : "", "Brand")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Card Number"
                   copyLabel: "Card number"
@@ -4644,22 +4644,18 @@ Panel {
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("cardNumber")
                   value: root.vault.shownSecret("cardNumber", root.vault.detailCard ? root.vault.detailCard.number : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("cardNumber")
                   onCopyRequested: root.copyDetailSecret("cardNumber", "Card number")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Expires"
                   value: root.vault.detailCardExpiry
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailCardExpiry, "Expiry")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsCard
                   label: "Security Code"
                   copyLabel: "Security code"
@@ -4667,8 +4663,6 @@ Panel {
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("cardCode")
                   value: root.vault.shownSecret("cardCode", root.vault.detailCard ? root.vault.detailCard.code : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("cardCode")
                   onCopyRequested: root.copyDetailSecret("cardCode", "Security code")
                 }
@@ -4677,89 +4671,73 @@ Panel {
                 // FIELDS: Identity
                 // -----------------------------------------------------------
                 // Every field is declared; DetailField hides the empty ones.
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Name"
                   value: root.vault.detailIdentityName
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentityName, "Name")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Username"
                   shortcutHint: "u"
                   value: root.vault.detailIdentity ? root.vault.detailIdentity.username : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.username : "", "Username")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Company"
                   value: root.vault.detailIdentity ? root.vault.detailIdentity.company : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.company : "", "Company")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Email"
                   shortcutHint: "c"
                   value: root.vault.detailIdentity ? root.vault.detailIdentity.email : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.email : "", "Email")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Phone"
                   value: root.vault.detailIdentity ? root.vault.detailIdentity.phone : ""
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onCopyRequested: root.vault.copyToClipboard(root.vault.detailIdentity ? root.vault.detailIdentity.phone : "", "Phone")
                 }
 
                 // Masked like a password (and unlike one, not rotatable).
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Social Security Number"
                   copyLabel: "SSN"
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("ssn")
                   value: root.vault.shownSecret("ssn", root.vault.detailIdentity ? root.vault.detailIdentity.ssn : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("ssn")
                   onCopyRequested: root.copyDetailSecret("ssn", "SSN")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Passport Number"
                   copyLabel: "Passport number"
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("passportNumber")
                   value: root.vault.shownSecret("passportNumber", root.vault.detailIdentity ? root.vault.detailIdentity.passportNumber : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("passportNumber")
                   onCopyRequested: root.copyDetailSecret("passportNumber", "Passport number")
                 }
 
-                DetailField {
+                VaultField {
                   visible: root.vault.detailIsIdentity
                   label: "Licence Number"
                   copyLabel: "Licence number"
                   sensitive: true
                   revealed: root.vault.isFieldRevealed("licenseNumber")
                   value: root.vault.shownSecret("licenseNumber", root.vault.detailIdentity ? root.vault.detailIdentity.licenseNumber : "")
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
                   onRevealToggled: root.toggleProtectedReveal("licenseNumber")
                   onCopyRequested: root.copyDetailSecret("licenseNumber", "Licence number")
                 }
@@ -4824,7 +4802,7 @@ Panel {
                     id: customFieldRepeater
                     model: root.vault.detailItem ? root.vault.detailItem.fields : []
 
-                    delegate: DetailField {
+                    delegate: VaultField {
                       required property var modelData
                       required property int index
                       // The helper names a field by its place in the item's own list.
@@ -4835,8 +4813,6 @@ Panel {
                       value: root.vault.shownSecret(revealKey, modelData.value)
                       sensitive: Boolean(modelData.sensitive)
                       revealed: root.vault.isFieldRevealed(revealKey)
-                      foreground: root.fg
-                      fontFamily: root.fontFamily
                       onRevealToggled: root.toggleProtectedReveal(revealKey)
                       // Hidden fields are protected; plain ones are not.
                       onCopyRequested: {
