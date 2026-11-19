@@ -572,6 +572,15 @@ jobs:
           section="${section//@RUN_URL@/$RUN_URL}"
           section="${section//@REPO@/$REPO}"
           printf '\n%s\n' "$section" >> "$notes"
+          # The commit these assets were built from, as the notes' last
+          # line: an HTML comment, so the release page does not show it.
+          # publish-on-master.yml and a re-run of this job read it back from
+          # the release's body. Exactly one may exist.
+          ! grep -q 'built-from:' "$notes" || {
+            echo "::error::the changelog section for $version contains 'built-from:', which the release's commit marker uses"
+            exit 1
+          }
+          printf '\n<!-- built-from: %s -->\n' "$GITHUB_SHA" >> "$notes"
           # A release asset is named by its file name alone, and every
           # architecture's helper has the same one, so each is attached as
           # <name>-<arch>-linux: the same bytes as bin/<arch>-linux/<name>.
@@ -596,8 +605,7 @@ jobs:
           # A draft: the tag is on a release branch not yet merged to master.
           # publish-on-master.yml publishes it when the commit lands there,
           # after checking the draft again: its assets against the same list,
-          # and the tag against the commit recorded below as the draft's
-          # target.
+          # and the tag against the commit the notes' marker records.
           # Every job checked, built and attested GITHUB_SHA, but a release
           # goes by tag name: the tag must still name that commit. Asked of
           # the remote without credentials (the repository is public); an
@@ -626,20 +634,21 @@ jobs:
                           else "unknown" end' <<< "$mine")"
           case "$state" in
             absent)
-              # The target is unused for the tag, which exists; it records
-              # the commit these assets were built from, for the publisher.
               gh release create "$TAG" "${assets[@]}" --draft --verify-tag \
-                --target "$GITHUB_SHA" \
                 --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
               ;;
             draft)
               # Only a draft is refilled, which is what re-running this job
-              # does: one made for this commit, holding nothing this
-              # workflow does not make (--clobber replaces by name and would
-              # leave any other asset where it is).
-              built="$(jq -r '.[0].target_commitish' <<< "$mine")"
+              # does: one whose notes carry exactly one marker, naming this
+              # commit, and which holds nothing this workflow does not make
+              # (--clobber replaces by name and would leave any other asset
+              # where it is). Its notes are left as they are.
+              built="$(jq -r '(.[0].body // "") as $body
+                               | [$body | scan("<!-- built-from: ([0-9a-f]{40}) -->") | .[0]] as $marked
+                               | if ([$body | scan("built-from:")] | length) == 1 and ($marked | length) == 1
+                                 then $marked[0] else "" end' <<< "$mine")"
               [ "$built" = "$GITHUB_SHA" ] || {
-                echo "::error::draft release $TAG was made for $built, not for $GITHUB_SHA; delete the draft and run again"
+                echo "::error::draft release $TAG was made for ${built:-an unrecorded commit}, not for $GITHUB_SHA; delete the draft and run again"
                 exit 1
               }
               # A jq or grep that fails stops the job. Only grep's "nothing

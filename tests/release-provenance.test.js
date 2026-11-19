@@ -323,8 +323,9 @@ const git = (cwd, ...args) => {
 }
 
 // The tagged checkout: v9.9.9, annotated as this repository's tags are, on a
-// commit that master then moves past; `stale` is a lightweight tag on that
-// later commit.
+// commit that master then moves past with a different asset list, so a
+// publisher that read the list from master and not from the built commit
+// would refuse the draft.
 const origin = path.join(scratch, "origin.git")
 const checkout = path.join(scratch, "checkout")
 git(scratch, "init", "-q", "--bare", "-b", "master", origin)
@@ -341,10 +342,15 @@ git(checkout, "add", "-A")
 git(checkout, "commit", "-q", "-m", "release")
 const built = git(checkout, "rev-parse", "HEAD")
 git(checkout, "tag", "-a", "v9.9.9", "-m", "v9.9.9")
-git(checkout, "commit", "-q", "--allow-empty", "-m", "merge")
+// A commit on master with the built commit's files, which the tag does not name.
+git(checkout, "commit", "-q", "--allow-empty", "-m", "same files")
+const untagged = git(checkout, "rev-parse", "HEAD")
+fs.writeFileSync(path.join(checkout, ".github/release-assets.txt"), "checkout SHA256SUMS\nrelease-reports next-release.json\n")
+git(checkout, "commit", "-q", "-a", "-m", "the next release's list")
 const later = git(checkout, "rev-parse", "HEAD")
 git(checkout, "remote", "add", "origin", origin)
 git(checkout, "push", "-q", "origin", "master", "v9.9.9")
+git(checkout, "checkout", "-q", "--detach", "v9.9.9")
 
 const runnerTemp = path.join(scratch, "temp")
 // The run's artifacts as download-artifact leaves them, then the listing step.
@@ -357,8 +363,12 @@ function listing(change = () => {}) {
   change(path.join(runnerTemp, "dist"))
   return sh(listingShell, runnerTemp, { GITHUB_WORKSPACE: checkout })
 }
+// The draft's body is the notes the publish step wrote, as the API would
+// hand them back; `marked` is a body recording some other commit.
+let draftBody = ""
+const marked = sha => `Notes.\n\n<!-- built-from: ${sha} -->\n`
 const releaseEntry = (fields = {}) => ({
-  tag_name: "v9.9.9", draft: true, target_commitish: built,
+  tag_name: "v9.9.9", draft: true, body: draftBody,
   assets: ASSETS.map(name => ({ name, state: "uploaded" })), ...fields })
 // What `gh api` answers: one page per array, or a failed call for null.
 function serverHolds(...pages) {
@@ -375,12 +385,13 @@ const uploaded = call => call.filter((arg, at) => arg.startsWith(runnerTemp) && 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
 const listed = listing()
-serverHolds([{ tag_name: "v9.9.8", draft: false, target_commitish: "master", assets: [] }])
+serverHolds([{ tag_name: "v9.9.8", draft: false, body: marked(built), assets: [] }])
 const first = runPublish()
 const created = ghCalls(["create", "upload"])
 const createArgs = created.length === 1 ? created[0] : []
 const notesAt = createArgs[createArgs.indexOf("--notes-file") + 1] || "/nonexistent"
 const notes = fs.existsSync(notesAt) ? fs.readFileSync(notesAt, "utf8") : ""
+draftBody = notes
 serverHolds([releaseEntry()])
 const rerun = runPublish()
 const refilled = ghCalls(["create", "upload"])
@@ -388,7 +399,8 @@ check("a tagged run makes a draft of exactly the 29 assets, and a re-run refills
   listed.status === 0 && first.status === 0 && ASSETS.length === 29
     && createArgs[1] === "create" && createArgs[2] === "v9.9.9" && same(uploaded(createArgs), ASSETS)
     && createArgs.includes("--draft") && createArgs.includes("--verify-tag")
-    && createArgs[createArgs.indexOf("--target") + 1] === built
+    && !createArgs.includes("--target") && notes.endsWith(`\n<!-- built-from: ${built} -->\n`)
+    && notes.split("built-from:").length === 2
     && ARCHES.every(a => HELPERS.every(h =>
       fs.readFileSync(path.join(runnerTemp, "dist", `${h}-${a}-linux`), "utf8") === `${h} ${a}\n`))
     && /- This release\./.test(notes) && !/The one before/.test(notes) && /## Verifying the helpers/.test(notes)
@@ -415,8 +427,10 @@ listing()
 const refusals = {
   "a published release": [[releaseEntry({ draft: false })], built],
   "a tag that names another commit": [[], later],
-  "a draft made for another commit": [[releaseEntry({ target_commitish: later })], built],
+  "a draft made for another commit": [[releaseEntry({ body: marked(later) })], built],
+  "a draft whose notes name two commits": [[releaseEntry({ body: marked(built) + marked(built) })], built],
   "a draft holding another asset": [[releaseEntry({ assets: [{ name: "install.txt", state: "uploaded" }] })], built],
+  "a draft whose assets cannot be read": [[releaseEntry({ assets: null })], built],
   "two releases for the tag": [[releaseEntry(), releaseEntry()], built],
   "a failed lookup": [null, built],
 }
@@ -451,8 +465,9 @@ const unpublishable = {
   "an asset more": [releaseEntry({ assets: [...releaseEntry().assets, { name: "install.txt", state: "uploaded" }] })],
   "an asset fewer": [releaseEntry({ assets: without("SHA256SUMS") })],
   "an upload cut short": [releaseEntry({ assets: [...without("SHA256SUMS"), { name: "SHA256SUMS", state: "starter" }] })],
-  "no recorded commit": [releaseEntry({ target_commitish: "master" })],
-  "a tag that names another commit than the built one": [releaseEntry({ target_commitish: later })],
+  "no recorded commit": [releaseEntry({ body: "Notes.\n" })],
+  "two recorded commits": [releaseEntry({ body: draftBody + marked(later) })],
+  "a tag that names another commit than the built one": [releaseEntry({ body: marked(untagged) })],
   "two drafts for the tag": [releaseEntry(), releaseEntry()],
   "a failed lookup": null,
 }

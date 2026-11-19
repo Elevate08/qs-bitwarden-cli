@@ -66,11 +66,14 @@ against it, and the artifacts are unpacked outside the checkout. A manual run
 publishes nothing unless it is on a tag named `v` and a version.
 
 The release it makes is a draft, and the draft records the commit it was
-built from as its target. Before uploading, the job asks the server what the
+built from: the last line of its notes is the HTML comment
+`<!-- built-from: <commit> -->`, which the release page does not show. Before
+uploading, the job asks the server what the
 tag names and stops unless that is the commit it built. A release that is
 already published is never touched. A draft is refilled only by a re-run for
-the same commit, and only if it holds no asset outside the list. A failed
-lookup stops the job.
+the same commit (its notes must carry exactly one such marker, naming that
+commit), and only if it holds no asset outside the list. A lookup or a
+comparison that fails stops the job.
 
 `.github/workflows/publish-on-master.yml` takes the draft public when its
 commit reaches master. Just before it does, it reads the release from the
@@ -78,8 +81,8 @@ API again and stops unless: there is exactly one release for the tag; the tag
 on the server still names the commit the draft records; that commit is on
 master; and the draft's assets are exactly the names in that commit's
 `.github/release-assets.txt`, each fully uploaded. So an asset added to the
-draft, an upload that was cut short, or a tag moved since the build is not
-published.
+draft, an upload that was cut short, a draft with no marker or more than one,
+or a tag moved since the build is not published.
 
 The two workflows do not lock each other out, so one interleaving is left to
 the checks: the release job re-run by hand while the merge to master
@@ -105,8 +108,9 @@ What this does not do:
 - The publisher compares asset names and upload state, not asset bytes. The
   six binaries can be checked against their attestations and `SHA256SUMS`;
   the reports and symbols have no such check.
-- The commit a draft records is a field of the release. Someone who can edit
-  releases can change it, as they can change the assets.
+- The commit a draft records is a line of its notes, an editable field of
+  the release. Someone who can edit releases can change it, as they can
+  change the assets.
 
 One CI path writes binaries: `.github/workflows/helper-rebuild.yml`. For a
 same-repository PR into a `release/**` branch whose Rust changes are only plain

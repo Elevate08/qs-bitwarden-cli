@@ -104,10 +104,14 @@ jobs:
                 ;;
             esac
 
-            # The commit release.yml built the draft from: it creates the
-            # draft with that commit as its target. A release field, not an
-            # asset or anything in the tag.
-            built="$(jq -r '.[0].target_commitish' <<< "$mine")"
+            # The commit release.yml built the draft from: the last line of
+            # the notes it wrote is `<!-- built-from: <commit> -->`. Read
+            # from the release's body; no marker, or more than one, is
+            # refused. A release field, not an asset or anything in the tag.
+            built="$(jq -r '(.[0].body // "") as $body
+                           | [$body | scan("<!-- built-from: ([0-9a-f]{40}) -->") | .[0]] as $marked
+                           | if ([$body | scan("built-from:")] | length) == 1 and ($marked | length) == 1
+                             then $marked[0] else "" end' <<< "$mine")"
             [[ "$built" =~ ^[0-9a-f]{40}$ ]] || {
               echo "::error::draft release $tag does not record the commit it was built from; refusing to publish"
               exit 1
