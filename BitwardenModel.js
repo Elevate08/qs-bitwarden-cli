@@ -528,7 +528,7 @@ function bwCompileCacheCommand(home) {
     // XDG_CACHE_HOME set to the data or state home it would be the one that
     // holds the plugin's accounts or learned picks, which is not this
     // check's to scan or to change the mode of.
-    + "shopt -s dotglob nullglob; for __e in \"$__p\"/*; do [ \"$__e\" = \"$__x\" ] || exit 1; done; "
+    + "__o=\"$(timeout " + BW_COMPILE_CACHE_SCAN_TIMEOUT_S + " find \"$__p\" -mindepth 1 -maxdepth 1 ! -name node-compile-cache -printf x -quit)\" || exit 1; [ -z \"$__o\" ] || exit 1; "
     + "if __there \"$__x\"; then __ok \"$__x\" || exit 1; fi; "
     + "__bad=\"$(timeout " + BW_COMPILE_CACHE_SCAN_TIMEOUT_S + " find \"$__p\" -mindepth 1 "
     + "\\( ! \\( -type f -o -type d \\) -o ! -uid \"$__u\" -o -perm /022 \\) -printf x -quit)\" || exit 1; "

@@ -170,11 +170,11 @@ check("the variable is Node's", VAR === "NODE_COMPILE_CACHE")
       && script.indexOf("case \"$__c\" in *[!") < script.indexOf("__chain \"${__h%/*}/\" || exit 1")
       && script.indexOf("__chain \"${__h%/*}/\" || exit 1") < script.indexOf("mkdir -m 700"), script)
   const find = "__bad=\"$(timeout 5 find \"$__p\" -mindepth 1 \\( ! \\( -type f -o -type d \\) -o ! -uid \"$__u\" -o -perm /022 \\) -printf x -quit)\" || exit 1; [ -z \"$__bad\" ] || exit 1; fi; "
-  check("what is already in the plugin's directory is looked at in one bounded find that follows no symlink and stops at the first offender",
-    script.indexOf(find) !== -1 && (script.match(/\bfind\b/g) || []).length === 1 && !/find -L|-follow/.test(script), script)
+  check("what is already in the plugin's directory is looked at in bounded finds (one for strangers beside the cache, one for its contents) that follow no symlink and stop at the first offender",
+    script.indexOf(find) !== -1 && (script.match(/\bfind\b/g) || []).length === 2 && !/find -L|-follow/.test(script), script)
   check("a refusal changes nothing: what is there is judged before the two directories are made, and modes are set last, once everything has passed",
     script.indexOf("if __there \"$__p\"; then __ok \"$__p\" || exit 1; "
-        + "shopt -s dotglob nullglob; for __e in \"$__p\"/*; do [ \"$__e\" = \"$__x\" ] || exit 1; done; "
+        + "__o=\"$(timeout 5 find \"$__p\" -mindepth 1 -maxdepth 1 ! -name node-compile-cache -printf x -quit)\" || exit 1; [ -z \"$__o\" ] || exit 1; "
         + "if __there \"$__x\"; then __ok \"$__x\" || exit 1; fi; __bad=") !== -1
       && script.indexOf(find) < script.indexOf("for __d in")
       && (script.match(/\bchmod\b/g) || []).length === 1

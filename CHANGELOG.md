@@ -186,7 +186,8 @@
   500 items: 1.2 ms to 0.6 ms) and not at all for an open from the same one.
   Two passes still happen only when both hold: the suggestions for the
   window last seen are out of date (a pick was learned since) and the open
-  is from a different window. The suggestions are the same, except that an emptied vault
+  is from a different window, or the window's data cannot be keyed exactly
+  (a number that is not finite). The suggestions are the same, except that an emptied vault
   and a locked one no longer keep showing the last ones.
 - **Internal cleanup, no behaviour change.** Unused ids, properties and
   test-only model functions are gone, and repeated panel markup and model

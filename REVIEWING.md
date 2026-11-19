@@ -201,7 +201,7 @@ choice without building anything; it only runs those probes.
     already there is judged before anything is made, and `bw` then runs
     without the cache, with a note on the setting's row. A check that fails
     part-way (a `mkdir` or the final `chmod` itself failing) may leave the
-    empty directories it created, and one already running when the setting
+    empty directories it created or one of the two modes already set, and one already running when the setting
     is turned off finishes; its answer is not used. A path that passed has
     its two directories set to exactly 0700 (`chmod 00700`, which also
     clears a setgid bit inherited from the cache home). They hold the cache
@@ -259,7 +259,9 @@ choice without building anything; it only runs those probes.
     or a umask of 022 or 077 for the shell, puts that right.
   - *`BW_PASSWORD`.* The plugin never sets `BW_PASSWORD` for a launch that
     may use the cache. One already exported in the session that started the
-    shell is inherited by every `bw` launch as before, cached or not.
+    shell is inherited as before by every `bw` launch that the plugin does
+    not hand its own password to (unlock and login replace it), cached or
+    not.
   - *Which launches use it.* Only `bw` itself, and only where it is given no
     password: status, lock, logout, sync, the list, get, create, edit,
     delete, send and generate commands, attachment download, and the

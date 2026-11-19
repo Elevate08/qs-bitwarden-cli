@@ -42,7 +42,8 @@ rm -f ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
 # Node's compiled-code cache for bw, if you had that setting on (no account
 # or vault data): the directory qs-bitwarden-cli in your cache home. The
 # plugin only uses it when it holds nothing but node-compile-cache, and
-# "Remove Plugin Data" does not touch it. This prints where it is; look,
+# "Remove Plugin Data" does not touch it (unless your cache home is also
+# your data or state home). This prints where it is; look,
 # then remove it yourself.
 ls -ld "${XDG_CACHE_HOME:-$HOME/.cache}/qs-bitwarden-cli"
 ```
