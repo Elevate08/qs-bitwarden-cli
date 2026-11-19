@@ -173,10 +173,12 @@ check("the variable is Node's", VAR === "NODE_COMPILE_CACHE")
   check("what is already in the plugin's directory is looked at in one bounded find that follows no symlink and stops at the first offender",
     script.indexOf(find) !== -1 && (script.match(/\bfind\b/g) || []).length === 1 && !/find -L|-follow/.test(script), script)
   check("a refusal changes nothing: what is there is judged before the two directories are made, and modes are set last, once everything has passed",
-    script.indexOf("if __there \"$__p\"; then __ok \"$__p\" || exit 1; if __there \"$__x\"; then __ok \"$__x\" || exit 1; fi; __bad=") !== -1
+    script.indexOf("if __there \"$__p\"; then __ok \"$__p\" || exit 1; "
+        + "shopt -s dotglob nullglob; for __e in \"$__p\"/*; do [ \"$__e\" = \"$__x\" ] || exit 1; done; "
+        + "if __there \"$__x\"; then __ok \"$__x\" || exit 1; fi; __bad=") !== -1
       && script.indexOf(find) < script.indexOf("for __d in")
       && (script.match(/\bchmod\b/g) || []).length === 1
-      && /done; \[ "\$\(realpath -e -- "\$__x" && printf x\)" = "\$__x"\$'\\n'x \] \|\| exit 1; chmod 700 -- "\$__p" "\$__x" \|\| exit 1; printf '%s\\n' "\$__x"$/.test(script), script)
+      && /done; \[ "\$\(realpath -e -- "\$__x" && printf x\)" = "\$__x"\$'\\n'x \] \|\| exit 1; chmod 00700 -- "\$__p" "\$__x" \|\| exit 1; printf '%s\\n' "\$__x"$/.test(script), script)
   check("the probe runs with PATH and a fixed locale only, and its whole output is what is judged",
     JSON.stringify(Model.plainProbeEnv("/usr/bin")) === JSON.stringify({ PATH: "/usr/bin", LC_ALL: "C" })
       && Model.plainProbeEnv("").PATH === "/usr/local/bin:/usr/bin:/bin"
@@ -381,6 +383,38 @@ if (trusted) {
       check(`a cache with ${what} is refused, and left as it was, modes included`,
         r.rc !== 0 && r.dir === "" && r.out === "" && fs.readdirSync(f.version).sort().join() === before
           && mode(cacheOf(f.base)) === 0o755 && mode(path.dirname(cacheOf(f.base))) === 0o755, JSON.stringify(r))
+    }
+    {
+      // A plugin directory that is not the cache's alone: XDG_CACHE_HOME set
+      // to the data or state home, where the plugin keeps accounts and
+      // learned picks under the same name.
+      for (const [what, plant] of [["a directory of the plugin's data", d => fs.mkdirSync(path.join(d, "accounts"), { mode: 0o700 })],
+        ["a file", d => fs.writeFileSync(path.join(d, "associations.json"), "{}", { mode: 0o600 })],
+        ["a hidden file", d => fs.writeFileSync(path.join(d, ".hidden"), "", { mode: 0o600 })]]) {
+        for (const withCache of [true, false]) {
+          const base = home()
+          const dir = path.dirname(cacheOf(base))
+          fs.mkdirSync(withCache ? cacheOf(base) : dir, { recursive: true, mode: 0o755 })
+          fs.chmodSync(dir, 0o755)
+          plant(dir)
+          const before = fs.readdirSync(dir).sort().join()
+          check(`a plugin directory that also holds ${what} is refused${withCache ? "" : " before a cache directory is made in it"}, and nothing in it is made or has its mode changed`,
+            probe(base) !== 0 && mode(dir) === 0o755 && fs.readdirSync(dir).sort().join() === before
+              && (!withCache || mode(cacheOf(base)) === 0o755), mode(dir).toString(8) + " " + fs.readdirSync(dir).join())
+        }
+      }
+      const sg = home()
+      fs.mkdirSync(cacheOf(sg), { recursive: true })
+      fs.chmodSync(path.dirname(cacheOf(sg)), 0o2750)
+      fs.chmodSync(cacheOf(sg), 0o2755)
+      check("0700 means exactly that: a setgid bit on either directory is cleared by a check that passes",
+        probe(sg) === 0 && mode(cacheOf(sg)) === 0o700 && mode(path.dirname(cacheOf(sg))) === 0o700,
+        mode(cacheOf(sg)).toString(8) + " " + mode(path.dirname(cacheOf(sg))).toString(8))
+      const sgHome = home()
+      fs.chmodSync(sgHome, 0o2700)
+      check("...and directories made inside a setgid cache home, which inherit the bit, end without it",
+        run(sgHome).dir === cacheOf(sgHome) && mode(cacheOf(sgHome)) === 0o700 && mode(path.dirname(cacheOf(sgHome))) === 0o700,
+        mode(cacheOf(sgHome)).toString(8))
     }
     {
       const f = filled()
@@ -609,7 +643,7 @@ check("a bw that is given the master password or a login's credentials never get
   const cmd = Model.terminalLoginCommand("login", "https://vault.example.com", "default")
   const outer = cmd[2]
   check("the script the terminal runs unsets the variable itself, before any bw",
-    (outer.match(/set -u; unset NODE_COMPILE_CACHE; /g) || []).length === 2
+    (outer.match(/set -u; unset NODE_COMPILE_CACHE; bw\(\) \{ command env -u NODE_COMPILE_CACHE bw "\$@"; \}; /g) || []).length === 2
       && outer.split("bash -c ").slice(1).every(inner => inner.indexOf("unset NODE_COMPILE_CACHE; ") < inner.indexOf("bw ")), outer)
   // Run it: a launcher that, like a terminal started by the session manager,
   // gives the script an environment of its own with the variable set.
@@ -641,10 +675,41 @@ check("a bw that is given the master password or a login's credentials never get
       r.status === 0 && lines.length === expected.length
         && lines.every((l, i) => l === "<unset>\t" + expected[i]), JSON.stringify([r.status, r.stderr, lines]))
   }
-  // Positive control: the same launcher without the unset does pass it on.
+  // A startup file named by BASH_ENV, read by the terminal's `bash -c`,
+  // that exports the variable and makes it readonly: `unset` cannot remove
+  // it, so every bw of the script is started through `env -u`.
+  {
+    const startup = path.join(dir, "bash-env")
+    fs.writeFileSync(startup, "export NODE_COMPILE_CACHE=/from/bash/env\nreadonly NODE_COMPILE_CACHE\n")
+    fs.rmSync(seen, { force: true })
+    // bw as it is, a Node program: a bash stand-in would read the startup
+    // file itself and export the variable again.
+    const bashBw = fs.readFileSync(path.join(bin, "bw"))
+    fs.writeFileSync(path.join(bin, "bw"), "#!/usr/bin/env node\n"
+      + "const c = process.env.NODE_COMPILE_CACHE\n"
+      + "require('fs').appendFileSync(" + JSON.stringify(seen) + ", (c === undefined ? '<unset>' : c) + '\\t' + process.argv.slice(2).join(' ') + '\\n')\n"
+      + "if (/^(login|unlock)$/.test(process.argv[2])) process.stdout.write('c2Vzc2lvbi1rZXktc2Vzc2lvbi1rZXktc2Vzc2lvbi1rZXk=')\n", { mode: 0o755 })
+    const c = Model.terminalLoginCommand("login", "https://vault.example.com", "default")
+    const r = spawnSync(c[0], c.slice(1), { encoding: "utf8", timeout: 20000,
+      env: { PATH: bin + ":" + process.env.PATH, HOME: dir, XDG_RUNTIME_DIR: path.join(dir, "run"), BASH_ENV: startup } })
+    const lines = fs.existsSync(seen) ? fs.readFileSync(seen, "utf8").split("\n").filter(Boolean) : []
+    // The same script without the wrapper: the control for this case.
+    fs.rmSync(seen, { force: true })
+    spawnSync(c[0], [c[1], c[2].replace(/bw\(\) \{[^}]*\}; /g, "")], { encoding: "utf8", timeout: 20000,
+      env: { PATH: bin + ":" + process.env.PATH, HOME: dir, XDG_RUNTIME_DIR: path.join(dir, "run"), BASH_ENV: startup } })
+    const bare = fs.existsSync(seen) ? fs.readFileSync(seen, "utf8").split("\n").filter(Boolean) : []
+    fs.writeFileSync(path.join(bin, "bw"), bashBw, { mode: 0o755 })
+    check("(with unset alone, that readonly value does reach bw)",
+      bare.length === 2 && bare.every(l => l.split("\t")[0] === "/from/bash/env"), JSON.stringify(bare))
+    check("with the variable exported readonly by a BASH_ENV file, where unset fails, bw config and bw login in the terminal still see none",
+      r.status === 0 && lines.join("|") === "<unset>\tconfig server https://vault.example.com|<unset>\tlogin --raw",
+      JSON.stringify([r.status, lines]))
+  }
+  // Positive control: the same launcher without the unset and the wrapper
+  // does pass it on.
   fs.rmSync(seen, { force: true })
   const c = Model.terminalLoginCommand("unlock", "", "default")
-  spawnSync(c[0], [c[1], c[2].replace(/unset NODE_COMPILE_CACHE; /g, "")], { encoding: "utf8", timeout: 20000,
+  spawnSync(c[0], [c[1], c[2].replace(/unset NODE_COMPILE_CACHE; bw\(\) \{[^}]*\}; /g, "")], { encoding: "utf8", timeout: 20000,
     env: { PATH: bin + ":" + process.env.PATH, HOME: dir, XDG_RUNTIME_DIR: path.join(dir, "run") } })
   check("(without the unset, that launcher's value does reach bw)",
     fs.existsSync(seen) && fs.readFileSync(seen, "utf8") === "/somewhere/else/cache\tunlock --raw\n",

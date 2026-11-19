@@ -275,8 +275,10 @@ if (!failedToRun && trustedRoot) {
     third.expect("its slot is retired by a logout of its own",
       () => seen(third, /^logout$/).filter(l => l.dir.endsWith("/" + slotB)).length >= 2)
     const logouts = seen(third, /^logout$/).filter(l => l.dir.endsWith("/" + slotB))
-    check("the retiring logout ran without the cache",
-      logouts.some(l => l.cache === "<unset>") && logouts.every(l => l.cache === wanted || l.cache === "<unset>"),
+    // The ordinary logout comes first (it may use the cache); the one that
+    // retires the slot follows its completion.
+    check("the retiring logout, the second of the two, ran without the cache",
+      logouts.length === 2 && logouts[1].cache === "<unset>" && (logouts[0].cache === wanted || logouts[0].cache === "<unset>"),
       JSON.stringify(logouts))
     third.q("unlock", "pw-a@x")
     third.expect("the first account unlocks again", s => s.status === "unlocked" && s.compileCacheState === "accepted")

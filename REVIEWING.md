@@ -155,9 +155,15 @@ choice without building anything; it only runs those probes.
 - Node's compile cache for `bw` (`NODE_COMPILE_CACHE`, Node 22.1+) is an
   opt-in setting, `bwCompileCache`, **off by default**. Off, the plugin runs
   no check, creates no directory, and removes the variable from the
-  environment of every `bw` and `node` it starts (`bwEnv`,
+  environment it gives every `bw` and `node` it starts (`bwEnv`,
   `generatorServeEnv`, `withoutCompileCache`), so a value the shell inherited
-  is never honoured. On, a `bw` that is handed the master password or a
+  is not passed on. That is as far as the plugin's hand reaches: most of
+  those launches are `bash -c` scripts, and a startup file named by
+  `BASH_ENV` in the session (the user's own, or a program's running as the
+  user) that exports the variable sets it again inside them, as it could
+  set any other. The script the terminal hand-off runs starts its `bw`
+  through `env -u NODE_COMPILE_CACHE` as well as unsetting it, which covers
+  one made readonly there. On, a `bw` that is handed the master password or a
   login's credentials still never uses it; the rest may:
   - *What is written.* Node, not the plugin, writes V8's compiled form of the
     JavaScript files `bw` loads (its bundle, its modules and the two
@@ -187,13 +193,20 @@ choice without building anything; it only runs those probes.
     a regular file or directory owned by the user and not group- or
     world-writable, with no symlink (one `find`, no `-L`, stopped at the
     first offender, given 5 seconds). The exact line the check printed is
-    what `bw` is given (`bwCompileCacheAccepted`). A path that fails is left
-    exactly as it was found: what is already there is judged before anything
-    is made, and a failed check means `bw` runs without the cache, with a
-    note on the setting's row. A path that passed has its two directories
-    set to 0700. They are the plugin's own (nothing else is kept in
-    `qs-bitwarden-cli` under the cache home), so tightening them touches
-    nothing of anyone else's, and it is what keeps a cleared `~/.cache` from
+    what `bw` is given (`bwCompileCacheAccepted`). The plugin's directory
+    must hold nothing but the cache directory: with `XDG_CACHE_HOME` pointed
+    at the data or state home, `qs-bitwarden-cli` there is where the
+    plugin's accounts or learned picks live, and the check refuses it
+    untouched. A refused check changes no existing file or mode: what is
+    already there is judged before anything is made, and `bw` then runs
+    without the cache, with a note on the setting's row. A check that fails
+    part-way (a `mkdir` or the final `chmod` itself failing) may leave the
+    empty directories it created, and one already running when the setting
+    is turned off finishes; its answer is not used. A path that passed has
+    its two directories set to exactly 0700 (`chmod 00700`, which also
+    clears a setgid bit inherited from the cache home). They hold the cache
+    and nothing else, so tightening them touches nothing of anyone
+    else's, and it is what keeps a cleared `~/.cache` from
     switching the cache off for good: Node recreates the directories with
     the default umask, and the next check makes them private again.
   - *When.* At shell start with the setting on, when the setting is turned
@@ -220,7 +233,9 @@ choice without building anything; it only runs those probes.
     process. Both call `bwEnvAtStart()`, which replaces a directory the
     environment names with what holds at that moment (nothing, if the
     setting was turned off or a check is running) and leaves a removed
-    variable removed. The generator's `bw serve`, the one plain `Process`
+    variable removed. So a run queued while a check was still running
+    starts without the cache even if the check has passed by then: a lost
+    saving, never an unchecked directory. The generator's `bw serve`, the one plain `Process`
     that may use the cache, reads its environment as a binding when it
     starts.
   - *Between checks* the directory is not looked at again. A device and
@@ -242,6 +257,9 @@ choice without building anything; it only runs those probes.
     group-writable under such a umask, and the next check refuses the cache
     for that, private parent or not; `chmod -R go-w` on the cache directory,
     or a umask of 022 or 077 for the shell, puts that right.
+  - *`BW_PASSWORD`.* The plugin never sets `BW_PASSWORD` for a launch that
+    may use the cache. One already exported in the session that started the
+    shell is inherited by every `bw` launch as before, cached or not.
   - *Which launches use it.* Only `bw` itself, and only where it is given no
     password: status, lock, logout, sync, the list, get, create, edit,
     delete, send and generate commands, attachment download, and the

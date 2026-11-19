@@ -435,6 +435,9 @@ var NODE_UNCACHED = "env -u " + BW_COMPILE_CACHE_ENV + " node"
 // For a script that runs where the plugin's environment does not reach (a
 // terminal started through the session manager has the user manager's).
 var BW_COMPILE_CACHE_UNSET = "unset " + BW_COMPILE_CACHE_ENV + "; "
+// ...and, for a variable `unset` cannot remove (one a startup file named by
+// BASH_ENV made readonly), every `bw` of that script started through `env`.
+var BW_UNCACHED_FUNCTION = "bw() { command env -u " + BW_COMPILE_CACHE_ENV + " bw \"$@\"; }; "
 
 // A directory from the environment that can be taken at its word: absolute,
 // with no `..` to be read one way by a shell and another by Node, and no
@@ -483,11 +486,15 @@ var BW_COMPILE_CACHE_SCAN_TIMEOUT_S = 5
 // - everything already in the plugin's directory is a regular file or a
 //   directory of this user's that no one else can write to: Node follows a
 //   symlink it finds there. One `find`, stopping at the first that is not.
-// A path that fails is left exactly as it was found, and `bw` runs without
+// - the plugin's directory holds nothing but the cache directory.
+// A refused check changes no existing file or mode, and `bw` runs without
 // the cache: every check on what is already there comes before anything is
-// made or changed. Only a path that passed is touched: the two directories
-// are set to 0700. Both are the plugin's own (nothing else is kept in
-// them), and Node recreates a deleted one with the default umask; with the
+// made or changed. (One that fails part-way, a `mkdir` or the `chmod`
+// itself failing, may leave the empty directories it made.) Only a path
+// that passed is touched: the two directories are set to exactly 0700,
+// setgid and sticky bits cleared. Both are the plugin's own (the check
+// refuses a plugin directory with anything else in it), and Node recreates
+// a deleted one with the default umask; with the
 // outer one private, an inner one recreated under any umask is out of
 // reach of everyone else.
 function bwCompileCacheCommand(home) {
@@ -517,6 +524,11 @@ function bwCompileCacheCommand(home) {
     // What is already there, before anything is made. No -L: a symlink is
     // reported, not followed.
     + "if __there \"$__p\"; then __ok \"$__p\" || exit 1; "
+    // Nothing but the cache directory may be in the plugin's directory: with
+    // XDG_CACHE_HOME set to the data or state home it would be the one that
+    // holds the plugin's accounts or learned picks, which is not this
+    // check's to scan or to change the mode of.
+    + "shopt -s dotglob nullglob; for __e in \"$__p\"/*; do [ \"$__e\" = \"$__x\" ] || exit 1; done; "
     + "if __there \"$__x\"; then __ok \"$__x\" || exit 1; fi; "
     + "__bad=\"$(timeout " + BW_COMPILE_CACHE_SCAN_TIMEOUT_S + " find \"$__p\" -mindepth 1 "
     + "\\( ! \\( -type f -o -type d \\) -o ! -uid \"$__u\" -o -perm /022 \\) -printf x -quit)\" || exit 1; "
@@ -526,7 +538,8 @@ function bwCompileCacheCommand(home) {
     + "__ok \"$__d\" || exit 1; "
     + "done; "
     + "[ \"$(realpath -e -- \"$__x\" && printf x)\" = \"$__x\"$'\\n'x ] || exit 1; "
-    + "chmod 700 -- \"$__p\" \"$__x\" || exit 1; "
+    // Five digits: GNU chmod keeps a directory's setgid bit for `700`.
+    + "chmod 00700 -- \"$__p\" \"$__x\" || exit 1; "
     + "printf '%s\\n' \"$__x\""
   return ["bash", "-c", script, "_", String(home || "")]
 }
@@ -560,7 +573,7 @@ function bwCompileCacheAccepted(exitCode, output) {
 function bwCompileCacheNote(on, home, state) {
   if (!on) return ""
   if (home === "") return "Not in use: XDG_CACHE_HOME is not a plain absolute path, or HOME is not set, so there is nowhere to keep it."
-  if (state === "refused") return "Not in use: the cache directory, one above it or something in it is not yours alone, or its path has characters other than printable ASCII. bw starts without it."
+  if (state === "refused") return "Not in use: the cache directory, one above it or something in it is not yours alone, the qs-bitwarden-cli directory there holds something other than the cache, or the path has characters other than printable ASCII. bw starts without it."
   return ""
 }
 
@@ -1260,7 +1273,7 @@ function terminalLoginCommand(mode, serverUrl, slot) {
   // The terminal may be started by the session manager with the user
   // manager's environment, not this launcher's: the script itself drops a
   // NODE_COMPILE_CACHE before any `bw`. No cache here, setting on or off.
-  var inner = "set -u; " + BW_COMPILE_CACHE_UNSET + accountAppDataExport(slot) + appDataDirPrelude()
+  var inner = "set -u; " + BW_COMPILE_CACHE_UNSET + BW_UNCACHED_FUNCTION + accountAppDataExport(slot) + appDataDirPrelude()
     + "d=\"${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR -- refusing to write a session key}/"
     + RUNTIME_SUBDIR + "\"; f=\"$d/" + HANDOFF_BASENAME + "\"; "
     // umask before mkdir so the dir is created 0700; a failed chmod means the

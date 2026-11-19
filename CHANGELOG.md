@@ -30,11 +30,13 @@
   signed-out account and the plugin's own `node -e` checks never use the
   cache either. Turning the setting off leaves the directory;
   docs/uninstall.md says where it is.
-- **An inherited `NODE_COMPILE_CACHE` is never passed on.** Whether the new
+- **An inherited `NODE_COMPILE_CACHE` is not passed on.** Whether the new
   setting is on or off, a `NODE_COMPILE_CACHE` the shell was started with is
-  removed from the environment of every `bw` and `node` the plugin starts
-  (the terminal sign-in's script unsets it itself), so `bw` only ever loads
-  cached code from the directory the plugin checked.
+  removed from the environment the plugin gives each `bw` and `node` it
+  starts, and the terminal sign-in's script unsets it and starts its `bw`
+  through `env -u`. What the plugin cannot do is stop your own shell
+  startup file from setting it again: one named by `BASH_ENV` that exports
+  the variable still applies inside the plugin's `bash` scripts.
 - **Taking over Omarchy's password-manager key.** The README's Global hotkey
   section now shows the two `bindings.lua` lines that make
   `SUPER + SHIFT + SLASH` toggle the panel instead of launching 1Password,
