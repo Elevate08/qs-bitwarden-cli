@@ -37,7 +37,8 @@ let n = 0
 // Commits BASE_FILES to a fixture release branch, applies `changes` (path ->
 // content, null to delete, {symlink} for a symlink) on a branch off it, then runs
 // the gate there.
-function gate(changes, env = {}) {
+// `prepare(dir)` runs after the PR commit, before the gate.
+function gate(changes, env = {}, prepare = null) {
   const dir = path.join(tmp, `repo${n++}`)
   fs.mkdirSync(dir)
   git(dir, "init", "-q", "-b", "main")
@@ -60,6 +61,7 @@ function gate(changes, env = {}) {
   }
   git(dir, "add", "-A")
   git(dir, "commit", "-q", "-m", "pr")
+  if (prepare) prepare(dir)
   const r = spawnSync("bash", [], {
     cwd: dir, input: script, encoding: "utf8",
     env: {
@@ -105,6 +107,7 @@ const denied = {
   "a nested rust-toolchain": { "tools/rust-toolchain": "b\n" },
   "a nested .cargo directory": { "tools/.cargo/config.toml": "b\n" },
   "the build script": { "scripts/build-agent.sh": "b\n" },
+  "a workflow": { ".github/workflows/helper-rebuild.yml": "b\n" },
   ".gitattributes (alters git archive)": { ".gitattributes": "agent/src export-ignore\n" },
   "a package file outside src/": { "agent/tests/t.rs": "b\n" },
   "a package benches file": { "vault/benches/b.rs": "b\n" },
@@ -121,6 +124,22 @@ verdict("a fork is not eligible", { "agent/src/main.rs": "b\n" }, "no", { IS_FOR
 verdict("a push is not eligible", { "agent/src/main.rs": "b\n" }, "no", { GITHUB_EVENT_NAME: "push" })
 verdict("a PR into master is not eligible", { "agent/src/main.rs": "b\n" }, "no", { GITHUB_BASE_REF: "master" })
 verdict("an unfetched base is not eligible", { "agent/src/main.rs": "b\n" }, "no", { GITHUB_BASE_REF: "release/9.9" })
+
+// `origin/<base>` names a tag before it names the remote-tracking branch, so
+// a tag of that name at the PR's own head would make the diff empty.
+{
+  const { out, err } = gate({ "agent/Cargo.lock": "b\n" }, {},
+    dir => git(dir, "tag", "origin/release/1.0", "HEAD"))
+  check("a tag named like the base branch does not stand in for it", out === "no", `got ${out}: ${err}`)
+}
+// The reason names the PR's files; a name must not be able to start a log
+// line of its own, where the runner reads `::` as a command.
+{
+  // (Unquoted, the first name is a glob that matches the second, whole.)
+  const { out, err } = gate({ "x*/Cargo.toml": "b\n", "x\n::error::forged/Cargo.toml": "b\n" })
+  check("a file name cannot put a workflow command in the gate's log",
+    out === "no" && /forged/.test(err) && !/^::/m.test(err), `got ${out}: ${err}`)
+}
 
 fs.rmSync(tmp, { recursive: true, force: true })
 done()
