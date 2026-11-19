@@ -753,6 +753,9 @@ Item {
   // it so answers for a vault no longer open are dropped (vaultReadIsStale()).
   property int vaultEpoch: 0
   property var readEpochs: ({})
+  // Reads waiting for their process: { name: { epoch, launch } }
+  // (startVaultRead()). Holds no vault data.
+  property var queuedReads: ({})
 
   // Processes whose collectors still need emptying after a lock; see
   // scrubSecretBuffers().
@@ -4790,9 +4793,10 @@ Item {
   function loadSends() {
     if (!session) return
     sendsLoading = true
-    beginVaultRead("sends")
-    listSendsProc.command = Model.listSendsCommand()
-    listSendsProc.running = true
+    startVaultRead("sends", listSendsProc, function() {
+      listSendsProc.command = Model.listSendsCommand()
+      listSendsProc.running = true
+    })
   }
 
   function onSendsLoaded(raw) {
@@ -6707,6 +6711,7 @@ Item {
     vaultEpoch += 1
     sshAgentLoadFailStreak = 0
     readEpochs = ({})
+    queuedReads = ({})
     masterPassword = ""
     itemsLoadedAt = 0
     orgsLoadedAt = 0
@@ -6869,6 +6874,44 @@ Item {
     return Model.vaultReadIsStale(readEpochs[name], vaultEpoch, !!session)
   }
 
+  // Whether an earlier run still holds `proc`: running (a lock's scrub
+  // included), or stopped with its exit still to come. Setting `running`
+  // again then starts nothing, and that run's answer is the next to arrive.
+  function vaultProcBusy(proc) {
+    return proc.running || (proc.runId !== undefined && proc.runId !== 0)
+  }
+
+  // Starts reader `name` on its shared process: `launch()` sets the command
+  // and runs it. The generation is stamped here, when the run starts, so the
+  // answer is judged against the vault it was started for. While an earlier
+  // run holds the process the read waits in `queuedReads` (the newest one
+  // only) and starts when that run exits (supersededVaultRead()); nothing of
+  // the process is touched meanwhile.
+  function startVaultRead(name, proc, launch) {
+    if (vaultProcBusy(proc)) {
+      queuedReads[name] = { epoch: vaultEpoch, launch: launch }
+      return
+    }
+    delete queuedReads[name]
+    beginVaultRead(name)
+    launch()
+  }
+
+  // Asked on every exit of a reader's process, a scrub's included. True when
+  // a newer read was waiting: the answer that just arrived is not the one
+  // wanted and must not be used, and the waiting read starts now if it is
+  // still for the open vault.
+  function supersededVaultRead(name) {
+    var queued = queuedReads[name]
+    if (!queued) return false
+    delete queuedReads[name]
+    if (queued.epoch === vaultEpoch && session) {
+      beginVaultRead(name)
+      queued.launch()
+    }
+    return true
+  }
+
   // Items, organizations and folders together: each is its own bw start, and
   // bw spends most of one waiting, so queueing them only added ~3 s. On a
   // session `bw status` has not confirmed yet, the metadata waits for it.
@@ -6912,18 +6955,17 @@ Item {
     if (showSpinner !== false) isLoading = true
     // The early read for this vault is still running: it serves this request.
     if (listProc.running && listReadEarly && !vaultReadIsStale("items")) return
-    beginVaultRead("items")
     listReadMode = Model.vaultListMode(dependencies)
     if (listReadMode === "blocked") {
       isLoading = false
       abandonSyncReload()
-      if (!vaultReadIsStale("items")) {
-        errorMessage = Model.vaultListBlockedMessage(dependencies)
-        listReadError = errorMessage
-      }
+      errorMessage = Model.vaultListBlockedMessage(dependencies)
+      listReadError = errorMessage
       return
     }
-    startVaultListRead(false)
+    // Behind a run still going (an account just left, a lock's scrub, an
+    // older refresh), this read waits for it to exit.
+    startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
   }
 
   // The reload a sync ends with (onSyncFinished(), maybeAutoSync()) cannot
@@ -6992,12 +7034,20 @@ Item {
   }
 
   function onListProcessExited(exitCode, rawJson, stderrText) {
-    if (finishScrubRun(listProc)) return
+    if (finishScrubRun(listProc)) {
+      supersededVaultRead("items")
+      return
+    }
     var hadAgentBranch = listAgentBranchActive
     var wasEarly = listReadEarly
     listAgentBranchActive = false
     listReadEarly = false
     endSshAgentLoad(exitCode === 0)
+    // A read asked for since this run started replaces its answer.
+    if (supersededVaultRead("items")) {
+      listRetriedWithoutAgent = false
+      return
+    }
 
     if (exitCode === 0) {
       listRetriedWithoutAgent = false
@@ -7043,9 +7093,10 @@ Item {
   function loadOrganizations(force) {
     if (!session) return
     if (!force && organizations.length > 0 && (Date.now() - orgsLoadedAt) < metaFreshMs) return
-    beginVaultRead("organizations")
-    listOrgsProc.command = Model.listOrganizationsCommand()
-    listOrgsProc.running = true
+    startVaultRead("organizations", listOrgsProc, function() {
+      listOrgsProc.command = Model.listOrganizationsCommand()
+      listOrgsProc.running = true
+    })
   }
 
   function onListOrgsFinished(rawJson) {
@@ -7057,9 +7108,10 @@ Item {
   function loadFolders(force) {
     if (!session) return
     if (!force && folders.length > 0 && (Date.now() - foldersLoadedAt) < metaFreshMs) return
-    beginVaultRead("folders")
-    listFoldersProc.command = Model.listFoldersCommand()
-    listFoldersProc.running = true
+    startVaultRead("folders", listFoldersProc, function() {
+      listFoldersProc.command = Model.listFoldersCommand()
+      listFoldersProc.running = true
+    })
   }
 
   function onListFoldersFinished(rawJson) {
@@ -7294,9 +7346,12 @@ Item {
   function loadOrgCollections(orgId) {
     if (!session || !orgId) return
     formCollectionsLoading = true
-    beginVaultRead("collections")
-    orgCollectionsProc.command = Model.listOrgCollectionsCommand(orgId)
-    orgCollectionsProc.running = true
+    // A second organization asked for while the first is being read waits,
+    // and the first one's answer is then dropped: it is not this one's.
+    startVaultRead("collections", orgCollectionsProc, function() {
+      orgCollectionsProc.command = Model.listOrgCollectionsCommand(orgId)
+      orgCollectionsProc.running = true
+    })
   }
 
   function onOrgCollectionsLoaded(raw) {
@@ -7455,6 +7510,9 @@ Item {
   function openDetail(item, browsing) {
     closeFilterGroup()
     if (!item || !item.id) return
+    // A `bw get item` still running, or waiting, was for the item open before.
+    invalidateEpochOperation("detail")
+    delete queuedReads["detail"]
     // Another item's confirmation does not carry over.
     if (String(item.id) !== repromptVerifiedId) clearRepromptGrant()
     if (!browsing) learnFromPick(item)
@@ -7477,7 +7535,6 @@ Item {
       detailItem = detail
       detailPassword = detail.password
     } else {
-      beginVaultRead("detail")
       if (item.typeCode === 5) {
         isLoading = false
         errorMessage = "SSH keys are read-only public records"
@@ -7490,8 +7547,12 @@ Item {
         isLoading = false
         detailItem = Model.publicItemDetail(item)
       } else {
-        getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
-        getItemProc.running = true
+        var readId = item.id
+        var readType = item.typeCode
+        startVaultRead("detail", getItemProc, function() {
+          getItemProc.command = Model.getItemCommand(readId, readType)
+          getItemProc.running = true
+        })
       }
     }
 
@@ -9506,7 +9567,8 @@ Item {
       id: listFoldersStdout
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(listFoldersProc)) return
+      var scrub = root.finishScrubRun(listFoldersProc)
+      if (root.supersededVaultRead("folders") || scrub) return
       if (exitCode === 0) root.onListFoldersFinished(listFoldersStdout.text)
     }
   }
@@ -9519,7 +9581,8 @@ Item {
       id: orgCollectionsStdout
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(orgCollectionsProc)) return
+      var scrub = root.finishScrubRun(orgCollectionsProc)
+      if (root.supersededVaultRead("collections") || scrub) return
       if (exitCode === 0) root.onOrgCollectionsLoaded(orgCollectionsStdout.text)
       else root.formCollectionsLoading = false
     }
@@ -9556,7 +9619,8 @@ Item {
       id: listSendsStdout
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(listSendsProc)) return
+      var scrub = root.finishScrubRun(listSendsProc)
+      if (root.supersededVaultRead("sends") || scrub) return
       if (exitCode === 0) root.onSendsLoaded(listSendsStdout.text)
       else root.sendsLoading = false
     }
@@ -10123,7 +10187,8 @@ Item {
       id: listOrgsStdout
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(listOrgsProc)) return
+      var scrub = root.finishScrubRun(listOrgsProc)
+      if (root.supersededVaultRead("organizations") || scrub) return
       if (exitCode === 0) root.onListOrgsFinished(listOrgsStdout.text)
     }
   }
@@ -10139,7 +10204,8 @@ Item {
       id: getItemStderr
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(getItemProc)) return
+      var scrub = root.finishScrubRun(getItemProc)
+      if (root.supersededVaultRead("detail") || scrub) return
       if (exitCode === 0) {
         root.onDetailFinished(getItemStdout.text)
       } else {

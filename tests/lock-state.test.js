@@ -210,11 +210,18 @@ for (const [name, starter, handler] of [
   ["totp",          "startTotpFetch",     "onTotpFinished"],
   ["sends",         "loadSends",          "onSendsLoaded"],
 ]) {
-  check(`${starter}() records the vault generation`,
-    new RegExp(`beginVaultRead\\("${name}"\\)`).test(bodyOf(starter)), bodyOf(starter))
+  // Stamped where the run starts: by the starter itself, or by
+  // startVaultRead(), which also keeps a read asked for while the process is
+  // still held from re-stamping the run in flight.
+  check(`${starter}() records the vault generation when its run starts`,
+    new RegExp(`(beginVaultRead|startVaultRead)\\("${name}"[,)]`).test(bodyOf(starter)), bodyOf(starter))
   check(`${handler}() refuses an answer from a vault that has closed`,
     new RegExp(`if \\(vaultReadIsStale\\("${name}"\\)\\) return`).test(bodyOf(handler)), bodyOf(handler))
 }
+
+check("startVaultRead() stamps only a run it starts",
+  /if \(vaultProcBusy\(proc\)\) \{\s*queuedReads\[name\] = \{ epoch: vaultEpoch, launch: launch \}\s*return\s*\}\s*delete queuedReads\[name\]\s*beginVaultRead\(name\)\s*launch\(\)/
+    .test(bodyOf("startVaultRead")), bodyOf("startVaultRead"))
 
 // Writers and generated values can outlive a lock too. Their server-side
 // effect may already have happened, but no completion may repopulate the

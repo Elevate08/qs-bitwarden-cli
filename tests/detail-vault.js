@@ -26,7 +26,9 @@ const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submit
   "clearRepromptGrant", "withholdDetailSecrets", "withRevealedDetail", "loadFullDetail", "openDetail",
   "onDetailFinished", "toggleFieldReveal", "setFieldRevealed", "isFieldRevealed", "shownSecret", "revealField",
   "totpWanted", "helperRow", "readDetailSecret", "copyDetailField", "copyDetailFieldNow", "startEditItem",
-  "copyDetailTotp", "copyTotpCodeNow", "applyTotpCode", "fetchTotp", "localTotp", "saveItemForm"]
+  "copyDetailTotp", "copyTotpCodeNow", "applyTotpCode", "fetchTotp", "localTotp", "saveItemForm",
+  "beginVaultRead", "beginEpochOperation", "invalidateEpochOperation", "vaultReadIsStale", "vaultProcBusy",
+  "startVaultRead", "supersededVaultRead"]
 
 // `items`: the list (rows from Model.parseItems). `fallback`: no helper.
 function makeVault(items, fallback) {
@@ -40,10 +42,11 @@ function makeVault(items, fallback) {
     showDeleteConfirm: false, attachmentQueue: [], attachmentSaved: {},
     totpFollowupActive: false, totpFollowupItem: null, totpFollowupCode: "", totpCopyItemId: "",
     totpRequestItemId: "", totpQueuedItemId: "", totpQueuedEpoch: -1, totpRestartPending: false,
-    getTotpProc: { running: false },
+    getTotpProc: { running: false }, getItemProc: { running: false, command: [] },
+    readEpochs: {}, queuedReads: {},
     pendingSave: null, formIsEditing: true, formItemId: "g1",
     queries: [], answers: [], copied: [], edits: [], flashes: [], formResets: 0, verify: null,
-    closeFilterGroup() {}, learnFromPick() {}, beginVaultRead() {}, vaultReadIsStale() { return false },
+    closeFilterGroup() {}, learnFromPick() {},
     resetAutoLockTimer() {}, flashNotification(text) { v.flashes.push(text) },
     startTotpFetch(id) { v.queries.push({ kind: "bw get totp", args: { id } }) },
     copyToClipboard(value, label) { v.copied.push([value, label]) },

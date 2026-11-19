@@ -162,6 +162,16 @@
   later one. A save or delete also dropped the rows past that point from the
   list on screen until the next reload. Both now work over the whole list,
   without copying it.
+- **A list read left over from another account is not taken for the new
+  one's.** Each of the panel's readers (items, folders, organizations,
+  collections, Sends, a single item) runs one command at a time. A read
+  asked for while the previous run was still going (an account just left, a
+  lock's cleanup run, an older refresh) started nothing, and the previous
+  run's answer was then accepted as the new read's: after an account switch
+  that could be an empty list shown as the vault, with the list error
+  cleared. A read now waits for the run before it to exit and that run's
+  answer is dropped; the same goes for a second organization's collections
+  or a second item asked for while the first is being read.
 
 ## [1.13.1] - 2026-11-18
 
