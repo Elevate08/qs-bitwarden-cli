@@ -228,6 +228,20 @@
   open nor use a grant. With a helper from before this change the panel
   treats every forwarded login's server as claimed. This needs the rebuilt
   SSH agent helper.
+- **A list the panel refuses is no longer what the vault helper answers
+  from.** The helper took each list read as its items the moment `bw` printed
+  it, before the panel decided whether to show it. When the panel refused one
+  (it was started before a save, delete or sync finished, or a newer read
+  replaced it) and the read that should have replaced it failed or could not
+  start, the helper went on serving the refused one: an edited item's old
+  password could be copied, revealed or typed. A list read is now set aside in
+  the helper, one at a time and under an id, and becomes its items only when
+  the panel accepts that list; a refused or replaced one is dropped and wiped,
+  as it is by a save or delete that finishes meanwhile and by a lock, logout
+  or account switch. Searches, reveals, copies, auto-type and TOTP answer only
+  from the last list both sides accepted. This needs the rebuilt vault helper
+  (it says `staged-lists` in `--version`); with one from before it the panel
+  asks the old way and behaves as it did.
 
 ### Changed
 

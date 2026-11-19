@@ -1077,6 +1077,9 @@ Item {
   // "pending" | "starting" | "active" | "fallback" | "stopped"
   property string vaultHelperState: "pending"
   readonly property bool vaultHelperActive: vaultHelperState === "active"
+  // The helper in use sets a list read aside until the panel commits it
+  // (docs/vault-helper.md). One from before that takes each read at once.
+  readonly property bool vaultHelperStaging: vaultHelperActive && vaultHelper.staging === true
   property string vaultHelperWarning: ""
   property int vaultRunSeq: 0
   property var vaultRuns: ({})
@@ -1216,6 +1219,7 @@ Item {
       var runs = Object.assign({}, vaultRuns)
       delete runs[message.id]
       vaultRuns = runs
+      proc.staged = Math.floor(Number(message.staged)) || 0
       proc.finish(Number(message.code), message.out, message.err, message.session === true, message.held === true)
     } else if (message.type === "result") {
       var done = vaultQueries[message.q]
@@ -1319,7 +1323,9 @@ Item {
     runs[id] = proc
     vaultRuns = runs
     proc.runId = id
-    vaultHelperProc.write(Model.vaultExecLine(id, proc.command, environment, inject, proc.capture, proc.stdinText))
+    // Decided here, as the request is written, for the helper it goes to.
+    var capture = proc.capture === "vault" && vaultHelperStaging ? "vaultStage" : proc.capture
+    vaultHelperProc.write(Model.vaultExecLine(id, proc.command, environment, inject, capture, proc.stdinText))
     proc.started()
   }
 
@@ -1376,6 +1382,28 @@ Item {
   function forgetHeldAfter(value) {
     var kept = value
     return function() { root.forgetHeldPassword(kept) }
+  }
+
+  // The list read the helper staged under `stage` is the one now shown: its
+  // items become the helper's. Written before anything asked of the new
+  // list, and the helper answers in order. A commit the helper refuses (that
+  // read is no longer the one staged) leaves it answering from the list
+  // before, so the list is read again.
+  function commitStagedList(stage) {
+    if (!stage) return
+    var epoch = vaultEpoch
+    vaultQuery("commitVault", { stage: stage }, function(ok) {
+      if (ok || epoch !== root.vaultEpoch || !root.vaultHelperActive) return
+      console.warn("qs-bitwarden: the vault helper did not take the list that is shown; reading it again")
+      root.itemsLoadedAt = 0
+      root.loadItems(false)
+    })
+  }
+
+  // The list read staged under `stage` will not be shown: the helper drops
+  // it and keeps answering from the last list both sides accepted.
+  function discardStagedList(stage) {
+    if (stage && vaultHelperActive) vaultHelperProc.write(Model.vaultHelperLine("discardVault", { stage: stage }))
   }
 
   // An item the vault no longer has (deleted or trashed).
@@ -6893,6 +6921,8 @@ Item {
     readEpochs = ({})
     queuedReads = ({})
     listRereadOwed = false
+    // The helper drops what it had staged with the rest (forgetVault()).
+    listProc.staged = 0
     createdItemHandoff = null
     masterPassword = ""
     itemsLoadedAt = 0
@@ -7240,6 +7270,9 @@ Item {
     }
     var hadAgentBranch = listAgentBranchActive
     var wasEarly = listReadEarly
+    // What the helper set aside of this read, taken before another starts.
+    var staged = listProc.staged
+    listProc.staged = 0
     listAgentBranchActive = false
     listReadEarly = false
     endSshAgentLoad(exitCode === 0)
@@ -7253,6 +7286,7 @@ Item {
       || (exitCode === 0 && !vaultReadIsStale("items") && listSnapshotOutdated())
     if (hadAgentBranch && notShown && !vaultReadIsStale("items")) sshAgentLoadedForVaultEpoch = -1
     // A read asked for since this run started replaces its answer.
+    if (queuedReads["items"]) discardStagedList(staged)
     if (supersededVaultRead("items")) {
       listRetriedWithoutAgent = false
       return
@@ -7261,10 +7295,12 @@ Item {
     if (exitCode === 0) {
       listRetriedWithoutAgent = false
       // A snapshot from before a save or delete finished would take the saved
-      // row away again, or bring the deleted one back, here and in the helper
-      // (whose items this read has already replaced): read again instead.
-      // What an accepted list settles (the sync, the spinner) waits for that.
+      // row away again, or bring the deleted one back: read again instead,
+      // and the helper drops what it set aside of this one (a helper from
+      // before staging has already taken it). What an accepted list settles
+      // (the sync, the spinner) waits for that.
       if (!vaultReadIsStale("items") && listSnapshotOutdated()) {
+        discardStagedList(staged)
         if (itemChangeRunning()) listRereadOwed = true
         // While an SSH approval waits, a key load would fail it. An
         // automatic sync's reload is already owed and holds off for that
@@ -7273,9 +7309,15 @@ Item {
         else startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
         return
       }
+      // The list that is shown is the one the helper answers from: what it
+      // set aside of this read becomes its items before anything is asked of
+      // them (onListFinished() refuses a read of a vault since closed).
+      if (vaultReadIsStale("items")) discardStagedList(staged)
+      else commitStagedList(staged)
       onListFinished(rawJson)
       return
     }
+    discardStagedList(staged)
 
     // The agent must never cost the item list: retry once without it.
     if (hadAgentBranch && !listRetriedWithoutAgent && !vaultReadIsStale("items")) {
@@ -7309,9 +7351,8 @@ Item {
       errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
       listReadError = errorMessage
       // The list on screen is not known to be current (this may have been
-      // the re-read of a snapshot that was refused, which the vault helper
-      // has taken all the same): the next time it is wanted it is read
-      // again (ensureItemsFresh()).
+      // the re-read of a snapshot that was refused): the next time it is
+      // wanted it is read again (ensureItemsFresh()).
       itemsLoadedAt = 0
     }
   }

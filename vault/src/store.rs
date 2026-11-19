@@ -163,12 +163,26 @@ struct Held {
     card_digits: Zeroizing<String>,
 }
 
+/// The items of a staged list read, wiped when dropped as `Held` is.
+struct Staged {
+    id: u64,
+    items: Vec<Held>,
+    index: HashMap<String, usize>,
+}
+
 #[derive(Default)]
 pub struct Store {
     session: Option<Zeroizing<String>>,
     secrets: HashMap<String, Zeroizing<String>>,
     items: Vec<Held>,
     index: HashMap<String, usize>,
+    /// A list read the panel has not accepted yet (`stage_vault`): at most
+    /// one, and nothing is answered from it. It becomes `items` only when
+    /// the panel commits it by its id.
+    staged: Option<Staged>,
+    /// The last id given to a staged read. Never reset, so an id is not
+    /// reused after a `forget`.
+    stage_seq: u64,
     /// Counts `forget`s. A run remembers the count it started under, and
     /// what it captured is dropped if the count has moved on: it belongs to
     /// a vault the panel has since locked, logged out of or switched away
@@ -209,10 +223,13 @@ impl Store {
         self.secrets.retain(|name, _| keep.contains(name));
         self.items.clear();
         self.index.clear();
+        self.staged = None;
     }
 
-    /// Drops one item, from search as well as from `item`.
+    /// Drops one item, from search as well as from `item`. A staged read is
+    /// from before the delete and is dropped with it.
     pub fn forget_item(&mut self, id: &str) {
+        self.staged = None;
         let Some(at) = self.index.remove(id) else {
             return;
         };
@@ -306,68 +323,128 @@ impl Store {
 
     /// Takes a sanitized vault read (`{sshCapability, items, sshKeys}`, the
     /// panel's jq filter output) and returns it with every secret removed.
-    /// `replace` swaps the whole store (a list read); otherwise the items are
-    /// added or updated (a save). `None`: not a vault read of that shape.
-    /// Nothing of it may be forwarded, and the store is left as it was.
+    /// `replace` swaps the whole store (a list read taken at once, as a
+    /// panel from before staging asks); otherwise the items are added or
+    /// updated (a save). `None`: not a vault read of that shape. Nothing of
+    /// it may be forwarded, and the store is left as it was. Either way a
+    /// staged read is dropped: it is from before this one.
     pub fn strip_vault(&mut self, raw: &str, replace: bool) -> Option<Zeroizing<String>> {
-        let mut vault: Value = serde_json::from_str(raw).ok()?;
-        if !is_vault_read(&vault) {
-            wipe_value(&mut vault);
-            return None;
-        }
+        self.staged = None;
         if replace {
-            self.items.clear();
-            self.index.clear();
+            let (mut items, mut index) = (Vec::new(), HashMap::new());
+            let out = strip_into(raw, &mut items, &mut index)?;
+            self.items = items;
+            self.index = index;
+            Some(out)
+        } else {
+            strip_into(raw, &mut self.items, &mut self.index)
         }
-        if let Some(Value::Array(items)) = vault.get_mut("items") {
-            for item in items.iter_mut() {
-                if let Value::Object(map) = item {
-                    for path in SSH_PRIVATE_KEY_PATHS {
-                        remove(map, path);
-                    }
-                    self.hold(map);
-                    strip_item(map);
-                }
-            }
-        }
-        if let Some(Value::Array(keys)) = vault.get_mut("sshKeys") {
-            for key in keys.iter_mut() {
-                if let Value::Object(map) = key {
-                    // Public records: cut down to that, then held for search.
-                    public_ssh_record(map);
-                    self.hold(map);
-                }
-            }
-        }
-        let out = serde_json::to_string(&vault).ok().map(Zeroizing::new);
-        wipe_value(&mut vault);
-        out
     }
 
-    fn hold(&mut self, item: &mut Map<String, Value>) {
-        let Some(id) = item.get("id").and_then(Value::as_str).map(str::to_owned) else {
-            return;
-        };
-        let Ok(full) = serde_json::to_string(item) else {
-            return;
-        };
-        let held = Held {
-            haystack: haystack(item),
-            card_digits: Zeroizing::new(
-                text(item, &["card", "number"])
-                    .chars()
-                    .filter(char::is_ascii_digit)
-                    .collect(),
-            ),
-            full: Zeroizing::new(full),
-            id: id.clone(),
-        };
-        match self.index.get(&id) {
-            Some(at) => self.items[*at] = held,
-            None => {
-                self.index.insert(id, self.items.len());
-                self.items.push(held);
+    /// As a replacing `strip_vault`, but the items are set aside under the
+    /// id returned, and the store answers from what it held until
+    /// `commit_staged` is given that id. One read is staged at a time: this
+    /// drops the one before, whether or not this read is understood.
+    pub fn stage_vault(&mut self, raw: &str) -> Option<(u64, Zeroizing<String>)> {
+        self.staged = None;
+        let (mut items, mut index) = (Vec::new(), HashMap::new());
+        let out = strip_into(raw, &mut items, &mut index)?;
+        self.stage_seq = self.stage_seq.wrapping_add(1).max(1);
+        let id = self.stage_seq;
+        self.staged = Some(Staged { id, items, index });
+        Some((id, out))
+    }
+
+    /// The staged read `id` becomes the store's items. False, and nothing
+    /// changes, when that is not the read staged now (it was replaced,
+    /// discarded, or dropped by a lock, a save or a delete).
+    pub fn commit_staged(&mut self, id: u64) -> bool {
+        match self.staged.take() {
+            Some(staged) if staged.id == id => {
+                self.items = staged.items;
+                self.index = staged.index;
+                true
             }
+            other => {
+                self.staged = other;
+                false
+            }
+        }
+    }
+
+    /// Drops the staged read `id`, if it is the one staged now.
+    pub fn discard_staged(&mut self, id: u64) {
+        if self.staged.as_ref().is_some_and(|staged| staged.id == id) {
+            self.staged = None;
+        }
+    }
+
+    /// Drops whatever is staged (a staged read that failed).
+    pub fn unstage(&mut self) {
+        self.staged = None;
+    }
+}
+
+/// Parses a vault read into `items`/`index` and returns it without secrets
+/// (`Store::strip_vault`). Nothing is added unless the shape is right.
+fn strip_into(
+    raw: &str,
+    held: &mut Vec<Held>,
+    index: &mut HashMap<String, usize>,
+) -> Option<Zeroizing<String>> {
+    let mut vault: Value = serde_json::from_str(raw).ok()?;
+    if !is_vault_read(&vault) {
+        wipe_value(&mut vault);
+        return None;
+    }
+    if let Some(Value::Array(items)) = vault.get_mut("items") {
+        for item in items.iter_mut() {
+            if let Value::Object(map) = item {
+                for path in SSH_PRIVATE_KEY_PATHS {
+                    remove(map, path);
+                }
+                hold(held, index, map);
+                strip_item(map);
+            }
+        }
+    }
+    if let Some(Value::Array(keys)) = vault.get_mut("sshKeys") {
+        for key in keys.iter_mut() {
+            if let Value::Object(map) = key {
+                // Public records: cut down to that, then held for search.
+                public_ssh_record(map);
+                hold(held, index, map);
+            }
+        }
+    }
+    let out = serde_json::to_string(&vault).ok().map(Zeroizing::new);
+    wipe_value(&mut vault);
+    out
+}
+
+fn hold(items: &mut Vec<Held>, index: &mut HashMap<String, usize>, item: &mut Map<String, Value>) {
+    let Some(id) = item.get("id").and_then(Value::as_str).map(str::to_owned) else {
+        return;
+    };
+    let Ok(full) = serde_json::to_string(item) else {
+        return;
+    };
+    let held = Held {
+        haystack: haystack(item),
+        card_digits: Zeroizing::new(
+            text(item, &["card", "number"])
+                .chars()
+                .filter(char::is_ascii_digit)
+                .collect(),
+        ),
+        full: Zeroizing::new(full),
+        id: id.clone(),
+    };
+    match index.get(&id) {
+        Some(at) => items[*at] = held,
+        None => {
+            index.insert(id, items.len());
+            items.push(held);
         }
     }
 }
@@ -919,6 +996,51 @@ mod tests {
         store.strip_vault(&saved.to_string(), true).unwrap();
         assert!(store.item("c").is_none());
         assert!(store.strip_vault("not json", true).is_none());
+    }
+
+    #[test]
+    fn a_staged_read_answers_nothing_until_its_own_id_is_committed() {
+        let read = |password: &str| {
+            serde_json::json!({ "items": [{ "id": "a", "type": 1, "name": "Bank", "login": { "password": password } }], "sshKeys": [] }).to_string()
+        };
+        let holds = |store: &Store, password: &str| {
+            store.item("a").is_some_and(|item| item.contains(password))
+        };
+        let mut store = Store::default();
+        store.strip_vault(&vault(), true).unwrap();
+
+        // Staged: handed on without secrets, and not answered from.
+        let (first, shown) = store.stage_vault(&read("staged-1")).unwrap();
+        assert!(!shown.contains("staged-1"));
+        assert!(holds(&store, "hunter2") && store.search("  ").len() == 5);
+        assert_eq!(
+            store
+                .value_at("a", &["login", "password"])
+                .unwrap()
+                .as_str(),
+            "hunter2"
+        );
+        // A newer read takes its place: the older id commits nothing, and
+        // neither does a discarded one.
+        let (second, _) = store.stage_vault(&read("staged-2")).unwrap();
+        assert!(second != first && !store.commit_staged(first));
+        store.discard_staged(first);
+        assert!(holds(&store, "hunter2"));
+        assert!(store.commit_staged(second) && holds(&store, "staged-2"));
+        assert!(store.item("c").is_none() && !store.commit_staged(second));
+
+        // A save lands in the committed items and ends a read staged before it.
+        let (stale, _) = store.stage_vault(&read("staged-3")).unwrap();
+        store.strip_vault(&read("saved"), false).unwrap();
+        assert!(!store.commit_staged(stale) && holds(&store, "saved"));
+        // So does a lock, and the next id is a new one.
+        let (locked, _) = store.stage_vault(&read("staged-4")).unwrap();
+        store.forget(&[]);
+        assert!(!store.commit_staged(locked) && store.item("a").is_none());
+        let (next, _) = store.stage_vault(&read("staged-5")).unwrap();
+        assert!(next != locked);
+        // A read that is refused still ends the one staged before it.
+        assert!(store.stage_vault("not json").is_none() && !store.commit_staged(next));
     }
 
     #[test]

@@ -34,6 +34,10 @@ const VAULT_READ_REFUSED: &str = "Could not safely read vault items.\n";
 /// are dropped, as there is no reply to refuse them with.
 const MAX_DETACHED: usize = 8;
 const EXIT_REFUSED: i32 = 126;
+/// Said after the protocol in `--version`: this helper stages a list read
+/// (the `vaultStage` capture, `commitVault`, `discardVault`). The panel's
+/// inspection looks for it and asks the old way of a helper without it.
+const STAGED_LISTS: &str = "staged-lists";
 /// `wtype` waits before the first key, so the shortcut that asked for the
 /// typing is let go first, and between keys, so a page that moves focus on
 /// Tab keeps up. The text comes on stdin; `-` reads it.
@@ -93,7 +97,7 @@ fn main() {
     match arg.as_deref() {
         Some("--version") => {
             println!(
-                "{NAME} {} (protocol {})",
+                "{NAME} {} (protocol {}) {STAGED_LISTS}",
                 env!("CARGO_PKG_VERSION"),
                 control::PROTOCOL
             );
@@ -294,6 +298,11 @@ impl Helper {
             }
             Request::ForgetSecret { name, .. } => self.store.lock().unwrap().forget_secret(&name),
             Request::ForgetItem { id, .. } => self.store.lock().unwrap().forget_item(&id),
+            Request::CommitVault { q, stage, .. } => {
+                let committed = self.store.lock().unwrap().commit_staged(stage);
+                self.result(q, committed.then_some(Value::Bool(true)));
+            }
+            Request::DiscardVault { stage, .. } => self.store.lock().unwrap().discard_staged(stage),
             Request::Item { q, id, .. } => {
                 let store = self.store.lock().unwrap();
                 let line = store.item(&id).map(|full| secret_result_line(q, full));
@@ -610,7 +619,8 @@ fn run(
     } else {
         Zeroizing::new(String::from_utf8_lossy(&stdout).into_owned())
     };
-    let (forwarded, session, held, refused) = keep(&store, generation, &capture, code, &text);
+    let (forwarded, session, held, refused, staged) =
+        keep(&store, generation, &capture, code, &text);
     // A refused list read is a failed one. Reported as a success it would be
     // an empty vault to the panel, while the items of the last good read are
     // still held here.
@@ -620,7 +630,7 @@ fn run(
     } else {
         String::from_utf8_lossy(&err).into_owned()
     });
-    let _ = out.send(exit_line(id, code, &forwarded, &err, session, held));
+    let _ = out.send(exit_line(id, code, &forwarded, &err, session, held, staged));
 }
 
 /// What the panel is told of a finished run, and whether the helper kept a
@@ -631,16 +641,19 @@ fn run(
 /// has forgotten it. The last flag: a list read that ran to the end under
 /// the current generation and was not a vault read (`Store::strip_vault`).
 /// A save is not flagged: its empty answer already makes the panel reload.
+/// The number: the id a `vaultStage` read was staged under, 0 if nothing was
+/// staged.
 fn keep(
     store: &Shared<Store>,
     generation: u64,
     capture: &Capture,
     code: i32,
     text: &Zeroizing<String>,
-) -> (Zeroizing<String>, bool, bool, bool) {
+) -> (Zeroizing<String>, bool, bool, bool, u64) {
     let mut session = false;
     let mut held = false;
     let mut refused = false;
+    let mut staged = 0;
     let mut store = store.lock().unwrap();
     let current = store.generation() == generation;
     let forwarded: Zeroizing<String> = match capture {
@@ -678,13 +691,26 @@ fn keep(
             }
             Zeroizing::new(String::new())
         }
-        Capture::Vault | Capture::VaultMerge => {
-            let replace = *capture == Capture::Vault;
+        Capture::Vault | Capture::VaultMerge | Capture::VaultStage => {
+            let replace = *capture != Capture::VaultMerge;
             let stripped = if code == 0 && current {
-                let stripped = store.strip_vault(text, replace);
+                let stripped = if *capture == Capture::VaultStage {
+                    // Set aside: the store answers from what it held until
+                    // the panel commits this read.
+                    store.stage_vault(text).map(|(id, stripped)| {
+                        staged = id;
+                        stripped
+                    })
+                } else {
+                    store.strip_vault(text, replace)
+                };
                 refused = replace && stripped.is_none();
                 stripped
             } else {
+                // A staged read that failed still ends the one before it.
+                if current && *capture == Capture::VaultStage {
+                    store.unstage();
+                }
                 None
             };
             // Anything else could be a truncated read full of secrets: only
@@ -698,7 +724,7 @@ fn keep(
             })
         }
     };
-    (forwarded, session, held, refused)
+    (forwarded, session, held, refused, staged)
 }
 
 /// A piece of a reply line (see `json_line`).
@@ -762,8 +788,22 @@ fn totp_result_line(q: u64, code: &str, period: u64) -> Line {
 }
 
 /// The `exit` reply of a run: its output and errors may hold a secret.
-fn exit_line(id: u64, code: i32, out: &str, err: &str, session: bool, held: bool) -> Line {
+/// `staged` (not 0) is the id its list read was staged under.
+fn exit_line(
+    id: u64,
+    code: i32,
+    out: &str,
+    err: &str,
+    session: bool,
+    held: bool,
+    staged: u64,
+) -> Line {
     let (id, code) = (id.to_string(), code.to_string());
+    let staged = if staged == 0 {
+        String::new()
+    } else {
+        format!(r#","staged":{staged}"#)
+    };
     let flag = |b: bool| if b { "true" } else { "false" };
     json_line(&[
         Part::Raw(r#"{"type":"exit","id":"#),
@@ -778,6 +818,7 @@ fn exit_line(id: u64, code: i32, out: &str, err: &str, session: bool, held: bool
         Part::Raw(flag(session)),
         Part::Raw(r#","held":"#),
         Part::Raw(flag(held)),
+        Part::Raw(&staged),
         Part::Raw("}"),
     ])
 }
@@ -1073,13 +1114,13 @@ mod tests {
         let store = shared();
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
-        let (shown, session, _, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
+        let (shown, session, _, _, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
         assert_eq!(shown.as_str(), HELD_SESSION);
         assert!(!session);
         assert!(store.lock().unwrap().session().is_none());
 
         let now = store.lock().unwrap().generation();
-        let (_, session, _, _) = keep(&store, now, &Capture::Session, 0, &text(KEY));
+        let (_, session, _, _, _) = keep(&store, now, &Capture::Session, 0, &text(KEY));
         assert!(session);
         assert_eq!(store.lock().unwrap().session(), Some(KEY));
     }
@@ -1090,7 +1131,7 @@ mod tests {
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
         let capture = Capture::Secret("pw".to_owned());
-        let (shown, _, held, _) = keep(&store, started, &capture, 0, &text("hunter2"));
+        let (shown, _, held, _, _) = keep(&store, started, &capture, 0, &text("hunter2"));
         assert!(shown.is_empty());
         assert!(!held);
         assert!(store.lock().unwrap().secret("pw").is_none());
@@ -1101,19 +1142,19 @@ mod tests {
         let store = shared();
         let now = store.lock().unwrap().generation();
         let capture = Capture::Pinentry("pin".to_owned());
-        let (shown, session, held, _) = keep(&store, now, &capture, 0, &text("a%25%0Ab+c\n"));
+        let (shown, session, held, _, _) = keep(&store, now, &capture, 0, &text("a%25%0Ab+c\n"));
         assert!(shown.is_empty() && !session && held);
         assert_eq!(store.lock().unwrap().secret("pin"), Some("a%\nb+c"));
 
         // A cancel, an empty answer, malformed data and a crash keep
         // nothing, and do not replace what is held.
         for (code, answer) in [(1, "x"), (0, ""), (0, "%zz"), (4, "x")] {
-            let (shown, _, held, _) = keep(&store, now, &capture, code, &text(answer));
+            let (shown, _, held, _, _) = keep(&store, now, &capture, code, &text(answer));
             assert!(shown.is_empty() && !held, "{code} {answer}");
         }
         assert_eq!(store.lock().unwrap().secret("pin"), Some("a%\nb+c"));
         store.lock().unwrap().forget(&[]);
-        let (_, _, held, _) = keep(&store, now, &capture, 0, &text("late"));
+        let (_, _, held, _, _) = keep(&store, now, &capture, 0, &text("late"));
         assert!(!held);
         assert!(store.lock().unwrap().secret("pin").is_none());
     }
@@ -1124,12 +1165,12 @@ mod tests {
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&[]);
         let vault = r#"{"items":[{"id":"a","name":"n","login":{"password":"p"}}]}"#;
-        let (shown, _, _, _) = keep(&store, started, &Capture::Vault, 0, &text(vault));
+        let (shown, _, _, _, _) = keep(&store, started, &Capture::Vault, 0, &text(vault));
         assert!(shown.is_empty());
         assert!(store.lock().unwrap().item("a").is_none());
 
         // The save pipeline's marker still passes.
-        let (shown, _, _, _) = keep(
+        let (shown, _, _, _, _) = keep(
             &store,
             started,
             &Capture::VaultMerge,
@@ -1140,11 +1181,43 @@ mod tests {
     }
 
     #[test]
+    fn a_staged_list_read_is_set_aside_and_named_in_its_exit() {
+        let store = shared();
+        let now = store.lock().unwrap().generation();
+        let read = |password: &str| {
+            text(&format!(
+                r#"{{"items":[{{"id":"a","name":"n","login":{{"password":"{password}"}}}}]}}"#
+            ))
+        };
+        // As a panel from before staging asks: taken at once.
+        let (_, _, _, _, staged) = keep(&store, now, &Capture::Vault, 0, &read("old"));
+        assert!(staged == 0 && store.lock().unwrap().item("a").unwrap().contains("old"));
+
+        let (shown, _, _, refused, staged) =
+            keep(&store, now, &Capture::VaultStage, 0, &read("new"));
+        assert!(staged != 0 && !refused && shown.contains("\"a\"") && !shown.contains("new"));
+        assert!(store.lock().unwrap().item("a").unwrap().contains("old"));
+        let line: Value =
+            serde_json::from_str(&exit_line(1, 0, &shown, "", false, false, staged)).unwrap();
+        assert_eq!(line["staged"], staged);
+
+        // Refused, failed, or from before a lock: nothing is staged, and the
+        // first two end the read staged before them.
+        let (_, _, _, refused, none) = keep(&store, now, &Capture::VaultStage, 0, &text("[]"));
+        assert!(refused && none == 0 && !store.lock().unwrap().commit_staged(staged));
+        let (_, _, _, _, none) = keep(&store, now, &Capture::VaultStage, 1, &read("new"));
+        assert_eq!(none, 0);
+        store.lock().unwrap().forget(&[]);
+        let (shown, _, _, _, none) = keep(&store, now, &Capture::VaultStage, 0, &read("new"));
+        assert!(none == 0 && shown.is_empty());
+    }
+
+    #[test]
     fn a_refused_list_read_is_a_failure_and_a_refused_save_a_reload() {
         let store = shared();
         let now = store.lock().unwrap().generation();
         let good = r#"{"items":[{"id":"a","name":"n","login":{"password":"p"}}]}"#;
-        let (shown, _, _, refused) = keep(&store, now, &Capture::Vault, 0, &text(good));
+        let (shown, _, _, refused, _) = keep(&store, now, &Capture::Vault, 0, &text(good));
         assert!(!refused && shown.contains("\"a\"") && !shown.contains("\"p\""));
 
         // Not a vault read: nothing is handed on, the run is to be reported
@@ -1154,7 +1227,7 @@ mod tests {
             r#"[{"id":"a","login":{"password":"hunter2"}}]"#,
             "",
         ] {
-            let (shown, _, _, refused) = keep(&store, now, &Capture::Vault, 0, &text(bad));
+            let (shown, _, _, refused, _) = keep(&store, now, &Capture::Vault, 0, &text(bad));
             assert!(refused && shown.is_empty(), "{bad}");
             assert!(store.lock().unwrap().item("a").is_some(), "{bad}");
         }
@@ -1162,9 +1235,9 @@ mod tests {
 
         // A save answers with nothing (the panel reloads) or the marker.
         let bad = r#"{"items":[],"data":[]}"#;
-        let (shown, _, _, refused) = keep(&store, now, &Capture::VaultMerge, 0, &text(bad));
+        let (shown, _, _, refused, _) = keep(&store, now, &Capture::VaultMerge, 0, &text(bad));
         assert!(!refused && shown.is_empty());
-        let (shown, _, _, refused) = keep(
+        let (shown, _, _, refused, _) = keep(
             &store,
             now,
             &Capture::VaultMerge,
@@ -1175,10 +1248,10 @@ mod tests {
         assert_eq!(shown.as_str(), SAVED_UNSANITIZED);
 
         // A read that already failed, or outlived a lock, is not relabelled.
-        let (_, _, _, refused) = keep(&store, now, &Capture::Vault, 1, &text(""));
+        let (_, _, _, refused, _) = keep(&store, now, &Capture::Vault, 1, &text(""));
         assert!(!refused);
         store.lock().unwrap().forget(&[]);
-        let (_, _, _, refused) = keep(&store, now, &Capture::Vault, 0, &text(bad));
+        let (_, _, _, refused, _) = keep(&store, now, &Capture::Vault, 0, &text(bad));
         assert!(!refused);
     }
 
@@ -1187,7 +1260,7 @@ mod tests {
         let store = shared();
         let started = store.lock().unwrap().generation();
         store.lock().unwrap().forget(&["pw".to_owned()]);
-        let (_, session, _, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
+        let (_, session, _, _, _) = keep(&store, started, &Capture::Session, 0, &text(KEY));
         assert!(!session);
     }
 
@@ -1278,7 +1351,7 @@ mod tests {
                 json!({ "type": "result", "q": 7, "ok": true, "value": value })
             );
 
-            let line = exit_line(u64::MAX, -3, &value, &value, true, false);
+            let line = exit_line(u64::MAX, -3, &value, &value, true, false, 0);
             assert_eq!(line.capacity(), line.len(), "{value:?}");
             let parsed: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(
@@ -1292,7 +1365,7 @@ mod tests {
             line.as_str(),
             r#"{"type":"result","q":1,"ok":true,"value":{"code":"123456","period":30}}"#
         );
-        let line = exit_line(2, 0, "", "", false, true);
+        let line = exit_line(2, 0, "", "", false, true, 0);
         assert_eq!(
             line.as_str(),
             r#"{"type":"exit","id":2,"code":0,"out":"","err":"","session":false,"held":true}"#

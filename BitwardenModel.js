@@ -6554,10 +6554,15 @@ function helperInspectCommand(pluginDir, spec) {
     + "  case \"$__version\" in *" + shellQuote(spec.name + " ") + "*) ;; *) __state=no-version; continue;; esac; "
     + "  __semver=\"$(printf '%s' \"$__version\" | sed -n " + shellQuote("s/.*" + spec.name + " \\([0-9.]*\\).*/\\1/p") + ")\"; "
     + "  __proto=\"$(printf '%s' \"$__version\" | sed -n " + shellQuote(spec.protocolSed) + ")\"; "
+    // What the helper says after its protocol (spec.capability), if this
+    // helper has one to say: one from before it reports 0.
+    + (spec.capability
+      ? "  __cap=0; case \"$__version\" in *" + shellQuote(") " + spec.capability) + ") __cap=1;; esac; "
+      : "")
     + "  if timeout 20 \"$__bin\" --self-test >/dev/null 2>&1; then __self=pass; "
     + "  else __self=fail; __state=self-test-failed; continue; fi; "
     + "  __report state=ok \"source=$__source\" \"version=$__semver\" \"protocol=$__proto\" "
-    + "\"checksum=$__checksum\" \"selfTest=$__self\"; "
+    + "\"checksum=$__checksum\" \"selfTest=$__self\"" + (spec.capability ? " \"capability=$__cap\"" : "") + "; "
     + "done; "
     + "if [ -z \"$__found\" ]; then __report state=missing; fi; "
     // Keep the checksum verdict in failures, so "mismatch" is not "unchecked".
@@ -6709,10 +6714,14 @@ function heldSecretName(value) {
 }
 var VAULT_HELPER_DEVELOPMENT_RELATIVE = "vault/target/debug/qs-bitwarden-vault"
 
+// `capability`: what a helper that stages list reads says after its protocol
+// in `--version` (vault/src/main.rs STAGED_LISTS). The protocol number is the
+// same with and without it, so each works with the other's panel.
 var VAULT_HELPER_SPEC = {
   name: "qs-bitwarden-vault",
   development: VAULT_HELPER_DEVELOPMENT_RELATIVE,
-  protocolSed: "s/.*protocol \\([0-9]*\\).*/\\1/p"
+  protocolSed: "s/.*protocol \\([0-9]*\\).*/\\1/p",
+  capability: "staged-lists"
 }
 
 function vaultHelperInspectCommand(pluginDir) {
@@ -6722,8 +6731,13 @@ function vaultHelperInspectCommand(pluginDir) {
 var VAULT_HELPER_MESSAGES = helperMessages("vault helper", "vault/Cargo.toml",
   "speaks a different protocol")
 
+// `staging`: the helper inspected stages a list read until the panel commits
+// it. Only the inspection's own `capability=1` says so; a helper from before
+// staging prints no such line and is asked the old way.
 function parseVaultHelperInspection(raw) {
-  return parseHelperInspection(raw, VAULT_HELPER_PROTOCOL, VAULT_HELPER_MESSAGES)
+  var fields = parseHelperInspection(raw, VAULT_HELPER_PROTOCOL, VAULT_HELPER_MESSAGES)
+  fields.staging = fields.state === "ok" && String(raw || "").split("\n").indexOf("capability=1") !== -1
+  return fields
 }
 
 function vaultHelperPath(pluginDir, source, arch) {

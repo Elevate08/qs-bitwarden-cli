@@ -283,6 +283,33 @@ if (!fs.existsSync(binary)) {
   const inspection = require("child_process").execFileSync(...(c => [c[0], c.slice(1)])(Model.vaultHelperInspectCommand(repoRoot))).toString()
   const parsed = Model.parseVaultHelperInspection(inspection)
   eq("the panel's inspection accepts the built helper", parsed.state + "/" + parsed.protocol, "ok/1")
+  {
+    // Whether it stages list reads is what its own --version says, seen by
+    // the same inspection: the build made here does, and a helper that does
+    // not say so (the one in bin/ until it is rebuilt) is never asked to.
+    const os = require("os")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-stage-"))
+    fs.mkdirSync(path.join(root, "vault/target/debug"), { recursive: true })
+    fs.symlinkSync(binary, path.join(root, "vault/target/debug/qs-bitwarden-vault"))
+    const built = require("child_process").execFileSync(...(c => [c[0], c.slice(1)])(Model.vaultHelperInspectCommand(root))).toString()
+    fs.rmSync(root, { recursive: true, force: true })
+    check("the inspection sees that the built helper stages list reads, and that one which does not say so does not",
+      Model.parseVaultHelperInspection(built).staging === true
+        && Model.parseVaultHelperInspection(built.replace("capability=1", "capability=0")).staging === false
+        && Model.parseVaultHelperInspection(built.replace("capability=1\n", "")).staging === false, built)
+  }
+  {
+    // The capture is chosen as the request is written, for the helper in use.
+    const capture = staging => {
+      const written = []
+      const v = { Model, vaultHelperState: "active", vaultHelperActive: true, vaultHelperStaging: staging, vaultRunSeq: 0, vaultRuns: {},
+        vaultWaiting: [], bwEnvAtStart() {}, vaultHelperProc: { running: true, write: line => written.push(JSON.parse(line)) } }
+      new Function("scope", "with (scope) {\n" + body("vaultStart") + "\nreturn vaultStart }")(v)(
+        { capture: "vault", session: true, inject: {}, environment: {}, command: ["bw"], stdinText: "", started() {} })
+      return written[0].capture
+    }
+    eq("a list read is staged only by a helper that stages", capture(true) + "," + capture(false), "vaultStage,vault")
+  }
 
   const child = spawn(binary, [], { stdio: ["pipe", "pipe", "inherit"] })
   let buffer = ""
@@ -374,6 +401,29 @@ if (!fs.existsSync(binary)) {
     check("a forgotten item is no longer served by the helper", (await reply(m => m.q === 201)).ok === false, "")
     send(Model.vaultHelperLine("search", { q: 202, query: "Recovery" }))
     eq("nor found by its search", JSON.stringify((await reply(m => m.q === 202)).value), "[]")
+
+    // A staged list read: answered from only once its own id is committed.
+    const edited = code => JSON.stringify({ items: [{ id: "k", type: 3, name: "Card", card: { code } }], sshKeys: [] })
+    const cardCode = async () => (await field("field", "k", "cardCode")).value
+    const commit = async stage => {
+      n += 1
+      send(Model.vaultHelperLine("commitVault", { q: n, stage }))
+      return (await reply(m => m.q === n)).ok
+    }
+    send(Model.vaultExecLine(4, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("111")))
+    const first = await reply(m => m.type === "exit" && m.id === 4)
+    send(Model.vaultExecLine(5, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("222")))
+    const second = await reply(m => m.type === "exit" && m.id === 5)
+    check("a staged read is handed on without secrets and is not answered from",
+      first.staged > 0 && second.staged > first.staged && !/111|222/.test(first.out + second.out) && await cardCode() === "987",
+      JSON.stringify(first))
+    check("a read replaced by a newer one cannot be committed", await commit(first.staged) === false && await cardCode() === "987", "")
+    check("the staged read's own id commits it, once",
+      await commit(second.staged) === true && await cardCode() === "222" && await commit(second.staged) === false, "")
+    send(Model.vaultExecLine(6, ["sh", "-c", "cat"], {}, {}, "vaultStage", edited("333")))
+    const third = await reply(m => m.type === "exit" && m.id === 6)
+    send(Model.vaultHelperLine("discardVault", { stage: third.staged }))
+    check("a discarded read is gone", await commit(third.staged) === false && await cardCode() === "222", "")
 
     child.stdin.end()
     child.on("exit", () => done())

@@ -55,15 +55,30 @@ Locking, logging out and switching accounts tell the helper to forget
 everything. A lock that is still running `bw lock` keeps its own copy of the
 key until it finishes.
 
-The helper takes each list read as its items when `bw` prints it, before the
-panel decides whether to show it. When the panel refuses a list snapshot (one
-started before a save, delete or sync finished) and the read that should
-replace it fails, the helper holds that refused snapshot, an edited item's
-old password included, until the next list read succeeds. The panel shows the
-list error; after a failed read it also treats its list as stale and reads it
-again the next time it is wanted, but a replacement read that could not start
-(a missing dependency), or a save that succeeds afterwards, leaves the list
-counted as fresh, and then the next read is the next sync or refresh.
+A list read does not become the helper's items when `bw` prints it. The
+helper sets it aside (one read at a time, under an id it tells the panel) and
+goes on answering searches, reveals, copies, auto-type and TOTP from the items
+it held. Only when the panel accepts that list and shows it does it tell the
+helper to take the read, by that id. When the panel refuses a list snapshot
+(one started before a save, delete or sync finished) or a newer read replaces
+it, the helper drops what it set aside, wiped as its items are; so does a
+newer list read, a save or delete that finishes meanwhile, and a lock, logout
+or account switch. If the read that should replace a refused snapshot fails or
+cannot start, the helper and the panel both stay on the last list they
+accepted, with what was saved or deleted since: an edited item's old password
+is not served. The panel shows the list error; after a failed read it also
+treats its list as stale and reads it again the next time it is wanted, but a
+replacement read that could not start (a missing dependency), or a save that
+succeeds afterwards, leaves the list counted as fresh, and then the next read
+is the next sync or refresh.
+
+A vault helper from before this (it does not say `staged-lists` in its
+`--version`, which is where the panel's check of the helper looks) is asked
+the old way and takes each list read as `bw` prints it, so with such a helper
+a refused snapshot whose replacement fails is held, an edited item's old
+password included, until the next list read succeeds. The helper shipped with
+a release is the one built with it; this arises only with an older one built
+locally.
 
 ## How the shell talks to it
 
