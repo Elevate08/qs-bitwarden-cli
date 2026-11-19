@@ -4,6 +4,8 @@ unlock-key/target/
 vault/target/
 docs/screenshots/.preview-base.png
 docs/screenshots/.preview-base.png.anchor
+# demo/capture.sh's whole-desktop captures (QSBW_KEEP_RAW): never fixtures only.
+docs/screenshots/.raw*.png
 
 # Planning notes, design ideas and decision records are local working files.
 /tasks/

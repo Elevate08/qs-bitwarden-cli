@@ -82,20 +82,26 @@ start_shell() {
 # it (windows, filenames, terminal scrollback) into the published image.
 shot() { # shot <name>
   sleep 1
-  grim "$OUT/.raw.png"
+  # The whole desktop, whatever else is on it: taken in the run's private
+  # directory, which restore() removes, never in the output directory (the
+  # repository's docs/screenshots by default, where an interrupted run left
+  # it to be committed with the shots).
+  local raw="$DEMO_DIRS/raw.png"
+  grim "$raw"
   local box err
   # Keep the locator's own reason. Swallowing it turned a theme change into
   # six identical "could not locate the panel border" lines and no clue why.
-  if box="$(/usr/bin/python3 "$REPO/demo/find_panel.py" "$OUT/.raw.png" 2>"$FIND_PANEL_ERR")"; then
-    magick "$OUT/.raw.png" -crop "$box" +repage "$OUT/$1.png"
+  if box="$(/usr/bin/python3 "$REPO/demo/find_panel.py" "$raw" 2>"$FIND_PANEL_ERR")"; then
+    magick "$raw" -crop "$box" +repage "$OUT/$1.png"
     echo "  wrote $1.png  ($box)"
   else
     err="$(cat "$FIND_PANEL_ERR")"
     echo "  SKIPPED $1: ${err:-could not locate the panel border}" >&2
   fi
   : > "$FIND_PANEL_ERR"
-  if [ -n "${QSBW_KEEP_RAW:-}" ]; then mv -f "$OUT/.raw.png" "$OUT/.raw-$1.png" 2>/dev/null || true
-  else rm -f "$OUT/.raw.png"; fi
+  # Kept only when asked for, under a name .gitignore refuses.
+  if [ -n "${QSBW_KEEP_RAW:-}" ]; then mv -f "$raw" "$OUT/.raw-$1.png" 2>/dev/null || true
+  else rm -f "$raw"; fi
 }
 
 # open_detail <search text>
