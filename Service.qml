@@ -3100,6 +3100,7 @@ Item {
     if (message.type === "keys_loaded") {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
       root.sshAgentLoadFailStreak = 0
+      root.sshAgentLoadRefusals = 0
       // Every public_key for this epoch arrived before this message.
       if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
       return
@@ -3108,9 +3109,11 @@ Item {
       // The helper dropped its private keys but keeps serving (unlike
       // `locked`, the vault_locked ack). Ignore failures of older loads.
       if (message.epoch !== root.sshAgentEpoch) return
-      root.sshAgentLoadFailStreak += 1
+      if (message.refused !== true) root.sshAgentLoadFailStreak += 1
+      // `refused`: not begun, over a waiting request (sshAgentLoadRefusals).
+      else if (++root.sshAgentLoadRefusals > 3) return
       root.sshAgentLoadedForVaultEpoch = -1
-      if (root.sshAgentLoadFailStreak === 1) maybeStartupLoad()
+      if (message.refused === true || root.sshAgentLoadFailStreak === 1) maybeStartupLoad()
       return
     }
     if (message.type === "locked") {
@@ -3156,6 +3159,15 @@ Item {
   property int sshAgentLoadedForVaultEpoch: -1
   // Auto-retries of a failed FIFO load (one), so a bad payload cannot loop.
   property int sshAgentLoadFailStreak: 0
+  // Loads the helper refused in a row (`load_failed` with `refused`): not
+  // begun, as a signing request waited in the helper with its prompt still
+  // on the way here, and the keys are as they were. Each is owed and asked
+  // for again once that request is answered, whatever failed before, but
+  // three with no load between
+  // is a request the helper holds and the panel does not show (a queue
+  // dropped at a timeout): asking again would only read the list over and
+  // over, so the keys served stay until the next list.
+  property int sshAgentLoadRefusals: 0
 
   function primeSshAgentLoadId() {
     if (loadIdProc.running || sshAgentNextLoadId !== "") return
@@ -3248,6 +3260,7 @@ Item {
     // A new helper is empty even if the vault epoch did not move; allow a load.
     root.sshAgentLoadedForVaultEpoch = -1
     root.sshAgentLoadFailStreak = 0
+    root.sshAgentLoadRefusals = 0
     primeSshAgentLoadId()
     // A remembered session may already be unlocked. Deferred a beat so the
     // just-primed nonce is ready.
@@ -6918,6 +6931,7 @@ Item {
     forgetVault()
     vaultEpoch += 1
     sshAgentLoadFailStreak = 0
+    sshAgentLoadRefusals = 0
     readEpochs = ({})
     queuedReads = ({})
     listRereadOwed = false
@@ -7354,6 +7368,11 @@ Item {
       // the re-read of a snapshot that was refused): the next time it is
       // wanted it is read again (ensureItemsFresh()).
       itemsLoadedAt = 0
+      // A key load owed to this read (it replaced one whose keys were not
+      // kept, and started before a nonce was ready) is not left waiting for
+      // the next list: asked for once. The attempt is marked before it
+      // runs, so one that fails as well ends here and is not repeated.
+      if (sshAgentLoadedForVaultEpoch !== root.vaultEpoch) maybeStartupLoad()
     }
   }
 

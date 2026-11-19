@@ -64,10 +64,14 @@ enum Output {
         epoch: u64,
     },
     /// A candidate load was refused. Not `locked`, which acknowledges
-    /// `vault_locked`; the panel retries this one.
+    /// `vault_locked`; the panel retries this one. `refused` (only written
+    /// when true): the load was not let begin, because signing requests were
+    /// waiting for an answer, and the keys served are the ones from before.
     LoadFailed {
         v: u8,
         epoch: u64,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        refused: bool,
     },
     KeysLoaded {
         v: u8,
@@ -201,6 +205,9 @@ struct ActiveLoad {
     /// Set by `key_load_end`: when a payload still missing counts as never
     /// coming. See `LOAD_END_GRACE_MS`.
     payload_deadline_ms: Option<u64>,
+    /// Not let begin (`open_load_window`): its payload is read so that it
+    /// does not sit in the FIFO, then dropped, and nothing else changes.
+    refused: bool,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -418,9 +425,7 @@ async fn run() -> Result<(), ()> {
                     ControlMessage::Shutdown { .. } => break,
                     ControlMessage::KeyLoadBegin { epoch, load_id, .. } => {
                         if active_load.is_some() { return Err(()); }
-                        gate_open = false;
-                        approvals.invalidate_all();
-                        fail_pending(&mut pending);
+                        let refused = !open_load_window(&mut gate_open, &mut approvals, &mut pending);
                         let window = LoadWindow::new(epoch, &load_id).map_err(|_| ())?;
                         // No drain here: the panel starts the vault read right
                         // after sending this line, so a drain could race this
@@ -432,12 +437,15 @@ async fn run() -> Result<(), ()> {
                             let result = read_payload_async(fifo, std::time::Duration::from_secs(30), filter).await;
                             let _ = sender.send((epoch, result)).await;
                         });
-                        active_load = Some(ActiveLoad { epoch, window, payload: None, end_received: false, payload_deadline_ms: None, task });
+                        active_load = Some(ActiveLoad { epoch, window, payload: None, end_received: false, payload_deadline_ms: None, refused, task });
                     }
                     ControlMessage::KeyLoadEnd { epoch, status, .. } => {
                         let Some(load) = active_load.as_mut() else { return Err(()) };
                         if load.epoch != epoch { return Err(()); }
-                        if status != LoadStatus::Ok {
+                        if load.refused && status != LoadStatus::Ok {
+                            // Nothing of it was begun: only its payload goes.
+                            cancel_load(&mut active_load, runtime.runtime());
+                        } else if status != LoadStatus::Ok {
                             cancel_load(&mut active_load, runtime.runtime());
                             store.lock(epoch);
                             gate_open = false;
@@ -970,6 +978,28 @@ fn emit_grants_if_changed(
     emit(output, Output::GrantsChanged { v: 1, grants })
 }
 
+/// What `key_load_begin` does to the signing requests waiting for the
+/// panel's answer. A load replaces the keys they were asked for, so it ends
+/// them: the gate closes, approvals and grants go, and each is failed. But
+/// the panel starts a load only when it shows no request, and one may be
+/// waiting here with its `approval_required` still on the way to the panel:
+/// with keys being served and a request waiting, the load is refused
+/// instead (false) and nothing changes. The panel is told at the load's end
+/// (`load_failed` with `refused`) and loads again once it has answered.
+fn open_load_window(
+    gate_open: &mut bool,
+    approvals: &mut ApprovalManager,
+    pending: &mut HashMap<RequestId, PendingSign>,
+) -> bool {
+    if *gate_open && !pending.is_empty() {
+        return false;
+    }
+    *gate_open = false;
+    approvals.invalidate_all();
+    fail_pending(pending);
+    true
+}
+
 fn fail_pending(pending: &mut HashMap<RequestId, PendingSign>) {
     for (_, sign) in pending.drain() {
         let _ = sign.reply.send(protocol::failure_response());
@@ -990,6 +1020,8 @@ enum LoadOutcome {
     Pending,
     Published,
     Failed,
+    /// A refused load ended: keys, gate and held requests are as they were.
+    Refused,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1004,7 +1036,7 @@ fn settle_load(
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
     match outcome {
-        LoadOutcome::Pending => Ok(()),
+        LoadOutcome::Pending | LoadOutcome::Refused => Ok(()),
         LoadOutcome::Published => {
             release_held(held, store, approvals, pending, started, output)?;
             release_held_identities(held_identities, store, output, "released")
@@ -1031,6 +1063,20 @@ fn finish_load_if_ready(
     }
     let mut load = active.take().ok_or(())?;
     load.task.abort();
+    if load.refused {
+        // The payload (wiped as it drops) was read only to empty the pipe.
+        drop(load.payload.take());
+        runtime.discard_buffered();
+        emit(
+            output,
+            Output::LoadFailed {
+                v: 1,
+                epoch: load.epoch,
+                refused: true,
+            },
+        )?;
+        return Ok(LoadOutcome::Refused);
+    }
     let result = load
         .payload
         .take()
@@ -1079,6 +1125,7 @@ fn finish_load_if_ready(
                 Output::LoadFailed {
                     v: 1,
                     epoch: load.epoch,
+                    refused: false,
                 },
             )?;
             Ok(LoadOutcome::Failed)
@@ -1152,6 +1199,62 @@ mod tests {
             assert!(outputs.try_recv().is_err(), "gate open: {gate_open}");
         }
     }
+    /// The panel starts a key load when it shows no request, but one may
+    /// already wait here with its prompt on the way: the load is refused and
+    /// the request can still be approved and signed. With none waiting, the
+    /// load begins as before.
+    #[test]
+    fn a_load_does_not_begin_over_a_request_waiting_for_its_answer() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let mut store = KeyStore::new();
+        load_key(&mut store, &key, 1);
+        let mut approvals = ApprovalManager::new(1000);
+        let mut pending = HashMap::new();
+        let (output, mut outputs) = mpsc::channel(8);
+        let (event, mut answer) = login_event(&key.public_key().to_bytes().unwrap(), false, vec![]);
+        let started = Instant::now();
+        handle_client(
+            event,
+            true,
+            &store,
+            &mut approvals,
+            &mut pending,
+            &mut HashMap::new(),
+            &mut None,
+            true,
+            started,
+            &output,
+        )
+        .unwrap();
+        let prompt = next(&mut outputs);
+        assert_eq!(prompt["type"], "approval_required");
+        let id = prompt["requestId"].as_u64().unwrap();
+
+        let mut gate_open = true;
+        assert!(!open_load_window(
+            &mut gate_open,
+            &mut approvals,
+            &mut pending
+        ));
+        assert!(
+            gate_open && answer.try_recv().is_err(),
+            "the request was failed"
+        );
+        let authorization = approvals.approve(id, 0, elapsed_ms(started)).unwrap();
+        let sign = pending.remove(&id).unwrap();
+        let signed = authorized_signature(&store, authorization, &sign.message, sign.flags);
+        assert_ne!(signed, protocol::failure_response());
+
+        assert!(open_load_window(&mut gate_open, &mut approvals, &mut pending) && !gate_open);
+        let refused = serde_json::to_value(Output::LoadFailed {
+            v: 1,
+            epoch: 2,
+            refused: true,
+        });
+        assert_eq!(refused.unwrap()["refused"], true);
+    }
+
     /// One Ed25519 key loaded at `epoch`, generated here.
     fn load_key(store: &mut KeyStore, key: &ssh_key::PrivateKey, epoch: u64) {
         use qs_bitwarden_ssh_agent::keystore::CandidateItem;

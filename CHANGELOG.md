@@ -269,6 +269,18 @@
 
 ### Fixed
 
+- **A key reload no longer fails an SSH request that is waiting for your
+  answer, and an owed one is not left waiting.** The panel reloads the SSH
+  agent's keys only when it shows no signing request, but a second request
+  could already be waiting in the agent with its prompt still on the way to
+  the panel, and the reload failed it. The agent now refuses to begin a reload
+  while a request is waiting (the keys it serves stay as they are) and says
+  so; the panel reloads once the request is answered (after three refusals
+  in a row it leaves the keys as they are until the next list read). With an agent helper
+  from before this the request is failed as before. And when a list read that
+  a key load was owed to failed, nothing asked for the load until some later
+  list; the panel now asks once, right then. This needs the rebuilt SSH agent
+  helper.
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.

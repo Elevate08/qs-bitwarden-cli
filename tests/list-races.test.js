@@ -663,6 +663,14 @@ const finishSave = (c, code, out) => {
   f.exit("listProc", 1, "", "failed")
   check("a superseded read that failed leaves the keys owed to the read that replaces it",
     f.ended.join() === "false" && f.sshAgentLoadedForVaultEpoch === -1 && f.runsOf("listProc").length === 2)
+  f.sshAgentNextLoadId = LOAD_ID; f.maybeStartupLoad()   // the nonce is in while that read runs: nothing to do yet
+  f.exit("listProc", 1, "", "failed")
+  eq("when that read fails too, the owed key load is asked for, not left for a later list", f.lifecycle.join(), "startup")
+  f.loadItems(false)                                     // the load it starts, which fails with and without the agent
+  f.exit("listProc", 1, "", "failed"); f.exit("listProc", 1, "", "failed")
+  eq("and only once: an attempt that fails is not repeated", f.lifecycle.join(), "startup")
+  f.sshAgentNextLoadId = LOAD_ID; f.loadItems(false)
+  check("the next list read carries the keys", f.listAgentBranchActive && f.sshAgentLoadActive)
 
   const k = keyed()
   k.loadItems(false)
@@ -677,6 +685,21 @@ const finishSave = (c, code, out) => {
   p.sshPendingCount = 0
   p.maybeStartupLoad()
   eq("and runs once it is answered", p.lifecycle.join(), "startup")
+  // The agent refuses a load begun over a signing request the panel has not
+  // seen yet (agent/src/main.rs open_load_window()), and says so at its end.
+  const r = keyed()
+  vm.runInContext(functionBody(source, "onSshAgentMessage"), r)
+  Object.assign(r, { sshAgentLoadedForVaultEpoch: r.vaultEpoch, sshAgentLoadFailStreak: 1, sshAgentLoadRefusals: 0, sshPendingCount: 1 })
+  r.onSshAgentMessage({ type: "load_failed", epoch: r.sshAgentEpoch, refused: true })
+  check("a key load the agent refused is owed again, and waits for the request it was refused for",
+    r.sshAgentLoadedForVaultEpoch === -1 && r.lifecycle.length === 0 && r.sshAgentLoadFailStreak === 1, r.lifecycle.join())
+  r.sshPendingCount = 0; r.maybeStartupLoad()            // onSshPendingCountChanged
+  r.onSshAgentMessage({ type: "load_failed", epoch: r.sshAgentEpoch, refused: true })
+  eq("and is asked for again with nothing waiting: a refusal is not a failed load", r.lifecycle.join(), "startup,startup")
+  for (let i = 0; i < 3; i++) r.onSshAgentMessage({ type: "load_failed", epoch: r.sshAgentEpoch, refused: true })
+  eq("but not for ever: after three in a row the keys served stay until the next list", r.lifecycle.length, 3)
+  r.dropVaultState()
+  eq("a lock clears the count", r.sshAgentLoadRefusals, 0)
   check("the answer is what asks again", /onSshPendingCountChanged: if \(sshPendingCount === 0\) maybeStartupLoad\(\)/.test(source))
 }
 
