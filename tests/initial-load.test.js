@@ -32,7 +32,7 @@ check("a remembered session reads the list alongside bw status",
 const startRead = bodyOf("startVaultListRead")
 check("an early read never feeds the SSH agent",
   /listReadEarly\s*=\s*status\s*!==\s*"unlocked"/.test(startRead)
-    && /useAgent\s*=\s*!retrying\s*&&\s*!listReadEarly/.test(startRead),
+    && /mayLoad\s*=\s*!retrying\s*&&\s*!listReadEarly/.test(startRead) && /useAgent\s*=\s*mayLoad\s*&&/.test(startRead),
   startRead)
 const loadItemsBody = bodyOf("loadItems")
 // The early read is one case of a read already running for this vault
@@ -69,7 +69,8 @@ check("the vault list is parsed once per load",
     && !/inspectSanitizedVault|parseSanitizedItems/.test(listFinished),
   listFinished)
 
-const listExited = bodyOf("onListProcessExited")
+// The failure a read ends with is settled in listReadFailed().
+const listExited = bodyOf("onListProcessExited") + "\n" + bodyOf("listReadFailed")
 check("item output is accepted only after the process exit status is known",
   /exitCode\s*===\s*0/.test(listExited) && /onListFinished\(/.test(listExited), listExited)
 check("a failed item refresh clears all loading and deferred-work state",

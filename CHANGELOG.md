@@ -236,12 +236,15 @@
   start, the helper went on serving the refused one: an edited item's old
   password could be copied, revealed or typed. A list read is now set aside in
   the helper, one at a time and under an id, and becomes its items only when
-  the panel accepts that list; a refused or replaced one is dropped and wiped,
-  as it is by a save or delete that finishes meanwhile and by a lock, logout
-  or account switch. Searches, reveals, copies, auto-type and TOTP answer only
-  from the last list both sides accepted. This needs the rebuilt vault helper
-  (it says `staged-lists` in `--version`); with one from before it the panel
-  asks the old way and behaves as it did.
+  the panel accepts that list, which it shows only once the helper has taken
+  it; a refused or replaced one is dropped and wiped, as it is by a save that
+  finishes meanwhile and by a lock, logout or account switch. What the helper
+  serves (searches, reveals, copies, auto-type, its TOTP codes) comes only
+  from the last list both sides accepted; the panel can still copy a TOTP
+  code it already holds, or get one from `bw get totp`. This needs the
+  rebuilt vault helper (it says `staged-lists` in `--version`); with one from
+  before it, or one restarted after it stopped and not checked again, the
+  panel asks the old way and behaves as it did.
 
 ### Changed
 
@@ -270,17 +273,19 @@
 ### Fixed
 
 - **A key reload no longer fails an SSH request that is waiting for your
-  answer, and an owed one is not left waiting.** The panel reloads the SSH
-  agent's keys only when it shows no signing request, but a second request
-  could already be waiting in the agent with its prompt still on the way to
-  the panel, and the reload failed it. The agent now refuses to begin a reload
-  while a request is waiting (the keys it serves stay as they are) and says
-  so; the panel reloads once the request is answered (after three refusals
-  in a row it leaves the keys as they are until the next list read). With an agent helper
-  from before this the request is failed as before. And when a list read that
-  a key load was owed to failed, nothing asked for the load until some later
-  list; the panel now asks once, right then. This needs the rebuilt SSH agent
-  helper.
+  answer, and an owed one is not left waiting.** The panel started a reload
+  of the SSH agent's keys with every list read, also while it showed a
+  signing request, and right after the last one was answered, when a second
+  request could already be waiting in the agent with its prompt still on the
+  way; the reload failed those requests. The panel now starts none while a
+  request is shown (the list is read without the keys, and the reload follows
+  the answer), and the agent refuses to begin one while a request is waiting,
+  keeps the keys it serves and says so; that reload is tried again when the
+  last request shown is answered, or with the next list read. With an agent
+  helper from before this the request the panel has not seen is failed as
+  before. And when a list read that a key load was owed to failed, nothing
+  asked for the load until some later list; the panel now asks once, right
+  then. This needs the rebuilt SSH agent helper.
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.

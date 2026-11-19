@@ -443,8 +443,12 @@ async fn run() -> Result<(), ()> {
                         let Some(load) = active_load.as_mut() else { return Err(()) };
                         if load.epoch != epoch { return Err(()); }
                         if load.refused && status != LoadStatus::Ok {
-                            // Nothing of it was begun: only its payload goes.
+                            // Nothing of it was begun: only its payload goes,
+                            // and the panel is still told the load did not
+                            // happen (its list read failed; a retry without
+                            // the agent may be shown).
                             cancel_load(&mut active_load, runtime.runtime());
+                            emit(&output_tx, Output::LoadFailed { v: 1, epoch, refused: true })?;
                         } else if status != LoadStatus::Ok {
                             cancel_load(&mut active_load, runtime.runtime());
                             store.lock(epoch);

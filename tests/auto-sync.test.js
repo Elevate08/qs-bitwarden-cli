@@ -32,7 +32,7 @@ function fixture() {
     startVaultListRead: () => { c.listReads += 1; c.listProc.running = true },
     closeFilterGroup: () => c.closedFilters++,
     flashNotification: message => c.flashes.push(message),
-    refreshDerivedFromItems() {}, reconcileOpenDetail() {}, recheckArmedAutoType() {}, recheckTotpFollowup() {}, maybeStartupLoad() {}, commitStagedList() {}, discardStagedList() {},
+    refreshDerivedFromItems() {}, reconcileOpenDetail() {}, recheckArmedAutoType() {}, recheckTotpFollowup() {}, maybeStartupLoad() {}, commitStagedList() {}, discardStagedList() {}, listCommitRetried: false,
     deferredMetadataTimer: { restart() {} }
   }
   for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemProc",
@@ -246,8 +246,8 @@ for (const code of [0, 1]) {
   const p = fixture(); p.isSyncing = true; p.dependencies = noJq; p.loadItems(true)
   check("a plain load owes no sync and leaves one in flight alone", p.isSyncing && !p.isLoading, "")
   check("a failed list read releases the background flag with the sync guard",
-    /isSyncing = false\s*syncReloadPending = false\s*backgroundSync = false/.test(functionBody(source, "onListProcessExited")),
-    functionBody(source, "onListProcessExited"))
+    /isSyncing = false\s*syncReloadPending = false\s*backgroundSync = false/.test(functionBody(source, "listReadFailed")),
+    functionBody(source, "listReadFailed"))
 }
 {
   // A list read that failed leaves its message up until a list is accepted;
@@ -286,7 +286,7 @@ for (const code of [0, 1]) {
   s.finishScrubRun = () => false
   s.requestSessionCredentialClear = () => { s.cleared++ }
   s.focusAppropriateField = () => { s.focused++ }
-  vm.runInContext(["onListProcessExited", "onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), s)
+  vm.runInContext(["onListProcessExited", "listReadFailed", "onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), s)
   s.loadItems(false)
   s.listProc.running = false
   s.onListProcessExited(1, "", "Could not safely read vault items.\n")
@@ -340,7 +340,7 @@ for (const code of [0, 1]) {
   vm.runInContext(["onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), n)
   n.errorMessage = "An unrelated edit failed"; n.beginEpochOperation("status"); n.onStatusFinished("")
   eq("another message is left exactly as dropping the vault leaves it", n.errorMessage, "An unrelated edit failed")
-  const exited = functionBody(source, "onListProcessExited")
+  const exited = functionBody(source, "listReadFailed")
   check("a failed list read records the message it showed",
     /errorMessage = Model\.vaultListFailureMessage\(stderrText, dependencies, listReadMode\)\s*listReadError = errorMessage/.test(exited),
     exited)

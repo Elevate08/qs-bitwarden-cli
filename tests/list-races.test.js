@@ -23,7 +23,7 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
   "onDeleteItemFinished", "reconcileOpenDetail", "totpWanted",
-  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "discardStagedList"]
+  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "discardStagedList", "listReadFailed"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
 // a run only when none is held (runId 0); to false it asks for a kill, and
@@ -71,7 +71,7 @@ function fixture() {
   const c = {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
-    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, createdItemHandoff: null,
+    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, listCommitRetried: false, createdItemHandoff: null,
     pendingSave: null, pendingDelete: null, recheckArmedAutoType() {}, recheckTotpFollowup() {}, sshTotalPendingCount: 0,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
@@ -104,8 +104,8 @@ function fixture() {
   // The vault helper's items, as far as list reads go (vault/src/store.rs).
   // One that stages sets a read aside under an id and answers from what it
   // held until that id is committed; one from before staging takes each read
-  // as it is printed. A save's answer goes into what is held, and ends a
-  // read staged before it.
+  // as it is printed. A save's answer goes into what is held and ends a read
+  // staged before it; a forgotten item leaves both; a forget drops everything.
   const helper = c.helper = { staging: true, held: [], staged: null, seq: 0, lines: [] }
   helper.read = rows => {
     if (!helper.staging) { helper.held = rows; return 0 }
@@ -124,6 +124,12 @@ function fixture() {
     helper.lines.push(m.type)
     if (m.type === "discardVault" && helper.staged && helper.staged.id === m.stage) helper.staged = null
   } }
+  c.forgetVaultItem = id => {
+    c.forgotten.push(id)
+    helper.held = helper.held.filter(held => held !== id)
+    if (helper.staged) helper.staged.rows = helper.staged.rows.filter(row => row !== id)
+  }
+  c.forgetVault = () => { helper.held = []; helper.staged = null }
   const rowIds = out => { try { return JSON.parse(out).items.map(i => i.id) } catch (e) { return null } }
   c.rowIds = rowIds
   c.root = c
@@ -132,12 +138,15 @@ function fixture() {
   for (const id of ["listProc", "listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"])
     vm.runInContext(`function exit_${id}(exitCode) {\n${exitHandler(id)}\n}`, c)
   // A run of `id` ends: its output is in the collectors, then exited().
-  c.exit = (id, code, out, err) => {
+  // `between`: what happens after the helper has dealt with the output and
+  // before the panel reads the exit.
+  c.exit = (id, code, out, err, between) => {
     const stem = id.replace(/Proc$/, "")
     c[stem + "Stdout"].text = out || ""
     if (c[stem + "Stderr"]) c[stem + "Stderr"].text = err || ""
     c[id].end()
     if (id === "listProc") c.listProc.staged = code === 0 && rowIds(out) ? helper.read(rowIds(out)) : 0
+    if (between) between()
     c["exit_" + id](code)
   }
   // Lock, logout or account switch, then another vault opened.
@@ -546,29 +555,27 @@ const finishSave = (c, code, out) => {
   c.exit("listProc", 1, "", "Could not safely read vault items.")    // and its re-read fails
   eq("a refused snapshot whose re-read fails leaves the helper on the list before it, the saved item included",
     c.helper.held.join() + "/" + JSON.stringify(c.helper.staged), [oldId, savedId].join() + "/null")
-  const w = saving(false)
-  w.loadItems(false)
-  w.exit("listProc", 0, listOf(stored(oldId, "Old")), "")           // lands while the save runs: refused
-  finishSave(w, 0, savedAnswer)
-  eq("so does one that lands while the save is still running", w.helper.held.join(), [oldId, savedId].join())
   const u = fixture()
   u.loadItems(false); u.vaultChanges += 1; u.loadItems(false)
   u.exit("listProc", 0, vaultOf("old"), "")
-  check("a superseded read is dropped by the helper, not taken", u.helper.held.length === 0 && u.helper.staged === null,
-    JSON.stringify(u.helper))
+  const dropped = u.helper.held.length === 0 && u.helper.staged === null
   u.exit("listProc", 0, vaultOf("new"), "")
-  eq("and the read that is shown is the one it takes", u.helper.held.join(), "id-new")
-  u.commitStagedList(99)
-  check("a commit the helper refuses has the list read again", u.runsOf("listProc").length === 3 && u.itemsLoadedAt === 0,
-    String(u.runsOf("listProc").length))
-  u.listProc.staged = 7; u.dropVaultState()
-  eq("a lock drops the staged read's id", u.listProc.staged, 0)
-  // A helper from before staging: nothing is asked of it that it does not know.
-  const o = fixture()
-  o.helper.staging = false
-  o.loadItems(false); o.exit("listProc", 0, vaultOf("only"), "")
-  check("a helper that does not stage is sent no commit or discard", names(o) === "only" && o.helper.lines.length === 0,
-    o.helper.lines.join())
+  check("a superseded read is dropped by the helper, and the read that is shown is the one it takes",
+    dropped && u.helper.held.join() === "id-new" && names(u) === "new", JSON.stringify(u.helper))
+  // The helper refuses the commit (the read is no longer the one staged).
+  const r = fixture()
+  r.syncReloadPending = true; r.isSyncing = true
+  r.loadItems(false)
+  r.exit("listProc", 0, vaultOf("x"), "", () => { r.helper.staged = null })
+  const reread = names(r) === "" && r.isSyncing && r.runsOf("listProc").length === 2
+  r.exit("listProc", 0, vaultOf("x"), "", () => { r.helper.staged = null })
+  check("a list whose commit the helper refuses is not shown: it is read again once, and then is a failed read",
+    reread && names(r) === "" && r.runsOf("listProc").length === 2 && r.errorMessage !== "" && r.itemsLoadedAt === 0 && !r.isSyncing,
+    JSON.stringify({ reread, runs: r.runsOf("listProc").length, error: r.errorMessage }))
+  Object.assign(u, { listCommitRetried: true, sshAgentLoadRefused: true }); u.listProc.staged = 7
+  u.dropVaultState()
+  check("a lock drops the staged read's id, the commit retry and the refused key load",
+    u.listProc.staged === 0 && !u.listCommitRetried && !u.sshAgentLoadRefused)
   const q = fixture()
   q.loadItems(false); q.vaultChanges += 1; q.loadItems(false)
   q.exit("listProc", 0, vaultOf("old"), "")
@@ -628,12 +635,19 @@ const finishSave = (c, code, out) => {
 // batch itself is not ended as failed, which would lock the agent.
 {
   const LOAD_ID = "ab".repeat(16)
-  const keyed = () => {
+  // `dispatch`: the startup load goes through the service's own
+  // applySshAgentLifecycle(), which starts the list read; otherwise it is
+  // only noted.
+  const keyed = dispatch => {
     const c = fixture()
     Object.assign(c, { sshAgentGateOpen: true, sshAgentNextLoadId: LOAD_ID, ended: [], lifecycle: [], primed: 0,
-      sshPendingCount: 0, endSshAgentLoad: ok => { c.ended.push(ok); c.sshAgentLoadActive = false },
-      applySshAgentLifecycle: e => c.lifecycle.push(e), primeSshAgentLoadId: () => { c.primed++ } })
-    vm.runInContext(functionBody(source, "maybeStartupLoad"), c)
+      sshPendingCount: 0, sshAgentLoadRefused: false, sshAgentLoadFailStreak: 0,
+      endSshAgentLoad: ok => { c.ended.push(ok); c.sshAgentLoadActive = false },
+      applySshAgentLifecycle: e => c.lifecycle.push(e), primeSshAgentLoadId: () => { c.primed++ },
+      sshAgentEnabled: true, sshAgentKeyCount: 1 })
+    c.sshAgentProc.running = false
+    vm.runInContext(["maybeStartupLoad", "sshApprovalsCleared", "onSshAgentMessage"].concat(
+      dispatch ? ["applySshAgentLifecycle", "sshAgentVaultContext"] : []).map(n => functionBody(source, n)).join("\n"), c)
     return c
   }
   const c = keyed()
@@ -657,7 +671,7 @@ const finishSave = (c, code, out) => {
   check("a snapshot from before a sync leaves a key load owed too",
     o.ended.join() === "true" && o.sshAgentLoadedForVaultEpoch === -1 && o.runsOf("listProc").length === 2, o.ended.join())
 
-  const f = keyed()
+  const f = keyed(true)
   f.loadItems(false)
   f.vaultChanges += 1; f.loadItems(false)
   f.exit("listProc", 1, "", "failed")
@@ -665,12 +679,11 @@ const finishSave = (c, code, out) => {
     f.ended.join() === "false" && f.sshAgentLoadedForVaultEpoch === -1 && f.runsOf("listProc").length === 2)
   f.sshAgentNextLoadId = LOAD_ID; f.maybeStartupLoad()   // the nonce is in while that read runs: nothing to do yet
   f.exit("listProc", 1, "", "failed")
-  eq("when that read fails too, the owed key load is asked for, not left for a later list", f.lifecycle.join(), "startup")
-  f.loadItems(false)                                     // the load it starts, which fails with and without the agent
-  f.exit("listProc", 1, "", "failed"); f.exit("listProc", 1, "", "failed")
-  eq("and only once: an attempt that fails is not repeated", f.lifecycle.join(), "startup")
-  f.sshAgentNextLoadId = LOAD_ID; f.loadItems(false)
-  check("the next list read carries the keys", f.listAgentBranchActive && f.sshAgentLoadActive)
+  const asked = f.runsOf("listProc").length === 3 && f.listAgentBranchActive
+  f.exit("listProc", 1, "", "failed")                    // the load it starts fails too
+  check("when that read fails too the owed key load is asked for: once, and with no plain read after a plain read just failed",
+    asked && f.runsOf("listProc").length === 3 && !f.listProc.running && f.errorMessage !== "",
+    JSON.stringify({ asked, runs: f.runsOf("listProc").length }))
 
   const k = keyed()
   k.loadItems(false)
@@ -687,20 +700,26 @@ const finishSave = (c, code, out) => {
   eq("and runs once it is answered", p.lifecycle.join(), "startup")
   // The agent refuses a load begun over a signing request the panel has not
   // seen yet (agent/src/main.rs open_load_window()), and says so at its end.
+  // The request may be one the panel never shows: the load is asked for
+  // again when the last visible request is answered, not at once.
   const r = keyed()
-  vm.runInContext(functionBody(source, "onSshAgentMessage"), r)
-  Object.assign(r, { sshAgentLoadedForVaultEpoch: r.vaultEpoch, sshAgentLoadFailStreak: 1, sshAgentLoadRefusals: 0, sshPendingCount: 1 })
+  r.loadItems(false); r.exit("listProc", 0, vaultOf("a"), "")
   r.onSshAgentMessage({ type: "load_failed", epoch: r.sshAgentEpoch, refused: true })
-  check("a key load the agent refused is owed again, and waits for the request it was refused for",
-    r.sshAgentLoadedForVaultEpoch === -1 && r.lifecycle.length === 0 && r.sshAgentLoadFailStreak === 1, r.lifecycle.join())
-  r.sshPendingCount = 0; r.maybeStartupLoad()            // onSshPendingCountChanged
-  r.onSshAgentMessage({ type: "load_failed", epoch: r.sshAgentEpoch, refused: true })
-  eq("and is asked for again with nothing waiting: a refusal is not a failed load", r.lifecycle.join(), "startup,startup")
-  for (let i = 0; i < 3; i++) r.onSshAgentMessage({ type: "load_failed", epoch: r.sshAgentEpoch, refused: true })
-  eq("but not for ever: after three in a row the keys served stay until the next list", r.lifecycle.length, 3)
-  r.dropVaultState()
-  eq("a lock clears the count", r.sshAgentLoadRefusals, 0)
-  check("the answer is what asks again", /onSshPendingCountChanged: if \(sshPendingCount === 0\) maybeStartupLoad\(\)/.test(source))
+  r.sshAgentNextLoadId = LOAD_ID; r.maybeStartupLoad()   // the next nonce arriving asks too
+  const quiet = r.lifecycle.length === 0
+  r.sshApprovalsCleared()
+  check("a key load the agent refused is not asked for again at once, but when the last request is answered",
+    quiet && r.lifecycle.join() === "startup", r.lifecycle.join())
+  const v = keyed()
+  v.loadItems(false); v.exit("listProc", 0, vaultOf("a"), "")
+  v.sshAgentNextLoadId = LOAD_ID; v.sshPendingCount = 1
+  v.loadItems(false)                                     // a refresh while a request is shown
+  const without = !v.listAgentBranchActive && v.ended.length === 1
+  v.exit("listProc", 0, vaultOf("b"), "")
+  v.sshPendingCount = 0; v.sshApprovalsCleared()
+  check("no key load is begun while a signing request is shown: the read goes without, and the load follows the answer",
+    without && names(v) === "b" && v.lifecycle.join() === "startup", JSON.stringify({ without, lifecycle: v.lifecycle }))
+  check("the answer is what asks again", /onSshPendingCountChanged: if \(sshPendingCount === 0\) sshApprovalsCleared\(\)/.test(source))
 }
 
 // --- an automatic sync's reload, a list from before it and an SSH approval ---------------

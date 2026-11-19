@@ -786,6 +786,9 @@ Item {
   // Such a snapshot arrived while a save or delete was still running: the
   // list is read again when that finishes (settleOwedListRead()).
   property bool listRereadOwed: false
+  // The helper refused the commit of a list it had staged and the list is
+  // being read again: a second refusal is a failed read, not a third read.
+  property bool listCommitRetried: false
   // A new item's detail, covered by an SSH approval when its save answered:
   // { from: provisional id, to: saved id }, taken up when the detail is back
   // (resumeCreatedItem()).
@@ -1079,7 +1082,10 @@ Item {
   readonly property bool vaultHelperActive: vaultHelperState === "active"
   // The helper in use sets a list read aside until the panel commits it
   // (docs/vault-helper.md). One from before that takes each read at once.
-  readonly property bool vaultHelperStaging: vaultHelperActive && vaultHelper.staging === true
+  // True only for the process started straight from an inspection that said
+  // so: one restarted after it stopped may be another executable, and is
+  // asked the old way until the helper is checked again.
+  property bool vaultHelperStaging: false
   property string vaultHelperWarning: ""
   property int vaultRunSeq: 0
   property var vaultRuns: ({})
@@ -1117,6 +1123,7 @@ Item {
 
   function onVaultHelperInspected(raw) {
     vaultHelper = Model.parseVaultHelperInspection(raw)
+    vaultHelperStaging = vaultHelper.staging === true
     if (Model.helperReady(vaultHelper)) startVaultHelper()
     else useVaultFallback(vaultHelper.message)
   }
@@ -1236,6 +1243,7 @@ Item {
   // The helper went away: its runs fail, and the session key went with it,
   // so an unlocked vault is locked here too. Restarted, within a limit.
   function onVaultHelperExited(exitCode) {
+    vaultHelperStaging = false
     vaultHelperReadyTimer.stop()
     vaultHelperSettleTimer.stop()
     if (vaultHelperReadyTimedOut) {
@@ -1384,19 +1392,32 @@ Item {
     return function() { root.forgetHeldPassword(kept) }
   }
 
-  // The list read the helper staged under `stage` is the one now shown: its
-  // items become the helper's. Written before anything asked of the new
-  // list, and the helper answers in order. A commit the helper refuses (that
-  // read is no longer the one staged) leaves it answering from the list
-  // before, so the list is read again.
-  function commitStagedList(stage) {
-    if (!stage) return
+  // The list read the helper staged under `stage` was accepted. The helper
+  // takes it as its items, and the list is shown (onListFinished()) only
+  // once it has answered that it did: the rows on screen are never ones the
+  // helper cannot answer for. A commit it refuses (that read is no longer
+  // the one staged) shows nothing and the list is read again, once; refused
+  // again, it is a failed read.
+  function commitStagedList(stage, rawJson) {
     var epoch = vaultEpoch
+    var changes = vaultChanges
     vaultQuery("commitVault", { stage: stage }, function(ok) {
-      if (ok || epoch !== root.vaultEpoch || !root.vaultHelperActive) return
-      console.warn("qs-bitwarden: the vault helper did not take the list that is shown; reading it again")
-      root.itemsLoadedAt = 0
-      root.loadItems(false)
+      if (epoch !== root.vaultEpoch) return
+      if (!ok) {
+        root.listCommitRetried = !root.listCommitRetried
+        if (root.listCommitRetried) root.loadItems(false)
+        else root.listReadFailed("", false)
+        return
+      }
+      root.listCommitRetried = false
+      // A save or delete begun or finished while the helper answered: this
+      // list is from before it, as in onListProcessExited().
+      if (changes !== root.vaultChanges || root.itemChangeRunning()) {
+        if (root.itemChangeRunning()) root.listRereadOwed = true
+        else root.loadItems(false)
+        return
+      }
+      root.onListFinished(rawJson)
     })
   }
 
@@ -3100,7 +3121,7 @@ Item {
     if (message.type === "keys_loaded") {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
       root.sshAgentLoadFailStreak = 0
-      root.sshAgentLoadRefusals = 0
+      root.sshAgentLoadRefused = false
       // Every public_key for this epoch arrived before this message.
       if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
       return
@@ -3109,11 +3130,13 @@ Item {
       // The helper dropped its private keys but keeps serving (unlike
       // `locked`, the vault_locked ack). Ignore failures of older loads.
       if (message.epoch !== root.sshAgentEpoch) return
-      if (message.refused !== true) root.sshAgentLoadFailStreak += 1
-      // `refused`: not begun, over a waiting request (sshAgentLoadRefusals).
-      else if (++root.sshAgentLoadRefusals > 3) return
+      if (message.refused === true) {
+        root.sshAgentLoadRefused = true
+        return
+      }
+      root.sshAgentLoadFailStreak += 1
       root.sshAgentLoadedForVaultEpoch = -1
-      if (message.refused === true || root.sshAgentLoadFailStreak === 1) maybeStartupLoad()
+      if (root.sshAgentLoadFailStreak === 1) maybeStartupLoad()
       return
     }
     if (message.type === "locked") {
@@ -3159,15 +3182,17 @@ Item {
   property int sshAgentLoadedForVaultEpoch: -1
   // Auto-retries of a failed FIFO load (one), so a bad payload cannot loop.
   property int sshAgentLoadFailStreak: 0
-  // Loads the helper refused in a row (`load_failed` with `refused`): not
-  // begun, as a signing request waited in the helper with its prompt still
-  // on the way here, and the keys are as they were. Each is owed and asked
-  // for again once that request is answered, whatever failed before, but
-  // three with no load between
-  // is a request the helper holds and the panel does not show (a queue
-  // dropped at a timeout): asking again would only read the list over and
-  // over, so the keys served stay until the next list.
-  property int sshAgentLoadRefusals: 0
+  // The helper refused the last key load (`load_failed` with `refused`): a
+  // signing request waited in it, its prompt perhaps still on the way here,
+  // and the keys it serves are as they were. The load stays owed, but is not
+  // asked for at once: the helper may hold a request the panel no longer
+  // shows (a queue dropped at a timeout), and asking again would read the
+  // list over and over until that request expires. It is asked for again
+  // when something changes: the last visible request is answered
+  // (sshApprovalsCleared()), or another list read starts
+  // (startVaultListRead()). So a refusal costs at most the one list read
+  // such a change starts, and one more when that read had no nonce.
+  property bool sshAgentLoadRefused: false
 
   function primeSshAgentLoadId() {
     if (loadIdProc.running || sshAgentNextLoadId !== "") return
@@ -3198,7 +3223,12 @@ Item {
   // jq with it.
   function cancelSshAgentLoad() {
     if (listProc.running) listProc.running = false
-    endSshAgentLoad(false)
+    // A reply to the load cancelled here (the helper answers one it refused)
+    // is then for an older epoch, and schedules nothing.
+    if (sshAgentLoadActive) {
+      endSshAgentLoad(false)
+      sshAgentEpoch += 1
+    }
     listAgentBranchActive = false
     listRetriedWithoutAgent = false
   }
@@ -3260,7 +3290,7 @@ Item {
     // A new helper is empty even if the vault epoch did not move; allow a load.
     root.sshAgentLoadedForVaultEpoch = -1
     root.sshAgentLoadFailStreak = 0
-    root.sshAgentLoadRefusals = 0
+    root.sshAgentLoadRefused = false
     primeSshAgentLoadId()
     // A remembered session may already be unlocked. Deferred a beat so the
     // just-primed nonce is ready.
@@ -3300,7 +3330,17 @@ Item {
     promoteUnlockToApproval()
     maybeStartupLoad()
   }
-  onSshPendingCountChanged: if (sshPendingCount === 0) maybeStartupLoad()
+  onSshPendingCountChanged: if (sshPendingCount === 0) sshApprovalsCleared()
+
+  // No signing request is shown any more: a key load held back for one, or
+  // refused by the helper over one, is asked for now.
+  function sshApprovalsCleared() {
+    if (sshAgentLoadRefused) {
+      sshAgentLoadRefused = false
+      sshAgentLoadedForVaultEpoch = -1
+    }
+    maybeStartupLoad()
+  }
 
   // Unlocked but keys still loading: ask for approval now. The companion
   // applies it once the keys land, re-checking the key is present.
@@ -6931,12 +6971,13 @@ Item {
     forgetVault()
     vaultEpoch += 1
     sshAgentLoadFailStreak = 0
-    sshAgentLoadRefusals = 0
+    sshAgentLoadRefused = false
     readEpochs = ({})
     queuedReads = ({})
     listRereadOwed = false
     // The helper drops what it had staged with the rest (forgetVault()).
     listProc.staged = 0
+    listCommitRetried = false
     createdItemHandoff = null
     masterPassword = ""
     itemsLoadedAt = 0
@@ -7225,7 +7266,16 @@ Item {
     // Keys go to the agent only from a read of a confirmed session;
     // maybeStartupLoad() loads them once the status has confirmed it.
     listReadEarly = status !== "unlocked"
-    var useAgent = !retrying && !listReadEarly && sshAgentGateOpen && Model.isValidLoadId(sshAgentNextLoadId)
+    var mayLoad = !retrying && !listReadEarly && sshAgentGateOpen
+    // A key load fails every signing request waiting for an answer, so none
+    // is begun while one is shown: this read goes without the keys and the
+    // load is owed (sshApprovalsCleared()). So is one the helper refused,
+    // now that another read starts.
+    if (mayLoad && (sshPendingCount > 0 || sshAgentLoadRefused)) {
+      sshAgentLoadRefused = false
+      sshAgentLoadedForVaultEpoch = -1
+    }
+    var useAgent = mayLoad && sshPendingCount === 0 && Model.isValidLoadId(sshAgentNextLoadId)
     if (useAgent) {
       sshAgentEpoch += 1
       sshAgentLoadId = sshAgentNextLoadId
@@ -7323,11 +7373,14 @@ Item {
         else startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
         return
       }
-      // The list that is shown is the one the helper answers from: what it
-      // set aside of this read becomes its items before anything is asked of
-      // them (onListFinished() refuses a read of a vault since closed).
-      if (vaultReadIsStale("items")) discardStagedList(staged)
-      else commitStagedList(staged)
+      // What the helper set aside of this read becomes its items first, and
+      // the list is shown when it has (commitStagedList()). Nothing set
+      // aside: a helper from before staging has taken the read already.
+      if (staged && !vaultReadIsStale("items")) {
+        commitStagedList(staged, rawJson)
+        return
+      }
+      discardStagedList(staged)
       onListFinished(rawJson)
       return
     }
@@ -7350,6 +7403,22 @@ Item {
       return
     }
 
+    listReadFailed(stderrText, wasEarly)
+    // A key load owed to this read (it replaced one whose keys were not
+    // kept, and started before a nonce was ready) is not left waiting for
+    // the next list: asked for once. The attempt is marked before it runs,
+    // so one that fails as well is not repeated; and a plain list has just
+    // failed, so the read it starts gets no plain retry of its own.
+    if (!vaultReadIsStale("items") && !wasEarly && sshAgentLoadedForVaultEpoch !== root.vaultEpoch) {
+      maybeStartupLoad()
+      listRetriedWithoutAgent = listAgentBranchActive
+    }
+  }
+
+  // A list read that failed for good, or whose commit the helper refused
+  // twice: what an accepted list would have settled is given up.
+  function listReadFailed(stderrText, wasEarly) {
+    listCommitRetried = false
     isLoading = false
     isSyncing = false
     syncReloadPending = false
@@ -7368,11 +7437,6 @@ Item {
       // the re-read of a snapshot that was refused): the next time it is
       // wanted it is read again (ensureItemsFresh()).
       itemsLoadedAt = 0
-      // A key load owed to this read (it replaced one whose keys were not
-      // kept, and started before a nonce was ready) is not left waiting for
-      // the next list: asked for once. The attempt is marked before it
-      // runs, so one that fails as well ends here and is not repeated.
-      if (sshAgentLoadedForVaultEpoch !== root.vaultEpoch) maybeStartupLoad()
     }
   }
 
