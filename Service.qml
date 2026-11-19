@@ -6890,8 +6890,6 @@ Item {
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAttachmentDownloads()
-    // The fetched website icons: their keys name the vault's sites.
-    Model.forgetWebsiteIcons()
     session = ""
     forgetVault()
     vaultEpoch += 1
