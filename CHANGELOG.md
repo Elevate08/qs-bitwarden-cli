@@ -217,7 +217,23 @@
   that id. A list read that started before a save or delete finished is not
   shown: the list is read again. A save whose answer carries no item returns
   that detail to the list, and when an SSH approval is covering the detail
-  as the save answers, the move happens once the detail is back.
+  as the save answers, the move happens once the detail is back. A create
+  the vault refuses also returns that detail to the list, with the draft
+  kept for reopening.
+- **Collections of an organization the form no longer has.** Choosing an
+  organization, then "personal" (or another one) while the first one's
+  collections were still being read, could offer those collections, and
+  pre-select a single one, in the item being edited. A read still waiting
+  is dropped and an answer is shown only for the organization the form has.
+- **A lock's cleanup after a cancelled list read.** A list read stopped by
+  the lock, whose exit had not arrived yet, was handed the cleanup command
+  without it running, and that read's exit then counted as the cleanup:
+  without the vault helper, the read's output could stay in the shell's
+  memory after the lock. The cleanup now waits for that exit.
+- **A command that cannot start no longer stalls its reader.** Without the
+  vault helper, a `bw` run that could not be started at all never reported
+  an exit, so that reader (the item list, say) started nothing again until
+  the shell was restarted. It now ends as a command that was not found.
 
 ## [1.13.1] - 2026-11-18
 

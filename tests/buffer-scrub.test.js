@@ -89,6 +89,16 @@ const busy = (cmd) => ({ running: true, command: cmd })
 }
 
 {
+  // Stopped (cancelled), its exit still to come: VaultProcess keeps the run.
+  const held = Object.assign(idle(["bw", "list", "items"]), { runId: 7 })
+  const p = Model.scrubPass([held])
+  check("a stopped process whose run has not exited is not given the scrub's command",
+    p.start.length === 0 && p.waiting.length === 1, `start=${p.start.length} waiting=${p.waiting.length}`)
+  held.runId = 0
+  check("and is scrubbed once that run has exited", Model.scrubPass([held]).start.length === 1)
+}
+
+{
   const p = Model.scrubPass([idle(Model.scrubCommand())])
   check("a process already scrubbed is left alone",
     p.start.length === 0, `start=${p.start.length}`)

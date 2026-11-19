@@ -186,6 +186,27 @@ const names = c => Array.from(c.items).map(i => i.name).join()
   eq("with its own answer accepted", names(c), "B")
 }
 
+// --- a lock's scrub and a stopped run whose exit is still to come -----------------------
+{
+  const c = fixture()
+  vm.runInContext(functionBody(source, "scrubStep"), c)
+  c.loadItems(false)
+  const command = c.listProc.command
+  c.listStdout.text = "the old vault's list"
+  c.listProc.running = false                    // cancelSshAgentLoad(): killed, its exit still to come
+  c.dropVaultState()
+  c.scrubPending = [c.listProc]
+  c.scrubStep()
+  check("the scrub leaves a stopped run's command alone until it has exited",
+    c.listProc.command === command && c.scrubPending.length === 1 && c.runsOf("listProc").length === 1, JSON.stringify(c.listProc.command))
+  c.exit("listProc", 143, "the old vault's list", "")
+  check("that run's exit is not counted as the scrub", c.scrubPending.length === 1 && names(c) === "")
+  c.scrubStep()                                 // scrubRetry
+  check("the scrub then runs", Model.isScrubCommand(c.listProc.command) && c.runsOf("listProc").length === 2)
+  c.exit("listProc", 0, "", "")
+  eq("and is what clears the queue", c.scrubPending.length, 0)
+}
+
 // --- a killed run whose exit is still to come ---------------------------------------
 {
   const c = fixture()
@@ -277,8 +298,9 @@ for (const [name, id, out, starter] of READERS) {
 // --- an organization's collections: keyed by the organization --------------------------
 {
   const c = fixture()
-  c.loadOrgCollections("org-1")
-  c.loadOrgCollections("org-2")
+  vm.runInContext(functionBody(source, "setFormOrganization"), c)
+  c.setFormOrganization("org-1")
+  c.setFormOrganization("org-2")
   eq("a second organization waits for the first one's read", c.runsOf("orgCollectionsProc").length, 1)
   c.exit("orgCollectionsProc", 0, JSON.stringify([{ id: "c1", name: "Of org 1", organizationId: "org-1" }]), "")
   check("the first organization's collections are not offered as the second's",
@@ -291,6 +313,25 @@ for (const [name, id, out, starter] of READERS) {
   c.exit("orgCollectionsProc", 0, JSON.stringify([{ id: "c2", name: "Of org 2", organizationId: "org-2" }]), "")
   check("and is the one shown", c.formCollections.length === 1 && c.formCollections[0].id === "c2"
     && c.formCollectionsLoading === false, JSON.stringify(c.formCollections))
+}
+
+{
+  // A, then B, then "personal" while A's read still runs.
+  const c = fixture()
+  vm.runInContext(functionBody(source, "setFormOrganization"), c)
+  c.setFormOrganization("org-1")
+  c.setFormOrganization("org-2")
+  c.setFormOrganization("personal")
+  c.exit("orgCollectionsProc", 0, JSON.stringify([{ id: "c1", name: "Of org 1", organizationId: "org-1" }]), "")
+  check("choosing no organization drops the read that was waiting", c.runsOf("orgCollectionsProc").length === 1, JSON.stringify(c.runs))
+  check("and the answer still on its way offers and pre-selects nothing in a personal item",
+    c.formCollections.length === 0 && c.formCollectionIds.length === 0, JSON.stringify(c.formCollectionIds))
+  // An answer for another organization than the form's, however it got here.
+  const d = fixture()
+  d.formOrgId = "org-2"
+  d.loadOrgCollections("org-1")
+  d.exit("orgCollectionsProc", 0, JSON.stringify([{ id: "c1", name: "Of org 1", organizationId: "org-1" }]), "")
+  check("collections are shown only for the organization the form has", d.formCollections.length === 0 && d.formCollectionIds.length === 0)
 }
 
 // --- single-item reads (no helper: `bw get item`) -----------------------------------------
@@ -596,6 +637,22 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
   u.isLoading = true                             // the user asked for this read, and is watching a spinner
   u.exit("listProc", 0, vaultOf("old"), "")
   check("a read the user is waiting for is read again at once", u.runsOf("listProc").length === 2 && u.idleChecks === 0)
+}
+
+{
+  // A create the vault refused: its provisional row is gone, and so is a detail open on it.
+  const c = saving(true)
+  finishSave(c, 1, "")
+  check("a refused create leaves the list, not a detail of a row that is gone",
+    c.currentScreen === "main" && !Array.from(c.items).some(i => Model.isPendingItemId(i.id)), c.currentScreen)
+  check("and keeps the draft for reopening", c.failedSave !== null && c.failedSave.name === "New login")
+  const g = saving(true); g.currentScreen = "sshApproval"; g.screenBeforeSshApproval = "detail"
+  finishSave(g, 1, "")
+  check("under an SSH approval it is the list the approval returns to",
+    g.currentScreen === "sshApproval" && g.screenBeforeSshApproval === "main", g.screenBeforeSshApproval)
+  const e = saving(false); e.currentScreen = "detail"; e.detailItem = { id: oldId, name: "Old" }
+  finishSave(e, 1, "")
+  eq("a detail open on another item stays", e.currentScreen, "detail")
 }
 
 check("the waiting reads are per-vault state a lock drops", /queuedReads = \(\{\}\)/.test(functionBody(source, "dropVaultState")))

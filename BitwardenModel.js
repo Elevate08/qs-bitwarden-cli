@@ -567,14 +567,17 @@ function scrubRetryMs() { return SCRUB_RETRY_MS }
 
 // One pass over the scrub queue: `start` is scrubbed now, `waiting` is checked
 // again next tick, anything else is done. Running processes are left alone
-// (their read is still wanted); already-scrubbed ones need nothing.
+// (their read is still wanted), and so is one stopped whose exit is still to
+// come (VaultProcess keeps its `runId`): setting its command would start
+// nothing, and that run's exit would pass for the scrub's. Already-scrubbed
+// ones need nothing.
 function scrubPass(procs) {
   var start = []
   var waiting = []
   for (var i = 0; i < (procs || []).length; i++) {
     var p = procs[i]
     if (!p) continue
-    if (p.running) { waiting.push(p); continue }
+    if (p.running || (p.runId !== undefined && p.runId !== 0)) { waiting.push(p); continue }
     if (isScrubCommand(p.command)) continue
     start.push(p)
     waiting.push(p)

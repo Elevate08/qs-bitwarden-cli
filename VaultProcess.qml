@@ -57,6 +57,7 @@ Item {
       local.command = Model.scrubCommand()
       local.environment = ({})
       runId = -1
+      localStarted = false
       local.running = true
       return
     }
@@ -82,6 +83,7 @@ Item {
       return
     }
     runId = -1
+    localStarted = false
     local.command = cmd
     local.environment = env
     local.stdinEnabled = stdinText !== ""
@@ -107,8 +109,19 @@ Item {
     if (local.running) local.running = false
   }
 
+  // Whether the local run in flight got as far as starting. One that could
+  // not (no such program, no more processes) is reported by Quickshell as
+  // `running` going back to false, with neither started() nor exited().
+  property bool localStarted: false
+
   Process {
     id: local
+    onRunningChanged: {
+      // Ended here as a command that was not found, so the caller's exit
+      // handler runs and whatever waits for this process is not stranded.
+      if (!running && proc.runId === -1 && !proc.localStarted)
+        proc.finish(127, "", "The command could not be started.", false, false)
+    }
     stdout: StdioCollector { id: localOut; waitForEnd: true }
     stderr: StdioCollector { id: localErr; waitForEnd: true }
     onStarted: {
@@ -116,6 +129,7 @@ Item {
         write(proc.stdinText)
         stdinEnabled = false
       }
+      proc.localStarted = true
       proc.started()
     }
     onExited: function(exitCode, exitStatus) {

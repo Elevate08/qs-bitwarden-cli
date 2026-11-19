@@ -7423,6 +7423,8 @@ Item {
     formPicker = ""
     formCollectionIds = []
     formCollections = []
+    // A read still waiting was for the organization chosen before.
+    delete queuedReads["collections"]
     if (id && id !== "personal" && id !== "all") loadOrgCollections(id)
   }
 
@@ -7440,7 +7442,10 @@ Item {
   function onOrgCollectionsLoaded(raw) {
     formCollectionsLoading = false
     if (vaultReadIsStale("collections")) return
-    formCollections = Model.parseCollections(raw)
+    // Only those of the organization the form has now: the answer may be for
+    // one chosen before it, or before "personal".
+    var org = String(formOrgId || "")
+    formCollections = Model.parseCollections(raw).filter(function(c) { return c.organizationId === org })
     // A single collection is not a choice; pre-select it.
     if (formCollections.length === 1 && formCollectionIds.length === 0) {
       formCollectionIds = [formCollections[0].id]
@@ -8379,6 +8384,8 @@ Item {
         itemsLoadedAt = Date.now()
         refreshDerivedFromItems()
         failedSave = { name: save.name, form: save.form }
+        // A detail open on the row just removed has no item (the draft stays).
+        if (save.isCreate) leaveProvisionalDetail(save.id)
         errorMessage = "Could not save " + save.name + ". " + (stderrText || "")
       } else {
         errorMessage = stderrText || "Failed to save item"
