@@ -2052,56 +2052,22 @@ Panel {
                 }
               }
 
-              Row {
+              NumberRow {
                 visible: root.vault.genOpts.numbers
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(170)
-                  text: "Minimum numbers"
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                NumberEntry {
-                  anchors.verticalCenter: parent.verticalCenter
-                  value: root.vault.genOpts.minNumber
-                  from: 0
-                  to: 9
-                  stepSize: 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.vault.setGenOpt("minNumber", v) }
-                }
+                label: "Minimum numbers"
+                value: root.vault.genOpts.minNumber
+                from: 0
+                to: 9
+                onModified: function(v) { root.vault.setGenOpt("minNumber", v) }
               }
 
-              Row {
+              NumberRow {
                 visible: root.vault.genOpts.special
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(170)
-                  text: "Minimum special"
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                NumberEntry {
-                  anchors.verticalCenter: parent.verticalCenter
-                  value: root.vault.genOpts.minSpecial
-                  from: 0
-                  to: 9
-                  stepSize: 1
-                  foreground: root.fg
-                  accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onModified: function(v) { root.vault.setGenOpt("minSpecial", v) }
-                }
+                label: "Minimum special"
+                value: root.vault.genOpts.minSpecial
+                from: 0
+                to: 9
+                onModified: function(v) { root.vault.setGenOpt("minSpecial", v) }
               }
             }
 

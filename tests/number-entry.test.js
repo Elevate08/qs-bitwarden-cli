@@ -62,6 +62,6 @@ check("NumberEntry swallows middle-click",
 check("NumberEntry never calls the clipboard",
   !/clipboard\(|\.paste\(\)|mimeData/.test(entry))
 check("Panel uses NumberEntry",
-  (fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8").match(/\bNumberEntry \{/g) || []).length === 4)
+  (fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8").match(/\bNumberEntry \{/g) || []).length === 2)
 
 done()
