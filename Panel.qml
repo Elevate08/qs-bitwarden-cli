@@ -269,21 +269,53 @@ Panel {
     actionPalette.openFor()
   }
 
+  // The item the palette was opened for, as the vault holds it now: the
+  // list's item with that id, or on the detail screen the open detail if it
+  // is still that item. Null when a sync removed it from the vault or another
+  // item took its place. The open detail is a copy read earlier, so it also
+  // has to agree with the list about the master-password re-prompt: a sync
+  // that turned it on must not leave the palette acting on the old answer.
+  function paletteItem(screen, itemId) {
+    if (itemId === "") return null
+    var fresh = null
+    var list = root.vault.items || []
+    for (var i = 0; i < list.length && !fresh; i++) {
+      if (list[i] && String(list[i].id) === itemId) fresh = list[i]
+    }
+    if (!fresh || screen !== "detail") return fresh
+    var detail = root.vault.detailItem
+    if (!detail || String(detail.id) !== itemId) return null
+    if (root.vault.itemNeedsReprompt(fresh) !== root.vault.itemNeedsReprompt(detail)) return null
+    return detail
+  }
+
   // Runs a palette action through what its letter, or its field's copy button,
-  // runs. `screen` is the one the palette was opened from.
-  function runPaletteAction(action, screen) {
+  // runs. `screen` is the one the palette was opened from and `itemId` the
+  // item it was opened for: the action runs on that item, never on whatever
+  // row or detail is current by now, and does nothing if it is gone.
+  function runPaletteAction(action, screen, itemId) {
+    var item = root.paletteItem(screen, itemId)
+    if (!item) return
+    if (screen !== "detail") {
+      // The list's letters (p u m w e), on this item rather than the cursor's.
+      switch (action.id) {
+        case "copyPassword": root.vault.copyPassword(item); return
+        case "copyUsername": root.vault.copyUsername(item); return
+        case "copyTotp": if (item.hasTotp) root.vault.copyTotpCode(item); return
+        case "openWebsite": if (item.uris && item.uris.length > 0) root.vault.openUrl(item.uris[0]); return
+        case "openDetail": root.vault.openDetail(item); return
+      }
+      return
+    }
     // Like x: asks first, and an SSH key has no Delete.
     if (action.id === "delete") {
-      if (root.vault.detailItem && root.vault.detailItem.typeCode !== 5) root.vault.showDeleteConfirm = true
+      if (item.typeCode !== 5) root.vault.showDeleteConfirm = true
       return
     }
     if (action.key) {
-      if (screen === "detail") root.runDetailShortcut(action.key)
-      else root.vault.runShortcut(action.key)
+      root.runDetailShortcut(action.key)
       return
     }
-    var item = root.vault.detailItem
-    if (!item) return
     switch (action.id) {
       case "openWebsite": if (item.uris && item.uris.length > 0) root.vault.openUrl(item.uris[0]); return
       case "copyCardholder": root.vault.copyToClipboard(root.vault.detailCard ? root.vault.detailCard.cardholderName : "", "Cardholder name"); return
@@ -6111,6 +6143,10 @@ Panel {
         // Where Ctrl+K was pressed: the screen, and whether from the search box.
         property string fromScreen: "main"
         property bool fromSearch: false
+        // The item Ctrl+K was pressed on. Actions run on this id, not on the
+        // row the cursor is on when Enter is pressed: a sync can reorder the
+        // list while the palette is open.
+        property string itemId: ""
         property var all: []
         readonly property var actions: shown ? Model.filterActions(all, query) : []
         readonly property real rowHeight: Style.space(30)
@@ -6125,6 +6161,7 @@ Panel {
           var item = screen === "detail" ? v.detailItem : (screen === "main" ? v.getSelectedItem() : null)
           if (!item) return
           actionPalette.fromScreen = screen
+          actionPalette.itemId = String(item.id || "")
           actionPalette.fromSearch = searchField.activeFocus
           actionPalette.all = Model.itemActions(item, {
             screen: screen,
@@ -6141,6 +6178,7 @@ Panel {
           if (!actionPalette.shown) return
           actionPalette.shown = false
           actionPalette.all = []
+          actionPalette.itemId = ""
           if (actionPalette.fromScreen === "main" && actionPalette.fromSearch) searchField.forceActiveFocus()
           else keyCatcher.forceActiveFocus()
         }
@@ -6159,10 +6197,11 @@ Panel {
           if (index < 0 || index >= actions.length) return
           var action = actions[index]
           var screen = actionPalette.fromScreen
+          var itemId = actionPalette.itemId
           // Closed first: an action may open a screen, a prompt or a form
           // that takes the keyboard itself.
           actionPalette.close()
-          root.runPaletteAction(action, screen)
+          root.runPaletteAction(action, screen, itemId)
         }
 
         // Closed when the vault locks or the screen changes underneath it.
@@ -6170,6 +6209,13 @@ Panel {
           target: root.vault
           function onStatusChanged() { if (root.vault.status !== "unlocked") actionPalette.close() }
           function onCurrentScreenChanged() { if (root.vault.currentScreen !== actionPalette.fromScreen) actionPalette.close() }
+          // The open item was replaced (a new item's saved copy, a browse):
+          // its actions were listed for the item before.
+          function onDetailItemChanged() {
+            if (!actionPalette.shown || actionPalette.fromScreen !== "detail") return
+            var detail = root.vault.detailItem
+            if (!detail || String(detail.id) !== actionPalette.itemId) actionPalette.close()
+          }
         }
 
         Rectangle {
