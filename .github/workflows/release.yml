@@ -365,6 +365,7 @@ jobs:
     needs: [verify, symbols, host-run]
     # Only a `v*` tag publishes, the pattern of `on:` above; a dispatch run on
     # a branch, or on a tag of any other name, stops after verification.
+    # startsWith ignores case, so the job's first step asks again in shell.
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-24.04
     # The only job asking for more than read. No reviewer click: the work was
@@ -381,6 +382,20 @@ jobs:
       attestations: write   # record the provenance attestation
 
     steps:
+      - name: Only a tag named v and a digit is a release
+        # Case-sensitive, unlike the `if` above: `V2.0.0` on a manual run
+        # stops here, before anything is checked out, attested or uploaded.
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *)
+              echo "::error::$TAG is not a release tag: those are a lowercase v and a version"
+              exit 1
+              ;;
+          esac
+
       - name: Check out the tagged commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -40,7 +40,8 @@ check("a dispatch run can rehearse the whole path",
   /workflow_dispatch:/.test(release),
   "verification cannot be run without creating a tag")
 check("only a v* tag reaches the publishing job",
-  /^ {4}if: github\.ref_type == 'tag' && startsWith\(github\.ref_name, 'v'\)$/m.test(jobs.get("release") || ""),
+  /^ {4}if: github\.ref_type == 'tag' && startsWith\(github\.ref_name, 'v'\)$/m.test(jobs.get("release") || "")
+    && /steps:\n {6}- name: [^\n]*\n(?: {8}#[^\n]*\n)* {8}env:\n {10}TAG: \$\{\{ github\.ref_name \}\}\n {8}run: \|\n {10}case "\$TAG" in\n {12}v\[0-9\]\*\) ;;\n {12}\*\)\n[^\n]*\n {14}exit 1/.test(jobs.get("release") || ""),
   "a dispatch run on a branch or another tag could publish a release or sign an attestation")
 check("a release in flight is never cancelled",
   /concurrency:[\s\S]{0,200}?cancel-in-progress: false/.test(release),
