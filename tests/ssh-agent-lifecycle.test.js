@@ -379,6 +379,7 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
     const v = {
       Model: Model, sshPromotedOldId: shown.requestId, sshPromotedRaw: shown.raw,
       sshPrompt: { requestId: shown.requestId }, sshPromptQueue: [], writes: [], shownNew: [],
+      sshNotifyRequestId: shown.requestId,       // its notification is up
       sshAgentMayPrompt() { return true },
       sshAgentWrite(line) { v.writes.push(line) },
       showSshApproval(message) { v.shownNew.push(message) }
@@ -403,6 +404,7 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
   v.onSshAgentMessage(approvalOf(21, a))
   eq("the matching approval is adopted", v.sshPrompt.requestId, 21)
   eq("and the promotion is finished", v.sshPromotedOldId, null)
+  eq("the notification shown for it is still its own, so its Deny is not dropped", v.sshNotifyRequestId, 21)
   eq("the other request stays queued", v.sshPromptQueue.length, 1)
 
   // Each field that tells two requests apart is compared.

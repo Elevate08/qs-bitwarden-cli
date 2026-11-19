@@ -352,6 +352,13 @@
   `~/.local/share/qs-bitwarden-cli/ssh`, or no data directory), the reason
   was recorded and drawn nowhere. It is now added to the line under **SSH
   agent status** in Settings until an export or a removal succeeds.
+- **Deny on the notification of a request that was waiting for an unlock.**
+  A signing request that arrived while the vault was locked is shown on the
+  card as soon as the vault opens and is given its final number when its
+  keys have loaded. A notification put up in between kept the earlier
+  number, so its **Deny** was ignored and the request stayed on the card.
+  The notification now follows its request. It still cannot approve, and a
+  notification never answers for any request but the one it was shown for.
 
 ## [1.13.1] - 2026-11-18
 

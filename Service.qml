@@ -2979,6 +2979,9 @@ Item {
   function adoptSshPrompt(message) {
     if (root.sshPromotedOldId !== null && root.sshPrompt
         && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
+      // A notification already up was shown for this request under its old
+      // id: its Deny stays this request's, and no other's.
+      if (root.sshNotifyRequestId === root.sshPrompt.requestId) root.sshNotifyRequestId = message.requestId
       root.sshPrompt.requestId = message.requestId
       root.sshPromptRaw = message
       root.sshPromotedOldId = null
