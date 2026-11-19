@@ -125,9 +125,13 @@ you to it.
   uses. The method is a small number, not a secret.
 - A program running as you changing Node's compile cache for `bw`
   (`~/.cache/qs-bitwarden-cli/node-compile-cache`, compiled code that Node
-  loads into `bw`). It is private to you and checked for that before it is
-  used; such a program can already change the plugin's own files, which `bw`
-  loads the same way. Another user being able to write there is in scope.
+  loads into `bw`). The directory, and every directory above it, is checked
+  at shell start to be yours (or root's, above it) and writable by no one
+  else before it is used, and a `NODE_COMPILE_CACHE` the shell inherited is
+  not passed to `bw` or the pinentry; a program running as you can already
+  change the plugin's own files, which `bw` loads the same way. Another user
+  being able to write there, or an unchecked directory reaching `bw`, is in
+  scope.
 - Bugs in the Bitwarden server, `bw`, gnome-keyring, systemd, Quickshell or
   Omarchy. Report those upstream, and tell us if the plugin makes them worse.
 - An attacker who already controls your unlocked session or your user

@@ -38,8 +38,12 @@ rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/accounts"
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/qs-bitwarden-cli/ssh"
 rm -f ~/.config/uwsm/env.d/50-qs-bitwarden-ssh-agent
 
-# Node's compiled-code cache for bw (no account or vault data)
-rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/qs-bitwarden-cli"
+# Node's compiled-code cache for bw (no account or vault data). Only under
+# an absolute cache home, as the plugin itself only uses one.
+case "${XDG_CACHE_HOME:-$HOME/.cache}" in
+  /*) rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/qs-bitwarden-cli/node-compile-cache"
+      rmdir "${XDG_CACHE_HOME:-$HOME/.cache}/qs-bitwarden-cli" 2>/dev/null ;;
+esac
 ```
 
 **Do not hand-edit `~/.config/omarchy/shell.json`.** On many setups it is not a

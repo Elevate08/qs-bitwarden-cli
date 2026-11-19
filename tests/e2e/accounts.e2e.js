@@ -185,6 +185,36 @@ try {
   if (failedToRun || failures.length) console.error("--- shell log (tail) ---\n" + shell.logTail())
   shell.cleanup()
 }
+
+// --- a NODE_COMPILE_CACHE the shell was started with never reaches bw ---
+// The helper and every Process inherit the shell's environment. Until the
+// plugin's own cache directory has been checked, the variable must be taken
+// out of what `bw` (and the `node` checks beside it) get. Here the cache home
+// is under /tmp, a shared directory, so the probe refuses it: no cache at all.
+if (!failedToRun) {
+  const inherited = fs.mkdtempSync("/tmp/qsbw-e2e-inherited-")
+  const second = createShell("e2e-accounts-cache", check, { env: { NODE_COMPILE_CACHE: path.join(inherited, "cache") } })
+  try {
+    second.start()
+    second.q("open")
+    second.q("login", "a@x", "pw-a@x")
+    second.expect("with an inherited cache directory, the account logs in and its list is read",
+      s => s.status === "unlocked" && s.items.join() === "Login of a@x")
+    check("nothing was written to the inherited directory",
+      !fs.existsSync(path.join(inherited, "cache")), fs.readdirSync(inherited).join())
+    check("and the plugin's own directory, under a shared /tmp, was refused and never made",
+      fs.statSync("/tmp").mode % 0o10000 !== 0o1777
+        || !fs.existsSync(path.join(second.env.XDG_CACHE_HOME, "qs-bitwarden-cli")), "")
+    const errors = second.scriptErrors()
+    check("that shell logged no script errors", errors.length === 0, errors.join("\n"))
+  } catch (e) {
+    failedToRun = e
+  } finally {
+    if (failedToRun) console.error("--- shell log (tail) ---\n" + second.logTail())
+    second.cleanup()
+    fs.rmSync(inherited, { recursive: true, force: true })
+  }
+}
 if (failedToRun) {
   console.error("e2e-accounts: " + failedToRun.message)
   process.exit(1)

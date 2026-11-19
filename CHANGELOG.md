@@ -148,8 +148,9 @@
   Node's compile cache (`NODE_COMPILE_CACHE`, Node 22.1+) in
   `~/.cache/qs-bitwarden-cli/node-compile-cache` (about 11 MB): on one
   machine with bw 2026.2.0, `bw status` took 544 ms instead of 657 ms. It
-  holds compiled code, nothing of the vault, and is used only if the
-  directory is yours and no one else can write to it.
+  holds compiled code, nothing of the vault, and is used only if it and
+  every directory above it are yours (or root's) and no one else can write
+  to them; a `NODE_COMPILE_CACHE` the shell inherited is not passed on.
 - **Opening the panel reads the vault again less often.** A list over a
   minute old was re-read (`bw list items`) on every open. Now a `stat` of
   `bw`'s data file (about 6 ms; its contents are not read) is compared with

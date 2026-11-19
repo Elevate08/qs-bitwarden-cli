@@ -470,44 +470,103 @@ function bwNodeOptions(pluginDir, existing) {
 // cache of the modules bw loads, about a sixth of each start. It holds
 // compiled code, nothing of the vault, and is shared by every account. It is
 // code Node will run in a process that sees the master password, so the
-// variable is set only for a directory bwCompileCacheCommand() accepted.
+// variable is set only to the directory bwCompileCacheCommand() accepted,
+// and until then is taken out of bw's environment: a value the shell was
+// started with has been checked by no one.
 var BW_COMPILE_CACHE_ENV = "NODE_COMPILE_CACHE"
-var BW_COMPILE_CACHE_SUBDIR = "qs-bitwarden-cli/node-compile-cache"
+var BW_COMPILE_CACHE_PARENT = "qs-bitwarden-cli"
+var BW_COMPILE_CACHE_SUBDIR = BW_COMPILE_CACHE_PARENT + "/node-compile-cache"
 
 function bwCompileCacheEnvVar() { return BW_COMPILE_CACHE_ENV }
 
-// "" when neither base is an absolute path, which leaves the cache off.
-function bwCompileCacheDir(xdgCacheHome, home) {
-  var base = String(xdgCacheHome || "")
-  if (!base || base.charAt(0) !== "/") {
-    var h = String(home || "")
-    if (!h || h.charAt(0) !== "/") return ""
-    base = h.replace(/\/+$/, "") + "/.cache"
-  }
-  return base.replace(/\/+$/, "") + "/" + BW_COMPILE_CACHE_SUBDIR
+// A directory from the environment that can be taken at its word: absolute,
+// with no `..` to be read one way by a shell and another by Node, and no
+// control character (a trailing newline is dropped by `$(...)`).
+function plainAbsoluteDir(value) {
+  var dir = String(value || "")
+  if (dir.charAt(0) !== "/" || /[\x00-\x1f\x7f]/.test(dir)) return ""
+  var parts = dir.split("/")
+  for (var i = 0; i < parts.length; i++) if (parts[i] === "..") return ""
+  return dir.replace(/\/+$/, "") || "/"
 }
 
-// Exits 0 only when `dir` (bwCompileCacheDir()) may be used. The cache home
-// must be this user's and writable by no one else; the plugin's directory in
-// it and the cache directory are created mode 0700, and one already there is
-// accepted only as a real directory (not a symlink) that this user owns and
-// no one else can write to. Nothing is repaired: a directory that fails is
-// left alone and `bw` runs without the cache. Node recreates a deleted cache
-// directory with the default umask, hence the chmod of one that passed.
-function bwCompileCacheCommand(dir) {
-  var mine = "case \"$(stat -L -c %a -- \"$1\" 2>/dev/null)\" in *[0145][0145]) ;; *) return 1 ;; esac; "
-  var script = "__d=\"$1\"; case \"$__d\" in /*) ;; *) exit 1 ;; esac; umask 077; "
-    + "__own() { [ -d \"$1\" ] && [ -O \"$1\" ] || return 1; " + mine + "}; "
-    + "__p=\"$(dirname -- \"$__d\")\"; __b=\"$(dirname -- \"$__p\")\"; "
-    + "[ -e \"$__b\" ] || mkdir -p -- \"$__b\" || exit 1; "
-    + "__own \"$__b\" || exit 1; "
-    + "for __x in \"$__p\" \"$__d\"; do "
-    + "if [ -e \"$__x\" ] || [ -L \"$__x\" ]; then "
-    + "[ ! -L \"$__x\" ] && __own \"$__x\" || exit 1; "
-    + "else mkdir -- \"$__x\" || exit 1; fi; "
+// The cache home the cache directory goes under: XDG_CACHE_HOME, or ~/.cache
+// when that is unset or empty. "" leaves the cache off, which is also what
+// an XDG_CACHE_HOME that is set but not usable does: it is not second-guessed.
+function bwCompileCacheHome(xdgCacheHome, home) {
+  if (xdgCacheHome) return plainAbsoluteDir(xdgCacheHome)
+  var h = plainAbsoluteDir(home)
+  return h === "" ? "" : h.replace(/\/+$/, "") + "/.cache"
+}
+
+// The environment of a probe that needs no secret and no setting: only PATH,
+// with a fixed locale (GNU stat prints fractions with the locale's decimal
+// separator). Used with `clearEnvironment: true`, so no BW_SESSION and no
+// BASH_ENV reach it.
+function plainProbeEnv(path) {
+  return { PATH: String(path || "") || "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C" }
+}
+
+// Prints the cache directory and exits 0 only when it may be used. `home` is
+// bwCompileCacheHome(). Everything is checked on the canonical path (symlinks
+// resolved), and that path is what is printed, so what was checked is what
+// Node is given:
+// - every directory from the cache home up to / belongs to this user or root
+//   and is writable by no one else (a shared directory such as /tmp above it
+//   would let another user swap the path);
+// - the plugin's directory and the cache directory in it are real
+//   directories of this user's that no one else can write to, created mode
+//   0700 if missing (by mode, not umask, and checked again once made).
+// Nothing is repaired: a path that fails is left alone and `bw` runs without
+// the cache. Node recreates a deleted cache directory with the default umask,
+// hence the chmod of one that passed.
+function bwCompileCacheCommand(home) {
+  var script = "exec 2>/dev/null; case \"$1\" in /*) ;; *) exit 1 ;; esac; __u=\"$(id -u)\" || exit 1; "
+    // $1: a directory; $2: `root` if root may own it too.
+    + "__ok() { [ -d \"$1\" ] && [ ! -L \"$1\" ] || return 1; "
+    + "__s=\"$(stat -c '%u %a' -- \"$1\" 2>/dev/null)\" || return 1; "
+    + "case \"${__s#* }\" in *[0145][0145]) ;; *) return 1 ;; esac; "
+    + "[ \"${__s%% *}\" = \"$__u\" ] || { [ \"$2\" = root ] && [ \"${__s%% *}\" = 0 ]; }; }; "
+    // Sets __c to the canonical form of $1 and checks it up to /. The
+    // trailing x keeps `$(...)` from eating a newline that is the path's.
+    + "__chain() { __c=\"$(realpath -e -- \"$1\" && printf x)\" || return 1; __c=\"${__c%x}\"; __c=\"${__c%?}\"; "
+    + "case \"$__c\" in *$'\\n'*) return 1 ;; /*) ;; *) return 1 ;; esac; "
+    + "__a=\"$__c\"; while :; do __ok \"$__a\" root || return 1; [ \"$__a\" = / ] && break; "
+    + "__a=\"${__a%/*}\"; [ -n \"$__a\" ] || __a=/; done; }; "
+    // A cache home not there yet is made only inside a directory that passes.
+    + "if [ ! -e \"$1\" ] && [ ! -L \"$1\" ]; then __h=\"${1%/}\"; "
+    + "__chain \"${__h%/*}/\" || exit 1; [ \"$__c\" = / ] && __c=''; "
+    + "mkdir -m 700 -- \"$__c/${__h##*/}\" || exit 1; fi; "
+    + "__chain \"$1\" || exit 1; "
+    + "[ \"$__c\" = / ] && __c=''; "
+    + "for __x in \"$__c/" + BW_COMPILE_CACHE_PARENT + "\" \"$__c/" + BW_COMPILE_CACHE_SUBDIR + "\"; do "
+    + "[ -e \"$__x\" ] || [ -L \"$__x\" ] || mkdir -m 700 -- \"$__x\" || exit 1; "
+    + "__ok \"$__x\" || exit 1; "
     + "done; "
-    + "chmod 700 -- \"$__d\" || exit 1"
-  return ["bash", "-c", script, "_", String(dir || "")]
+    + "chmod 700 -- \"$__x\" || exit 1; "
+    + "[ \"$(realpath -e -- \"$__x\" && printf x)\" = \"$__x\"$'\\n'x ] || exit 1; "
+    + "printf '%s\\n' \"$__x\""
+  return ["bash", "-c", script, "_", String(home || "")]
+}
+
+// For a Node program of the plugin's that gets no cache of its own (the
+// pinentry, which is typed the master password): `env` with an inherited
+// NODE_COMPILE_CACHE removed, so it loads no compiled code nobody checked.
+function withoutCompileCache(env) {
+  var out = env || {}
+  out[BW_COMPILE_CACHE_ENV] = null
+  return out
+}
+
+// The directory the probe printed, if it exited 0 and printed one that is
+// plainly the cache directory; "" otherwise. This, not a path put together
+// again here, is what `bw` is given.
+function bwCompileCacheAccepted(exitCode, line) {
+  var dir = String(line || "")
+  if (exitCode !== 0 || plainAbsoluteDir(dir) !== dir) return ""
+  var tail = "/" + BW_COMPILE_CACHE_SUBDIR
+  if (dir.length < tail.length || dir.slice(-tail.length) !== tail) return ""
+  return dir.indexOf("/./") === -1 && dir.indexOf("//") === -1 ? dir : ""
 }
 
 function passwordEnvVar() {
@@ -2623,7 +2682,7 @@ function pinentryEnvironment(opts) {
   var env = {}
   env[PINENTRY_DESC_ENV] = pinentryText(o.description)
   env[PINENTRY_ERR_ENV] = pinentryText(o.error)
-  return env
+  return withoutCompileCache(env)
 }
 
 // Prints "found" or "missing": whether the frontend at `frontend` (as for

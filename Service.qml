@@ -4718,27 +4718,37 @@ Item {
   // Read once: the shell's own NODE_OPTIONS plus the early-exit preload.
   readonly property string bwNodeOptions: Model.bwNodeOptions(sshAgentPluginDir, Quickshell.env("NODE_OPTIONS"))
 
-  // Node's compile cache for `bw`: the directory, once the probe at start
-  // has accepted it (Model.bwCompileCacheCommand()); "" until then and if it
-  // was refused, and `bw` then starts without the cache.
-  readonly property string bwCompileCachePath: Model.bwCompileCacheDir(
+  // Node's compile cache for `bw`: the directory the probe at start printed
+  // once it had checked it (Model.bwCompileCacheCommand()); "" until then and
+  // if it was refused, and `bw` then starts without a cache.
+  readonly property string bwCompileCacheHome: Model.bwCompileCacheHome(
     Quickshell.env("XDG_CACHE_HOME") || "", Quickshell.env("HOME") || "")
   property string bwCompileCacheDir: ""
+  property string bwCompileCacheLine: ""
 
   function probeBwCompileCache() {
-    if (bwCompileCachePath === "" || bwCompileCacheProc.running) return
+    if (bwCompileCacheHome === "" || bwCompileCacheProc.running) return
+    bwCompileCacheLine = ""
     bwCompileCacheProc.running = true
   }
 
   function onBwCompileCacheProbed(exitCode) {
-    bwCompileCacheDir = exitCode === 0 ? bwCompileCachePath : ""
+    bwCompileCacheDir = Model.bwCompileCacheAccepted(exitCode, bwCompileCacheLine)
+    bwCompileCacheLine = ""
+  }
+
+  // NODE_COMPILE_CACHE for a `bw`: the accepted directory, or null, which
+  // removes one the shell inherited (Process and the vault helper both unset
+  // a null).
+  function bwCompileCacheEnvValue() {
+    return bwCompileCacheDir !== "" ? bwCompileCacheDir : null
   }
 
   // No session here: a VaultProcess adds it (vaultStart()).
   function bwEnv(extra) {
     var env = accountAppDataEnv()
     if (bwNodeOptions) env.NODE_OPTIONS = bwNodeOptions
-    if (bwCompileCacheDir) env[Model.bwCompileCacheEnvVar()] = bwCompileCacheDir
+    env[Model.bwCompileCacheEnvVar()] = bwCompileCacheEnvValue()
     if (extra) for (var k in extra) env[k] = extra[k]
     return env
   }
@@ -4997,7 +5007,7 @@ Item {
     var env = accountAppDataEnv()
     env[Model.sessionEnvVar()] = null
     env[Model.noInteractionEnvVar()] = "true"
-    if (bwCompileCacheDir) env[Model.bwCompileCacheEnvVar()] = bwCompileCacheDir
+    env[Model.bwCompileCacheEnvVar()] = bwCompileCacheEnvValue()
     return env
   }
 
@@ -9778,6 +9788,7 @@ Item {
 
   Process {
     id: pinentryProbeProc
+    environment: Model.withoutCompileCache({})
     stdout: StdioCollector { id: pinentryProbeOut; waitForEnd: true }
     onExited: function(exitCode) { root.pinentryMissing = Model.pinentryProbeMissing(exitCode, pinentryProbeOut.text) }
   }
@@ -10027,7 +10038,12 @@ Item {
 
   Process {
     id: bwCompileCacheProc
-    command: Model.bwCompileCacheCommand(root.bwCompileCachePath)
+    command: Model.bwCompileCacheCommand(root.bwCompileCacheHome)
+    clearEnvironment: true
+    environment: Model.plainProbeEnv(Quickshell.env("PATH") || "")
+    stdout: SplitParser {
+      onRead: function(line) { root.bwCompileCacheLine = line }
+    }
     onExited: function(exitCode) { root.onBwCompileCacheProbed(exitCode) }
   }
 
