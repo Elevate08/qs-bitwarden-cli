@@ -109,7 +109,7 @@ for (const [what, bad] of [["group-writable", 0o770], ["world-writable", 0o707],
   check("a file in the cache directory's place is refused", probe(dir) !== 0)
 }
 check("a directory this user does not own is refused",
-  probe("/usr/qs-bitwarden-cli/node-compile-cache") !== 0 || process.getuid() === 0)
+  process.getuid() === 0 || probe("/usr/qs-bitwarden-cli/node-compile-cache") !== 0)
 check("a relative or empty path is refused",
   probe("") !== 0 && probe("cache/qs-bitwarden-cli/node-compile-cache") !== 0)
 {

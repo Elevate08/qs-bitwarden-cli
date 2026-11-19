@@ -144,23 +144,19 @@
 
 ### Changed
 
-- **`bw` starts about a sixth faster.** Every `bw` the panel runs now uses
-  Node's compile cache (`NODE_COMPILE_CACHE`, Node 22.1 or newer), kept in
-  `~/.cache/qs-bitwarden-cli/node-compile-cache` (mode 0700, about 11 MB):
-  on one machine with bw 2026.2.0, `bw status` went from 657 ms to 544 ms
-  and `bw --version` from 645 ms to 533 ms, with the same output. It holds
-  compiled code only, nothing of the vault, and is used only if the
+- **`bw` starts about a sixth faster.** The `bw` commands the panel runs use
+  Node's compile cache (`NODE_COMPILE_CACHE`, Node 22.1+) in
+  `~/.cache/qs-bitwarden-cli/node-compile-cache` (about 11 MB): on one
+  machine with bw 2026.2.0, `bw status` took 544 ms instead of 657 ms. It
+  holds compiled code, nothing of the vault, and is used only if the
   directory is yours and no one else can write to it.
-- **Opening the panel no longer re-reads an unchanged vault.** A list more
-  than a minute old was read again (`bw list items`, about 1.6 s of work
-  behind the panel) on every open. The panel now compares the size, inode
-  and times of `bw`'s data file (a `stat`, about 6 ms; the contents are not
-  read) with what they were before the list was last read, and skips the
-  read when they match. A sync, a save, unlocking and switching account read
-  as before, and so does an open when the file cannot be checked.
-- **Suggestions for the focused window cost less on a large vault.** Matching
-  5,000 items against a window title took about 14.5 ms and takes about
-  9 ms (2,000 items: 6.7 ms to 5.3 ms); the suggestions are the same.
+- **Opening the panel reads the vault again less often.** A list over a
+  minute old was re-read (`bw list items`) on every open. Now a `stat` of
+  `bw`'s data file (about 6 ms; its contents are not read) is compared with
+  one taken before the last read, and the read is skipped while they match.
+  The first such open after an unlock, sync or save still reads.
+- **Window-title suggestions cost less on a large vault**: about 9 ms
+  instead of 14.5 ms for 5,000 items on the same machine, same suggestions.
 
 ### Fixed
 
