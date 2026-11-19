@@ -982,7 +982,7 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
   }
   check("both starts ask the service last: the helper dispatch once its environment is put together, the local start as it hands it to the process",
     /else environment\[key\] = proc\.environment\[key\]\s+\}\s+bwEnvAtStart\(environment\)\s+if \(!vaultHelperActive\)/.test(functionBody(svc, "vaultStart"))
-      && /local\.environment = vault\.bwEnvAtStart\(env\)\s+local\.stdinEnabled = stdinText !== ""\s+local\.running = true/.test(functionBody(vaultProcess, "launchLocal"))
+      && /local\.environment = vault\.bwEnvAtStart\(env\)\s+local\.command = cmd\s+local\.stdinEnabled = stdinText !== ""\s+local\.running = true/.test(functionBody(vaultProcess, "launchLocal"))
       && (vaultProcess.match(/local\.environment = /g) || []).length === 2
       && !/refreshBwCompileCacheIn/.test(svc))
 

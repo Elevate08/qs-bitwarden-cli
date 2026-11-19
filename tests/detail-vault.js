@@ -26,7 +26,13 @@ const names = ["itemNeedsReprompt", "repromptSatisfied", "withReprompt", "submit
   "clearRepromptGrant", "withholdDetailSecrets", "withRevealedDetail", "loadFullDetail", "openDetail",
   "onDetailFinished", "toggleFieldReveal", "setFieldRevealed", "isFieldRevealed", "shownSecret", "revealField",
   "totpWanted", "helperRow", "readDetailSecret", "copyDetailField", "copyDetailFieldNow", "startEditItem",
-  "copyDetailTotp", "copyTotpCodeNow", "applyTotpCode", "fetchTotp", "localTotp", "saveItemForm"]
+  "copyDetailTotp", "copyTotpCodeNow", "applyTotpCode", "fetchTotp", "localTotp", "saveItemForm",
+  "beginVaultRead", "beginEpochOperation", "invalidateEpochOperation", "vaultReadIsStale", "vaultProcBusy",
+  "startVaultRead", "supersededVaultRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem",
+  "leaveProvisionalDetail", "settleOwedListRead", "listSnapshotOutdated",
+  "reconcileOpenDetail", "onListFinished", "itemChangeRunning",
+  "recheckArmedAutoType", "autoTypeArmed", "disarmAutoType", "recheckTotpFollowup",
+  "closeAccounts", "closeSettings", "reopenFailedSave"]
 
 // `items`: the list (rows from Model.parseItems). `fallback`: no helper.
 function makeVault(items, fallback) {
@@ -40,10 +46,21 @@ function makeVault(items, fallback) {
     showDeleteConfirm: false, attachmentQueue: [], attachmentSaved: {},
     totpFollowupActive: false, totpFollowupItem: null, totpFollowupCode: "", totpCopyItemId: "",
     totpRequestItemId: "", totpQueuedItemId: "", totpQueuedEpoch: -1, totpRestartPending: false,
-    getTotpProc: { running: false },
+    getTotpProc: { running: false }, getItemProc: { running: false, command: [] },
+    readEpochs: {}, queuedReads: {}, vaultChanges: 0, listReadChanges: 0, listRereadOwed: false,
+    createdItemHandoff: null, screenBeforeSshApproval: "main", pendingDelete: null, itemPayloadJson: "",
+    failedSave: null, itemsLoadedAt: 0, reloads: 0,
+    refreshDerivedFromItems() {}, loadItems() { v.reloads++ },
+    autoTypeItemId: "", autoTypeArmEpoch: -1, autoTypeArmReprompt: false, autoTypeArmTimer: { stop() {} },
+    totpFollowupTimer: { stop() {} }, autoTotpTimer: { stop() {} },
+    screenBeforeAccounts: "main", screenBeforeSettings: "main", restored: [], restoreItemForm(f) { v.restored.push(f) },
+    // The list read: `listProc.running` while one is in flight.
+    listProc: { running: false, command: [] }, listReadError: "", sshCapability: "", syncReloadPending: false,
+    isSyncing: false, backgroundSync: false, metadataLoadPending: false, statusRefreshAfterItems: false,
+    deferredMetadataTimer: { restart() {} }, maybeStartupLoad() {},
     pendingSave: null, formIsEditing: true, formItemId: "g1",
     queries: [], answers: [], copied: [], edits: [], flashes: [], formResets: 0, verify: null,
-    closeFilterGroup() {}, learnFromPick() {}, beginVaultRead() {}, vaultReadIsStale() { return false },
+    closeFilterGroup() {}, learnFromPick() {},
     resetAutoLockTimer() {}, flashNotification(text) { v.flashes.push(text) },
     startTotpFetch(id) { v.queries.push({ kind: "bw get totp", args: { id } }) },
     copyToClipboard(value, label) { v.copied.push([value, label]) },

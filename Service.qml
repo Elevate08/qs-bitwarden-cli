@@ -370,7 +370,7 @@ Item {
     var epoch = vaultEpoch
     vaultQuery("field", { id: id, field: key }, function(ok, value) {
       if (epoch !== root.vaultEpoch || (root.currentScreen !== "detail" && root.currentScreen !== "history")
-          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(root.detailItem)) return
       if (!ok) {
         root.errorMessage = "Could not read this value"
         return
@@ -461,8 +461,12 @@ Item {
     return !!item && Number(item.reprompt) === 1
   }
 
+  // The row the list has now for this id decides, whatever was handed in: a
+  // row still drawn from before a refresh, or a detail opened before it, may
+  // say otherwise. An item in no list (one being created) goes by its own.
   function repromptSatisfied(item) {
-    if (!itemNeedsReprompt(item)) return true
+    var row = item ? Model.findItemById(items, item.id) : null
+    if (!itemNeedsReprompt(row || item)) return true
     var id = String(item.id || "")
     if (id === "") return false
     if (id === repromptActionId) return true
@@ -583,7 +587,7 @@ Item {
     var epoch = vaultEpoch
     vaultQuery("item", { id: id }, function(ok, full) {
       if (epoch !== root.vaultEpoch || root.currentScreen !== "detail"
-          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(item)) return
+          || !root.detailItem || String(root.detailItem.id) !== id || !root.repromptSatisfied(root.detailItem)) return
       if (root.detailItem.secretsWithheld) {
         var parsed = ok ? Model.parseItemDetail(String(full)) : null
         if (!parsed) {
@@ -668,6 +672,9 @@ Item {
   // (dropVaultSecrets()).
   property string autoTypeItemId: ""
   property int autoTypeArmEpoch: -1
+  // Whether that item asked for the master password when it was armed (and
+  // so was asked): recheckArmedAutoType().
+  property bool autoTypeArmReprompt: false
   // From a type's start until wtype has finished, or the helper has not
   // answered in time; `autoTypeSeq` tells a late answer it was given up on.
   property bool autoTypeBusy: false
@@ -756,6 +763,21 @@ Item {
   // it so answers for a vault no longer open are dropped (vaultReadIsStale()).
   property int vaultEpoch: 0
   property var readEpochs: ({})
+  // Reads waiting for their process: { name: { epoch, launch } }
+  // (startVaultRead()). Holds no vault data.
+  property var queuedReads: ({})
+  // Saves, deletes and syncs that have finished, and the count when the list
+  // read in flight started: a list read that started before one of them
+  // finished is a snapshot from before it (listSnapshotOutdated()).
+  property int vaultChanges: 0
+  property int listReadChanges: 0
+  // Such a snapshot arrived while a save or delete was still running: the
+  // list is read again when that finishes (settleOwedListRead()).
+  property bool listRereadOwed: false
+  // A new item's detail, covered by an SSH approval when its save answered:
+  // { from: provisional id, to: saved id }, taken up when the detail is back
+  // (resumeCreatedItem()).
+  property var createdItemHandoff: null
 
   // Processes whose collectors still need emptying after a lock; see
   // scrubSecretBuffers().
@@ -2380,6 +2402,8 @@ Item {
     if (back === "accounts" || back === "") back = "main"
     if (status !== "unlocked") back = status === "unauthenticated" ? "login" : "locked"
     currentScreen = back
+    // A list accepted meanwhile did not see the detail this returns to.
+    reconcileOpenDetail()
   }
 
   // After a logout: the next most recent account, or a clean sign-in. The
@@ -3205,6 +3229,8 @@ Item {
     // calls back when it lands.
     if (sshAgentLoadActive || listProc.running) return
     if (sshAgentLoadedForVaultEpoch === root.vaultEpoch) return
+    // A load fails every signing request waiting for approval: after them.
+    if (sshPendingCount > 0) return
     // No nonce yet: onSshAgentLoadIdRead() calls back when it is ready.
     if (!Model.isValidLoadId(sshAgentNextLoadId)) {
       primeSshAgentLoadId()
@@ -3221,6 +3247,7 @@ Item {
     promoteUnlockToApproval()
     maybeStartupLoad()
   }
+  onSshPendingCountChanged: if (sshPendingCount === 0) maybeStartupLoad()
 
   // Unlocked but keys still loading: ask for approval now. The companion
   // applies it once the keys land, re-checking the key is present.
@@ -3660,8 +3687,11 @@ Item {
 
   function refreshStatus() {
     // A delayed probe or wake-up refresh must not erase why the vault locked
-    // or that its last automatic synchronization failed.
-    if (errorMessage !== vaultHelperLostMessage && errorMessage !== autoSyncError) errorMessage = ""
+    // or that its last automatic synchronization failed. Nor a failed list
+    // read's message: if this check fails too it is the only word on why
+    // (onStatusFinished()), and otherwise the next list or drop takes it.
+    if (errorMessage !== vaultHelperLostMessage && errorMessage !== autoSyncError
+        && !(listReadError !== "" && errorMessage === listReadError)) errorMessage = ""
     if (logoutPending) return
     // Wait for the dependency probe, which owns the first status transition.
     if (!depsChecked) {
@@ -3866,9 +3896,18 @@ Item {
     if (!st) {
       cancelAuthPrewarm()
       followVaultClosedInSshAgent("unauthenticated")
+      // The check itself failed, and says nothing. A list read that failed
+      // just before is then the only word on why the vault closed: its
+      // message stays up over the sign-in screen (still the list's, so the
+      // next list that is accepted, or the next drop, takes it down).
+      var listError = listReadError !== "" && errorMessage === listReadError ? listReadError : ""
       if (vaultStatePresent()) {
         if (session) requestSessionCredentialClear()
         dropVaultState()
+      }
+      if (listError !== "" && errorMessage === "") {
+        errorMessage = listError
+        listReadError = listError
       }
       status = "unauthenticated"
       currentScreen = "login"
@@ -4915,9 +4954,10 @@ Item {
   function loadSends() {
     if (!session) return
     sendsLoading = true
-    beginVaultRead("sends")
-    listSendsProc.command = Model.listSendsCommand()
-    listSendsProc.running = true
+    startVaultRead("sends", listSendsProc, function() {
+      listSendsProc.command = Model.listSendsCommand()
+      listSendsProc.running = true
+    })
   }
 
   function onSendsLoaded(raw) {
@@ -5804,6 +5844,8 @@ Item {
 
   function closeSettings() {
     currentScreen = (screenBeforeSettings === "settings" ? "main" : screenBeforeSettings)
+    // A list accepted meanwhile did not see the detail this returns to.
+    reconcileOpenDetail()
   }
 
   // Via `omarchy bar set`; the shell reloads, so setting() sees the change.
@@ -6837,6 +6879,9 @@ Item {
     vaultEpoch += 1
     sshAgentLoadFailStreak = 0
     readEpochs = ({})
+    queuedReads = ({})
+    listRereadOwed = false
+    createdItemHandoff = null
     masterPassword = ""
     itemsLoadedAt = 0
     orgsLoadedAt = 0
@@ -7005,6 +7050,50 @@ Item {
     return Model.vaultReadIsStale(readEpochs[name], vaultEpoch, !!session)
   }
 
+  // Whether an earlier run still holds `proc`: running (a lock's scrub
+  // included), or stopped with its exit still to come. Setting `running`
+  // again then starts nothing, and that run's answer is the next to arrive.
+  function vaultProcBusy(proc) {
+    return proc.running || (proc.runId !== undefined && proc.runId !== 0)
+  }
+
+  // Whether `proc` is running reader `name` for the open vault. A request
+  // that needs nothing newer than that run will bring is served by it.
+  function vaultReadRunning(name, proc) {
+    return proc.running && !Model.isScrubCommand(proc.command) && !vaultReadIsStale(name)
+  }
+
+  // Starts reader `name` on its shared process: `launch()` sets the command
+  // and runs it. The generation is stamped here, when the run starts, so the
+  // answer is judged against the vault it was started for. While an earlier
+  // run holds the process the read waits in `queuedReads` (the newest one
+  // only) and starts when that run exits (supersededVaultRead()); nothing of
+  // the process is touched meanwhile.
+  function startVaultRead(name, proc, launch) {
+    if (vaultProcBusy(proc)) {
+      queuedReads[name] = { epoch: vaultEpoch, launch: launch }
+      return
+    }
+    delete queuedReads[name]
+    beginVaultRead(name)
+    launch()
+  }
+
+  // Asked on every exit of a reader's process, a scrub's included. True when
+  // a newer read was waiting: the answer that just arrived is not the one
+  // wanted and must not be used, and the waiting read starts now if it is
+  // still for the open vault.
+  function supersededVaultRead(name) {
+    var queued = queuedReads[name]
+    if (!queued) return false
+    delete queuedReads[name]
+    if (queued.epoch === vaultEpoch && session) {
+      beginVaultRead(name)
+      queued.launch()
+    }
+    return true
+  }
+
   // Items, organizations and folders together: each is its own bw start, and
   // bw spends most of one waiting, so queueing them only added ~3 s. On a
   // session `bw status` has not confirmed yet, the metadata waits for it.
@@ -7046,20 +7135,21 @@ Item {
       return
     }
     if (showSpinner !== false) isLoading = true
-    // The early read for this vault is still running: it serves this request.
-    if (listProc.running && listReadEarly && !vaultReadIsStale("items")) return
-    beginVaultRead("items")
+    // A read of this vault as it is now is already running (the early read
+    // included): it serves this request.
+    if (vaultReadRunning("items", listProc) && listReadChanges === vaultChanges) return
     listReadMode = Model.vaultListMode(dependencies)
     if (listReadMode === "blocked") {
       isLoading = false
       abandonSyncReload()
-      if (!vaultReadIsStale("items")) {
-        errorMessage = Model.vaultListBlockedMessage(dependencies)
-        listReadError = errorMessage
-      }
+      errorMessage = Model.vaultListBlockedMessage(dependencies)
+      listReadError = errorMessage
       return
     }
-    startVaultListRead(false)
+    // Behind a run still going (an account just left, a lock's scrub, a
+    // read from before a save, delete or sync), this read waits for it to
+    // exit.
+    startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
   }
 
   // The reload a sync ends with (onSyncFinished(), maybeAutoSync()) cannot
@@ -7091,6 +7181,7 @@ Item {
       }
     }
     listAgentBranchActive = useAgent
+    listReadChanges = vaultChanges
     listProc.environment = root.vaultListEnv(useAgent ? sshAgentLoadId : "")
     listProc.command = Model.sanitizedListCommand({ agentBranch: useAgent })
     listProc.running = true
@@ -7116,6 +7207,9 @@ Item {
     vault = null
     itemsLoadedAt = Date.now()
     refreshDerivedFromItems()
+    reconcileOpenDetail()
+    recheckArmedAutoType()
+    recheckTotpFollowup()
     if (syncReloadPending) {
       syncReloadPending = false
       isSyncing = false
@@ -7128,15 +7222,45 @@ Item {
   }
 
   function onListProcessExited(exitCode, rawJson, stderrText) {
-    if (finishScrubRun(listProc)) return
+    if (finishScrubRun(listProc)) {
+      supersededVaultRead("items")
+      return
+    }
     var hadAgentBranch = listAgentBranchActive
     var wasEarly = listReadEarly
     listAgentBranchActive = false
     listReadEarly = false
     endSshAgentLoad(exitCode === 0)
+    // An answer that will not be shown (a newer read is waiting, or it is a
+    // snapshot from before a save, delete or sync) gave the SSH agent this
+    // vault's keys as they were a moment ago. They are kept (ending the load
+    // as failed would lock the agent), and a load is owed again: the read
+    // that replaces this one starts before the next nonce is in, so it is
+    // the list that is shown that is followed by one (maybeStartupLoad()).
+    var notShown = !!queuedReads["items"]
+      || (exitCode === 0 && !vaultReadIsStale("items") && listSnapshotOutdated())
+    if (hadAgentBranch && notShown && !vaultReadIsStale("items")) sshAgentLoadedForVaultEpoch = -1
+    // A read asked for since this run started replaces its answer.
+    if (supersededVaultRead("items")) {
+      listRetriedWithoutAgent = false
+      return
+    }
 
     if (exitCode === 0) {
       listRetriedWithoutAgent = false
+      // A snapshot from before a save or delete finished would take the saved
+      // row away again, or bring the deleted one back, here and in the helper
+      // (whose items this read has already replaced): read again instead.
+      // What an accepted list settles (the sync, the spinner) waits for that.
+      if (!vaultReadIsStale("items") && listSnapshotOutdated()) {
+        if (itemChangeRunning()) listRereadOwed = true
+        // While an SSH approval waits, a key load would fail it. An
+        // automatic sync's reload is already owed and holds off for that
+        // (maybeAutoSync(), on its timer): this read is left to it.
+        else if (autoSyncReloadPending && !isLoading && sshTotalPendingCount > 0) return
+        else startVaultRead("items", listProc, function() { root.startVaultListRead(false) })
+        return
+      }
       onListFinished(rawJson)
       return
     }
@@ -7172,16 +7296,44 @@ Item {
     if (!vaultReadIsStale("items") && !wasEarly) {
       errorMessage = Model.vaultListFailureMessage(stderrText, dependencies, listReadMode)
       listReadError = errorMessage
+      // The list on screen is not known to be current (this may have been
+      // the re-read of a snapshot that was refused, which the vault helper
+      // has taken all the same): the next time it is wanted it is read
+      // again (ensureItemsFresh()).
+      itemsLoadedAt = 0
     }
+  }
+
+  // Whether the list read that just ended started before a save or delete
+  // finished, or one is still running.
+  function listSnapshotOutdated() {
+    return listReadChanges !== vaultChanges || itemChangeRunning()
+  }
+
+  // A save or delete of the open vault still running. One left over from a
+  // vault since dropped is not this vault's business: its answer is refused.
+  function itemChangeRunning() {
+    return (!!pendingSave && !vaultReadIsStale("itemSave")) || (!!pendingDelete && !vaultReadIsStale("itemDelete"))
+  }
+
+  // A save or delete has finished: a list read still going is from before
+  // it, and the read a snapshot was held back for runs now, after it.
+  function settleOwedListRead() {
+    vaultChanges += 1
+    if (!listRereadOwed || itemChangeRunning()) return
+    listRereadOwed = false
+    loadItems(false)
   }
 
   // Rarely change; this panel's own changes pass `force`.
   function loadOrganizations(force) {
     if (!session) return
     if (!force && organizations.length > 0 && (Date.now() - orgsLoadedAt) < metaFreshMs) return
-    beginVaultRead("organizations")
-    listOrgsProc.command = Model.listOrganizationsCommand()
-    listOrgsProc.running = true
+    if (!force && vaultReadRunning("organizations", listOrgsProc)) return
+    startVaultRead("organizations", listOrgsProc, function() {
+      listOrgsProc.command = Model.listOrganizationsCommand()
+      listOrgsProc.running = true
+    })
   }
 
   function onListOrgsFinished(rawJson) {
@@ -7193,9 +7345,11 @@ Item {
   function loadFolders(force) {
     if (!session) return
     if (!force && folders.length > 0 && (Date.now() - foldersLoadedAt) < metaFreshMs) return
-    beginVaultRead("folders")
-    listFoldersProc.command = Model.listFoldersCommand()
-    listFoldersProc.running = true
+    if (!force && vaultReadRunning("folders", listFoldersProc)) return
+    startVaultRead("folders", listFoldersProc, function() {
+      listFoldersProc.command = Model.listFoldersCommand()
+      listFoldersProc.running = true
+    })
   }
 
   function onListFoldersFinished(rawJson) {
@@ -7395,6 +7549,7 @@ Item {
     if (screen !== "edit" && !(screen === "generator" && generatorReturnScreen === "edit")) {
       resetItemForm()
     }
+    if (currentScreen === "detail") resumeCreatedItem()
     restoreScreenFocus()
   }
 
@@ -7424,21 +7579,29 @@ Item {
     formPicker = ""
     formCollectionIds = []
     formCollections = []
+    // A read still waiting was for the organization chosen before.
+    delete queuedReads["collections"]
     if (id && id !== "personal" && id !== "all") loadOrgCollections(id)
   }
 
   function loadOrgCollections(orgId) {
     if (!session || !orgId) return
     formCollectionsLoading = true
-    beginVaultRead("collections")
-    orgCollectionsProc.command = Model.listOrgCollectionsCommand(orgId)
-    orgCollectionsProc.running = true
+    // A second organization asked for while the first is being read waits,
+    // and the first one's answer is then dropped: it is not this one's.
+    startVaultRead("collections", orgCollectionsProc, function() {
+      orgCollectionsProc.command = Model.listOrgCollectionsCommand(orgId)
+      orgCollectionsProc.running = true
+    })
   }
 
   function onOrgCollectionsLoaded(raw) {
     formCollectionsLoading = false
     if (vaultReadIsStale("collections")) return
-    formCollections = Model.parseCollections(raw)
+    // Only those of the organization the form has now: the answer may be for
+    // one chosen before it, or before "personal".
+    var org = String(formOrgId || "")
+    formCollections = Model.parseCollections(raw).filter(function(c) { return c.organizationId === org })
     // A single collection is not a choice; pre-select it.
     if (formCollections.length === 1 && formCollectionIds.length === 0) {
       formCollectionIds = [formCollections[0].id]
@@ -7569,6 +7732,8 @@ Item {
     if (exitCode === 0) {
       if (errorMessage === autoSyncError) errorMessage = ""
       itemsLoadedAt = 0
+      // A list read still going started before this sync finished.
+      vaultChanges += 1
       if (backgroundSync) {
         isSyncing = false
         autoSyncReloadPending = true
@@ -7591,6 +7756,9 @@ Item {
   function openDetail(item, browsing) {
     closeFilterGroup()
     if (!item || !item.id) return
+    // A `bw get item` still running, or waiting, was for the item open before.
+    invalidateEpochOperation("detail")
+    delete queuedReads["detail"]
     // Another item's confirmation does not carry over.
     if (String(item.id) !== repromptVerifiedId) clearRepromptGrant()
     if (!browsing) learnFromPick(item)
@@ -7613,7 +7781,6 @@ Item {
       detailItem = detail
       detailPassword = detail.password
     } else {
-      beginVaultRead("detail")
       if (item.typeCode === 5) {
         isLoading = false
         errorMessage = "SSH keys are read-only public records"
@@ -7626,8 +7793,12 @@ Item {
         isLoading = false
         detailItem = Model.publicItemDetail(item)
       } else {
-        getItemProc.command = Model.getItemCommand(item.id, item.typeCode)
-        getItemProc.running = true
+        var readId = item.id
+        var readType = item.typeCode
+        startVaultRead("detail", getItemProc, function() {
+          getItemProc.command = Model.getItemCommand(readId, readType)
+          getItemProc.running = true
+        })
       }
     }
 
@@ -7636,6 +7807,52 @@ Item {
     // it is revealed or copied.
     if (item.hasTotp && !itemNeedsReprompt(item)) {
       fetchTotp(item.id)
+    }
+  }
+
+  // The open item against the list just accepted. The detail is a copy made
+  // when it was opened, and the helper already answers from the new vault.
+  // An item no longer there closes its detail. One that asks for the master
+  // password now, and did not when it was opened, loses what was revealed or
+  // loaded of it and is opened again as a click on its row would open it:
+  // the public view, each value behind the prompt. Anything else is left as
+  // it is, a confirmed re-prompt included.
+  function reconcileOpenDetail() {
+    var covered = currentScreen === "sshApproval"
+    var screen = covered ? screenBeforeSshApproval : currentScreen
+    if (!detailItem) return
+    var id = String(detailItem.id)
+    var onDetail = screen === "detail" || screen === "history"
+    var editing = (screen === "edit" || (screen === "generator" && generatorReturnScreen === "edit"))
+      && formIsEditing && String(formItemId) === id
+    // A new item still being saved is in no list yet (followCreatedItem()).
+    if ((!onDetail && !editing) || Model.isPendingItemId(id)) return
+    var row = Model.findItemById(items, id)
+    var newlyProtected = !!row && itemNeedsReprompt(row) && !itemNeedsReprompt(detailItem)
+    if (row && !newlyProtected) {
+      // Its code is the helper's answer for the new vault.
+      if (currentScreen === "detail" && detailItem.hasTotp && totpWanted(detailItem)) fetchTotp(detailItem.id)
+      return
+    }
+    clearRepromptGrant()
+    liveTotp = ""
+    detailPassword = ""
+    if (covered) {
+      // An SSH approval has the screen: the list is what it returns to, and
+      // what would have gone on leaving the item goes now.
+      screenBeforeSshApproval = "main"
+      resetItemForm()
+      detailItem = null
+      return
+    }
+    if (row) {
+      openDetail(row, true)
+    } else {
+      // As leaving it does (onCurrentScreenChanged: an edit form of it goes
+      // too), and nothing of it is kept.
+      currentScreen = "main"
+      detailItem = null
+      flashNotification("That item is no longer in the vault")
     }
   }
 
@@ -7859,7 +8076,11 @@ Item {
 
   function applyTotpCode(itemId, code) {
     var c = String(code || "").trim()
-    if (detailItem && detailItem.id === itemId && totpWanted(detailItem)) liveTotp = c
+    // Shown only on the detail of that item, while it is up (an SSH approval
+    // may cover it): an answer arriving after it was left is not kept.
+    var screen = currentScreen === "sshApproval" ? screenBeforeSshApproval : currentScreen
+    if (detailItem && detailItem.id === itemId && totpWanted(detailItem)
+        && (screen === "detail" || screen === "history" || screen === "edit")) liveTotp = c
     if (totpFollowupActive && totpFollowupItem && totpFollowupItem.id === itemId) {
       totpFollowupCode = c
     }
@@ -8187,9 +8408,29 @@ Item {
     if (status !== "unlocked") return
     if (!failedSave) return
     var f = failedSave.form
-    failedSave = null
-    errorMessage = ""
-    restoreItemForm(f)
+    // The draft holds the item's password and TOTP key as they were typed or
+    // loaded. An edit goes back to it as an edit of that item would start
+    // now: not at all if the item is gone, behind the prompt if it asks.
+    var row = f && f.isEditing ? Model.findItemById(items, String(f.itemId)) : null
+    if (f && f.isEditing && !row) {
+      failedSave = null
+      errorMessage = ""
+      flashNotification("That item is no longer in the vault")
+      return
+    }
+    var reopen = function() {
+      if (root.failedSave === null || root.failedSave.form !== f) return
+      root.failedSave = null
+      root.errorMessage = ""
+      // Gone while the prompt was up: the draft goes with it.
+      if (row && !Model.findItemById(root.items, String(f.itemId))) {
+        root.flashNotification("That item is no longer in the vault")
+        return
+      }
+      root.restoreItemForm(f)
+    }
+    if (row) withReprompt(row, reopen)
+    else reopen()
   }
 
   function startEditItem(item) {
@@ -8317,6 +8558,7 @@ Item {
     var save = pendingSave
     pendingSave = null
     if (vaultReadIsStale("itemSave")) return
+    settleOwedListRead()
 
     if (exitCode !== 0) {
       // Refused: restore the previous row (or remove a created one) and keep
@@ -8326,6 +8568,8 @@ Item {
         itemsLoadedAt = Date.now()
         refreshDerivedFromItems()
         failedSave = { name: save.name, form: save.form }
+        // A detail open on the row just removed has no item (the draft stays).
+        if (save.isCreate) leaveProvisionalDetail(save.id)
         errorMessage = "Could not save " + save.name + ". " + (stderrText || "")
       } else {
         errorMessage = stderrText || "Failed to save item"
@@ -8337,37 +8581,63 @@ Item {
 
     // Update the list from the saved item the command printed. If it was not
     // sanitized (marker) or not recognised (null), reload the full list.
-    var spliced = String(stdoutText).indexOf(Model.savedUnsanitizedMarker()) === 0
-      ? null : Model.spliceSavedItem(items, stdoutText, save ? save.id : "")
-    if (!spliced) {
-      // A provisional row must never survive a reload it is not part of.
-      if (save && save.isCreate) items = Model.replaceItemById(items, save.id, null)
+    var saved = String(stdoutText).indexOf(Model.savedUnsanitizedMarker()) === 0
+      ? null : Model.savedItemOf(stdoutText)
+    if (!saved) {
+      // A provisional row must never survive a reload it is not part of, and
+      // a detail open on it has no item to become: back to the list.
+      if (save && save.isCreate) {
+        items = Model.replaceItemById(items, save.id, null)
+        leaveProvisionalDetail(save.id)
+      }
       loadItems()
       return
     }
-    var before = items
-    items = spliced
+    // Once, under the id the vault gave it, whether or not a refresh listed
+    // it first.
+    items = Model.spliceSavedItem(items, saved, save ? save.id : "")
     itemsLoadedAt = Date.now()
     refreshDerivedFromItems()
-    if (save && save.isCreate) followCreatedItem(save.id, before)
+    if (save && save.isCreate) followCreatedItem(save.id, saved.id)
   }
 
   // A new item's provisional row can be opened while its save runs. Once the
   // server has given it an id that row is gone, so a detail still open on it
-  // is opened again on the saved item (the one row `before` did not have),
-  // as a click on its row would: any re-prompt and on-demand read apply.
-  function followCreatedItem(provisionalId, before) {
-    if (currentScreen !== "detail" || !detailItem || String(detailItem.id) !== String(provisionalId)) return
-    var known = ({})
-    for (var i = 0; i < before.length; i++) if (before[i]) known[String(before[i].id)] = true
-    var created = null
-    for (var j = 0; j < items.length; j++) {
-      if (!items[j] || known[String(items[j].id)]) continue
-      // More than one new row: no telling which is this save's.
-      if (created) return
-      created = items[j]
+  // is opened again on the saved item, the row under the id the save
+  // answered with, as a click on it would: any re-prompt and on-demand read
+  // apply. Under an SSH approval shown in the panel the detail is not on
+  // screen and opening would take the screen from the approval, so that
+  // waits until the detail is back.
+  function followCreatedItem(provisionalId, savedId) {
+    if (!detailItem || String(detailItem.id) !== String(provisionalId)) return
+    if (currentScreen === "sshApproval" && screenBeforeSshApproval === "detail") {
+      createdItemHandoff = { from: String(provisionalId), to: String(savedId) }
+      return
     }
+    if (currentScreen !== "detail") return
+    var created = Model.findItemById(items, String(savedId))
     if (created) openDetail(created, true)
+  }
+
+  // The detail is on screen again (onCurrentScreenChanged): a handoff held
+  // back under an SSH approval happens now, if the detail is still the
+  // provisional one. A saved item no longer listed leaves nothing to show.
+  function resumeCreatedItem() {
+    var handoff = createdItemHandoff
+    if (!handoff) return
+    createdItemHandoff = null
+    if (currentScreen !== "detail" || !detailItem || String(detailItem.id) !== handoff.from) return
+    var created = Model.findItemById(items, handoff.to)
+    if (created) openDetail(created, true)
+    else currentScreen = "main"
+  }
+
+  // A detail open on a provisional row that will get no saved item to move
+  // to: the list, now or when an SSH approval covering it is answered.
+  function leaveProvisionalDetail(provisionalId) {
+    if (!detailItem || String(detailItem.id) !== String(provisionalId)) return
+    if (currentScreen === "detail") currentScreen = "main"
+    else if (currentScreen === "sshApproval" && screenBeforeSshApproval === "detail") screenBeforeSshApproval = "main"
   }
 
   // The row disappears at once; if the vault refuses, it comes back. A
@@ -8420,9 +8690,11 @@ Item {
     // follows, so the helper would keep its secrets and go on serving them.
     if (exitCode === 0 && removal) forgetVaultItem(removal.id)
     if (vaultReadIsStale("itemDelete")) return
+    settleOwedListRead()
 
     if (exitCode === 0) {
-      // Nothing else changed; no reload needed.
+      // Nothing else changed; no reload needed, unless a list snapshot was
+      // held back for this delete (settleOwedListRead()).
       flashNotification("Item deleted")
       return
     }
@@ -8793,7 +9065,35 @@ Item {
   function disarmAutoType() {
     autoTypeItemId = ""
     autoTypeArmEpoch = -1
+    autoTypeArmReprompt = false
     autoTypeArmTimer.stop()
+  }
+
+  // The armed item against the list just accepted: one that asks for the
+  // master password now, and did not when it was armed, was armed with no
+  // prompt and is disarmed. The password already copied is the clipboard's.
+  function recheckArmedAutoType() {
+    if (!autoTypeArmed() || autoTypeArmReprompt) return
+    var row = Model.findItemById(items, autoTypeItemId)
+    if (row && itemNeedsReprompt(row)) disarmAutoType()
+  }
+
+  // The TOTP follow-up to a password copy (armTotpFollowup()) against the
+  // list just accepted. It copies the code with no prompt, as part of a copy
+  // that passed any; `totpFollowupItem` is the row as it was then. An item
+  // gone, or one that asks for the master password now and did not then,
+  // ends it: both timers, the code it held and a copy still being fetched.
+  function recheckTotpFollowup() {
+    var held = totpFollowupItem
+    if (!held) return
+    var row = Model.findItemById(items, held.id)
+    if (row && (!itemNeedsReprompt(row) || itemNeedsReprompt(held))) return
+    if (totpCopyItemId === String(held.id)) totpCopyItemId = ""
+    totpFollowupItem = null
+    totpFollowupActive = false
+    totpFollowupCode = ""
+    totpFollowupTimer.stop()
+    autoTotpTimer.stop()
   }
 
   // Ends a type in flight without a report: the helper's late answer is
@@ -8820,6 +9120,8 @@ Item {
     withReprompt(item, function() {
       root.autoTypeItemId = String(item.id)
       root.autoTypeArmEpoch = root.vaultEpoch
+      // By the row the gate went by, not the one handed in.
+      root.autoTypeArmReprompt = root.itemNeedsReprompt(Model.findItemById(root.items, item.id) || item)
       autoTypeArmTimer.restart()
       // The poll runs while armed; a reading now is normally in before the
       // key can be pressed, so the first type is not refused as stale.
@@ -9002,7 +9304,9 @@ Item {
   // only once any re-prompt has passed.
   function armTotpFollowup(item) {
     if (!item || !item.hasTotp) return
-    totpFollowupItem = item
+    // The current row, as the gate went by: recheckTotpFollowup() compares
+    // a later list with what was true when this was armed.
+    totpFollowupItem = Model.findItemById(items, item.id) || item
     totpFollowupActive = true
     fetchTotp(item.id)
     totpFollowupTimer.restart()
@@ -9643,7 +9947,8 @@ Item {
       id: listFoldersStdout
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(listFoldersProc)) return
+      var scrub = root.finishScrubRun(listFoldersProc)
+      if (root.supersededVaultRead("folders") || scrub) return
       if (exitCode === 0) root.onListFoldersFinished(listFoldersStdout.text)
     }
   }
@@ -9656,7 +9961,8 @@ Item {
       id: orgCollectionsStdout
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(orgCollectionsProc)) return
+      var scrub = root.finishScrubRun(orgCollectionsProc)
+      if (root.supersededVaultRead("collections") || scrub) return
       if (exitCode === 0) root.onOrgCollectionsLoaded(orgCollectionsStdout.text)
       else root.formCollectionsLoading = false
     }
@@ -9693,7 +9999,8 @@ Item {
       id: listSendsStdout
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(listSendsProc)) return
+      var scrub = root.finishScrubRun(listSendsProc)
+      if (root.supersededVaultRead("sends") || scrub) return
       if (exitCode === 0) root.onSendsLoaded(listSendsStdout.text)
       else root.sendsLoading = false
     }
@@ -10275,7 +10582,8 @@ Item {
       id: listOrgsStdout
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(listOrgsProc)) return
+      var scrub = root.finishScrubRun(listOrgsProc)
+      if (root.supersededVaultRead("organizations") || scrub) return
       if (exitCode === 0) root.onListOrgsFinished(listOrgsStdout.text)
     }
   }
@@ -10291,7 +10599,8 @@ Item {
       id: getItemStderr
     }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(getItemProc)) return
+      var scrub = root.finishScrubRun(getItemProc)
+      if (root.supersededVaultRead("detail") || scrub) return
       if (exitCode === 0) {
         root.onDetailFinished(getItemStdout.text)
       } else {

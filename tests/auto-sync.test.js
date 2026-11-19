@@ -8,7 +8,8 @@ const Model = loadModule()
 const source = read("Service.qml")
 const functions = ["autoSyncIdle", "maybeAutoSync", "syncVault", "onSyncFinished",
   "onListFinished", "dropVaultState", "beginVaultRead", "vaultReadIsStale",
-  "beginEpochOperation", "epochOperationIsStale", "loadItems", "abandonSyncReload"]
+  "beginEpochOperation", "epochOperationIsStale", "loadItems", "abandonSyncReload",
+  "vaultProcBusy", "vaultReadRunning", "startVaultRead", "supersededVaultRead"]
 const deps = Model.parseDependencies("bw=1\njq=1\nomarchy=1", null, {})
 const noJq = Model.parseDependencies("bw=1\njq=0\nomarchy=1", null, {})
 
@@ -22,7 +23,8 @@ function fixture() {
     autoLockMinutes: 15, autoLockArmedAt: 1000000, suspendLockPending: false, syncReloadPending: false,
     autoSyncReloadPending: false, backgroundSync: false,
     autoSyncError: "Automatic sync failed. The local vault may be out of date.",
-    errorMessage: "", listReadError: "", vaultEpoch: 1, readEpochs: {}, itemsLoadedAt: 100,
+    errorMessage: "", listReadError: "", vaultEpoch: 1, readEpochs: {}, queuedReads: {}, vaultChanges: 0, listReadChanges: 0, itemsLoadedAt: 100,
+   
     statusRefreshAfterItems: false, loadCalls: [], flashes: [], closedFilters: 0,
     dependencies: deps, listReadEarly: false, listReadMode: "", listReads: 0,
     Model, authAttemptInFlight: () => false,
@@ -30,7 +32,7 @@ function fixture() {
     startVaultListRead: () => { c.listReads += 1; c.listProc.running = true },
     closeFilterGroup: () => c.closedFilters++,
     flashNotification: message => c.flashes.push(message),
-    refreshDerivedFromItems() {}, maybeStartupLoad() {},
+    refreshDerivedFromItems() {}, reconcileOpenDetail() {}, recheckArmedAutoType() {}, recheckTotpFollowup() {}, maybeStartupLoad() {},
     deferredMetadataTimer: { restart() {} }
   }
   for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemProc",
@@ -40,6 +42,7 @@ function fixture() {
     "cancelFingerprintUnlock", "cancelFidoUnlock", "cancelAttachmentDownloads",
     "forgetVault", "resetItemForm", "dropVaultSecrets"]) c[name] = () => {}
   c.Date = { now: () => c.now }
+  c.root = c
   vm.createContext(c)
   vm.runInContext(functions.map(n => functionBody(source, n)).join("\n"), c)
   c.finish = code => { c.syncProc.running = false; c.onSyncFinished(code) }
@@ -271,6 +274,72 @@ for (const code of [0, 1]) {
   try { k.dropVaultState() } catch (e) { k.errorMessage = "threw: " + e.message }
   check("but keeps a message something else put up", k.errorMessage === "An unrelated edit failed" && k.listReadError === "",
     k.errorMessage + "|" + k.listReadError)
+  // The reviewer's sequence: the list read fails and says so, then the
+  // status check fails too (it says nothing) and the vault is dropped for
+  // the sign-in screen. The list's message is the only reason on screen.
+  const s = fixture()
+  Object.assign(s, { items: [], organizations: [], folders: [], sends: [], detailItem: null, itemPayloadJson: "",
+    sendPayloadJson: "", statusCheckAuthoritative: true, listAgentBranchActive: false, listRetriedWithoutAgent: false,
+    metadataForceRefresh: false, accountId: "", userEmail: "", loginEmail: "", focused: 0, cleared: 0 })
+  for (const name of ["restartStaleStatusProbe", "cancelAuthPrewarm", "followVaultClosedInSshAgent", "endSshAgentLoad",
+    "noteActiveAccount", "maybeMigrateLegacyFingerprint"]) s[name] = () => {}
+  s.finishScrubRun = () => false
+  s.requestSessionCredentialClear = () => { s.cleared++ }
+  s.focusAppropriateField = () => { s.focused++ }
+  vm.runInContext(["onListProcessExited", "onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), s)
+  s.loadItems(false)
+  s.listProc.running = false
+  s.onListProcessExited(1, "", "Could not safely read vault items.\n")
+  const shown = s.errorMessage
+  check("premise: the failed list read shows its message", shown !== "" && s.listReadError === shown && s.status === "unlocked", shown)
+  // The status check is asked for through its entry point, which clears an
+  // ordinary message; the probe behind it (dependencies, registry, session
+  // file, `bw status`) is not driven here, only its answer.
+  Object.assign(s, { vaultHelperLostMessage: "lost", logoutPending: false, depsChecked: false, probes: 0 })
+  s.checkDependencies = () => { s.probes++ }
+  vm.runInContext(functionBody(source, "refreshStatus"), s)
+  s.refreshStatus()
+  check("asking for a status check keeps the failed list read's message", s.errorMessage === shown && s.probes === 1, s.errorMessage)
+  s.beginEpochOperation("status")
+  s.onStatusFinished("")
+  check("a status check failing after it drops the vault for the sign-in screen",
+    s.status === "unauthenticated" && s.currentScreen === "login" && s.session === "" && s.cleared === 1,
+    s.status + " " + s.currentScreen)
+  eq("and the list read's message is still there to say why", s.errorMessage, shown)
+  eq("still marked as the list's, so the next accepted list takes it down", s.listReadError, shown)
+  s.session = "next-session"; s.beginVaultRead("items"); s.onListFinished("[]")
+  eq("which it does", s.errorMessage, "")
+  const o = fixture()
+  Object.assign(o, { vaultHelperLostMessage: "lost", logoutPending: false, depsChecked: false, checkDependencies() {} })
+  vm.runInContext(functionBody(source, "refreshStatus"), o)
+  o.errorMessage = "Sync failed"; o.listReadError = ""
+  o.refreshStatus()
+  eq("any other message is cleared by a status check, as before", o.errorMessage, "")
+  o.errorMessage = "Something newer"; o.listReadError = "Could not safely read vault items."
+  o.refreshStatus()
+  eq("as is one that replaced the list read's on screen", o.errorMessage, "")
+  // A status that answers (locked elsewhere) explains itself: the message goes with the vault.
+  const l = fixture()
+  Object.assign(l, { items: [], organizations: [], folders: [], sends: [], detailItem: null, itemPayloadJson: "",
+    sendPayloadJson: "", statusCheckAuthoritative: true, accountId: "", userEmail: "", loginEmail: "", sshAuthSurfaceActive: false })
+  for (const name of ["restartStaleStatusProbe", "cancelAuthPrewarm", "followVaultClosedInSshAgent", "noteActiveAccount",
+    "maybeMigrateLegacyFingerprint", "requestSessionCredentialClear", "focusAppropriateField"]) l[name] = () => {}
+  vm.runInContext(["onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), l)
+  l.dependencies = noJq; l.loadItems(false); l.dependencies = deps
+  l.beginEpochOperation("status")
+  l.Qt = { callLater() {} }
+  l.onStatusFinished(JSON.stringify({ status: "locked", userEmail: "a@x", userId: "id-a", serverUrl: null }))
+  check("a vault the status reports locked takes its list-read message along, as a lock does",
+    l.status === "locked" && l.errorMessage === "" && l.listReadError === "", l.status + "|" + l.errorMessage)
+  // With no list error up, a failed status check puts nothing up.
+  const n = fixture()
+  Object.assign(n, { items: [], organizations: [], folders: [], sends: [], detailItem: null, itemPayloadJson: "",
+    sendPayloadJson: "", statusCheckAuthoritative: true })
+  for (const name of ["restartStaleStatusProbe", "cancelAuthPrewarm", "followVaultClosedInSshAgent",
+    "requestSessionCredentialClear", "focusAppropriateField"]) n[name] = () => {}
+  vm.runInContext(["onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), n)
+  n.errorMessage = "An unrelated edit failed"; n.beginEpochOperation("status"); n.onStatusFinished("")
+  eq("another message is left exactly as dropping the vault leaves it", n.errorMessage, "An unrelated edit failed")
   const exited = functionBody(source, "onListProcessExited")
   check("a failed list read records the message it showed",
     /errorMessage = Model\.vaultListFailureMessage\(stderrText, dependencies, listReadMode\)\s*listReadError = errorMessage/.test(exited),
@@ -278,7 +347,15 @@ for (const code of [0, 1]) {
   const finished = functionBody(source, "onListFinished")
   const staleAt = finished.indexOf('vaultReadIsStale("items")) return')
   check("a stale list result clears nothing",
-    staleAt >= 0 && staleAt < finished.indexOf("listReadError"), finished)
+    staleAt >= 0 && finished.indexOf("listReadError") > staleAt, finished)
+  // The same, run: a list answer for a vault no longer open, with a message up.
+  const st = fixture(); st.dependencies = noJq; st.loadItems(false); st.dependencies = deps
+  const up = st.errorMessage
+  st.syncReloadPending = true; st.beginVaultRead("items"); st.vaultEpoch += 1
+  st.onListFinished("[]")
+  check("a stale list answer leaves the message, its marker, the timestamp and a pending sync as they were",
+    up !== "" && st.errorMessage === up && st.listReadError === up && st.itemsLoadedAt === 100 && st.syncReloadPending === true
+      && st.flashes.length === 0, st.errorMessage + "|" + st.listReadError)
 }
 check("timer belongs to the shared service", /id: autoSyncTimer/.test(source)
   && !/id: autoSyncTimer/.test(read("Panel.qml")), "one timer across monitors")

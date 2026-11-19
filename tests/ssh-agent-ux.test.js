@@ -230,6 +230,125 @@ check("no outcome approves",
     wellFormed(Model.sshAgentNotifyCommand(Model.sshAgentPromptView(Object.assign({}, raw, { processPath: path511 }), 120), 100).pop()))
 }
 
+// Text the agent has already escaped (it writes a tab as the six characters
+// \u0009), and the panel's own escapes bounded a second time: a cut never
+// lands inside an escape that is already in the text either.
+{
+  const wholeEscapes = t => t.replace(/\\u\{[0-9a-fA-F]+\}|\\u[0-9a-fA-F]{4}/g, "").indexOf("\\u") === -1
+  const view = fields => Model.sshAgentPromptView(Object.assign({}, raw, fields), 120)
+  const tab = "\\u0009"
+  check("the reviewer's case: a path cut through an agent-written \\u0009 does not start with its tail",
+    view({ processPath: "/" + "a".repeat(3) + tab + "b".repeat(508) }).processPath === "…" + "b".repeat(508)
+      && view({ processPath: "/" + tab + "b".repeat(506) }).processPath === "\u2026" + "b".repeat(506)
+      && view({ processPath: "/" + tab + "b".repeat(505) }).processPath === "/" + tab + "b".repeat(505))
+  const broken = []
+  for (const escape of [tab, "\\u{e0001}", "\\u00ad"]) {
+    for (let after = 500; after <= 514; after++) {
+      const p = view({ processPath: "/dir/" + escape + "b".repeat(after) }).processPath
+      if (p.length > 512 || !wholeEscapes(p) || !/^(…|\/dir\/)/.test(p)) broken.push("path " + escape + "+" + after + ": " + p.slice(0, 12))
+    }
+    for (let before = 244; before <= 258; before++) {
+      const text = "k".repeat(before) + escape + "zzz"
+      const n = view({ keyName: text }).keyName
+      const pn = view({ processPath: "/usr/bin/" + text }).processName
+      for (const [what, out] of [["key name", n], ["program name", pn]]) {
+        if (out.length > 256 || !wholeEscapes(out) || out !== (before + escape.length <= 256 ? text.slice(0, 256) : "k".repeat(Math.min(before, 256))))
+          broken.push(what + " " + before + "+" + escape + ": " + out.slice(-12))
+      }
+    }
+  }
+  check("an escape already in the text is kept or dropped whole at either end", broken.length === 0, broken.slice(0, 6).join(" | "))
+  // Only what the agent or this file writes is such an escape: lowercase,
+  // \uXXXX in the first plane and \u{X...} beyond it, naming a character that
+  // is written out. Anything else that looks like one is the text it is.
+  const piecesOf = t => { const out = []; Model.eachVisiblePiece(t, 0, p => { out.push(p) }); return out }
+  check("the two formatters' escapes are one piece each",
+    ["\\u0009", "\\u00ad", "\\u200b", "\\ufeff", "\\u{e0001}", "\\u{1bca0}"].every(e => piecesOf(e).length === 1), "")
+  const literal = ["\\u0041", "\\u00AD", "\\u000A", "\\u{1F600}", "\\u{1f600}", "\\u{ad}", "\\u{00e0001}", "\\u{E0001}", "\\ud83d", "\\u{110000}"]
+  check("a spelling neither formatter writes is ordinary characters",
+    literal.every(e => piecesOf(e).length === e.length && piecesOf(e).join("") === e), literal.filter(e => piecesOf(e).length !== e.length).join(" "))
+  check("so a cut may fall inside it, like any text",
+    view({ keyName: "k".repeat(253) + "\\u0041" }).keyName === "k".repeat(253) + "\\u0"
+      && view({ keyName: "k".repeat(253) + "\\u00ad" }).keyName === "k".repeat(253))
+  // The reviewer's other case: the name of a program escaped here, then cut.
+  for (let before = 249; before <= 256; before++) {
+    const pn = view({ processPath: "/opt/" + "n".repeat(before) + "­tail" }).processName
+    if (/\\u?[0-9a-f]{0,3}$/.test(pn) && !/\\u00ad$/.test(pn) || pn.length > 256)
+      check(`a program name with a soft hyphen after ${before} characters does not end in a cut escape`, false, pn.slice(-8))
+  }
+  check("a program name is escaped and cut in one step",
+    view({ processPath: "/opt/" + "n".repeat(252) + "­tail" }).processName === "n".repeat(252)
+      && view({ processPath: "/opt/" + "n".repeat(250) + "­tail" }).processName === "n".repeat(250) + "\\u00ad"
+      && view({ processPath: "/o­pt/ssh" }).processName === "ssh" && view({ processPath: "ssh" }).processName === "ssh"
+      && view({ processPath: "/usr/bin/" }).processName === "")
+  check("a backslash that starts no escape is still one character",
+    view({ keyName: "a\\b\\u12\\u{}\\uzzzz" }).keyName === "a\\b\\u12\\u{}\\uzzzz")
+}
+
+// The limits bound the work as well as the result: a long text is not read
+// to its end (boundedText stops at the limit, boundedPath reads only the
+// tail). Counted on the one RegExp every step goes through.
+{
+  const re = Model.SSH_AGENT_TOKEN_RE
+  let steps = 0
+  re.exec = function(text) { steps++; return RegExp.prototype.exec.call(this, text) }
+  const count = run => { steps = 0; run(); return steps }
+  const long = "x".repeat(64000)
+  const mixed = ("/seg­" + "\u{1f511}").repeat(9000) + "/ssh"
+  eq("premise: a 64,000-character text", long.length, 64000)
+  const text = count(() => Model.boundedText(long, 256))
+  const path = count(() => Model.boundedPath(long, 512))
+  const name = count(() => Model.processNameFromPath(long))
+  // What is not a step of that RegExp: the string methods the name's lookup
+  // uses. One lastIndexOf and one slice, and nothing that walks the text here.
+  const used = {}
+  const methods = ["lastIndexOf", "indexOf", "slice", "substring", "substr", "split", "replace", "match", "charCodeAt", "charAt", "codePointAt"]
+  const originals = methods.map(n => String.prototype[n])
+  methods.forEach((n, i) => { String.prototype[n] = function() { if (this.length > 1000) used[n] = (used[n] || 0) + 1; return originals[i].apply(this, arguments) } })
+  let named
+  try { named = Model.processNameFromPath("/usr/bin/" + long) } finally { methods.forEach((n, i) => { String.prototype[n] = originals[i] }) }
+  check("a long program name's lookup is one lastIndexOf and one slice of the text, and no walk of it in script",
+    named === "x".repeat(256) && JSON.stringify(used) === JSON.stringify({ lastIndexOf: 1, slice: 1 }), JSON.stringify(used))
+  const tail = count(() => Model.boundedPath(mixed, 512))
+  const viewed = count(() => Model.sshAgentPromptView(Object.assign({}, raw, { keyName: long, processPath: mixed, fingerprint: long, keyId: long }), 120))
+  check("boundedText reads no further than its limit", text > 0 && text <= 258, String(text))
+  check("boundedPath reads only the end of the path", path > 0 && path <= 512 + 12, String(path))
+  check("a long program name is cut the same way", name > 0 && name <= 258, String(name))
+  check("with escapes and pairs in it too", tail > 0 && tail <= 512 + 12, String(tail))
+  check("a whole prompt of oversized fields stays bounded", viewed > 0 && viewed <= 4 * 258 + 524 + 258, String(viewed))
+  delete re.exec
+  check("and what they return is what reading it all returns",
+    Model.boundedText(long, 256) === "x".repeat(256) && Model.boundedPath(long, 512) === "…" + "x".repeat(511)
+      && Model.processNameFromPath(mixed) === "ssh" && Model.boundedPath(mixed, 512).length <= 512
+      && Model.boundedPath(mixed, 512).slice(-4) === "/ssh")
+
+  // Against the plain definition (escape everything, then cut between
+  // pieces), over texts whose pairs and escapes fall on every edge.
+  const pieces = t => { const out = []; Model.eachVisiblePiece(String(t), 0, p => { out.push(p) }); return out }
+  const plainText = (t, limit) => { let out = ""; for (const p of pieces(t)) { if (out.length + p.length > limit) break; out += p } return out }
+  const plainPath = (t, limit) => {
+    const all = pieces(t)
+    if (all.join("").length <= limit) return all.join("")
+    let kept = ""
+    for (let i = all.length - 1; i >= 0; i--) { if (kept.length + all[i].length > limit - 1) break; kept = all[i] + kept }
+    return "…" + kept
+  }
+  const alphabet = ["a", "/", "­", "\u{1f511}", "\u{e0001}", "\\u0009", "\\u{1F600}", "\\", "u", "{", "}", "0", "\ud83d", "\udd11"]
+  let seed = 12345
+  const next = n => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  const differ = []
+  for (let round = 0; round < 400 && differ.length < 3; round++) {
+    let t = ""
+    const parts = 20 + next(90)
+    for (let i = 0; i < parts; i++) t += alphabet[next(alphabet.length)]
+    for (const limit of [8, 31, 64]) {
+      if (Model.boundedPath(t, limit) !== plainPath(t, limit)) differ.push("path " + limit + " " + JSON.stringify(t))
+      if (Model.boundedText(t, limit) !== plainText(t, limit)) differ.push("text " + limit + " " + JSON.stringify(t))
+    }
+  }
+  check("the bounded scans agree with the plain definition on random texts", differ.length === 0, differ.join(" | ").slice(0, 400))
+}
+
 // Characters that draw as nothing are written out wherever the prompt shows them.
 const ignorable = ["\u00ad", "\u034f", "\u061c", "\u115f", "\u1160", "\u17b4", "\u17b5", "\u180b", "\u180f", "\u200b", "\u200f",
   "\u202a", "\u202e", "\u2060", "\u2065", "\u206f", "\u3164", "\ufe00", "\ufe0f", "\ufeff", "\uffa0", "\ufff0", "\ufff8",
@@ -302,7 +421,7 @@ for (const name of ipcNames) {
   check(`SECURITY.md names the IPC command ${name}`, new RegExp("`" + name + "[ `]").test(policy))
 }
 check("the docs say a long path is shortened from the left",
-  /the path is shortened from the left past the display limit/.test(guide) && /The limit is 512 characters of the text as written out/.test(guide)
+  /the path is shortened from the left past the display limit/.test(guide) && /The limit is 512 UTF-16 code units of the text as written out, one of them reserved for the `…`/.test(guide)
   && Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/" + "a".repeat(600) + "/ssh" }), 120).processPath.length === 512
   && Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/" + "a".repeat(600) + "/ssh" }), 120).processPath[0] === "\u2026")
 for (const [name, text] of [["README.md", readPluginSource("README.md")], ["docs/ssh-agent.md", readPluginSource("docs/ssh-agent.md")],

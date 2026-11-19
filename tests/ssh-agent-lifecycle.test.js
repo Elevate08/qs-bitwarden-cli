@@ -234,7 +234,7 @@ check("both edges of the startup race trigger the load",
 // The panel's first read is launched before the helper handshakes, so the
 // completion of that read is the third edge that can owe a key load.
 check("a completed read re-checks whether a startup load is owed",
-  /function onListFinished\(rawJson\)[\s\S]{0,900}?maybeStartupLoad\(\)/.test(panelSrc),
+  /function onListFinished\(rawJson\)[\s\S]{0,1300}?maybeStartupLoad\(\)/.test(panelSrc),
   "a finished read never re-checks for an owed startup load")
 check("a startup attempt is recorded before it runs, not after",
   /sshAgentLoadedForVaultEpoch = root\.vaultEpoch\s*\n\s*applySshAgentLifecycle\("startup"\)/.test(panelSrc),

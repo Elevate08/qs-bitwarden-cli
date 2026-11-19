@@ -61,7 +61,7 @@ const deferredStart = () => {
   const local = { running: true }
   // The vault's last word on the environment; tests/bw-compile-cache.test.js
   // drives the real one.
-  const scope = { running: false, runId: 0, startSeq: 0, command: [], stdinText: "", local, vault: { bwEnvAtStart: env => env } }
+  const scope = { running: false, runId: 0, startSeq: 0, localStarted: false, command: [], stdinText: "", local, vault: { bwEnvAtStart: env => env } }
   const make = new Function("scope", "Qt", "local", "proc",
     "with (scope) { " + functionBody(vaultProcess, "runLocally") + "\n"
       + functionBody(vaultProcess, "launchLocal") + "\n"
@@ -95,6 +95,59 @@ const deferredStart = () => {
     JSON.stringify(t.local))
   check("and the replaced start does not end the run that replaced it",
     t.finished.length === 0 && t.scope.running === true, t.finished.join())
+}
+// A local run that could not start: Quickshell puts `running` back to false
+// and emits neither started() nor exited() (seen on the installed one with a
+// command that does not exist). The run is ended here instead, so its exit
+// handler runs and a read waiting for the process starts.
+{
+  const handlerOf = name => {
+    const from = vaultProcess.indexOf(name + ": {", vaultProcess.indexOf("id: local\n"))
+    let depth = 0
+    for (let i = vaultProcess.indexOf("{", from); i < vaultProcess.length; i++) {
+      if (vaultProcess[i] === "{") depth++
+      else if (vaultProcess[i] === "}" && --depth === 0) return vaultProcess.slice(vaultProcess.indexOf("{", from) + 1, i)
+    }
+    return ""
+  }
+  const signal = (name, t) => new Function("proc", "local", "Model", "with (local) { " + handlerOf(name) + " }")(t.proc, t.local, Model)
+  const localRun = () => {
+    const t = deferredStart()
+    t.local.running = false
+    t.local.stdinEnabled = false
+    t.proc = t.scope
+    t.scope.started = () => {}
+    t.scope.localStarted = true                  // left over from the run before
+    t.begin(["no-such-program"], {})
+    return t
+  }
+  const t = localRun()
+  check("premise: the run is held, and has not started", t.scope.runId === -1 && t.local.running === true && t.scope.localStarted === false)
+  t.local.running = false                        // Quickshell: the start failed
+  signal("onRunningChanged", t)
+  check("a local run that could not start ends as a command not found, and frees its process",
+    t.finished.join() === "127" && t.scope.runId === 0 && t.scope.running === false, t.finished.join())
+
+  const ok = localRun()
+  signal("onRunningChanged", ok)                 // running: true
+  signal("onStarted", ok)
+  check("a run that started is not ended by its start", ok.finished.length === 0 && ok.scope.localStarted === true)
+  ok.local.running = false                       // it exits: exited() ends it, then `running` changes
+  ok.scope.finish(0)
+  signal("onRunningChanged", ok)
+  eq("and is ended once, by its exit", ok.finished.join(), "0")
+
+  const next = localRun()
+  signal("onStarted", next)
+  next.local.running = false
+  next.scope.finish(0)
+  next.begin(["b"], {})                          // the exit handler starts the next run
+  signal("onRunningChanged", next)               // the first run's change arrives with `running` true again
+  check("a run started from the exit handler is not taken for a failed start",
+    next.finished.join() === "0" && next.scope.runId === -1 && next.local.command[0] === "b", next.finished.join())
+  check("a scrub that runs here marks its start too",
+    /local\.command = Model\.scrubCommand\(\)\s*local\.environment = \(\{\}\)\s*runId = -1\s*localStarted = false\s*local\.running = true/
+      .test(functionBody(vaultProcess, "start")), functionBody(vaultProcess, "start"))
 }
 {
   const t = deferredStart()

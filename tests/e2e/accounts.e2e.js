@@ -141,6 +141,29 @@ try {
   expect("and deletes the older one's directory", () => !addedDirs().includes(oldB))
   check("and its keyring entries", !fs.readdirSync(keyring).some(n => n.endsWith("@" + oldB)), fs.readdirSync(keyring).join())
 
+  // --- the open item across a reload of the list ---
+  // The detail is a copy made when the item was opened: a list that turns
+  // its master-password re-prompt on closes what was revealed and puts the
+  // item behind the prompt.
+  const dataB = path.join(accountsDir, state().accounts.find(a => a.email === "b@x").slot)
+  q("openFirst")
+  q("reveal", "password")
+  expect("B's item is open with its password revealed, no prompt asked",
+    s => s.screen === "detail" && s.revealed.join() === "password" && !s.reprompt.pending)
+  fs.rmSync(bwLog + ".clipboard", { force: true })
+  q("copyField", "password")
+  expect("and a copy goes through",
+    s => s.error === "" && s.revealed.join() === "password" && s.screen === "detail" && fs.existsSync(bwLog + ".clipboard"))
+  // A sync elsewhere turns the item's re-prompt on; the next list brings it.
+  fs.writeFileSync(path.join(dataB, "fake-item-reprompt"), "1")
+  q("reload")
+  expect("a reload that turns the re-prompt on hides what was revealed and keeps the detail",
+    s => s.screen === "detail" && s.detail && s.detail.withheld && s.revealed.length === 0 && !s.reprompt.pending)
+  q("reveal", "password")
+  expect("and the next reveal asks for the master password",
+    s => s.reprompt.pending && s.revealed.length === 0)
+  fs.rmSync(path.join(dataB, "fake-item-reprompt"))
+
   q("logout")
   expect("logging out of B moves to A", s => s.slot === "default" && s.status === "locked" && s.accounts.length === 1)
   q("logout")

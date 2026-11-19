@@ -196,6 +196,8 @@ ShellRoot {
     function reveal(key: string): void { vault.toggleFieldReveal(key) }
     function copyField(key: string): void { vault.copyDetailField(key, key) }
     function approveSsh(seconds: int): void { vault.approveSshRequest(seconds) }
+    // A background refresh of the item list, as a sync ends with.
+    function reload(): void { vault.loadItems(false) }
     // A `bw status` check, as waking from sleep runs with the panel open.
     function refresh(): void { vault.refreshStatus() }
   }

@@ -96,7 +96,7 @@
   button; it decides nothing). It shows what the card shows
   (the key, the program's name and path with the "not verified" note, what
   is being signed) and nothing secret; as on the card, a path longer than 512
-  characters, counted as displayed, is shortened from the left. It cannot approve: that stays on
+  UTF-16 code units of the text as written out (one of them the `…`) is shortened from the left. It cannot approve: that stays on
   the card. Deny denies; clicking the notification itself, dismissing it or
   the notification expiring leaves the request on the card and does not count
   toward the cooldown. The request's own two-minute deadline still does.
@@ -135,7 +135,9 @@
   (fillers, variation selectors, invisible operators, tag characters) went
   through, so a path containing one drew exactly like the path without it.
   They are written out too, and the length limit now cuts between whole
-  characters, never through a written-out one or a surrogate pair. This shows
+  characters, never through a written-out one (written out here, or by the
+  agent before the text arrives) or a surrogate pair, and reads no more of
+  an over-long text than the limit. This shows
   that such a character is there; it is not a promise that two different
   paths always look different (a literal backslash is shown as it is, and a
   long path is shortened from the left).
@@ -150,6 +152,31 @@
   sync changed whether the item asks for the master password since it was
   opened. A master-password re-prompt item still asks first, as its letter
   does.
+- **A re-prompt turned on elsewhere reaches an item that is open.** While
+  an item's detail was open, a sync could bring it back with "ask for the
+  master password" turned on, and the open detail kept the old answer, so a
+  copy or reveal there read the now-protected value with no prompt. When a
+  refreshed list arrives the open item is now checked against it: if it asks
+  for the master password and did not when it was opened, whatever was
+  revealed or loaded of it is dropped and it is shown again behind the
+  prompt (an edit form of it closes); if it is gone, the panel returns to
+  the list, and neither the detail nor an edit form of it is kept (under an
+  SSH approval too). The same check runs on returning to a detail from
+  Accounts or Settings. An item whose re-prompt was already confirmed, or
+  whose setting did not change, is as it was. Until that list has arrived
+  the open item still goes by the setting it was opened with.
+- **The re-prompt goes by the list as it is now.** Whether an action asks
+  for the master password was read from the row or detail it was started
+  on, which could be older than the list: rows still drawn while a search
+  waited for its answer, for one. It is now read from the item's row in
+  the current list. "Reopen" after a refused edit asks first too if the
+  item asks now, and discards the draft if the item is gone.
+- **An armed auto-type or TOTP follow-up does not outlast a re-prompt
+  turned on elsewhere.** A password armed for auto-type with no prompt, and
+  the TOTP code that follows a password copy, stayed armed if a sync then
+  brought the item back with "ask for the master password" turned on. The
+  refreshed list now ends both (the follow-up also when the item is gone);
+  an item that asked when it was armed stays armed.
 
 - **The vault helper refuses a vault read it does not recognise.** It used
   to remove secrets only from items sitting where it expected them and hand
@@ -207,6 +234,71 @@
   later one. A save or delete also dropped the rows past that point from the
   list on screen until the next reload. Both now work over the whole list,
   without copying it.
+- **A list read left over from another account is not taken for the new
+  one's.** Each of the panel's readers (items, folders, organizations,
+  collections, Sends, a single item) runs one command at a time. A read
+  asked for while the previous run was still going (an account just left, a
+  lock's cleanup run, a refresh from before a sync) started nothing, and the previous
+  run's answer was then accepted as the new read's: after an account switch
+  that could be an empty list shown as the vault, with the list error
+  cleared. A read now waits for the run before it to exit and that run's
+  answer is dropped; the same goes for a second organization's collections
+  or a second item asked for while the first is being read. A refresh
+  asked for again while one of the same vault is running is still served by
+  that one, unless a sync has finished since it started.
+- **SSH prompt text is cut at whole escapes, and long text costs no more
+  than short.** The agent writes control characters out as `\uXXXX` before
+  the panel gets the text, and the panel cut that text one character at a
+  time: a path could start with `…009` (the tail of a tab's `\u0009`), and a
+  program's name, written out first and cut afterwards, could end in `\u`.
+  A written-out character already in the text, spelled as the agent or the
+  panel writes one (lowercase, and only for a character they write out), is
+  now kept or dropped whole, and the name is written out and cut in one step. The limits (512 UTF-16
+  code units for a path, one of them the `…`; 256 for a name) also bound
+  the work again: a 64,000-character path or key name was read to its end
+  on every prompt, and now only the part that can be shown is.
+- **A failed status check no longer wipes the only error on screen.** When
+  the item list could not be read and the status check after it failed too,
+  the vault was dropped for the sign-in screen and the list's message
+  ("Could not safely read vault items.") went with it, leaving no reason
+  on screen. That message now stays up there, and asking for the status
+  check does not clear it either. A lock, a logout, an account
+  switch and a vault that `bw` reports locked still take it along.
+- **Saving a new item while the list refreshes.** If the refresh already
+  listed the new item when its save answered, the item appeared twice and a
+  detail opened on it stayed on its "saving" row, where nothing works; if a
+  list read from before the save answered after it, the new row vanished
+  again (and a deleted one could come back). The saved item now goes in
+  once, under the id the save answered with, and the open detail moves to
+  that id. A list read that started before a save or delete finished is not
+  shown: the list is read again. A save whose answer carries no item returns
+  that detail to the list, and when an SSH approval is covering the detail
+  as the save answers, the move happens once the detail is back. A create
+  the vault refuses also returns that detail to the list, with the draft
+  kept for reopening.
+- **SSH keys from a list that was not shown.** A list read replaced by a
+  newer one, or taken before a save, delete or sync finished, handed the
+  SSH agent its keys, and the keys of the list that was shown were then not
+  loaded. They are now loaded after the list that is shown, once no SSH
+  approval is waiting. While one is waiting, a list from before an
+  automatic sync is not read again at once but with that sync's own
+  reload, so it cannot fail the signing request being approved. A list
+  read that fails also leaves the list due to be read again the next time
+  the panel wants it.
+- **Collections of an organization the form no longer has.** Choosing an
+  organization, then "personal" (or another one) while the first one's
+  collections were still being read, could offer those collections, and
+  pre-select a single one, in the item being edited. A read still waiting
+  is dropped and an answer is shown only for the organization the form has.
+- **A lock's cleanup after a cancelled list read.** A list read stopped by
+  the lock, whose exit had not arrived yet, was handed the cleanup command
+  without it running, and that read's exit then counted as the cleanup:
+  without the vault helper, the read's output could stay in the shell's
+  memory after the lock. The cleanup now waits for that exit.
+- **A command that cannot start no longer stalls its reader.** Without the
+  vault helper, a `bw` run that could not be started at all never reported
+  an exit, so that reader (the item list, say) started nothing again until
+  the shell was restarted. It now ends as a command that was not found.
 
 ## [1.13.1] - 2026-11-18
 

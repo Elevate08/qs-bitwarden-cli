@@ -221,41 +221,54 @@ for (const action of listActions) {
 }
 check("onTextKey uses runDetailShortcut", /onTextKey[\s\S]*?root\.runDetailShortcut\(lower\)/.test(panel))
 // --- a new item's detail, opened while its save runs ---------------------------------
-// The real onSaveItemFinished() and followCreatedItem(): the open detail moves
-// from the provisional row to the saved item, so the palette (bound by id)
-// has an item to act on, and a palette listed for the provisional one closes.
-
-function saveStandIn(state) {
-  const v = Object.assign({ Model, isLoading: true, itemPayloadJson: "x", errorMessage: "", failedSave: null,
-    itemsLoadedAt: 0, currentScreen: "detail", opened: [], reloads: 0,
-    vaultReadIsStale() { return false }, flashNotification() {}, refreshDerivedFromItems() {},
-    loadItems() { v.reloads++ },
-    // What a click on the row does, as far as this test needs: the detail
-    // becomes that row's item, through the function that gates and loads it.
-    openDetail(item, browsing) { v.opened.push([item, browsing]); v.detailItem = { id: item.id, name: item.name } }
-  }, state)
-  v.root = v
-  Object.assign(v, new Function("root", "with (root) {\n" + functionBody(serviceSrc, "onSaveItemFinished") + "\n"
-    + functionBody(serviceSrc, "followCreatedItem") + "\nreturn { onSaveItemFinished, followCreatedItem } }")(v))
-  return v
-}
+// The real onSaveItemFinished(), followCreatedItem() and openDetail(), on the
+// detail stand-in (detail-vault.js): the open detail moves from the
+// provisional row to the saved item as a click on its row would, so the
+// palette (bound by id) has an item to act on, a re-prompt item asks before
+// anything is read, and an ordinary one reads on demand.
+const { makeVault: makeDetailVault, answer: answerHelper, confirm: confirmReprompt } = require("./detail-vault")
 const draft = { type: 1, name: "New login", notes: "", favorite: false, login: { username: "me", password: "pw", uris: [] } }
 const provisionalId = Model.pendingItemId(777)
 const provisionalRow = Model.optimisticItem(draft, provisionalId)
-const existingRow = Model.optimisticItem(Object.assign({}, draft, { name: "Old" }), "11111111-1111-1111-1111-111111111111")
+const existingRow = Model.parseItems([{ id: "11111111-1111-1111-1111-111111111111", type: 1, name: "Old", reprompt: 0,
+  login: { username: "old" }, qsbwHeld: { password: true, totp: false, notes: false } }])[0]
 const savedId = "55555555-5555-5555-5555-555555555555"
-const savedEnvelope = id => JSON.stringify({ sshCapability: "unconfirmed", items: [Object.assign({}, draft, { object: "item", id })], sshKeys: [] })
+// What the helper hands back for the saved item: no secret, flags for what it holds.
+const savedEnvelope = (id, extra) => JSON.stringify({ sshCapability: "unconfirmed", sshKeys: [], items: [Object.assign(
+  { object: "item", id, type: 1, name: "New login", reprompt: 0, login: { username: "me", uris: [] },
+    qsbwHeld: { password: true, totp: false, notes: false } }, extra || {})] })
+// A vault with the provisional row listed and its save running; `open`: the id of the detail on screen.
+function saving(open, screen) {
+  const v = makeDetailVault(Model.replaceItemById([existingRow], provisionalId, provisionalRow))
+  v.picks = []
+  v.learnFromPick = item => { v.picks.push(item.id) }
+  v.pendingSave = { id: provisionalId, isCreate: true, name: "New login", previous: null, form: {} }
+  v.readEpochs.itemSave = v.vaultEpoch
+  if (open === provisionalId) { v.currentScreen = "detail"; v.detailItem = Object.assign({}, provisionalRow) }
+  else if (open) v.openDetail(Model.findItemById(v.items, open), true)
+  if (screen) v.currentScreen = screen
+  v.queries.length = 0; v.answers.length = 0
+  return v
+}
 {
-  const v = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
-    detailItem: { id: provisionalId, name: "New login" }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  const v = saving(provisionalId)
   // Before the save lands the palette acts on the provisional row's detail.
   const before = makePanel(v.items, v.detailItem)
   before.runPaletteAction({ id: "copyUsername", key: "u" }, "detail", provisionalId)
   check("new item: the palette works in the provisional detail", before.calls.length === 1)
   v.onSaveItemFinished(0, savedEnvelope(savedId), "")
-  check("new item: the open detail follows the save to the saved item, opened as a row is (browsing, so not learned as a pick)",
-    v.opened.length === 1 && v.opened[0][0].id === savedId && v.opened[0][0] === Model.findItemById(v.items, savedId)
-    && v.opened[0][1] === true && !v.opened[0][0].pending, JSON.stringify(v.opened.map(o => o[0].id)))
+  check("new item: the open detail follows the save to the saved item, the row now listed under its id",
+    v.currentScreen === "detail" && v.detailItem && v.detailItem.id === savedId && !v.detailItem.pending
+      && v.detailItem.secretsWithheld === true && !Model.findItemById(v.items, provisionalId)
+      && Model.findItemById(v.items, savedId) !== null, JSON.stringify(v.detailItem && v.detailItem.id))
+  check("new item: opened as a browse, so it is not learned as a pick, and nothing secret is asked for by opening",
+    v.picks.length === 0 && v.queries.length === 0 && v.detailPassword === "", JSON.stringify(v.queries))
+  v.toggleFieldReveal("password")
+  check("new item: its password is then read on demand, under the saved id",
+    v.queries.length === 1 && v.queries[0].kind === "field" && v.queries[0].args.id === savedId && !v.repromptPending,
+    JSON.stringify(v.queries))
+  answerHelper(v, 0, true, "pw")
+  check("new item: and shows", v.shownSecret("password", "") === "pw")
   const after = makePanel(v.items, v.detailItem)
   after.runPaletteAction({ id: "copyUsername", key: "u" }, "detail", String(v.detailItem.id))
   check("new item: a palette opened on the saved detail acts", after.calls.length === 1 && after.calls[0][0] === "runDetailShortcut")
@@ -263,31 +276,64 @@ const savedEnvelope = id => JSON.stringify({ sshCapability: "unconfirmed", items
   check("new item: a palette still holding the provisional id does nothing", after.calls.length === 1)
 }
 {
-  const v = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
-    detailItem: { id: existingRow.id }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  // The saved item has a TOTP key: the handoff fetches the code as opening a row does.
+  const v = saving(provisionalId)
+  v.onSaveItemFinished(0, savedEnvelope(savedId, { qsbwHeld: { password: true, totp: true, notes: false } }), "")
+  check("new item with a TOTP key: its code is asked of the helper through the handoff",
+    v.detailItem.id === savedId && v.queries.length === 1 && v.queries[0].kind === "totp" && v.queries[0].args.id === savedId,
+    JSON.stringify(v.queries))
+}
+{
+  // The saved item asks for the master password (an organization's policy, a
+  // clone of a flagged item): the handoff must not hand its secrets over.
+  const v = saving(provisionalId)
+  v.onSaveItemFinished(0, savedEnvelope(savedId, { reprompt: 1, qsbwHeld: { password: true, totp: true, notes: false } }), "")
+  check("new re-prompt item: the handoff opens its public view and asks the helper nothing, not even the code",
+    v.detailItem.id === savedId && v.detailItem.reprompt === 1 && v.detailItem.secretsWithheld === true
+      && v.queries.length === 0 && v.liveTotp === "" && !v.repromptPending, JSON.stringify(v.queries))
+  v.copyDetailField("password", "Password")
+  check("new re-prompt item: a copy asks for the master password first", v.repromptPending && v.repromptItemId === savedId && v.queries.length === 0)
+  confirmReprompt(v)
+  check("new re-prompt item: and reads once it is confirmed", v.queries.length === 1 && v.queries[0].kind === "copyField"
+    && v.queries[0].args.id === savedId, JSON.stringify(v.queries))
+}
+{
+  const v = saving(existingRow.id)
+  const detail = v.detailItem
   v.onSaveItemFinished(0, savedEnvelope(savedId), "")
-  check("new item: a detail open on another item is left alone", v.opened.length === 0 && v.detailItem.id === existingRow.id)
-  const m = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow), currentScreen: "main",
-    detailItem: { id: provisionalId }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  check("new item: a detail open on another item is left alone", v.detailItem === detail && v.detailItem.id === existingRow.id && v.queries.length === 0)
+  const m = saving(provisionalId, "main")
   m.onSaveItemFinished(0, savedEnvelope(savedId), "")
-  check("new item: nothing is opened when the detail is not on screen", m.opened.length === 0 && m.currentScreen === "main")
-  const f = saveStandIn({ items: Model.replaceItemById([existingRow], provisionalId, provisionalRow),
-    detailItem: { id: provisionalId }, pendingSave: { id: provisionalId, isCreate: true, name: "New login" } })
+  check("new item: nothing is opened when the detail is not on screen", m.currentScreen === "main" && m.detailItem.id === provisionalId)
+  const f = saving(provisionalId)
   f.onSaveItemFinished(1, "", "refused")
-  check("new item: a refused save opens nothing", f.opened.length === 0 && !Model.findItemById(f.items, provisionalId))
+  check("new item: a refused save opens nothing", f.detailItem.id === provisionalId && !Model.findItemById(f.items, provisionalId)
+    && f.failedSave !== null && f.queries.length === 0)
 }
 {
   // An edit keeps its id: the saved row replaces the old one and the detail is not reopened.
-  const v = saveStandIn({ items: [existingRow], detailItem: { id: existingRow.id },
-    pendingSave: { id: existingRow.id, isCreate: false, name: "Old", previous: existingRow } })
+  const v = makeDetailVault([existingRow])
+  v.openDetail(existingRow, true)
+  const detail = v.detailItem
+  v.pendingSave = { id: existingRow.id, isCreate: false, name: "Old", previous: existingRow, form: {} }
+  v.readEpochs.itemSave = v.vaultEpoch
   v.onSaveItemFinished(0, savedEnvelope(existingRow.id), "")
   check("an edit does not reopen the detail, and its id still resolves",
-    v.opened.length === 0 && v.items.length === 1 && v.items[0].id === existingRow.id
+    v.detailItem === detail && v.items.length === 1 && v.items[0].id === existingRow.id
     && makePanel(v.items, v.detailItem).paletteItem("detail", existingRow.id) === v.detailItem)
 }
 const paletteConn = panel.slice(panel.indexOf("// Closed when the vault locks"), panel.indexOf("color: Color.menu.scrim"))
+// The block is instantiated and driven through the vault's signals in
+// tests/qml/tst_palette_follows_detail.qml (qmltestrunner); a handler that is
+// right does nothing on a block that listens to something else, so what it
+// listens to is pinned here too, for a run without Qt.
+check("the palette's Connections block listens to the vault",
+  /^Closed when the vault locks[^\n]*\n\s*Connections \{\s*target: root\.vault\s*function onStatusChanged\(\)/.test(paletteConn.slice(3)), paletteConn.slice(0, 200))
 check("an open detail palette closes when the detail's item changes under it",
   /function onDetailItemChanged\(\) \{\s+if \(!actionPalette\.shown \|\| actionPalette\.fromScreen !== "detail"\) return\s+var detail = root\.vault\.detailItem\s+if \(!detail \|\| String\(detail\.id\) !== actionPalette\.itemId\) actionPalette\.close\(\)/.test(paletteConn))
+check("and a QML test drives that block through the vault's own signals",
+  /paletteConnections\(\)/.test(read("tests/qml/tst_palette_follows_detail.qml"))
+    && /root\.vault\.detailItem = \{ id: "b" \}/.test(read("tests/qml/tst_palette_follows_detail.qml")))
 {
   // That handler, run: same id stays open, another id or none closes.
   const run = (palette, detailItem) => {

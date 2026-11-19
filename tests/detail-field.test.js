@@ -225,7 +225,7 @@ check("and keeps what the user typed so it can be reopened",
   "a refused save must not cost the user their edit")
 
 check("a save that lands but cannot be sanitised drops its provisional row",
-  /if \(save && save\.isCreate\) items = Model\.replaceItemById\(items, save\.id, null\)/.test(panelSrc),
+  /if \(save && save\.isCreate\) \{\s*items = Model\.replaceItemById\(items, save\.id, null\)/.test(panelSrc),
   "a provisional row must not survive the reload that replaces it")
 
 check("the saving row is marked in the list",

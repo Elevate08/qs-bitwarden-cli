@@ -421,6 +421,26 @@ check("the settled row is no longer marked as saving",
   !settled.find(i => i.id === "55555555-5555-5555-5555-555555555555").pending,
   "a row that has landed must not keep spinning")
 
+// A refresh can list the new item before its save answers: the list then
+// holds it under its real id, with or without the provisional row.
+{
+  const savedRow = Model.savedItemOf(createdEnvelope)
+  check("the saved item is read from the save's answer, id included",
+    savedRow && savedRow.id === "55555555-5555-5555-5555-555555555555", JSON.stringify(savedRow && savedRow.id))
+  const refreshed = Model.replaceItemById(listed3, savedRow.id, savedRow)
+  for (const [why, list] of [["without the provisional row", refreshed],
+    ["beside the provisional row", Model.replaceItemById(refreshed, provisional, optimistic)]]) {
+    const once = Model.spliceSavedItem(list, createdEnvelope, provisional)
+    check(`a saved item the list already holds (${why}) goes in once`,
+      once.length === listed3.length + 1 && once.filter(i => i.id === savedRow.id).length === 1
+        && !once.some(i => Model.isPendingItemId(i.id)), JSON.stringify(once.map(i => i.id)))
+  }
+  check("the row savedItemOf() read can be handed over in place of the text",
+    JSON.stringify(Model.spliceSavedItem(withOptimistic, savedRow, provisional).map(i => i.id)) === JSON.stringify(settled.map(i => i.id)))
+  check("no item, no list", Model.savedItemOf("{oops") === null && Model.savedItemOf(Model.savedUnsanitizedMarker()) === null
+    && Model.spliceSavedItem(listed3, null, provisional) === null)
+}
+
 // A refused save must not leave the panel showing something the vault rejected.
 check("a failed create takes its provisional row back out",
   Model.replaceItemById(withOptimistic, provisional, null).length === listed3.length,
