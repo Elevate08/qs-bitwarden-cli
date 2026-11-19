@@ -2407,22 +2407,16 @@ Item {
   // plain JS object.
   property string sshAgentPhase: "disabled"
   property bool sshAgentGateOpen: false
-  property string sshAgentSocketPath: ""
-  property string sshAgentFifoPath: ""
   property string sshAgentVersion: ""
   property string sshAgentErrorCode: ""
-  property string sshAgentErrorMessage: ""
 
   function applySshAgentEvent(event) {
     var step = Model.sshAgentReduce(root.sshAgentState, event)
     root.sshAgentState = step.state
     root.sshAgentPhase = step.state.phase
     root.sshAgentGateOpen = step.state.gateOpen
-    root.sshAgentSocketPath = step.state.socketPath
-    root.sshAgentFifoPath = step.state.fifoPath
     root.sshAgentVersion = step.state.agentVersion
     root.sshAgentErrorCode = step.state.errorCode
-    root.sshAgentErrorMessage = step.state.errorMessage
 
     // State is committed first: stopping the Process can re-enter with the
     // exit before this returns, and must see the new phase.
@@ -3037,7 +3031,6 @@ Item {
     }
     if (message.type === "keys_loaded") {
       root.sshAgentKeyCount = Math.max(0, Math.floor(Number(message.keyCount)) || 0)
-      root.sshAgentKeysLoadedAt = Date.now()
       root.sshAgentLoadFailStreak = 0
       // Every public_key for this epoch arrived before this message.
       if (root.sshPendingPublicEpoch === message.epoch) exportSshPublicKeys()
@@ -3091,7 +3084,6 @@ Item {
   // (all at once would exceed the line limit).
   property var sshPendingPublicKeys: []
   property int sshPendingPublicEpoch: -1
-  property double sshAgentKeysLoadedAt: 0
   // The vault epoch a key load was started for, so a startup load runs once.
   property int sshAgentLoadedForVaultEpoch: -1
   // Auto-retries of a failed FIFO load (one), so a bad payload cannot loop.
@@ -3156,7 +3148,6 @@ Item {
     if (action.advanceEpoch) sshAgentEpoch += 1
     if (action.clearPublic) {
       root.sshAgentKeyCount = 0
-      root.sshAgentKeysLoadedAt = 0
       clearSshPublicKeys()
     }
     // The ack is not a precondition: a companion that cannot confirm the lock

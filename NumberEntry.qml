@@ -5,7 +5,7 @@ import qs.Ui
 
 // Number spinner with the shell NumberField's chrome and call-site API (label,
 // value, from, to, stepSize, foreground, accent, fontFamily, fontSize,
-// fieldWidth, hasCursor, modified, hovered, field).
+// fieldWidth, hasCursor, modified, field).
 //
 // The shell's NumberField types into an editable TextInput. On Qt 6.12 that
 // control reads the Wayland clipboard offer on the GUI thread whenever the
@@ -37,7 +37,6 @@ Column {
   property alias field: spin
 
   signal modified(int value)
-  signal hovered(bool on)
 
   // Longer than any setting needs; keeps a held key from growing the document.
   readonly property int maxDigits: 10
@@ -136,10 +135,7 @@ Column {
       radius: Style.cornerRadius
 
       HoverHandler {
-        onHoveredChanged: {
-          root._hovered = hovered
-          root.hovered(hovered)
-        }
+        onHoveredChanged: root._hovered = hovered
       }
     }
 
