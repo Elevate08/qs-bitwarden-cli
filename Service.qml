@@ -428,11 +428,7 @@ Item {
   //
   // An item with `reprompt` 1 asks for the master password before anything
   // secret of it is revealed, copied or edited, as Bitwarden's own clients
-  // do. withReprompt(item, callback) runs the
-  // callback at once for any other item, or once the password is confirmed:
-  // the Panel draws the prompt from repromptPending, repromptItemName,
-  // repromptError and repromptBusy, and answers with submitReprompt(password)
-  // or cancelReprompt(). The password is checked against the stored copy
+  // do (withReprompt()). The password is checked against the stored copy
   // when quick unlock has one, else by `bw` itself (verifyMasterPassword());
   // it travels in the environment, never argv, and is not kept. A success
   // lasts only while that item's detail stays open: closing it, opening
@@ -440,9 +436,8 @@ Item {
   //
   // With the vault helper the shell holds no item's secrets until a value is
   // revealed or the item is edited: the detail is drawn from the list row
-  // (Model.publicItemDetail()). Revealing and copying go through the helper
-  // (readDetailSecret(), copyDetailField()), after the prompt for a re-prompt
-  // item; editing asks for the whole item (withRevealedDetail()). Ending the
+  // (Model.publicItemDetail()), reveals and copies go through the helper, and
+  // editing asks for the whole item (withRevealedDetail()). Ending the
   // confirmation drops what was fetched.
   property bool repromptPending: false
   property string repromptItemId: ""
@@ -1596,9 +1591,7 @@ Item {
   // holds its own ways in. Turning one off removes it from every account
   // (purgeQuickUnlockMethod()), and every envelope read removes a way in whose
   // setting is off (reconcileDisabledMethods()), which catches a setting
-  // turned off in shell.json while the shell was not running. Before, only the
-  // account on screen lost it, and the others kept a way in that the settings
-  // screen showed as "off".
+  // turned off in shell.json while the shell was not running.
 
   // Methods to purge once the unlock tool is ready.
   property var pendingPurges: []
@@ -3752,11 +3745,9 @@ Item {
   // It can also open underneath a pinentry that is already asking: showing
   // the popout makes the unlock form visible inside show(), before `opened`
   // reads true here, and the form asks pinentry on its own (UnlockForm.qml,
-  // armOfferedMethod()). beginPinentry() then saw a closed panel and hid
-  // nothing, and the panel kept the keyboard while pinentry waited for it
-  // (#132). Such an open is still the user's: its startup work runs now, as
-  // for a panel already open when pinentry was asked, and hideForPinentry()
-  // then hides it and has it shown again, as a resume, once pinentry answers.
+  // armOfferedMethod()), so beginPinentry() saw a closed panel and hid nothing
+  // (#132). Such an open is still the user's: its startup work runs now, and
+  // hideForPinentry() hides it until pinentry answers, then shows it again.
   // Deferred, so the hide neither runs inside the notification that is
   // showing the popout nor reads a `presenter` not yet re-evaluated.
   function panelShown() {
@@ -6337,10 +6328,10 @@ Item {
   // The master password (unlock, re-prompt) and the PIN are typed into the
   // plugin's own pinentry (pinentry/omarchy-pinentry), a separate process,
   // not into the panel: a string typed into the shell stays in its heap after
-  // it is cleared and lands in a shell core dump. The pinentry runs through the vault helper (Model.pinentryCommand()),
-  // which holds what was typed under a name; the shell sees only that name,
-  // and uses it like the password a quick-unlock method produced
-  // (Model.heldSecretRef()). Not available without the helper: while it is
+  // it is cleared and lands in a shell core dump. The pinentry runs through
+  // the vault helper (Model.pinentryCommand()), which holds what was typed
+  // under a name; the shell sees only that name (Model.heldSecretRef()).
+  // Not available without the helper: while it is
   // starting, restarting or left stopped the panel waits for it rather than
   // offer its own field, which is used only where Model.typedSecretEntry()
   // says (pinentry off, unable to run here or declined, or the vault held in
@@ -6348,10 +6339,9 @@ Item {
   // forms are not covered.
   //
   // Set only by a probe that ran to its end and found the prompt unable to
-  // run here (no frontend, or its `--check` failed: no quickshell, node,
-  // Wayland display or shell kit) (Model.pinentryProbeMissing()): a probe
-  // killed or still running leaves
-  // pinentry offered, for the same reason as below.
+  // run here (no frontend, or its `--check` failed) (Model.pinentryProbeMissing()):
+  // a probe killed or still running leaves pinentry offered, for the same
+  // reason as below.
   property bool pinentryMissing: false
   onPinentryMissingChanged: resetPinentryChoice()
   // A run that failed (a prompt that could not start, a helper that predates
@@ -6866,10 +6856,9 @@ Item {
   //
   // Each lock runs with the environment of the moment it was asked for (the
   // session being locked and its account's data directory), one at a time.
-  // Its exit status used to be ignored: a failed lock is retried once, then
-  // `bw status` (with that session) says whether it is really still unlocked,
-  // and if so the user is told. The environment, which holds the session, is
-  // dropped as soon as the lock settles.
+  // A failed lock is retried once, then `bw status` (with that session) says
+  // whether it is really still unlocked, and if so the user is told. The
+  // environment, which holds the session, is dropped as soon as the lock settles.
   property var lockRun: null
   property var lockQueue: []
 
