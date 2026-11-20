@@ -316,8 +316,7 @@ impl Helper {
                 self.copy(q, password, clear_sec);
             }
             Request::Field { q, id, field, .. } => {
-                let value = store::SecretField::parse(&field)
-                    .and_then(|field| self.store.lock().unwrap().item_secret(&id, &field));
+                let value = self.secret_field(&id, &field);
                 self.secret_result(q, value.map(|value| secret_result_line(q, &value)));
             }
             Request::CopyField {
@@ -326,11 +325,7 @@ impl Helper {
                 field,
                 clear_sec,
                 ..
-            } => {
-                let value = store::SecretField::parse(&field)
-                    .and_then(|field| self.store.lock().unwrap().item_secret(&id, &field));
-                self.copy(q, value, clear_sec);
-            }
+            } => self.copy(q, self.secret_field(&id, &field), clear_sec),
             Request::AutoType { q, id, .. } => self.auto_type(q, &id),
             Request::Totp { q, id, .. } => {
                 let key = self.field(&id, &["login", "totp"]);
@@ -363,6 +358,12 @@ impl Helper {
     /// One string field of a held item, e.g. `login.password`.
     fn field(&self, id: &str, path: &[&str]) -> Option<Zeroizing<String>> {
         self.store.lock().unwrap().value_at(id, path)
+    }
+
+    /// The value the panel names `field` (`store::SecretField`) of a held item.
+    fn secret_field(&self, id: &str, field: &str) -> Option<Zeroizing<String>> {
+        let field = store::SecretField::parse(field)?;
+        self.store.lock().unwrap().item_secret(id, &field)
     }
 
     /// Answers a copy request: the value goes to the clipboard and not into
@@ -417,15 +418,12 @@ impl Helper {
         thread::spawn(move || {
             let typed = feed_and_wait(child, text, &group);
             drop(slot);
-            let message = match typed {
-                Typed::All => json!({ "type": "result", "q": q, "ok": true, "value": true }),
-                Typed::Stopped => {
-                    json!({ "type": "result", "q": q, "ok": false, "value": "stopped" })
-                }
-                Typed::Failed => {
-                    json!({ "type": "result", "q": q, "ok": false, "value": "failed" })
-                }
+            let (ok, value) = match typed {
+                Typed::All => (true, json!(true)),
+                Typed::Stopped => (false, json!("stopped")),
+                Typed::Failed => (false, json!("failed")),
             };
+            let message = json!({ "type": "result", "q": q, "ok": ok, "value": value });
             let _ = out.send(Zeroizing::new(message.to_string()));
         });
     }
@@ -601,15 +599,7 @@ fn run(
     // found the entry would signal that one. Waiting without reaping keeps
     // the id ours until the entry is gone; a `kill` signals with the list
     // locked, so it either lands before this or finds nothing.
-    if let Some(pid) = i32::try_from(child.id())
-        .ok()
-        .and_then(rustix::process::Pid::from_raw)
-    {
-        let _ = rustix::process::waitid(
-            rustix::process::WaitId::Pid(pid),
-            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
-        );
-    }
+    wait_unreaped(&child);
     runs.lock().unwrap().remove(&id);
     let status = child.wait();
     let mut code = match status {
@@ -904,6 +894,17 @@ fn stop_group(id: u64, group: u32, runs: Shared<HashMap<u64, u32>>) {
     });
 }
 
+/// Waits for `child` to exit and leaves it unreaped, so its id stays its own.
+fn wait_unreaped(child: &Child) {
+    use rustix::process::{waitid, Pid, WaitId, WaitIdOptions};
+    if let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
+        let _ = waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+        );
+    }
+}
+
 fn signal_group(group: u32, signal: rustix::process::Signal) {
     use rustix::process::{kill_process_group, Pid};
     if let Some(pid) = i32::try_from(group).ok().and_then(Pid::from_raw) {
@@ -1016,15 +1017,7 @@ fn feed_and_wait(mut child: Child, text: Zeroizing<String>, group: &Shared<Optio
         None => false,
     };
     drop(text);
-    if let Some(pid) = i32::try_from(child.id())
-        .ok()
-        .and_then(rustix::process::Pid::from_raw)
-    {
-        let _ = rustix::process::waitid(
-            rustix::process::WaitId::Pid(pid),
-            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
-        );
-    }
+    wait_unreaped(&child);
     let stopped = group.lock().unwrap().take().is_none();
     let status = child.wait();
     if written && status.map(|s| s.success()).unwrap_or(false) {

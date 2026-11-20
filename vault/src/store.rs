@@ -253,8 +253,18 @@ impl Store {
 
     /// One string at `path` of a held item.
     pub fn value_at(&self, id: &str, path: &[&str]) -> Option<Zeroizing<String>> {
+        self.string_of(id, |item| get_value(item, path))
+    }
+
+    /// The string `pick` finds in a held item, copied out of a parse that is
+    /// wiped before it is dropped.
+    fn string_of(
+        &self,
+        id: &str,
+        pick: impl FnOnce(&Value) -> Option<&Value>,
+    ) -> Option<Zeroizing<String>> {
         let mut item: Value = serde_json::from_str(self.item(id)?).ok()?;
-        let value = get_value(&item, path)
+        let value = pick(&item)
             .and_then(Value::as_str)
             .map(|s| Zeroizing::new(s.to_owned()));
         wipe_value(&mut item);
@@ -264,38 +274,21 @@ impl Store {
     /// The value `field` names; `None` if the item or the value is absent. A
     /// custom field answers only if it is hidden (type 1) or links to a secret.
     pub fn item_secret(&self, id: &str, field: &SecretField) -> Option<Zeroizing<String>> {
-        if let Some(path) = field.path() {
-            return self.value_at(id, path);
-        }
-        let mut item: Value = serde_json::from_str(self.item(id)?).ok()?;
-        if let SecretField::History(index) = field {
-            let value = item
-                .get("passwordHistory")
-                .and_then(Value::as_array)
-                .and_then(|history| history.get(*index))
-                .and_then(|entry| entry.get("password"))
-                .and_then(Value::as_str)
-                .map(|s| Zeroizing::new(s.to_owned()));
-            wipe_value(&mut item);
-            return value;
-        }
-        let SecretField::Custom(index) = field else {
-            return None;
-        };
-        let value = (|| {
-            let custom = item.get("fields")?.as_array()?.get(*index)?;
-            let text = |node: &Value| node.as_str().map(|s| Zeroizing::new(s.to_owned()));
-            match custom.get("type").and_then(Value::as_u64)? {
-                1 => text(custom.get("value")?),
-                3 => {
-                    let path = linked_secret_path(custom.get("linkedId")?.as_u64()?)?;
-                    text(get_value(&item, path)?)
+        match field {
+            SecretField::History(index) => self.string_of(id, |item| {
+                let history = item.get("passwordHistory")?.as_array()?;
+                history.get(*index)?.get("password")
+            }),
+            SecretField::Custom(index) => self.string_of(id, |item| {
+                let custom = item.get("fields")?.as_array()?.get(*index)?;
+                match custom.get("type").and_then(Value::as_u64)? {
+                    1 => custom.get("value"),
+                    3 => get_value(item, linked_secret_path(custom.get("linkedId")?.as_u64()?)?),
+                    _ => None,
                 }
-                _ => None,
-            }
-        })();
-        wipe_value(&mut item);
-        value
+            }),
+            named => self.value_at(id, named.path()?),
+        }
     }
 
     /// Ids whose search text contains `query`, in load order. Mirrors
@@ -485,9 +478,14 @@ fn is_vault_read(vault: &Value) -> bool {
 /// Keeps the public fields of an `sshKeys` record, and those only as plain
 /// values: a record that came with more (a whole SSH item, say) loses it.
 fn public_ssh_record(record: &mut Map<String, Value>) {
-    record.retain(|key, value| {
-        let keep =
-            SSH_RECORD_KEYS.contains(&key.as_str()) && !value.is_object() && !value.is_array();
+    keep_plain(record, SSH_RECORD_KEYS);
+}
+
+/// Keeps the entries named in `keys`, and those only as plain values; the
+/// rest is wiped.
+fn keep_plain(map: &mut Map<String, Value>, keys: &[&str]) {
+    map.retain(|key, value| {
+        let keep = keys.contains(&key.as_str()) && !value.is_object() && !value.is_array();
         if !keep {
             wipe_value(value);
         }
@@ -633,18 +631,12 @@ fn haystack(item: &Map<String, Value>) -> Zeroizing<String> {
 /// "has a password" style flags. A card number keeps only its last four.
 fn strip_item(item: &mut Map<String, Value>) {
     let mut held = Map::new();
-    held.insert(
-        "password".into(),
-        Value::Bool(present(item, &["login", "password"])),
-    );
-    held.insert(
-        "totp".into(),
-        Value::Bool(present(item, &["login", "totp"])),
-    );
-    held.insert("notes".into(), Value::Bool(present(item, &["notes"])));
-    // Which of the other secrets there were, so the panel draws a row for
-    // each and asks for its value only when it is revealed or copied.
+    // Which of the secrets there were, so the panel draws a row for each
+    // and asks for its value only when it is revealed or copied.
     for (flag, path) in [
+        ("password", &["login", "password"][..]),
+        ("totp", &["login", "totp"][..]),
+        ("notes", &["notes"][..]),
         ("cardCode", &["card", "code"][..]),
         ("ssn", &["identity", "ssn"][..]),
         ("passportNumber", &["identity", "passportNumber"][..]),
@@ -718,14 +710,7 @@ fn strip_attachment(attachment: &mut Value) {
         *attachment = Value::Null;
         return;
     };
-    map.retain(|key, value| {
-        let keep =
-            ATTACHMENT_KEYS.contains(&key.as_str()) && !value.is_object() && !value.is_array();
-        if !keep {
-            wipe_value(value);
-        }
-        keep
-    });
+    keep_plain(map, ATTACHMENT_KEYS);
 }
 
 /// A custom field keeps its value only if it is plainly text (type 0) or a
@@ -748,9 +733,7 @@ fn strip_field(field: &mut Value) {
     {
         return;
     }
-    if let Some(mut value) = map.remove("value") {
-        wipe_value(&mut value);
-    }
+    wipe_out(map, "value");
 }
 
 /// Removes what is at `path`. A parent that is there but is not an object
@@ -764,19 +747,19 @@ fn remove(item: &mut Map<String, Value>, path: &[&str]) {
         match map.get(*key) {
             Some(Value::Object(_)) => {}
             Some(Value::Null) | None => return,
-            Some(_) => {
-                if let Some(mut value) = map.remove(*key) {
-                    wipe_value(&mut value);
-                }
-                return;
-            }
+            Some(_) => return wipe_out(map, key),
         }
         let Some(Value::Object(next)) = map.get_mut(*key) else {
             return;
         };
         map = next;
     }
-    if let Some(mut value) = map.remove(*last) {
+    wipe_out(map, last);
+}
+
+/// Removes the entry `key`, wiped.
+fn wipe_out(map: &mut Map<String, Value>, key: &str) {
+    if let Some(mut value) = map.remove(key) {
         wipe_value(&mut value);
     }
 }
