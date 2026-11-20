@@ -712,6 +712,9 @@ Item {
   property var pendingSave: null
   // The delete in flight, with the removed row for restoring on refusal.
   property var pendingDelete: null
+  // The message a save or delete last put in errorMessage, which may name
+  // its item: a lock takes it down if it is still the one showing.
+  property string itemChangeError: ""
 
   // A refused save's form, kept so it can be reopened rather than retyped.
   property var failedSave: null
@@ -6979,6 +6982,8 @@ Item {
     if (lockRun) forgetVaultSecret(lockRun.key)
     lockRun = null
     lockProc.environment = {}
+    // A `bw status` check's answer names the account.
+    lockStdout.text = ""
     Qt.callLater(pumpBwLock)
     maybeAckSleep()
   }
@@ -6997,6 +7002,11 @@ Item {
     // note of which message it was.
     if (listReadError !== "" && errorMessage === listReadError) errorMessage = ""
     listReadError = ""
+    // A refused or waiting save or delete names its item.
+    if (itemChangeError !== "" && errorMessage === itemChangeError) errorMessage = ""
+    itemChangeError = ""
+    // So can a notice (a link being opened, a file saved).
+    flashMessage = ""
     lastSyncAttemptAt = 0
     backgroundSync = false
     autoSyncReloadPending = false
@@ -7040,6 +7050,11 @@ Item {
     selectedFolder = "all"
     openFilterGroup = ""
     searchQuery = ""
+    // What the helper was asked and answered (invalidateHelperSearch(),
+    // spelled out): the text and the ids of the items it matched.
+    searchAnsweredQuery = ""
+    searchAnsweredIds = null
+    searchAskedQuery = ""
     selectedCategory = "all"
     selectedIndex = 0
     detailItem = null
@@ -7048,6 +7063,10 @@ Item {
     // A refused save's form holds what was typed (a password included) and
     // must not be reopenable after a lock, logout or account switch.
     failedSave = null
+    // A save or delete still running: its form (passwords, TOTP keys, notes)
+    // and the row it would put back. Its exit is refused as stale.
+    pendingSave = null
+    pendingDelete = null
     resetItemForm()
     totpFollowupActive = false
     isLoading = false
@@ -7092,8 +7111,13 @@ Item {
     itemPayloadJson = ""
     sends = []
     sendPayloadJson = ""
+    sendFormName = ""
     sendFormText = ""
     sendFormPassword = ""
+    sendError = ""
+    // A confirmed re-prompt leaves its item's name (cancelReprompt() runs
+    // only for one still waiting).
+    repromptItemName = ""
     // The old master password a refused quick unlock left for a re-seal
     // (storeAcceptedMasterPassword()). It used to outlive the lock; without
     // it the next re-seal falls back to the fingerprint wrap or marks the
@@ -7102,6 +7126,9 @@ Item {
     clearLoginAttempt()
     syncLoginFieldsToState()
     pinEntry = ""
+    // A legacy PIN kept for a migration whose unlock this lock interrupted
+    // (one the helper held went with forgetVault()).
+    pendingPinForMigration = ""
     pinSetupPin = ""
     pinSetupConfirm = ""
     pinSetupMaster = ""
@@ -8669,6 +8696,13 @@ Item {
   function saveItemForm() {
     if (pendingSave) {
       errorMessage = "Still saving " + pendingSave.name + " -- one moment"
+      itemChangeError = errorMessage
+      return
+    }
+    // A save from before a lock has dropped its note (dropVaultState()) but
+    // may still hold its process, whose exit would answer for this one.
+    if (vaultProcBusy(editItemProc) || vaultProcBusy(createItemProc)) {
+      errorMessage = "Still saving -- one moment"
       return
     }
 
@@ -8752,6 +8786,7 @@ Item {
       } else {
         errorMessage = stderrText || "Failed to save item"
       }
+      itemChangeError = errorMessage
       return
     }
 
@@ -8836,6 +8871,12 @@ Item {
     }
     if (pendingDelete) {
       errorMessage = "Still deleting " + pendingDelete.name + " -- one moment"
+      itemChangeError = errorMessage
+      return
+    }
+    // As for a save (saveItemForm()): one from before a lock.
+    if (vaultProcBusy(deleteItemProc)) {
+      errorMessage = "Still deleting -- one moment"
       return
     }
 
@@ -8889,6 +8930,7 @@ Item {
     } else {
       errorMessage = stderrText || "Failed to delete item"
     }
+    itemChangeError = errorMessage
   }
 
   // -------------------------------------------------------------------------
@@ -8936,8 +8978,10 @@ Item {
   function askHelperSearch(query) {
     if (searchAskedQuery === query) return
     searchAskedQuery = query
+    var epoch = vaultEpoch
     vaultQuery("search", { query: query }, function(ok, ids) {
-      if (root.searchAskedQuery !== query) return
+      // An answer for a vault since closed is another vault's ids.
+      if (epoch !== root.vaultEpoch || root.searchAskedQuery !== query) return
       var found = {}
       var list = ok && Array.isArray(ids) ? ids
         : Model.filterItems(root.items, query, "all", "all", "all").map(function(it) { return it.id })

@@ -38,8 +38,18 @@ check("a failed lock is retried once, then checked with bw status",
 check("a lock bw status still reports unlocked is reported to the user",
   /st\s*&&\s*st\.unlocked[\s\S]{0,300}errorMessage\s*=/.test(exited), exited)
 check("the session held for the retry is dropped once the lock settles",
-  /lockRun\s*=\s*null/.test(body("finishBwLock")) && /lockProc\.environment\s*=\s*\{\}/.test(body("finishBwLock")),
+  /lockRun\s*=\s*null/.test(body("finishBwLock")) && /lockProc\.environment\s*=\s*\{\}/.test(body("finishBwLock"))
+    // And what a `bw status` check printed.
+    && /lockStdout\.text = ""/.test(body("finishBwLock")),
   body("finishBwLock"))
+// Without the helper a run's environment is copied into the inner Process:
+// dropped before the caller hears of the exit, whichever way the run ended.
+{
+  const vp = readPluginSource("VaultProcess.qml")
+  check("a settled local run keeps no environment (a password, the session key)",
+    (vp.match(/local\.environment = \(\{\}\)\s*(?:\/\/[^\n]*\s*)*[^\n]*proc\.finish\(127/g) || []).length === 1
+      && /var err = localErr\.text\s*(?:\/\/[^\n]*\s*)*local\.environment = \(\{\}\)/.test(vp), "")
+}
 
 // --- the remembered session's clear ---------------------------------------------
 
@@ -156,6 +166,12 @@ check("the envelope queue's collector (a bw session key in the no-helper verify)
 
 check("a lock drops the old master password held for a re-seal",
   /rotationOldPassword = ""/.test(body("dropVaultSecrets")), body("dropVaultSecrets"))
+check("and a legacy PIN kept for a migration, a Send draft's name and error, a confirmed re-prompt's item name",
+  ["pendingPinForMigration", "sendFormName", "sendError", "repromptItemName"]
+    .every(name => new RegExp("\\n\\s*" + name + ' = ""').test(body("dropVaultSecrets"))), body("dropVaultSecrets"))
+check("a search answer for a vault since closed is not taken",
+  /var epoch = vaultEpoch\s*vaultQuery\("search"[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*if \(epoch !== root\.vaultEpoch \|\|/.test(body("askHelperSearch")),
+  body("askHelperSearch"))
 check("and so does closing the panel",
   /rotationOldPassword = ""/.test(body("abandonAuthSecrets")), body("abandonAuthSecrets"))
 check("a lock, logout or switch drops a refused save's form",
@@ -168,12 +184,21 @@ check("a lock, logout or switch drops a refused save's form",
   const state = { errorMessage: "", autoSyncError: "x", listReadError: "", vaultEpoch: 1, session: "s",
     items: [{ id: "1" }], filteredItems: [{ id: "1" }], suggestedItems: [{ id: "1", name: "Bank" }],
     detectedContext: { kind: "web", key: "bank.example" }, learnedIds: { 1: true },
-    contextMatchKey: "3|{\"class\":\"firefox\",\"title\":\"Bank - Mozilla Firefox\"}" }
+    contextMatchKey: "3|{\"class\":\"firefox\",\"title\":\"Bank - Mozilla Firefox\"}",
+    // A save and a delete still running, a search answered, a notice and a
+    // refusal that name what they were about.
+    pendingSave: { name: "Bank", form: { password: "p" } }, pendingDelete: { name: "Bank", previous: { id: "1" } },
+    searchAskedQuery: "bank", searchAnsweredQuery: "bank", searchAnsweredIds: { 1: true },
+    flashMessage: "Opening https://bank.example", itemChangeError: "Could not save Bank. " }
+  state.errorMessage = state.itemChangeError
   const v = new Proxy(state, { has: (t, k) => typeof k === "string" && !["Object", "Model"].includes(k),
     get: (t, k) => k in t ? t[k] : (typeof k === "string" && /^[a-z]/.test(k) ? () => {} : undefined) })
   new Function("scope", "Model", "with (scope) {\n" + body("dropVaultState") + "\ndropVaultState() }")(v, Model)
-  check("a lock, logout or switch, run as written, leaves no items, session, suggestions for the focused window, their context, learned marks or match key",
-    state.suggestedItems.length === 0 && state.detectedContext === null && JSON.stringify(state.learnedIds) === "{}"
+  check("a lock, logout or switch, run as written, leaves no items, session, suggestions for the focused window, their context, learned marks or match key, "
+      + "save or delete in flight, search answer, notice or item's refusal",
+    state.pendingSave === null && state.pendingDelete === null && state.searchAskedQuery === "" && state.searchAnsweredQuery === ""
+      && state.searchAnsweredIds === null && state.flashMessage === "" && state.errorMessage === "" && state.itemChangeError === ""
+      && state.suggestedItems.length === 0 && state.detectedContext === null && JSON.stringify(state.learnedIds) === "{}"
       && state.contextMatchKey === "" && state.items.length === 0 && state.filteredItems.length === 0 && state.session === "",
     JSON.stringify([state.suggestedItems, state.detectedContext, state.learnedIds, state.contextMatchKey]))
 }

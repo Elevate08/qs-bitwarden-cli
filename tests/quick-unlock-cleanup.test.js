@@ -44,7 +44,7 @@ function vault() {
     quickUnlockAvailable: true, accountId: "synthetic-id", quickUnlockEnabledAt: {},
     quickUnlockEnableGraceMs: 60000, reconciledMethods: {},
     quickUnlockPurgeAttempts: {}, quickUnlockPurgePending: {}, quickUnlockPurgeMaxAttempts: 3,
-    quickUnlockPurgeFailures: {}, errorMessage: "",
+    quickUnlockPurgeFailures: {}, errorMessage: "", itemChangeError: "",
     autoSyncError: /readonly property string autoSyncError: "([^"]+)"/.exec(service)[1],
     listReadError: "",
     lastSyncAttemptAt: 0, backgroundSync: false, autoSyncReloadPending: false,

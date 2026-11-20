@@ -130,8 +130,10 @@ Item {
     onRunningChanged: {
       // Ended here as a command that was not found, so the caller's exit
       // handler runs and whatever waits for this process is not stranded.
-      if (!running && proc.runId === -1 && !proc.localStarted)
+      if (!running && proc.runId === -1 && !proc.localStarted) {
+        local.environment = ({})
         proc.finish(127, "", "The command could not be started.", false, false)
+      }
     }
     stdout: StdioCollector { id: localOut; waitForEnd: true }
     stderr: StdioCollector { id: localErr; waitForEnd: true }
@@ -147,6 +149,10 @@ Item {
       var scrub = Model.isScrubCommand(command)
       var out = localOut.text
       var err = localErr.text
+      // A settled run keeps no environment (a password, the session key):
+      // dropped before the caller hears of the exit and can start the next,
+      // which sets its own (launchLocal()).
+      local.environment = ({})
       // The copies here were only the way in; the caller's collector keeps them.
       if (!scrub) Qt.callLater(function() {
         if (local.running) return
