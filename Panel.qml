@@ -1344,19 +1344,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0f: BITWARDEN SEND
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: sendFlick
           visible: root.vault.activeScreen === "sends"
           width: parent.width
           height: Math.min(Style.space(520), sendCol.implicitHeight)
-          contentWidth: width
           contentHeight: sendCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: sendFlick }
 
           Column {
             id: sendCol
@@ -1670,19 +1663,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0e: FINGERPRINT SETUP
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: fpFlick
           visible: root.vault.activeScreen === "fingerprint"
           width: parent.width
           height: Math.min(Style.space(520), fpCol.implicitHeight)
-          contentWidth: width
           contentHeight: fpCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: fpFlick }
 
           Column {
             id: fpCol
@@ -1769,19 +1755,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0d: GENERATOR
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: genFlick
           visible: root.vault.activeScreen === "generator"
           width: parent.width
           height: Math.min(Style.space(520), genCol.implicitHeight)
-          contentWidth: width
           contentHeight: genCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: genFlick }
 
           Column {
             id: genCol
@@ -2058,19 +2037,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0c: PIN SETUP (scrolls: taller than the popup on small displays)
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: pinFlick
           visible: root.vault.activeScreen === "pin"
           width: parent.width
           height: Math.min(Style.space(520), pinCol.implicitHeight)
-          contentWidth: width
           contentHeight: pinCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: pinFlick }
 
           Column {
             id: pinCol
@@ -2183,19 +2155,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0a: SETUP WIZARD (missing dependencies; scrolls)
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: setupFlick
           visible: root.vault.activeScreen === "setup"
           width: parent.width
           height: Math.min(Style.space(520), setupCol.implicitHeight)
-          contentWidth: width
           contentHeight: setupCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: setupFlick }
 
           Column {
             id: setupCol
@@ -3929,7 +3894,7 @@ Panel {
 
             PanelSeparator { width: parent.width }
 
-            Flickable {
+            PanelFlick {
               id: detailFlickable
               width: parent.width
               // Beside the list it fills the pane, so the list does not
@@ -3937,14 +3902,7 @@ Panel {
               height: root.splitView
                 ? Math.max(Style.space(120), vaultDetailColumn.height - y)
                 : Math.min(Style.space(380), detailContentColumn.implicitHeight)
-              contentWidth: width
               contentHeight: detailContentColumn.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: detailFlickable }
 
               Column {
                 id: detailContentColumn
@@ -4720,18 +4678,11 @@ Panel {
               }
             }
 
-            Flickable {
+            PanelFlick {
               id: filterOptionsList
               width: parent.width
               height: Math.min(root.vault.currentFilterVisibleRows, root.vault.currentFilterOptions.length) * root.vault.filterRowHeight
-              contentWidth: width
               contentHeight: filterOptionsCol.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: filterOptionsList }
 
               // Keep the keyboard cursor in view when it runs past the fold.
               function revealCursor() {
@@ -4986,18 +4937,11 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Flickable {
+          PanelFlick {
             id: editFlickable
             width: parent.width
             height: Math.min(Style.space(420), editFormCol.implicitHeight)
-            contentWidth: width
             contentHeight: editFormCol.implicitHeight
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.VerticalFlick
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-            WheelScroll { view: editFlickable }
 
             Column {
               id: editFormCol
@@ -5080,19 +5024,12 @@ Panel {
                   onClicked: root.vault.toggleFormPicker("folder")
                 }
 
-                Flickable {
+                PanelFlick {
                   id: folderPickList
                   visible: root.vault.formPicker === "folder"
                   width: parent.width
                   height: visible ? Math.min(Style.space(150), folderPickCol.implicitHeight) : 0
-                  contentWidth: width
                   contentHeight: folderPickCol.implicitHeight
-                  clip: true
-                  boundsBehavior: Flickable.StopAtBounds
-                  flickableDirection: Flickable.VerticalFlick
-                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                  WheelScroll { view: folderPickList }
 
                   Column {
                     id: folderPickCol
@@ -5166,19 +5103,12 @@ Panel {
                   onClicked: root.vault.toggleFormPicker("organization")
                 }
 
-                Flickable {
+                PanelFlick {
                   id: orgPickList
                   visible: root.vault.formPicker === "organization"
                   width: parent.width
                   height: visible ? Math.min(Style.space(150), orgPickCol.implicitHeight) : 0
-                  contentWidth: width
                   contentHeight: orgPickCol.implicitHeight
-                  clip: true
-                  boundsBehavior: Flickable.StopAtBounds
-                  flickableDirection: Flickable.VerticalFlick
-                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                  WheelScroll { view: orgPickList }
 
                   Column {
                     id: orgPickCol
@@ -5235,18 +5165,11 @@ Panel {
                     }
                   }
 
-                  Flickable {
+                  PanelFlick {
                     id: collectionList
                     width: parent.width
                     height: Math.min(Style.space(150), collectionCol.implicitHeight)
-                    contentWidth: width
                     contentHeight: collectionCol.implicitHeight
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-                    flickableDirection: Flickable.VerticalFlick
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                    WheelScroll { view: collectionList }
 
                     Column {
                       id: collectionCol
@@ -5720,19 +5643,12 @@ Panel {
               font.pixelSize: Style.font.bodySmall
             }
 
-            Flickable {
+            PanelFlick {
               id: paletteList
               visible: actionPalette.actions.length > 0
               width: parent.width
               height: Math.min(actionPalette.visibleRows, actionPalette.actions.length) * actionPalette.rowHeight
-              contentWidth: width
               contentHeight: paletteRows.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: paletteList }
 
               Column {
                 id: paletteRows
