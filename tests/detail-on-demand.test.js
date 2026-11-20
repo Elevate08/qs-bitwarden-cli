@@ -164,7 +164,8 @@ const leaks = v => MARKERS.filter(m => shellState(v).includes(m))
   const cases = [
     ["closing the item (leaving to the list)", v => v.goTo("main")],
     ["closing the panel", v => v.clearRepromptGrant()],
-    ["opening another item", v => v.openDetail(row(v, "c1"))]
+    ["opening another item", v => v.openDetail(row(v, "c1"))],
+    ["a lock", v => { v.vaultEpoch++; v.detailItem = null; v.clearRepromptGrant() }]
   ]
   for (const [label, act] of cases) {
     const v = makeVault(list())

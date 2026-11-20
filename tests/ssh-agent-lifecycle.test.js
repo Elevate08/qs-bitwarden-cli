@@ -31,6 +31,10 @@ eq("locked with a cache keeps the cache",
 eq("locked before any load is empty",
   Model.sshAgentVaultState(ctx({ unlocked: false, hasPublicCache: false })), "locked-empty")
 
+// Logged out outranks everything below it: an account change must not leave a
+// public projection behind just because one was loaded a moment ago.
+eq("logged out outranks a stale cache",
+  Model.sshAgentVaultState(ctx({ loggedIn: false, hasPublicCache: true })), "logged-out")
 eq("disabled outranks logged out",
   Model.sshAgentVaultState(ctx({ enabled: false, loggedIn: false })), "disabled")
 
@@ -53,6 +57,17 @@ eq("lock keeps the public projection", lock.clearPublic, false)
 eq("lock does not stop the helper", lock.stopHelper, false)
 eq("the acknowledgment wait is bounded at two seconds", Model.sshAgentLockAckTimeoutMs(), 2000)
 
+// Screen lock and suspend are locks. They are listed separately so the table
+// says so, rather than leaving it to a reader to infer from the panel.
+for (const event of ["screen-lock", "suspend"]) {
+  const t = at(event, { loadActive: true })
+  eq(`${event} locks the companion`, t.awaitLockAck, true)
+  eq(`${event} cancels an in-flight load`, t.cancelLoad, true)
+  eq(`${event} keeps the public projection`, t.clearPublic, false)
+  check(`${event} sends the same line a lock does`,
+    JSON.stringify(t.controlLines) === JSON.stringify(lock.controlLines), JSON.stringify(t.controlLines))
+}
+
 // Logout and account change clear the public projection too.
 for (const event of ["logout", "account-change"]) {
   const t = at(event, { loadActive: true })
@@ -71,6 +86,14 @@ for (const event of ["logout", "account-change"]) {
 }
 eq("a lock leaves the epoch to the next load", lock.advanceEpoch, false)
 
+// Unlock and sync both ride the panel's existing read.
+for (const event of ["unlock", "sync"]) {
+  const t = at(event)
+  eq(`${event} starts a key load`, t.startLoad, true)
+  eq(`${event} clears nothing`, t.clearPublic, false)
+  eq(`${event} sends no lifecycle line`, t.controlLines.length, 0)
+}
+
 // Startup into a vault the keyring already unlocked. A freshly started
 // companion is in "locked, no cache yet" while the panel is unlocked, so
 // startup is not evidence that the vault is locked.
@@ -85,8 +108,12 @@ eq("disabling stops the helper", disabled.stopHelper, true)
 eq("disabling cancels an in-flight load", disabled.cancelLoad, true)
 eq("disabling clears the public projection", disabled.clearPublic, true)
 
+const shutdown = at("shutdown", { loadActive: true })
+eq("panel shutdown stops the helper", shutdown.stopHelper, true)
+eq("panel shutdown cancels an in-flight load", shutdown.cancelLoad, true)
+
 // Nothing is asked of a companion that is not there to answer.
-for (const event of ["lock", "logout"]) {
+for (const event of ["lock", "logout", "unlock", "sync", "screen-lock", "suspend"]) {
   const t = Model.sshAgentLifecycleTransition(event, ctx({ enabled: false, helperReady: false }))
   eq(`${event} sends nothing while disabled`, t.controlLines.length, 0)
   eq(`${event} starts no load while disabled`, t.startLoad, false)
@@ -257,6 +284,11 @@ check("a departed helper's key count is not left standing",
 eq("revoke_grants is a versioned v1 line", Model.sshAgentRevokeGrantsLine(),
   JSON.stringify({ v: 1, type: "revoke_grants" }) + "\n")
 
+for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLine(),
+                    Model.sshAgentRevokeGrantsLine()]) {
+  check("no lifecycle line carries key material or a session token",
+    line.indexOf("BW_SESSION") < 0 && line.indexOf("privateKey") < 0 && line.indexOf("PRIVATE") < 0, line)
+}
 
 // --- a killed helper's runtime files -----------------------------------------
 //

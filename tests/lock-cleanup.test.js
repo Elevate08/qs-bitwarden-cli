@@ -136,6 +136,9 @@ function lockFixture(status) {
     v.status === "locked" && v.currentScreen === "locked" && v.flashed.join() === "Vault locked"
       && cleanup.every(c => v.calls.indexOf(c) >= 0) && v.calls.indexOf("focusAppropriateField") >= 0
       && v.fingerprintMessage === "" && v.fingerprintError === "", v.calls.join())
+  const w = lockFixture("locked")
+  w.lockVault()
+  check("a locked one locks again, as before", w.status === "locked" && w.currentScreen === "locked", w.calls.join())
   // The IPC `lock`, or a helper lost, with no account signed in.
   const u = lockFixture("unauthenticated")
   u.lockVault()

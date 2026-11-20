@@ -23,11 +23,14 @@ const { check, done } = createSuite("lock-triggers")
 const LOCK_ANSWERS = [
   ["true", true],
   ["true\n", true],
+  ["  true  ", true],
   ["false", false],
+  ["", false],
   ["Target not found.", false],
   ["TRUE", false],
   ["truthy", false],
   [null, false],
+  [undefined, false],
 ]
 
 for (const [raw, want] of LOCK_ANSWERS) {
@@ -36,8 +39,15 @@ for (const [raw, want] of LOCK_ANSWERS) {
 }
 
 const lockCmd = Model.screenLockStateCommand()
-check("screen lock state is asked of the shell's own lock plugin, and what is read back is bounded",
-  /omarchy-shell lock isLocked[^|]*\| head -c \d+/.test(lockCmd.join(" ")), lockCmd.join(" "))
+check("screen lock state is asked of the shell's own lock plugin",
+  lockCmd.join(" ").includes("omarchy-shell lock isLocked"), lockCmd.join(" "))
+
+check("screen lock state bounds what it will read back",
+  /head -c \d+/.test(lockCmd.join(" ")), lockCmd.join(" "))
+
+check("screen lock poll is a sane interval",
+  Model.screenLockPollMs() >= 1000 && Model.screenLockPollMs() <= 15000,
+  String(Model.screenLockPollMs()))
 
 // -------------------------------------------------------------------------
 // Suspend
@@ -200,6 +210,12 @@ const WINDOW = Model.HANDOFF_WINDOW_MS
 
 check("the window is closed when no terminal login was ever launched",
   Model.handoffWindowOpen(0, NOW) === false, "0")
+
+check("the window is open right after launching one",
+  Model.handoffWindowOpen(NOW, NOW) === true, "same instant")
+
+check("the window is still open partway through a slow login",
+  Model.handoffWindowOpen(NOW - WINDOW / 2, NOW) === true, "half the window")
 
 check("the window is open at the boundary",
   Model.handoffWindowOpen(NOW - WINDOW, NOW) === true, "exactly the window")

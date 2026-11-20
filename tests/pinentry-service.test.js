@@ -250,6 +250,9 @@ function withViews(v, count) {
   v.unlockWithPinentry()
   check("without the vault helper nothing is run and nothing changes", !started && !v.pinentryActive && v.opened
     && v.unlocks.length === 0, "")
+  check("it is not available then", v.pinentryAvailable === false, "")
+  check("nor when turned off or unable to run here",
+    makeVault({ usePinentry: false }).pinentryAvailable === false && makeVault({ pinentryMissing: true }).pinentryAvailable === false, "")
 }
 
 {
@@ -261,11 +264,13 @@ function withViews(v, count) {
   // allowVaultWithoutHelper allows.
   const entry = (helperState, extra) => Model.typedSecretEntry(Object.assign(
     { usePinentry: true, missing: false, declined: false, helperState }, extra || {}))
-  const states = { active: "pinentry", stopped: "wait", fallback: "field" }
-  for (const [state, expected] of Object.entries(states)) eq(`helper ${state}: typed in ${expected}`, entry(state), expected)
-  eq("pinentry turned off: the field", entry("stopped", { usePinentry: false }), "field")
-  eq("pinentry missing: the field", entry("stopped", { missing: true }), "field")
-  eq("the field picked: the field", entry("stopped", { declined: true }), "field")
+  const states = { pending: "wait", starting: "wait", active: "pinentry", stopped: "wait", fallback: "field", "": "wait", other: "wait" }
+  for (const [state, expected] of Object.entries(states)) eq(`helper ${state || "(none)"}: typed in ${expected}`, entry(state), expected)
+  for (const state of Object.keys(states)) {
+    eq(`helper ${state || "(none)"}, pinentry turned off: the field`, entry(state, { usePinentry: false }), "field")
+    eq(`helper ${state || "(none)"}, pinentry missing: the field`, entry(state, { missing: true }), "field")
+    eq(`helper ${state || "(none)"}, the field picked: the field`, entry(state, { declined: true }), "field")
+  }
 }
 
 {
@@ -419,6 +424,12 @@ function withViews(v, count) {
   check("it asks again with the field's message",
     s.proc.starts.length === 2 && s.pinUnlockError === "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
       && s.proc.starts[1].environment.QSBW_PE_ERR === s.pinUnlockError, JSON.stringify(s.proc.starts[1]))
+  check("a master password run has no minimum", makeVault().proc && (() => {
+    const m = makeVault()
+    Object.defineProperty(m.proc, "running", { configurable: true, get() { return false }, set() {} })
+    m.unlockWithPinentry()
+    return m.proc.command[7] === "0"
+  })(), "")
 
   // The unlock was not taken up: nothing else would forget it.
   const w = makeVault({ submitTakesIt: false })

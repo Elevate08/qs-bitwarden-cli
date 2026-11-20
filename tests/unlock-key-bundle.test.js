@@ -24,8 +24,21 @@ const { check, eq, done } = createSuite("unlock-key-bundle")
 
 const bundled = path.join(repoRoot, "bin", HOST_DIR, "qs-bitwarden-unlock-key")
 const development = path.join(repoRoot, "unlock-key", "target", "debug", "qs-bitwarden-unlock-key")
+const sums = path.join(repoRoot, "bin", "SHA256SUMS")
 
 check("the unlock tool is tracked in the repository", fs.existsSync(bundled), bundled)
+check("it is executable", fs.existsSync(bundled) && (fs.statSync(bundled).mode & 0o111) !== 0,
+  "the shipped tool is not executable, so a fresh clone cannot run it")
+check("it is a real ELF binary",
+  fs.existsSync(bundled) && fs.readFileSync(bundled).subarray(0, 4).toString("latin1") === "\x7fELF",
+  "no ELF magic")
+const sumLines = fs.existsSync(sums) ? fs.readFileSync(sums, "utf8").trim().split("\n") : []
+const recorded = sumLines.find(l => l.endsWith(`  ${HOST_DIR}/qs-bitwarden-unlock-key`)) || ""
+check("it has its own line in SHA256SUMS", recorded !== "", sumLines.join(" | "))
+if (fs.existsSync(bundled) && recorded) {
+  const actual = spawnSync("sha256sum", [bundled], { encoding: "utf8" }).stdout.split(" ")[0]
+  eq("the tracked binary matches its line", actual, recorded.split(/\s+/)[0])
+}
 
 // -------------------------------------------------------------------------
 // Where the panel looks
@@ -36,6 +49,8 @@ eq("the bundled path is architecture-scoped",
 eq("the development path is cargo's debug output for its own package",
   Model.UNLOCK_KEY_DEVELOPMENT_RELATIVE, "unlock-key/target/debug/qs-bitwarden-unlock-key")
 eq("the panel reads envelope v1", Model.UNLOCK_KEY_ENVELOPE_VERSION, 1)
+// v2: the account comes in QSBW_ACCOUNT_ID / QSBW_SERVER, not --account-id / --server.
+eq("the panel speaks command interface v2", Model.UNLOCK_KEY_CLI_VERSION, 2)
 
 // -------------------------------------------------------------------------
 // The inspection, run against real files
@@ -135,7 +150,9 @@ if (fs.existsSync(sample)) {
 for (const key of ["fingerprintUnlock", "pinUnlock", "fidoUnlock"]) {
   eq(`${key} goes through the unlock tool`, Model.isQuickUnlockSetting(key), true)
 }
-eq("rememberSession does not", Model.isQuickUnlockSetting("rememberSession"), false)
+for (const key of ["rememberSession", "sshAgentEnabled", "autoLockMinutes"]) {
+  eq(`${key} does not`, Model.isQuickUnlockSetting(key), false)
+}
 
 const service = readPluginSource("Service.qml")
 check("the tool is inspected at every start, not only when an option is on",

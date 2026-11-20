@@ -118,8 +118,9 @@ check("the refusal names the target", /riscv64/.test(wrongTarget.stderr), wrongT
 const wrongArch = run("--arch", "riscv64")
 eq("an unshipped architecture is refused", wrongArch.status, 1)
 check("the refusal lists what ships", /x86_64 aarch64/.test(wrongArch.stderr), wrongArch.stderr.slice(0, 160))
-for (const arch of ["x86_64", "arm64"]) {
+for (const arch of ["x86_64", "aarch64", "arm64"]) {
   const explained = run("--explain", "--arch", arch)
+  eq(`--arch ${arch} is accepted`, explained.status, 0)
   check(`--arch ${arch} names its target and directory`,
     new RegExp(`${arch === "arm64" ? "aarch64" : arch}-unknown-linux-gnu, bin/${arch === "arm64" ? "aarch64" : arch}-linux/`).test(explained.stdout),
     explained.stdout.slice(0, 200))
@@ -139,6 +140,7 @@ check("a claim of being pinned is verified, not trusted",
 
 // Via --explain, so no image is pulled and no build runs.
 const explain = run("--explain")
+eq("--explain reports without acting", explain.status, 0)
 check("--explain names the environment it would build in",
   /^environment: /m.test(explain.stdout), explain.stdout.slice(0, 200))
 check("--explain is honest about an unpinned environment",
@@ -211,6 +213,7 @@ check("the checksum file is written relative to bin/ so sha256sum -c works there
       { encoding: "utf8", env: Object.assign({}, process.env,
         { REPO_ROOT: dir, SUMS_FILE: path.join(dir, "bin", "SHA256SUMS"), OUTPUT_ARCH: "aarch64-linux" }) })
     const written = fsx.readFileSync(path.join(dir, "bin", "SHA256SUMS"), "utf8")
+    eq("write_sums succeeds", out.status, 0)
     check("write_sums keeps the other architecture's line", written.includes("2".repeat(64) + "  x86_64-linux/qs-bitwarden-vault"), written)
     check("and replaces its own", !written.includes("1".repeat(64)) && /^[0-9a-f]{64}  aarch64-linux\/qs-bitwarden-vault$/m.test(written), written)
   } finally { fsx.rmSync(dir, { recursive: true, force: true }) }

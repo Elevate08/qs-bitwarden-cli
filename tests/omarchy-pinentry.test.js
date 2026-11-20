@@ -140,6 +140,8 @@ r = session(ask(), "answer:t\tab\u007f")
 eq("every other control byte is encoded too", r.lines[4], "D t%09ab%7F")
 r = session(ask(), "answer:pässwörd€")
 eq("non-ASCII is passed as UTF-8, as pinentry does", r.lines[4], "D pässwörd€")
+r = session(ask(), "answer:%25")
+eq("an answer that is itself an escape is not decoded twice", r.lines[4], "D %2525")
 r = session(ask(), "answer:")
 eq("an empty answer is OK with no data", r.lines.slice(4, 6).join("|"), "OK|OK closing connection")
 {
@@ -306,10 +308,10 @@ function checks() {
 // --- through the panel's pinentry script -------------------------------------------------------
 
 const exits = Model.pinentryExitCodes()
-function script(answer, opts = {}) {
+function script(answer, opts = {}, program = frontend) {
   fs.writeFileSync(answerFile, answer)
   fs.writeFileSync(uiLog, "")
-  const argv = Model.pinentryCommand(frontend, Object.assign({ title: "Bitwarden", prompt: "PIN:" }, opts))
+  const argv = Model.pinentryCommand(program, Object.assign({ title: "Bitwarden", prompt: "PIN:" }, opts))
   const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", timeout: 20000,
     env: applied(Object.assign({}, baseEnv, Model.pinentryEnvironment(opts))) })
   return { code: r.status, out: r.stdout, starts: uiStarts() }
@@ -318,9 +320,26 @@ function script(answer, opts = {}) {
 function throughScript() {
   let s = script("answer:p%w\nd")
   eq("the panel's script takes the frontend's answer", `${s.code}|${s.out}`, "0|p%25w%0Ad")
+  s = script("cancel")
+  eq("a cancel is the script's cancel", `${s.code}|${s.out}`, `${exits.cancelled}|`)
+  s = script("crash")
+  eq("a prompt that died is the script's failure (the panel offers its field)", s.code, exits.failed)
+  s = script("answer:12", { minLength: 4 })
+  eq("a PIN under the minimum exits short", `${s.code}|${s.out}`, `${exits.short}|`)
+  s = script("answer:1%%%", { minLength: 4 })
+  eq("each encoded % counts as one character", `${s.code}|${s.out}`, "0|1%25%25%25")
+  s = script("answer:ü", { minLength: 2 })
+  eq("a non-ASCII character counts as one", s.code, exits.short)
   s = script("cancel", { description: "Unlock Bitwarden for you@example.com", error: "Wrong PIN" })
   eq("the description reaches the prompt from the environment",
     s.starts[0] && `${s.starts[0].ask.description}|${s.starts[0].ask.error}`, "Unlock Bitwarden for you@example.com|Wrong PIN")
+  // The script asks SETTIMEOUT 120 itself; the stand-in prompt here hangs, so
+  // the frontend's own timeout must be what ends it: shorten it by wrapping.
+  const wrapped = path.join(scratch, "short-timeout")
+  // Its arguments go through, so the script's `--check` reaches the frontend.
+  fs.writeFileSync(wrapped, `#!/usr/bin/bash\n# SETTIMEOUT 120 becomes 1.\nexec "${frontend}" "$@" < <(sed -u 's/^SETTIMEOUT 120$/SETTIMEOUT 1/')\n`, { mode: 0o755 })
+  s = script("hang", {}, wrapped)
+  eq("a prompt left open times out as the script's cancel", `${s.code}|${s.out}`, `${exits.cancelled}|`)
   eq("no private directory survives the script", leftovers().join(","), "")
 }
 
@@ -329,8 +348,13 @@ function throughScript() {
 function only() {
   const bundled = Model.omarchyPinentryPath(repoRoot)
   eq("the frontend's path is derived from the plugin's directory", bundled, frontend)
+  eq("whatever else is passed", Model.omarchyPinentryPath(repoRoot, false), frontend)
   eq("and is empty for a plugin dir that is not a clean absolute path", Model.omarchyPinentryPath("plugins/x"), "")
   eq("or one with a parent step in it", Model.omarchyPinentryPath(repoRoot + "/../x"), "")
+  check("it travels as an argument, never as script text",
+    Model.pinentryCommand(bundled, {})[4] === bundled && !Model.pinentryCommand(bundled, {})[2].includes(bundled)
+      && Model.pinentryProbeCommand(bundled)[4] === bundled && !Model.pinentryProbeCommand(bundled)[2].includes(bundled), "")
+  eq("a path that is not absolute is not passed", Model.pinentryCommand("-x", {})[4], "")
 
   // A PATH with stand-ins for pinentry-qt and pinentry that record their
   // name, then act as the e2e stand-in: the script must never run them.
@@ -345,22 +369,25 @@ function only() {
     if (where) fs.symlinkSync(where, path.join(bin, t))
   }
   const fakeAnswers = path.join(scratch, "fake-answers")
-  const ran = extraEnv => {
+  const ran = (extraEnv, where = bundled) => {
     fs.writeFileSync(marker, "")
     fs.writeFileSync(fakeAnswers, "pin:x\n")
     fs.writeFileSync(answerFile, "answer:y")
     fs.writeFileSync(uiLog, "")
     const env = Object.assign({}, baseEnv, { PATH: bin, FAKE_PINENTRY_ANSWERS: fakeAnswers }, extraEnv || {})
-    const argv = Model.pinentryCommand(bundled, { title: "t", prompt: "p" })
+    const argv = Model.pinentryCommand(where, { title: "t", prompt: "p" })
     const r = spawnSync("/usr/bin/bash", argv.slice(1), { encoding: "utf8", timeout: 20000, env })
-    const pr = Model.pinentryProbeCommand(bundled)
+    const pr = Model.pinentryProbeCommand(where)
     const pb = spawnSync("/usr/bin/bash", pr.slice(1), { encoding: "utf8", timeout: 5000, env })
     return `${r.status}|${r.stdout}|${fs.readFileSync(marker, "utf8").trim()}|${uiStarts().length}|${pb.stdout.trim()}`
   }
   const missing = `${exits.missing}|||0|missing`
   eq("the frontend runs and answers, the probe finds it", ran(), "0|y||1|found")
-  eq("unable to run (no display): missing, and no other pinentry runs",
-    ran({ QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "" }), missing)
+  eq("unable to run (no runtime dir): missing, and no other pinentry runs",
+    ran({ XDG_RUNTIME_DIR: "" }), missing)
+  eq("unable to run (no display, no kit): missing, and no other pinentry runs",
+    ran({ QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "", OMARCHY_SHELL_DIR: path.join(scratch, "nokit") }), missing)
+  eq("no display alone: missing", ran({ QSBW_PINENTRY_TEST_UI: "", WAYLAND_DISPLAY: "" }), missing)
   {
     // quickshell missing: a display and the kit are not enough.
     const kit = path.join(scratch, "kit")
@@ -375,6 +402,7 @@ function only() {
   const noNode = fs.mkdtempSync(path.join(scratch, "bin-"))
   for (const n of fs.readdirSync(bin)) if (n !== "node") fs.symlinkSync(fs.realpathSync(path.join(bin, n)), path.join(noNode, n))
   eq("without node: missing, and no other pinentry runs", ran({ PATH: noNode }), missing)
+  eq("a plugin dir that gives no path: missing", ran({}, Model.omarchyPinentryPath("plugins/x")), missing)
 }
 
 // --- through the vault helper ---------------------------------------------------------------

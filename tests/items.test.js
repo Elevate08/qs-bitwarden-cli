@@ -128,6 +128,9 @@ check("card numbers and codes survive too",
 
 const listedIdentity = listed.find(i => i.id === identity.id)
 const identityDetail = Model.itemDetailFromObject(listedIdentity.rawObject)
+check("identity fields survive too",
+  identityDetail.identity.email === "a@example.com" && identityDetail.identity.postalCode === "00000",
+  JSON.stringify(identityDetail.identity))
 
 // --- cards and identities are first-class, not decoration --------------------
 //
@@ -258,7 +261,10 @@ check("a blank custom-field label blocks the save with a useful row number",
 
 const { execFileSync } = require("child_process")
 const encodeSamples = [
+  '{"name":"Test","type":3}',
   '{"name":"unicode \u00e9\u00e5\u4e2d","notes":"line1\nline2"}',
+  '{"name":"' + "x".repeat(500) + '"}',
+  '{"password":"p@ss w/ spaces & $pecial \'quotes\'"}',
 ]
 for (const sample of encodeSamples) {
   const ours = execFileSync("bash", ["-c", 'printf "%s" "$P" | base64 -w0'],
@@ -279,6 +285,8 @@ for (const [label, cmd] of [
 ]) {
   check(`${label} pipes the payload from the environment through base64`,
     /printf '%s' "\$QSBW_ITEM" \| base64 -w0 \|/.test(cmd), cmd)
+  check(`${label} still keeps the payload out of argv`,
+    !cmd.includes("password") && !cmd.includes("cardholderName"), cmd)
 }
 
 // --- splicing a save into the list ------------------------------------------
@@ -479,12 +487,12 @@ check("finding an item by id returns null rather than throwing when absent",
       Model.replaceItemById(holed, "id-1", null).length === 4097,
       "a null past the old cap reached the comparator and threw")
     // An index read must never happen for a length that is no list's:
-    // each function, for an endless length.
+    // each function, for an endless length and for a finite unsafe one.
     const trap = length => new Proxy({}, { get: (t, k) => {
       if (k === "length") return length
       throw new Error("read index " + String(k))
     } })
-    for (const length of [Infinity]) {
+    for (const length of [Infinity, 9007199254740992]) {
       for (const [name, run] of [["replaceItemById", l => Model.replaceItemById(l, "id-1", null)],
         ["findItemById", l => Model.findItemById(l, "id-1")]]) {
         let trapped = "none"

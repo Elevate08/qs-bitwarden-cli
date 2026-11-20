@@ -26,12 +26,28 @@ const { check, eq, done } = createSuite("ssh-agent-bundle")
 const bundled = path.join(repoRoot, "bin", HOST_DIR, "qs-bitwarden-ssh-agent")
 const sums = path.join(repoRoot, "bin", "SHA256SUMS")
 
+check("the helper is tracked in the repository", fs.existsSync(bundled), bundled)
+check("its checksum is tracked beside it", fs.existsSync(sums), sums)
+check("it is executable", fs.existsSync(bundled) && (fs.statSync(bundled).mode & 0o111) !== 0,
+  "the shipped helper is not executable, so a fresh clone cannot run it")
+check("it is not a Git LFS placeholder",
+  fs.existsSync(bundled) && !/git-lfs/.test(fs.readFileSync(bundled).subarray(0, 200).toString("latin1")),
+  "an LFS smudge would leave a text pointer where the binary should be")
+check("it is a real ELF binary",
+  fs.existsSync(bundled) && fs.readFileSync(bundled).subarray(0, 4).toString("latin1") === "\x7fELF",
+  "no ELF magic")
+
 // SHA256SUMS names every shipped helper, one line each.
 const sumLines = fs.existsSync(sums) ? fs.readFileSync(sums, "utf8").trim().split("\n") : []
 check("every checksum line records a path relative to bin/",
   sumLines.length > 0 && sumLines.every(l => /^[0-9a-f]{64}  (x86_64|aarch64)-linux\/[a-z0-9-]+$/.test(l)),
   sumLines.join(" | "))
 const recorded = sumLines.find(l => l.endsWith(`  ${HOST_DIR}/qs-bitwarden-ssh-agent`)) || ""
+check("the SSH helper has its own line", recorded !== "", sumLines.join(" | "))
+if (fs.existsSync(bundled) && recorded) {
+  const actual = spawnSync("sha256sum", [bundled], { encoding: "utf8" }).stdout.split(" ")[0]
+  eq("the tracked binary matches its tracked checksum", actual, recorded.split(/\s+/)[0])
+}
 
 // -------------------------------------------------------------------------
 // Which helper the panel picks
@@ -46,6 +62,10 @@ eq("amd64 is x86_64", Model.helperArchitecture("amd64"), "x86_64")
 eq("an architecture no release ships has no shipped path",
   Model.helperBundledRelative(Model.SSH_AGENT_HELPER_SPEC, "riscv64"), "")
 eq("nor a crafted one", Model.helperBundledRelative(Model.SSH_AGENT_HELPER_SPEC, "../x86_64"), "")
+eq("the machine bytes are x86_64's and aarch64's",
+  Model.HELPER_ARCHITECTURES.x86_64.elfMachine + "," + Model.HELPER_ARCHITECTURES.aarch64.elfMachine, "3e,b7")
+eq("the development path is cargo's debug output",
+  Model.SSH_AGENT_DEVELOPMENT_RELATIVE, "agent/target/debug/qs-bitwarden-ssh-agent")
 
 const candidates = Model.helperCandidates("/opt/bw", Model.SSH_AGENT_HELPER_SPEC, "x86_64")
 eq("both candidates are offered", candidates.length, 2)
@@ -53,9 +73,14 @@ eq("the shipped helper is preferred", candidates[0].path, "/opt/bw/bin/x86_64-li
 eq("the development build is the fallback", candidates[1].path, "/opt/bw/agent/target/debug/qs-bitwarden-ssh-agent")
 eq("the preferred one is labelled", candidates[0].source, "bundled")
 eq("the fallback is labelled", candidates[1].source, "development")
+check("every candidate path is absolute",
+  candidates.every(c => c.path.charAt(0) === "/"), JSON.stringify(candidates))
 eq("no plugin directory yields no candidates", Model.helperCandidates("", Model.SSH_AGENT_HELPER_SPEC, "x86_64").length, 0)
 eq("a traversing plugin directory yields no candidates",
   Model.helperCandidates("/opt/../etc", Model.SSH_AGENT_HELPER_SPEC, "x86_64").length, 0)
+eq("aarch64 is offered its own build",
+  Model.helperCandidates("/opt/bw", Model.SSH_AGENT_HELPER_SPEC, "aarch64")[0].path,
+  "/opt/bw/bin/aarch64-linux/qs-bitwarden-ssh-agent")
 const unsupported = Model.helperCandidates("/opt/bw", Model.SSH_AGENT_HELPER_SPEC, "riscv64")
 eq("an unshipped architecture is offered only the local build", unsupported.length, 1)
 eq("which is the development one", unsupported[0].source, "development")
@@ -135,6 +160,7 @@ inTemp(dir => {
   fs.copyFileSync(sums, path.join(dir, "bin", "SHA256SUMS"))
   const result = inspect(dir)
   eq("a non-executable helper is reported", result.state, "not-executable")
+  eq("and the feature stays off", Model.helperReady(result), false)
 })
 
 // Corrupt or truncated -- a partial clone, or an interrupted download.
@@ -149,6 +175,7 @@ inTemp(dir => {
   const result = inspect(dir)
   check("a truncated helper is refused", result.state !== "ok", JSON.stringify(result))
   eq("the checksum is what catches it", result.checksum, "mismatch")
+  eq("and the feature stays off", Model.helperReady(result), false)
   check("the message names staleness or corruption",
     /stale|corrupt|match|update/i.test(result.message), result.message)
 })
@@ -162,6 +189,7 @@ inTemp(dir => {
   fs.copyFileSync(sums, path.join(dir, "bin", "SHA256SUMS"))
   const result = inspect(dir)
   check("an LFS placeholder is refused", result.state !== "ok", JSON.stringify(result))
+  eq("and the feature stays off", Model.helperReady(result), false)
 })
 
 // A development build with no shipped artifact: the dev loop must keep working.
@@ -173,6 +201,7 @@ inTemp(dir => {
   const result = inspect(dir)
   eq("a development build is usable", result.state, "ok")
   eq("and is identified as such", result.source, "development")
+  eq("the feature is enabled from it", Model.helperReady(result), true)
   check("no checksum is claimed for an untracked build",
     result.checksum === "unchecked", result.checksum)
 })
@@ -230,6 +259,7 @@ inTemp(dir => {
   eq("with no architecture to launch from", result.arch, "")
   check("the message says which builds exist and how to build one",
     /x86_64 and aarch64/.test(result.message) && /cargo build/.test(result.message), result.message)
+  eq("and the feature stays off", Model.helperReady(result), false)
 })
 
 // But a local build still serves it.

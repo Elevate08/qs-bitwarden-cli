@@ -52,7 +52,7 @@ function fixture() {
 const schema = Model.settingSchemaEntry("autoSyncMinutes")
 eq("automatic sync defaults to every 15 minutes", Model.intSetting("autoSyncMinutes", undefined), 15)
 eq("schema exposes General setting", schema.group, "general")
-for (const value of [null, "invalid", -1, Infinity])
+for (const value of [null, false, "invalid", -1, Infinity])
   eq(`invalid interval ${value} falls back to the default`, Model.intSetting("autoSyncMinutes", value), 15)
 eq("large interval is bounded", Model.intSetting("autoSyncMinutes", 1e12), 1440)
 eq("a one-minute interval is supported", Model.intSetting("autoSyncMinutes", 1), 1)
@@ -61,14 +61,14 @@ eq("a one-minute interval is supported", Model.intSetting("autoSyncMinutes", 1),
   eq("disabled does no network work", c.syncProc.running, false)
 }
 for (const [key, value] of [["live", false], ["session", ""], ["status", "locked"],
-  ["currentScreen", "edit"],
+  ["currentScreen", "edit"], ["currentScreen", "detail"], ["currentScreen", "settings"],
   ["isLoading", true], ["isUnlocking", true], ["logoutPending", true],
   ["metadataLoadPending", true], ["creatingFolder", true], ["repromptBusy", true],
   ["sendBusy", true], ["isSyncing", true]]) {
   const c = fixture(); c[key] = value; c.maybeAutoSync()
   eq(`defer while ${key}=${value}`, c.syncProc.running, false)
 }
-for (const screen of ["detail"]) {
+for (const screen of ["detail", "edit", "settings", "generator", "sends", "accounts"]) {
   // Closing on a copy from an item leaves the screen behind; opening an
   // unlocked panel goes back to the list anyway.
   const c = fixture(); c.opened = false; c.currentScreen = screen; c.maybeAutoSync()
@@ -151,6 +151,7 @@ for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemPr
 }
 {
   const c = fixture(); c.maybeAutoSync(); c.currentScreen = "edit"; c.finish(0)
+  eq("finishing during an edit defers the list reload", c.loadCalls.length, 0)
   eq("the pending reload is remembered", c.autoSyncReloadPending, true)
   c.autoSyncMinutes = 0; c.maybeAutoSync()
   eq("disabled setting does not interrupt the edit", c.loadCalls.length, 0)

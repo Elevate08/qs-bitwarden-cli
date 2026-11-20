@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Supervision of the SSH companion, which the panel never waits on: path
 // resolution, the minimal environment, the bounded NDJSON reader and the
-// restart state machine, then the handshake with the real helper.
+// restart state machine, then the handshake with real child processes (a fake
+// helper, and the real one when built).
 //
 //   node tests/ssh-agent-control.test.js
 
@@ -25,12 +26,16 @@ eq("plugin dir from a file URL",
 eq("plugin dir keeps a percent-encoded segment",
   Model.pluginDirFromUrl("file:///home/u/my%20plugins/bw/"), "/home/u/my plugins/bw")
 eq("plugin dir accepts a bare absolute path", Model.pluginDirFromUrl("/opt/bw/"), "/opt/bw")
+eq("plugin dir refuses a relative URL", Model.pluginDirFromUrl("plugins/bw"), "")
 eq("plugin dir refuses a non-file scheme", Model.pluginDirFromUrl("qrc:/bw/"), "")
+eq("plugin dir refuses traversal", Model.pluginDirFromUrl("file:///opt/bw/../../etc/"), "")
 eq("plugin dir refuses an encoded traversal", Model.pluginDirFromUrl("file:///opt/bw/%2e%2e/etc/"), "")
+eq("plugin dir refuses an empty url", Model.pluginDirFromUrl(""), "")
 eq("plugin dir refuses a non-string", Model.pluginDirFromUrl(null), "")
 
 eq("plugin dir loses trailing slashes", Model.cleanAbsoluteDir("/opt/bw//"), "/opt/bw")
 eq("plugin dir refuses a relative path", Model.cleanAbsoluteDir("opt/bw"), "")
+eq("plugin dir refuses an empty path", Model.cleanAbsoluteDir(""), "")
 eq("plugin dir refuses a dot segment", Model.cleanAbsoluteDir("/opt/../etc"), "")
 
 // The source is chosen by the bundle inspection (see ssh-agent-bundle.test.js),
@@ -49,6 +54,9 @@ eq("on aarch64, its own build",
 eq("the shipped helper with no reported architecture launches nothing",
   Model.sshAgentHelperCommand("/opt/bw", "bundled", "").length, 0)
 eq("no accepted source launches nothing", Model.sshAgentHelperCommand("/opt/bw", "").length, 0)
+eq("an unknown source launches nothing", Model.sshAgentHelperCommand("/opt/bw", "elsewhere").length, 0)
+check("helper command never goes through a shell",
+  !helperCmd.some(a => /^(?:ba)?sh$/.test(path.basename(String(a)))), JSON.stringify(helperCmd))
 eq("helper command is empty without a plugin dir", Model.sshAgentHelperCommand("", "bundled").length, 0)
 
 // -------------------------------------------------------------------------
@@ -59,6 +67,7 @@ const env = Model.sshAgentHelperEnv("/run/user/1000")
 eq("helper environment carries only XDG_RUNTIME_DIR", Object.keys(env).sort().join(","), "XDG_RUNTIME_DIR")
 eq("helper environment points at the runtime dir", env.XDG_RUNTIME_DIR, "/run/user/1000")
 eq("helper environment refuses a relative runtime dir", Model.sshAgentHelperEnv("run/user/1000"), null)
+eq("helper environment refuses an empty runtime dir", Model.sshAgentHelperEnv(""), null)
 
 // -------------------------------------------------------------------------
 // Bounded NDJSON reader
@@ -67,8 +76,19 @@ eq("helper environment refuses a relative runtime dir", Model.sshAgentHelperEnv(
 eq("hello is the versioned v1 handshake", Model.sshAgentHelloLine(), '{"v":1,"type":"hello"}\n')
 eq("shutdown is a versioned v1 line", Model.sshAgentShutdownLine(), '{"v":1,"type":"shutdown"}\n')
 
+const ready = Model.parseAgentEvent(JSON.stringify({
+  v: 1, type: "ready", socketPath: "/run/user/1000/qs-bitwarden-cli/ssh-agent.sock",
+  fifoPath: "/run/user/1000/qs-bitwarden-cli/ssh-keys.fifo", agentVersion: "0.1.0"
+}))
+eq("ready parses", ready.ok, true)
+eq("ready keeps its socket path", ready.message.socketPath, "/run/user/1000/qs-bitwarden-cli/ssh-agent.sock")
+eq("ready keeps its agent version", ready.message.agentVersion, "0.1.0")
+
 eq("an empty line is ignored rather than fatal", Model.parseAgentEvent("").code, "EMPTY")
+check("an empty line does not fail closed", Model.parseAgentEvent("").fatal === false,
+  JSON.stringify(Model.parseAgentEvent("")))
 eq("malformed JSON fails closed", Model.parseAgentEvent("{not json").code, "MALFORMED")
+check("malformed JSON is fatal", Model.parseAgentEvent("{not json").fatal === true, "not fatal")
 eq("a wrong version fails closed", Model.parseAgentEvent('{"v":2,"type":"ready"}').code, "VERSION_MISMATCH")
 eq("a missing version fails closed", Model.parseAgentEvent('{"type":"ready"}').code, "VERSION_MISMATCH")
 eq("an unknown type fails closed", Model.parseAgentEvent('{"v":1,"type":"exec"}').code, "UNKNOWN_TYPE")
@@ -146,14 +166,35 @@ eq("ready records the agent version", live.state.agentVersion, "0.1.0")
 check("no reduction ever asks QML to wait",
   live.actions.every(a => !("wait" in a) && !("waitMs" in a)), JSON.stringify(live.actions))
 
+const badVersion = drive(Model.sshAgentInitialState(), [
+  { kind: "enabled", value: true, nowMs: 0 },
+  { kind: "started", nowMs: 1 },
+  { kind: "line", line: '{"v":2,"type":"ready","socketPath":"/s","fifoPath":"/f","agentVersion":"9"}', nowMs: 2 }
+])
+eq("a version mismatch stops the helper", badVersion.last.stop, true)
+eq("a version mismatch is reported", badVersion.state.errorCode, "VERSION_MISMATCH")
+check("a version mismatch keeps the gate closed", badVersion.state.gateOpen === false,
+  JSON.stringify(badVersion.state))
+
 const garbage = drive(reachReady(0).state, [{ kind: "line", line: "not json at all", nowMs: 100 }])
 eq("a malformed line closes the gate", garbage.state.gateOpen, false)
 eq("a malformed line stops the helper", garbage.last.stop, true)
 eq("a malformed line is reported", garbage.state.errorCode, "MALFORMED")
 
+const tooLong = drive(reachReady(0).state, [{ kind: "line", line: overlong, nowMs: 100 }])
+eq("an overlong line closes the gate", tooLong.state.gateOpen, false)
+eq("an overlong line is reported", tooLong.state.errorCode, "LINE_TOO_LONG")
+
 const blank = drive(reachReady(0).state, [{ kind: "line", line: "", nowMs: 100 }])
 eq("a blank line is ignored", blank.state.phase, "ready")
 check("a blank line leaves the gate open", blank.state.gateOpen === true, JSON.stringify(blank.state))
+
+const passthrough = drive(reachReady(0).state, [{
+  kind: "line", nowMs: 100,
+  line: JSON.stringify({ v: 1, type: "keys_loaded", epoch: 7, keyCount: 2, skipped: [] })
+}])
+eq("a live event stays ready", passthrough.state.phase, "ready")
+eq("a live event reaches the panel", passthrough.last.message.type, "keys_loaded")
 
 const loadFailed = drive(reachReady(0).state, [{
   kind: "line", nowMs: 100,
@@ -190,6 +231,7 @@ eq("the backoff timer restarts the helper", restarted.last.start, true)
 eq("the backoff timer returns to starting", restarted.state.phase, "starting")
 
 eq("backoff step 1", Model.sshAgentRestartDelayMs(1), 500)
+eq("backoff step 2", Model.sshAgentRestartDelayMs(2), 1000)
 eq("backoff step 3", Model.sshAgentRestartDelayMs(3), 2000)
 check("backoff is capped", Model.sshAgentRestartDelayMs(50) === 30000,
   String(Model.sshAgentRestartDelayMs(50)))
@@ -250,7 +292,9 @@ check("a failed supervisor starts nothing", failedIgnores.actions.every(a => !a.
     crashy = Model.sshAgentReduce(crashy, { kind: "restartTimer", nowMs: t }).state
   }
   eq("a helper that handshakes then dies still trips the bound", crashy.phase, "failed")
+  eq("that loop is reported as a crash loop", crashy.errorCode, "CRASH_LOOP")
   eq("that loop is bounded by the same restart cap", scheduled, Model.SSH_AGENT_MAX_RESTARTS)
+  check("that loop leaves the gate closed", crashy.gateOpen === false, JSON.stringify(crashy))
 }
 
 // -------------------------------------------------------------------------
@@ -306,6 +350,10 @@ eq("and counts", realCrash.state.failures, 1)
 
 const afterReady = drive(reachReady(0).state, [{ kind: "exited", exitCode: 1, lockHeld: true, nowMs: 5 }])
 eq("a run that reached ready cannot have lost the lock, whatever the probe says", afterReady.state.phase, "backoff")
+
+const disabledWhileWaiting = drive(elsewhere.state, [{ kind: "enabled", value: false, nowMs: 50 }])
+eq("disabling while served elsewhere turns it off", disabledWhileWaiting.state.phase, "disabled")
+check("and cancels the pending retry", disabledWhileWaiting.last.cancelRestart === true, JSON.stringify(disabledWhileWaiting.last))
 
 const elsewhereSetup = Model.sshAgentSetupState({ enabled: true, supervisable: true, phase: "elsewhere", errorCode: "ELSEWHERE" })
 check("settings explain that another process is serving the agent",
@@ -378,6 +426,10 @@ eq("disabling returns to disabled", disabledMidflight.state.phase, "disabled")
 check("disabling closes the gate", disabledMidflight.state.gateOpen === false,
   JSON.stringify(disabledMidflight.state))
 
+const disabledDuringBackoff = drive(eof.state, [{ kind: "enabled", value: false, nowMs: 150 }])
+eq("disabling during backoff cancels the restart", disabledDuringBackoff.last.cancelRestart, true)
+eq("disabling during backoff is disabled", disabledDuringBackoff.state.phase, "disabled")
+
 const reEnabled = drive(loop, [{ kind: "enabled", value: false, nowMs: 1 }, { kind: "enabled", value: true, nowMs: 2 }])
 eq("re-enabling clears the crash-loop failure", reEnabled.state.errorCode, "")
 eq("re-enabling starts the helper again", reEnabled.last.start, true)
@@ -415,7 +467,7 @@ function runHelper(command, environment, opts) {
       try { child.kill("SIGKILL") } catch (e) {}
       resolve({ state, readyState, messages })
     }
-    const guard = setTimeout(finish, 5000)
+    const guard = setTimeout(finish, (opts && opts.timeoutMs) || 5000)
 
     const started = Model.sshAgentReduce(state, { kind: "started", nowMs: 1 })
     state = started.state
@@ -445,9 +497,80 @@ function runHelper(command, environment, opts) {
   })
 }
 
+function writeFakeHelper(name, body) {
+  const file = path.join(tmpRoot, name)
+  fs.writeFileSync(file, "#!/usr/bin/env node\n" + body, { mode: 0o700 })
+  return file
+}
+
+const fakeReady = writeFakeHelper("fake-ready.js", `
+process.stdin.resume()
+let seen = ""
+process.stdin.on("data", d => {
+  seen += d.toString()
+  if (seen.indexOf('"hello"') >= 0) {
+    process.stdout.write(JSON.stringify({ v: 1, type: "ready",
+      socketPath: "/run/fake/ssh-agent.sock", fifoPath: "/run/fake/ssh-keys.fifo",
+      agentVersion: "0.0.0-fake" }) + "\\n")
+    seen = ""
+  }
+})
+process.stdin.on("end", () => process.exit(0))
+`)
+
+const fakeGarbage = writeFakeHelper("fake-garbage.js", `
+process.stdin.resume()
+process.stdout.write("this is not ndjson\\n")
+setTimeout(() => process.exit(0), 2000)
+`)
+
+const fakeSilent = writeFakeHelper("fake-silent.js", `
+process.stdin.resume()
+setTimeout(() => process.exit(0), 60000)
+`)
+
+const fakeCrash = writeFakeHelper("fake-crash.js", `process.exit(9)`)
+
+const fakeFlood = writeFakeHelper("fake-flood.js", `
+process.stdin.resume()
+let seen = ""
+process.stdin.on("data", d => {
+  seen += d.toString()
+  if (seen.indexOf('"hello"') >= 0) {
+    process.stdout.write('{"v":1,"type":"error","code":"X","message":"' + "z".repeat(200000) + '"}\\n')
+    seen = ""
+  }
+})
+`)
+
 const realHelper = path.join(repoRoot, "agent", "target", "debug", "qs-bitwarden-ssh-agent")
 
 async function processTests() {
+  const nodeBin = process.execPath
+
+  const okRun = await runHelper([nodeBin, fakeReady], Model.sshAgentHelperEnv(runtimeDir), { stopOnReady: true })
+  check("a fake helper completes the handshake", okRun.readyState !== null, JSON.stringify(okRun.state))
+  eq("a fake helper opens the gate on ready", okRun.readyState && okRun.readyState.gateOpen, true)
+  eq("a fake helper reports its version", okRun.readyState && okRun.readyState.agentVersion, "0.0.0-fake")
+  eq("closing stdin ends the fake helper and closes the gate", okRun.state.gateOpen, false)
+
+  const garbageRun = await runHelper([nodeBin, fakeGarbage], Model.sshAgentHelperEnv(runtimeDir))
+  eq("a garbage-emitting helper fails closed", garbageRun.state.errorCode, "MALFORMED")
+  check("a garbage-emitting helper never opens the gate", garbageRun.state.gateOpen === false,
+    JSON.stringify(garbageRun.state))
+
+  const floodRun = await runHelper([nodeBin, fakeFlood], Model.sshAgentHelperEnv(runtimeDir))
+  eq("an overlong helper line fails closed", floodRun.state.errorCode, "LINE_TOO_LONG")
+
+  const crashRun = await runHelper([nodeBin, fakeCrash], Model.sshAgentHelperEnv(runtimeDir))
+  eq("a helper that dies at once backs off", crashRun.state.phase, "backoff")
+  check("a helper that dies at once leaves the gate closed", crashRun.state.gateOpen === false,
+    JSON.stringify(crashRun.state))
+
+  const silentRun = await runHelper([nodeBin, fakeSilent], Model.sshAgentHelperEnv(runtimeDir), { timeoutMs: 1200 })
+  eq("a silent helper never opens the gate", silentRun.state.gateOpen, false)
+  eq("a silent helper stays in the handshake", silentRun.state.phase, "handshaking")
+
   if (fs.existsSync(realHelper)) {
     const realRun = await runHelper([realHelper], Model.sshAgentHelperEnv(runtimeDir), { stopOnReady: true })
     check("the real helper completes the v1 handshake with only XDG_RUNTIME_DIR",

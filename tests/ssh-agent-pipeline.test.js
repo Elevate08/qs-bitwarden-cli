@@ -96,10 +96,12 @@ function runPipeline(opts, envOverrides, contents) {
 // The load nonce
 // -------------------------------------------------------------------------
 
+eq("the load id env var is named", Model.loadIdEnvVar(), "QSBW_LOAD_ID")
 eq("a 128-bit lowercase hex nonce is valid", Model.isValidLoadId(LOAD_ID), true)
 eq("a short nonce is refused", Model.isValidLoadId("abc"), false)
 eq("an uppercase nonce is refused", Model.isValidLoadId(LOAD_ID.toUpperCase()), false)
 eq("a non-hex nonce is refused", Model.isValidLoadId("z".repeat(32)), false)
+eq("an empty nonce is refused", Model.isValidLoadId(""), false)
 eq("a non-string nonce is refused", Model.isValidLoadId(null), false)
 
 const nonceRun = spawnSync("bash", Model.loadIdCommand().slice(1), { encoding: "utf8" })
@@ -125,6 +127,10 @@ check("the nonce is read from the environment, never passed in argv",
 // Disabled mode has no private branch at all
 // -------------------------------------------------------------------------
 
+const plainText = Model.sanitizedListCommand().join(" ")
+check("the default command has no tee branch", plainText.indexOf("tee") < 0, plainText.slice(0, 400))
+check("the default command never names the key FIFO",
+  plainText.indexOf("ssh-keys.fifo") < 0, plainText.slice(0, 400))
 check("an explicitly disabled branch is identical to the default",
   Model.sanitizedListCommand({ agentBranch: false, runtimeDir: runtimeDir }).join(" ")
     === Model.sanitizedListCommand().join(" "), "disabled form differs from the default")
@@ -161,6 +167,7 @@ check("the encoded key is canonical standard base64",
   /^[A-Za-z0-9+\/]+={0,2}$/.test(payload.items[0].privateKeyB64) &&
     Buffer.from(payload.items[0].privateKeyB64, "base64").toString("base64") === payload.items[0].privateKeyB64,
   payload.items[0].privateKeyB64)
+check("the old plain-text field is gone", !("privateKey" in payload.items[0]), "privateKey present")
 eq("the eligible key carries its public blob", payload.items[0].publicKey, "ssh-ed25519 AAAAWORK")
 eq("the eligible key carries its fingerprint", payload.items[0].fingerprint, "SHA256:work")
 eq("the eligible key is not marked re-prompt", payload.items[0].requiresReprompt, false)
@@ -234,6 +241,7 @@ eq("each item has exactly the agreed fields",
 // nothing usable reaches the FIFO in the first place.
 for (const [label, contents] of [
   ["malformed JSON", "{ this is not json"],
+  ["a truncated array", '[{"object":"item","id":"a","type":1,'],
   ["a non-array document", '{"items":[]}']
 ]) {
   const run = withFifoReader(() =>
@@ -313,6 +321,13 @@ eq("vault_locked is a versioned v1 line", Model.sshAgentVaultLockedLine(7),
 eq("vault_logged_out is a versioned v1 line", Model.sshAgentLoggedOutLine(),
   JSON.stringify({ v: 1, type: "vault_logged_out" }) + "\n")
 eq("an invalid nonce yields no begin line", Model.sshAgentLoadBeginLine(7, "nope"), "")
+
+// No control line may ever carry key material or a session token.
+for (const line of [Model.sshAgentLoadBeginLine(7, LOAD_ID), Model.sshAgentLoadEndLine(7, true),
+                    Model.sshAgentVaultLockedLine(7), Model.sshAgentLoggedOutLine()]) {
+  check("no control line carries private material",
+    line.indexOf(PRIVATE_MARKER) < 0 && line.indexOf("BW_SESSION") < 0 && line.indexOf("privateKey") < 0, line)
+}
 
 // -------------------------------------------------------------------------
 // The whole data plane, end to end

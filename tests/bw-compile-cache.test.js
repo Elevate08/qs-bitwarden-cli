@@ -219,7 +219,7 @@ if (trusted) {
     check("...and not a path with more than its last part missing",
       probe(deep) !== 0 && !fs.existsSync(path.dirname(deep)))
   }
-  for (const [what, bad] of [["group-writable", 0o770], ["world-writable", 0o707]]) {
+  for (const [what, bad] of [["group-writable", 0o770], ["world-writable", 0o707], ["world-writable and sticky", 0o1777]]) {
     const base = home()
     const dir = cacheOf(base)
     fs.mkdirSync(dir, { recursive: true })
@@ -363,7 +363,12 @@ if (trusted) {
     const cases = [
       ["a symlink to a file among the entries", f => fs.symlinkSync(outside, path.join(f.version, "bbbb"))],
       ["a symlink in place of the version directory", f => fs.symlinkSync(path.dirname(outside), path.join(cacheOf(f.base), "v23.0.0-x64-00000000-0"))],
+      ["a dangling symlink", f => fs.symlinkSync(path.join(tmp, "nothing-here"), path.join(f.version, "cccc"))],
+      ["a symlink at the top of the cache directory", f => fs.symlinkSync(outside, path.join(cacheOf(f.base), "dddd"))],
       ["a group-writable directory inside", f => fs.chmodSync(f.version, 0o775)],
+      ["a world-writable directory inside", f => fs.chmodSync(f.version, 0o757)],
+      ["a nested world-writable directory", f => { fs.mkdirSync(path.join(f.version, "deep")); fs.chmodSync(path.join(f.version, "deep"), 0o777) }],
+      ["a group-writable file inside", f => fs.chmodSync(path.join(f.version, "aaaa"), 0o660)],
       ["a world-writable file inside", f => fs.chmodSync(path.join(f.version, "aaaa"), 0o606)],
       ["a FIFO inside", f => { if (spawnSync("mkfifo", [path.join(f.version, "eeee")]).status !== 0) throw new Error("mkfifo") }]
     ]
@@ -384,6 +389,7 @@ if (trusted) {
       // to the data or state home, where the plugin keeps accounts and
       // learned picks under the same name.
       for (const [what, plant] of [["a directory of the plugin's data", d => fs.mkdirSync(path.join(d, "accounts"), { mode: 0o700 })],
+        ["a file", d => fs.writeFileSync(path.join(d, "associations.json"), "{}", { mode: 0o600 })],
         ["a hidden file", d => fs.writeFileSync(path.join(d, ".hidden"), "", { mode: 0o600 })]]) {
         for (const withCache of [true, false]) {
           const base = home()
@@ -599,6 +605,9 @@ check("a bw that is given the master password or a login's credentials never get
     scripts.every(s => /env -u NODE_COMPILE_CACHE node -e /.test(text(s))
       && !/(^|[^E] )node -e /.test(text(s).replace(/env -u NODE_COMPILE_CACHE node -e /g, ""))),
     scripts.map(s => (text(s).match(/.{0,30}node -e/g) || []).join(" | ")).join("\n"))
+  check("the list script's two checks both do (the validator, and the writer that hands SSH keys to the agent)",
+    (text(Model.sanitizedListCommand({ agentBranch: true })).match(/env -u NODE_COMPILE_CACHE node -e /g) || []).length === 2
+      && /timeout 10 env -u NODE_COMPILE_CACHE node -e /.test(text(Model.sanitizedListCommand({ agentBranch: true }))))
 }
 
 // The terminal hand-off: the script that runs inside the terminal.
@@ -712,8 +721,7 @@ const childEnv = (inherited, built) => {
 }
 const GOOD = "/h/.cache/qs-bitwarden-cli/node-compile-cache"
 
-{
-  const builder = "bwEnv"
+for (const builder of ["bwEnv", "generatorServeEnv"]) {
   const inherited = { PATH: "/usr/bin", NODE_COMPILE_CACHE: "/inherited/cache" }
   const value = v => v[builder]()[VAR]
   const reaches = v => childEnv(inherited, v[builder]()).NODE_COMPILE_CACHE
@@ -773,15 +781,6 @@ const GOOD = "/h/.cache/qs-bitwarden-cli/node-compile-cache"
   toggled.probeBwCompileCache()
   check(`${builder}: ...and the change handler forgets the directory and starts nothing`,
     toggled.bwCompileCacheDir === "" && toggled.bwCompileCacheState === "off" && toggled.bwCompileCacheProc.starts === 1)
-
-  // The generator's server builds its own environment: the same value, and no session.
-  const serve = service({})
-  serve.probeBwCompileCache()
-  const servePending = serve.generatorServeEnv()[VAR]
-  serve.answer(0, GOOD + "\n")
-  check("generatorServeEnv: removed while the check runs and with the setting off, the accepted directory otherwise, and never a session",
-    servePending === null && serve.generatorServeEnv()[VAR] === GOOD && serve.generatorServeEnv()[Model.sessionEnvVar()] === null
-      && VAR in off.generatorServeEnv() && off.generatorServeEnv()[VAR] === null)
 }
 
 {
@@ -1029,8 +1028,7 @@ if (trusted) {
     return v
   }
 
-  {
-    const builder = "bwEnv"
+  for (const builder of ["bwEnv", "generatorServeEnv"]) {
     // The shell was started with a cache directory of someone's choosing.
     const inheritedDir = path.join(home(), "inherited")
     const shellEnv = { PATH: process.env.PATH, NODE_OPTIONS: options, QSBW_CODE: "123456", NODE_COMPILE_CACHE: inheritedDir }
@@ -1054,38 +1052,43 @@ if (trusted) {
     const ok = probed({}, base)
     check(`${builder}: on and accepted by the real check, the directory is the one it made`,
       ok.bwCompileCacheDir === cacheOf(base) && ok[builder]()[VAR] === cacheOf(base), JSON.stringify(ok[builder]()))
-    const plain = runBwWith(childEnv({ PATH: process.env.PATH, NODE_OPTIONS: options, QSBW_CODE: "123456" }, {}))
-    const cold = runBwWith(childEnv(shellEnv, ok.bwEnv()))
-    const written = entriesOf(cacheOf(base)).length
-    const warm = runBwWith(childEnv(shellEnv, ok.bwEnv()))
-    check("with the cache, bw prints and returns what it did without it, cold and warm",
-      plain.status === 3 && plain.stdout === "answer login --code=123456\n" && same(plain, cold) && same(plain, warm),
-      JSON.stringify([plain, cold, warm]))
-    check("the preloads' early exit still lets Node write the cache, into the accepted directory only",
-      !fs.existsSync(inheritedDir) && (!supported || written >= 2), "entries: " + written + " on Node " + process.versions.node)
-    check("what is written is private to the user",
-      entriesOf(cacheOf(base)).every(f => (mode(path.join(cacheOf(base), f)) & 0o077) === 0))
-    check("what Node wrote passes the next check as it is", !supported || run(base).dir === cacheOf(base))
-    // A cache someone damaged costs speed, not the answer.
-    for (const f of entriesOf(cacheOf(base))) fs.writeFileSync(path.join(cacheOf(base), f), "not a code cache")
-    check("a damaged cache entry is not an error", same(plain, runBwWith(childEnv(shellEnv, ok.bwEnv()))))
-    check("bwEnv() still carries the preloads beside it, and what the caller adds",
-      ok.bwEnv({ EXTRA: "1" }).NODE_OPTIONS === options && ok.bwEnv({ EXTRA: "1" }).EXTRA === "1")
+    if (builder === "bwEnv") {
+      const plain = runBwWith(childEnv({ PATH: process.env.PATH, NODE_OPTIONS: options, QSBW_CODE: "123456" }, {}))
+      const cold = runBwWith(childEnv(shellEnv, ok.bwEnv()))
+      const written = entriesOf(cacheOf(base)).length
+      const warm = runBwWith(childEnv(shellEnv, ok.bwEnv()))
+      check("with the cache, bw prints and returns what it did without it, cold and warm",
+        plain.status === 3 && plain.stdout === "answer login --code=123456\n" && same(plain, cold) && same(plain, warm),
+        JSON.stringify([plain, cold, warm]))
+      check("the preloads' early exit still lets Node write the cache, into the accepted directory only",
+        !fs.existsSync(inheritedDir) && (!supported || written >= 2), "entries: " + written + " on Node " + process.versions.node)
+      check("what is written is private to the user",
+        entriesOf(cacheOf(base)).every(f => (mode(path.join(cacheOf(base), f)) & 0o077) === 0))
+      check("what Node wrote passes the next check as it is", !supported || run(base).dir === cacheOf(base))
+      // A cache someone damaged costs speed, not the answer.
+      for (const f of entriesOf(cacheOf(base))) fs.writeFileSync(path.join(cacheOf(base), f), "not a code cache")
+      check("a damaged cache entry is not an error", same(plain, runBwWith(childEnv(shellEnv, ok.bwEnv()))))
+      check("bwEnv() still carries the preloads beside it, and what the caller adds",
+        ok.bwEnv({ EXTRA: "1" }).NODE_OPTIONS === options && ok.bwEnv({ EXTRA: "1" }).EXTRA === "1")
 
-    // The directory removed behind the plugin's back: Node makes it again,
-    // by umask; the next check is what looks at it.
-    fs.rmSync(cacheOf(base), { recursive: true })
-    const old = process.umask(0o002)
-    runBwWith(childEnv(shellEnv, ok.bwEnv()))
-    process.umask(old)
-    if (supported) {
-      check("(Node recreates a cache directory that was removed, group-writable under such a umask)",
-        fs.existsSync(cacheOf(base)) && (mode(cacheOf(base)) & 0o020) !== 0, mode(cacheOf(base)).toString(8))
-      const after = probed({}, base)
-      check("...inside the plugin's directory, which stayed private, so no one else could reach it",
-        (mode(path.dirname(cacheOf(base))) & 0o077) === 0, mode(path.dirname(cacheOf(base))).toString(8))
-      check("...and the next check (the next opening) refuses it as it stands: the cache goes unused until it is put right",
-        after.bwCompileCacheState === "refused" && after.bwEnv()[VAR] === null && (mode(cacheOf(base)) & 0o020) !== 0)
+      // The directory removed behind the plugin's back: Node makes it again,
+      // by umask; the next check is what looks at it.
+      fs.rmSync(cacheOf(base), { recursive: true })
+      const old = process.umask(0o002)
+      runBwWith(childEnv(shellEnv, ok.bwEnv()))
+      process.umask(old)
+      if (supported) {
+        check("(Node recreates a cache directory that was removed, group-writable under such a umask)",
+          fs.existsSync(cacheOf(base)) && (mode(cacheOf(base)) & 0o020) !== 0, mode(cacheOf(base)).toString(8))
+        const after = probed({}, base)
+        check("...inside the plugin's directory, which stayed private, so no one else could reach it",
+          (mode(path.dirname(cacheOf(base))) & 0o077) === 0, mode(path.dirname(cacheOf(base))).toString(8))
+        check("...and the next check (the next opening) refuses it as it stands: the cache goes unused until it is put right",
+          after.bwCompileCacheState === "refused" && after.bwEnv()[VAR] === null && (mode(cacheOf(base)) & 0o020) !== 0)
+      }
+    } else {
+      check("the generator's server still gets no session",
+        ok.generatorServeEnv()[Model.sessionEnvVar()] === null)
     }
   }
   // Positive control for the cases above: left alone, Node does use an inherited directory.

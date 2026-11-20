@@ -78,7 +78,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const restore = raw => Model.restoreGeneratorOptions(raw)
 const store = opts => Model.generatorOptionsToStore(opts)
 
-for (const [what, raw] of [["nothing saved", undefined], ["a string", "length=20"], ["an array", [20, true]]]) {
+for (const [what, raw] of [["nothing saved", undefined], ["null", null], ["a string", "length=20"],
+                           ["an array", [20, true]], ["a number", 20]]) {
   check(`${what} restores the defaults unchanged`,
     same(restore(raw), Model.generatorDefaults()), JSON.stringify(restore(raw)))
 }
@@ -110,15 +111,16 @@ check("a partial save keeps the defaults for the rest",
 // The minimums are checked with their character set on, so they are not
 // zeroed for being unused.
 for (const [key, bad] of [["length", "abc"], ["length", 4], ["length", 129], ["length", 20.5],
-                          ["words", 2], ["words", 21],
-                          ["minNumber", 10], ["numbers", "false"], ["type", "pin"],
-                          ["separator", "--"], ["separator", "\n"], ["separator", 7],
+                          ["length", null], ["words", 2], ["words", 21], ["minNumber", -1],
+                          ["minNumber", 10], ["minSpecial", "9"], ["numbers", "false"],
+                          ["uppercase", 0], ["special", "true"], ["type", "pin"],
+                          ["separator", "--"], ["separator", ""], ["separator", "\n"], ["separator", 7],
                           // Half a surrogate pair, a C1 control, line breaks and
                           // bidi controls draw nothing or reorder the passphrase.
-                          ["separator", "\ud800"], ["separator", "\u0085"],
-                          ["separator", "\u2028"], ["separator", "\u2029"],
-                          ["separator", "\u202e"], ["separator", "\u2066"],
-                          ["separator", "\u200e"], ["separator", "\u200f"]]) {
+                          ["separator", "\ud800"], ["separator", "\udfff"], ["separator", "\u0085"],
+                          ["separator", "\u009f"], ["separator", "\u2028"], ["separator", "\u2029"],
+                          ["separator", "\u202a"], ["separator", "\u202e"], ["separator", "\u2066"],
+                          ["separator", "\u2069"], ["separator", "\u200e"], ["separator", "\u200f"]]) {
   const base = key.startsWith("min") ? { numbers: true, special: true } : {}
   const got = restore(Object.assign({}, base, { [key]: bad }))[key]
   // Invisible characters spelled out, so the report can be read.
@@ -292,6 +294,7 @@ check("a failed response yields nothing, so the caller falls back",
   Model.parseServeGenerated('{"success":false,"message":"locked"}') === "", "expected empty")
 check("garbage yields nothing rather than throwing",
   Model.parseServeGenerated("<html>not json</html>") === "", "expected empty")
+check("an empty body yields nothing", Model.parseServeGenerated("") === "", "expected empty")
 
 
 // --- what our own server exiting means ---------------------------------------

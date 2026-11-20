@@ -24,6 +24,7 @@ for (const [type, body] of [
   ["grants_changed", { grants: [] }]
 ]) {
   const parsed = Model.parseAgentEvent(JSON.stringify(Object.assign({ v: 1, type: type }, body)))
+  eq(`${type} parses`, parsed.ok, true)
   eq(`${type} keeps its type`, parsed.ok && parsed.message.type, type)
 }
 
@@ -46,6 +47,8 @@ eq("a dismissed unlock is reported as user-cancelled", Model.sshAgentUnlockCance
 // The companion cannot read shell.json, so the panel has to tell it.
 eq("unlock-on-demand is sent to the companion", Model.sshAgentOptionsLine(true),
   JSON.stringify({ v: 1, type: "options", unlockOnDemand: true }) + "\n")
+eq("and its default off state is sent too", Model.sshAgentOptionsLine(false),
+  JSON.stringify({ v: 1, type: "options", unlockOnDemand: false }) + "\n")
 eq("anything that is not true is off", Model.sshAgentOptionsLine(undefined),
   JSON.stringify({ v: 1, type: "options", unlockOnDemand: false }) + "\n")
 
@@ -142,12 +145,14 @@ eq("and no destination line", loginTo(HOST, "sshsig").destinationLabel, "")
   eq("a forwarded login whose server the helper vouches for is not marked", hostbound.hostKeyClaimed, false)
   eq("and reads as before", hostbound.destinationLabel, plain)
   eq("a local login is not marked", login({ forwarded: false, hostKeyClaimed: false }).destinationLabel, plain)
+  eq("nor one from a helper that does not send the field", login({ forwarded: false }).destinationLabel, plain)
+  eq("the existing label is unchanged", loginTo(HOST).destinationLabel, plain)
 
   // A helper from before the field cannot say, so a forwarded host key is
   // taken for a claim; only the boolean false is believed.
   eq("a forwarded login from a helper without the field is marked",
     login({ forwarded: true }).destinationLabel, claimedLabel)
-  for (const odd of [0, "false"]) {
+  for (const odd of [null, 0, "", "false", "no", {}, []]) {
     eq(`hostKeyClaimed ${JSON.stringify(odd)} on a forwarded login is not a "no"`,
       login({ forwarded: true, hostKeyClaimed: odd }).hostKeyClaimed, true)
     eq(`hostKeyClaimed ${JSON.stringify(odd)} on a local login is not a "yes"`,
@@ -160,6 +165,19 @@ eq("and no destination line", loginTo(HOST, "sshsig").destinationLabel, "")
   const none = login({ forwarded: true, hostKeyClaimed: true, hostKey: "" })
   eq("no host key, nothing claimed", none.hostKeyClaimed, false)
   check("and the line says none was reported", /not reported/i.test(none.destinationLabel), none.destinationLabel)
+  const badShape = login({ forwarded: true, hostKeyClaimed: true, hostKey: HOST + "\nServer host key SHA256:forged" })
+  eq("a host key of another shape is dropped from a claim too", badShape.hostKey, "")
+  check("and nothing of it is drawn", !/forged/.test(badShape.destinationLabel), badShape.destinationLabel)
+  const signature = Model.sshAgentPromptView(Object.assign({}, request,
+    { operation: "sshsig", operationDetail: "git", hostKey: HOST, forwarded: true, hostKeyClaimed: true }), 120)
+  eq("a Git signature has no server to claim", signature.hostKeyClaimed, false)
+  eq("and still no destination line", signature.destinationLabel, "")
+
+  // The label is fixed text and the one fingerprint shape: its length is
+  // bounded and it holds nothing else of the request.
+  check("the claimed line is bounded", claimedLabel.length < 110, String(claimedLabel.length))
+  const hostile = login({ forwarded: true, hostKeyClaimed: "<b>yes</b>\n" + "x".repeat(5000) })
+  eq("a hostKeyClaimed that is text adds nothing to the line", hostile.destinationLabel, claimedLabel)
 
   // The notification and the terminal listing carry the same line.
   const body = Model.sshAgentNotifyCommand(claimed, 60).pop()
@@ -203,6 +221,12 @@ eq("and no destination line", loginTo(HOST, "sshsig").destinationLabel, "")
         check(`${type} with hostKeyClaimed ${claimed} is accepted as the helper printed it`,
           step.state.phase === "ready" && message && message.type === type && message.hostKeyClaimed === claimed,
           JSON.stringify(step))
+        const shown = Model.sshAgentPromptView(message, type === "approval_required" ? 120 : 0)
+        eq(`and its prompt says ${claimed ? "the server is claimed" : "what the helper vouches for"}`,
+          shown.destinationLabel, claimed ? claimedLabel : plain)
+        eq(`${type}, ${claimed}: the terminal listing agrees`, Model.sshAgentPendingRequests(
+          type === "approval_required" ? message : null, [], type === "unlock_required" ? message : null, [])[0].destination,
+          claimed ? claimedLabel : plain)
       }
     }
   }
@@ -272,6 +296,9 @@ const everyInvisible = Model.sshAgentPromptView(Object.assign({}, request, {
 check("no control, bidi or zero-width character reaches the prompt",
   !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/.test(everyInvisible.keyName),
   JSON.stringify(everyInvisible.keyName))
+eq("ordinary text, including non-Latin, is left alone",
+  Model.sshAgentPromptView(Object.assign({}, request, { keyName: "Schl\u00fcssel \u9375" }), 120).keyName,
+  "Schl\u00fcssel \u9375")
 
 // A long path loses its beginning, never the executable.
 const longPath = "/" + "d".repeat(600) + "/bin/ssh-keygen"
@@ -280,6 +307,10 @@ check("a long path keeps its end", longView.processPath.length === 512
   && longView.processPath.charAt(0) === "\u2026" && longView.processPath.endsWith("/bin/ssh-keygen"),
   longView.processPath.slice(-30))
 eq("the name is taken from the whole path", longView.processName, "ssh-keygen")
+const longName = Model.sshAgentPromptView(Object.assign({}, request, {
+  processPath: "/usr/bin/" + "n".repeat(600) + "/ssh"
+}), 120)
+eq("a name past the cut is still the real one", longName.processName, "ssh")
 const hiddenInGrant = Model.sshAgentGrantViews([
   { grantId: 1, keyName: "k\n", fingerprint: "SHA256:x", pid: 1, processPath: "/a\n/b/ssh", expiresInSec: 5 }])
 check("a grant's path and key name are escaped",
@@ -288,6 +319,7 @@ check("a grant's path and key name are escaped",
 
 // The panel's countdown has to agree with the companion's deadline, or it
 // counts down to a moment nothing happens at.
+eq("the request deadline matches the companion's", Model.sshAgentRequestDeadlineMs(), 120000)
 const agentSrc = fs.readFileSync(path.join(repoRoot, "agent", "src", "approvals.rs"), "utf8")
 const agentDeadline = /pub const REQUEST_LIFETIME_MS: u64 = ([0-9_]+);/.exec(agentSrc)
 check("the panel and the companion agree on it",
@@ -307,6 +339,8 @@ eq("a grant keeps its id", grants[0].grantId, 9)
 eq("a grant names its process", grants[0].processName, "ssh")
 check("a grant states its remaining time", /1m 35s|95/.test(grants[0].remainingLabel), grants[0].remainingLabel)
 check("an expiring grant says so", grants[1].remainingLabel.length > 0, grants[1].remainingLabel)
+check("no grant view carries key material",
+  grants.every(g => JSON.stringify(g).indexOf("PRIVATE") < 0), "leaked")
 eq("a malformed grant list yields nothing", Model.sshAgentGrantViews(null).length, 0)
 const scoped = Model.sshAgentGrantViews([
   { grantId: 11, keyName: "work", fingerprint: "SHA256:z", pid: 7, processPath: "/usr/bin/ssh-keygen",
@@ -372,6 +406,12 @@ cool = Model.sshAgentCooldownAfter(cool, "denied", 2000)
 eq("two consecutive denials start one", Model.sshAgentCooldownActive(cool, 2000), true)
 eq("the cooldown ends on its own", Model.sshAgentCooldownActive(cool, 2000 + 10 * 60 * 1000), false)
 
+// A timeout is a denial for this purpose: the user saw it and did nothing.
+let timedOut = Model.sshAgentCooldownInitial()
+timedOut = Model.sshAgentCooldownAfter(timedOut, "timeout", 0)
+timedOut = Model.sshAgentCooldownAfter(timedOut, "timeout", 100)
+eq("two timeouts also start a cooldown", Model.sshAgentCooldownActive(timedOut, 100), true)
+
 // Approving clears the history: the user is engaging, not being pestered.
 let mixed = Model.sshAgentCooldownInitial()
 mixed = Model.sshAgentCooldownAfter(mixed, "denied", 0)
@@ -384,6 +424,7 @@ eq("an approval resets the denial run", Model.sshAgentCooldownActive(mixed, 200)
 let stuck = Model.sshAgentCooldownInitial()
 stuck = Model.sshAgentCooldownAfter(stuck, "denied", 0)
 stuck = Model.sshAgentCooldownAfter(stuck, "denied", 100)
+eq("two denials leave a cooldown running", Model.sshAgentCooldownActive(stuck, 100), true)
 stuck = Model.sshAgentCooldownAfter(stuck, "resumed", 200)
 eq("an explicit resume ends it at once", Model.sshAgentCooldownActive(stuck, 200), false)
 eq("and clears the run behind it, so one later denial does not re-arm it",
@@ -397,6 +438,8 @@ unattended = Model.sshAgentCooldownAfter(unattended, "denied", 0)
 unattended = Model.sshAgentCooldownAfter(unattended, "denied", 100)
 eq("an unanswered request leaves the window where it was",
   Model.sshAgentCooldownAfter(unattended, "withdrawn", 200).untilMs, unattended.untilMs)
+eq("and the cooldown lapses on its own",
+  Model.sshAgentCooldownActive(unattended, 100 + 5 * 60 * 1000), false)
 
 // A cooldown that fails signatures silently is worse than the pestering it
 // prevents: SSH just stops working for five minutes with no explanation
@@ -404,6 +447,7 @@ eq("an unanswered request leaves the window where it was",
 let cooled = Model.sshAgentCooldownInitial()
 const quiet = Model.sshAgentCooldownStatus(cooled, 0)
 eq("nothing is reported while no cooldown is running", quiet.active, false)
+eq("a quiet cooldown has no message", quiet.message, "")
 
 cooled = Model.sshAgentCooldownAfter(cooled, "denied", 0)
 cooled = Model.sshAgentCooldownAfter(cooled, "denied", 0)
@@ -418,12 +462,16 @@ check("the remaining time counts down",
   String(Model.sshAgentCooldownStatus(cooled, 60000).remainingSec))
 eq("it clears itself when the window passes",
   Model.sshAgentCooldownStatus(cooled, 5 * 60 * 1000).active, false)
+check("the status never names a key or a process",
+  cooling.message.indexOf("ssh-") < 0 && cooling.message.indexOf("/usr/") < 0, cooling.message)
 
 // Unlocking runs one `bw list items`, which takes seconds on a real vault.
 // The request that triggered the unlock is held across it, so without a
 // loading state the user unlocks and then watches nothing happen.
 const note = Model.sshAgentLoadingNote()
 check("the loading note says keys are on the way", /load/i.test(note), note)
+check("the loading note does not promise it is instant",
+  !/instant|immediat/i.test(note), note)
 
 // -------------------------------------------------------------------------
 // The panel wiring
@@ -544,6 +592,8 @@ eq("a deleted fragment is caught even while this session still points here",
 check("and it says the next login is what breaks",
   /next login/.test(Model.sshAgentRoutingNotice({ state: "absent" }, routed).text),
   Model.sshAgentRoutingNotice({ state: "absent" }, routed).text)
+eq("a foreign file is called out too",
+  Model.sshAgentRoutingNotice({ state: "foreign" }, routed).urgent, true)
 eq("a managed fragment in a routed session says nothing",
   Model.sshAgentRoutingNotice({ state: "managed" }, routed).text, "")
 check("a managed fragment in an unrouted session explains the wait",
@@ -773,6 +823,7 @@ check("closing the transient popup clears authentication state",
 
 let q = []
 q = Model.sshAgentEnqueuePrompt(q, { requestId: 1, keyName: "key1" }, 4)
+eq("enqueues first item", q.length, 1)
 q = Model.sshAgentEnqueuePrompt(q, { requestId: 2, keyName: "key2" }, 4)
 eq("enqueues second item", q.length, 2)
 q = Model.sshAgentEnqueuePrompt(q, { requestId: 2, keyName: "key2" }, 4)
@@ -784,6 +835,7 @@ eq("respects queue capacity cap", q.length, 4)
 
 eq("pending count includes active and queued", Model.sshAgentPendingCount({ requestId: 0 }, q), 5)
 eq("pending count with no active", Model.sshAgentPendingCount(null, q), 4)
+eq("pending count with no queue", Model.sshAgentPendingCount({ requestId: 0 }, []), 1)
 
 let deq = Model.sshAgentDequeuePrompt(q)
 eq("dequeues first item", deq.next.requestId, 1)
@@ -791,6 +843,7 @@ eq("remaining queue length is decremented", deq.remaining.length, 3)
 
 let emptyDeq = Model.sshAgentDequeuePrompt([])
 eq("empty dequeue next is null", emptyDeq.next, null)
+eq("empty dequeue remaining is empty", emptyDeq.remaining.length, 0)
 
 let removed = Model.sshAgentRemovePrompt(q, 3)
 eq("removes targeted requestId", removed.length, 3)

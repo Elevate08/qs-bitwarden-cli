@@ -38,11 +38,27 @@ check("installed + registered + present is applicable, but not ready without a c
   all.ready === false && all.applicable === true,
   JSON.stringify(all))
 
+const noToken = Fido.parseFidoProbe("fido_installed=1\nfido_registered=1\nfido_token=0\n")
+check("registered but no device plugged in is not ready",
+  noToken.ready === false && noToken.applicable === true,
+  JSON.stringify(noToken))
+
+const noReg = Fido.parseFidoProbe("fido_installed=1\nfido_registered=0\nfido_token=1\n")
+check("a device but no registration is not ready",
+  noReg.ready === false && noReg.applicable === true,
+  JSON.stringify(noReg))
+
 const none = Fido.parseFidoProbe("fido_installed=0\nfido_registered=0\nfido_token=0\n")
 check("nothing present is neither ready nor applicable",
   none.ready === false && none.applicable === false,
   JSON.stringify(none))
 
+check("an empty probe answer is not read as ready",
+  Fido.parseFidoProbe("").ready === false && Fido.parseFidoProbe("").applicable === false,
+  JSON.stringify(Fido.parseFidoProbe("")))
+check("a malformed probe answer is not read as ready",
+  Fido.parseFidoProbe("garbage\n=1\nfido_installed\n").ready === false,
+  JSON.stringify(Fido.parseFidoProbe("garbage\n=1\nfido_installed\n")))
 check("trailing whitespace and blank lines are tolerated",
   Fido.parseFidoProbe("  fido_installed=1 \r\n\n fido_registered=1\n\r\n fido_token=1\n rp=pam://h \n cred=QUJD|+presence|/dev/hidraw1 \n").ready === true,
   "")
@@ -81,6 +97,10 @@ check("setup hands off to Omarchy's own FIDO2 installer in a floating terminal",
 
 
 const Model = loadModule()
+
+check("the FIDO entry is its own keyring account, not the fingerprint's",
+  Model.KEYRING_FIDO === "fido_password",
+  Model.KEYRING_FIDO)
 
 const hasCmd = Model.keyringHasFidoPasswordCommand().join(" ")
 check("the presence check reads the FIDO account and never the fingerprint's",

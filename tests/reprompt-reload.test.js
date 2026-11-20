@@ -294,6 +294,9 @@ function makeVault(fallback) {
   check("an accepted list fetches the open item's code afresh, from the vault the helper has now",
     v.queries.length === asked + 1 && v.queries[asked].kind === "totp" && v.totpWanted(v.detailItem), v.kinds())
   eq("the code on screen stays until that answer", v.liveTotp, "123456")
+  v.copyDetailField("password", "Password")
+  check("and a copy goes through, with no prompt",
+    v.queries.length === asked + 2 && v.queries[asked + 1].kind === "copyField" && !v.repromptPending && v.errorMessage === "", v.kinds())
 }
 {
   // An item opened while a list read runs has its code asked for as ever;
@@ -318,6 +321,20 @@ function makeVault(fallback) {
   v.land(withFlag("p1", 1))
   v.copyDetailField("password", "Password")
   check("after the list it asks for the master password", v.repromptPending && v.kinds() === "copyField", v.kinds())
+}
+{
+  // A flagged item: its prompt, or its confirmation, stands across a reload.
+  const v = makeVault()
+  v.openDetail(v.row("g1"))
+  v.toggleFieldReveal("password"); confirm(v); answer(v, 0, true, "hunter2")
+  v.reload(VAULT)
+  v.copyDetailField("password", "Password")
+  check("a confirmed re-prompt item copies as ever", v.queries.length === 2 && v.queries[1].kind === "copyField" && v.errorMessage === "", v.errorMessage)
+  const u = makeVault()
+  u.openDetail(u.row("g1"))
+  u.reload(VAULT)
+  u.copyDetailField("password", "Password")
+  check("an unconfirmed one asks for the master password as ever", u.repromptPending && u.queries.length === 0 && u.errorMessage === "", u.errorMessage)
 }
 
 // --- (c) an auto-type armed before the reload ------------------------------------------------

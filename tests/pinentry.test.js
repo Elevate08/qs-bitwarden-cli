@@ -60,6 +60,7 @@ r = run("cancel")
 eq("a cancel exits 1 and prints nothing", `${r.code}|${r.out}`, `${exits.cancelled}|`)
 r = run("empty")
 eq("an empty answer is told apart from a cancel", `${r.code}|${r.out}`, `${exits.empty}|`)
+check("a cancel and an empty answer differ", exits.cancelled !== exits.empty, "")
 // SETTIMEOUT ran out: pinentry says GPG_ERR_TIMEOUT (62), from source 5 as
 // the stand-in sends it. Nobody answered, which is a cancel, not a failure
 // that would offer the panel's field.
@@ -83,6 +84,8 @@ r = run("pin:%25%25", { minLength: 4 })
 eq("an encoded % counts as one character, so two are short", `${r.code}|${r.out}`, `${exits.short}|`)
 r = run("pin:%25%25%0A%0D", { minLength: 4 })
 eq("four characters, encoded, are enough", `${r.code}|${r.out}`, "0|%25%25%0A%0D")
+r = run("pin:1234", { minLength: 4 })
+eq("the minimum itself passes", `${r.code}|${r.out}`, "0|1234")
 r = run("pin:1", {})
 eq("no minimum, no check", `${r.code}|${r.out}`, "0|1")
 r = run("empty", { minLength: 4 })
@@ -206,6 +209,7 @@ check("nor is any other end that is not the probe's own answer",
     ran(notExecutable), `${exits.missing}|||missing`)
   eq("no frontend at all is missing, with pinentry-qt and pinentry on PATH",
     ran(""), `${exits.missing}|||missing`)
+  eq("nor does a frontend that is gone fall back", ran(path.join(dir, "gone")), `${exits.missing}|||missing`)
   const script = Model.pinentryCommand(fake, {})[2]
   const probeScript = Model.pinentryProbeCommand(fake)[2]
   check("neither script names another program or looks one up on PATH",

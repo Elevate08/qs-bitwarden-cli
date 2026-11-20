@@ -18,6 +18,9 @@ const { check, done } = createSuite("auth")
 
 // Distinctive enough that a substring search cannot miss them.
 const MASTER = "correct-horse-battery-staple"
+const CLIENT_ID = "user.11111111-2222-3333-4444-555555555555"
+const CLIENT_SECRET = "sEcReTcLiEnTsTrInG"
+const CODE = "249213"
 const SERVER = "https://vault.example.com"
 
 // Fixes #6. Cloud regions are distinct Bitwarden environments, while a
@@ -119,12 +122,16 @@ check("a remembered method is validated on the way back out of shell.json",
   R && R(STORE, "a@example.com") === 0
     && R({ [KA]: "3" }, "a@example.com") === 3
     && R({ [KA]: 2 }, "a@example.com") === -1
+    && R({ [KA]: 9 }, "a@example.com") === -1
     && R({ [KA]: "; rm -rf /" }, "a@example.com") === -1
+    && R({ [KA]: null }, "a@example.com") === -1
     // Number() reads all of these as 0, which is Authenticator. An unset entry
     // must not come back as a confident answer.
-    && R({ [KA]: null }, "a@example.com") === -1
     && R({ [KA]: "" }, "a@example.com") === -1
-    && R({ [KA]: false }, "a@example.com") === -1,
+    && R({ [KA]: false }, "a@example.com") === -1
+    && R({ [KA]: true }, "a@example.com") === -1
+    && R({ [KA]: [1] }, "a@example.com") === -1
+    && R({ [KA]: {} }, "a@example.com") === -1,
   "anything not in the table reads as not remembered")
 
 // The bug this replaced: one method for the whole machine, so a second vault
@@ -207,6 +214,15 @@ check("a hashed entry wins over a stale plain one for the same account",
   const forgot = Model.forgetTwoFactorMethodIn(LEGACY, "a@example.com")
   check("so does forgetting one",
     !(KA in forgot) && forgot[KB] === 1 && !/@/.test(JSON.stringify(forgot)), JSON.stringify(forgot))
+  const same = Model.rememberTwoFactorMethodIn({ "a@example.com": 0, [KA]: 0 }, "b@example.com", 1)
+  check("a plain and a hashed entry for one account collapse to one",
+    Object.keys(same).length === 2, JSON.stringify(same))
+  check("a migrated map still counts only 10 accounts",
+    (() => {
+      const old = {}
+      for (let i = 0; i < 10; i++) old[`o${i}@example.com`] = 0
+      return Object.keys(Model.rememberTwoFactorMethodIn(old, "new@example.com", 1)).length === 10
+    })(), "")
 }
 // `omarchy bar set` takes the value as an argument (it has no stdin or file
 // form), so no key of the map, and nothing else a setting holds, may name an
@@ -218,6 +234,9 @@ check("a per-account map reaches shell.json as JSON, not as a number",
   jsonWrite.includes(JSON.stringify(writtenMap)) && jsonWrite.includes("--json"), jsonWrite)
 check("the settings write puts no email in the argv",
   !/me@example\.com|@/.test(jsonWrite.replace("io.github.elevate08.qs-bitwarden-cli", "")), jsonWrite)
+check("an integer setting is still written as an integer",
+  Model.settingWriteCommand("autoLockMinutes", 15, "int").join(" ").includes("'15'"),
+  Model.settingWriteCommand("autoLockMinutes", 15, "int").join(" "))
 
 // Everything a builder could conceivably interpolate, flattened to one string.
 const flat = (cmd) => cmd.join(" ")
@@ -227,6 +246,8 @@ const flat = (cmd) => cmd.join(" ")
 const unlock = Model.unlockPrewarmCommand()
 check("unlock takes no password argument at all",
   Model.unlockPrewarmCommand.length === 0, `arity ${Model.unlockPrewarmCommand.length}`)
+check("unlock reads the submitted password from its private FIFO",
+  flat(unlock).includes("--passwordfile") && !flat(unlock).includes("--passwordenv"), flat(unlock))
 check("unlock caps output and diagnostic stderr on the producer side",
   flat(unlock).includes("head -c") && flat(unlock).includes("exec 2>"), flat(unlock))
 
@@ -247,6 +268,9 @@ const everyCommand = [
 
 for (const [label, cmd] of everyCommand) {
   const text = flat(cmd)
+  check(`${label} carries no master password in argv`, !text.includes(MASTER), text)
+  check(`${label} carries no client secret in argv`, !text.includes(CLIENT_SECRET), text)
+  check(`${label} carries no client id in argv`, !text.includes(CLIENT_ID), text)
   // An inline `VAR=value bw ...` prefix is exactly how the secrets used to
   // leak: the assignment lands in the wrapping shell's own command line.
   check(`${label} assigns no credential inline in the script`,
@@ -280,6 +304,9 @@ const emailMethod = Model.emailLoginPrewarmCommand("john@example.com", true, "",
 const emailNoMethod = Model.emailLoginPrewarmCommand("john@example.com", true, "", -1)
 check("a chosen method is passed to bw as a bare integer",
   / --method 0 /.test(flat(emailMethod) + " "), flat(emailMethod))
+check("the method is sent before the code, as bw's own option order has it",
+  flat(emailMethod).indexOf("--method") < flat(emailMethod).indexOf(Model.twoFactorCodeFlag()),
+  flat(emailMethod))
 check("no method at all is sent when none was chosen, so bw picks for itself",
   !flat(emailNoMethod).includes("--method")
     && !flat(Model.emailLoginPrewarmCommand("john@example.com", true, "")).includes("--method"),
@@ -341,6 +368,10 @@ check("the echoed device code never survives into a message shown to the user",
 check("what bw actually had to say survives the sanitiser",
   Model.sanitizeInteractiveStderr(noisy, "913744") === "Invalid verification code. Try again.",
   JSON.stringify(Model.sanitizeInteractiveStderr(noisy, "913744")))
+check("the sanitiser drops escape sequences and inquirer's own prompt lines",
+  !/\u001b/.test(Model.sanitizeInteractiveStderr(noisy, "913744"))
+    && !Model.sanitizeInteractiveStderr(noisy, "913744").includes("Enter OTP"),
+  JSON.stringify(Model.sanitizeInteractiveStderr(noisy, "913744")))
 check("a stack trace cannot flood the panel's error banner",
   Model.sanitizeInteractiveStderr("x".repeat(9000), "").length <= 300,
   String(Model.sanitizeInteractiveStderr("x".repeat(9000), "").length))
@@ -356,6 +387,17 @@ check("interaction is disabled through the environment, not the command line",
   Model.noInteractionEnvVar() === "BW_NOINTERACTION"
     && !everyCommand.some(([, c]) => flat(c).includes("BW_NOINTERACTION=")),
   Model.noInteractionEnvVar())
+
+// --- the two-step code, the one exception, is still kept out of the shell ----
+// bw takes the code only from --code. Neither the shell nor bw's argv may
+// carry it: bw-login-code.js reads it from the environment instead
+// (tests/bw-login-code.test.js).
+
+check("a 2FA code is neither inlined nor expanded into argv",
+  !flat(emailFull).includes(CODE) && !flat(emailFull).includes("--code")
+    && !flat(emailFull).includes(Model.twoFactorCodeEnvVar()), flat(emailFull))
+check("no code placeholder at all when no code was entered",
+  !flat(emailPlain).includes(Model.twoFactorCodeFlag()), flat(emailPlain))
 
 // --- the rest of the command shape still has to be right --------------------
 
@@ -397,8 +439,11 @@ check("a key sharing the stream with other output is still found",
 // Each of these used to be returned verbatim and stored as a session.
 const notKeys = [
   ["an error message", "You are not logged in."],
+  ["a single word of prose", "Failed"],
   ["an empty file", ""],
+  ["whitespace", "   \n  "],
   ["a short string of key-ish characters", "abc123=="],
+  ["a path someone left in the handoff file", "/home/user/notes.txt"],
   ["a sentence with no spaces but wrong characters", "unlock.failed:invalid.master.password!"]
 ]
 for (const [label, input] of notKeys) {
@@ -727,6 +772,10 @@ check("a status result that raced a submitted login is ignored",
 check("the guard covers both kinds of submitted authentication",
   /loginSubmitted \|\| unlockSubmitted/.test(bodyOf("authAttemptInFlight")),
   bodyOf("authAttemptInFlight"))
+check("the guard sits ahead of every branch that cancels or drops state",
+  statusFinished.indexOf("authAttemptInFlight")
+    < statusFinished.indexOf("cancelAuthPrewarm"),
+  statusFinished)
 
 // --- a cleared property must never leave a filled-in field ------------------
 //

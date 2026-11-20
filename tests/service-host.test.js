@@ -19,6 +19,8 @@ const { check, done } = createSuite("service-host")
 const timeout = Model.vaultHostTimeoutMs()
 check("the timeout is long enough for a service published after its views",
   timeout >= 1000 && timeout <= 10000, String(timeout))
+check("a found service is used at once",
+  Model.vaultHostDecision(true, 0, timeout) === "shared", "expected shared")
 check("a found service wins even after the timeout",
   Model.vaultHostDecision(true, timeout * 2, timeout) === "shared", "expected shared")
 check("not found yet is a wait, not a private vault",
@@ -188,6 +190,8 @@ check("the vault's `opened` is whether any view's popout is open",
 
 const P = Model.presenterIndex
 check("no views, no presenter", P([], "eDP-1") === -1 && P(null, "eDP-1") === -1, "expected -1")
+check("a single view presents whatever is focused",
+  P([{ opened: false, screen: "eDP-1" }], "DP-1") === 0, "expected 0")
 check("an open popout outranks the focused monitor",
   P([{ opened: false, screen: "eDP-1" }, { opened: true, screen: "DP-1" }], "eDP-1") === 1, "expected 1")
 check("otherwise the view on the focused monitor presents",

@@ -54,6 +54,7 @@ for (const want of expected) {
 const windowManifest = manifestEntry("sshAgentApprovalWindowSec")
 const windowModel = modelEntry("sshAgentApprovalWindowSec")
 eq("approval window minimum is 0", windowModel && windowModel.min, 0)
+eq("approval window maximum is 900", windowModel && windowModel.max, Model.SSH_AGENT_APPROVAL_WINDOW_MAX_SEC)
 eq("approval window maximum is the documented cap", Model.SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, 900)
 eq("manifest agrees on the window minimum", windowManifest && windowManifest.min, 0)
 eq("manifest agrees on the window maximum", windowManifest && windowManifest.max, 900)
@@ -68,7 +69,10 @@ check("the approval window says what 0 means",
 eq("the agent is off when the setting is absent", Model.boolSetting("sshAgentEnabled", undefined), false)
 eq("the agent is off when shell.json holds junk", Model.boolSetting("sshAgentEnabled", "yes please"), false)
 eq("the agent is on only for a real boolean", Model.boolSetting("sshAgentEnabled", true), true)
+eq("unlock-on-demand is off by default", Model.boolSetting("sshAgentUnlockOnDemand", undefined), false)
 eq("the centered approval popup is on by default", Model.boolSetting("sshAgentApprovalPopup", undefined), true)
+eq("the centered approval popup accepts false", Model.boolSetting("sshAgentApprovalPopup", false), false)
+eq("the centered approval popup rejects junk", Model.boolSetting("sshAgentApprovalPopup", "yes"), true)
 
 eq("the approval window defaults to 120", Model.intSetting("sshAgentApprovalWindowSec", undefined), 120)
 eq("the approval window keeps a valid value", Model.intSetting("sshAgentApprovalWindowSec", 300), 300)
@@ -89,6 +93,8 @@ const sshRows = grouped.filter(e => e.group === "sshAgent")
 eq("the SSH Agent group holds exactly the six settings", sshRows.length, 6)
 eq("the group header is drawn once", sshRows.filter(e => e.groupLabel).length, 1)
 eq("the enabled toggle leads the group", sshRows[0].key, "sshAgentEnabled")
+check("grouping did not mutate the schema",
+  Model.SETTINGS_SCHEMA.every(e => e.groupLabel === undefined), "schema was mutated")
 
 // The SSH settings are only offered once the dependency probe has confirmed a
 // CLI that can decrypt SSH key items -- the same gate the SSH type filter
@@ -133,6 +139,9 @@ check("hiding the group does not mutate the schema",
 // Sections do not fold.
 
 const allRows = Model.visibleSettings(supportedDeps, true)
+check("every setting in the schema is drawn",
+  allRows.filter(e => e.kind === "setting").length === Model.SETTINGS_SCHEMA.length,
+  `${allRows.filter(e => e.kind === "setting").length} of ${Model.SETTINGS_SCHEMA.length}`)
 check("each group is headed exactly once",
   allRows.filter(e => e.kind === "group").length
     === new Set(allRows.filter(e => e.kind === "setting").map(e => e.group)).size,
@@ -184,6 +193,8 @@ check("the SSH block is drawn inside the group rather than after every group",
 
 const state = opts => Model.sshAgentSetupState(opts)
 
+eq("off is disabled", state({ enabled: false, supervisable: false, phase: "disabled", errorCode: "" }).state,
+  "disabled")
 eq("off while a helper still winds down is still disabled",
   state({ enabled: false, supervisable: false, phase: "restarting", errorCode: "MALFORMED" }).state, "disabled")
 check("disabled reports no error",
@@ -220,7 +231,7 @@ check("the runtime-directory error names the cause",
 // Client routing is never a setup state
 // -------------------------------------------------------------------------
 
-const routingIrrelevant = ["/run/user/1000/gcr/ssh"]
+const routingIrrelevant = ["/run/user/1000/qs-bitwarden-cli/ssh-agent.sock", "/run/user/1000/gcr/ssh", ""]
 for (const sock of routingIrrelevant) {
   const s = state({
     enabled: true, supervisable: true, phase: "ready", errorCode: "", sshAuthSock: sock
@@ -235,6 +246,7 @@ for (const sock of routingIrrelevant) {
 const RT = "/run/user/1000"
 const ours = Model.sshAgentSocketPath(RT)
 eq("the socket path is deterministic", ours, "/run/user/1000/qs-bitwarden-cli/ssh-agent.sock")
+eq("no runtime directory means no socket path", Model.sshAgentSocketPath(""), "")
 eq("a relative runtime directory means no socket path", Model.sshAgentSocketPath("run/user/1000"), "")
 
 const diag = (sock, rt) => Model.sshAuthSockDiagnostic(sock, rt === undefined ? RT : rt)
@@ -255,6 +267,7 @@ const owners = [
 for (const [sock, owner] of owners) {
   const d = diag(sock)
   eq(`${sock} is attributed to ${owner}`, d.owner, owner)
+  eq(`${sock} points elsewhere`, d.state, "elsewhere")
   check(`${sock} names its owner in the message`, d.message.indexOf(owner) >= 0, d.message)
 }
 

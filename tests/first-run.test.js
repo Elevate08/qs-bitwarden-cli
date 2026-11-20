@@ -48,6 +48,10 @@ check("gate: missing optional tools do not close it",
   Model.setupGateActive(MINIMAL, true, false) === false,
   `gated on optional tools: [${Model.missingRequired(MINIMAL).map(d => d.key)}]`)
 
+check("gate: opens once everything is installed",
+  Model.setupGateActive(INSTALLED, true, false) === false,
+  "a fully installed machine was still gated")
+
 // --- the first-run sequence -------------------------------------------------
 // In order: probing `bw` before knowing it exists would land on a login form
 // that cannot succeed.
@@ -120,9 +124,17 @@ check("install: never asks for a package Omarchy already ships",
   Model.DEPENDENCIES.every(d => OMARCHY_BASE.indexOf(d.pkg) === -1),
   `wizard lists [${Model.DEPENDENCIES.map(d => d.pkg).filter(p => OMARCHY_BASE.indexOf(p) !== -1)}]`)
 
+check("install: the one thing an Omarchy machine can genuinely lack is still required",
+  Model.DEPENDENCIES.some(d => d.pkg === "bitwarden-cli" && d.required),
+  `wizard lists [${Model.DEPENDENCIES.map(d => d.pkg)}]`)
+
 check("install: asks for nothing when nothing is missing",
   Model.missingPackages(INSTALLED).length === 0,
   `got [${Model.missingPackages(INSTALLED)}]`)
+
+check("install: a package shared by two tools is only asked for once",
+  new Set(fresh).size === fresh.length,
+  `got [${fresh}]`)
 
 // Installs go through Omarchy's own installer window.
 const cmd = Model.installPackagesCommand(fresh, "Bitwarden CLI")
@@ -132,6 +144,10 @@ check("install: goes through Omarchy's floating-terminal installer",
 
 check("install: names what is being installed, and asks for exactly the packages",
   cmd[3] === "Bitwarden CLI" && cmd[4] === fresh.join(" "),
+  cmd.join(" "))
+
+check("install: no shell of our own to quote for",
+  cmd.every(a => typeof a === "string") && cmd.indexOf("-c") === -1,
   cmd.join(" "))
 
 // omarchy-install-app expands the package list unquoted -- that is how it
@@ -197,6 +213,10 @@ check("reader: a laptop with one is",
 check("reader: the row is still in items either way, for the settings screen",
   NO_READER.items.some(d => d.key === "fprintd"),
   "dropping the row from items would break settingBlocked()")
+
+check("reader: no reader never gates the panel",
+  Model.setupGateActive(NO_READER, true, false) === false,
+  "a machine with no fingerprint reader was held on setup")
 
 // Detection comes from Omarchy's own sysfs scan, which answers before fprintd
 // or usbutils are installed -- which is precisely when the wizard has to

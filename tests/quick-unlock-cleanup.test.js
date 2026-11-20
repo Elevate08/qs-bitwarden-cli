@@ -64,6 +64,28 @@ function vault() {
   }
   return v
 }
+// Closing during a legacy PIN run must not allow a new submission to rename
+// the capture that owns the first run's held master password.
+{
+  const v = vault()
+  Object.assign(v, { sshAuthSurfaceActive: true, pinReady: true, isUnlocking: false,
+    pinBusy: false, pinEntry: "123456", envelopeSummary: null, pendingUnlockPassword: "",
+    syncLoginFieldsToState() {}, clearLoginAttempt() {} })
+  bind(v, service, ["submitPinUnlock", "abandonAuthSecrets"])
+  v.submitPinUnlock()
+  v.pinUnlockProc.runId = 1
+  const capture = v.pinUnlockProc.capture
+  v.abandonAuthSecrets()
+  eq("abandoned legacy PIN remains busy until its process exits", v.pinBusy, true)
+  v.pinEntry = "654321"
+  v.submitPinUnlock()
+  eq("resubmission preserves the in-flight legacy capture", v.pinUnlockProc.capture, capture)
+  v.pinUnlockProc.running = false
+  v.pinUnlockProc.runId = 0
+  v.onPinUnlockResult(0, Model.heldSecretRef(capture.slice(7)))
+  check("abandoned legacy answer is forgotten", v.forgotten.includes(capture.slice(7)))
+  eq("legacy exit releases busy state", v.pinBusy, false)
+}
 // A status held back during a legacy PIN run is re-run on every exit that
 // does not hand off to a typed unlock, including a wrong PIN.
 for (const [label, code, out] of [["wrong PIN", 1, ""], ["empty output", 0, ""]]) {
@@ -84,7 +106,7 @@ for (const [label, code, out] of [["wrong PIN", 1, ""], ["empty output", 0, ""]]
 }
 // VaultProcess keeps its runId after a kill request; only finish releases it.
 // Exercise the real cancellation/result paths while its helper exit is delayed.
-for (const cleanup of ["dismiss", "dismiss then panel close"]) {
+for (const cleanup of ["dismiss", "dismiss twice", "dismiss then panel close"]) {
   for (const exitCode of [143, 0]) {
     const v = vault(); const starts = []; const held = new Set()
     Object.assign(v, { sshAuthSurfaceActive: true, pinReady: true, isUnlocking: false,
@@ -118,6 +140,7 @@ for (const cleanup of ["dismiss", "dismiss then panel close"]) {
     v.submitPinUnlock()
     const capture = v.pinUnlockProc.capture
     v.clearSshPopupUnlockState()
+    if (cleanup === "dismiss twice") v.clearSshPopupUnlockState()
     if (cleanup === "dismiss then panel close") v.abandonAuthSecrets()
     eq(`${label}: kill awaits the original exit`, v.pinUnlockProc.runId, 1)
     eq(`${label}: cancellation stays busy until exit`, v.pinBusy, true)
@@ -307,8 +330,8 @@ for (const reason of ["old account", "old epoch", "logout"]) {
   eq("a queued old purge cannot remove a newly enabled method", v.envelopeProc.command[0], "synthetic-setup")
 }
 // A discarded maintenance job must settle, including a last allowed attempt.
-{
-  const v = vault(); const key = "default:pin"; const attempts = 2
+for (const attempts of [0, 2]) {
+  const v = vault(); const key = "default:pin"
   v.quickUnlockPurgeAttempts[key] = attempts
   v.queueEnvelopeJob({ command: ["blocked-write"], writes: true })
   v.reconcileDisabledMethods()
@@ -354,8 +377,8 @@ for (const reason of ["old account", "old epoch", "logout"]) {
     eq("fresh purge can reconcile", !!v.reconciledMethods[key], true)
   }
 }
-for (const code of [0, 1]) {
-  const v = vault(); const later = []; const key = "default:pin"; const priorAttempts = 2
+for (const code of [0, 1]) for (const priorAttempts of [0, 2]) {
+  const v = vault(); const later = []; const key = "default:pin"
   v.quickUnlockPurgeAttempts[key] = priorAttempts
   v.Qt.callLater = f => later.push(f)
   v.reconcileDisabledMethods()
@@ -415,7 +438,9 @@ case "$1" in
    failed) echo 'synthetic service unavailable' >&2; exit 1;;
    newline-error) printf '\\n' >&2; exit 1;;
    killed) kill -KILL $$;;
+   invalid-status) exit 2;;
    empty-success) exit 0;;
+   present-newline-error) cat "$SYNTHETIC_ENVELOPE"; printf '\\n' >&2; exit 0;;
    present-error) cat "$SYNTHETIC_ENVELOPE"; echo "synthetic warning" >&2; exit 0;;
  esac ;;
  clear) case "$PURGE_CASE" in present) exit 0;; absent) exit 1;; failed) echo 'synthetic service unavailable' >&2; exit 1;; newline-error) printf '\\n' >&2; exit 1;; killed) kill -KILL $$;; esac ;;
@@ -443,20 +468,22 @@ esac
   const stub = path.join(scratch, "secret-tool")
   fs.writeFileSync(stub, fs.readFileSync(stub, "utf8").replace(' clear)',
     ' store) cat > "$SYNTHETIC_ENVELOPE";;\n clear) [ "$5" = unlock_envelope ] && { echo clear >> "\${SYNTHETIC_CALLS:-/dev/null}";'
-    + ' case "$ENVELOPE_CLEAR_CASE" in present) rm -f "$SYNTHETIC_ENVELOPE"; exit 0;;'
-    + ' failed) echo "synthetic service unavailable" >&2; exit 1;; esac; };'))
+    + ' case "$ENVELOPE_CLEAR_CASE" in present) rm -f "$SYNTHETIC_ENVELOPE"; exit 0;; absent) exit 1;;'
+    + ' failed) echo "synthetic service unavailable" >&2; exit 1;; newline-error) printf "\\n" >&2; exit 1;; killed) kill -KILL $$$$;; esac; };'))  // $$$$: replace() reads $$ as one $
   const envelope = path.join(scratch, "envelope")
   const initial = JSON.stringify({ account: { id: "synthetic", server: "https://synthetic.invalid" }, pin: { wrap: "synthetic" } })
-  for (const [kind, ok] of [["present", true], ["absent", true], ["failed", false],
-    ["newline-error", false], ["killed", false], ["empty-success", false], ["present-error", false]]) {
-    fs.writeFileSync(envelope, initial)
-    const command = Model.quickUnlockPurgeCommand(tool, ["default"], "pin")
-    const r = spawnSync(command[0], command.slice(1), { encoding: "utf8", timeout: 5000,
-      env: { PATH: `${scratch}:/usr/bin:/bin`, HOME: scratch, LOOKUP_CASE: kind,
-        PURGE_CASE: "present", SYNTHETIC_ENVELOPE: envelope } })
-    eq(`envelope lookup ${kind}: success disposition`, r.status === 0, ok)
-    eq(`envelope lookup ${kind}: stored wrap disposition`,
-      JSON.parse(fs.readFileSync(envelope, "utf8")).pin !== null, kind !== "present")
+  for (const legacy of ["present", "absent"]) {
+    for (const [kind, ok] of [["present", true], ["absent", true], ["failed", false],
+      ["newline-error", false], ["killed", false], ["invalid-status", false], ["empty-success", false], ["present-error", false], ["present-newline-error", false]]) {
+      fs.writeFileSync(envelope, initial)
+      const command = Model.quickUnlockPurgeCommand(tool, ["default"], "pin")
+      const r = spawnSync(command[0], command.slice(1), { encoding: "utf8", timeout: 5000,
+        env: { PATH: `${scratch}:/usr/bin:/bin`, HOME: scratch, LOOKUP_CASE: kind,
+          PURGE_CASE: legacy, SYNTHETIC_ENVELOPE: envelope } })
+      eq(`envelope lookup ${kind}, legacy ${legacy}: success disposition`, r.status === 0, ok)
+      eq(`envelope lookup ${kind}, legacy ${legacy}: stored wrap disposition`,
+        JSON.parse(fs.readFileSync(envelope, "utf8")).pin !== null, kind !== "present")
+    }
   }
   // The fingerprint wrap holds the data key in the clear, so its purge deletes
   // the envelope entry instead of storing one without the wrap; an envelope
@@ -475,11 +502,11 @@ esac
     return { status: r.status, kept: fs.existsSync(envelope) ? JSON.parse(fs.readFileSync(envelope, "utf8")) : null,
       calls: fs.existsSync(calls) ? fs.readFileSync(calls, "utf8").trim().split("\n").join(",") : "" }
   }
-  {
-    const r = purge("fingerprint", withFingerprint, "present", "present")
-    eq("fingerprint purge: succeeds", r.status, 0)
-    eq("fingerprint purge: the envelope entry is cleared, not stored again", r.kept, null)
-    eq("fingerprint purge: the wrap is never removed on its own", r.calls, "clear")
+  for (const legacy of ["present", "absent"]) {
+    const r = purge("fingerprint", withFingerprint, "present", legacy)
+    eq(`fingerprint purge, legacy ${legacy}: succeeds`, r.status, 0)
+    eq(`fingerprint purge, legacy ${legacy}: the envelope entry is cleared, not stored again`, r.kept, null)
+    eq(`fingerprint purge, legacy ${legacy}: the wrap is never removed on its own`, r.calls, "clear")
   }
   {
     const r = purge("fingerprint", withoutFingerprint, "present", "present")
@@ -493,10 +520,10 @@ esac
     check("and stores the envelope again with the fingerprint wrap kept",
       r.kept !== null && r.kept.pin === null && r.kept.fingerprint === true && r.calls === "remove pin", JSON.stringify(r))
   }
-  {
-    const r = purge("fingerprint", withFingerprint, "failed", "present")
-    eq("fingerprint purge, envelope clear failed: the purge fails", r.status === 0, false)
-    check("fingerprint purge, envelope clear failed: nothing was stored",
+  for (const [clearCase, ok] of [["absent", true], ["failed", false], ["newline-error", false], ["killed", false]]) {
+    const r = purge("fingerprint", withFingerprint, clearCase, "present")
+    eq(`fingerprint purge, envelope clear ${clearCase}: success disposition`, r.status === 0, ok)
+    check(`fingerprint purge, envelope clear ${clearCase}: nothing was stored`,
       r.kept !== null && r.kept.fingerprint === true && r.calls === "clear", JSON.stringify(r))
   }
   const legacyName = Model.keyringEntryName(Model.LEGACY_ENTRY_FOR_METHOD.fingerprint, "default")

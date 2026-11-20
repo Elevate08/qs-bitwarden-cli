@@ -38,9 +38,8 @@ check("auto-type is off by default, in the settings screen and the manifest",
 check("the service reads it false-safe",
   /readonly property bool autoTypeEnabled: Model\.boolSetting\("autoTypeEnabled", setting\("autoTypeEnabled", false\)\)/
     .test(service), "")
-{
-  const text = entry.description
-  check("the settings screen says what it risks and what it needs",
+for (const [where, text] of [["settings screen", entry.description], ["manifest", listed.description]]) {
+  check(`the ${where} says what it risks and what it needs`,
     /Off by default/.test(text) && /whatever window has focus/.test(text) && /any program running as you/.test(text)
       && /Needs wtype/.test(text) && text.indexOf(Model.autoTypeArmMs() / 1000 + " seconds") >= 0, text)
 }
@@ -198,6 +197,8 @@ const reloaded = (v, id, reprompt) => { v.items = v.items.map(i => i.id === id ?
   reloaded(v, "a", 1)
   check("a list that turns its re-prompt on disarms it, and stops the arm's timer",
     !v.autoTypeArmed() && v.autoTypeItemId === "" && v.autoTypeArmEpoch === -1 && v.autoTypeArmTimer.running === false, v.autoTypeItemId)
+  eq("so the key types nothing", v.requestAutoType(), "not-armed")
+  check("and asks the helper nothing", v.queries.length === 0)
 }
 {
   const v = makeVault()
@@ -384,12 +385,22 @@ check("Enter's copy and the arm share one follow-up, and one TOTP notice",
   plain.queries[0].cb(true, true)
   check("a login without TOTP copies nothing after its type", totpCopies(plain).length === 0 && totpNotices(plain).length === 0, "")
 
-  const f = makeVault()
-  f.copyPasswordAndArm(item(f, "t"))
-  f.requestAutoType()
-  f.queries[0].cb(false, "failed")
-  check("a type that failed copies no code", totpCopies(f).length === 0 && totpNotices(f).length === 0
-    && f.autoTypeTypedItemId === "", JSON.stringify(f.fetches))
+  for (const reason of ["missing", "stopped", "failed"]) {
+    const f = makeVault()
+    f.copyPasswordAndArm(item(f, "t"))
+    f.requestAutoType()
+    f.queries[0].cb(false, reason)
+    check(`a type that ended "${reason}" copies no code`, totpCopies(f).length === 0 && totpNotices(f).length === 0
+      && f.autoTypeTypedItemId === "", JSON.stringify(f.fetches))
+  }
+  const late = makeVault()
+  late.copyPasswordAndArm(item(late, "t"))
+  late.requestAutoType()
+  late.autoTypeSeq += 1 // the watchdog gave up on it
+  late.finishAutoType(false, "timeout")
+  late.queries[0].cb(true, true)
+  check("nor one the watchdog gave up on, when the helper's late success comes in", totpCopies(late).length === 0
+    && totpNotices(late).length === 0, JSON.stringify(late.fetches))
 
   const lock = makeVault()
   lock.copyPasswordAndArm(item(lock, "t"))
@@ -618,7 +629,7 @@ check("the read's collector is scrubbed on lock with the other secret readers",
 
 eq("username, Tab, password", Model.autoTypeText("me", "pw").text, "me\tpw")
 eq("the password alone without a username", Model.autoTypeText("", "pw").text, "pw")
-for (const bad of ["a\nb", "a\u007fb", "a\u0085b"]) {
+for (const bad of ["a\nb", "a\tb", "a\rb", "a\bb", "a\u007fb", "a\u001bb", "a\u0085b"]) {
   check(`refused: ${JSON.stringify(bad)}`, Model.autoTypeText("me", bad).reason === "unsafe"
     && Model.autoTypeText(bad, "pw").reason === "unsafe", "")
 }
@@ -689,7 +700,8 @@ function searchBoxWith(opts = {}) {
   check("with text selected it is the box's own copy: not taken, nothing armed",
     sel.press(Qt.ControlModifier, Qt.Key_C) === false && sel.armed.length === 0, sel.armed.join())
   for (const [what, mods, key] of [["Ctrl+Shift+C", Qt.ControlModifier | Qt.ShiftModifier, Qt.Key_C],
-      ["Ctrl+Alt+C", Qt.ControlModifier | Qt.AltModifier, Qt.Key_C], ["Ctrl+V", Qt.ControlModifier, Qt.Key_V]]) {
+      ["Ctrl+Alt+C", Qt.ControlModifier | Qt.AltModifier, Qt.Key_C], ["a plain c", Qt.NoModifier, Qt.Key_C],
+      ["Ctrl+V", Qt.ControlModifier, Qt.Key_V]]) {
     const x = searchBoxWith()
     // Ctrl+Alt+C is Alt+c to the box (copy username), as before.
     const taken = x.press(mods, key, "c")

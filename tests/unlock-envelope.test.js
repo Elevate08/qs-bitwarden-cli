@@ -192,6 +192,8 @@ function suite(realCreds) {
       run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "add-pin" }), { [SECRET]: PASSWORD, [PIN]: PIN_VALUE }).code, 0)
     eq(tag + "the PIN opens it", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).out, PASSWORD)
     eq(tag + "a wrong PIN is a wrong key", open({ kind: "pin" }, { [PIN]: "000000" }).code, 3)
+    check(tag + "adding a method rewrites it on one line",
+      !/[\r\n]/.test(stored()), "the stored secret has a line break")
 
     eq(tag + "fingerprint is added",
       run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "add-fingerprint" }), { [SECRET]: PASSWORD }).code, 0)
@@ -234,6 +236,8 @@ function suite(realCreds) {
     eq(tag + "the PIN still works, now for the new password", open({ kind: "pin" }, { [PIN]: PIN_VALUE }).out, NEW_PASSWORD)
     eq(tag + "so does the key", open({ kind: "fido", cred: CRED }, { [HMAC]: HMAC_VALUE }).out, NEW_PASSWORD)
     eq(tag + "and the stale mark is gone", summary().stale, false)
+    check(tag + "rotating rewrites it on one line",
+      !/[\r\n]/.test(stored()), "the stored secret has a line break")
     eq(tag + "rotating through fingerprint needs no secret",
       run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "rotate", auth: { kind: "fingerprint" } }),
         { [NEW_SECRET]: PASSWORD }).code, 0)
@@ -338,6 +342,8 @@ function suite(realCreds) {
       run(Model.unlockEnvelopeUpdateCommand(tool, ACCOUNT, { kind: "remove", method: "fido", cred: FIDO_CRED_A })).code, 0)
     eq(tag + "B still unlocks",
       run(Model.fidoUnlockCommand(tool, ACCOUNT, Object.assign(onKey(FIDO_CRED_B), { salt: wrapB.salt }))).out, plain)
+    const handedOut = fs.existsSync(hmacLog) ? fs.readFileSync(hmacLog, "utf8").trim().split("\n") : []
+    check(tag + "the stand-in key handed out secrets", handedOut.length >= 5, String(handedOut.length))
 
     // --- an envelope stored across several lines, before __seal() joined them ---
     {

@@ -17,13 +17,16 @@ const { check, done } = createSuite("handoff-urls")
 // fallback would let another user pre-create the directory and collect it.
 
 const login = Model.terminalLoginCommand("login")[2]
+const unlock = Model.terminalLoginCommand("unlock")[2]
 const read = Model.sessionHandoffReadCommand(true)[2]
 
-for (const [label, script] of [["terminal login", login], ["handoff read", read]]) {
+for (const [label, script] of [["terminal login", login], ["terminal unlock", unlock], ["handoff read", read]]) {
   check(`${label} never falls back to /tmp`, !script.includes("/tmp"), script)
   check(`${label} puts the key under XDG_RUNTIME_DIR`, script.includes("XDG_RUNTIME_DIR"), script)
 }
 
+check("the write side refuses to run without a runtime dir, rather than defaulting",
+  /XDG_RUNTIME_DIR:\?/.test(login), login)
 check("mkdir and chmod are both checked, so a directory that is not ours aborts",
   login.includes('mkdir -p -- "$d") || exit 1') && login.includes('chmod 700 -- "$d" || exit 1'), login)
 check("umask is set before the directory is created, not after",
@@ -104,6 +107,7 @@ for (const [input, expected] of [
   ["HTTPS://Example.COM", "HTTPS://Example.COM"],
   ["example.com", "https://example.com"],
   ["example.com:8443/login", "https://example.com:8443/login"],
+  ["localhost:3000", "https://localhost:3000"],
   ["192.168.1.10:8006", "https://192.168.1.10:8006"]
 ]) {
   const r = opens(input)
@@ -112,8 +116,11 @@ for (const [input, expected] of [
 
 for (const [input, scheme] of [
   ["file:///etc/passwd", "file"],
+  ["ftp://files.example.com", "ftp"],
   ["javascript:alert(1)", "javascript"],
+  ["data:text/html,<script>x</script>", "data"],
   ["mailto:someone@example.com", "mailto"],
+  ["vnc://10.0.0.1", "vnc"],
   ["custom-app-handler://do-something", "custom-app-handler"]
 ]) {
   const r = opens(input)
@@ -134,7 +141,9 @@ check("an ambiguous backslash web URL is refused instead of parsed differently b
 for (const [label, input] of [
   ["a space", "https://example.com/a b"],
   ["a newline", "https://example.com/\n--help"],
+  ["a tab", "example.com\t/x"],
   ["a NUL", "https://example.com/\u0000"],
+  ["an escape", "https://example.com/\u001b[2J"],
   ["a DEL", "https://example.com/\u007f"]
 ]) {
   const r = opens(input)

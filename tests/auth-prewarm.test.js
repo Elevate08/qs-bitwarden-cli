@@ -22,6 +22,7 @@ check("the model exposes the three prewarming commands",
 if (Model.unlockPrewarmCommand && Model.emailLoginPrewarmCommand && Model.authPasswordWriteCommand) {
   const unlock = Model.unlockPrewarmCommand()
   const email = Model.emailLoginPrewarmCommand("person@example.com", false, "")
+  const email2fa = Model.emailLoginPrewarmCommand("person@example.com", true, "https://vault.example.com")
   const writer = Model.authPasswordWriteCommand("unlock")
   const distinctive = "  exact master password with spaces  "
 
@@ -29,6 +30,12 @@ if (Model.unlockPrewarmCommand && Model.emailLoginPrewarmCommand && Model.authPa
     /bw unlock .*--passwordfile/.test(flat(unlock)) && !flat(unlock).includes("--passwordenv"), flat(unlock))
   check("prewarmed email login makes bw itself wait on a password FIFO",
     /bw login .*--passwordfile/.test(flat(email)) && !flat(email).includes("--passwordenv"), flat(email))
+  check("email and server inputs remain shell-quoted",
+    flat(email2fa).includes("'person@example.com'")
+      && flat(email2fa).includes("'https://vault.example.com'"), flat(email2fa))
+  check("2FA carries only the placeholder bw-login-code.js swaps for the code",
+    flat(email2fa).includes(" " + Model.twoFactorCodeFlag() + " ")
+      && !flat(email2fa).includes("--code") && !flat(email2fa).includes("QSBW_CODE"), flat(email2fa))
   check("the writer reads the password from the existing protected environment binding",
     flat(writer).includes('"$' + Model.passwordEnvVar() + '"'), flat(writer))
   check("an unknown FIFO name is rejected instead of becoming a path",

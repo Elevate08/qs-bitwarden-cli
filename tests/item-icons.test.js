@@ -19,20 +19,24 @@ const hosts = [
   ["https://github.com/login", "github.com"],
   ["http://Example.COM:8080/path?q=1#x", "example.com"],
   ["https://user:pw@vault.example.org/", "vault.example.org"],
-  ["github.com/login", "github.com"],    // no scheme, has a dot: a website
+  ["github.com", "github.com"],          // no scheme, has a dot: a website
+  ["github.com/login", "github.com"],
   ["https://10.0.0.1/", "10.0.0.1"],
   ["https://example.com./", "example.com"],
   ["localhost", ""],                      // no dot
   ["https://localhost/", ""],
   ["ftp://files.example.com", ""],        // a scheme other than http(s)
+  ["ssh://git@github.com", ""],
   ["androidapp://com.example.app", ""],
+  ["iosapp://com.example.app", ""],
   ["http://abcdefghijklmnop.onion/", ""], // Bitwarden never fetches these
   ["eepsite.i2p", ""],
   ["https://exa mple.com/", ""],
   ["https://例え.jp/", ""],               // only plain ASCII hosts go in the URL
   ["https://evil.com\\@good.com/", ""],
   ["https://-bad-.com/", ""],
-  ["", ""]
+  ["", ""],
+  [null, ""]
 ]
 for (const [uri, want] of hosts) {
   check(`icon host for ${JSON.stringify(uri)}`, Model.websiteIconHost(uri) === want,
@@ -43,6 +47,7 @@ for (const [uri, want] of hosts) {
 
 const services = [
   ["", NET],
+  [null, NET],
   ["https://vault.bitwarden.com", NET],
   ["https://bitwarden.com", NET],
   ["https://vault.bitwarden.eu", "https://icons.bitwarden.eu"],
@@ -101,7 +106,9 @@ check("and the card glyph with them off", Model.itemIconGlyph(visa, false) === M
 check("a brand without a mark keeps the card glyph",
   Model.itemIconGlyph({ typeCode: 3, card: { brand: "Maestro" } }, true) === Model.itemTypeGlyph(3)
     && Model.itemIconGlyph({ typeCode: 3, card: { brand: "__proto__" } }, true) === Model.itemTypeGlyph(3))
-check("a secure note keeps its type glyph", Model.itemIconGlyph({ typeCode: 2 }, true) === Model.itemTypeGlyph(2))
+for (const code of [2, 4, 5]) {
+  check(`type ${code} keeps its type glyph`, Model.itemIconGlyph({ typeCode: code }, true) === Model.itemTypeGlyph(code))
+}
 check("no item draws the login glyph", Model.itemIconGlyph(null, true) === Model.itemTypeGlyph(1))
 
 // --- settings ------------------------------------------------------------------

@@ -109,6 +109,8 @@ for (const [host, root, base] of [
   ["github.com", "github", "github.com"],
   ["dash.cloudflare.com", "cloudflare", "cloudflare.com"],
   ["www.bbc.co.uk", "bbc", "bbc.co.uk"],
+  ["homeassistant.local", "homeassistant", "homeassistant.local"],
+  ["console.aws.amazon.com", "amazon", "amazon.com"],
 ]) {
   const p = Model.parseHost(host)
   check(`parseHost(${host})`, p && p.rootName === root && p.baseDomain === base,
