@@ -154,7 +154,7 @@ TestCase {
       }
       var body = block.join("\n")
       var buttons = []
-      var declarations = directChildren(body, "Button|VaultFilterButton")
+      var declarations = directChildren(body, "Button|PanelButton|VaultFilterButton")
       for (var k = 0; k < declarations.length; k++) {
         var declaration = declarations[k]
         var textBinding = propertyIn(declaration, "text")

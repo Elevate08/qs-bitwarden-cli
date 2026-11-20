@@ -581,6 +581,11 @@ Panel {
     font.family: root.fontFamily
   }
 
+  // The kit's Button in the bar's font.
+  component PanelButton: Button {
+    fontFamily: root.fontFamily
+  }
+
   // An item-form caption.
   component FormCaption: PanelText {
     color: root.dim; font.pixelSize: Style.font.caption; font.bold: true
@@ -1199,13 +1204,12 @@ Panel {
               }
             }
 
-            Button {
+            PanelButton {
               id: copyFollowupTotpBtn
               anchors.verticalCenter: parent.verticalCenter
               text: "Copy TOTP (Enter)"
               selected: true
               accent: Color.accent
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: {
                 var item = root.vault.totpFollowupItem
@@ -1326,11 +1330,10 @@ Panel {
                 width: parent.width
               }
 
-              Button {
+              PanelButton {
                 text: "Resume Signing Now"
                 iconText: "󰐊"
                 tooltipText: "End the cooldown; the next signing request asks again"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.resumeSshSigning()
               }
@@ -1366,10 +1369,9 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: root.vault.sendMode === "create" ? "Back to Sends" : "Back (Esc)"
                 iconText: "󰁍"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: {
                   if (root.vault.sendMode === "create") { root.vault.sendError = ""; root.vault.sendMode = "list" }
@@ -1377,23 +1379,21 @@ Panel {
                 }
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.sendMode === "list"
                 text: "New Send"
                 iconText: "󰐕"
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.beginCreateSend()
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.sendMode === "list"
                 text: "Refresh"
                 iconText: "󰑐"
                 iconSpinning: root.vault.sendsLoading
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.loadSends()
               }
@@ -1549,12 +1549,11 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "Hide text by default"
                   tooltipText: "The recipient must click to reveal it"
                   selected: root.vault.sendFormHidden
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.sendFormHidden = !root.vault.sendFormHidden
                 }
@@ -1590,14 +1589,13 @@ Panel {
                 enabled: !root.vault.sendBusy
               }
 
-              Button {
+              PanelButton {
                 width: parent.width
                 text: root.vault.sendBusy ? "Creating..." : "Create Send & Copy Link"
                 iconText: root.vault.sendBusy ? "󰑐" : "󰒗"
                 iconSpinning: root.vault.sendBusy
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 enabled: !root.vault.sendBusy
                 onClicked: root.vault.submitCreateSend()
               }
@@ -1652,20 +1650,18 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Add Account"
               iconText: "󰐕"
               selected: root.vault.accountIndex === root.vault.accountRows.length
               accent: Color.accent
-              fontFamily: root.fontFamily
               enabled: root.vault.canChangeAccount() && !root.vault.accountsFull
               onClicked: root.vault.beginAddAccount()
             }
 
-            Button {
+            PanelButton {
               text: "Back"
               iconText: "󰁍"
-              fontFamily: root.fontFamily
               onClicked: root.vault.closeAccounts()
             }
           }
@@ -1741,21 +1737,19 @@ Panel {
                 width: parent.width
                 spacing: Style.space(8)
 
-                Button {
+                PanelButton {
                   text: root.vault.fpBusy ? "Checking..." : "Enable"
                   iconText: root.vault.fpBusy ? "󰑐" : "󰈷"
                   iconSpinning: root.vault.fpBusy
                   selected: true
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   enabled: !root.vault.fpBusy
                   onClicked: root.vault.submitFingerprintSetup()
                 }
 
-                Button {
+                PanelButton {
                   text: "Cancel"
                   iconText: "󰅖"
-                  fontFamily: root.fontFamily
                   enabled: !root.vault.fpBusy
                   onClicked: { root.vault.fpError = ""; root.vault.currentScreen = "settings" }
                 }
@@ -1800,21 +1794,19 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: root.vault.generatorFeedsForm ? "Back to item (Esc)" : "Back (Esc)"
                 iconText: "󰁍"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.closeGenerator()
               }
 
               // Only when opened from the item form: fill its password field
               // and return.
-              Button {
+              PanelButton {
                 visible: root.vault.generatorFeedsForm
                 text: "Use this password (Enter)"
                 iconText: "󰄬"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 selected: true
                 accent: Color.accent
@@ -1914,22 +1906,20 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: "Password"
                 iconText: "󰌆"
                 selected: root.vault.genOpts.type === "password"
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.setGenOpt("type", "password")
               }
 
-              Button {
+              PanelButton {
                 text: "Passphrase"
                 iconText: "󰈚"
                 selected: root.vault.genOpts.type === "passphrase"
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.setGenOpt("type", "passphrase")
               }
@@ -1953,44 +1943,39 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "A-Z"
                   selected: root.vault.genOpts.uppercase
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("uppercase", !root.vault.genOpts.uppercase)
                 }
-                Button {
+                PanelButton {
                   text: "a-z"
                   selected: root.vault.genOpts.lowercase
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("lowercase", !root.vault.genOpts.lowercase)
                 }
-                Button {
+                PanelButton {
                   text: "0-9"
                   selected: root.vault.genOpts.numbers
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("numbers", !root.vault.genOpts.numbers)
                 }
-                Button {
+                PanelButton {
                   text: "!@#$%^&*"
                   selected: root.vault.genOpts.special
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("special", !root.vault.genOpts.special)
                 }
-                Button {
+                PanelButton {
                   text: "Avoid ambiguous"
                   tooltipText: "Exclude characters that are easy to confuse, such as l, 1, I, O and 0"
                   selected: root.vault.genOpts.ambiguous
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("ambiguous", !root.vault.genOpts.ambiguous)
                 }
@@ -2051,19 +2036,17 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "Capitalize"
                   selected: root.vault.genOpts.capitalize
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("capitalize", !root.vault.genOpts.capitalize)
                 }
-                Button {
+                PanelButton {
                   text: "Include number"
                   selected: root.vault.genOpts.includeNumber
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.setGenOpt("includeNumber", !root.vault.genOpts.includeNumber)
                 }
@@ -2176,21 +2159,19 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: root.vault.pinBusy ? "Checking..." : "Save PIN"
                 iconText: root.vault.pinBusy ? "󰑐" : "󰄬"
                 iconSpinning: root.vault.pinBusy
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 enabled: !root.vault.pinBusy
                 onClicked: root.vault.submitPinSetup()
               }
 
-              Button {
+              PanelButton {
                 text: "Cancel"
                 iconText: "󰅖"
-                fontFamily: root.fontFamily
                 enabled: !root.vault.pinBusy
                 onClicked: { root.vault.pinError = ""; root.vault.currentScreen = "settings" }
               }
@@ -2320,7 +2301,7 @@ Panel {
                 }
 
                 // One button per row, whichever door this row goes through.
-                Button {
+                PanelButton {
                   anchors.verticalCenter: parent.verticalCenter
                   visible: modelData.setup ? !modelData.ready : !modelData.installed
                   text: modelData.setup ? "Set up" : "Install"
@@ -2328,7 +2309,6 @@ Panel {
                   tooltipText: modelData.setup
                     ? "omarchy setup security fingerprint"
                     : root.vault.installHint([modelData.pkg])
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.installOne(modelData)
                 }
@@ -2340,31 +2320,28 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Re-check"
               iconText: "󰑐"
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.checkDependencies()
             }
 
             // Installs every missing package, optional ones included.
-            Button {
+            PanelButton {
               visible: root.vault.installablePackages.length > 0
               text: root.vault.installablePackages.length > 1 ? "Install all missing" : "Install"
               iconText: "󰐕"
               selected: true
               accent: Color.accent
               tooltipText: root.vault.installHint(root.vault.installablePackages)
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.installMissing()
             }
 
-            Button {
+            PanelButton {
               text: root.vault.missingRequired.length > 0 ? "Continue anyway" : "Done"
               iconText: "󰁍"
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.dismissSetup()
             }
@@ -2422,10 +2399,9 @@ Panel {
                 font.pixelSize: Style.font.caption
               }
 
-              Button {
+              PanelButton {
                 text: "Back (Esc)"
                 iconText: "󰁍"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.closeSettings()
               }
@@ -2712,12 +2688,11 @@ Panel {
                 wrapMode: Text.WrapAnywhere
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.updateAvailableVersion !== "" && root.vault.pluginUpdateCanLaunch
                 text: "Update plugin"
                 iconText: "󰚰"
                 tooltipText: "Runs " + root.vault.pluginUpdateCommandText + " in a terminal"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.runPluginUpdate()
               }
@@ -2736,11 +2711,10 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 text: "Dependencies"
                 iconText: "󰏗"
                 tooltipText: "Check the tools this plugin needs"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: {
                   root.vault.setupDismissed = false
@@ -2768,31 +2742,28 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 visible: !root.vault.pluginDataConfirmPending
                 text: "Remove Plugin Data"
                 iconText: "󰩹"
                 tooltipText: "Clear the keyring entries, learned suggestions and exported public keys this plugin stored"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 enabled: !root.vault.pluginDataBusy
                 onClicked: root.vault.beginPluginDataRemoval()
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.pluginDataConfirmPending
                 text: "Remove Everything"
                 iconText: "󰩹"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 enabled: !root.vault.pluginDataBusy
                 onClicked: root.vault.beginPluginDataRemoval()
               }
 
-              Button {
+              PanelButton {
                 visible: root.vault.pluginDataConfirmPending
                 text: "Cancel"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.cancelPluginDataRemoval()
               }
@@ -2871,12 +2842,11 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               visible: !root.vault.sshAgentLoadActive
               text: "Not now"
               iconText: "󰅖"
               tooltipText: "Refuse this request (Esc)"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.denySshRequest()
             }
@@ -2923,11 +2893,10 @@ Panel {
               elide: Text.ElideRight
             }
 
-            Button {
+            PanelButton {
               id: accountBackBtn
               text: root.vault.addingAccount && root.vault.slotBeforeAdd !== "" ? "Cancel" : "Accounts"
               iconText: root.vault.addingAccount && root.vault.slotBeforeAdd !== "" ? "󰅖" : "󰀉"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               enabled: root.vault.canChangeAccount()
               onClicked: root.vault.addingAccount && root.vault.slotBeforeAdd !== ""
@@ -2939,11 +2908,10 @@ Panel {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Email & Password"
               iconText: "󰇮"
               selected: root.vault.loginMethod === "email"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: {
                 root.vault.invalidateEmailLoginPrewarm()
@@ -2952,11 +2920,10 @@ Panel {
               }
             }
 
-            Button {
+            PanelButton {
               text: "API Key"
               iconText: "󰌋"
               selected: root.vault.loginMethod === "apikey"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: {
                 root.vault.invalidateEmailLoginPrewarm()
@@ -2982,26 +2949,23 @@ Panel {
               anchors.horizontalCenter: parent.horizontalCenter
               spacing: Style.space(6)
 
-              Button {
+              PanelButton {
                 text: "US"
                 selected: root.vault.loginServerRegion === "us"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: root.vault.selectLoginServerRegion("us")
               }
 
-              Button {
+              PanelButton {
                 text: "EU"
                 selected: root.vault.loginServerRegion === "eu"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: root.vault.selectLoginServerRegion("eu")
               }
 
-              Button {
+              PanelButton {
                 text: "Custom"
                 selected: root.vault.loginServerRegion === "custom"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: root.vault.selectLoginServerRegion("custom")
               }
@@ -3077,12 +3041,11 @@ Panel {
                   // Kept from input methods while shown, too.
                   inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 }
-                Button {
+                PanelButton {
                   id: eyeBtnLogin
                   property bool revealed: false
                   iconText: revealed ? "󰈉" : "󰈈"
                   tooltipText: revealed ? "Hide password" : "Show password"
-                  fontFamily: root.fontFamily
                   onClicked: revealed = !revealed
                 }
               }
@@ -3120,14 +3083,13 @@ Panel {
                 onAccepted: root.vault.submitDeviceVerification()
               }
 
-              Button {
+              PanelButton {
                 width: parent.width
                 text: root.vault.isLoading ? "Verifying device..." : "Verify Device & Unlock"
                 iconText: root.vault.isLoading ? "󰑐" : "󰌋"
                 iconSpinning: root.vault.isLoading
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 enabled: !root.vault.isLoading
                 onClicked: root.vault.submitDeviceVerification()
               }
@@ -3136,19 +3098,17 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "Back to credentials"
                   iconText: "󰁍"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.backToCredentials()
                 }
 
                 // A real terminal can answer anything this path cannot.
-                Button {
+                PanelButton {
                   text: "Use Terminal Instead"
                   iconText: "󰞷"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.launchTerminalLogin()
                 }
@@ -3185,11 +3145,10 @@ Panel {
                   width: parent.width
                   spacing: Style.space(2)
 
-                  Button {
+                  PanelButton {
                     width: parent.width
                     text: modelData.label
                     iconText: "󰌋"
-                    fontFamily: root.fontFamily
                     enabled: !root.vault.isLoading
                     onClicked: root.vault.chooseTwoFactorMethod(modelData.method)
                   }
@@ -3204,10 +3163,9 @@ Panel {
                 }
               }
 
-              Button {
+              PanelButton {
                 text: "Back to credentials"
                 iconText: "󰁍"
-                fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: root.backToCredentials()
               }
@@ -3244,19 +3202,17 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                Button {
+                PanelButton {
                   text: "Back to credentials"
                   iconText: "󰁍"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.backToCredentials()
                 }
 
                 // The only way back to the question once remembered.
-                Button {
+                PanelButton {
                   text: "Change method"
                   iconText: "󰑐"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: {
                     root.vault.invalidateEmailLoginPrewarm()
@@ -3266,7 +3222,7 @@ Panel {
               }
             }
 
-            Button {
+            PanelButton {
               // For the stages that use the ordinary login command.
               visible: !root.vault.show2faMethodPicker && !root.vault.showDeviceCodeField
               width: parent.width
@@ -3275,7 +3231,6 @@ Panel {
               iconSpinning: !root.vault.logoutCleanupFailed && (root.vault.logoutPending || root.vault.isLoading)
               selected: true
               accent: Color.accent
-              fontFamily: root.fontFamily
               enabled: root.vault.logoutCleanupFailed || (!root.vault.logoutPending && !root.vault.isLoading)
               onClicked: root.vault.logoutCleanupFailed ? root.vault.retryLogoutCleanup() : root.vault.submitLogin()
             }
@@ -3331,14 +3286,13 @@ Panel {
               }
             }
 
-            Button {
+            PanelButton {
               width: parent.width
               text: root.vault.logoutCleanupFailed ? "Retry Logout Cleanup" : (root.vault.logoutPending ? "Finishing logout..." : (root.vault.isLoading ? "Logging in..." : "Log In with API Key"))
               iconText: root.vault.logoutCleanupFailed ? "󰑐" : ((root.vault.logoutPending || root.vault.isLoading) ? "󰑐" : "󰌋")
               iconSpinning: !root.vault.logoutCleanupFailed && (root.vault.logoutPending || root.vault.isLoading)
               selected: true
               accent: Color.accent
-              fontFamily: root.fontFamily
               enabled: root.vault.logoutCleanupFailed || (!root.vault.logoutPending && !root.vault.isLoading)
               onClicked: root.vault.logoutCleanupFailed ? root.vault.retryLogoutCleanup() : root.vault.submitLogin()
             }
@@ -3357,12 +3311,11 @@ Panel {
               font.bold: root.vault.loginDeviceVerification
               anchors.verticalCenter: parent.verticalCenter
             }
-            Button {
+            PanelButton {
               text: root.vault.loginDeviceVerification ? "Finish in Terminal" : "Launch Terminal"
               iconText: "󰞷"
               selected: root.vault.loginDeviceVerification
               accent: Color.accent
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.launchTerminalLogin()
             }
@@ -3391,23 +3344,21 @@ Panel {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: root.vault.accountCount > 1 ? "Switch Account" : "Add Account"
               iconText: "󰀉"
               tooltipText: root.vault.accountCount > 1
                 ? "Unlock another account; each keeps its own unlock methods"
                 : "Sign in to another account beside this one"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               enabled: root.vault.canChangeAccount()
               onClicked: root.vault.accountCount > 1 ? root.vault.openAccounts() : root.vault.beginAddAccount()
             }
 
-            Button {
+            PanelButton {
               text: "Log Out"
               iconText: "󰍃"
               tooltipText: "Sign this account out and forget its unlock methods"
-              fontFamily: root.fontFamily
               fontSize: Style.font.caption
               onClicked: root.vault.logoutAccount()
             }
@@ -3876,19 +3827,18 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Button {
+              PanelButton {
                 // Short, like the Sends screen's. Beside the list it closes the
                 // pane, and is icon-only like the others: the pane is too
                 // narrow for their labels on one line.
                 text: root.splitView ? "" : "Back (Esc)"
                 iconText: root.splitView ? "󰅖" : "󰁍"
                 tooltipText: root.splitView ? "Close (Esc)" : ""
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.currentScreen = "main"
               }
 
-              Button {
+              PanelButton {
                 visible: Boolean(root.vault.detectedContext && root.vault.detectedContext.displayName && root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
                 readonly property bool pinned: Boolean(root.vault.detailItem
                   && Model.isAssociated(root.vault.associations, root.vault.detectedContext, root.vault.detailItem.id))
@@ -3899,39 +3849,35 @@ Panel {
                 // Window titles are untrusted; tooltips auto-detect markup.
                 tooltipText: Model.plainLabel((pinned ? "Stop suggesting this for " : "Always suggest this for ")
                   + (root.vault.detectedContext ? root.vault.detectedContext.displayName : ""))
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.toggleAssociation(root.vault.detailItem)
               }
 
               // Previous passwords, as Bitwarden's own clients offer them.
-              Button {
+              PanelButton {
                 visible: root.vault.detailHistoryCount > 0
                 text: root.splitView ? "" : "Password history (" + root.vault.detailHistoryCount + ")"
                 iconText: "󰋚"
                 tooltipText: root.splitView ? "Password history (" + root.vault.detailHistoryCount + ") (h)" : ""
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.openHistory()
               }
 
-              Button {
+              PanelButton {
                 visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
                 text: root.splitView ? "" : "Edit"
                 iconText: "󰏫"
                 tooltipText: root.splitView ? "Edit (e)" : ""
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.editDetailItem()
               }
 
-              Button {
+              PanelButton {
                 visible: Boolean(root.vault.detailItem && root.vault.detailItem.typeCode !== 5)
                 text: root.splitView ? "" : "Delete"
                 iconText: "󰆴"
                 tooltipText: root.splitView ? "Delete (x)" : ""
                 accent: Color.urgent
-                fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 onClicked: root.vault.showDeleteConfirm = true
               }
@@ -3964,19 +3910,17 @@ Panel {
                   font.bold: true
                 }
 
-                Button {
+                PanelButton {
                   text: "Confirm Delete"
                   iconText: "󰆴"
                   selected: true
                   accent: Color.urgent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.deleteCurrentItem()
                 }
 
-                Button {
+                PanelButton {
                   text: "Cancel"
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.showDeleteConfirm = false
                 }
@@ -4925,10 +4869,9 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Back (Esc)"
               iconText: "󰁍"
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.closeHistory()
             }
@@ -5023,10 +4966,9 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Button {
+            PanelButton {
               text: "Cancel (Esc)"
               iconText: "󰁍"
-              fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.vault.currentScreen = root.vault.formIsEditing ? "detail" : "main"
             }
@@ -5075,37 +5017,33 @@ Panel {
                 visible: !root.vault.formIsEditing
                 spacing: Style.space(8)
 
-                Button {
+                PanelButton {
                   text: "Login"
                   iconText: "󰌋"
                   selected: root.vault.formTypeCode === 1
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.changeFormType(1)
                 }
 
-                Button {
+                PanelButton {
                   text: "Secure Note"
                   iconText: "󰈙"
                   selected: root.vault.formTypeCode === 2
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.changeFormType(2)
                 }
-                Button {
+                PanelButton {
                   text: "Card"
                   iconText: "󰿯"
                   selected: root.vault.formTypeCode === 3
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.changeFormType(3)
                 }
 
-                Button {
+                PanelButton {
                   text: "Identity"
                   iconText: ""
                   selected: root.vault.formTypeCode === 4
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: root.vault.changeFormType(4)
                 }
@@ -5131,13 +5069,12 @@ Panel {
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "FOLDER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
-                Button {
+                PanelButton {
                   width: parent.width
                   text: Model.plainLabel(root.vault.formFolderLabel())
                   iconText: root.vault.formPicker === "folder" ? "\u{F0140}" : "\u{F024B}"
                   selected: root.vault.formPicker === "folder"
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   leftAlign: true
                   onClicked: root.vault.toggleFormPicker("folder")
@@ -5200,11 +5137,10 @@ Panel {
                     enabled: !root.vault.creatingFolder
                   }
 
-                  Button {
+                  PanelButton {
                     text: root.vault.creatingFolder ? "Adding..." : "Add"
                     iconText: root.vault.creatingFolder ? "\u{F0450}" : "\u{F0415}"
                     iconSpinning: root.vault.creatingFolder
-                    fontFamily: root.fontFamily
                     fontSize: Style.font.caption
                     enabled: !root.vault.creatingFolder && root.vault.newFolderName.trim() !== ""
                     onClicked: root.vault.submitNewFolder()
@@ -5219,13 +5155,12 @@ Panel {
                 spacing: Style.space(3)
                 Text { textFormat: Text.PlainText; text: "ORGANIZATION"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
 
-                Button {
+                PanelButton {
                   width: parent.width
                   text: Model.plainLabel(root.vault.formOrgLabel())
                   iconText: root.vault.formPicker === "organization" ? "\u{F0140}" : "\u{F0991}"
                   selected: root.vault.formPicker === "organization"
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   leftAlign: true
                   onClicked: root.vault.toggleFormPicker("organization")
@@ -5364,10 +5299,9 @@ Panel {
                   Text { textFormat: Text.PlainText; text: "PASSWORD"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
                   Item { Layout.fillWidth: true }
                   // Opens the generator, which fills this field and returns.
-                  Button {
+                  PanelButton {
                     text: "Generate..."
                     iconText: "󰌆"
-                    fontFamily: root.fontFamily
                     fontSize: Style.font.caption
                     onClicked: root.vault.openGenerator()
                   }
@@ -5384,11 +5318,10 @@ Panel {
                     text: root.vault.formPassword
                     onTextChanged: root.vault.formPassword = text
                   }
-                  Button {
+                  PanelButton {
                     id: eyeBtnForm
                     iconText: root.vault.formPasswordRevealed ? "󰈉" : "󰈈"
                     tooltipText: root.vault.formPasswordRevealed ? "Hide password" : "Show password"
-                    fontFamily: root.fontFamily
                     onClicked: root.vault.formPasswordRevealed = !root.vault.formPasswordRevealed
                   }
                 }
@@ -5590,11 +5523,10 @@ Panel {
               // Favorite Star Toggle
               Row {
                 spacing: Style.space(8)
-                Button {
+                PanelButton {
                   text: root.vault.formFavorite ? "★ In Favorites" : "☆ Add to Favorites"
                   selected: root.vault.formFavorite
                   accent: Color.accent
-                  fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   onClicked: root.vault.formFavorite = !root.vault.formFavorite
                 }
@@ -5610,7 +5542,7 @@ Panel {
               }
 
               // Save Action Button
-              Button {
+              PanelButton {
                 width: parent.width
                 text: root.vault.isLoading
                   ? "Saving..."
@@ -5619,7 +5551,6 @@ Panel {
                 iconSpinning: root.vault.isLoading
                 selected: true
                 accent: Color.accent
-                fontFamily: root.fontFamily
                 enabled: !root.vault.isLoading && root.vault.formPicker === ""
                 onClicked: root.vault.saveItemForm()
               }

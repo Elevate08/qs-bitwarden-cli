@@ -112,7 +112,7 @@ const panel = read("Panel.qml")
 const formAt = panel.indexOf("id: editFormCol")
 const itemForm = balanced(panel, panel.lastIndexOf("Column {", formAt))
 const submitForm = functionBody(itemForm, "submitForm")
-const saveButton = itemForm.match(/\/\/ Save Action Button\s*Button \{[\s\S]*?\n {14}\}/)?.[0] || ""
+const saveButton = itemForm.match(/\/\/ Save Action Button\s*PanelButton \{[\s\S]*?\n {14}\}/)?.[0] || ""
 check("the item form saves on Enter with the Save button's guards",
   /root\.vault\.formPicker !== ""/.test(submitForm) && /root\.vault\.isLoading/.test(submitForm)
     && /root\.vault\.saveItemForm\(\)/.test(submitForm)
