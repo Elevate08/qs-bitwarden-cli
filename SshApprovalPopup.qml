@@ -24,7 +24,6 @@ PanelWindow {
     && (vault.sshPrompt !== null || vault.sshUnlockRequest !== null)
     && !vault.pinentryActive
   property bool focusPrimed: false
-  readonly property var anchorWindow: anchorItem ? anchorItem.QsWindow.window : null
   readonly property int cardWidth: Math.max(1, Math.min(Style.space(460), width - Style.gapsOut * 2))
   readonly property int cardHeight: Math.max(1, Math.min(
     content.implicitHeight + card.contentTopInset + card.contentBottomInset,

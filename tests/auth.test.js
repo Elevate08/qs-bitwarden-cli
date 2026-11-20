@@ -281,8 +281,8 @@ for (const [label, cmd] of everyCommand) {
     !text.includes("--code") && !text.includes("$" + Model.twoFactorCodeEnvVar()), text)
 }
 check("a login with a code carries the placeholder instead",
-  flat(emailFull).includes(" " + Model.twoFactorCodeFlag() + " ")
-    && !flat(emailPlain).includes(Model.twoFactorCodeFlag()),
+  flat(emailFull).includes(" " + Model.TWOFACTOR_CODE_FLAG + " ")
+    && !flat(emailPlain).includes(Model.TWOFACTOR_CODE_FLAG),
   flat(emailFull))
 
 // The builders cannot leak what they are never given, so also assert they no
@@ -305,7 +305,7 @@ const emailNoMethod = Model.emailLoginPrewarmCommand("john@example.com", true, "
 check("a chosen method is passed to bw as a bare integer",
   / --method 0 /.test(flat(emailMethod) + " "), flat(emailMethod))
 check("the method is sent before the code, as bw's own option order has it",
-  flat(emailMethod).indexOf("--method") < flat(emailMethod).indexOf(Model.twoFactorCodeFlag()),
+  flat(emailMethod).indexOf("--method") < flat(emailMethod).indexOf(Model.TWOFACTOR_CODE_FLAG),
   flat(emailMethod))
 check("no method at all is sent when none was chosen, so bw picks for itself",
   !flat(emailNoMethod).includes("--method")
@@ -316,7 +316,7 @@ check("a method outside the table never reaches the command line",
     (m) => !flat(Model.emailLoginPrewarmCommand("john@example.com", true, "", m)).includes("--method")),
   "only table members may be interpolated")
 check("the email login stage that carries a method carries no code with it",
-  !flat(Model.emailLoginPrewarmCommand("john@example.com", false, "", 1)).includes(Model.twoFactorCodeFlag())
+  !flat(Model.emailLoginPrewarmCommand("john@example.com", false, "", 1)).includes(Model.TWOFACTOR_CODE_FLAG)
     && flat(Model.emailLoginPrewarmCommand("john@example.com", false, "", 1)).includes("--method 1"),
   "choosing Email must be able to ask bw to send the mail")
 
@@ -397,7 +397,7 @@ check("a 2FA code is neither inlined nor expanded into argv",
   !flat(emailFull).includes(CODE) && !flat(emailFull).includes("--code")
     && !flat(emailFull).includes(Model.twoFactorCodeEnvVar()), flat(emailFull))
 check("no code placeholder at all when no code was entered",
-  !flat(emailPlain).includes(Model.twoFactorCodeFlag()), flat(emailPlain))
+  !flat(emailPlain).includes(Model.TWOFACTOR_CODE_FLAG), flat(emailPlain))
 
 // --- the rest of the command shape still has to be right --------------------
 
@@ -710,7 +710,7 @@ check("restarting email login clears both the second-factor stage and its code",
 // must not read as new-device verification, which also follows a sent code,
 // and the code must not be retried any other way.
 check("a bw without the code preload is recognised by its refusal of the placeholder",
-  Model.loginCodeChannelMissing("", "error: unknown option '" + Model.twoFactorCodeFlag() + "'")
+  Model.loginCodeChannelMissing("", "error: unknown option '" + Model.TWOFACTOR_CODE_FLAG + "'")
     && !Model.loginCodeChannelMissing("", "error: unknown option '--raw'")
     && !Model.loginCodeChannelMissing("", "Code is required."),
   "only bw's refusal of the placeholder counts")
@@ -755,7 +755,7 @@ check("every command that carries a code also carries a method",
     const noMethod = Model.emailLoginPrewarmCommand("a@b.c", true, "", -1).join(" ")
     // The builder still honours -1; it is the panel that must never reach it
     // with a code. Assert the builder pairs them when asked to.
-    return withCode.includes("--method 1") && withCode.includes(Model.twoFactorCodeFlag())
+    return withCode.includes("--method 1") && withCode.includes(Model.TWOFACTOR_CODE_FLAG)
       && !noMethod.includes("--method")
   })(),
   "the pairing is the panel's to enforce, and the builder must support it")

@@ -5,10 +5,9 @@ import qs.Ui
 // Bitwarden's master password re-prompt: an item with the flag asks for the
 // master password before any of its secrets is shown, copied or edited. The
 // vault runs the check (withReprompt() holds the action, submitReprompt()
-// verifies, cancelReprompt() drops it); this only collects the password.
-//
-// Overlaid on the panel content with a scrim, so nothing underneath can be
-// clicked while it asks. Enter submits, Escape cancels.
+// verifies, cancelReprompt() drops it); this only collects the password,
+// overlaid on the panel content with a scrim so nothing underneath can be
+// clicked while it asks.
 Item {
   id: confirm
 
