@@ -22,8 +22,7 @@ Column {
 
   // One method at a time, first available of FIDO2, fingerprint, PIN, master
   // password. `chosen` (set by picking another method in the row) is ignored
-  // once that method becomes unavailable, e.g. an exhausted PIN or a closed
-  // lid.
+  // once that method becomes unavailable (an exhausted PIN, a closed lid).
   property string chosen: ""
   readonly property string method: chosen !== "" && methodAvailable(chosen)
     ? chosen
@@ -48,11 +47,9 @@ Column {
   readonly property var focusField: !typesHere ? null : (method === "pin"
     ? pinField
     : (method === "password" ? passwordField : null))
-  // A FIDO2 attempt: scanning, authorized, then unlocking.
   readonly property bool fidoBusy: form.vault.fidoScanning
     || form.vault.fidoAuthorized
     || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fido")
-  // A fingerprint attempt: scanning, authorized, then unlocking.
   readonly property bool fingerprintBusy: form.vault.fingerprintScanning
     || form.vault.fingerprintAuthorized
     || (form.vault.isUnlocking && form.vault.pendingUnlockFrom === "fingerprint")
@@ -233,7 +230,6 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // Only on the fingerprint screen.
   Text {
     textFormat: Text.PlainText
     visible: form.method === "fingerprint" && form.vault.fingerprintMessage !== ""
@@ -305,7 +301,6 @@ Column {
   Button {
     visible: form.fieldsOffered && form.method === "fingerprint"
     width: parent.width
-    // Once a finger is read, say what the vault is doing.
     text: form.vault.isUnlocking
       ? "Unlocking..."
       : (form.vault.fingerprintScanning ? "Waiting for fingerprint..." : "Unlock with Fingerprint")
@@ -476,7 +471,6 @@ Column {
     }
   }
 
-  // One Unlock button for both typed methods.
   Button {
     visible: form.fieldsOffered && form.method !== "fingerprint" && form.method !== "fido"
     width: parent.width

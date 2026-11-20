@@ -103,7 +103,6 @@ BorderSurface {
       }
     }
 
-    // Optional recovery action for an error (e.g. back to a failed save's form).
     PanelActionButton {
       id: noticeActionButton
       visible: root.showsError && root.actionLabel !== ""

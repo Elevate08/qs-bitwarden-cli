@@ -14,7 +14,6 @@ Panel {
   // =========================================================================
   // View
   // =========================================================================
-  //
   // Everything here draws; the vault (state, commands, timers, IPC) is
   // Service.qml. tests/service-host.test.js enforces that neither side names
   // the other's controls.
@@ -25,7 +24,6 @@ Panel {
   // -------------------------------------------------------------------------
   // View contract
   // -------------------------------------------------------------------------
-  //
   // What the vault may ask of a view, via `presenter` or eachView(); it names
   // no control by id (enforced by tests/service-host.test.js).
 
@@ -68,12 +66,11 @@ Panel {
   }
 
   // SSH requests drawn in the panel itself (the centred card turned off) arm
-  // like the card does (SshApprovalScreen.qml). The panel opens for a request
-  // while the user may be typing elsewhere, and on a locked vault its focus
-  // target is the unlock field, so stray keys and an Enter used to submit a
-  // wrong PIN or part of another password. Until armed, a guard holds the
-  // keyboard and drops every key but Escape; a field the vault asks to focus
-  // meanwhile gets focus once armed.
+  // like the card does (SshApprovalScreen.qml): the panel opens while the user
+  // may be typing elsewhere, and on a locked vault stray keys and an Enter
+  // would submit a wrong PIN or part of another password to the unlock field.
+  // Until armed, a guard holds the keyboard and drops every key but Escape; a
+  // field the vault asks to focus meanwhile gets focus once armed.
   readonly property int sshArmDelayMs: 800
   readonly property bool sshRequestInPanel: root.opened && !root.vault.sshAgentApprovalPopup
     && (root.vault.sshPrompt !== null || root.vault.sshUnlockRequest !== null)
@@ -157,9 +154,8 @@ Panel {
   }
 
   // Re-point each field at its property with Qt.binding, never assign a value:
-  // an imperative `text =` breaks the binding, and the field would keep
-  // showing text the property no longer holds (a login once went out with no
-  // code while the field showed one). See tests/qml/tst_field_binding.qml.
+  // an imperative `text =` breaks the binding, and the field would keep showing
+  // text the property no longer holds. See tests/qml/tst_field_binding.qml.
   function syncLoginFields() {
     code2faField.text = Qt.binding(function() { return root.vault.login2faCode })
     deviceCodeField.text = Qt.binding(function() { return root.vault.loginDeviceCode })
@@ -185,11 +181,10 @@ Panel {
 
   // Master password re-prompt: Bitwarden's per-item flag that asks for the
   // master password before a secret of that item is shown, copied or edited.
-  // Every such action here goes through the vault's withReprompt(), which
-  // runs it at once for an ordinary item and only after the password is
-  // confirmed (RepromptConfirm.qml) for a flagged one. Protected: password,
-  // TOTP, card number and code, SSN, passport and licence numbers, hidden
-  // custom fields, notes, attachments, and editing.
+  // Every such action goes through the vault's withReprompt(), which runs a
+  // flagged item's only after the password is confirmed (RepromptConfirm.qml).
+  // Protected: password, TOTP, card number and code, SSN, passport and licence
+  // numbers, hidden custom fields, notes, attachments, and editing.
   function protect(item, action) {
     root.vault.withReprompt(item, action)
   }
@@ -207,8 +202,7 @@ Panel {
     root.vault.copyDetailField(field, label)
   }
 
-  // Enter, `y` and `p` on the detail screen: a card's number, else a login's
-  // password.
+  // Enter, `y`, `p` on the detail: a card's number, else a login's password.
   function copyPrimarySecret() {
     if (root.vault.detailIsCard) {
       if (root.vault.detailCard && root.vault.detailCard.number) {
@@ -226,7 +220,6 @@ Panel {
 
   // The detail screen's letters, from the key catcher and the action palette.
   function runDetailShortcut(lower) {
-    // `y` copies the item's primary secret (password or card number).
     if (lower === "y" || lower === "p") {
       root.copyPrimarySecret()
     } else if (lower === "n") {
@@ -271,10 +264,9 @@ Panel {
 
   // The item the palette was opened for, as the vault holds it now: the
   // list's item with that id, or on the detail screen the open detail if it
-  // is still that item. Null when a sync removed it from the vault or another
-  // item took its place. The open detail is a copy read earlier, so it also
-  // has to agree with the list about the master-password re-prompt: a sync
-  // that turned it on must not leave the palette acting on the old answer.
+  // is still that item; null when a sync removed or replaced it. The open
+  // detail is an earlier copy, so it must also agree with the list about the
+  // re-prompt: a sync that turned it on must not leave the old answer in use.
   function paletteItem(screen, itemId) {
     if (itemId === "") return null
     var fresh = null
@@ -362,11 +354,10 @@ Panel {
   }
 
   // Ctrl+C (Control alone) with auto-type on: copy and arm the login Enter
-  // acts on -- the open item on the detail screen, the highlighted row of the
-  // list, which is the top suggestion (or the first item) when the panel
-  // opens. Through copyPasswordAndArm(), so after any re-prompt. True when it
-  // took the key: something was armed, or its prompt shown. The callers say
-  // where it may run (the catcher unblocked, a search box with no selection).
+  // acts on -- the open item on the detail screen, else the highlighted row.
+  // Through copyPasswordAndArm(), so after any re-prompt. True when it took
+  // the key: something was armed, or its prompt shown. The callers say where
+  // it may run (the catcher unblocked, a search box with no selection).
   function armAutoTypeFromKey(event) {
     if ((event.modifiers & ~Qt.KeypadModifier) !== Qt.ControlModifier || event.key !== Qt.Key_C) return false
     if (!root.vault.autoTypeEnabled) return false
@@ -409,11 +400,9 @@ Panel {
   // -------------------------------------------------------------------------
   // Vault host
   // -------------------------------------------------------------------------
-  //
   // This widget exists per monitor; `vault` is the shared Service.qml, or a
-  // private one when the shell does not provide it (see
-  // Model.vaultHostDecision()). Never null: until resolved it is the bar's own
-  // inert standby vault.
+  // private one when the shell does not provide it (Model.vaultHostDecision()).
+  // Never null: until resolved it is the bar's own inert standby vault.
   //
   // A private vault may only mean the shell was slow to publish the service,
   // and with one per monitor a lock on one monitor is not a lock on the
@@ -557,8 +546,7 @@ Panel {
     settingsStickyEntry = found
   }
 
-  // Where the section at `index` ends: the next heading, or the last settings
-  // row.
+  // Where section `index` ends: the next heading, or the last settings row.
   function settingsSectionEnd(index) {
     var entries = root.vault.settingsEntries
     for (var i = index + 1; i < entries.length; i++) {
@@ -805,7 +793,6 @@ Panel {
   // -------------------------------------------------------------------------
   // Panel width
   // -------------------------------------------------------------------------
-  //
   // The vault list and an item's detail side by side (the `sideBySide`
   // setting), as Bitwarden desktop draws them, in a panel wide enough for
   // both. Only while unlocked: the lock and login screens keep the compact
@@ -911,10 +898,9 @@ Panel {
           return
         }
 
-        // With auto-type on, Ctrl+C arms the highlighted login
-        // (armAutoTypeFromKey()). Only while the catcher has the keys: in a
-        // field it stays the field's own copy, except in the search box,
-        // which arms from its own handler. Anything else falls through.
+        // With auto-type on, Ctrl+C arms the highlighted login. Only while the
+        // catcher has the keys: in a field it stays the field's own copy,
+        // except in the search box, which arms from its own handler.
         if (!keyCatcher.blocked && root.armAutoTypeFromKey(event)) {
           event.accepted = true
           return
@@ -1032,8 +1018,7 @@ Panel {
         // a card's number. Nothing on notes and identities.
         if (root.vault.currentScreen === "detail") root.copyPrimarySecret()
       }
-      // The kit turns x (and Delete) into this signal rather than a text key,
-      // so `x` never reached onTextKey and did nothing.
+      // The kit turns x (and Delete) into this signal, never a text key.
       onDeleteRequested: {
         if (root.vault.currentScreen === "sends" && root.vault.sendMode === "list") {
           if (root.vault.sendIndex < root.vault.sends.length) root.vault.deleteSend(root.vault.sends[root.vault.sendIndex])
@@ -3447,9 +3432,8 @@ Panel {
               id: searchField
               width: parent.width - (root.vault.searchQuery ? clearSearchBtn.width + Style.space(6) : 0)
               placeholderText: "Search items, usernames, URLs, public keys, fingerprints..."
-              // Bound, and never assigned here: an assignment (the old Escape
-              // and clear button) broke the binding, so a later clear (panel
-              // closed, lock) left the old text in the box.
+              // Bound, never assigned here: an assignment breaks the binding,
+              // and a later clear (panel closed, lock) leaves old text behind.
               text: root.vault.searchQuery
               onTextChanged: {
                 if (root.vault.searchQuery === text) return
@@ -3459,10 +3443,9 @@ Panel {
                 root.vault.scheduleFilterRebuild()
               }
               Keys.onPressed: function(event) {
-                // Ctrl+C arms the highlighted login from here, as Enter copies
-                // it: the box has focus when the panel opens, and the catcher's
-                // Ctrl+C never sees a key while it does. Only with nothing
-                // selected; a selection's Ctrl+C is the box's own copy.
+                // Ctrl+C arms the highlighted login: the box has focus when the
+                // panel opens, and the catcher never sees a key while it does.
+                // Only with nothing selected; a selection's Ctrl+C copies it.
                 if (searchField.selectedText === "" && root.armAutoTypeFromKey(event)) {
                   event.accepted = true
                   return
@@ -3894,10 +3877,9 @@ Panel {
               spacing: Style.space(8)
 
               Button {
-                // Short, like the Sends screen's. Beside the list, it closes
-                // the pane rather than going anywhere.
-                // Icon-only beside the list, as are the others: the pane is
-                // too narrow for their labels on one line.
+                // Short, like the Sends screen's. Beside the list it closes the
+                // pane, and is icon-only like the others: the pane is too
+                // narrow for their labels on one line.
                 text: root.splitView ? "" : "Back (Esc)"
                 iconText: root.splitView ? "󰅖" : "󰁍"
                 tooltipText: root.splitView ? "Close (Esc)" : ""
@@ -5619,9 +5601,8 @@ Panel {
               }
 
               // Enter saves from anywhere in the form, except while a picker
-              // has it. An editable text field claims Return before any
-              // Shortcut and calls submitForm() itself; this covers the rest
-              // (a masked field, or focus on no field).
+              // has it. An editable field claims Return before any Shortcut and
+              // calls submitForm() itself; this covers a masked field, or none.
               Shortcut {
                 sequences: ["Return", "Enter"]
                 enabled: root.vault.activeScreen === "edit" && root.vault.formPicker === "" && !root.vault.isLoading
@@ -5658,9 +5639,8 @@ Panel {
       }
 
       // Ctrl+K: a searchable list of what the highlighted row or open item
-      // can do (Model.itemActions()), each with its letter. Enter runs it, the
-      // arrows move, Escape returns to where the key was pressed. Overlaid
-      // with a scrim, like the re-prompt question.
+      // can do (Model.itemActions()), each with its letter. Escape returns to
+      // where the key was pressed. Overlaid with a scrim, like the re-prompt.
       Item {
         id: actionPalette
         anchors.fill: parent
@@ -5673,9 +5653,8 @@ Panel {
         // Where Ctrl+K was pressed: the screen, and whether from the search box.
         property string fromScreen: "main"
         property bool fromSearch: false
-        // The item Ctrl+K was pressed on. Actions run on this id, not on the
-        // row the cursor is on when Enter is pressed: a sync can reorder the
-        // list while the palette is open.
+        // The item Ctrl+K was pressed on. Actions run on this id, not the
+        // cursor's row: a sync can reorder the list while the palette is open.
         property string itemId: ""
         property var all: []
         readonly property var actions: shown ? Model.filterActions(all, query) : []

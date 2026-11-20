@@ -3,18 +3,15 @@ import QtQuick.Controls as QQC
 import qs.Commons
 import qs.Ui
 
-// Number spinner with the shell NumberField's chrome and call-site API (label,
-// value, from, to, stepSize, foreground, accent, fontFamily, fontSize,
-// fieldWidth, hasCursor, modified, field).
+// Number spinner with the shell NumberField's chrome and call-site API.
 //
-// The shell's NumberField types into an editable TextInput. On Qt 6.12 that
-// control reads the Wayland clipboard offer on the GUI thread whenever the
-// clipboard changes, with no total byte cap (QTBUG-149610), so any live one
-// lets another clipboard owner stall the shell. This one types into a
-// TextEdit, which only asks which formats are offered. A number needs no
-// paste, so Ctrl+V, Shift+Insert and middle-click are swallowed rather than
-// routed anywhere. The SpinBox stays non-editable: it keeps the buttons, the
-// range and the step, and never owns a text input.
+// The shell's NumberField types into an editable TextInput, and on Qt 6.12
+// any live one lets another clipboard owner stall the shell (QTBUG-149610,
+// see LineField.qml). This one types into a TextEdit, which only asks which
+// formats are offered. A number needs no paste, so Ctrl+V, Shift+Insert and
+// middle-click are swallowed rather than routed anywhere. The SpinBox stays
+// non-editable: it keeps the buttons, the range and the step, and never owns
+// a text input.
 //
 // A typed value is committed on Return/Enter and on focus loss. It is
 // reported through modified() and never written to `value`, so a caller's
@@ -186,7 +183,6 @@ Column {
           root.step(-1)
           return
         }
-        // Printable text: digits, and a minus where the range allows one.
         // Chords (Ctrl+A, Ctrl+Z...) keep their editing meaning; AltGr arrives
         // as Ctrl+Alt and still carries a character.
         if (!event.text || event.text.charCodeAt(0) < 32) return

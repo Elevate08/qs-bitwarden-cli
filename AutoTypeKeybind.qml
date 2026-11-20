@@ -5,8 +5,7 @@ import "BitwardenModel.js" as Model
 
 // Under "Auto-type logins" while it is on: which key runs the autoType IPC,
 // and registering one in ~/.config/hypr/bindings.lua (see "Auto-type
-// keybinding" in BitwardenModel.js). Stateless; reads the vault and calls back
-// into it.
+// keybinding" in BitwardenModel.js). Stateless: reads the vault, calls back.
 Column {
   id: section
 
