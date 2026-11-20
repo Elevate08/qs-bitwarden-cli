@@ -39,6 +39,11 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 signature = { version = "2", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
+# The generator behind RSA blinding: ChaCha20 keyed with 32 bytes read from
+# /dev/urandom for each signature (src/signing.rs). Already in the graph at
+# this version, under rsa's bignum crate, against the same rand_core; default
+# features stay off, and nothing here turns on getrandom.
+rand_chacha = { version = "0.3.1", default-features = false }
 
 [dev-dependencies]
 # Test-only key generation, so no private key material is committed.
