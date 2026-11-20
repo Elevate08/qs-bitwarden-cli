@@ -250,13 +250,22 @@ const bodyOf = name => functionBody(panelSrc, name)
     Model, opened: false, sshAuthSurfaceActive: false, pinentryActive: false, status: "locked", sshPrompt: null,
     secondFactorStartedAt: 0, pinentryAutoAsked: false, unlockProc: proc(), loginProc: proc(), authPasswordWriterProc: proc(),
     presenter: { focusField() {} }, fidoUnlocker: { releaseSurface() {} },
-    resumeFromPinentry: () => false, pendingSecondFactorLogin: () => false
+    resumeFromPinentry: () => false, pendingSecondFactorLogin: () => false,
+    unlockPrewarmQuit: false, unlockPrewarmStopped: false, unlockSubmitted: false, isUnlocking: false, errorMessage: "",
+    pendingUnlockPassword: "", unlockStdout: { text: "" }, unlockStderr: { text: "" }, scrubbing: false,
+    Qt: { callLater(fn) { fn() } }, writeAuthPassword() {}, cancelFidoUnlock() {},
+    // The scrub that follows an unsubmitted exit, and its own exit.
+    clearProcessCollectorSoon() { v.scrubbing = true },
+    finishScrubRun() { const was = v.scrubbing; v.scrubbing = false; return was }
   }
   for (const stub of ["focusAppropriateField", "detectActiveWindowContext", "refreshFingerprintAvailability", "refreshStatus",
     "armPresenceUnlock", "clearRepromptGrant", "resetPinentryChoice", "cancelFingerprintUnlock", "abandonAuthSecrets"]) v[stub] = () => {}
-  const real = ["panelShown", "onPanelOpened", "prepareUnlock", "cancelAuthPrewarm"]
+  const real = ["panelShown", "onPanelOpened", "prepareUnlock", "cancelAuthPrewarm", "unlockVaultWithPassword"]
+  const unlockDecl = panelSrc.slice(panelSrc.indexOf("id: unlockProc"))
+  const exited = unlockDecl.slice(unlockDecl.indexOf("onExited: function(exitCode) {")).replace("onExited: function(exitCode) {", "onExited: {")
   Object.assign(v, new Function("root", "with (root) {\n" + real.map(bodyOf).join("\n")
-    + "\nreturn { " + real.join(", ") + ", openedChanged() {" + handlerBody(panelSrc, "onOpenedChanged") + "} } }")(v))
+    + "\nreturn { " + real.join(", ") + ", openedChanged() {" + handlerBody(panelSrc, "onOpenedChanged") + "}"
+    + ", exited(exitCode) {" + handlerBody(exited, "onExited") + "} } }")(v))
   v.opened = true
   v.openedChanged()
   const onOpen = starts.length
@@ -264,11 +273,19 @@ const bodyOf = name => functionBody(panelSrc, name)
   v.sshAuthSurfaceActive = true
   v.prepareUnlock()
   const prewarmed = onOpen === 1 && starts.length === 1 && starts[0] === v.unlockProc && v.unlockProc.running
+  // It ends by itself, unsubmitted; its scrub runs and exits. Not started
+  // again until a submit, which starts the one it writes to.
+  v.unlockProc.on = false
+  v.exited(1)
+  v.exited(0)
+  const afterQuit = starts.length
+  v.unlockVaultWithPassword("typed")
+  const onSubmit = starts.length
   v.opened = false
   v.openedChanged()
-  check("a locked panel that opens starts one unlock prewarm, and closing it stops that",
-    prewarmed && !v.unlockProc.running && starts.length === 1,
-    `started as it opened: ${onOpen}, in all: ${starts.length}, running after close: ${v.unlockProc.running}`)
+  check("a locked panel that opens starts one unlock prewarm, one that quits waits for a submit, and closing stops it",
+    prewarmed && afterQuit === 1 && onSubmit === 2 && !v.unlockProc.running && starts.length === 2,
+    `started as it opened: ${onOpen}, after it quit: ${afterQuit}, on submit: ${onSubmit}, running after close: ${v.unlockProc.running}`)
 }
 check("submitting unlock writes to the prepared FIFO",
   /writeAuthPassword\("unlock",\s*p\)/.test(bodyOf("unlockVaultWithPassword")), bodyOf("unlockVaultWithPassword"))

@@ -4334,13 +4334,23 @@ Item {
   // inside onOpenedChanged) that binding has not been evaluated again yet and
   // still reads false, which left an opened lock screen without its prewarm.
   function prepareUnlock() {
-    if ((!opened && !sshAuthSurfaceActive) || status !== "locked" || unlockProc.running) return
+    if ((!opened && !sshAuthSurfaceActive) || status !== "locked" || unlockProc.running || unlockPrewarmQuit) return
     unlockSubmitted = false
     unlockProc.command = Model.unlockPrewarmCommand()
     unlockProc.running = true
   }
 
+  // A prewarm that ended by itself before any submit (its FIFO could not be
+  // made, say) is not started again by the scrub that follows it, which
+  // would repeat for as long as the lock screen is up. The next submit, or
+  // whatever cancels the prewarm (a close, a lock), clears that. One stopped
+  // here is not such an end.
+  property bool unlockPrewarmQuit: false
+  property bool unlockPrewarmStopped: false
+
   function cancelAuthPrewarm() {
+    unlockPrewarmQuit = false
+    if (unlockProc.running && !Model.isScrubCommand(unlockProc.command)) unlockPrewarmStopped = true
     authPasswordWriteTarget = ""
     authPasswordWriteValue = ""
     unlockSubmitted = false
@@ -6701,6 +6711,7 @@ Item {
     // Held until the result; the FIFO writer reads it as BW_PASSWORD (the
     // prewarmed unlockProc never sees it).
     pendingUnlockPassword = p
+    unlockPrewarmQuit = false
     prepareUnlock()
     unlockSubmitted = true
     writeAuthPassword("unlock", p)
@@ -10762,6 +10773,8 @@ Item {
         return
       }
       if (!root.unlockSubmitted) {
+        root.unlockPrewarmQuit = !root.unlockPrewarmStopped
+        root.unlockPrewarmStopped = false
         root.clearProcessCollectorSoon(unlockProc)
         return
       }
