@@ -236,6 +236,23 @@ impl ApprovalManager {
         released
     }
 
+    /// The key set was replaced, or put back in service: requests whose key
+    /// it serves carry on at `epoch` with their deadlines as they were; the
+    /// rest are dropped and returned.
+    pub fn rebase(&mut self, epoch: u64, mut served: impl FnMut(&[u8]) -> bool) -> Vec<RequestId> {
+        let mut dropped = Vec::new();
+        self.pending.retain_mut(|request| {
+            let keep = served(&request.public_blob);
+            if keep {
+                request.epoch = epoch;
+            } else {
+                dropped.push(request.id);
+            }
+            keep
+        });
+        dropped
+    }
+
     pub fn disconnect(&mut self, id: RequestId) {
         self.pending.retain(|request| request.id != id);
     }

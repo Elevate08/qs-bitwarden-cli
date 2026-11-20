@@ -4,12 +4,13 @@ use qs_bitwarden_ssh_agent::approvals::{
 use qs_bitwarden_ssh_agent::control::{
     parse_control_line, ControlMessage, LoadStatus, MAX_CONTROL_LINE,
 };
-use qs_bitwarden_ssh_agent::keystore::{KeyStore, MAX_KEYS};
+use qs_bitwarden_ssh_agent::keystore::{KeyStore, LoadReport, MAX_KEYS};
 use qs_bitwarden_ssh_agent::lifecycle::harden_process;
 use qs_bitwarden_ssh_agent::load::LoadWindow;
 use qs_bitwarden_ssh_agent::protocol::{self, AgentRequest};
 use qs_bitwarden_ssh_agent::runtime::{read_payload_async, Runtime, RuntimeError, ServiceRuntime};
 use qs_bitwarden_ssh_agent::server::{self, ClientEvent};
+use qs_bitwarden_ssh_agent::state::VaultState;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -29,11 +30,19 @@ enum Output {
         fifo_path: String,
         #[serde(rename = "agentVersion")]
         agent_version: String,
+        /// What this helper does that one before it did not; see `FEATURES`.
+        features: &'static [&'static str],
     },
     ApprovalRequired {
         v: u8,
         #[serde(rename = "requestId")]
         request_id: u64,
+        /// The id this request's `unlock_required` had, which still answers
+        /// it once (`addressed`); 0 for a request that was never held. Always
+        /// present, so the panel can tell this helper's "none" from an older
+        /// helper's silence.
+        #[serde(rename = "promotedFrom")]
+        promoted_from: u64,
         #[serde(rename = "keyId")]
         key_id: String,
         #[serde(rename = "keyName")]
@@ -156,7 +165,19 @@ struct PendingSign {
     reply: oneshot::Sender<Vec<u8>>,
     message: Vec<u8>,
     flags: u32,
+    /// The id of the `unlock_required` this request was held under, until a
+    /// decision has been taken by it (`addressed`).
+    promoted_from: Option<RequestId>,
+    /// The grant window, if the user approved while no key could sign (a key
+    /// load running, or keys set aside): applied by `settle_pending` when
+    /// keys are in service again, never before.
+    approved: Option<u64>,
 }
+
+/// What `ready` lists. `keys-aside`: a failed `key_load_end` sets keys in
+/// service aside instead of dropping them, and `keys_resume` and `keys_drop`
+/// are understood.
+const FEATURES: &[&str] = &["keys-aside"];
 
 /// A signature asked for while locked, kept whole so the unlock it triggers
 /// can release it.
@@ -253,10 +274,10 @@ impl ControlReader {
 
 /// Control output uses `try_send`, and the writer cannot run until the select
 /// loop yields, so the channel holds one iteration's largest burst: a
-/// successful load (a `public_key` per key and `keys_loaded`, then two
-/// messages per held sign request and one for held listings). A full channel
-/// fails `emit`, which ends the helper.
-const CONTROL_OUTPUT_CAPACITY: usize = MAX_KEYS + 1 + 2 * MAX_PENDING + 1 + 8;
+/// successful load (a `public_key` per key and `keys_loaded`, one message per
+/// waiting request whose key went, then two per held sign request and one
+/// for held listings). A full channel fails `emit`, which ends the helper.
+const CONTROL_OUTPUT_CAPACITY: usize = MAX_KEYS + 1 + 3 * MAX_PENDING + 1 + 8;
 
 fn emit(output: &mpsc::Sender<Output>, message: Output) -> Result<(), ()> {
     output.try_send(message).map_err(|_| ())
@@ -362,7 +383,7 @@ async fn run() -> Result<(), ()> {
                         // The gate stays closed until a load publishes keys
                         // (`finish_load_if_ready`), as `KeyStore::authorize`
                         // requires; nothing could be signed before then.
-                        emit(&output_tx, Output::Ready { v: 1, socket_path: socket.clone(), fifo_path: fifo.clone(), agent_version: env!("CARGO_PKG_VERSION").to_owned() })?;
+                        emit(&output_tx, Output::Ready { v: 1, socket_path: socket.clone(), fifo_path: fifo.clone(), agent_version: env!("CARGO_PKG_VERSION").to_owned(), features: FEATURES })?;
                     }
                     ControlMessage::Hello { .. } => return Err(()),
                     ControlMessage::VaultLocked { epoch, .. } => {
@@ -391,19 +412,10 @@ async fn run() -> Result<(), ()> {
                             request.approved = Some(grant_seconds);
                             continue;
                         }
-                        let Some(sign) = pending.remove(&request_id) else { continue };
-                        let response = approvals
-                            .approve(request_id, grant_seconds, elapsed_ms(started))
-                            .map(|authorization| {
-                                authorized_signature(&store, authorization, &sign.message, sign.flags)
-                            })
-                            .unwrap_or_else(|_| protocol::failure_response());
-                        let _ = sign.reply.send(response);
-                        if grant_seconds > 0 {
-                            settle_granted(&mut approvals, &mut pending, &store, started, &output_tx)?;
-                        }
+                        approve(request_id, grant_seconds, gate_open, &store, &mut approvals, &mut pending, started, &output_tx)?;
                     }
                     ControlMessage::Deny { request_id, .. } | ControlMessage::UnlockCancelled { request_id, .. } => {
+                        let request_id = addressed(&mut pending, request_id, &output_tx)?;
                         approvals.disconnect(request_id);
                         if let Some(sign) = pending.remove(&request_id) { let _ = sign.reply.send(protocol::failure_response()); }
                         // The panel asked, so no request_cancelled back.
@@ -412,15 +424,35 @@ async fn run() -> Result<(), ()> {
                             release_held_identities(&mut held_identities, &store, &output_tx, "cancelled")?;
                         }
                     }
+                    ControlMessage::KeysResume { .. } => {
+                        // Only keys a failed `key_load_end` set aside: after a
+                        // lock or a logout there are none, and a load still
+                        // running decides for itself.
+                        if active_load.is_none() && !gate_open && store.state() == VaultState::Unlocked {
+                            gate_open = true;
+                            settle_pending(&mut approvals, &mut pending, &store, started, &output_tx)?;
+                        }
+                    }
+                    ControlMessage::KeysDrop { .. } => {
+                        // The same keys and no others: with none loaded any
+                        // more, every request that waited on them fails.
+                        if active_load.is_none() && !gate_open && store.state() == VaultState::Unlocked {
+                            store.lock(store.epoch());
+                            settle_pending(&mut approvals, &mut pending, &store, started, &output_tx)?;
+                        }
+                    }
                     ControlMessage::Options { unlock_on_demand: on, .. } => unlock_on_demand = on,
                     ControlMessage::RevokeGrants { .. } => approvals.revoke_all_grants(),
                     ControlMessage::RevokeGrant { grant_id, .. } => approvals.revoke_grant(grant_id),
                     ControlMessage::Shutdown { .. } => break,
                     ControlMessage::KeyLoadBegin { epoch, load_id, .. } => {
                         if active_load.is_some() { return Err(()); }
+                        // Nothing signs until the load has ended. Requests
+                        // waiting for an answer wait on (`settle_pending`
+                        // checks them against the keys the load leaves);
+                        // grants end here, as they always have.
                         gate_open = false;
-                        approvals.invalidate_all();
-                        fail_pending(&mut pending);
+                        approvals.revoke_all_grants();
                         let window = LoadWindow::new(epoch, &load_id).map_err(|_| ())?;
                         // No drain here: the panel starts the vault read right
                         // after sending this line, so a drain could race this
@@ -438,8 +470,16 @@ async fn run() -> Result<(), ()> {
                         let Some(load) = active_load.as_mut() else { return Err(()) };
                         if load.epoch != epoch { return Err(()); }
                         if status != LoadStatus::Ok {
+                            // The panel's vault read failed, which a session
+                            // ended elsewhere looks like too. Keys in service
+                            // stay loaded but sign nothing until the panel
+                            // has read that vault again (`keys_resume`) or a
+                            // load publishes, and go if it could not
+                            // (`keys_drop`). Not a lock: `vault_locked` and
+                            // `vault_logged_out` drop every key whatever was
+                            // set aside here.
                             cancel_load(&mut active_load, runtime.runtime());
-                            store.lock(epoch);
+                            keep_or_lock(&mut store, epoch);
                             gate_open = false;
                             cancel_held(&mut held, "load-failed", &output_tx)?;
                             release_held_identities(&mut held_identities, &store, &output_tx, "load-failed")?;
@@ -609,7 +649,10 @@ fn handle_client(
                 kind: classified.kind,
                 forwarded: event.forwarded || host_claimed,
             };
-            if !gate_open {
+            // With the key loaded but nothing signing (a key load running, or
+            // keys set aside), the request is an ordinary one that waits: no
+            // grant is live then, so it is always asked about.
+            if !gate_open && store.authorize(&public_blob).is_none() {
                 // Locked but the cache knows the key: ask the panel to unlock
                 // and hold the request. Unknown keys are not ours.
                 let Some(key) = store
@@ -678,7 +721,13 @@ fn handle_client(
                 elapsed_ms(started),
             ) {
                 Ok(Submit::Granted(authorization)) => {
-                    let response = authorized_signature(store, authorization, &message, flags);
+                    // No grant is live with the gate closed; were one, it
+                    // would still sign nothing.
+                    let response = if gate_open {
+                        authorized_signature(store, authorization, &message, flags)
+                    } else {
+                        protocol::failure_response()
+                    };
                     let _ = event.reply.send(response);
                 }
                 Ok(Submit::Pending(id)) => {
@@ -698,6 +747,7 @@ fn handle_client(
                         Output::ApprovalRequired {
                             v: 1,
                             request_id: id,
+                            promoted_from: 0,
                             key_id: key.item_id.clone(),
                             key_name: protocol::visible_text(&key.name),
                             fingerprint: key.fingerprint.clone(),
@@ -717,6 +767,8 @@ fn handle_client(
                             reply: event.reply,
                             message,
                             flags,
+                            promoted_from: None,
+                            approved: None,
                         },
                     );
                 }
@@ -744,7 +796,8 @@ fn release_held(
     let mut released = held.drain().collect::<Vec<_>>();
     released.sort_by_key(|(old_id, _)| *old_id);
     for (old_id, request) in released {
-        // Withdraw the unlock prompt; an approval prompt with its own id follows.
+        // Withdraw the unlock prompt; an approval prompt with its own id
+        // follows, naming this one (`promotedFrom`).
         emit(
             output,
             Output::RequestCancelled {
@@ -809,6 +862,7 @@ fn release_held(
                     Output::ApprovalRequired {
                         v: 1,
                         request_id: id,
+                        promoted_from: old_id,
                         key_id: key.item_id.clone(),
                         key_name: protocol::visible_text(&key.name),
                         fingerprint: key.fingerprint.clone(),
@@ -830,6 +884,8 @@ fn release_held(
                         reply: request.reply,
                         message: request.message,
                         flags: request.flags,
+                        promoted_from: Some(old_id),
+                        approved: None,
                     },
                 );
             }
@@ -841,6 +897,113 @@ fn release_held(
     // One approved with a grant may follow another from the same program that
     // has just been queued.
     settle_granted(approvals, pending, store, started, output)
+}
+
+/// The request a decision is for. One released from an unlock is still
+/// answered under the id its unlock prompt had, exactly once: that id is the
+/// only one the panel knows until it has read the `approval_required` that
+/// replaced it. The prompt under the new id, on its way or already up, is
+/// withdrawn as "granted", which every panel reads as answered: it closes
+/// the prompt and counts nothing toward the cooldown.
+fn addressed(
+    pending: &mut HashMap<RequestId, PendingSign>,
+    id: RequestId,
+    output: &mpsc::Sender<Output>,
+) -> Result<RequestId, ()> {
+    let Some((&current, sign)) = pending
+        .iter_mut()
+        .find(|(_, sign)| sign.promoted_from == Some(id))
+    else {
+        return Ok(id);
+    };
+    sign.promoted_from = None;
+    emit(
+        output,
+        Output::RequestCancelled {
+            v: 1,
+            request_id: current,
+            reason: "granted",
+        },
+    )?;
+    Ok(current)
+}
+
+/// The panel's Approve for a request waiting for one.
+#[allow(clippy::too_many_arguments)]
+fn approve(
+    request_id: RequestId,
+    grant_seconds: u64,
+    gate_open: bool,
+    store: &KeyStore,
+    approvals: &mut ApprovalManager,
+    pending: &mut HashMap<RequestId, PendingSign>,
+    started: Instant,
+    output: &mpsc::Sender<Output>,
+) -> Result<(), ()> {
+    let request_id = addressed(pending, request_id, output)?;
+    if !gate_open {
+        // Nothing signs now: kept for `settle_pending`.
+        if let Some(sign) = pending.get_mut(&request_id) {
+            sign.approved = Some(grant_seconds);
+        }
+        return Ok(());
+    }
+    let Some(sign) = pending.remove(&request_id) else {
+        return Ok(());
+    };
+    let response = approvals
+        .approve(request_id, grant_seconds, elapsed_ms(started))
+        .map(|authorization| authorized_signature(store, authorization, &sign.message, sign.flags))
+        .unwrap_or_else(|_| protocol::failure_response());
+    let _ = sign.reply.send(response);
+    if grant_seconds > 0 {
+        settle_granted(approvals, pending, store, started, output)?;
+    }
+    Ok(())
+}
+
+/// Keys are in service again after a key load (published, or failed with the
+/// keys before it kept) or after keys set aside were resumed. A request that
+/// waited carries on if its key is among them, and fails if it is not; one
+/// approved meanwhile is signed now.
+fn settle_pending(
+    approvals: &mut ApprovalManager,
+    pending: &mut HashMap<RequestId, PendingSign>,
+    store: &KeyStore,
+    started: Instant,
+    output: &mpsc::Sender<Output>,
+) -> Result<(), ()> {
+    for id in approvals.rebase(store.epoch(), |blob| store.authorize(blob).is_some()) {
+        if let Some(sign) = pending.remove(&id) {
+            let _ = sign.reply.send(protocol::failure_response());
+        }
+        emit(
+            output,
+            Output::RequestCancelled {
+                v: 1,
+                request_id: id,
+                reason: "withdrawn",
+            },
+        )?;
+    }
+    let mut approved: Vec<_> = pending
+        .iter()
+        .filter_map(|(id, sign)| sign.approved.map(|grant_seconds| (*id, grant_seconds)))
+        .collect();
+    approved.sort_unstable();
+    for (id, grant_seconds) in approved {
+        approve(
+            id,
+            grant_seconds,
+            true,
+            store,
+            approvals,
+            pending,
+            started,
+            output,
+        )?;
+    }
+    Ok(())
 }
 
 /// Answers the queued requests a grant just opened covers, and withdraws
@@ -1003,6 +1166,9 @@ fn settle_load(
     started: Instant,
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
+    if !matches!(outcome, LoadOutcome::Pending) {
+        settle_pending(approvals, pending, store, started, output)?;
+    }
     match outcome {
         LoadOutcome::Pending => Ok(()),
         LoadOutcome::Published => {
@@ -1031,14 +1197,8 @@ fn finish_load_if_ready(
     }
     let mut load = active.take().ok_or(())?;
     load.task.abort();
-    let result = load
-        .payload
-        .take()
-        .ok_or(())?
-        .map_err(|_| ())
-        .and_then(|payload| load.window.decode(payload, store).map_err(|_| ()))
-        .and_then(|candidate| store.publish(candidate).map_err(|_| ()));
-    match result {
+    let payload = load.payload.take().ok_or(())?;
+    match publish_load(&mut load.window, load.epoch, payload, store) {
         Ok(report) => {
             *gate_open = true;
             // Before keys_loaded, so the panel has the whole set.
@@ -1067,8 +1227,10 @@ fn finish_load_if_ready(
         }
         Err(()) => {
             // A bad FIFO payload is a failed load (retryable), not a lock ack.
-            store.lock(load.epoch);
-            *gate_open = false;
+            // The panel's read of the vault succeeded (`key_load_end` said
+            // so), so the session is the one the keys in service were loaded
+            // in, and they stay in service.
+            *gate_open = keep_or_lock(store, load.epoch);
             // Its payload may have landed after the reader gave up (a vault
             // read past the 30 s deadline). The next load's filter would skip
             // it anyway; wiping it now keeps keys from sitting in the pipe.
@@ -1084,6 +1246,39 @@ fn finish_load_if_ready(
             Ok(LoadOutcome::Failed)
         }
     }
+}
+
+/// Decode a load's payload and put its keys in service. The candidate is
+/// built aside and takes the store's place only whole, so a load that fails
+/// at any point leaves the keys in service, and their epoch, as they were.
+fn publish_load(
+    window: &mut LoadWindow,
+    epoch: u64,
+    payload: Result<Zeroizing<Vec<u8>>, RuntimeError>,
+    store: &mut KeyStore,
+) -> Result<LoadReport, ()> {
+    if epoch <= store.epoch() {
+        return Err(());
+    }
+    let mut next = KeyStore::new();
+    let candidate = window
+        .decode(payload.map_err(|_| ())?, &mut next)
+        .map_err(|_| ())?;
+    let report = next.publish(candidate).map_err(|_| ())?;
+    *store = next;
+    Ok(report)
+}
+
+/// After a failed load: whether keys are loaded still. A failed load is not a
+/// lock, so keys already in service are kept (`KeyStore::lock` and `logout`
+/// alone drop them, on `vault_locked` and `vault_logged_out`); with none in
+/// service the store is locked at the load's epoch, as it always was.
+fn keep_or_lock(store: &mut KeyStore, epoch: u64) -> bool {
+    let serving = store.state() == VaultState::Unlocked;
+    if !serving {
+        store.lock(epoch);
+    }
+    serving
 }
 
 fn authorized_signature(
@@ -1358,6 +1553,148 @@ mod tests {
             assert_eq!(prompt["forwarded"], true);
             assert_eq!(prompt["grantOffered"], false);
         }
+    }
+
+    /// A request released from an unlock gets a new id, and its prompt says
+    /// which id it had. A decision sent under that one, by a panel that has
+    /// not read the new id yet, still reaches the request, once, and the
+    /// prompt under the new id is withdrawn.
+    #[test]
+    fn a_decision_under_the_unlock_id_reaches_the_released_request_once() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let blob = key.public_key().to_bytes().unwrap();
+        let mut store = KeyStore::new();
+        load_key(&mut store, &key, 1);
+        store.lock(2);
+        let mut approvals = ApprovalManager::new(1000);
+        let (mut pending, mut held) = (HashMap::new(), HashMap::new());
+        let (output, mut outputs) = mpsc::channel(8);
+        let (event, _answer) = login_event(&blob, false, vec![]);
+        handle_client(
+            event,
+            false,
+            &store,
+            &mut approvals,
+            &mut pending,
+            &mut held,
+            &mut None,
+            true,
+            Instant::now(),
+            &output,
+        )
+        .unwrap();
+        let unlock_id = next(&mut outputs)["requestId"].as_u64().unwrap();
+        load_key(&mut store, &key, 3);
+        release_held(
+            &mut held,
+            &store,
+            &mut approvals,
+            &mut pending,
+            Instant::now(),
+            &output,
+        )
+        .unwrap();
+        assert_eq!(next(&mut outputs)["reason"], "released");
+        let prompt = next(&mut outputs);
+        let approval_id = prompt["requestId"].as_u64().unwrap();
+        assert_eq!(prompt["promotedFrom"], unlock_id);
+
+        assert_eq!(
+            addressed(&mut pending, unlock_id, &output).unwrap(),
+            approval_id
+        );
+        let withdrawn = next(&mut outputs);
+        assert_eq!(withdrawn["requestId"], approval_id);
+        assert_eq!(withdrawn["reason"], "granted");
+        assert_eq!(
+            addressed(&mut pending, unlock_id, &output).unwrap(),
+            unlock_id
+        );
+        assert!(outputs.try_recv().is_err());
+    }
+
+    /// A request waiting for its answer when a key load begins is not failed
+    /// by it. Approved during the load, it is signed when the load has put
+    /// its key back in service, and failed when the load took the key away.
+    #[test]
+    fn a_waiting_request_outlives_a_key_load_that_keeps_its_key() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let other = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let blob = key.public_key().to_bytes().unwrap();
+        for (reloaded, signed) in [(&key, true), (&other, false)] {
+            let mut store = KeyStore::new();
+            load_key(&mut store, &key, 1);
+            let mut approvals = ApprovalManager::new(1000);
+            let mut pending = HashMap::new();
+            let (output, mut outputs) = mpsc::channel(8);
+            let (event, mut answer) = login_event(&blob, false, vec![]);
+            let now = Instant::now();
+            handle_client(
+                event,
+                true,
+                &store,
+                &mut approvals,
+                &mut pending,
+                &mut HashMap::new(),
+                &mut None,
+                true,
+                now,
+                &output,
+            )
+            .unwrap();
+            let id = next(&mut outputs)["requestId"].as_u64().unwrap();
+
+            // `key_load_begin` closes the gate; the approval waits with it.
+            approve(
+                id,
+                0,
+                false,
+                &store,
+                &mut approvals,
+                &mut pending,
+                now,
+                &output,
+            )
+            .unwrap();
+            assert!(
+                answer.try_recv().is_err(),
+                "nothing is signed during a load"
+            );
+
+            let mut next_store = KeyStore::new();
+            load_key(&mut next_store, reloaded, 2);
+            settle_pending(&mut approvals, &mut pending, &next_store, now, &output).unwrap();
+            let response = answer.try_recv().unwrap();
+            assert_eq!(response != protocol::failure_response(), signed);
+            assert_eq!(outputs.try_recv().is_err(), signed);
+        }
+    }
+
+    /// A key load that fails leaves the keys in service where they were, and
+    /// a lock still drops them.
+    #[test]
+    fn a_failed_key_load_keeps_the_keys_in_service_until_a_lock() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let blob = key.public_key().to_bytes().unwrap();
+        let mut store = KeyStore::new();
+        load_key(&mut store, &key, 1);
+
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let mut window = LoadWindow::new(2, nonce).unwrap();
+        let payload = format!("{{\"loadId\":\"{nonce}\",\"items\":[")
+            .into_bytes()
+            .into();
+        assert!(publish_load(&mut window, 2, Ok(payload), &mut store).is_err());
+        assert!(keep_or_lock(&mut store, 2));
+        assert!(store.authorize(&blob).is_some());
+
+        store.lock(3);
+        assert!(store.authorize(&blob).is_none());
+        assert!(!keep_or_lock(&mut store, 4));
     }
 
     /// An identity listing's unlock prompt has no server, so nothing claimed.
