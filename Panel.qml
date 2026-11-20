@@ -586,6 +586,36 @@ Panel {
     fontFamily: root.fontFamily
   }
 
+  // An item-form caption.
+  component FormCaption: Text {
+    textFormat: Text.PlainText; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+  }
+
+  // An item-form field: a caption over a LineField bound both ways by the
+  // caller (`text:` and `onTextChanged:`).
+  component FormLine: Column {
+    property alias label: formLineCaption.text
+    property alias placeholderText: formLineField.placeholderText
+    property alias text: formLineField.text
+    width: parent ? parent.width : 0
+    spacing: Style.space(3)
+    FormCaption { id: formLineCaption }
+    LineField { id: formLineField; width: parent.width }
+  }
+
+  // The same over a SecretField, for values the form keeps masked.
+  component FormSecret: Column {
+    id: formSecret
+    property alias label: formSecretCaption.text
+    property alias placeholderText: formSecretField.placeholderText
+    property alias text: formSecretField.text
+    property string iconFontFamily: root.fontFamily
+    width: parent ? parent.width : 0
+    spacing: Style.space(3)
+    FormCaption { id: formSecretCaption }
+    SecretField { id: formSecretField; width: parent.width; iconFontFamily: formSecret.iconFontFamily }
+  }
+
   // A form row: label, optional caption note, and a NumberEntry.
   component NumberRow: Row {
     id: numberRow
@@ -5537,17 +5567,12 @@ Panel {
               }
 
               // FIELD: Username (Login only)
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 1
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "USERNAME / EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "username or email address..."
-                  text: root.vault.formUsername
-                  onTextChanged: root.vault.formUsername = text
-                }
+                label: "USERNAME / EMAIL"
+                placeholderText: "username or email address..."
+                text: root.vault.formUsername
+                onTextChanged: root.vault.formUsername = text
               }
 
               // FIELD: Password with Generator (Login only)
@@ -5591,334 +5616,182 @@ Panel {
               }
 
               // FIELD: TOTP Authenticator Key (Login only)
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 1
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "AUTHENTICATOR KEY (TOTP SECRET)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: "e.g. JBSWY3DPEHPK3PXP (optional)..."
-                  text: root.vault.formTotp
-                  onTextChanged: root.vault.formTotp = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "AUTHENTICATOR KEY (TOTP SECRET)"
+                placeholderText: "e.g. JBSWY3DPEHPK3PXP (optional)..."
+                text: root.vault.formTotp
+                onTextChanged: root.vault.formTotp = text
               }
 
               // FIELD: Website URL (Login only)
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 1
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "WEBSITE URL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "https://example.com/login..."
-                  text: root.vault.formUri
-                  onTextChanged: root.vault.formUri = text
-                }
+                label: "WEBSITE URL"
+                placeholderText: "https://example.com/login..."
+                text: root.vault.formUri
+                onTextChanged: root.vault.formUri = text
               }
 
               // -----------------------------------------------------------
               // FORM FIELDS: Card
               // -----------------------------------------------------------
               // Expiry as two boxes here: the vault stores two values.
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "CARDHOLDER NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "Name as printed on the card"
-                  text: root.vault.formCardholderName
-                  onTextChanged: root.vault.formCardholderName = text
-                }
+                label: "CARDHOLDER NAME"
+                placeholderText: "Name as printed on the card"
+                text: root.vault.formCardholderName
+                onTextChanged: root.vault.formCardholderName = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "BRAND"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "Visa, Mastercard, Amex..."
-                  text: root.vault.formCardBrand
-                  onTextChanged: root.vault.formCardBrand = text
-                }
+                label: "BRAND"
+                placeholderText: "Visa, Mastercard, Amex..."
+                text: root.vault.formCardBrand
+                onTextChanged: root.vault.formCardBrand = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "CARD NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: "1234 5678 9012 3456"
-                  text: root.vault.formCardNumber
-                  onTextChanged: root.vault.formCardNumber = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "CARD NUMBER"
+                placeholderText: "1234 5678 9012 3456"
+                text: root.vault.formCardNumber
+                onTextChanged: root.vault.formCardNumber = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "EXPIRY MONTH"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "MM"
-                  text: root.vault.formCardExpMonth
-                  onTextChanged: root.vault.formCardExpMonth = text
-                }
+                label: "EXPIRY MONTH"
+                placeholderText: "MM"
+                text: root.vault.formCardExpMonth
+                onTextChanged: root.vault.formCardExpMonth = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "EXPIRY YEAR"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "YYYY"
-                  text: root.vault.formCardExpYear
-                  onTextChanged: root.vault.formCardExpYear = text
-                }
+                label: "EXPIRY YEAR"
+                placeholderText: "YYYY"
+                text: root.vault.formCardExpYear
+                onTextChanged: root.vault.formCardExpYear = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 3
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "SECURITY CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: "CVV / CVC"
-                  text: root.vault.formCardCode
-                  onTextChanged: root.vault.formCardCode = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "SECURITY CODE"
+                placeholderText: "CVV / CVC"
+                text: root.vault.formCardCode
+                onTextChanged: root.vault.formCardCode = text
               }
 
               // -----------------------------------------------------------
               // FORM FIELDS: Identity
               // -----------------------------------------------------------
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "TITLE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "Mr, Ms, Dr..."
-                  text: root.vault.formIdTitle
-                  onTextChanged: root.vault.formIdTitle = text
-                }
+                label: "TITLE"
+                placeholderText: "Mr, Ms, Dr..."
+                text: root.vault.formIdTitle
+                onTextChanged: root.vault.formIdTitle = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "FIRST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdFirstName
-                  onTextChanged: root.vault.formIdFirstName = text
-                }
+                label: "FIRST NAME"
+                text: root.vault.formIdFirstName
+                onTextChanged: root.vault.formIdFirstName = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "MIDDLE NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdMiddleName
-                  onTextChanged: root.vault.formIdMiddleName = text
-                }
+                label: "MIDDLE NAME"
+                text: root.vault.formIdMiddleName
+                onTextChanged: root.vault.formIdMiddleName = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "LAST NAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdLastName
-                  onTextChanged: root.vault.formIdLastName = text
-                }
+                label: "LAST NAME"
+                text: root.vault.formIdLastName
+                onTextChanged: root.vault.formIdLastName = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "USERNAME"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdUsername
-                  onTextChanged: root.vault.formIdUsername = text
-                }
+                label: "USERNAME"
+                text: root.vault.formIdUsername
+                onTextChanged: root.vault.formIdUsername = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "COMPANY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdCompany
-                  onTextChanged: root.vault.formIdCompany = text
-                }
+                label: "COMPANY"
+                text: root.vault.formIdCompany
+                onTextChanged: root.vault.formIdCompany = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "EMAIL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "name@example.com"
-                  text: root.vault.formIdEmail
-                  onTextChanged: root.vault.formIdEmail = text
-                }
+                label: "EMAIL"
+                placeholderText: "name@example.com"
+                text: root.vault.formIdEmail
+                onTextChanged: root.vault.formIdEmail = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "PHONE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdPhone
-                  onTextChanged: root.vault.formIdPhone = text
-                }
+                label: "PHONE"
+                text: root.vault.formIdPhone
+                onTextChanged: root.vault.formIdPhone = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "SOCIAL SECURITY NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdSsn
-                  onTextChanged: root.vault.formIdSsn = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "SOCIAL SECURITY NUMBER"
+                text: root.vault.formIdSsn
+                onTextChanged: root.vault.formIdSsn = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "PASSPORT NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdPassport
-                  onTextChanged: root.vault.formIdPassport = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "PASSPORT NUMBER"
+                text: root.vault.formIdPassport
+                onTextChanged: root.vault.formIdPassport = text
               }
-              Column {
+              FormSecret {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "LICENCE NUMBER"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                SecretField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdLicense
-                  onTextChanged: root.vault.formIdLicense = text
-                  iconFontFamily: root.fontFamily
-                }
+                label: "LICENCE NUMBER"
+                text: root.vault.formIdLicense
+                onTextChanged: root.vault.formIdLicense = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 1"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdAddress1
-                  onTextChanged: root.vault.formIdAddress1 = text
-                }
+                label: "ADDRESS LINE 1"
+                text: root.vault.formIdAddress1
+                onTextChanged: root.vault.formIdAddress1 = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 2"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdAddress2
-                  onTextChanged: root.vault.formIdAddress2 = text
-                }
+                label: "ADDRESS LINE 2"
+                text: root.vault.formIdAddress2
+                onTextChanged: root.vault.formIdAddress2 = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "ADDRESS LINE 3"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdAddress3
-                  onTextChanged: root.vault.formIdAddress3 = text
-                }
+                label: "ADDRESS LINE 3"
+                text: root.vault.formIdAddress3
+                onTextChanged: root.vault.formIdAddress3 = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "CITY / TOWN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdCity
-                  onTextChanged: root.vault.formIdCity = text
-                }
+                label: "CITY / TOWN"
+                text: root.vault.formIdCity
+                onTextChanged: root.vault.formIdCity = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "STATE / COUNTY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdState
-                  onTextChanged: root.vault.formIdState = text
-                }
+                label: "STATE / COUNTY"
+                text: root.vault.formIdState
+                onTextChanged: root.vault.formIdState = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "POSTAL CODE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdPostalCode
-                  onTextChanged: root.vault.formIdPostalCode = text
-                }
+                label: "POSTAL CODE"
+                text: root.vault.formIdPostalCode
+                onTextChanged: root.vault.formIdPostalCode = text
               }
-              Column {
+              FormLine {
                 visible: root.vault.formTypeCode === 4
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "COUNTRY"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: ""
-                  text: root.vault.formIdCountry
-                  onTextChanged: root.vault.formIdCountry = text
-                }
+                label: "COUNTRY"
+                text: root.vault.formIdCountry
+                onTextChanged: root.vault.formIdCountry = text
               }
 
               CustomFieldsEditor {
@@ -5928,16 +5801,11 @@ Panel {
               }
 
               // FIELD: Notes
-              Column {
-                width: parent.width
-                spacing: Style.space(3)
-                Text { textFormat: Text.PlainText; text: "NOTES"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                LineField {
-                  width: parent.width
-                  placeholderText: "Additional secure notes..."
-                  text: root.vault.formNotes
-                  onTextChanged: root.vault.formNotes = text
-                }
+              FormLine {
+                label: "NOTES"
+                placeholderText: "Additional secure notes..."
+                text: root.vault.formNotes
+                onTextChanged: root.vault.formNotes = text
               }
 
               // Favorite Star Toggle

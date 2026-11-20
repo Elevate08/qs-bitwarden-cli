@@ -24,7 +24,8 @@ check("and closing the panel does too",
 
 for (const prop of ["formTotp", "formCardNumber", "formCardCode", "formIdSsn", "formIdPassport", "formIdLicense"]) {
   check(`the form's ${prop} field is masked`,
-    new RegExp(`SecretField \\{\\s*width: parent\\.width\\s*placeholderText: [^\\n]*\\s*text: root\\.vault\\.${prop}\\s*onTextChanged: root\\.vault\\.${prop} = text`).test(view),
+    /component FormSecret: Column \{[^}]*\}\s*SecretField \{ id: formSecretField;/.test(view)
+      && new RegExp(`FormSecret \\{\\s*(?:visible: [^\\n]*\\s*)?label: [^\\n]*\\s*(?:placeholderText: [^\\n]*\\s*)?text: root\\.vault\\.${prop}\\s*onTextChanged: root\\.vault\\.${prop} = text`).test(view),
     `${prop} is a plain TextField, drawn in the clear and offered to input methods`)
 }
 

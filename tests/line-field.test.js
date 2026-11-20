@@ -125,7 +125,7 @@ check("the form's Enter Shortcut saves through submitForm()",
 // A field whose own Return does something else (a new folder, a custom field)
 // must not also save the item; every other field must.
 const formFields = [itemForm, read("CustomFieldsEditor.qml")]
-  .flatMap(src => [...blocks(src, "LineField"), ...blocks(src, "SecretField")])
+  .flatMap(src => ["LineField", "SecretField", "FormLine", "FormSecret"].flatMap(type => blocks(src, type)))
 check("the item form has its fields", formFields.length > 30, `${formFields.length} fields`)
 for (const field of formFields) {
   const ownReturn = /\bonAccepted:/.test(field)
