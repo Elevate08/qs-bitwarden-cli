@@ -114,7 +114,7 @@ const listProcessStart = panelSrc.indexOf("id: listProc")
 const listProcess = listProcessStart === -1 ? "" : panelSrc.slice(listProcessStart, listProcessStart + 900)
 check("the item process waits for onExited instead of racing its stdout and stderr handlers",
   /onExited:[\s\S]*onListProcessExited/.test(listProcess)
-    && !/onStreamFinished:[\s\S]*onListFinished/.test(listProcess),
+    && !/(?:onStreamFinished|onCollected):[\s\S]*onListFinished/.test(listProcess),
   listProcess)
 
 const processBlock = id => {
@@ -126,7 +126,7 @@ const processBlock = id => {
 const racing = ["statusProc", "sessionHandoffProc", "listOrgsProc", "listFoldersProc",
                   "orgCollectionsProc", "listSendsProc", "keyringLookupMasterProc",
                   "getItemProc", "getTotpProc"]
-  .filter(id => !/onExited:/.test(processBlock(id)) || /onStreamFinished:/.test(processBlock(id)))
+  .filter(id => !/onExited:/.test(processBlock(id)) || /onStreamFinished:|onCollected:/.test(processBlock(id)))
 check("every reader accepts output only after its exit status is known", racing.length === 0, racing.join(", "))
 
 done()
