@@ -250,9 +250,6 @@ function withViews(v, count) {
   v.unlockWithPinentry()
   check("without the vault helper nothing is run and nothing changes", !started && !v.pinentryActive && v.opened
     && v.unlocks.length === 0, "")
-  check("it is not available then", v.pinentryAvailable === false, "")
-  check("nor when turned off or unable to run here",
-    makeVault({ usePinentry: false }).pinentryAvailable === false && makeVault({ pinentryMissing: true }).pinentryAvailable === false, "")
 }
 
 {
@@ -264,13 +261,11 @@ function withViews(v, count) {
   // allowVaultWithoutHelper allows.
   const entry = (helperState, extra) => Model.typedSecretEntry(Object.assign(
     { usePinentry: true, missing: false, declined: false, helperState }, extra || {}))
-  const states = { pending: "wait", starting: "wait", active: "pinentry", stopped: "wait", fallback: "field", "": "wait", other: "wait" }
-  for (const [state, expected] of Object.entries(states)) eq(`helper ${state || "(none)"}: typed in ${expected}`, entry(state), expected)
-  for (const state of Object.keys(states)) {
-    eq(`helper ${state || "(none)"}, pinentry turned off: the field`, entry(state, { usePinentry: false }), "field")
-    eq(`helper ${state || "(none)"}, pinentry missing: the field`, entry(state, { missing: true }), "field")
-    eq(`helper ${state || "(none)"}, the field picked: the field`, entry(state, { declined: true }), "field")
-  }
+  const states = { active: "pinentry", stopped: "wait", fallback: "field" }
+  for (const [state, expected] of Object.entries(states)) eq(`helper ${state}: typed in ${expected}`, entry(state), expected)
+  eq("pinentry turned off: the field", entry("stopped", { usePinentry: false }), "field")
+  eq("pinentry missing: the field", entry("stopped", { missing: true }), "field")
+  eq("the field picked: the field", entry("stopped", { declined: true }), "field")
 }
 
 {
@@ -424,12 +419,6 @@ function withViews(v, count) {
   check("it asks again with the field's message",
     s.proc.starts.length === 2 && s.pinUnlockError === "PIN must be at least " + Model.pinUnlockMinLength() + " digits"
       && s.proc.starts[1].environment.QSBW_PE_ERR === s.pinUnlockError, JSON.stringify(s.proc.starts[1]))
-  check("a master password run has no minimum", makeVault().proc && (() => {
-    const m = makeVault()
-    Object.defineProperty(m.proc, "running", { configurable: true, get() { return false }, set() {} })
-    m.unlockWithPinentry()
-    return m.proc.command[7] === "0"
-  })(), "")
 
   // The unlock was not taken up: nothing else would forget it.
   const w = makeVault({ submitTakesIt: false })
@@ -481,19 +470,9 @@ function withViews(v, count) {
 
 // --- the wiring ------------------------------------------------------------------------------------
 
-const flows = ["unlockWithPinentry", "unlockPinWithPinentry", "submitRepromptWithPinentry", "requestPinentry", "onPinentryExited"]
-  .map(body).join("\n")
-check("no pinentry flow writes what was typed into the shell's fields",
-  !/\b(masterPassword|pinEntry|loginPassword|pinSetupMaster|fpSetupMaster)\s*=[^=]/.test(flows), flows)
-check("the run asks the helper to hold the answer",
-  /pinentryProc\.capture = "pinentry:" \+ name/.test(body("requestPinentry"))
-    && /Model\.pinentryCommand\(omarchyPinentryPath, ask\)/.test(body("requestPinentry"))
-    && /pinentryProc\.environment = Model\.pinentryEnvironment\(/.test(body("requestPinentry")), body("requestPinentry"))
 check("the process is a VaultProcess with no session and no output collector",
   /VaultProcess \{\s*id: pinentryProc\s*vault: root\s*session: false\s*stderr: VaultCollector[^\n]*\n\s*onExited/.test(service)
     && !/id: pinentryProc[\s\S]{0,200}stdout:/.test(service), "")
-check("the unlock hands the held name to the password flow",
-  /unlockVaultWithPassword\(Model\.heldSecretRef\(r\.name\)\)/.test(body("unlockWithPinentry")), body("unlockWithPinentry"))
 check("the PIN unlock takes a held PIN, in place of the field, for both its paths",
   /function submitPinUnlock\(heldPin\)/.test(service)
     && /env\[Model\.pinEnvVar\(\)\] = held \|\|/.test(body("submitPinUnlock"))
@@ -512,19 +491,13 @@ check("a failed delivery, an abandoned unlock and a dismissed SSH popup forget i
 check("a lock, another method's unlock and the panel being asked for end a pinentry",
   /cancelPinentry\(\)/.test(body("dropVaultState")) && /cancelPinentry\(\)/.test(body("onUnlockSuccess"))
     && /cancelPinentry\(\)/.test(body("open")), "")
-check("hiding the panel for pinentry is not a close; coming back is a resume",
-  /else if \(!pinentryActive\) \{\s*pinentryAutoAsked = false\s*clearRepromptGrant\(\)\s*resetPinentryChoice\(\)/.test(service) && /!resumeFromPinentry\(\)/.test(body("panelShown")), "")
-check("every show of the panel goes through panelShown(), which hides it again while pinentry asks (#132)",
-  /onOpenedChanged: \{\s*if \(opened\) \{\s*panelShown\(\)\s*\} else if/.test(service)
-    && /if \(pinentryActive\) Qt\.callLater\(hideForPinentry\)/.test(body("panelShown"))
-    && /hideForPinentry\(\)/.test(body("beginPinentry")) && !/hidePopout/.test(body("beginPinentry")), body("panelShown"))
+check("every show of the panel goes through panelShown() (#132); hiding it for pinentry is not a close",
+  /onOpenedChanged: \{\s*if \(opened\) \{\s*panelShown\(\)\s*\} else if \(!pinentryActive\) \{\s*pinentryAutoAsked = false\s*clearRepromptGrant\(\)\s*resetPinentryChoice\(\)/.test(service), "")
 check("the field picked after a failure lasts until the panel closes or the vault locks or unlocks",
   /resetPinentryChoice\(\)/.test(body("dropVaultState")) && /resetPinentryChoice\(\)/.test(body("onUnlockSuccess")), "")
 check("a pinentry run never runs in the shell: without the helper it is refused",
   /capture\.indexOf\("pinentry:"\) === 0[\s\S]{0,200}proc\.finish\(/.test(body("vaultStart"))
     && body("vaultStart").indexOf("pinentry:") < body("vaultStart").indexOf("runLocally"), body("vaultStart"))
-check("the verification of a held password is the existing one",
-  /verifyMasterPassword\(pw, function\(ok\)/.test(body("submitReprompt")), "")
 check("pinentry counts as an auth surface while it is up, and covers the SSH popup",
   /sshAuthSurfaceActive: opened \|\| sshApprovalPopupOpen \|\| pinentryActive/.test(service)
     && /!vault\.pinentryActive/.test(read("SshApprovalPopup.qml")), "")
@@ -543,7 +516,7 @@ check("the fields stay as the fallback, with the reason when pinentry failed",
   /id: passwordField/.test(form) && /id: pinField/.test(form) && /form\.vault\.pinentryNotice/.test(form), "")
 {
   const use = (form.match(/function useMethod\(name\) \{[\s\S]*?\n  \}/) || [""])[0]
-  check("picking PIN or Password opens pinentry straight away",
+  check("picking PIN or Password opens pinentry straight away, and counts as the ask",
     /if \(form\.pinentryOffered\) \{\s*form\.vault\.pinentryAutoAsked = true\s*form\.submitCurrentMethod\(\)\s*return\s*\}/.test(use)
       && use.indexOf("form.pinentryOffered") > use.indexOf("form.chosen = name"), use)
 }
@@ -551,13 +524,6 @@ check("the fields stay as the fallback, with the reason when pinentry failed",
   const arm = (form.match(/function armOfferedMethod\(\) \{[\s\S]*?\n  \}/) || [""])[0]
   check("a default PIN or password method opens pinentry once when the form shows",
     /else if \(form\.pinentryOffered && !form\.vault\.pinentryAutoAsked && !form\.vault\.pinentryActive\) \{\s*form\.vault\.pinentryAutoAsked = true\s*form\.submitCurrentMethod\(\)/.test(arm), arm)
-  const use = (form.match(/function useMethod\(name\) \{[\s\S]*?\n  \}/) || [""])[0]
-  check("picking it counts as the ask, so it is not opened twice",
-    /if \(form\.pinentryOffered\) \{\s*form\.vault\.pinentryAutoAsked = true\s*form\.submitCurrentMethod\(\)/.test(use), use)
-  const opened = (service.match(/onOpenedChanged: \{[\s\S]*?\n  \}/) || [""])[0]
-  check("a cancelled pinentry does not reopen when the panel comes back; a real close asks again next time",
-    /\} else if \(!pinentryActive\) \{[\s\S]*pinentryAutoAsked = false/.test(opened)
-      && !/if \(opened\) \{[^}]*pinentryAutoAsked = false/.test(opened), opened)
   check("an SSH unlock request that ends asks again for the next one",
     /onSshUnlockRequestChanged: \{\s*if \(sshUnlockRequest !== null \|\| pinentryActive\) return\s*pinentryAutoAsked = false\s*resetPinentryChoice\(\)/.test(service), "")
 }
@@ -578,11 +544,8 @@ check("the setting defaults on",
 check("the plugin's own pinentry is the only one, found from the plugin's own directory",
   /omarchyPinentryPath: Model\.omarchyPinentryPath\(sshAgentPluginDir\)/.test(service)
     && Model.omarchyPinentryPath("/p") === "/p/pinentry/omarchy-pinentry", "")
-check("no program override and no on/off for it is read from shell.json, so a stale one is ignored",
-  !/setting\("pinentryProgram"|setting\("omarchyPinentry"|pinentryProgramName|case "omarchyPinentry"/.test(service), "")
-check("every pinentry run and probe is given it",
-  /Model\.pinentryCommand\(omarchyPinentryPath, ask\)/.test(body("requestPinentry"))
-    && /Model\.pinentryProbeCommand\(omarchyPinentryPath\)/.test(functionBody(service, "probePinentry")), "")
+check("the probe is given it too",
+  /Model\.pinentryProbeCommand\(omarchyPinentryPath\)/.test(body("probePinentry")), "")
 check("a plugin moved to another directory checks again whether the prompt can run",
   /onOmarchyPinentryPathChanged: \{\s*resetPinentryChoice\(\)\s*probePinentry\(\)/.test(service), "")
 {

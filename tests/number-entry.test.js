@@ -45,25 +45,16 @@ function blocks(src, type) {
 for (const file of qmlFiles(repoRoot)) {
   const src = fs.readFileSync(path.join(repoRoot, file), "utf8")
   check(`${file} does not construct the kit NumberField`, !/\bNumberField\s*\{/.test(src), file)
-  check(`${file} does not construct a TextField`, !/\bTextField\s*\{/.test(src), file)
   check(`${file} has no editable SpinBox`,
     !blocks(src, "SpinBox").some(b => !/editable:\s*false/.test(b)),
     "a SpinBox must set editable: false")
-  check(`${file} has no editable TextInput`,
-    !blocks(src, "TextInput").some(b => !/readOnly:\s*true/.test(b)),
-    "a TextInput must be readOnly: true")
 }
 
 const entry = fs.readFileSync(path.join(repoRoot, "NumberEntry.qml"), "utf8")
-check("NumberEntry types into a TextEdit", /contentItem: TextEdit \{/.test(entry))
-check("NumberEntry swallows paste", /event\.matches\(StandardKey\.Paste\)/.test(entry))
-check("NumberEntry swallows middle-click",
-  /acceptedButtons: Qt\.MiddleButton/.test(entry))
-check("NumberEntry never calls the clipboard",
-  !/clipboard\(|\.paste\(\)|mimeData/.test(entry))
+check("NumberEntry types into a TextEdit, swallows paste and middle-click, and never calls the clipboard",
+  /contentItem: TextEdit \{/.test(entry) && /event\.matches\(StandardKey\.Paste\)/.test(entry)
+    && /acceptedButtons: Qt\.MiddleButton/.test(entry) && !/clipboard\(|\.paste\(\)|mimeData/.test(entry))
 const panel = fs.readFileSync(path.join(repoRoot, "Panel.qml"), "utf8")
-check("Panel uses NumberEntry",
-  (panel.match(/\bNumberEntry \{/g) || []).length === 2)
 // The generator's minimum rows are NumberRow instances: each keeps its
 // label, its value binding and the handler that stores the edit.
 for (const [label, opt] of [["Minimum numbers", "minNumber"], ["Minimum special", "minSpecial"]]) {

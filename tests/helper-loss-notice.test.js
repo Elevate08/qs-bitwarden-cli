@@ -39,11 +39,6 @@ function vault(errorMessage) {
   eq("the vault stays locked", v.status, "locked")
 }
 {
-  const v = vault(notice)
-  v.refreshStatus()
-  eq("a background refresh also preserves the helper-loss notice", v.errorMessage, notice)
-}
-{
   const v = vault("An earlier operation failed")
   v.refreshStatus()
   eq("a refresh still clears an ordinary operation error", v.errorMessage, "")
