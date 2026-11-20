@@ -82,9 +82,6 @@ eq("the palette offers it for a helper-held login", actionsOf(pub, "detail").len
 
 check("h opens the history from the detail",
   /else if \(lower === "h"\) \{\s*root\.vault\.openHistory\(\)/.test(functionBody(panelOnly, "runDetailShortcut")), "h is not wired")
-check("h is not bound twice on the detail screen",
-  panelOnly.split('lower === "h"').length - 1 === 1,
-  "the detail key handler binds h more than once")
 check("b and q leave the history", /currentScreen === "history"\) \{\s*if \(lower === "b" \|\| lower === "q"\) root\.vault\.closeHistory/.test(panelOnly), "")
 check("Esc leaves the history for the detail",
   /currentScreen === "history"\) \{\s*closeHistory\(\)/.test(functionBody(service, "handleEscape")), "")

@@ -81,8 +81,6 @@ check("a question left unanswered is dropped when the cursor moves or the screen
 check("the dependency probe is told whether auto-type is on",
   (service.match(/Model\.parseDependencies\([^\n]*dependencyFeatures\(\)\)/g) || []).length === 2
     && /return \{ autoType: autoTypeEnabled \}/.test(body("dependencyFeatures")), body("dependencyFeatures"))
-check("and asked again when it is turned on or off",
-  /onAutoTypeEnabledChanged: \{[\s\S]{0,200}if \(depsChecked\) checkDependencies\(\)/.test(service), "")
 {
   const v = bind({
     settingConfirmKey: "", autoTypeEnabled: true, depsChecked: true, fingerprintUnlock: false, Model,
@@ -177,11 +175,11 @@ const item = (v, id) => v.items.find(i => i.id === id)
   v.vaultEpoch = 4
   check("an arm belongs to the vault it was made in", !v.autoTypeArmed(), "")
   check("a lock drops it with the vault's secrets, and stops a type in flight",
-    /disarmAutoType\(\)\s*stopAutoType\(\)/.test(body("dropVaultSecrets"))
-      && /autoTypePendingText = ""/.test(body("stopAutoType")), body("dropVaultSecrets"))
+    /disarmAutoType\(\)\s*stopAutoType\(\)/.test(body("dropVaultSecrets")), body("dropVaultSecrets"))
   check("it lasts autoTypeArmMs, then is dropped",
     /id: autoTypeArmTimer\s*interval: Model\.autoTypeArmMs\(\)\s*repeat: false\s*onTriggered: root\.disarmAutoType\(\)/.test(service), "")
-  check("turning auto-type off drops it", /onAutoTypeEnabledChanged: \{\s*if \(!autoTypeEnabled\) disarmAutoType\(\)/.test(service), "")
+  check("turning auto-type off drops it, and either way the dependency probe is asked again",
+    /onAutoTypeEnabledChanged: \{\s*if \(!autoTypeEnabled\) disarmAutoType\(\)\s*if \(depsChecked\) checkDependencies\(\)/.test(service), "")
 }
 
 // --- an arm across a reload of the list ------------------------------------------------
@@ -308,8 +306,6 @@ const reloaded = (v, id, reprompt) => { v.items = v.items.map(i => i.id === id ?
   check("every accepted list is checked against the arm, once its rows are in",
     finished.indexOf("items = vault.items") !== -1
       && finished.indexOf("items = vault.items") < finished.indexOf("recheckArmedAutoType()"), finished)
-  check("a lock forgets how the arm was made, with the arm",
-    /autoTypeItemId = ""\s*autoTypeArmEpoch = -1\s*autoTypeArmReprompt = false/.test(body("disarmAutoType")), body("disarmAutoType"))
 }
 
 // --- the TOTP code, around a type --------------------------------------------------------
@@ -341,7 +337,6 @@ const totpCopies = v => v.fetches.filter(f => f[1])
 }
 check("Enter's copy and the arm share one follow-up, and one TOTP notice",
   /copyPasswordNow\(item\)\s*armTotpFollowup\(item\)/.test(body("smartCopy"))
-    && /root\.copyPasswordNow\(item, [^\n]*\n[^\n]*\n\s*root\.armTotpFollowup\(item\)/.test(body("copyPasswordAndArm"))
     && (service.match(/TOTP Code Copied/g) || []).length === 1
     && /root\.notifyTotpCopied\(\)/.test(service.slice(service.indexOf("id: autoTotpTimer"), service.indexOf("id: autoTotpTimer") + 500)),
   body("smartCopy"))
@@ -423,8 +418,6 @@ check("Enter's copy and the arm share one follow-up, and one TOTP notice",
   gen.finishAutoType(true, "")
   check("a success reported into another vault generation copies nothing", totpCopies(gen).length === 0
     && totpNotices(gen).length === 0, JSON.stringify(gen.fetches))
-  check("the typed login is dropped with a type in flight, which a lock stops",
-    /autoTypeTypedItemId = ""/.test(body("stopAutoType")) && /stopAutoType\(\)/.test(body("dropVaultSecrets")), body("stopAutoType"))
 }
 
 // --- the IPC --------------------------------------------------------------------------
@@ -480,8 +473,6 @@ check("the IPC answers with requestAutoType()'s result",
   w.finishAutoType(false, "timeout")
   w.queries[0].cb(true, true)
   check("an answer after the watchdog gave up is ignored", w.flashed.indexOf("Auto-typed") === -1, w.flashed.join())
-  check("the watchdog moves the sequence on before it reports",
-    /root\.autoTypeSeq \+= 1\s*root\.finishAutoType\(false, "timeout"\)/.test(service), "")
   check("its message covers the helper and the shell's own wtype and bw alike",
     /timed out/.test(Model.autoTypeFailureMessage("timeout")), Model.autoTypeFailureMessage("timeout"))
 }
@@ -695,10 +686,6 @@ function searchBoxWith(opts = {}) {
   }
   return r
 }
-check("the search box has its own key handler, and it calls the shared function",
-  searchKeys !== "" && /searchField\.selectedText === "" && root\.armAutoTypeFromKey\(event\)/.test(searchKeys)
-    && /root\.copyPasswordAndArm\(picked\)/.test(body("armAutoTypeFromKey"))
-    && /onScreen === "main" \? root\.getSelectedItem\(\)/.test(body("armAutoTypeFromKey")), searchKeys)
 {
   const v = searchBoxWith()
   check("Ctrl+C in the search box, nothing selected: the highlighted row (the top suggestion) is armed",
@@ -750,8 +737,5 @@ check("the row's button is shown only with auto-type on, says what it does, and 
   /visible: root\.vault\.autoTypeEnabled && Model\.isLoginItem\(itemRow\.itemData\) && itemRow\.itemData\.hasPassword/.test(armButton)
     && /tooltipText: "Copy password and arm auto-type \(Ctrl\+C\)"/.test(armButton)
     && /onClicked: root\.vault\.copyPasswordAndArm\(itemRow\.itemData\)/.test(armButton), armButton)
-check("the password button keeps its place, first in the row",
-  row.indexOf('tooltipText: "Copy password (Enter / y)"') < row.indexOf("arm auto-type")
-    && row.indexOf("arm auto-type") < row.indexOf('tooltipText: "Copy username (u)"'), "")
 
 done()

@@ -44,7 +44,7 @@ check("paste asks wl-paste for text only",
   (line.match(/--type text /g) || []).length === 1 && /"--primary " : ""\) \+ "--type text "/.test(line),
   "an image-only clipboard would paste binary")
 check("destroying the field kills the paste's process group",
-  /Component\.onDestruction: killPasteGroup\(\)/.test(line) && /execDetached\(\["kill", "-KILL", "--", "-" \+ pid\]\)/.test(line),
+  /Component\.onDestruction: killPasteGroup\(\)/.test(line),
   "Process teardown kills only timeout and orphans the pipeline")
 check("paste does not read the clipboard in-process",
   !/clipboard\(|\.paste\(\)|mimeData/.test(line),

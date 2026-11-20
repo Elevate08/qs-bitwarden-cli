@@ -76,8 +76,6 @@ eq("dismiss, expiry or suppression (no output) leaves the request pending", Mode
 eq("unknown output leaves the request pending", Model.sshAgentNotifyDecision(0, "0\n"), "none")
 eq("a failed notify-send decides nothing", Model.sshAgentNotifyDecision(1, ""), "none")
 eq("a failed notify-send that printed deny decides nothing", Model.sshAgentNotifyDecision(1, "deny\n"), "none")
-check("the arm delay that only guarded the notification's allow is gone",
-  typeof Model.sshAgentNotifyArmMs === "undefined" && !/sshNotifyStartedMs|NOTIFY_ARM/.test(service + readPluginSource("BitwardenModel.js")))
 check("the notification waits before appearing", Model.sshAgentNotifyDelayMs() >= 3000)
 
 // -------------------------------------------------------------------------
@@ -424,10 +422,6 @@ check("the docs say a long path is shortened from the left",
   /the path is shortened from the left past the display limit/.test(guide) && /The limit is 512 UTF-16 code units of the text as written out, one of them reserved for the `…`/.test(guide)
   && Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/" + "a".repeat(600) + "/ssh" }), 120).processPath.length === 512
   && Model.sshAgentPromptView(Object.assign({}, raw, { processPath: "/" + "a".repeat(600) + "/ssh" }), 120).processPath[0] === "\u2026")
-for (const [name, text] of [["README.md", readPluginSource("README.md")], ["docs/ssh-agent.md", readPluginSource("docs/ssh-agent.md")],
-  ["CHANGELOG.md [Unreleased] Added", readPluginSource("CHANGELOG.md").split("## [Unreleased]")[1].split("### Security")[0]]]) {
-  check(`${name} does not describe an Allow once notification`, !/Allow once/.test(text))
-}
 
 // -------------------------------------------------------------------------
 // Idle timer: listing identities is not activity

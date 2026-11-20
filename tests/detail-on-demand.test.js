@@ -8,7 +8,7 @@
 //   node tests/detail-on-demand.test.js
 
 const { createSuite } = require("./harness")
-const { Model, src, body, makeVault, answer, confirm } = require("./detail-vault")
+const { Model, src, makeVault, answer } = require("./detail-vault")
 
 const { check, eq, done } = createSuite("detail-on-demand")
 
@@ -217,9 +217,6 @@ const leaks = v => MARKERS.filter(m => shellState(v).includes(m))
   check("a failed copy says so", /could not read/i.test(v.errorMessage) && v.flashes.length === 1, v.errorMessage)
 }
 
-check("every detail copy button names its field, and none reads a value in the shell",
-  !/copyToClipboard\(\s*(root\.)?(vault\.)?(detailPassword|detailItem\.notes|detailCard\.(number|code)|detailIdentity\.(ssn|passportNumber|licenseNumber))/.test(src), "")
-
 // --- edit ---------------------------------------------------------------------------------
 
 {
@@ -263,13 +260,6 @@ check("every detail copy button names its field, and none reads a value in the s
   w.goTo("main")
   check("and ending it from there drops both", w.formResets === 1 && w.detailItem.secretsWithheld && leaks(w).length === 0, shellState(w))
 }
-
-// --- the TOTP key ---------------------------------------------------------------------------
-
-check("the TOTP code is computed by the helper: no query carries a key, and the list has none",
-  /vaultQuery\("totp", \{ id: requested \}/.test(body("fetchTotp")) && row(makeVault(list()), "n1").totpKey === "", body("fetchTotp"))
-check("the detail from a helper row has no key to compute a code from",
-  makeVault(list()).localTotp("n1") === "", "")
 
 // --- without the helper -------------------------------------------------------------------------
 

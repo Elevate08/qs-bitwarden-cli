@@ -162,9 +162,6 @@ check("a lock, logout or switch drops a refused save's form",
   /failedSave = null/.test(body("dropVaultState")), body("dropVaultState"))
 // Suggestions are vault items, and the key they were matched under spells
 // out the focused window's title.
-check("a lock, logout or switch drops the suggestions for the focused window, their context, the learned marks and the key they were matched under",
-  /items = \[\]\s+filteredItems = \[\]\s+(?:\/\/[^\n]*\n\s+)*contextMatchKey = ""\s+suggestedItems = \[\]\s+detectedContext = null\s+learnedIds = \(\{\}\)/
-    .test(body("dropVaultState")), body("dropVaultState"))
 {
   // The purge as written, over a stand-in where every name it touches is a
   // plain property and every function it calls does nothing.
@@ -175,7 +172,7 @@ check("a lock, logout or switch drops the suggestions for the focused window, th
   const v = new Proxy(state, { has: (t, k) => typeof k === "string" && !["Object", "Model"].includes(k),
     get: (t, k) => k in t ? t[k] : (typeof k === "string" && /^[a-z]/.test(k) ? () => {} : undefined) })
   new Function("scope", "Model", "with (scope) {\n" + body("dropVaultState") + "\ndropVaultState() }")(v, Model)
-  check("...run as written: nothing of them is left after it",
+  check("a lock, logout or switch, run as written, leaves no items, session, suggestions for the focused window, their context, learned marks or match key",
     state.suggestedItems.length === 0 && state.detectedContext === null && JSON.stringify(state.learnedIds) === "{}"
       && state.contextMatchKey === "" && state.items.length === 0 && state.filteredItems.length === 0 && state.session === "",
     JSON.stringify([state.suggestedItems, state.detectedContext, state.learnedIds, state.contextMatchKey]))

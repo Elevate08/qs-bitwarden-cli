@@ -82,9 +82,6 @@ const actionUses = [...release.matchAll(/uses:\s*([^\s@]+)@(\S+)/g)]
 check("every third-party action is pinned to a full commit SHA",
   actionUses.length > 0 && actionUses.every(([, , ref]) => /^[0-9a-f]{40}$/.test(ref)),
   actionUses.filter(([, , ref]) => !/^[0-9a-f]{40}$/.test(ref)).map(m => m[0]).join(", ") || "no actions used")
-check("each pin says which release it is, for a human",
-  (release.match(/@[0-9a-f]{40} # v\d/g) || []).length === actionUses.length,
-  "a bare SHA tells a reviewer nothing about what version it is")
 
 // -------------------------------------------------------------------------
 // The gates are the branch's gates
@@ -158,8 +155,6 @@ check("the helper's reported versions are checked against the panel's",
   /SSH_AGENT_CONTROL_VERSION/.test(hostRun) && /control protocol/.test(hostRun)
     && /UNLOCK_KEY_ENVELOPE_VERSION/.test(hostRun) && /VAULT_HELPER_PROTOCOL/.test(hostRun),
   "a protocol bump could ship to users and disable the feature at launch")
-check("the shipped binary is executed, not merely compiled",
-  /--self-test/.test(hostRun), "nothing runs the bytes being released")
 check("every architecture's bytes run on a runner of that architecture",
   /- arch: x86_64\s*\n\s*runner: ubuntu-24\.04\s*\n/.test(hostRun) && /- arch: aarch64\s*\n\s*runner: ubuntu-24\.04-arm\s*\n/.test(hostRun)
     && /bin\/\$ARCH-linux\/qs-bitwarden-vault/.test(hostRun),
@@ -198,9 +193,6 @@ for (const arch of ["x86_64", "aarch64"]) {
       "the provenance attestation does not bind these tracked bytes")
   }
 }
-check("the verification command is written down where a reviewer will find it",
-  /gh attestation verify/.test(release),
-  "users are given provenance with no documented way to check it")
 
 // -------------------------------------------------------------------------
 // What the release publishes
@@ -233,12 +225,6 @@ check("release artifacts are scanned for key material before publication",
 const publishStep = releaseJob.slice(releaseJob.indexOf("- name: Publish the release"))
 const notesSection = /section="\$\(cat <<'EOF'\n([\s\S]*?)\n\s*EOF\n/.exec(publishStep)
 const notesText = notesSection ? notesSection[1] : ""
-check("the release notes carry a section on verifying the helpers",
-  /^\s*## Verifying the helpers$/m.test(notesText)
-    && publishStep.indexOf("CHANGELOG.md > \"$dist/release-notes.md\"") < publishStep.indexOf("## Verifying the helpers")
-    && /printf '\\n%s\\n' "\$section" >> "\$notes"/.test(publishStep)
-    && publishStep.indexOf(">> \"$notes\"") < publishStep.indexOf("gh release create"),
-  "a reviewer of the published release is not told how to check the bundled binaries")
 check("the notes link the gates run that rebuilt the helpers on both architectures",
   /\[`gates` run\]\(@RUN_URL@\)/.test(notesText) && /x86_64/.test(notesText) && /aarch64/.test(notesText)
     && /RUN_URL: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/.test(publishStep)

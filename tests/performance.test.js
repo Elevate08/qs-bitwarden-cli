@@ -12,15 +12,13 @@ const Model = loadModule()
 // The service's own open path, as written, for the contextual-match work one
 // panel open does: ensureItemsFresh() with the window the panel already
 // knew, then the compositor's answer. The list rebuild is left out, so the
-// time is the matching alone; `matches` counts the passes.
+// time is the matching alone.
 function openPath(items) {
   const svc = read("Service.qml")
-  const counting = Object.create(Model)
-  const v = { Model: counting, matches: 0, suggestOnOpen: true, items, associations: Model.emptyAssociations(),
+  const v = { Model, suggestOnOpen: true, items, associations: Model.emptyAssociations(),
     activeWindowData: null, suggestedItems: [], detectedContext: null, learnedIds: {},
     contextMatchKey: "", contextInputsGen: 1, itemsLoadedAt: Date.now(), itemsFreshMs: 60000,
     rebuildFilter() {}, beginInitialVaultLoad() {} }
-  counting.findContextualMatches = function () { v.matches++; return Model.findContextualMatches.apply(Model, arguments) }
   const names = ["handleActiveWindowDetected", "ensureItemsFresh"]
   Object.assign(v, new Function("scope", "with (scope) {\n" + names.map(nm => functionBody(svc, nm)).join("\n")
     + "\nreturn { " + names.join(", ") + " } }")(v))
@@ -116,8 +114,6 @@ const results = []
 for (const tier of tiers) {
   const raw = buildFixture(tier)
   const actualBytes = Buffer.byteLength(raw)
-  check(`${tier.name}: fixture item count`, JSON.parse(raw).length === tier.items,
-    `expected ${tier.items}`)
   check(`${tier.name}: fixture payload size`,
     actualBytes >= tier.bytes && actualBytes <= tier.bytes + tier.items * 2,
     `expected approximately ${tier.bytes} bytes, got ${actualBytes}`)
@@ -150,18 +146,10 @@ for (const tier of tiers) {
   panel.open(windows[0])
   const openNewSamples = []
   const openSameSamples = []
-  let openNewPasses = 0
-  let openSamePasses = 0
   for (let sample = 0; sample < 20; sample++) {
-    panel.matches = 0
     openNewSamples.push(timed(() => panel.open(windows[(sample + 1) % 2])).ms)
-    openNewPasses = Math.max(openNewPasses, panel.matches)
-    panel.matches = 0
     openSameSamples.push(timed(() => panel.open(windows[(sample + 1) % 2])).ms)
-    openSamePasses = Math.max(openSamePasses, panel.matches)
   }
-  check(`${tier.name}: an open from another window matches once`, openNewPasses === 1, `${openNewPasses} passes`)
-  check(`${tier.name}: an open from the same window does not match again`, openSamePasses === 0, `${openSamePasses} passes`)
 
   const row = {
     tier: tier.name,

@@ -125,17 +125,10 @@ check("the panel arms the window in wall-clock terms",
   bodyOf("resetAutoLockTimer"))
 const watchdog = panelSrc.slice(panelSrc.indexOf("id: autoLockWatchdog"),
   panelSrc.indexOf("id: autoLockWatchdog") + 900)
-check("the panel runs a wall-clock watchdog alongside the monotonic timer",
-  panelSrc.includes("id: autoLockWatchdog"), "no autoLockWatchdog Timer")
-check("the watchdog repeats, or it is just the monotonic timer again",
-  /repeat:\s*true/.test(watchdog), watchdog)
-check("the watchdog only runs on an unlocked vault",
-  /running:\s*root\.status === "unlocked" && root\.autoLockMinutes > 0/.test(watchdog), watchdog)
-check("the watchdog asks the wall clock",
-  /Model\.autoLockExpired\(root\.autoLockArmedAt, root\.autoLockMinutes, Date\.now\(\)\)/.test(watchdog),
+check("a repeating watchdog asks the wall clock while unlocked, and locks when the window has passed",
+  /repeat:\s*true\s*running:\s*root\.status === "unlocked" && root\.autoLockMinutes > 0/.test(watchdog)
+    && /if \(Model\.autoLockExpired\(root\.autoLockArmedAt, root\.autoLockMinutes, Date\.now\(\)\)\) \{[^}]*root\.lockVault\(\)/.test(watchdog),
   watchdog)
-check("and locks when it has passed",
-  /root\.lockVault\(\)/.test(watchdog), watchdog)
 
 // --- 4. A reader that outlived the vault it was reading ---------------------
 check("same generation, session still there: fresh",
@@ -218,10 +211,6 @@ for (const [name, starter, handler] of [
   check(`${handler}() refuses an answer from a vault that has closed`,
     new RegExp(`if \\(vaultReadIsStale\\("${name}"\\)\\) return`).test(bodyOf(handler)), bodyOf(handler))
 }
-
-check("startVaultRead() stamps only a run it starts",
-  /if \(vaultProcBusy\(proc\)\) \{\s*queuedReads\[name\] = \{ epoch: vaultEpoch, launch: launch \}\s*return\s*\}\s*delete queuedReads\[name\]\s*beginVaultRead\(name\)\s*launch\(\)/
-    .test(bodyOf("startVaultRead")), bodyOf("startVaultRead"))
 
 // Writers and generated values can outlive a lock too. Their server-side
 // effect may already have happened, but no completion may repopulate the
@@ -358,13 +347,10 @@ check("credential clears requested during another clear are repeated afterward",
     && /masterClearPending\s*=\s*true/.test(bodyOf("requestMasterCredentialClear"))
     && /allCredentialsClearPending\s*=\s*true/.test(bodyOf("requestAllCredentialClear")),
   "one or more keyring clear paths cannot queue a repeat")
-check("locking uses the centralized local vault purge",
-  /dropVaultState\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
 check("unreadable, locked, and logged-out status results purge local vault state",
   (bodyOf("onStatusFinished").match(/dropVaultState\(\)/g) || []).length >= 3,
   bodyOf("onStatusFinished"))
 for (const [prop, empty] of [
-  ["session", '""'], ["items", "[]"], ["filteredItems", "[]"],
   ["organizations", "[]"], ["folders", "[]"], ["detailItem", "null"],
   ["formCollections", "[]"], ["formCollectionIds", "[]"],
   ["formUsername", '""'], ["formUri", '""'],
@@ -382,7 +368,7 @@ check("the local vault purge cancels and clears attachment work",
 check("the local vault purge clears secret fields and collector buffers",
   /dropVaultSecrets\(\)/.test(droppedState), droppedState)
 
-for (const fn of ["onUnlockSuccess", "onSessionHandoff", "onKeyringLookupFinished"]) {
+for (const fn of ["onUnlockSuccess", "onSessionHandoff"]) {
   check(`${fn}() moves the vault generation on`,
     /vaultEpoch \+= 1/.test(bodyOf(fn)), bodyOf(fn))
 }

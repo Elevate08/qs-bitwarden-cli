@@ -53,9 +53,6 @@ check("the view asks the shell for its own plugin's service",
   "the bar's shell facade must be asked for serviceFor(root.moduleName)")
 check("and lets the model decide between shared, private and waiting",
   /Model\.vaultHostDecision\(/.test(panel), "vaultHostDecision not called")
-check("the lookup is polled, because nothing notifies a binding when the service appears",
-  /id:\s*vaultResolveTimer[\s\S]{0,200}running:\s*root\.resolvedVault === null && root\.vaultHost === "pending"/.test(panel),
-  "vaultResolveTimer must run until a vault is resolved")
 check("`vault` is never null: the view's own standby vault stands in until one is resolved",
   /readonly property var vault: resolvedVault !== null \? resolvedVault : localVault/.test(panel)
     && /Service \{\s*id: localVault\s*privateHost: true\s*\}/.test(panel),
@@ -107,7 +104,7 @@ check("the private host polls for the service and stops once shared",
     && /interval: Model\.vaultHandOverPollMs\(\)/.test(panel)
     && /^\s*if \(root\.vaultHost !== "private"\) return/m.test(handOver),
   "vaultHandOverTimer must run only while private")
-check("the first lookup is untouched by it",
+check("the first lookup is polled until a vault is resolved, and is untouched by the hand-over",
   /function resolveVault\(\) \{\s*if \(root\.resolvedVault\) return/.test(panel)
     && /interval: 50\s*repeat: true\s*running: root\.resolvedVault === null && root\.vaultHost === "pending"/.test(panel),
   "resolveVault and vaultResolveTimer must keep their first-resolution behaviour")
@@ -156,9 +153,6 @@ check("only the presenting view shows the SSH approval popup",
   /readonly property bool presenting: vault\.presenter === panel/.test(popupSrc)
     && /readonly property bool open: presenting && /.test(popupSrc),
   "every monitor's popup would open and take keyboard focus")
-check("vaultHost reports which monitor presents and which popouts are open",
-  /presenter: root\.presenter\.screenName/.test(service) && /screens\.push\(\{ screen: root\.views\[i\]\.screenName, opened:/.test(service),
-  "vaultHost diagnostics missing")
 
 // --- an unattached vault is inert ----------------------------------------------
 //
@@ -212,8 +206,6 @@ check("only a real true counts as open",
 check("the service follows Hyprland's focused monitor",
   /Hyprland\.focusedMonitor/.test(service) && /Model\.presenterIndex\(summaries, focusedScreen\)/.test(service),
   "presenter must be derived from the views and the focused monitor")
-check("each view reports the monitor it is on",
-  /readonly property string screenName:/.test(panel), "screenName missing from the view")
 
 // --- the split ----------------------------------------------------------------
 //

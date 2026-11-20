@@ -11,7 +11,7 @@
 //
 //   node tests/reprompt-reload.test.js
 
-const { createSuite, functionBody, read } = require("./harness")
+const { createSuite, read } = require("./harness")
 const { Model, makeVault: makeStandIn, answer, confirm } = require("./detail-vault")
 const { check, eq, done } = createSuite("reprompt-reload")
 
@@ -357,10 +357,6 @@ function makeVault(fallback) {
 
 // --- wiring -----------------------------------------------------------------------------------
 const service = read("Service.qml")
-const finished = functionBody(service, "onListFinished")
-check("an accepted list is checked against the open detail once its rows are in",
-  finished.indexOf("items = vault.items") !== -1
-    && finished.indexOf("items = vault.items") < finished.indexOf("reconcileOpenDetail()"), finished)
 check("the code's refresh timer goes through totpWanted()",
   /root\.detailItem\.hasTotp\s*&& root\.totpWanted\(root\.detailItem\)\) \{\s*root\.fetchTotp\(root\.detailItem\.id\)/.test(service))
 

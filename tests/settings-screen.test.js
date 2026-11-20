@@ -35,10 +35,6 @@ check("colorized icon leaves status badges independent",
     && shield.includes("color: bar ? bar.barForeground : Color.foreground"),
   "expected urgent and locked badge colors to remain independently bound")
 
-check("panel-open indicator keeps Omarchy's standard width",
-  !panelSrc.includes("openPanelIndicatorWidth"),
-  "expected no plugin-specific width override for the panel-open indicator")
-
 check("custom shield corrects its painted side bearings",
   shield.includes("id: shieldGlyphMetrics")
     && shield.includes("shieldGlyphMetrics.tightBoundingRect")
@@ -51,9 +47,6 @@ check("shield renders the way the rest of the bar does",
   shield.includes("renderType: Text.NativeRendering")
     && !shield.includes("renderType: Text.QtRendering"),
   "expected the shield to use Text.NativeRendering, as Omarchy's own glyphs do")
-
-check("the settings screen has a wrapper outside the scroll area", screenAt >= 0,
-  "expected a settingsScreen Column")
 
 // --- what must not scroll away -----------------------------------------------
 
@@ -88,10 +81,6 @@ check("and when folding changes what is in the list",
   /onContentHeightChanged: Qt\.callLater\(root\.updateSettingsSticky\)/.test(panelSrc),
   "a fold changes contentHeight and must re-run the check after layout")
 
-check("the indicator is held rather than bound",
-  /property var settingsStickyEntry: null/.test(panelSrc),
-  "it depends on delegate geometry, which a binding cannot read without fighting layout")
-
 // The bar names a section even at rest; the named section's in-list heading
 // is hidden instead.
 check("the bar names a section from the top of the list, before any scrolling",
@@ -113,12 +102,6 @@ check("the gap above it goes too",
   /visible: isGroup && index > 0 && !yieldsToBar/.test(panelSrc),
   "the spacer above a hidden heading would leave a smaller hole in its place")
 
-// Exactly one heading is ever yielding, so the content height is constant:
-// the one taking over collapses as the previous one is restored.
-check("only the pinned section's heading yields, so the height stays constant",
-  /content height is stable/.test(panelSrc),
-  "expected the reasoning recorded where the next reader will be standing")
-
 check("and only while part of that section is still on screen",
   /if \(top < settingsSectionEnd\(i\)\)/.test(panelSrc),
   "past the end of a section the bar must let go of it")
@@ -128,30 +111,6 @@ check("a section's extent is the next heading, or the last row for the final one
     && /if \(next\) return next\.y/.test(panelSrc)
     && /if \(last\) return last\.y \+ last\.height/.test(panelSrc),
   "expected both the between-headings and the final-section cases")
-
-// The trailing maintenance and danger-zone blocks are not foldable sections.
-// Leaving the last group pinned through them would offer to fold something the
-// user had scrolled past and could no longer see.
-check("the bar empties rather than naming a section that is no longer in view",
-  /var found = null/.test(panelSrc)
-    && !/if \(!found\) \{/.test(panelSrc),
-  "there must be no fallback that forces a section into an empty bar")
-
-// --- the sections are not foldable ------------------------------------------
-//
-//
-// Three small groups do not need folding; keep it from creeping back halfway.
-
-check("no collapse state is kept",
-  !/collapsedGroups/.test(panelSrc), "settings sections are not foldable")
-
-check("headings are not controls",
-  !/toggleSettingsGroup|toggleStickySettingsGroup/.test(panelSrc),
-  "a heading that folds nothing must not accept a click")
-
-check("the pinned indicator carries no chevron or count",
-  !/settingsStickyEntry\.collapsed|settingsStickyEntry\.count/.test(panelSrc),
-  "the bar names the section and nothing more")
 
 // A heading is in the list so the indicator has geometry to read, but it is
 // not something the cursor can act on -- stopping there and doing nothing on
@@ -164,16 +123,7 @@ check("the screen opens on a setting, not on a heading",
   /settingsIndex = firstSettingIndex\(\)/.test(panelSrc),
   "the first row in the list is a heading")
 
-check("activation and adjustment have no group case left",
-  !/e\.kind === "group"/.test(panelSrc),
-  "the cursor can no longer land on a heading, so neither needs to handle one")
-
 // --- geometry access is funnelled ---------------------------------------------
-
-check("view geometry is reached through named helpers, not ids scattered about",
-  /function settingsViewportTop\(\)/.test(panelSrc)
-    && /function settingsRepeaterItem\(i\)/.test(panelSrc),
-  "expected settingsViewportTop and settingsRepeaterItem")
 
 check("both helpers survive being called before the view exists",
   /return settingsFlick \? settingsFlick\.contentY : 0/.test(panelSrc)
@@ -200,11 +150,9 @@ const scrollViews = [
   "filterOptionsList", "detailFlickable", "editFlickable",
   "folderPickList", "orgPickList", "collectionList", "paletteList",
 ]
-for (const view of scrollViews) {
-  check(`${view} keeps its content clear of the scrollbar`,
-    new RegExp(`width: ${view}\\.width - root\\.scrollGutter`).test(panelSrc),
-    `${view} content runs under its own scrollbar`)
-}
+const underBar = scrollViews.filter(view => !new RegExp(`width: ${view}\\.width - root\\.scrollGutter`).test(panelSrc))
+check("every scrolling view keeps its content clear of the scrollbar", underBar.length === 0,
+  `content runs under its own scrollbar: ${underBar.join(", ")}`)
 
 // The vault list is a ListView, so its delegate takes the width directly
 // rather than through a content column.

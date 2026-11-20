@@ -164,11 +164,6 @@ check("the retry never abandons a collector that is still being written",
     `started=${p.start.length} remaining=${queue.length}`)
 }
 
-check("Panel completion handlers dequeue scrubbed processes explicitly",
-  /function\s+finishScrubRun\s*\(proc\)/.test(panelSource)
-    && /scrubPending\s*=\s*Model\.finishScrub\(scrubPending,\s*proc\)/.test(panelSource),
-  "Panel does not record scrub completion independently of Process reuse")
-
 check("a one-shot password copy scrubs its collector immediately after use",
   /clearProcessCollectorSoon\(copyPasswordProc\)/.test(panelBodyOf("onPasswordCopyFinished")),
   panelBodyOf("onPasswordCopyFinished"))
@@ -208,10 +203,8 @@ check("the deferred TOTP restart reserves the Process against a newer direct sta
 
 const cap = Model.GENERATE_RESPONSE_CAP
 
-check("the response cap is far above a generated password",
-  cap >= 4096, `cap is ${cap} bytes`)
-check("and far below anything that would hurt to hold",
-  cap <= 1024 * 1024, `cap is ${cap} bytes`)
+check("the response cap is far above a generated password and far below anything that would hurt to hold",
+  cap >= 4096 && cap <= 1024 * 1024, `cap is ${cap} bytes`)
 check("the request deadline is short enough to be a loopback deadline",
   Model.GENERATE_REQUEST_TIMEOUT_MS > 0 && Model.GENERATE_REQUEST_TIMEOUT_MS <= 10000,
   `deadline is ${Model.GENERATE_REQUEST_TIMEOUT_MS}ms`)

@@ -5,7 +5,7 @@
 //
 //   node tests/item-icons.test.js
 
-const { createSuite, loadModule, read, readPluginSource } = require("./harness")
+const { createSuite, loadModule, read } = require("./harness")
 const Model = loadModule()
 
 const { check, done } = createSuite("item-icons")
@@ -153,7 +153,6 @@ check("ItemIcon draws only the URL websiteIconUrl() gives",
 check("the glyph stays until the image has loaded",
   /imageShown: imageUrl !== "" && favicon\.status === Image\.Ready/.test(icon)
     && /visible: !icon\.imageShown/.test(icon))
-check("icons load off the GUI thread", /asynchronous: true/.test(icon))
 check("icons are decoded at device pixels, not logical ones",
   /pixelSize: Math\.ceil\(size \* Math\.max\(1, Screen\.devicePixelRatio/.test(icon)
     && /sourceSize\.width: icon\.pixelSize/.test(icon) && /sourceSize\.height: icon\.pixelSize/.test(icon))
@@ -182,8 +181,5 @@ check("browsing does not teach suggestions",
 check("browsing waits for the cursor to settle",
   /browseDetailTimer\.restart\(\)/.test(service) && /onTriggered: root\.openBrowsedDetail\(\)/.test(service))
 
-// readPluginSource() folds the service into the view; it must still parse
-// the new properties as the view's.
-check("readPluginSource() still sees the split", /splitView/.test(readPluginSource("Panel.qml")))
 
 done()

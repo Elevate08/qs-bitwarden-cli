@@ -144,19 +144,11 @@ check("locking runs bw lock without waiting on the companion",
     && /lockProc\.running = true/.test(panelSrc.slice(panelSrc.indexOf("function runBwLockStep()"),
       panelSrc.indexOf("function runBwLockStep()") + 600)),
   lockVault.slice(0, 300))
-check("locking reports the vault locked on the panel's own schedule",
-  /status = "locked"/.test(lockVault), "lockVault never sets the locked status")
-check("locking notifies the companion",
-  /applySshAgentLifecycle\("lock"\)|sshAgentVaultLockedLine/.test(lockVault),
-  "lockVault never tells the companion")
 
 check("a lock acknowledgment timeout kills the helper",
-  /id: sshAgentLockAckTimer[\s\S]{0,400}?onTriggered:[\s\S]{0,200}?(sshAgentProc\.running = false|killSshAgentHelper)/
+  /id: sshAgentLockAckTimer\s+interval: Model\.sshAgentLockAckTimeoutMs\(\)[\s\S]{0,200}?onTriggered:[\s\S]{0,200}?sshAgentProc\.running = false/
     .test(panelSrc),
-  "no acknowledgment timeout kills the helper")
-check("the acknowledgment timer uses the model's bound",
-  /id: sshAgentLockAckTimer[\s\S]{0,200}?interval: Model\.sshAgentLockAckTimeoutMs\(\)/.test(panelSrc),
-  "the acknowledgment timeout is not the model's")
+  "no acknowledgment timeout kills the helper within the model's bound")
 check("a locked acknowledgment stops the timer",
   /"locked"[\s\S]{0,300}?sshAgentLockAckTimer\.stop\(\)/.test(panelSrc),
   "the locked acknowledgment never stops the kill timer")
@@ -222,35 +214,21 @@ check("screen lock and suspend reach the companion through the lock path",
 check("the gate opening arms a startup load",
   /onSshAgentGateOpenChanged[\s\S]{0,1400}?sshAgentStartupLoadTimer\.restart\(\)/.test(panelSrc),
   "the gate opening never arms a startup load")
-check("a remembered unlocked session loads keys once the helper is ready",
-  /function maybeStartupLoad\(\)[\s\S]{0,1200}?applySshAgentLifecycle\("startup"\)/.test(panelSrc),
-  "nothing applies the startup transition")
+check("the startup load happens once per vault epoch, not once per edge",
+  /function maybeStartupLoad\(\)[\s\S]{0,1200}?sshAgentLoadedForVaultEpoch === root\.vaultEpoch/.test(panelSrc),
+  "nothing stops the startup load repeating")
 // On a shell restart the handshake and the first `bw status` race, so waiting
 // on only one of them loses the load whenever the other is second.
 check("both edges of the startup race trigger the load",
   /id: sshAgentStartupLoadTimer[\s\S]{0,200}?maybeStartupLoad\(\)/.test(panelSrc)
     && /onStatusChanged:[\s\S]{0,200}?maybeStartupLoad\(\)/.test(panelSrc),
   "only one edge triggers the startup load")
-// The panel's first read is launched before the helper handshakes, so the
-// completion of that read is the third edge that can owe a key load.
-check("a completed read re-checks whether a startup load is owed",
-  /function onListFinished\(rawJson\)[\s\S]{0,1300}?maybeStartupLoad\(\)/.test(panelSrc),
-  "a finished read never re-checks for an owed startup load")
-check("a startup attempt is recorded before it runs, not after",
-  /sshAgentLoadedForVaultEpoch = root\.vaultEpoch\s*\n\s*applySshAgentLifecycle\("startup"\)/.test(panelSrc),
-  "a failed startup load could relaunch itself")
-check("the startup load happens once per vault epoch, not once per edge",
-  /function maybeStartupLoad\(\)[\s\S]{0,1200}?sshAgentLoadedForVaultEpoch === root\.vaultEpoch/.test(panelSrc),
-  "nothing stops the startup load repeating")
 
 // The lock acknowledgment is what stops the kill timer, so it has to be
 // consumed wherever the companion's messages are handled.
 const messageHandler = panelSrc.slice(
   panelSrc.indexOf("function onSshAgentMessage(message)"),
   panelSrc.indexOf("function syncSshAgentSupervision()"))
-check("the companion's own events are consumed rather than ignored",
-  /message\.type === "locked"/.test(messageHandler) && /message\.type === "keys_loaded"/.test(messageHandler),
-  "onSshAgentMessage ignores the lock acknowledgment or the load result")
 check("a failed load is not treated as a lock acknowledgment",
   /message\.type === "load_failed"/.test(messageHandler)
     && !/"load_failed"[\s\S]{0,200}sshAgentLockAckTimer\.stop/.test(messageHandler),

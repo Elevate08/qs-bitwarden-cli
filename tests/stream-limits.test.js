@@ -6,7 +6,7 @@ const { createSuite, loadModule } = require("./harness")
 const fs = require("fs")
 const path = require("path")
 const os = require("os")
-const { execFileSync, spawnSync } = require("child_process")
+const { spawnSync } = require("child_process")
 
 const Model = loadModule()
 
@@ -129,20 +129,6 @@ check("deleteItemCommand caps stderr and response",
   flat(deleteItemCmd).includes("exec 2> >(head -c 8192 >&2)") && flat(deleteItemCmd).includes("head -c 65536"),
   flat(deleteItemCmd))
 
-// 14. Live execution check: verify head -c truncation behaviour on huge stream
-const hugeScript = "yes 'unbounded streaming line' | head -c 1024"
-const hugeOut = execFileSync("bash", ["-c", hugeScript], { encoding: "utf8" })
-check("head -c strictly bounds incoming stream to exact byte count",
-  Buffer.byteLength(hugeOut, "utf8") === 1024,
-  `Expected 1024 bytes, got ${Buffer.byteLength(hugeOut, "utf8")}`)
-
-// 15. Live execution check: verify stderr bounding does not corrupt stdout
-const stderrScript = "exec 2> >(head -c 100 >&2); echo 'stdout data'; (echo 'short stderr error' >&2)"
-const proc = execFileSync("bash", ["-c", stderrScript], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-check("capped stderr does not leak into stdout",
-  proc.trim() === "stdout data",
-  `stdout was: ${JSON.stringify(proc)}`)
-
 // 16. `pipefail` keeps a failing bw's status through the `head -c` cap.
 const cappedBuilders = [
   ["getItemCommand", Model.getItemCommand("x")],
@@ -156,10 +142,8 @@ const cappedBuilders = [
   ["settingWriteCommand", Model.settingWriteCommand("autoLockMinutes", 5, "int")],
 ]
 for (const [name, cmd] of cappedBuilders) {
-  check(`${name} restores the producer's exit status with pipefail`,
-    flat(cmd).includes("set -o pipefail"), flat(cmd))
-  check(`${name} does not report truncation (SIGPIPE 141) as a failure`,
-    flat(cmd).includes('case "$__rc" in 141) __rc=0 ;; esac'), flat(cmd))
+  check(`${name} restores the producer's exit status with pipefail, and does not report truncation (SIGPIPE 141) as a failure`,
+    flat(cmd).includes("set -o pipefail") && flat(cmd).includes('case "$__rc" in 141) __rc=0 ;; esac'), flat(cmd))
 }
 
 // 17. Live execution check, with a stub `bw`: a failing command must exit

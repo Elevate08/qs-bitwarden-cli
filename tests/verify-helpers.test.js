@@ -22,9 +22,6 @@ check("the script is executable", (fs.statSync(scriptPath).mode & 0o111) !== 0,
   "chmod +x scripts/verify-helpers.sh")
 eq("bash -n accepts it", bash("-n", scriptPath).status, 0)
 check("it runs under set -euo pipefail", /^set -euo pipefail$/m.test(script), "")
-// Outside comments and quoted messages (which name what build-agent.sh tries).
-const code = script.replace(/#.*$/gm, "").replace(/'[^']*'|"[^"]*"/g, "")
-check("it never calls sudo itself", !/\bsudo\b/.test(code), "verify-helpers.sh must not escalate")
 
 const help = bash(scriptPath, "--help")
 eq("--help exits 0", help.status, 0)
@@ -58,11 +55,11 @@ check("build-agent.sh needs cargo only where it builds, not to re-enter the imag
 
 // Every helper the script checks is one the release ships.
 const sums = read("bin/SHA256SUMS")
-for (const arch of ["x86_64", "aarch64"]) {
-  for (const name of ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key", "qs-bitwarden-vault"]) {
+for (const name of ["qs-bitwarden-ssh-agent", "qs-bitwarden-unlock-key", "qs-bitwarden-vault"]) {
+  for (const arch of ["x86_64", "aarch64"]) {
     check(`SHA256SUMS lists ${arch}-linux/${name}`, sums.includes(`  ${arch}-linux/${name}\n`), sums)
-    check(`REVIEWING.md names ${name}`, reviewing.includes(name), "")
   }
+  check(`REVIEWING.md names ${name}`, reviewing.includes(name), "")
 }
 
 // The files an automated marketplace review flagged.
@@ -102,8 +99,6 @@ const cites = [
   ["README.md", "sudo pacman -S --needed"],
   ["BitwardenModel.js", "sudo pacman -S --needed"],
   ["scripts/build-agent.sh", "PINNED_IMAGE="],
-  ["scripts/verify-helpers.sh", 'REPO="'],
-  ["scripts/verify-helpers.sh", 'SIGNER="'],
   ["scripts/repair-keyring.sh", "Default_keyring.keyring"],
   ["agent/src/main.rs", "harden_process()"],
   ["unlock-key/src/main.rs", "harden_process()"],

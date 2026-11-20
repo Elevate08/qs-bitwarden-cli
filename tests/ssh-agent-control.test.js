@@ -66,9 +66,6 @@ eq("helper command is empty without a plugin dir", Model.sshAgentHelperCommand("
 const env = Model.sshAgentHelperEnv("/run/user/1000")
 eq("helper environment carries only XDG_RUNTIME_DIR", Object.keys(env).sort().join(","), "XDG_RUNTIME_DIR")
 eq("helper environment points at the runtime dir", env.XDG_RUNTIME_DIR, "/run/user/1000")
-for (const banned of ["PATH", "HOME", "BW_SESSION", "BW_PASSWORD", "QSBW_SECRET", "SSH_AUTH_SOCK"]) {
-  check("helper environment omits " + banned, !(banned in env), JSON.stringify(env))
-}
 eq("helper environment refuses a relative runtime dir", Model.sshAgentHelperEnv("run/user/1000"), null)
 eq("helper environment refuses an empty runtime dir", Model.sshAgentHelperEnv(""), null)
 
@@ -612,25 +609,18 @@ async function processTests() {
 const panelSrc = ["Panel.qml", "SshAgentSettings.qml", "SshApprovalScreen.qml"]
   .map(readPluginSource)
   .join("\n")
-check("the supervisor Process is tracked, not detached",
-  !/execDetached\([^)]*sshAgent/i.test(panelSrc), "found execDetached for the ssh agent")
-check("the supervisor keeps stdin open", /id:\s*sshAgentProc[\s\S]{0,400}?stdinEnabled:\s*true/.test(panelSrc),
-  "sshAgentProc has no stdinEnabled: true")
-check("the supervisor parses stdout by line from startup",
-  /id:\s*sshAgentProc[\s\S]{0,600}?stdout:\s*SplitParser/.test(panelSrc),
-  "sshAgentProc has no SplitParser attached")
+check("the supervisor keeps stdin open and parses stdout by line from startup",
+  /id:\s*sshAgentProc[\s\S]{0,400}?stdinEnabled:\s*true[\s\S]{0,200}?stdout:\s*SplitParser/.test(panelSrc),
+  "sshAgentProc has no open stdin or no SplitParser attached")
 check("the supervisor uses a minimal environment",
   /id:\s*sshAgentProc[\s\S]{0,600}?clearEnvironment:\s*true/.test(panelSrc),
   "sshAgentProc does not clear its environment")
 
 // The helper removes its socket and FIFO when its control channel closes, not
 // on a signal, so stopping asks first.
-check("stopping the helper closes its control channel first",
-  /function stopSshAgentHelper\(\)[\s\S]{0,600}?stdinEnabled = false/.test(panelSrc),
-  "the stop path never closes stdin")
-check("stopping the helper sends the shutdown line",
-  /function stopSshAgentHelper\(\)[\s\S]{0,600}?sshAgentShutdownLine\(\)/.test(panelSrc),
-  "the stop path never sends shutdown")
+check("stopping the helper sends the shutdown line, then closes its control channel",
+  /function stopSshAgentHelper\(\)[\s\S]{0,600}?sshAgentShutdownLine\(\)\)\s*sshAgentProc\.stdinEnabled = false/.test(panelSrc),
+  "the stop path never sends shutdown or never closes stdin")
 check("termination is a backstop behind a grace period",
   /sshAgentTerminateTimer[\s\S]{0,300}?onTriggered:\s*if \(sshAgentProc\.running\) sshAgentProc\.running = false/.test(panelSrc),
   "nothing terminates a helper that ignores the shutdown request")

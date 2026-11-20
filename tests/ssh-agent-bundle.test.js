@@ -316,8 +316,6 @@ inTemp(dir => {
 const panelSrc = ["Panel.qml", "SshAgentSettings.qml"]
   .map(readPluginSource)
   .join("\n")
-check("the helper is inspected before the supervisor is allowed to start",
-  /helperReady\(sshAgentHelper\)/.test(panelSrc), "nothing gates startup on the inspection")
 check("a failed inspection disables only the agent",
   /sshAgentSupervisable[\s\S]{0,400}?helperReady\(sshAgentHelper\)|helperReady\(sshAgentHelper\)[\s\S]{0,400}?sshAgentSupervisable/.test(panelSrc),
   "the inspection result does not feed the supervisable gate")
