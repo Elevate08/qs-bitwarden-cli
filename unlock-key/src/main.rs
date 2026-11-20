@@ -147,7 +147,7 @@ fn run(command: &str, rest: &[String]) -> Outcome {
 fn create(flags: &Flags) -> Outcome {
     flags.only(&["salt", "m", "t", "p"])?;
     let password = secret_env(PASSWORD_ENV)?;
-    let master_key = hex_env(NEW_KEY_ENV)?;
+    let master_key = key_env(NEW_KEY_ENV, key_from_hex)?;
     let envelope = Envelope::create(flags.account()?, &password, flags.argon2()?, &master_key)?;
     Ok(envelope.to_json()?)
 }
@@ -176,12 +176,12 @@ fn add(flags: &Flags) -> Outcome {
     let auth = ViaKey::from_env(flags.required("auth")?, flags.optional("auth-cred"))?;
     match flags.required("method")? {
         "pin" => {
-            let pin_key = hex_env(NEW_KEY_ENV)?;
+            let pin_key = key_env(NEW_KEY_ENV, key_from_hex)?;
             envelope.add_pin(&auth.via()?, flags.argon2()?, &pin_key)?;
         }
         "fingerprint" => envelope.add_fingerprint(&auth.via()?)?,
         "fido" => {
-            let hmac = base64_env(NEW_KEY_ENV)?;
+            let hmac = key_env(NEW_KEY_ENV, key_from_base64)?;
             envelope.add_fido(
                 &auth.via()?,
                 flags.required("cred")?,
@@ -215,7 +215,7 @@ fn rotate(flags: &Flags) -> Outcome {
     let mut envelope = read_envelope(Some(&flags.account()?))?;
     let auth = ViaKey::from_env(flags.required("auth")?, flags.optional("auth-cred"))?;
     let password = secret_env(PASSWORD_ENV)?;
-    let master_key = hex_env(NEW_KEY_ENV)?;
+    let master_key = key_env(NEW_KEY_ENV, key_from_hex)?;
     envelope.rotate(&auth.via()?, &password, flags.argon2()?, &master_key)?;
     Ok(envelope.to_json()?)
 }
@@ -239,18 +239,18 @@ fn inspect(flags: &Flags) -> Outcome {
 struct ViaKey<'a> {
     kind: &'a str,
     credential: Option<&'a str>,
-    key: Option<Zeroizing<[u8; KEY_LEN]>>,
+    key: Option<Key>,
 }
 
 impl<'a> ViaKey<'a> {
     fn from_env(kind: &'a str, credential: Option<&'a str>) -> Result<Self, Failure> {
         let (key, credential) = match kind {
-            "master" | "pin" => (Some(hex_env(KEY_ENV)?), None),
+            "master" | "pin" => (Some(key_env(KEY_ENV, key_from_hex)?), None),
             "fingerprint" => (None, None),
             "fido" => {
                 let credential =
                     credential.ok_or(Failure::Usage("fido needs the credential id"))?;
-                (Some(base64_env(KEY_ENV)?), Some(credential))
+                (Some(key_env(KEY_ENV, key_from_base64)?), Some(credential))
             }
             _ => {
                 return Err(Failure::Usage(
@@ -373,16 +373,14 @@ fn text_env(name: &str) -> Result<String, Failure> {
     std::env::var(name).map_err(|_| Failure::Usage("the account is missing from the environment"))
 }
 
-fn hex_env(name: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, Failure> {
-    let text = secret_env(name)?;
-    let text = std::str::from_utf8(&text).map_err(|_| Failure::Envelope(Error::Malformed))?;
-    Ok(key_from_hex(text)?)
-}
+type Key = Zeroizing<[u8; KEY_LEN]>;
 
-fn base64_env(name: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, Failure> {
+/// The key in the variable `name`, as `decode` reads it: `key_from_hex` for
+/// `argon2 -r` output, `key_from_base64` for `fido2-assert`'s.
+fn key_env(name: &str, decode: fn(&str) -> Result<Key, Error>) -> Result<Key, Failure> {
     let text = secret_env(name)?;
     let text = std::str::from_utf8(&text).map_err(|_| Failure::Envelope(Error::Malformed))?;
-    Ok(key_from_base64(text)?)
+    Ok(decode(text)?)
 }
 
 /// One named self-test check.
