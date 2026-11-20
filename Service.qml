@@ -1407,17 +1407,22 @@ Item {
   function commitStagedList(stage, rawJson) {
     var epoch = vaultEpoch
     var changes = vaultChanges
-    listProc.committing = true
+    listProc.committing = stage
     vaultQuery("commitVault", { stage: stage }, function(ok) {
-      if (epoch !== root.vaultEpoch) return
-      listProc.committing = false
+      // First, whatever the answer and whatever has happened since (the
+      // vault closed, another session handed over, the helper gone): the
+      // reader is free again, and a read that waited for this answer runs,
+      // unless a later run or commit of the reader's is now what it waits
+      // for. A read queued for a vault since closed is only dropped.
+      if (listProc.committing === stage) listProc.committing = 0
+      var current = epoch === root.vaultEpoch
       var spinner = root.isLoading
-      if (ok) root.onListFinished(rawJson)
-      // A read that waited for this answer runs now, whatever it was.
-      if (root.supersededVaultRead("items")) {
+      if (ok && current) root.onListFinished(rawJson)
+      if (!root.vaultProcBusy(listProc) && root.supersededVaultRead("items")) {
         root.isLoading = spinner
         return
       }
+      if (!current) return
       if (!ok) {
         var again = !root.listCommitRetried
         if (again) root.loadItems(false)
@@ -6953,7 +6958,7 @@ Item {
     listRereadOwed = false
     // The helper drops what it had staged with the rest (forgetVault()).
     listProc.staged = 0
-    listProc.committing = false
+    listProc.committing = 0
     listCommitRetried = false
     createdItemHandoff = null
     masterPassword = ""
@@ -7128,7 +7133,7 @@ Item {
   // included), or stopped with its exit still to come. Setting `running`
   // again then starts nothing, and that run's answer is the next to arrive.
   function vaultProcBusy(proc) {
-    return proc.running || (proc.runId !== undefined && proc.runId !== 0) || proc.committing === true
+    return proc.running || (proc.runId !== undefined && proc.runId !== 0) || proc.committing > 0
   }
 
   // Whether `proc` is running reader `name` for the open vault. A request
@@ -7842,7 +7847,12 @@ Item {
     } else {
       isSyncing = false
       syncReloadPending = false
-      if (!backgroundSync) errorMessage = "Sync failed"
+      // A list read that failed keeps its message: the list on screen is
+      // not known to be current, and that outlasts a sync that failed too.
+      if (!backgroundSync) {
+        if (listReadError !== "" && errorMessage === listReadError) flashNotification("Sync failed")
+        else errorMessage = "Sync failed"
+      }
       else if (!errorMessage || errorMessage === autoSyncError) errorMessage = autoSyncError
       backgroundSync = false
     }

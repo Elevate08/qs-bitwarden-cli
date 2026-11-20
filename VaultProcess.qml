@@ -34,9 +34,10 @@ Item {
   // The id the helper staged this run's list under, 0 if it staged none:
   // for vault.commitStagedList() or discardStagedList(). An id, no vault data.
   property int staged: 0
-  // The helper has been asked to take that list and has not answered: the
-  // list is not read again until it has (vault.commitStagedList()).
-  property bool committing: false
+  // The staged id the helper has been asked to take and has not answered
+  // for, 0 if none: the list is not read again until it has
+  // (vault.commitStagedList()).
+  property int committing: 0
 
   signal started()
   signal exited(int exitCode, int exitStatus)

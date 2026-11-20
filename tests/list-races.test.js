@@ -607,10 +607,23 @@ const finishSave = (c, code, out) => {
   d.exit("listProc", 0, vaultOf("shared"), "", () => d.onDeleteItemFinished(0, "", ""))
   check("a delete left over from the vault before tells the helper nothing: the row shown is one it holds",
     d.forgotten.length === 0 && d.helper.held.join() === "id-shared" && names(d) === "shared", JSON.stringify(d.helper) + names(d))
-  Object.assign(u.listProc, { staged: 7, committing: true }); u.listCommitRetried = true
+  Object.assign(u.listProc, { staged: 7, committing: 7 }); u.listCommitRetried = true
   u.dropVaultState()
   check("a lock drops the staged read's id, the commit awaited and its retry",
     u.listProc.staged === 0 && !u.listProc.committing && !u.listCommitRetried)
+  // Another session is handed over (a terminal sign-in) while the helper's
+  // answer is on the way: its read waits for that answer, which is for a
+  // vault no longer open.
+  const h = fixture()
+  h.helper.defer = true
+  h.loadItems(false); h.exit("listProc", 0, vaultOf("before"), "")
+  h.session = "session-b"; h.vaultEpoch += 1
+  h.loadItems(true)
+  h.helper.answer()
+  const started = names(h) === "" && h.runsOf("listProc").length === 2
+  h.exit("listProc", 0, vaultOf("after"), ""); h.helper.answer()
+  check("a session handed over while the helper's answer is awaited is not left waiting: the answer shows nothing and its read runs",
+    started && names(h) === "after", JSON.stringify({ started, runs: h.runsOf("listProc").length, now: names(h) }))
   const q = fixture()
   q.loadItems(false); q.vaultChanges += 1; q.loadItems(false)
   q.exit("listProc", 0, vaultOf("old"), "")

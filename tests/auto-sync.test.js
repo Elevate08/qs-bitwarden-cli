@@ -180,6 +180,12 @@ for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemPr
   const c = fixture(); c.errorMessage = "An unrelated edit failed"
   c.maybeAutoSync(); c.syncVault(); c.finish(1)
   eq("a taken-over failure says so like a manual one", c.errorMessage, "Sync failed")
+  // The list's re-read failed while this sync ran: the list on screen is not
+  // known to be current, and the sync's own failure does not take that down.
+  const l = fixture()
+  l.syncVault(); l.errorMessage = l.listReadError = "Could not safely read vault items."
+  l.finish(1)
+  eq("a failed sync leaves a failed list read's message up", l.errorMessage + "/" + l.flashes.join(), "Could not safely read vault items./Sync failed")
 }
 {
   // Asked for during the reload an automatic sync owed.
