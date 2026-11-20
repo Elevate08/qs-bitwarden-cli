@@ -64,8 +64,9 @@
   cards their brand mark. The glyph stays until an icon has loaded and
   comes back if it fails. Only a login's first URI is used, and only a plain
   host name or IPv4 address from it goes into the request. **Show website
-  icons** (`showWebsiteIcons`) turns them on; it is off by default, and
-  off nothing is fetched (see Security below).
+  icons** (`showWebsiteIcons`) turns the website icons and card marks on;
+  it is off by default, and off nothing is fetched (see Security below).
+  The app marks are built in and show either way.
 - **The vault list and an item side by side.** An item opens in a pane
   beside the list, as in Bitwarden desktop, half each in a 470 px panel
   with the filter bar under both; the list drops its hover buttons and

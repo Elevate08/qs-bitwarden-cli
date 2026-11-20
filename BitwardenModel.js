@@ -8014,7 +8014,7 @@ var SETTINGS_SCHEMA = [
   { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
     description: "Use the active Omarchy theme accent for the primary menu-bar icon." },
   { key: "showWebsiteIcons", group: "general", type: "bool", label: "Show website icons", defaultValue: false,
-    description: "Show a recognizable image beside each login, and card brand marks, as Bitwarden does. Turning this on sends the host name of each login the list shows to your server's icon service (icons.bitwarden.net on Bitwarden's cloud), which so learns which sites you have saved, and a site whose icon is missing or unreadable is named in the system journal by Qt." },
+    description: "Show a login's website icon, and card brand marks, as Bitwarden does. With this on, the host name in the first URI of a login is sent to your server's icon service (icons.bitwarden.net on Bitwarden's cloud) when its row or its detail header is shown, so the service learns which sites you have saved, and a site whose icon is missing or unreadable is named in the system journal by Qt. Android and Apple app marks are built in and show either way." },
   { key: "sideBySide", group: "general", type: "bool", label: "Show details beside the list", defaultValue: true,
     description: "Open items in a pane beside the vault list, as Bitwarden desktop does. Off keeps the compact panel, where an item replaces the list." },
   { key: "checkForUpdates", group: "general", type: "bool", label: "Check for updates", defaultValue: true,

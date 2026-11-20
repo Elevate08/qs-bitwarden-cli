@@ -83,15 +83,16 @@ window and the live 2FA code replaces it on the clipboard.
 Items show their folder and organization inline. The bottom bar filters by
 folder, organization and type without leaving the keyboard.
 
-**Website icons** sit beside logins where Bitwarden would show them: the
-site's icon from your server's icon service, an Android or Apple mark for an
-app, and a brand mark for Visa, Mastercard, Amex, Discover, JCB and Diners
-Club cards. They are off until you turn on **Show website icons**: fetching
-an icon tells the icon service the site's name (`icons.bitwarden.net` on
-Bitwarden's cloud, your own server when self-hosted), as in Bitwarden's own
-apps, and Qt writes the name of a site whose icon is missing or unreadable
-to the system journal. Off, the type glyphs are drawn and nothing is
-fetched.
+**Icons** sit beside items where Bitwarden would show them. An app login
+(an `androidapp://` or `iosapp://` URI) always carries its Android or Apple
+mark, which is built in. A website's icon, from your server's icon service,
+and the brand mark of a Visa, Mastercard, Amex, Discover, JCB or Diners
+Club card appear once you turn on **Show website icons**, which is off by
+default: with it on, the host name in a login's first URI is sent to the
+icon service (`icons.bitwarden.net` on Bitwarden's cloud, your own server
+when self-hosted) when its row or its detail header is shown, as in
+Bitwarden's own apps, and Qt writes the name of a site whose icon is
+missing or unreadable to the system journal. Off, nothing is fetched.
 
 **Suggestions** read the focused window or browser tab and pin the matching
 credential to the top, so <kbd>Enter</kbd> is usually the only key you need.
@@ -727,7 +728,7 @@ The following settings are read from the plugin's own entry in the
 | `autoCopyTotpSec` | `number` | `3` | Seconds after password copy to automatically replace clipboard with TOTP code (`0` to disable). Also whether an [auto-type](#auto-type) copies the login's TOTP code once it has typed. Range `0`-`30`; out of range is clamped and an unreadable value falls back to `3`. |
 | `closeOnCopy` | `boolean` | `true` | Automatically close panel on Enter copy so target application receives focus immediately. |
 | `autoTypeEnabled` | `boolean` | `false` | Let <kbd>Ctrl</kbd>+<kbd>C</kbd> in the panel arm a login, and the `autoType` IPC type its username, <kbd>Tab</kbd> and password into the focused window with `wtype`. Whatever window has focus gets the password, and while a login is armed any program running as you can trigger it -- see [Auto-type](#auto-type). The settings screen asks you to confirm before turning it on. |
-| `showWebsiteIcons` | `boolean` | `false` | Show a login's website icon, an app's Android or Apple mark and a card's brand mark, where Bitwarden's apps would. Each icon is fetched from the account server's icon service -- `icons.bitwarden.net` (US cloud or no server set), `icons.bitwarden.eu` (EU cloud), or `<server>/icons` when self-hosted -- which so learns the names of the sites you have saved. Only a login's first URI, and only a plain host name or IPv4 address in it, is ever sent; `.onion` and `.i2p` hosts never are. Qt loads the icon by its URL, and logs that URL, which holds the site's name, to the system journal whenever the service has no icon for the site or sends something Qt cannot read. Off (the default) draws the type glyphs and fetches nothing. |
+| `showWebsiteIcons` | `boolean` | `false` | Show a login's website icon and a card's brand mark, where Bitwarden's apps would (an app login's Android or Apple mark is built in and shows either way). Each website icon is fetched when the login's row or its detail header is shown, from the account server's icon service -- `icons.bitwarden.net` (US cloud or no server set), `icons.bitwarden.eu` (EU cloud), or `<server>/icons` when self-hosted -- which so learns the names of the sites you have saved. Only a login's first URI, and only a plain host name or IPv4 address in it, is ever sent; `.onion` and `.i2p` hosts never are. Qt loads the icon by its URL, and logs that URL, which holds the site's name, to the system journal whenever the service has no icon for the site or sends something Qt cannot read. Off (the default) draws the type glyphs and the app marks and fetches nothing. |
 | `sideBySide` | `boolean` | `true` | Open items in a pane beside the vault list, as Bitwarden desktop does, half each in a 470 px panel (450 px compact) while unlocked, with the filter bar under both. Off keeps the compact panel, where an item replaces the list. A screen narrower than 440 px gets the compact layout. |
 | `checkForUpdates` | `boolean` | `true` | Once a day, ask GitHub for the latest release and show "Update available" in Settings when a newer one exists. The request is one `curl` to `api.github.com`, which sees your IP address; nothing else about you or your vault is sent. Off makes no request at all. |
 | `bwCompileCache` | `boolean` | `false` | Start most `bw` commands about a sixth faster (not unlock or login, which never use it) by letting Node keep the compiled form of `bw`'s code in `~/.cache/qs-bitwarden-cli/node-compile-cache` (under `XDG_CACHE_HOME` if that is set; about 11 MB). Off by default. The cache holds compiled code, nothing of your vault, but Node runs that code inside `bw`, which holds your vault's session key: a program running as you that can write there can run code in `bw`, as it already can by editing the plugin's own files. A `bw` that is given your master password (unlock, login, the password check) never uses the cache. The directory is used only after a check that it, everything in it and every directory above it are yours (or root's, above it) and writable by no one else, and that its path is printable ASCII; the check is repeated every time the vault is unlocked, and a note on the setting's row says when it failed. A shell whose umask leaves new directories group-writable (002) loses the cache at the second check. The plugin's directory there must hold only the cache, so an `XDG_CACHE_HOME` that is also your data or state home is refused once the plugin has stored anything there. Off, nothing is created or checked, and the plugin removes a `NODE_COMPILE_CACHE` the shell inherited from the environment it gives `bw` (a shell startup file named by `BASH_ENV` that exports it again is outside the plugin's hands). Turning it off leaves the directory; [docs/uninstall.md](docs/uninstall.md) says where it is. Needs Node 22.1 or later. |
