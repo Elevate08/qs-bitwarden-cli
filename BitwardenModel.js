@@ -5935,33 +5935,28 @@ function utf8ByteLength(text) {
 // fatal}. Only a blank line (SplitParser's remainder) is non-fatal; anything
 // not a well-formed v1 known-type object closes the gate.
 function parseAgentEvent(line) {
+  function fatal(code) { return { ok: false, code: code, fatal: true } }
   var text = (line === undefined || line === null) ? "" : String(line)
   if (text.charAt(text.length - 1) === "\n") text = text.slice(0, text.length - 1)
   if (text.charAt(text.length - 1) === "\r") text = text.slice(0, text.length - 1)
   if (text === "") return { ok: false, code: "EMPTY", fatal: false }
-  if (utf8ByteLength(text) > SSH_AGENT_MAX_LINE_BYTES) {
-    return { ok: false, code: "LINE_TOO_LONG", fatal: true }
-  }
+  if (utf8ByteLength(text) > SSH_AGENT_MAX_LINE_BYTES) return fatal("LINE_TOO_LONG")
   var parsed
   try {
     parsed = JSON.parse(text)
   } catch (e) {
-    return { ok: false, code: "MALFORMED", fatal: true }
+    return fatal("MALFORMED")
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { ok: false, code: "MALFORMED", fatal: true }
-  }
-  if (parsed.v !== SSH_AGENT_CONTROL_VERSION) {
-    return { ok: false, code: "VERSION_MISMATCH", fatal: true }
-  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fatal("MALFORMED")
+  if (parsed.v !== SSH_AGENT_CONTROL_VERSION) return fatal("VERSION_MISMATCH")
   if (typeof parsed.type !== "string" || SSH_AGENT_EVENT_TYPES.indexOf(parsed.type) < 0) {
-    return { ok: false, code: "UNKNOWN_TYPE", fatal: true }
+    return fatal("UNKNOWN_TYPE")
   }
   if (parsed.type === "ready") {
     if (typeof parsed.socketPath !== "string" || parsed.socketPath === ""
         || typeof parsed.fifoPath !== "string" || parsed.fifoPath === ""
         || typeof parsed.agentVersion !== "string" || parsed.agentVersion === "") {
-      return { ok: false, code: "MALFORMED", fatal: true }
+      return fatal("MALFORMED")
     }
   }
   return { ok: true, message: parsed }
@@ -8529,7 +8524,7 @@ function buildSendPayload(name, text, hidden, deleteInDays, maxAccessCount, pass
   var deletion = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
 
   var max = Number(maxAccessCount)
-  var payload = {
+  return {
     object: "send",
     name: String(name || "").trim() || "Untitled Send",
     notes: notes && String(notes).trim() ? String(notes).trim() : null,
@@ -8544,7 +8539,6 @@ function buildSendPayload(name, text, hidden, deleteInDays, maxAccessCount, pass
     disabled: false,
     hideEmail: false
   }
-  return payload
 }
 
 function parseSends(raw) {
