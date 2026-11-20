@@ -160,9 +160,11 @@ check("the vault list's rows keep clear of the scrollbar too",
   /width: ListView\.view\.width - root\.scrollGutter/.test(panelSrc),
   "the item rows run under the bar")
 
+// A PanelFlick brings its own scrollbar (tests/scrolling.test.js).
+const scrollBars = (panelSrc.match(/ScrollBar\.vertical:|PanelFlick \{/g) || []).length
 check("every scrolling view is accounted for",
-  (panelSrc.match(/ScrollBar\.vertical:/g) || []).length === scrollViews.length + 1,
-  `${(panelSrc.match(/ScrollBar\.vertical:/g) || []).length} scrollbars for ${scrollViews.length} views plus the list`)
+  scrollBars === scrollViews.length + 1,
+  `${scrollBars} scrollbars for ${scrollViews.length} views plus the list`)
 
 check("the pinned settings row is inset to match its rows",
   /anchors\.rightMargin: root\.scrollGutter/.test(panelSrc),

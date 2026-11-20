@@ -6761,65 +6761,42 @@ Item {
         return
       }
       // A stored secret the vault rejects: say which method went stale.
-      if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
-        // Changed elsewhere: keep the method and remember the old password so
-        // the next typed unlock re-seals the envelope.
-        pendingUnlockFrom = ""
-        fingerprintFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        fingerprintMessage = "Your master password was changed. Unlock with the new one once; fingerprint unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fingerprint") {
-        pendingUnlockFrom = ""
-        requestMasterCredentialClear()
-        fingerprintStored = false
-        fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fido" && fidoFromEnvelope) {
-        // Changed elsewhere, as for fingerprint.
-        pendingUnlockFrom = ""
-        fidoFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        fidoUnlocker.failure = "Your master password was changed. Unlock with the new one once; FIDO2 unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fido") {
-        pendingUnlockFrom = ""
-        fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "pin" && pinFromEnvelope) {
-        // Changed elsewhere, as for fingerprint.
-        pendingUnlockFrom = ""
-        pinFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        pinUnlockError = "Your master password was changed. Unlock with the new one once; PIN unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "pin") {
-        pendingUnlockFrom = ""
-        clearPin()
-        pinUnlockError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
+      if (pendingUnlockFrom === "fingerprint" || pendingUnlockFrom === "fido" || pendingUnlockFrom === "pin") {
+        if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
+          // Changed elsewhere: keep the method and remember the old password so
+          // the next typed unlock re-seals the envelope.
+          pendingUnlockFrom = ""
+          fingerprintFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          fingerprintMessage = "Your master password was changed. Unlock with the new one once; fingerprint unlock will follow it."
+        } else if (pendingUnlockFrom === "fingerprint") {
+          pendingUnlockFrom = ""
+          requestMasterCredentialClear()
+          fingerprintStored = false
+          fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
+        } else if (pendingUnlockFrom === "fido" && fidoFromEnvelope) {
+          // Changed elsewhere, as for fingerprint.
+          pendingUnlockFrom = ""
+          fidoFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          fidoUnlocker.failure = "Your master password was changed. Unlock with the new one once; FIDO2 unlock will follow it."
+        } else if (pendingUnlockFrom === "fido") {
+          pendingUnlockFrom = ""
+          fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
+        } else if (pendingUnlockFrom === "pin" && pinFromEnvelope) {
+          // Changed elsewhere, as for fingerprint.
+          pendingUnlockFrom = ""
+          pinFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          pinUnlockError = "Your master password was changed. Unlock with the new one once; PIN unlock will follow it."
+        } else if (pendingUnlockFrom === "pin") {
+          pendingUnlockFrom = ""
+          clearPin()
+          pinUnlockError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
+        }
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
@@ -9834,37 +9811,25 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: screenLockStateProc
     command: Model.screenLockStateCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onScreenLockState(text)
-    }
+    onCollected: function(text) { root.onScreenLockState(text) }
   }
 
-  Process {
+  TextProcess {
     id: sshAgentHelperProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onSshAgentHelperInspected(text)
-    }
+    onCollected: function(text) { root.onSshAgentHelperInspected(text) }
   }
 
-  Process {
+  TextProcess {
     id: unlockKeyProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUnlockKeyInspected(text)
-    }
+    onCollected: function(text) { root.onUnlockKeyInspected(text) }
   }
 
-  Process {
+  TextProcess {
     id: vaultHelperInspectProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onVaultHelperInspected(text)
-    }
+    onCollected: function(text) { root.onVaultHelperInspected(text) }
   }
 
   // The vault helper itself: requests on stdin, replies one per line.
@@ -9878,22 +9843,17 @@ Item {
     onExited: function(exitCode) { root.onVaultHelperExited(exitCode) }
   }
 
-  Process {
+  TextProcess {
     id: quickUnlockPrereqProc
     command: Model.quickUnlockPrereqCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onQuickUnlockPrereqs(text)
-    }
+    onCollected: function(text) { root.onQuickUnlockPrereqs(text) }
   }
 
   // Every envelope operation, one at a time; see queueEnvelopeJob().
   VaultProcess {
     id: envelopeProc
     vault: root
-    stdout: VaultCollector {
-      id: envelopeStdout
-    }
+    stdout: VaultCollector { id: envelopeStdout }
     onExited: function(exitCode) { root.onEnvelopeJobExited(exitCode) }
   }
 
@@ -9916,24 +9876,18 @@ Item {
     onExited: function(exitCode) { root.onSshExportFinished(exitCode, sshExportClearStdout.text) }
   }
 
-  Process {
+  TextProcess {
     id: loadIdProc
     command: Model.loadIdCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onSshAgentLoadIdRead(text)
-    }
+    onCollected: function(text) { root.onSshAgentLoadIdRead(text) }
   }
 
-  Process {
+  TextProcess {
     id: uwsmInspectProc
     command: Model.uwsmInspectCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.uwsmFragment = Model.parseUwsmInspection(text)
-        root.applyUwsmRestore()
-      }
+    onCollected: function(text) {
+      root.uwsmFragment = Model.parseUwsmInspection(text)
+      root.applyUwsmRestore()
     }
   }
 
@@ -9951,13 +9905,10 @@ Item {
     onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmWriteStdout.text) }
   }
 
-  Process {
+  TextProcess {
     id: autoTypeKeybindInspectProc
     command: Model.autoTypeKeybindInspectCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onAutoTypeKeybindInspected(text)
-    }
+    onCollected: function(text) { root.onAutoTypeKeybindInspected(text) }
   }
 
   Process {
@@ -10089,9 +10040,7 @@ Item {
     id: statusProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: statusStdout
-    }
+    stdout: VaultCollector { id: statusStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(statusProc)) {
         root.onStatusProbeProcessFreed()
@@ -10113,9 +10062,7 @@ Item {
     // Set by refreshStatus(). Defaults to the discard form, so a run not
     // started there can never adopt a key.
     command: Model.sessionHandoffReadCommand(false)
-    stdout: VaultCollector {
-      id: sessionHandoffStdout
-    }
+    stdout: VaultCollector { id: sessionHandoffStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(sessionHandoffProc)) {
         root.onStatusProbeProcessFreed()
@@ -10131,9 +10078,7 @@ Item {
     capture: "session"
     session: false
     command: Model.keyringLookupCommand(root.activeSlot)
-    stdout: VaultCollector {
-      id: keyringLookupStdout
-    }
+    stdout: VaultCollector { id: keyringLookupStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupProc)) {
         root.onStatusProbeProcessFreed()
@@ -10170,9 +10115,7 @@ Item {
     id: listFoldersProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listFoldersStdout
-    }
+    stdout: VaultCollector { id: listFoldersStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listFoldersProc)
       if (root.supersededVaultRead("folders") || scrub) return
@@ -10184,9 +10127,7 @@ Item {
     id: orgCollectionsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: orgCollectionsStdout
-    }
+    stdout: VaultCollector { id: orgCollectionsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(orgCollectionsProc)
       if (root.supersededVaultRead("collections") || scrub) return
@@ -10225,9 +10166,7 @@ Item {
     id: listSendsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listSendsStdout
-    }
+    stdout: VaultCollector { id: listSendsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listSendsProc)
       if (root.supersededVaultRead("sends") || scrub) return
@@ -10371,13 +10310,10 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: keyringHasPinProc
     command: Model.keyringHasPinCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onPinConfiguredChecked(text)
-    }
+    onCollected: function(text) { root.onPinConfiguredChecked(text) }
   }
 
   Process {
@@ -10388,13 +10324,10 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: depsCheckProc
     command: Model.dependencyCheckCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onDependenciesChecked(text)
-    }
+    onCollected: function(text) { root.onDependenciesChecked(text) }
   }
 
   Process {
@@ -10402,10 +10335,7 @@ Item {
     property string probeId: ""
     command: Model.bwVersionCommand()
     environment: Model.withoutCompileCache({})
-    stdout: StdioCollector {
-      id: bwVersionStdout
-      waitForEnd: true
-    }
+    stdout: StdioCollector { id: bwVersionStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onBwVersionProbed(bwVersionStdout.text, bwVersionProc.probeId) }
   }
 
@@ -10432,20 +10362,14 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: pluginVersionProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.pluginVersionInfo = Model.parsePluginVersionProbe(text)
-    }
+    onCollected: function(text) { root.pluginVersionInfo = Model.parsePluginVersionProbe(text) }
   }
 
-  Process {
+  TextProcess {
     id: updateCheckStateProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUpdateCheckStateRead(text)
-    }
+    onCollected: function(text) { root.onUpdateCheckStateRead(text) }
   }
 
   Process {
@@ -10454,20 +10378,14 @@ Item {
     stdinEnabled: true
   }
 
-  Process {
+  TextProcess {
     id: updateCheckProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUpdateCheckFinished(text)
-    }
+    onCollected: function(text) { root.onUpdateCheckFinished(text) }
   }
 
   Process {
     id: settingWriteProc
-    stderr: StdioCollector {
-      id: settingWriteStderr
-      waitForEnd: true
-    }
+    stderr: StdioCollector { id: settingWriteStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
         root.settingsFlash = ""
@@ -10510,13 +10428,10 @@ Item {
     onTriggered: root.settingsFlash = ""
   }
 
-  Process {
+  TextProcess {
     id: keyringHasMasterProc
     command: Model.keyringHasMasterPasswordCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onFingerprintStoredChecked(text)
-    }
+    onCollected: function(text) { root.onFingerprintStoredChecked(text) }
   }
 
   VaultProcess {
@@ -10524,9 +10439,7 @@ Item {
     vault: root
     session: false
     command: Model.keyringLookupMasterPasswordCommand(root.activeSlot)
-    stdout: VaultCollector {
-      id: keyringLookupMasterStdout
-    }
+    stdout: VaultCollector { id: keyringLookupMasterStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupMasterProc)) return
       if (exitCode === 0) {
@@ -10600,13 +10513,10 @@ Item {
     onExited: function(exitCode) { root.onBwCompileCacheProbed(probeSeq, exitCode, bwCompileCacheOut.text) }
   }
 
-  Process {
+  TextProcess {
     id: accountsReadProc
     command: Model.accountRegistryReadCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onAccountRegistryLoaded(text)
-    }
+    onCollected: function(text) { root.onAccountRegistryLoaded(text) }
   }
 
   Process {
@@ -10627,15 +10537,12 @@ Item {
 
   // ---- Learned associations ----
 
-  Process {
+  TextProcess {
     id: associationsReadProc
     command: Model.associationsReadCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        if (root.finishScrubRun(associationsReadProc)) return
-        root.onAssociationsLoaded(text)
-      }
+    onCollected: function(text) {
+      if (root.finishScrubRun(associationsReadProc)) return
+      root.onAssociationsLoaded(text)
     }
   }
 
@@ -10725,12 +10632,8 @@ Item {
     vault: root
     capture: "session"
     environment: root.loginProcessEnv()
-    stdout: VaultCollector {
-      id: loginStdout
-    }
-    stderr: VaultCollector {
-      id: loginStderr
-    }
+    stdout: VaultCollector { id: loginStdout }
+    stderr: VaultCollector { id: loginStderr }
     onExited: function(exitCode) {
       // A scrub started here briefly holds the process; a submit arriving then
       // is dispatched when the scrub exits (else it would need a second click).
@@ -10761,12 +10664,8 @@ Item {
     capture: "session"
     command: Model.unlockPrewarmCommand()
     environment: root.authEnv("", "", "", "")
-    stdout: VaultCollector {
-      id: unlockStdout
-    }
-    stderr: VaultCollector {
-      id: unlockStderr
-    }
+    stdout: VaultCollector { id: unlockStdout }
+    stderr: VaultCollector { id: unlockStderr }
     onExited: function(exitCode) {
       if (root.finishScrubRun(unlockProc)) {
         if (root.sshAuthSurfaceActive && root.status === "locked") Qt.callLater(root.prepareUnlock)
@@ -10795,12 +10694,8 @@ Item {
     vault: root
     capture: "vault"
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listStdout
-    }
-    stderr: VaultCollector {
-      id: listStderr
-    }
+    stdout: VaultCollector { id: listStdout }
+    stderr: VaultCollector { id: listStderr }
     onExited: function(exitCode) {
       root.onListProcessExited(exitCode, listStdout.text, listStderr.text)
     }
@@ -10810,9 +10705,7 @@ Item {
     id: listOrgsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listOrgsStdout
-    }
+    stdout: VaultCollector { id: listOrgsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listOrgsProc)
       if (root.supersededVaultRead("organizations") || scrub) return
@@ -10824,12 +10717,8 @@ Item {
     id: getItemProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: getItemStdout
-    }
-    stderr: VaultCollector {
-      id: getItemStderr
-    }
+    stdout: VaultCollector { id: getItemStdout }
+    stderr: VaultCollector { id: getItemStderr }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(getItemProc)
       if (root.supersededVaultRead("detail") || scrub) return
@@ -10848,9 +10737,7 @@ Item {
     id: getTotpProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: getTotpStdout
-    }
+    stdout: VaultCollector { id: getTotpStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(getTotpProc)) {
         root.continueTotpQueue(true)
@@ -10920,22 +10807,19 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: activeWindowProc
     command: Model.activeWindowCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        if (text && text.trim()) {
-          try {
-            var data = JSON.parse(text)
-            root.handleActiveWindowDetected(data)
-          } catch (e) {
-            root.windowDetectionFailed()
-          }
-        } else {
+    onCollected: function(text) {
+      if (text && text.trim()) {
+        try {
+          var data = JSON.parse(text)
+          root.handleActiveWindowDetected(data)
+        } catch (e) {
           root.windowDetectionFailed()
         }
+      } else {
+        root.windowDetectionFailed()
       }
     }
   }

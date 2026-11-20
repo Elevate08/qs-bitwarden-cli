@@ -586,6 +586,19 @@ Panel {
     fontFamily: root.fontFamily
   }
 
+  // A paragraph as wide as what it sits in, wrapped at words.
+  component PanelNote: PanelText {
+    width: parent ? parent.width : 0
+    wrapMode: Text.WordWrap
+  }
+
+  // The box a value of the open item or a generated one is shown in.
+  component ValueBox: BorderSurface {
+    radius: Style.cornerRadius
+    color: Style.hoverFillFor(root.fg, Color.accent)
+    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+  }
+
   // An item-form caption.
   component FormCaption: PanelText {
     color: root.dim; font.pixelSize: Style.font.caption; font.bold: true
@@ -1344,19 +1357,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0f: BITWARDEN SEND
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: sendFlick
           visible: root.vault.activeScreen === "sends"
           width: parent.width
           height: Math.min(Style.space(520), sendCol.implicitHeight)
-          contentWidth: width
           contentHeight: sendCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: sendFlick }
 
           Column {
             id: sendCol
@@ -1399,13 +1405,11 @@ Panel {
               }
             }
 
-            PanelText {
+            PanelNote {
               visible: root.vault.sendError !== ""
-              width: parent.width
               text: root.vault.sendError
               color: root.urgent
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             // ---------------- list ----------------
@@ -1414,13 +1418,11 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              PanelText {
+              PanelNote {
                 visible: !root.vault.sendsLoading && root.vault.sends.length === 0
-                width: parent.width
                 text: "No Sends yet. A Send shares a secret through a link that expires on its own -- useful for handing someone a credential without it living in a chat log."
                 color: root.dim
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
               PanelText {
@@ -1637,13 +1639,11 @@ Panel {
             }
           }
 
-          PanelText {
+          PanelNote {
             visible: root.vault.accountRows.length === 0
-            width: parent.width
             text: "No accounts yet. Log in to add the first one."
             color: root.dim
             font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
           }
 
           Row {
@@ -1670,19 +1670,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0e: FINGERPRINT SETUP
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: fpFlick
           visible: root.vault.activeScreen === "fingerprint"
           width: parent.width
           height: Math.min(Style.space(520), fpCol.implicitHeight)
-          contentWidth: width
           contentHeight: fpCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: fpFlick }
 
           Column {
             id: fpCol
@@ -1697,12 +1690,10 @@ Panel {
               title: "Enable fingerprint unlock"
               body: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "Honest limit: with fingerprint unlock on, a program running as you while you are logged in can open the stored password without your finger. A PIN or a FIDO2 key cannot be bypassed that way."
                 color: root.urgent
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
             }
 
@@ -1724,13 +1715,11 @@ Panel {
                 enabled: !root.vault.fpBusy
               }
 
-              PanelText {
+              PanelNote {
                 visible: root.vault.fpError !== ""
-                width: parent.width
                 text: root.vault.fpError
                 color: root.urgent
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
               Row {
@@ -1769,19 +1758,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0d: GENERATOR
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: genFlick
           visible: root.vault.activeScreen === "generator"
           width: parent.width
           height: Math.min(Style.space(520), genCol.implicitHeight)
-          contentWidth: width
           contentHeight: genCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: genFlick }
 
           Column {
             id: genCol
@@ -1816,12 +1798,9 @@ Panel {
             }
 
             // Generated value
-            BorderSurface {
+            ValueBox {
               width: parent.width
               implicitHeight: Style.space(58)
-              radius: Style.cornerRadius
-              color: Style.hoverFillFor(root.fg, Color.accent)
-              borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
               Row {
                 anchors.fill: parent
@@ -2058,19 +2037,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0c: PIN SETUP (scrolls: taller than the popup on small displays)
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: pinFlick
           visible: root.vault.activeScreen === "pin"
           width: parent.width
           height: Math.min(Style.space(520), pinCol.implicitHeight)
-          contentWidth: width
           contentHeight: pinCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: pinFlick }
 
           Column {
             id: pinCol
@@ -2125,13 +2097,11 @@ Panel {
               foreground: root.vault.pinSetupWeak ? root.urgent : root.fg
             }
 
-            PanelText {
+            PanelNote {
               visible: root.vault.pinSetupWeak
-              width: parent.width
               text: "󰀪  " + Model.pinWeakWarning(root.vault.pinSetupPin)
               color: root.urgent
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             Text { textFormat: Text.PlainText; text: "CONFIRM PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -2146,13 +2116,11 @@ Panel {
               enabled: !root.vault.pinBusy
             }
 
-            PanelText {
+            PanelNote {
               visible: root.vault.pinError !== ""
-              width: parent.width
               text: root.vault.pinError
               color: root.urgent
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             Row {
@@ -2183,19 +2151,12 @@ Panel {
         // -------------------------------------------------------------------
         // SCREEN 0a: SETUP WIZARD (missing dependencies; scrolls)
         // -------------------------------------------------------------------
-        Flickable {
+        PanelFlick {
           id: setupFlick
           visible: root.vault.activeScreen === "setup"
           width: parent.width
           height: Math.min(Style.space(520), setupCol.implicitHeight)
-          contentWidth: width
           contentHeight: setupCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-          WheelScroll { view: setupFlick }
 
           Column {
             id: setupCol
@@ -2260,43 +2221,35 @@ Panel {
                     }
                   }
 
-                  PanelText {
-                    width: parent.width
+                  PanelNote {
                     text: modelData.purpose
                     color: root.dim
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
-                  PanelText {
+                  PanelNote {
                     visible: !!modelData.note
-                    width: parent.width
                     text: modelData.note
                     color: root.urgent
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
                   // Auto-type needs a key as well as wtype; registering one
                   // is under its setting.
-                  PanelText {
+                  PanelNote {
                     visible: depCard.modelData.key === "wtype" && root.vault.autoTypeKeybind.setupNote !== ""
-                    width: parent.width
                     text: root.vault.autoTypeKeybind.setupNote
                     color: root.vault.autoTypeKeybind.bound ? root.dim : root.urgent
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
                   // A setup row needs more than the package (an enrolled
                   // finger, the PAM stack); only the setup command does that.
-                  PanelText {
+                  PanelNote {
                     visible: modelData.setup && modelData.installed && !modelData.ready
-                    width: parent.width
                     text: "Reader stack is installed, but no finger is enrolled yet."
                     color: root.urgent
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
                 }
 
@@ -2533,8 +2486,7 @@ Panel {
                       font.pixelSize: Style.font.body
                     }
 
-                    PanelText {
-                      width: parent.width
+                    PanelNote {
                       // `|| ""`: also evaluated for heading rows, which have no
                       // description.
                       text: blocked
@@ -2543,7 +2495,6 @@ Panel {
                           + (root.vault.settingNote(modelData) ? "\n\n" + root.vault.settingNote(modelData) : "")
                       color: root.dim
                       font.pixelSize: Style.font.caption
-                      wrapMode: Text.WordWrap
                     }
                   }
 
@@ -2650,31 +2601,25 @@ Panel {
               width: parent.width
               spacing: Style.space(4)
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "Plugin: " + (root.vault.pluginVersionLabel || "checking...")
                 color: root.fg
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "bw CLI: " + (root.vault.dependencies && root.vault.dependencies.bwVersion
                   ? root.vault.dependencies.bwVersion : "unknown")
                 color: root.fg
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
-              PanelText {
+              PanelNote {
                 visible: root.vault.updateAvailableVersion !== ""
-                width: parent.width
                 text: "Update available: " + root.vault.updateAvailableVersion
                 color: Color.accent
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
-                wrapMode: Text.WordWrap
               }
 
               // Without a floating terminal helper there is nothing to
@@ -2771,31 +2716,25 @@ Panel {
 
             // Must run before removal: `omarchy plugin remove` has no
             // uninstall hook.
-            PanelText {
-              width: parent.width
+            PanelNote {
               visible: root.vault.pluginDataConfirmPending
               text: "This clears the stored master password, learned suggestions and exported public keys. "
                 + "Settings and your vault are untouched. It cannot be undone."
               color: root.urgent
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
-            PanelText {
-              width: parent.width
+            PanelNote {
               visible: root.vault.pluginDataFlash !== ""
               text: root.vault.pluginDataFlash
               color: root.fg
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
-            PanelText {
-              width: parent.width
+            PanelNote {
               text: "Saved to the plugin's entry in ~/.config/omarchy/shell.json via `omarchy bar set`."
               color: root.dim
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
                     }
           }
@@ -3065,13 +3004,11 @@ Panel {
                 font.bold: true
               }
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "Bitwarden has not seen this machine before and emailed a code to "
                   + "your login address. This is asked once per device."
                 color: root.dim
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
 
               LineField {
@@ -3129,13 +3066,11 @@ Panel {
                 font.bold: true
               }
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "Which one do you use for this account? Bitwarden is asked for a code "
                   + "only after you choose, and the choice is remembered for next time."
                 color: root.dim
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
 
               Repeater {
@@ -3153,12 +3088,10 @@ Panel {
                     onClicked: root.vault.chooseTwoFactorMethod(modelData.method)
                   }
 
-                  PanelText {
-                    width: parent.width
+                  PanelNote {
                     text: modelData.hint
                     color: root.dim
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
                 }
               }
@@ -3929,7 +3862,7 @@ Panel {
 
             PanelSeparator { width: parent.width }
 
-            Flickable {
+            PanelFlick {
               id: detailFlickable
               width: parent.width
               // Beside the list it fills the pane, so the list does not
@@ -3937,14 +3870,7 @@ Panel {
               height: root.splitView
                 ? Math.max(Style.space(120), vaultDetailColumn.height - y)
                 : Math.min(Style.space(380), detailContentColumn.implicitHeight)
-              contentWidth: width
               contentHeight: detailContentColumn.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: detailFlickable }
 
               Column {
                 id: detailContentColumn
@@ -4033,12 +3959,9 @@ Panel {
                   width: parent.width
                   spacing: Style.space(4)
                   PanelSectionHeader { text: "PUBLIC KEY" }
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Math.max(Style.space(54), sshPublicKeyText.implicitHeight + Style.space(20))
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
                     PanelText {
                       id: sshPublicKeyText
                       anchors.fill: parent
@@ -4077,12 +4000,9 @@ Panel {
 
                   PanelSectionHeader { text: "PASSWORD" }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Style.space(34)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                     Row {
                       anchors.fill: parent
@@ -4141,12 +4061,9 @@ Panel {
                     }
                   }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Style.space(44)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                     Rectangle {
                       anchors.left: parent.left
@@ -4212,12 +4129,9 @@ Panel {
 
                   Repeater {
                     model: root.vault.detailItem ? root.vault.detailItem.uris : []
-                    delegate: BorderSurface {
+                    delegate: ValueBox {
                       width: detailContentColumn.width
                       implicitHeight: Style.space(34)
-                      radius: Style.cornerRadius
-                      color: Style.hoverFillFor(root.fg, Color.accent)
-                      borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                       Row {
                         anchors.fill: parent
@@ -4272,16 +4186,13 @@ Panel {
 
                   Repeater {
                     model: root.vault.detailItem ? root.vault.detailItem.attachments : []
-                    delegate: BorderSurface {
+                    delegate: ValueBox {
                       readonly property string savedPath: root.vault.attachmentSavedPath(modelData.id)
                       readonly property bool busy: root.vault.attachmentBusyId === modelData.id
                       readonly property bool queued: root.vault.isAttachmentQueued(modelData.id)
 
                       width: detailContentColumn.width
                       implicitHeight: Style.space(34)
-                      radius: Style.cornerRadius
-                      color: Style.hoverFillFor(root.fg, Color.accent)
-                      borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                       Row {
                         anchors.fill: parent
@@ -4382,12 +4293,9 @@ Panel {
                     }
                   }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: notesText.implicitHeight + Style.space(16)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                     PanelText {
                       id: notesText
@@ -4539,13 +4447,10 @@ Panel {
                 }
 
                 // One block, not seven rows. An address is copied as an address.
-                BorderSurface {
+                ValueBox {
                   visible: root.vault.detailIsIdentity && root.vault.detailIdentityAddress !== ""
                   width: parent.width
                   implicitHeight: addressText.implicitHeight + Style.space(16)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                   Row {
                     anchors.fill: parent
@@ -4645,10 +4550,8 @@ Panel {
                 font.bold: true
               }
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
                 text: "Click an item, or press e on the highlighted one, to see its details here."
                 color: root.dim
                 font.pixelSize: Style.font.caption
@@ -4720,18 +4623,11 @@ Panel {
               }
             }
 
-            Flickable {
+            PanelFlick {
               id: filterOptionsList
               width: parent.width
               height: Math.min(root.vault.currentFilterVisibleRows, root.vault.currentFilterOptions.length) * root.vault.filterRowHeight
-              contentWidth: width
               contentHeight: filterOptionsCol.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: filterOptionsList }
 
               // Keep the keyboard cursor in view when it runs past the fold.
               function revealCursor() {
@@ -4906,12 +4802,9 @@ Panel {
 
                 PanelSectionHeader { text: Model.formatHistoryDate(modelData.date).toUpperCase() }
 
-                BorderSurface {
+                ValueBox {
                   width: parent.width
                   implicitHeight: Style.space(34)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                   Row {
                     anchors.fill: parent
@@ -4986,18 +4879,11 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Flickable {
+          PanelFlick {
             id: editFlickable
             width: parent.width
             height: Math.min(Style.space(420), editFormCol.implicitHeight)
-            contentWidth: width
             contentHeight: editFormCol.implicitHeight
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.VerticalFlick
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-            WheelScroll { view: editFlickable }
 
             Column {
               id: editFormCol
@@ -5080,19 +4966,12 @@ Panel {
                   onClicked: root.vault.toggleFormPicker("folder")
                 }
 
-                Flickable {
+                PanelFlick {
                   id: folderPickList
                   visible: root.vault.formPicker === "folder"
                   width: parent.width
                   height: visible ? Math.min(Style.space(150), folderPickCol.implicitHeight) : 0
-                  contentWidth: width
                   contentHeight: folderPickCol.implicitHeight
-                  clip: true
-                  boundsBehavior: Flickable.StopAtBounds
-                  flickableDirection: Flickable.VerticalFlick
-                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                  WheelScroll { view: folderPickList }
 
                   Column {
                     id: folderPickCol
@@ -5166,19 +5045,12 @@ Panel {
                   onClicked: root.vault.toggleFormPicker("organization")
                 }
 
-                Flickable {
+                PanelFlick {
                   id: orgPickList
                   visible: root.vault.formPicker === "organization"
                   width: parent.width
                   height: visible ? Math.min(Style.space(150), orgPickCol.implicitHeight) : 0
-                  contentWidth: width
                   contentHeight: orgPickCol.implicitHeight
-                  clip: true
-                  boundsBehavior: Flickable.StopAtBounds
-                  flickableDirection: Flickable.VerticalFlick
-                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                  WheelScroll { view: orgPickList }
 
                   Column {
                     id: orgPickCol
@@ -5235,31 +5107,22 @@ Panel {
                     }
                   }
 
-                  Flickable {
+                  PanelFlick {
                     id: collectionList
                     width: parent.width
                     height: Math.min(Style.space(150), collectionCol.implicitHeight)
-                    contentWidth: width
                     contentHeight: collectionCol.implicitHeight
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-                    flickableDirection: Flickable.VerticalFlick
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                    WheelScroll { view: collectionList }
 
                     Column {
                       id: collectionCol
                       width: collectionList.width - root.scrollGutter
                       spacing: Style.space(2)
 
-                      PanelText {
+                      PanelNote {
                         visible: !root.vault.formCollectionsLoading && root.vault.formCollections.length === 0
-                        width: parent.width
                         text: "No collections available in this organization."
                         color: root.dim
                         font.pixelSize: Style.font.caption
-                        wrapMode: Text.WordWrap
                       }
 
                       Repeater {
@@ -5720,19 +5583,12 @@ Panel {
               font.pixelSize: Style.font.bodySmall
             }
 
-            Flickable {
+            PanelFlick {
               id: paletteList
               visible: actionPalette.actions.length > 0
               width: parent.width
               height: Math.min(actionPalette.visibleRows, actionPalette.actions.length) * actionPalette.rowHeight
-              contentWidth: width
               contentHeight: paletteRows.implicitHeight
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-              WheelScroll { view: paletteList }
 
               Column {
                 id: paletteRows
