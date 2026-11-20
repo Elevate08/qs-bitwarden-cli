@@ -2768,7 +2768,6 @@ Item {
       return
     }
     if (sshPrompt) {
-      keepSshHandoffDeny()
       sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
       root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       noteSshCooldown()
@@ -2780,7 +2779,6 @@ Item {
 
   function denyAllSshRequests() {
     if (sshPrompt) {
-      keepSshHandoffDeny()
       sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
     }
     for (var i = 0; i < root.sshPromptQueue.length; i++) {
@@ -2909,7 +2907,6 @@ Item {
   // --- Terminal replies ------------------------------------------------------
   function denyCurrentSshPrompt() {
     if (!sshPrompt) return
-    keepSshHandoffDeny()
     sshAgentWrite(Model.sshAgentDenyLine(sshPrompt.requestId))
     root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
     noteSshCooldown()
@@ -2983,32 +2980,6 @@ Item {
   // first and looks like the card's may be the other one's (a helper from
   // before the release order was fixed).
   property bool sshPromotedAmbiguous: false
-  // A Deny given to the promoted card before its approval_required arrived:
-  // the helper has retired the id the Deny named, so it is kept, for a few
-  // seconds, for the request that comes back. { raw, at } or null; dropped
-  // when used, with the vault, and when the next unlock is asked for.
-  property var sshHandoffDeny: null
-
-  function keepSshHandoffDeny() {
-    if (root.sshPromotedOldId === null || root.sshPromotedOldId !== root.sshPrompt.requestId) return
-    // Not when it cannot be told whose approval comes back first: that one
-    // is shown on the card instead.
-    if (!root.sshPromotedAmbiguous) root.sshHandoffDeny = { raw: root.sshPromotedRaw, at: Date.now() }
-    root.sshPromotedOldId = null
-    root.sshPromotedRaw = null
-  }
-
-  // True when `message` is the request a kept Deny was given to: it is denied
-  // under its new id (the Deny was counted when it was given).
-  function applySshHandoffDeny(message) {
-    var kept = root.sshHandoffDeny
-    if (kept === null) return false
-    var fresh = Date.now() - kept.at < 10000
-    if (!fresh || Model.sshAgentSameRequest(kept.raw, message)) root.sshHandoffDeny = null
-    if (!fresh || !Model.sshAgentSameRequest(kept.raw, message)) return false
-    sshAgentWrite(Model.sshAgentDenyLine(message.requestId))
-    return true
-  }
 
   function adoptSshPrompt(message) {
     if (root.sshPromotedOldId !== null && root.sshPrompt
@@ -3037,7 +3008,7 @@ Item {
         sshAgentWrite(Model.sshAgentDenyLine(message.requestId))
         return
       }
-      if (applySshHandoffDeny(message) || adoptSshPrompt(message)) return
+      if (adoptSshPrompt(message)) return
       if (root.sshPrompt !== null) {
         root.sshPromptQueue = Model.sshAgentEnqueuePrompt(root.sshPromptQueue, message, 4)
         return
@@ -3054,7 +3025,6 @@ Item {
         sshAgentWrite(Model.sshAgentUnlockCancelledLine(message.requestId))
         return
       }
-      root.sshHandoffDeny = null
       if (root.sshUnlockRequest !== null) {
         root.sshUnlockQueue = Model.sshAgentEnqueuePrompt(root.sshUnlockQueue, message, 4)
         return
@@ -6932,8 +6902,6 @@ Item {
     cancelFingerprintUnlock()
     cancelFidoUnlock()
     cancelAttachmentDownloads()
-    // A Deny kept for a request the last unlock released.
-    sshHandoffDeny = null
     session = ""
     forgetVault()
     vaultEpoch += 1

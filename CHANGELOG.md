@@ -393,9 +393,11 @@
   reader throw instead of starting from an empty store: the store was left
   as it stood and the suggestions for the focused window were not worked
   out again. Anything that is not an object now reads as empty, as broken
-  JSON already did, and so does a file whose version is not a number (an
-  object there threw the same way, and `true` passed for version 1); a
-  pick's count that is not a number counts as one.
+  JSON already did. The version and a pick's count are now accepted only
+  as a number or as a string of one to nine digits: an object there threw
+  the same way, `true` passed for version 1, and forms such as `"1.0"`,
+  which used to be read as numbers, no longer are. A file with any other
+  version reads as empty, and any other count counts as one.
 - **A failure to write the SSH public key files is shown.** When the
   `.pub` files Git signs with could not be written or removed (something
   that is not a directory, or a symlink, at
@@ -412,11 +414,9 @@
   number, so its **Deny** was ignored and the request stayed on the card.
   The notification now follows its request. It still cannot approve, and a
   notification never answers for any request but the one it was shown for.
-  A **Deny**, there or on the card, given in the moment between the two
-  numbers is kept and reaches the request under its final one, where it
-  used to be lost and the request shown again. Where two waiting requests
-  cannot be told apart (same key, program and operation), the notification
-  answers for neither, and the card is the way to answer.
+  Where two waiting requests cannot be told apart (same key, program and
+  operation), the notification answers for neither, and the card is the
+  way to answer.
 
 ## [1.13.1] - 2026-11-18
 
