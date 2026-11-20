@@ -97,6 +97,18 @@ for (const [label, code, out] of [["wrong PIN", 1, ""], ["empty output", 0, ""]]
   eq(`legacy ${label}: recheck flag cleared`, v.statusRecheckAfterUnlock, false)
   eq(`legacy ${label}: no unlock started`, v.unlocks.length, 0)
 }
+// A run the plugin did not send (too large for the vault helper) checked
+// nothing: four such PINs once removed PIN unlock.
+{
+  const refused = (legacy) => {
+    const v = vault(); let counted = 0
+    Object.assign(v, { sshAuthSurfaceActive: true, vaultRunRefusedMessage: "too large", countWrongPin() { counted++ } })
+    if (legacy) { v.pinUnlockProc.refused = true; v.onPinUnlockResult(1, "") }
+    else { v.envelopeProc.refused = true; v.onEnvelopePinResult(1, "") }
+    return counted === 0 && v.pinUnlockError === "too large" && v.unlocks.length === 0
+  }
+  check("a PIN run refused before it was sent is not counted as a wrong PIN (legacy or envelope)", refused(true) && refused(false))
+}
 {
   const v = vault()
   Object.assign(v, { sshAuthSurfaceActive: true, statusRecheckAfterUnlock: true,

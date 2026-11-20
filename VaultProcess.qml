@@ -37,6 +37,9 @@ Item {
   // The staged id the helper was asked to take and has not answered for, 0 if
   // none: the list is not read again until it has (vault.commitStagedList()).
   property int committing: 0
+  // The vault never sent this run (vault.refuseVaultStart()): its exit says
+  // nothing about what it was given. Until the next start.
+  property bool refused: false
 
   signal started()
   signal exited(int exitCode, int exitStatus)
@@ -55,6 +58,7 @@ Item {
 
   function start() {
     startSeq += 1
+    refused = false
     sessionHeld = false
     outputHeld = false
     staged = 0

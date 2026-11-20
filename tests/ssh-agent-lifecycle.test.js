@@ -151,11 +151,13 @@ check("a lock acknowledgment timeout kills the helper",
   "no acknowledgment timeout kills the helper within the model's bound")
 // The approvals' takedown as written, over a stand-in that records every
 // function it calls: an unlock started since the lock, a message and the
-// panel are not its to touch, nor is a card held for an unlock.
+// panel are not its to touch. A card held for an unlock goes too: its request
+// was refused before the ack, and this one was promoted (its approval is the
+// one taken down), so nothing behind it would answer.
 const ackTakedown = (() => {
   const calls = []
   const state = { sshPrompt: { requestId: 7 }, sshPromptQueue: [{ requestId: 8 }], sshPromptRaw: {}, sshPromotedOldId: 6,
-    sshPromotedRaw: {}, sshPromotedAmbiguous: true, sshUnlockRequest: null, sshUnlockRaw: null, sshUnlockQueue: [],
+    sshPromotedRaw: {}, sshPromotedAmbiguous: true, sshUnlockRequest: { requestId: 6 }, sshUnlockRaw: {}, sshUnlockQueue: [{ requestId: 9 }],
     sshPromptOpenedPanel: true, currentScreen: "locked", screenBeforeSshApproval: "main", opened: true,
     errorMessage: "Bitwarden did not lock", isUnlocking: true, unlockSubmitted: true }
   const v = new Proxy(state, { has: (t, k) => typeof k === "string",
@@ -163,9 +165,10 @@ const ackTakedown = (() => {
   const fn = functionBody(panelSrc, "dropRefusedSshApprovals")
   if (fn) new Function("scope", "with (scope) {\n" + fn + "\ndropRefusedSshApprovals() }")(v)
   return fn !== "" && calls.join() === "stopSshNotifyFallback" && state.sshPrompt === null && state.sshPromptQueue.length === 0
+    && state.sshUnlockRequest === null && state.sshUnlockQueue.length === 0
     && state.errorMessage === "Bitwarden did not lock" && state.isUnlocking && state.unlockSubmitted && state.opened
 })()
-check("a locked acknowledgment stops the timer, and takes down the approvals and grants from before it and nothing else (a helper that stops takes its grants too)",
+check("a locked acknowledgment stops the timer, and takes down the cards (a promoted unlock card too) and grants from before it and nothing else (a helper that stops takes its grants too)",
   /"locked"[\s\S]{0,300}?sshAgentLockAckTimer\.stop\(\)\s*dropRefusedSshApprovals\(\)\s*root\.sshGrantsAnnounced = \[\]/.test(panelSrc)
     && /if \(!sshAgentGateOpen\) \{\s*(?:\/\/[^\n]*\s*)*root\.sshGrantsAnnounced = \[\]/.test(panelSrc) && ackTakedown,
   "the locked acknowledgment never stops the kill timer, leaves refused approvals and dropped grants on screen, or ends an unlock")

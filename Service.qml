@@ -497,8 +497,9 @@ Item {
     repromptPending = true
   }
 
-  // `after(outcome)`, when given, is told "stale", "wrong" or "ok" once the
-  // password has been judged (before an accepted one's action runs).
+  // `after(outcome)`, when given, is told "stale", "wrong", "unchecked" (too
+  // large to send) or "ok" once the password has been judged (before an
+  // accepted one's action runs).
   function submitReprompt(password, after) {
     if (!repromptPending || repromptBusy) return
     var pw = String(password === undefined || password === null ? "" : password)
@@ -510,7 +511,7 @@ Item {
     repromptError = ""
     var id = repromptItemId
     var epoch = repromptEpoch
-    verifyMasterPassword(pw, function(ok) {
+    verifyMasterPassword(pw, function(ok, refused) {
       // Cancelled, replaced or locked meanwhile: nothing to run.
       if (!root.repromptPending || root.repromptItemId !== id || root.repromptEpoch !== epoch
           || root.vaultEpoch !== epoch || root.status !== "unlocked") {
@@ -520,8 +521,8 @@ Item {
       }
       root.repromptBusy = false
       if (!ok) {
-        root.repromptError = "That is not your master password."
-        if (after) after("wrong")
+        root.repromptError = refused ? root.vaultRunRefusedMessage : "That is not your master password."
+        if (after) after(refused ? "unchecked" : "wrong")
         return
       }
       if (after) after("ok")
@@ -612,12 +613,13 @@ Item {
   // answers first when quick unlock has one that is current (a stale one
   // holds an old password); anything but a match there, including a
   // mismatch (the password may have changed elsewhere), is decided by `bw`,
-  // which mints and adopts a new session (verifyWithBw()).
+  // which mints and adopts a new session (verifyWithBw()). `done(false,
+  // true)`: too large to send, so not checked at all.
   function verifyMasterPassword(password, done) {
     var pw = String(password || "")
     if (!pw) { done(false); return }
     if (!(quickUnlockAvailable && accountId && envelopeSummary && !envelopeSummary.stale)) {
-      verifyWithBw(pw, function(ok) { done(ok) })
+      verifyWithBw(pw, function(ok, refused) { done(ok, refused) })
       return
     }
     var env = {}
@@ -628,7 +630,8 @@ Item {
       onRefused: function() { done(false) },
       onDone: function(code) {
         if (code === 0) { done(true); return }
-        root.verifyWithBw(pw, function(ok) { done(ok) })
+        if (envelopeProc.refused) { done(false, true); return }
+        root.verifyWithBw(pw, function(ok, refused) { done(ok, refused) })
       }
     })
   }
@@ -1337,7 +1340,7 @@ Item {
     // The helper would drop it unanswered, and whatever waits for this
     // process would wait for good: it fails here instead.
     if (Model.vaultHelperLineTooLong(line)) {
-      refuseVaultStart(proc, "Too large for the vault helper.")
+      refuseVaultStart(proc)
       return
     }
     var runs = Object.assign({}, vaultRuns)
@@ -1349,12 +1352,17 @@ Item {
   }
 
   // Ends a run that was never sent, once its start has returned, unless it
-  // was started again meanwhile. Made apart from vaultStart() so the wait
-  // holds none of that run's environment.
-  function refuseVaultStart(proc, why) {
+  // was started again meanwhile; marked `refused`, so nothing it was given
+  // counts as checked (a wrong PIN or password). Made apart from vaultStart()
+  // so the wait holds none of that run's environment.
+  readonly property string vaultRunRefusedMessage: "Too large for the vault helper."
+
+  function refuseVaultStart(proc) {
     var seq = proc.startSeq
     Qt.callLater(function() {
-      if (proc.startSeq === seq) proc.finish(1, "", why, false, false)
+      if (proc.startSeq !== seq) return
+      proc.refused = true
+      proc.finish(1, "", root.vaultRunRefusedMessage, false, false)
     })
   }
 
@@ -2113,8 +2121,8 @@ Item {
             return
           }
           if (code !== E.absent && code !== 6 && code !== E.unseal) { done(false, "failed", code); return }
-          root.verifyWithBw(pw, function(ok) {
-            if (!ok) { done(false, "wrong-password", 3); return }
+          root.verifyWithBw(pw, function(ok, refused) {
+            if (!ok) { done(false, refused ? "failed" : "wrong-password", refused ? 0 : 3); return }
             root.storeAcceptedMasterPassword(pw, function(stored) {
               if (!stored) { done(false, "failed", 0); return }
               var again = {}
@@ -2154,7 +2162,7 @@ Item {
           if (root.status !== "unlocked") root.forgetVault()
           return
         }
-        if (!s) { done(false); return }
+        if (!s) { done(false, envelopeProc.refused); return }
         root.session = s
         root.storeCurrentSession()
         done(true)
@@ -2740,15 +2748,16 @@ Item {
         || root.sshPromptQueue.length > 0 || root.sshUnlockQueue.length > 0) dismissSshApproval()
   }
 
-  // The agent's lock ack (`locked`): every approval raised before it was
-  // refused, with no word for each, so their cards come down. Only that: a
-  // request held for an unlock is cancelled by a request_cancelled of its
-  // own and its card is left to that, and nothing here ends an unlock under
-  // way, clears a message or closes the panel, as answering or dismissing a
-  // card does (dismissSshApproval()). One raised after the lock is announced
-  // after the ack.
+  // The agent's lock ack (`locked`): every request raised before it was
+  // refused (approvals with no word of their own, ones held for an unlock
+  // each with a request_cancelled, which a card shown over it can hide, or
+  // after an unlock card was promoted), so every card comes down. Only that:
+  // nothing here ends an unlock under way, clears a message or closes the
+  // panel, as answering or dismissing a card does (dismissSshApproval()).
+  // One raised after the lock is announced after the ack.
   function dropRefusedSshApprovals() {
-    if (root.sshPrompt === null && root.sshPromptQueue.length === 0) return
+    if (root.sshPrompt === null && root.sshPromptQueue.length === 0
+        && root.sshUnlockRequest === null && root.sshUnlockQueue.length === 0) return
     stopSshNotifyFallback()
     root.sshPromptRaw = null
     root.sshPrompt = null
@@ -2756,8 +2765,11 @@ Item {
     root.sshPromotedOldId = null
     root.sshPromotedRaw = null
     root.sshPromotedAmbiguous = false
+    root.sshUnlockRequest = null
+    root.sshUnlockRaw = null
+    root.sshUnlockQueue = []
     // The panel a card opened stays open, as nobody's.
-    if (root.sshUnlockRequest === null) root.sshPromptOpenedPanel = false
+    root.sshPromptOpenedPanel = false
     if (root.currentScreen === "sshApproval") {
       root.currentScreen = root.screenBeforeSshApproval === "sshApproval"
         ? "main" : root.screenBeforeSshApproval
@@ -5267,6 +5279,7 @@ Item {
       sendError = "Still deleting the last Send -- one moment"
       return
     }
+    sendError = ""
     sendBusy = true
     beginVaultRead("sendDelete")
     deleteSendProc.command = Model.deleteSendCommand(send.id)
@@ -5726,6 +5739,10 @@ Item {
       return
     }
     pinEntry = ""
+    if (envelopeProc.refused) {
+      pinUnlockError = vaultRunRefusedMessage
+      return
+    }
     pinUnlockError = "Could not read the stored password. Unlock with your master password."
     refreshEnvelope()
   }
@@ -5757,6 +5774,13 @@ Item {
     }
     var pw = String(password || "")
 
+    if (pinUnlockProc.refused) {
+      releaseHeldPin()
+      pinEntry = ""
+      pinUnlockError = vaultRunRefusedMessage
+      recheckStatusAfterUnlock()
+      return
+    }
     if (exitCode !== 0 || !pw) {
       var viaPinentry = releaseHeldPin()
       countWrongPin()

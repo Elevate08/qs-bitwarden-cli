@@ -160,7 +160,7 @@ check("the stored copy answers first, silently, with the password in the environ
   /Model\.unlockEnvelopeCheckCommand\(envelopeTool\(\), envelopeAccount\(\)\)/.test(verify)
     && /env\[Model\.keyringSecretEnvVar\(\)\] = pw/.test(verify) && !/secretOutput/.test(verify), verify)
 check("a stale stored copy is not trusted, and anything but a match goes to bw",
-  /!envelopeSummary\.stale/.test(verify) && /if \(code === 0\) \{ done\(true\); return \}\s*root\.verifyWithBw\(pw/.test(verify),
+  /!envelopeSummary\.stale/.test(verify) && /if \(code === 0\) \{ done\(true\); return \}\s*if \(envelopeProc\.refused\) \{ done\(false, true\); return \}\s*root\.verifyWithBw\(pw/.test(verify),
   verify)
 const check0 = Model.unlockEnvelopeCheckCommand("/opt/tool", { id: "u", server: "https://s", slot: "default" })
 check("the check's command holds no secret and prints nothing",

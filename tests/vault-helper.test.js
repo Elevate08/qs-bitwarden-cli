@@ -188,8 +188,8 @@ check("a held reference in an environment travels by name",
 check("a request longer than the helper reads (in bytes) is not sent; its run fails instead",
   Model.vaultHelperLineTooLong("x".repeat(4194305) + "\n") && !Model.vaultHelperLineTooLong("x".repeat(4194304) + "\n")
     && Model.vaultHelperLineTooLong("é".repeat(2097153)) && !Model.vaultHelperLineTooLong("é".repeat(2097152))
-    && /if \(Model\.vaultHelperLineTooLong\(line\)\) \{\s*refuseVaultStart\(proc, [^\n]*\n\s*return\s*\}\s*var runs/.test(body("vaultStart"))
-    && /proc\.finish\(1, /.test(body("refuseVaultStart")),
+    && /if \(Model\.vaultHelperLineTooLong\(line\)\) \{\s*refuseVaultStart\(proc\)\s*return\s*\}\s*var runs/.test(body("vaultStart"))
+    && /proc\.refused = true\s*proc\.finish\(1, /.test(body("refuseVaultStart")),
   body("vaultStart"))
 check("a password copy goes from the helper to wl-copy",
   /vaultQuery\("copyPassword"/.test(body("copyPasswordNow")), body("copyPasswordNow"))
