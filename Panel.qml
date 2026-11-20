@@ -592,6 +592,13 @@ Panel {
     wrapMode: Text.WordWrap
   }
 
+  // The box a value of the open item or a generated one is shown in.
+  component ValueBox: BorderSurface {
+    radius: Style.cornerRadius
+    color: Style.hoverFillFor(root.fg, Color.accent)
+    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
+  }
+
   // An item-form caption.
   component FormCaption: PanelText {
     color: root.dim; font.pixelSize: Style.font.caption; font.bold: true
@@ -1791,12 +1798,9 @@ Panel {
             }
 
             // Generated value
-            BorderSurface {
+            ValueBox {
               width: parent.width
               implicitHeight: Style.space(58)
-              radius: Style.cornerRadius
-              color: Style.hoverFillFor(root.fg, Color.accent)
-              borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
               Row {
                 anchors.fill: parent
@@ -3955,12 +3959,9 @@ Panel {
                   width: parent.width
                   spacing: Style.space(4)
                   PanelSectionHeader { text: "PUBLIC KEY" }
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Math.max(Style.space(54), sshPublicKeyText.implicitHeight + Style.space(20))
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
                     PanelText {
                       id: sshPublicKeyText
                       anchors.fill: parent
@@ -3999,12 +4000,9 @@ Panel {
 
                   PanelSectionHeader { text: "PASSWORD" }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Style.space(34)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                     Row {
                       anchors.fill: parent
@@ -4063,12 +4061,9 @@ Panel {
                     }
                   }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: Style.space(44)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                     Rectangle {
                       anchors.left: parent.left
@@ -4134,12 +4129,9 @@ Panel {
 
                   Repeater {
                     model: root.vault.detailItem ? root.vault.detailItem.uris : []
-                    delegate: BorderSurface {
+                    delegate: ValueBox {
                       width: detailContentColumn.width
                       implicitHeight: Style.space(34)
-                      radius: Style.cornerRadius
-                      color: Style.hoverFillFor(root.fg, Color.accent)
-                      borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                       Row {
                         anchors.fill: parent
@@ -4194,16 +4186,13 @@ Panel {
 
                   Repeater {
                     model: root.vault.detailItem ? root.vault.detailItem.attachments : []
-                    delegate: BorderSurface {
+                    delegate: ValueBox {
                       readonly property string savedPath: root.vault.attachmentSavedPath(modelData.id)
                       readonly property bool busy: root.vault.attachmentBusyId === modelData.id
                       readonly property bool queued: root.vault.isAttachmentQueued(modelData.id)
 
                       width: detailContentColumn.width
                       implicitHeight: Style.space(34)
-                      radius: Style.cornerRadius
-                      color: Style.hoverFillFor(root.fg, Color.accent)
-                      borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                       Row {
                         anchors.fill: parent
@@ -4304,12 +4293,9 @@ Panel {
                     }
                   }
 
-                  BorderSurface {
+                  ValueBox {
                     width: parent.width
                     implicitHeight: notesText.implicitHeight + Style.space(16)
-                    radius: Style.cornerRadius
-                    color: Style.hoverFillFor(root.fg, Color.accent)
-                    borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                     PanelText {
                       id: notesText
@@ -4461,13 +4447,10 @@ Panel {
                 }
 
                 // One block, not seven rows. An address is copied as an address.
-                BorderSurface {
+                ValueBox {
                   visible: root.vault.detailIsIdentity && root.vault.detailIdentityAddress !== ""
                   width: parent.width
                   implicitHeight: addressText.implicitHeight + Style.space(16)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                   Row {
                     anchors.fill: parent
@@ -4819,12 +4802,9 @@ Panel {
 
                 PanelSectionHeader { text: Model.formatHistoryDate(modelData.date).toUpperCase() }
 
-                BorderSurface {
+                ValueBox {
                   width: parent.width
                   implicitHeight: Style.space(34)
-                  radius: Style.cornerRadius
-                  color: Style.hoverFillFor(root.fg, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
                   Row {
                     anchors.fill: parent
