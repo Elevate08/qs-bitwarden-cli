@@ -149,9 +149,10 @@ check("a lock acknowledgment timeout kills the helper",
   /id: sshAgentLockAckTimer\s+interval: Model\.sshAgentLockAckTimeoutMs\(\)[\s\S]{0,200}?onTriggered:[\s\S]{0,200}?sshAgentProc\.running = false/
     .test(panelSrc),
   "no acknowledgment timeout kills the helper within the model's bound")
-check("a locked acknowledgment stops the timer",
-  /"locked"[\s\S]{0,300}?sshAgentLockAckTimer\.stop\(\)/.test(panelSrc),
-  "the locked acknowledgment never stops the kill timer")
+check("a locked acknowledgment stops the timer, and takes down the cards and grants from before it (so does a helper that stops)",
+  /"locked"[\s\S]{0,300}?sshAgentLockAckTimer\.stop\(\)\s*(?:\/\/[^\n]*\s*)*withdrawSshCards\(\)\s*root\.sshGrantsAnnounced = \[\]/.test(panelSrc)
+    && /if \(!sshAgentGateOpen\) \{\s*(?:\/\/[^\n]*\s*)*root\.sshGrantsAnnounced = \[\]/.test(panelSrc),
+  "the locked acknowledgment never stops the kill timer, or leaves refused requests and dropped grants on screen")
 
 check("the panel's epoch follows the companion's past a logout",
   /function applySshAgentLifecycle\(event\)[\s\S]{0,700}?if \(action\.advanceEpoch\) sshAgentEpoch \+= 1/.test(panelSrc),

@@ -3265,6 +3265,11 @@ Item {
     if (message.type === "locked") {
       // The lock ack: signing denied, grants and private keys dropped.
       sshAgentLockAckTimer.stop()
+      // Every request raised before this is refused by now: approvals with
+      // no word of their own, ones held for an unlock each with a
+      // request_cancelled. One held after the lock is announced after this.
+      withdrawSshCards()
+      root.sshGrantsAnnounced = []
       return
     }
     if (message.type === "state_changed") {
@@ -3391,6 +3396,8 @@ Item {
     withdrawSshCards()
     if (sshAgentGateOpen) sendSshAgentOptions()
     if (!sshAgentGateOpen) {
+      // Its grants went with it, and it will not say so.
+      root.sshGrantsAnnounced = []
       endSshAgentLoad(false)
       // Its keys went with the process.
       root.sshAgentKeyCount = 0
