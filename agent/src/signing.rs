@@ -1,19 +1,20 @@
 //! The two signing paths allowed by the v1 agent protocol.
 
 use crate::rsa_keys;
-use rsa::rand_core::{CryptoRng, CryptoRngCore, Error as RngError, RngCore};
+use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha20Rng;
+use rsa::rand_core::CryptoRngCore;
 use rsa::signature::RandomizedSigner;
-use sha2::{Digest, Sha256};
 use signature::{SignatureEncoding, Signer};
 use ssh_key::{private::KeypairData, Algorithm, HashAlg, PrivateKey, Signature};
 use std::fs::File;
 use std::io::Read;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 /// Sign `message` with the algorithm the agent-protocol flags select. Errors
 /// are opaque: the wire has only a generic failure.
 pub(crate) fn sign(key: &PrivateKey, message: &[u8], flags: u32) -> Option<Signature> {
-    sign_with(key, message, flags, BlindingRandom::from_kernel)
+    sign_with(key, message, flags, blinding_rng)
 }
 
 /// `sign`, with where an RSA signature's blinding randomness comes from
@@ -75,110 +76,41 @@ fn sign_rsa(
     Signature::new(Algorithm::Rsa { hash: Some(hash) }, bytes).ok()
 }
 
-/// Bytes read from the kernel for one signature.
-const SEED_LEN: usize = 64;
-
-/// The blinding randomness of one RSA signature: a seed read from the
-/// kernel (`/dev/urandom`) before the private key is touched, stretched as
-/// SHA-256(label, seed, block number), block after block.
+/// The blinding randomness of one RSA signature: ChaCha20, keyed with 32
+/// bytes read from the kernel (`/dev/urandom`) before the private key is
+/// touched. `None` when the device cannot be opened or read in full; the
+/// request then fails like any other, unsigned.
 ///
-/// Why not read the device as `rsa` asks: it draws through `rand`, whose
+/// Why not hand `rsa` the device itself: it draws through `rand`, whose
 /// `fill` cannot report a failure (it panics on one, and release builds abort
-/// on panic), and it draws an unbounded amount, a modulus' worth again each
-/// time its candidate is not below the modulus. A read failing in the middle
-/// would have to end the helper, every key with it. Here the only read is
-/// the seed, up front, where failing it fails one request; after that
-/// nothing can fail: there is no panic path in this type. The block number
-/// is 64 bits and a signature draws a few kilobytes.
-///
-/// `std` and `sha2` only: `rand_core`'s `OsRng` needs its `getrandom`
-/// feature, which nothing in this crate's release graph turns on, and the
-/// ChaCha generator in the graph is not a dependency of this crate.
-struct BlindingRandom {
-    seed: [u8; SEED_LEN],
-    block: [u8; 32],
-    /// Bytes of `block` already handed out; 32 when a new one is due.
-    used: usize,
-    next_block: u64,
+/// on panic), and it draws an unbounded amount. Here the only read is the
+/// seed, up front, where failing it fails one request; the generator cannot
+/// fail after that. Read with `std`: `rand_core`'s `OsRng` needs its
+/// `getrandom` feature, which nothing in this crate's release graph turns on.
+fn blinding_rng() -> Option<ChaCha20Rng> {
+    seeded(File::open("/dev/urandom").ok()?)
 }
 
-impl BlindingRandom {
-    /// `None` when the device cannot be opened or read in full; the request
-    /// then fails like any other, unsigned.
-    fn from_kernel() -> Option<Self> {
-        Self::from_reader(File::open("/dev/urandom").ok()?)
-    }
-
-    /// The seed is read whole or not at all (`read_exact` retries an
-    /// interrupted read and refuses a short one).
-    fn from_reader(mut source: impl Read) -> Option<Self> {
-        let mut random = Self {
-            seed: [0; SEED_LEN],
-            block: [0; 32],
-            used: 32,
-            next_block: 0,
-        };
-        source.read_exact(&mut random.seed).ok()?;
-        Some(random)
-    }
-}
-
-impl RngCore for BlindingRandom {
-    fn next_u32(&mut self) -> u32 {
-        let mut bytes = [0_u8; 4];
-        self.fill_bytes(&mut bytes);
-        u32::from_le_bytes(bytes)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut bytes = [0_u8; 8];
-        self.fill_bytes(&mut bytes);
-        u64::from_le_bytes(bytes)
-    }
-
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        for byte in dest {
-            if self.used == self.block.len() {
-                let mut hash = Sha256::new();
-                hash.update(b"qs-bitwarden-ssh-agent rsa blinding v1");
-                hash.update(self.seed);
-                hash.update(self.next_block.to_le_bytes());
-                self.block = hash.finalize().into();
-                self.next_block = self.next_block.wrapping_add(1);
-                self.used = 0;
-            }
-            *byte = self.block[self.used];
-            self.used += 1;
-        }
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RngError> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
-}
-
-impl CryptoRng for BlindingRandom {}
-
-/// The seed gives every blinding factor of its signature, so it is wiped
-/// with the block in hand when the signature is done (or was not made).
-impl Drop for BlindingRandom {
-    fn drop(&mut self) {
-        self.seed.zeroize();
-        self.block.zeroize();
-    }
+/// The seed is read whole or not at all (`read_exact` retries an interrupted
+/// read and refuses a short one), and the buffer it is read into is wiped on
+/// return. `rand_chacha` 0.3 has no wipe of its own: the generator's copy of
+/// the key lasts until the memory of the signature it served is reused.
+fn seeded(mut source: impl Read) -> Option<ChaCha20Rng> {
+    let mut seed = Zeroizing::new([0_u8; 32]);
+    source.read_exact(&mut seed[..]).ok()?;
+    Some(ChaCha20Rng::from_seed(*seed))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{sign, sign_with, BlindingRandom, SEED_LEN};
+    use super::{blinding_rng, seeded, sign, sign_with};
     use crate::rsa_keys;
+    use rand_chacha::ChaCha20Rng;
     use rand_core::{CryptoRng, OsRng, RngCore};
     use signature::{SignatureEncoding, Signer, Verifier};
     use ssh_key::private::RsaKeypair;
     use ssh_key::{Algorithm, HashAlg, PrivateKey};
     use std::cell::Cell;
-    use std::io::{self, Read};
 
     const MESSAGE: &[u8] = b"agent sign request";
 
@@ -191,7 +123,7 @@ mod tests {
 
     /// The real generator, adding what is drawn from it to `drawn`.
     struct Counting<'a> {
-        inner: BlindingRandom,
+        inner: ChaCha20Rng,
         drawn: &'a Cell<usize>,
     }
 
@@ -222,7 +154,7 @@ mod tests {
         let (asked, drawn) = (Cell::new(0), Cell::new(0));
         let signature = sign_with(key, MESSAGE, flags, || {
             asked.set(asked.get() + 1);
-            BlindingRandom::from_kernel().map(|inner| Counting {
+            blinding_rng().map(|inner| Counting {
                 inner,
                 drawn: &drawn,
             })
@@ -297,20 +229,19 @@ mod tests {
         }
     }
 
-    /// No randomness, no RSA signature: the one request fails, without a
-    /// panic, and the private key is not used unblinded instead.
+    /// No seed, no RSA signature: with a random source that ends before the
+    /// seed is whole, the one request fails, without a panic, and the private
+    /// key is not used unblinded or under a constant seed instead.
     #[test]
-    fn an_rsa_request_fails_when_the_random_source_has_nothing() {
+    fn an_rsa_request_fails_when_the_seed_cannot_be_read() {
         let (_, key) = rsa_key();
-        for flags in [2, 4] {
-            let asked = Cell::new(0);
-            let signature = sign_with(&key, MESSAGE, flags, || {
-                asked.set(asked.get() + 1);
-                None::<BlindingRandom>
-            });
-            assert!(signature.is_none(), "flags {flags}");
-            assert_eq!(asked.get(), 1, "flags {flags}");
-        }
+        let asked = Cell::new(0);
+        let signature = sign_with(&key, MESSAGE, 2, || {
+            asked.set(asked.get() + 1);
+            seeded(&[0xa5_u8; 31][..])
+        });
+        assert!(signature.is_none());
+        assert_eq!(asked.get(), 1);
     }
 
     /// `ssh-rsa` (flags 0, SHA-1) and unknown flags stay refused, before the
@@ -342,106 +273,5 @@ mod tests {
             assert_eq!(signed.is_some(), flags == 0, "flags {flags}");
             assert_eq!((asked, drawn), (0, 0), "flags {flags}");
         }
-    }
-
-    /// A reader that fails or ends after `good` bytes, optionally reporting
-    /// one interrupted read first.
-    struct Flaky {
-        good: usize,
-        interrupt: bool,
-        error: bool,
-    }
-
-    impl Read for Flaky {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            if self.interrupt {
-                self.interrupt = false;
-                return Err(io::ErrorKind::Interrupted.into());
-            }
-            if self.good == 0 {
-                return if self.error {
-                    Err(io::ErrorKind::Other.into())
-                } else {
-                    Ok(0)
-                };
-            }
-            // One byte at a time: short reads are the rule, not the exception.
-            buf[0] = 0xa5;
-            self.good -= 1;
-            Ok(1)
-        }
-    }
-
-    /// The seed is read before any signing and whole or not at all: an
-    /// error or an end of input part-way gives no generator (and so no
-    /// signature), where the read used to be made mid-signature and a
-    /// failure ended the helper. Short and interrupted reads are carried on
-    /// from.
-    #[test]
-    fn a_seed_that_cannot_be_read_whole_gives_no_generator() {
-        let source = |good, interrupt, error| Flaky {
-            good,
-            interrupt,
-            error,
-        };
-        assert!(BlindingRandom::from_reader(source(SEED_LEN, true, false)).is_some());
-        assert!(BlindingRandom::from_reader(source(SEED_LEN, false, true)).is_some());
-        for good in [0, 1, SEED_LEN - 1] {
-            assert!(BlindingRandom::from_reader(source(good, false, false)).is_none());
-            assert!(BlindingRandom::from_reader(source(good, true, true)).is_none());
-        }
-        assert!(BlindingRandom::from_reader(io::empty()).is_none());
-
-        // And a signature asked for with such a source fails, alone.
-        let (_, key) = rsa_key();
-        let failed = sign_with(&key, MESSAGE, 2, || {
-            BlindingRandom::from_reader(source(SEED_LEN - 1, false, true))
-        });
-        assert!(failed.is_none());
-        assert!(sign(&key, MESSAGE, 2).is_some());
-    }
-
-    /// The generator: the kernel's seed decides everything, two seeds give
-    /// two streams, a stream does not repeat from block to block, and how it
-    /// is drawn (bytes, words, across block ends) does not change it.
-    #[test]
-    fn the_blinding_generator_stretches_its_seed_into_one_stream() {
-        let seeded = |seed: [u8; SEED_LEN]| BlindingRandom::from_reader(&seed[..]).unwrap();
-        let mut whole = [0_u8; 200];
-        seeded([7; SEED_LEN]).fill_bytes(&mut whole);
-
-        let mut again = seeded([7; SEED_LEN]);
-        let mut pieces = Vec::new();
-        for len in [1, 31, 1, 32, 33, 0, 64] {
-            let mut piece = vec![0_u8; len];
-            again.try_fill_bytes(&mut piece).unwrap();
-            pieces.extend(piece);
-        }
-        pieces.extend(again.next_u32().to_le_bytes());
-        pieces.extend(again.next_u64().to_le_bytes());
-        let mut rest = vec![0_u8; whole.len() - pieces.len()];
-        again.fill_bytes(&mut rest);
-        pieces.extend(rest);
-        assert_eq!(pieces, whole);
-
-        let mut other = [0_u8; 200];
-        let mut seed = [7; SEED_LEN];
-        seed[SEED_LEN - 1] = 8;
-        seeded(seed).fill_bytes(&mut other);
-        assert_ne!(other, whole);
-        for block in 1..6 {
-            assert_ne!(whole[..32], whole[block * 32..block * 32 + 32]);
-        }
-        assert_ne!(whole[..32], [0_u8; 32]);
-
-        // From the kernel, two generators differ.
-        let (mut first, mut second) = ([0_u8; 64], [0_u8; 64]);
-        BlindingRandom::from_kernel()
-            .expect("/dev/urandom opens")
-            .fill_bytes(&mut first);
-        BlindingRandom::from_kernel()
-            .unwrap()
-            .fill_bytes(&mut second);
-        assert_ne!(first, second);
     }
 }

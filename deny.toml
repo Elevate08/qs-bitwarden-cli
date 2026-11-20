@@ -64,7 +64,7 @@ wildcards = "deny"
 # contradict the design: the agent helper takes requests and secrets from
 # three places (the panel's control channel on stdin, the key FIFO and its
 # unix socket). Beside those it reads XDG_RUNTIME_DIR, /proc/<pid> of the
-# connected peer and, since RSA blinding, the kernel's random source: 64
+# connected peer and, since RSA blinding, the kernel's random source: 32
 # bytes of /dev/urandom per RSA signature (agent/src/signing.rs).
 deny = []
 

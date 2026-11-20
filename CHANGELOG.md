@@ -209,12 +209,15 @@
   the key, which is what the `rsa` crate's open timing advisory
   (RUSTSEC-2023-0071) is about. Each signature is now computed on the data
   multiplied by a fresh random factor, which is divided out after; the
-  signature is byte for byte the same. The factor comes from 64 bytes read
-  from the kernel (`/dev/urandom`) before the key is touched, and a request
+  signature is byte for byte the same. The factor comes from the
+  `rand_chacha` crate's ChaCha20 generator, keyed with 32 bytes read from
+  the kernel (`/dev/urandom`) before the key is touched, and a request
   fails, alone, if they cannot be read. The advisory
   is fixed in `rsa` 0.10.0; this release is still on 0.9, so it stays listed
   in `deny.toml` until that upgrade. Ed25519 keys never
-  had the problem. This needs the rebuilt SSH agent helper.
+  had the problem. Known limit, to be fixed later: the generator's own
+  state is not wiped after a signature (`rand_chacha` 0.3 has no way to),
+  only dropped. This needs the rebuilt SSH agent helper.
 - **A forwarded login's server is shown as the remote host's claim when
   that is all it is.** With agent forwarding (`ssh -A`), everything after
   your own `ssh`'s forwarding bind is written by the remote host, and it
