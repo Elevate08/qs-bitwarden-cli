@@ -2854,18 +2854,21 @@ Item {
   }
 
   function denySshRequest() {
-    if (sshUnlockRequest) {
-      sshAgentDecide(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
-      root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
-      noteSshCooldown()
-      advanceSshUnlock()
-      return
-    }
+    // The approval first: with one up it is the card on screen (the panel's
+    // and the popup's alike), and a request waiting for an unlock behind it
+    // is not what was refused.
     if (sshPrompt) {
       sshAgentDecide(Model.sshAgentDenyLine(sshPrompt.requestId))
       root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
       noteSshCooldown()
       advanceSshPrompt()
+      return
+    }
+    if (sshUnlockRequest) {
+      sshAgentDecide(Model.sshAgentUnlockCancelledLine(sshUnlockRequest.requestId))
+      root.sshCooldown = Model.sshAgentCooldownAfter(root.sshCooldown, "denied", Date.now())
+      noteSshCooldown()
+      advanceSshUnlock()
       return
     }
     dismissSshApproval()
@@ -2949,7 +2952,9 @@ Item {
   // notification must never collect. The notification can deny and nothing
   // else: its actions can be pressed by any program running as the user
   // (through the notification daemon), so approving stays on the card.
-  property int sshNotifyRequestId: -1
+  // A double, as every request id here is a plain number: an `int` holds
+  // nothing past 2^31, and an id it wrapped would match no card.
+  property double sshNotifyRequestId: -1
 
   function armSshNotifyFallback() {
     stopSshNotifyFallback()
@@ -3021,7 +3026,8 @@ Item {
     var text = String(idText || "").trim()
     var id = /^[0-9]{1,15}$/.test(text) ? Number(text) : -1
     var allow = decision === "allow"
-    if (id < 0 || (!allow && decision !== "deny")) return "invalid"
+    // 0 is no request: the helper numbers from 1, and writes 0 for "none".
+    if (id < 1 || (!allow && decision !== "deny")) return "invalid"
     if (allow && !root.sshAgentTerminalApproval) return "disabled"
     id = sshCurrentRequestId(id)
     if (root.sshPrompt && root.sshPrompt.requestId === id) {
@@ -3070,6 +3076,8 @@ Item {
   // prompt had is still its own once the card or a queued prompt carries
   // the new one.
   function sshCurrentRequestId(id) {
+    // Never 0 or less: that is the helper's "was never held", not a number.
+    if (!(id > 0)) return id
     var raw = root.sshPromptRaw
     if (root.sshPrompt && (root.sshPrompt.promotedFrom === id || (raw && raw.promotedFrom === id))) {
       return root.sshPrompt.requestId

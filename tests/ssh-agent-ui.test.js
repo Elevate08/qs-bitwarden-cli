@@ -571,7 +571,9 @@ check("grants are tracked from the companion",
 
 check("the card's approve and deny answer the request that is shown",
   /function approveSshRequest\(grantSeconds\)[\s\S]{0,500}?sshAgentDecide\(Model\.sshAgentApproveLine\(sshPrompt\.requestId, grantSeconds\)\)/.test(panelSrc)
-    && /function denySshRequest\(\)[\s\S]{0,500}?if \(sshPrompt\) \{\s*sshAgentDecide\(Model\.sshAgentDenyLine\(sshPrompt\.requestId\)\)\s*root\.sshCooldown = Model\.sshAgentCooldownAfter\(root\.sshCooldown, "denied"/.test(panelSrc),
+    // First in the function: Deny answers the approval that is shown, not a
+    // request waiting for an unlock behind it.
+    && /function denySshRequest\(\) \{\s*(?:\/\/[^\n]*\n\s*)*if \(sshPrompt\) \{\s*sshAgentDecide\(Model\.sshAgentDenyLine\(sshPrompt\.requestId\)\)\s*root\.sshCooldown = Model\.sshAgentCooldownAfter\(root\.sshCooldown, "denied"/.test(panelSrc),
   "approve or deny on the card does not reach the companion")
 check("grants can be revoked individually and together",
   /sshAgentRevokeGrantLine\(/.test(panelSrc) && /sshAgentRevokeGrantsLine\(/.test(panelSrc),

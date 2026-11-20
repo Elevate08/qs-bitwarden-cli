@@ -403,6 +403,14 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
       [named.sshPrompt.requestId, named.sshNotifyRequestId, named.sshPromptQueue.map(m => m.requestId).join(),
         named.sshCurrentRequestId(1), named.sshCurrentRequestId(2), named.sshCurrentRequestId(3)].join(),
       "21,21,20,21,20,3")
+    // An ordinary approval says `promotedFrom: 0`; 0 names no request.
+    const plain = makeVault({ requestId: 5, raw: null })
+    plain.sshPromptRaw = Object.assign(approvalOf(5, a), { promotedFrom: 0 })
+    plain.sshPromptQueue = [Object.assign(approvalOf(6, b), { promotedFrom: 0 })]
+    eq("0 is never a request's number", [plain.sshCurrentRequestId(0),
+      Function("root", "Model", "with (root) {" + functionBody(service, "replySshRequest")
+        + "\nreturn replySshRequest('0', 'allow') }")(Object.assign(plain, { sshAgentTerminalApproval: true }), Model)].join(),
+      "0,invalid")
     check("a terminal reply is resolved to the request's current number before it is looked up",
       /return "disabled"\s*id = sshCurrentRequestId\(id\)/.test(functionBody(service, "replySshRequest")), "")
   }
