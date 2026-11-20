@@ -19,16 +19,14 @@ const PIN_ENV = "QSBW_PIN"
 // migrate it into the envelope on the next PIN unlock.
 const PIN_ITERATIONS = 600000
 
-// Each PIN guess costs Argon2id at 256 MiB x 4 passes, but the stored item
-// is not a lock on guessing: a program running as the user can decrypt it
-// with `systemd-creds --user` and try PINs offline on every core (see
+// Each PIN guess costs Argon2id at 256 MiB x 4 passes, but the stored item is
+// not a lock on guessing: a program running as the user can decrypt it with
+// `systemd-creds --user` and try PINs offline on every core (see
 // PIN_GUESSES_PER_SECOND). So six digits is the floor and eight the
-// recommendation; six and seven are allowed with a warning that names the
-// cost.
+// recommendation; six and seven are allowed with a warning.
 const PIN_MIN_LENGTH = 6
 const PIN_RECOMMENDED_LENGTH = 8
-// PINs set before the floor was raised (at 4) still unlock; only new ones
-// must meet it.
+// PINs set under the old floor of 4 still unlock; only new ones must meet it.
 const PIN_UNLOCK_MIN_LENGTH = 4
 
 function keyringSecretEnvVar() {
@@ -39,7 +37,6 @@ function keyringAttributes(account) {
   return " service " + shellQuote(KEYRING_SERVICE) + " account " + shellQuote(account)
 }
 
-// A capped `secret-tool lookup` of one entry.
 function keyringReadScript(account) {
   return "secret-tool lookup" + keyringAttributes(account) + " 2>/dev/null | head -c " + MAX_TOKEN_BYTES
 }
@@ -83,12 +80,11 @@ function shellQuote(value) {
 // -------------------------------------------------------------------------
 //
 // `bw` holds one account per data directory, so each account the panel knows
-// lives in a slot: "default" is bw's own directory (the account a terminal
-// `bw` sees, and the only one before multi-account), any other slot a private
-// directory named by 16 hex digits, given to bw in BITWARDENCLI_APPDATA_DIR.
-// A slot's keyring entries are the legacy names with "@<slot>" appended, so
-// the default slot keeps its entries as they are, and no lookup for one slot
-// can match another's (secret-tool matches attributes exactly).
+// lives in a slot: "default" is bw's own directory (the one a terminal `bw`
+// sees), any other a private directory named by 16 hex digits, given to bw in
+// BITWARDENCLI_APPDATA_DIR. A slot's keyring entries are the legacy names with
+// "@<slot>" appended, so the default slot's are unchanged and no lookup for
+// one slot can match another's (secret-tool matches attributes exactly).
 var DEFAULT_ACCOUNT_SLOT = "default"
 var ACCOUNT_SLOT_RE = /^[0-9a-f]{16}$/
 var APPDATA_ENV = "BITWARDENCLI_APPDATA_DIR"
@@ -108,8 +104,7 @@ function isAccountSlot(slot) {
   return slot === DEFAULT_ACCOUNT_SLOT || ACCOUNT_SLOT_RE.test(String(slot))
 }
 
-// Anything that is not a slot means the default one, which is what every
-// caller got before slots existed.
+// Anything that is not a slot means the default one.
 function accountSlot(slot) {
   return typeof slot === "string" && isAccountSlot(slot) ? slot : DEFAULT_ACCOUNT_SLOT
 }
@@ -461,8 +456,7 @@ function plainProbeEnv(path) {
   return { PATH: String(path || "") || "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C" }
 }
 
-// How long the look inside the cache directory may take before the probe
-// gives up and the cache goes unused.
+// How long the cache directory scan may take before the cache goes unused.
 var BW_COMPILE_CACHE_SCAN_TIMEOUT_S = 5
 
 // Prints the cache directory and exits 0 only when it may be used. `home` is
@@ -482,15 +476,12 @@ var BW_COMPILE_CACHE_SCAN_TIMEOUT_S = 5
 //   directory of this user's that no one else can write to: Node follows a
 //   symlink it finds there. One `find`, stopping at the first that is not.
 // - the plugin's directory holds nothing but the cache directory.
-// A refused check changes no existing file or mode, and `bw` runs without
-// the cache: every check on what is already there comes before anything is
-// made or changed. (One that fails part-way, a `mkdir` or the `chmod`
-// itself failing, may leave the empty directories it made.) Only a path
-// that passed is touched: the two directories are set to exactly 0700,
-// setgid and sticky bits cleared. Both are the plugin's own (the check
-// refuses a plugin directory with anything else in it), and Node recreates
-// a deleted one with the default umask; with the
-// outer one private, an inner one recreated under any umask is out of
+// Every check on what is already there comes before anything is made or
+// changed, so a refusal changes no existing file or mode and `bw` runs without
+// the cache (a `mkdir` or `chmod` failing part-way may leave the empty
+// directories it made). A path that passed has its two directories set to
+// exactly 0700, setgid and sticky bits cleared; Node recreates a deleted inner
+// one with the default umask, and with the outer one private that is out of
 // reach of everyone else.
 function bwCompileCacheCommand(home) {
   var script = "exec 2>/dev/null; LC_ALL=C; "
@@ -520,9 +511,8 @@ function bwCompileCacheCommand(home) {
     // reported, not followed.
     + "if __there \"$__p\"; then __ok \"$__p\" || exit 1; "
     // Nothing but the cache directory may be in the plugin's directory: with
-    // XDG_CACHE_HOME set to the data or state home it would be the one that
-    // holds the plugin's accounts or learned picks, which is not this
-    // check's to scan or to change the mode of.
+    // XDG_CACHE_HOME set to the data or state home it would hold the plugin's
+    // accounts or learned picks, which is not this check's to scan or chmod.
     + "__o=\"$(timeout " + BW_COMPILE_CACHE_SCAN_TIMEOUT_S + " find \"$__p\" -mindepth 1 -maxdepth 1 ! -name node-compile-cache -printf x -quit)\" || exit 1; [ -z \"$__o\" ] || exit 1; "
     + "if __there \"$__x\"; then __ok \"$__x\" || exit 1; fi; "
     + "__bad=\"$(timeout " + BW_COMPILE_CACHE_SCAN_TIMEOUT_S + " find \"$__p\" -mindepth 1 "
@@ -550,10 +540,9 @@ function withoutCompileCache(env) {
   return out
 }
 
-// The directory the probe printed, if it exited 0 and printed exactly one
-// line that is plainly the cache directory, in printable ASCII; ""
-// otherwise. `output` is all of the probe's stdout. This, not a path put
-// together again here, is what `bw` is given.
+// The directory the probe printed, if it exited 0 and printed exactly one line
+// that is plainly the cache directory, in printable ASCII; "" otherwise. This,
+// not a path put together again here, is what `bw` is given.
 function bwCompileCacheAccepted(exitCode, output) {
   var text = String(output === undefined || output === null ? "" : output)
   if (exitCode !== 0 || !/^[\x20-\x7e]+\n$/.test(text)) return ""
@@ -723,8 +712,7 @@ function scrubRetryMs() { return SCRUB_RETRY_MS }
 // again next tick, anything else is done. Running processes are left alone
 // (their read is still wanted), and so is one stopped whose exit is still to
 // come (VaultProcess keeps its `runId`): setting its command would start
-// nothing, and that run's exit would pass for the scrub's. Already-scrubbed
-// ones need nothing.
+// nothing, and that run's exit would pass for the scrub's.
 function scrubPass(procs) {
   var start = []
   var waiting = []
@@ -983,7 +971,6 @@ function twoFactorStoredKey(key) {
   return isTwoFactorHashKey(key) ? String(key) : twoFactorAccountKey(key)
 }
 
-// Whether the map still has a key that is an email, to be rewritten.
 function twoFactorStoreHasPlainKeys(store) {
   if (!store || typeof store !== "object") return false
   for (var k in store) if (!isTwoFactorHashKey(k)) return true
@@ -1465,18 +1452,16 @@ function logoutCommand() {
 // Clipboard
 // -------------------------------------------------------------------------
 //
-// The copied value reaches wl-copy on stdin, from this env var, and never in
-// argv (/proc/<pid>/cmdline is world-readable). `env -u` drops the variable
-// before wl-copy starts, and `exec` means no shell stays behind holding it in
-// its environment for as long as the copy is served.
+// The copied value reaches wl-copy on stdin, from this env var, never in argv
+// (/proc/<pid>/cmdline is world-readable). `env -u` drops the variable before
+// wl-copy starts, and `exec` leaves no shell behind holding it in its
+// environment while the copy is served.
 //
-// The timed clear is the copy's own lifetime, not a timer in the shell: wl-copy
-// stays in the foreground under `timeout`, and when it ends the compositor
-// drops the selection it was serving. That clear survives a shell restart
-// (the shell restarts after every bar edit, which used to strand a copied
-// password on the clipboard for good), and it never touches a later copy:
-// wl-copy exits as soon as anything else takes the clipboard, so there is
-// nothing left for `timeout` to end. --sensitive marks the copy for clipboard
+// The timed clear is the copy's own lifetime, not a timer in the shell:
+// wl-copy stays in the foreground under `timeout`, and when it ends the
+// compositor drops the selection. That survives a shell restart (one follows
+// every bar edit) and never touches a later copy: wl-copy exits as soon as
+// anything else takes the clipboard. --sensitive marks the copy for clipboard
 // history to skip (x-kde-passwordManagerHint).
 var CLIPBOARD_ENV = "QSBW_CLIP"
 var CLIPBOARD_SENSITIVE_TYPE = "x-kde-passwordManagerHint"
@@ -1541,7 +1526,6 @@ function autoTypeText(username, password) {
   return { ok: true, reason: "", text: user ? user + "\t" + pass : pass }
 }
 
-// Why a type did not happen, from the helper's or the fallback's reason.
 function autoTypeFailureMessage(reason) {
   switch (String(reason || "")) {
     case "missing": return "Auto-type needs wtype, which is not installed"
@@ -1571,9 +1555,8 @@ function autoTypeFailedNoticeCommand(message) {
 // Hyprland in Lua: ~/.config/hypr/hyprland.lua requires `hypr.bindings`, the
 // user's ~/.config/hypr/bindings.lua, and Hyprland reloads on save (Omarchy's
 // bootstrap drops the cached module, so a reload reads the file again). The
-// settings screen appends one o.bind() line there, after a comment line
-// saying the plugin added it, and removes only that exact pair. It never
-// rewrites or reorders anything else in the file.
+// settings screen appends one o.bind() line there, after a comment line saying
+// the plugin added it, and removes only that exact pair.
 //
 // `hyprctl binds -j` reports an o.bind() as dispatcher "__lua" with an opaque
 // closure number, so the command cannot be read back from it. The binding is
@@ -1803,7 +1786,6 @@ function parseAutoTypeKeybindInspection(raw) {
   }
 }
 
-// What the keybinding row shows, from parseAutoTypeKeybindInspection().
 function autoTypeKeybindState(inspection) {
   var where = autoTypeBindingsDisplayPath()
   if (!inspection) {
@@ -2425,11 +2407,10 @@ function keyringLookupCommand(slot) {
   return ["bash", "-c", cappedScript(script)]
 }
 
-// Exits 0 only once no session entry is left: `secret-tool clear` exits 1
-// when nothing matched and skips locked matches, so its own status says
-// nothing either way. The check searches without unlocking (no keyring
-// prompt) and counts the output rather than capturing it, since it contains
-// the secret.
+// Exits 0 only once no session entry is left: `secret-tool clear` exits 1 when
+// nothing matched and skips locked matches, so its own status says nothing.
+// The check searches without unlocking (no keyring prompt) and counts the
+// output rather than capturing it, since it contains the secret.
 function keyringClearCommand(slot) {
   var attrs = keyringAttributes(keyringEntryName(KEYRING_ACCOUNT, slot))
   var script = "secret-tool clear" + attrs + " >/dev/null 2>&1; "
@@ -2491,7 +2472,6 @@ function validatePin(pin, confirm) {
 // warning text; a faster machine is faster still.
 var PIN_GUESSES_PER_SECOND = 17
 
-// The time to try every PIN of `length` digits, in words.
 function pinGuessTime(length) {
   var seconds = Math.pow(10, length) / PIN_GUESSES_PER_SECOND
   var minutes = seconds / 60
@@ -2553,10 +2533,9 @@ var PINENTRY_RESOLVE = "__prog=\"$1\"; if [ -z \"$__prog\" ] || [ ! -x \"$__prog
 var PINENTRY_TEXT_MAX = 400
 var PINENTRY_DESC_ENV = "QSBW_PE_DESC"
 var PINENTRY_ERR_ENV = "QSBW_PE_ERR"
-// Pinentry closes itself after this long without an answer (SETTIMEOUT), so
-// a forgotten window does not keep the panel hidden and SSH prompts held
-// back. The script stops waiting a little later, for a pinentry that ignores
-// it.
+// Pinentry closes itself after this long without an answer (SETTIMEOUT), so a
+// forgotten window does not keep the panel hidden and SSH prompts held back.
+// The script waits a little longer, for a pinentry that ignores it.
 var PINENTRY_TIMEOUT_S = 120
 var PINENTRY_GIVE_UP_S = PINENTRY_TIMEOUT_S + 30
 // Exit codes of the script (and 127, 126 and 128+ for a program that is
@@ -2626,7 +2605,6 @@ function pinentryFailedNotice() {
   return "The unlock prompt stopped before answering. Try again, or type it here instead."
 }
 
-// The notice while the probe says the prompt cannot run here.
 function pinentryMissingNotice() {
   return "The unlock prompt cannot open here (it needs quickshell, node and a Wayland display)."
     + " Typed here, it stays in the shell's memory until the shell restarts."
@@ -2705,15 +2683,14 @@ function pinentryProbeMissing(exitCode, stdoutText) {
   return exitCode === 0 && String(stdoutText || "").trim() === "missing"
 }
 
-// Where the master password and PIN are typed: "pinentry", "wait" or
-// "field" (the panel's own). `o`: { usePinentry, missing, declined,
-// helperState }. Pinentry runs under the vault helper, so until the helper is
-// up the panel waits for it: offering the field instead would put what is
-// typed into the shell whenever the helper is starting, restarting or was
-// left stopped (which a program running as you can cause by killing it). The
-// field is used only when pinentry is off, reported unable to run here or
-// declined, or when the vault is held in the shell as allowVaultWithoutHelper
-// allows.
+// Where the master password and PIN are typed: "pinentry", "wait" or "field"
+// (the panel's own). `o`: { usePinentry, missing, declined, helperState }.
+// Pinentry runs under the vault helper, so until the helper is up the panel
+// waits: offering the field instead would put what is typed into the shell
+// whenever the helper is starting, restarting or stopped (which a program
+// running as you can cause by killing it). The field is used only when
+// pinentry is off, cannot run here or was declined, or when the vault is held
+// in the shell as allowVaultWithoutHelper allows.
 function typedSecretEntry(o) {
   if (!o.usePinentry || o.missing || o.declined) return "field"
   if (o.helperState === "active") return "pinentry"
@@ -3078,11 +3055,10 @@ function repairedKeyringNoticeCommand() {
 // -------------------------------------------------------------------------
 //
 // The quick-unlock settings are shared switches, but each account's envelope
-// holds its own ways in. Turning a method off used to remove it from the
-// account on screen only, leaving every other account's way in stored (and
-// invisible, since the settings row then reads "off"). This removes one
-// method from each listed slot's envelope, and that slot's legacy entry for
-// the method, in one process queued like any envelope write.
+// holds its own ways in: one left stored for an account not on screen would be
+// invisible, since the settings row then reads "off". This removes one method
+// from each listed slot's envelope, and that slot's legacy entry for the
+// method, in one process queued like any envelope write.
 //
 // Fingerprint is the exception: its wrap holds the data key in the clear
 // (a fingerprint releases no secret), and the key is the envelope's for as
@@ -3920,13 +3896,11 @@ function identityDetail(identity) {
   }
 }
 
-// Title and names, skipping empty parts.
 function identityFullName(identity) {
   if (!identity) return ""
   return nonEmptyParts([identity.title, identity.firstName, identity.middleName, identity.lastName]).join(" ")
 }
 
-// The trimmed, non-empty strings among `parts`.
 function nonEmptyParts(parts) {
   return parts.map(function(part) { return String(part || "").trim() })
     .filter(function(part) { return part !== "" })
@@ -3995,10 +3969,9 @@ function repromptValue(value) {
   return Number(value) === 1 ? 1 : 0
 }
 
-// `raw` is the JSON text of an item array, or an array already parsed. The
+// `raw` is the JSON text of an item array, or an array already parsed: the
 // vault list is parsed once (readSanitizedVault()) and its items handed here
-// as an array: re-serializing them just to parse them again cost 4 parses
-// and 2 stringifies of the whole vault on the GUI thread per load.
+// as an array, not re-serialized to be parsed again on the GUI thread.
 function parseItems(raw) {
   var arr = Array.isArray(raw) ? raw : parseJsonArray(raw)
   var out = []
@@ -4286,8 +4259,7 @@ function itemDetailFromObject(it) {
 // stored list, which is how the helper names it ("passwordHistory:<index>").
 // `raw` is the stored array of { password, lastUsedDate }; with `withheld` it
 // is the helper's list of dates alone (the passwords stay in the helper) and
-// each password is the WITHHELD stand-in. An entry without a usable date sorts
-// after the dated ones.
+// each password is the WITHHELD stand-in. Undated entries sort last.
 function passwordHistoryEntries(raw, withheld) {
   var list = Array.isArray(raw) ? raw : []
   var out = []
@@ -4553,19 +4525,17 @@ function trimmedOrNull(value) {
   return t ? t : null
 }
 
-// The password is never trimmed: edge spaces can be part of it, and trimming
-// them on save silently broke the login.
+// The password is never trimmed: edge spaces can be part of it.
 function updateLoginFields(login, username, password, totp) {
   login.username = formValue(login.username, username, trimmedText)
   login.password = formValue(login.password, password, null)
   login.totp = formValue(login.totp, totp, trimmedOrNull)
 }
 
-// The websites an edit writes. The form edits the first one as a single
-// field (`typed`); every other website, and every match rule, is kept. Only
-// clearing the field drops the first website, and a changed address keeps the
-// match rule it had: saving used to replace the whole list with one entry and
-// reset its rule to the default, which widened browser-extension autofill.
+// The websites an edit writes. The form edits the first one as a single field
+// (`typed`); every other website, and every match rule, is kept. Only clearing
+// the field drops the first website, and a changed address keeps its match
+// rule: a reset to the default would widen browser-extension autofill.
 function editedUris(stored, typed) {
   var text = typed === undefined || typed === null ? "" : String(typed)
   var kept = toList(stored).filter(function(u) { return u && typeof u === "object" })
@@ -4632,8 +4602,7 @@ function customFieldsPayload(fields) {
   return out
 }
 
-// `typeFields` holds the card or identity fields as one object rather than
-// two dozen positional arguments.
+// `typeFields` holds the card or identity fields as one object.
 function buildCreatePayload(typeCode, name, username, password, totp, uri, notes, favorite, organizationId, folderId, collectionIds, typeFields, customFields) {
   if (Number(typeCode) === 5) return null
   var payload = {
@@ -4935,10 +4904,9 @@ function escapeRegExp(text) {
 function hasWholeWord(haystack, word) {
   if (!haystack || !word) return false
   // Most items are not in the title, and a RegExp per item is most of a pass
-  // over a large vault. A lowercase ASCII word can only match where it, or
-  // its ASCII capitals, stand in the text, so its absence from the lowercased
-  // text settles it. Any other word goes to the expression as before.
-  // Only for two strings: anything else is the expression's to coerce.
+  // over a large vault. A lowercase ASCII word can only match where it, or its
+  // ASCII capitals, stand in the text, so its absence from the lowercased text
+  // settles it. Only for two strings: the expression coerces the rest.
   if (typeof haystack === "string" && typeof word === "string" && /^[a-z0-9-]+$/.test(word)
       && haystack.toLowerCase().indexOf(word) === -1) return false
   var escaped = escapeRegExp(word)
@@ -5076,7 +5044,6 @@ function directDomainScore(domains, detectedDomain) {
   return score
 }
 
-// The item's registrable name appears in the page title.
 function domainTitleScore(domains, ctx) {
   var score = 0
   for (var i = 0; i < domains.length; i++) {
@@ -5096,7 +5063,6 @@ function domainTitleScore(domains, ctx) {
   return score
 }
 
-// The item name matches a whole title segment.
 function itemNameTitleScore(nameSquashed, ctx) {
   if (nameSquashed.length < 3) return 0
   var score = 0
@@ -5112,7 +5078,6 @@ function itemNameTitleScore(nameSquashed, ctx) {
   return score
 }
 
-// Shared significant words between the item name and the title.
 function sharedTitleTokenScore(nameTokens, titleTokens) {
   var overlap = 0
   for (var i = 0; i < nameTokens.length; i++) {
@@ -5121,7 +5086,6 @@ function sharedTitleTokenScore(nameTokens, titleTokens) {
   return overlap > 0 ? 78 + Math.min(overlap, 3) * 2 : 0
 }
 
-// Native app: match the window class against the item.
 function nativeAppScore(domains, nameSquashed, ctx) {
   if (ctx.isBrowser || ctx.isTerminal || ctx.clsSquashed.length < 3) return 0
   var score = 0
@@ -5208,9 +5172,8 @@ function isLoginItem(item) {
 // highlighted row, which has the letters of runShortcut() only) or "detail"
 // (the open item, with the detail screen's letters); context.revealed says
 // whether the item's primary secret is showing, which flips Reveal to Hide.
-// Only what the item has is listed. The panel runs an action through the
-// same function its letter does; the rest (no letter) through the same call
-// as the field's copy button.
+// The panel runs an action through the same function its letter does; the rest
+// (no letter) through the same call as the field's copy button.
 function itemActions(item, context) {
   var out = []
   if (!item || typeof item !== "object") return out
@@ -5377,11 +5340,10 @@ function associationsReadCommand(slot) {
 }
 
 // The payload arrives on stdin, which the panel closes after writing
-// (stdinEnabled = false). It used to travel in an environment variable, and
-// Linux caps one at 128 KiB (MAX_ARG_STRLEN), so a store past that failed to
-// start and learning silently stopped being saved. A payload over the read
-// cap is refused rather than written truncated (which would read back as
-// no store at all).
+// (stdinEnabled = false), not in an environment variable: Linux caps one at
+// 128 KiB (MAX_ARG_STRLEN), and a store past that would fail to start. A
+// payload over the read cap is refused rather than written truncated (which
+// would read back as no store at all).
 function associationsWriteCommand(slot) {
   return privateFileWriteCommand(ASSOC_DIR, associationsFileName(slot), "associations", MAX_ASSOC_BYTES)
 }
@@ -5574,7 +5536,6 @@ function forgetAssociation(assoc, ctx, itemId) {
   return next
 }
 
-// Whether the context already resolves to this item.
 function isAssociated(assoc, ctx, itemId) {
   if (!assoc || !ctx || !itemId) return false
   var keys = contextKeys(ctx)
@@ -5927,7 +5888,6 @@ function vaultListFailureMessage(stderrText, deps, mode) {
 var SSH_AGENT_CONTROL_VERSION = 1
 var SSH_AGENT_MAX_LINE_BYTES = 64 * 1024
 
-// How long a started helper has to answer `hello`.
 var SSH_AGENT_HANDSHAKE_TIMEOUT_MS = 5000
 var SSH_AGENT_BACKOFF_BASE_MS = 500
 var SSH_AGENT_BACKOFF_MAX_MS = 30000
@@ -6581,7 +6541,6 @@ function sshAgentHelperInspectCommand(pluginDir) {
   return helperInspectCommand(pluginDir, SSH_AGENT_HELPER_SPEC)
 }
 
-// A helper's state before its inspection has run.
 function uninspectedHelper() {
   return { state: "unknown", source: "", arch: "", version: "", protocol: 0,
     checksum: "unchecked", selfTest: "", message: "" }
@@ -6610,7 +6569,6 @@ function parseHelperInspection(raw, expectedProtocol, messages) {
   return fields
 }
 
-// User-facing text for each failed inspection state of a helper.
 function helperMessages(noun, manifest, protocolMismatch) {
   var the = "The " + noun
   return {
@@ -6993,17 +6951,16 @@ var SSH_AGENT_MAX_PATH_CHARS = 512
 
 function sshAgentRequestDeadlineMs() { return SSH_AGENT_REQUEST_DEADLINE_MS }
 
-// Characters that draw as nothing or change how their neighbours are drawn:
-// C0 and C1 controls, line and paragraph separators, zero-width and direction
+// Characters that draw as nothing or change how their neighbours are drawn: C0
+// and C1 controls, line and paragraph separators, zero-width and direction
 // marks, bidi embeddings and isolates, the byte order mark, and the other
 // default-ignorable code points (soft hyphen, combining grapheme joiner,
-// Hangul and Khmer fillers, Mongolian and other variation selectors,
-// invisible operators, the specials before U+FFF9, and beyond the first plane
-// -- surrogate pairs here -- the shorthand format controls, the musical
-// symbol controls and plane 14's tags and selectors). A process path or a
-// key's name containing one can pass for something else on a prompt.
-// tests/ssh-agent-ux.test.js checks it against the engine's own
-// Default_Ignorable_Code_Point.
+// Hangul and Khmer fillers, variation selectors, invisible operators, the
+// specials before U+FFF9, and beyond the first plane -- surrogate pairs here
+// -- the shorthand format controls, the musical symbol controls and plane 14's
+// tags and selectors). A process path or a key's name containing one can pass
+// for something else on a prompt. tests/ssh-agent-ux.test.js checks it against
+// the engine's own Default_Ignorable_Code_Point.
 var SSH_AGENT_INVISIBLE_SOURCE = "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff0-\\ufff8]"
   + "|\\ud82f[\\udca0-\\udca3]|\\ud834[\\udd73-\\udd7a]|[\\udb40-\\udb43][\\udc00-\\udfff]"
 // One step of the text: an invisible character (group 1), what may be an
@@ -7081,12 +7038,10 @@ function boundedText(value, limit) {
 
 // A path cut from the left, so the end of it -- the executable -- is what
 // remains. The limit is on the escaped text, one unit of it for the "…", and
-// the cut falls between pieces. Only the end of a long path is read: every
-// unit of the text is at least one unit escaped, so what is kept comes from
-// the last `limit` units, and a text longer than that is cut for certain.
-// The window starts a longest piece earlier still, because it may open in
-// the middle of a pair or an escape; the pieces realign within that margin,
-// before anything that can be kept.
+// the cut falls between pieces. Only the last `limit` units are read (every
+// unit of the text is at least one unit escaped), plus a longest piece before
+// them, since the window may open in the middle of a pair or an escape; the
+// pieces realign within that margin.
 function boundedPath(value, limit) {
   var text = textOf(value)
   var span = limit + SSH_AGENT_MAX_PIECE + 1
@@ -7136,11 +7091,9 @@ function sshAgentRevokeGrantLine(grantId) {
 
 // "/usr/bin/ssh" -> "ssh", for display beside the full path only.
 // The name is taken from the text as it came (escaping neither adds nor
-// removes a "/"), then escaped and cut in one step. Finding its start is one
-// lastIndexOf, which reads back from the end as far as the last "/": the
-// whole text only when the name is all of it. That and the slice (no copy of
-// the text is walked here) are the only work not bounded by the limit; the
-// text itself is at most one line of the agent's protocol.
+// removes a "/"), then escaped and cut in one step. The lastIndexOf and the
+// slice are the only work not bounded by the limit; the text itself is at most
+// one line of the agent's protocol.
 function processNameFromPath(processPath) {
   var text = textOf(processPath)
   return boundedText(text.slice(text.lastIndexOf("/") + 1), SSH_AGENT_MAX_NAME_CHARS)
@@ -7257,8 +7210,7 @@ function sshAgentPromptView(message, approvalWindowSec) {
 // Desktop-notification fallback and terminal replies for approvals
 // -------------------------------------------------------------------------
 
-// How long a prompt may sit unanswered before a desktop notification repeats
-// it.
+// How long a prompt sits unanswered before a desktop notification repeats it.
 var SSH_AGENT_NOTIFY_DELAY_MS = 8000
 
 function sshAgentNotifyDelayMs() { return SSH_AGENT_NOTIFY_DELAY_MS }
@@ -7727,9 +7679,8 @@ function sshAgentFailOnExit(state, next, action, nowMs) {
   action.restartInMs = sshAgentRestartDelayMs(next.failures)
 }
 
-// The whole supervisor, as one pure transition. The panel hands in an event
-// with the current clock and gets back the next state plus the side effects to
-// perform; it never has to work out what phase means what.
+// The whole supervisor, as one pure transition: an event and the current clock
+// in, the next state and the side effects to perform out.
 function sshAgentReduce(state, event) {
   var current = state || sshAgentInitialState()
   var next = sshAgentCopyState(current)
@@ -8471,15 +8422,14 @@ function restoreGeneratorOptions(raw) {
 // and answers in ~2 ms. It runs with no session, so it holds a locked vault.
 //
 // It listens on a Unix socket in the private runtime directory (0700), not on
-// a loopback port: a port is open to every local user, who could POST
-// /unlock to guess the master password (no second factor, no lockout) and
-// read /status (the account email and user id). A logged-out `bw serve` on
-// an empty data directory would avoid holding the account at all, but bw
-// 2026.2.0 refuses to start one ("You are not logged in."), so it runs in the
-// account's own data directory and the socket's directory is what keeps
-// other users out. `unix://` hostnames are handled by bw's serve command
-// (2026.2.0); a bw that cannot bind one exits, and the panel falls back to
-// `bw generate` (generatorServeExitAction()).
+// a loopback port: a port is open to every local user, who could POST /unlock
+// to guess the master password (no second factor, no lockout) and read /status
+// (the account email and user id). bw 2026.2.0 refuses to serve logged out on
+// an empty data directory ("You are not logged in."), so it runs in the
+// account's own data directory and the socket's directory is what keeps other
+// users out. `unix://` hostnames are handled by bw's serve command (2026.2.0);
+// a bw that cannot bind one exits, and the panel falls back to `bw generate`
+// (generatorServeExitAction()).
 var GENERATE_SOCKET_NAME = "generator.sock"
 // The request line's host; the socket is what is connected to.
 var GENERATE_HOST = "localhost"
@@ -8743,10 +8693,8 @@ function sendAccessLabel(send) {
 
 // The text a kit control (Ui.Button, its tooltip) is handed for vault data.
 // Omarchy 4.0.4's kit draws those labels with Text.PlainText, so the value is
-// passed unchanged: the HTML-escaped <span> this used to return for text
-// with "<" or "&" was drawn literally ("<span ...>Bills &amp; Banking</span>").
-// The plugin's own Text elements pin PlainText too; rich-text.test.js checks
-// both.
+// passed unchanged: an HTML-escaped <span> would be drawn literally. The
+// plugin's own Text elements pin PlainText too; rich-text.test.js checks both.
 function plainLabel(value) {
   return (value === undefined || value === null) ? "" : String(value)
 }
