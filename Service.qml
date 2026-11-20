@@ -10677,10 +10677,9 @@ Item {
         if (root.sshAuthSurfaceActive && root.status === "locked") Qt.callLater(root.prepareUnlock)
         return
       }
-      // A run from before the last cancel never carried a submit.
-      var staleRun = root.unlockPrewarmStartRound !== root.unlockPrewarmRound
-      if (staleRun || !root.unlockSubmitted) {
-        root.unlockPrewarmQuit = !staleRun
+      if (!root.unlockSubmitted) {
+        // Not a quit when a cancel stopped it (a run from an earlier round).
+        root.unlockPrewarmQuit = root.unlockPrewarmStartRound === root.unlockPrewarmRound
         root.clearProcessCollectorSoon(unlockProc)
         return
       }
