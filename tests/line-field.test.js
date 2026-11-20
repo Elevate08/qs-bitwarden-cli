@@ -52,6 +52,14 @@ check("paste does not read the clipboard in-process",
 check("masked text is not published as a selection",
   /selectByMouse: !root\.password/.test(line) && /StandardKey\.SelectAll/.test(line) && /if \(root\.password && selectedText\) deselect\(\)/.test(line),
   "TextEdit copies a selection to the primary selection")
+check("a masked field's select-all is virtual",
+  /StandardKey\.SelectAll/.test(line) && /_maskedAll = root\.enabled && !root\.readOnly && store\.text\.length > 0/.test(line)
+    && /function editRange\(\)[\s\S]*?if \(!_maskedAll\)/.test(line) && /visible: root\.password && root\._maskedAll/.test(line),
+  "a real select-all would be published to the primary selection")
+check("a masked field draws its own blinking caret",
+  /id: maskedCaret/.test(line) && /root\._maskedCaretWanted && root\._blinkOn/.test(line)
+    && /Qt\.styleHints\.cursorFlashTime/.test(line) && /opacity: root\.password \? 0 : 1/.test(line),
+  "a read-only TextEdit draws no caret and keyboard selection would publish one")
 check("masked edit ranges snap to whole characters",
   /function snapIndex/.test(line) && /snapIndex\(text, from, -1\)/.test(line) && /snapIndex\(text, to, 1\)/.test(line),
   "bullets map to UTF-16 units")
@@ -89,6 +97,16 @@ function balanced(src, from) {
   }
   return src.slice(start, i + 1)
 }
+
+const submit = functionBody(line, "submit")
+check("Return and Enter both submit",
+  /Keys\.onReturnPressed: function\(event\) \{\s*event\.accepted = true\s*root\.submit\(\)/.test(line)
+    && /Keys\.onEnterPressed: function\(event\) \{\s*event\.accepted = true\s*root\.submit\(\)/.test(line),
+  "keypad Enter must do what Return does")
+check("a field's Return reaches the form around it",
+  /if \(!enabled \|\| readOnly\) return\s*accepted\(\)\s*if \(!submitsForm\) return/.test(submit)
+    && /typeof item\.submitForm === "function"/.test(submit) && /item = item\.parent/.test(submit),
+  submit || "submit() missing")
 
 const panel = read("Panel.qml")
 const formAt = panel.indexOf("id: editFormCol")

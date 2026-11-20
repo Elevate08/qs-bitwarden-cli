@@ -730,6 +730,9 @@ check("a rejected PIN keeps its reason after the PIN method is gone",
   /visible: form\.fieldsOffered && form\.method !== "pin" && form\.vault\.pinUnlockError !== ""/.test(unlockFormSrc)
     && !/form\.vault\.pinError/.test(unlockFormSrc),
   "an exhausted PIN clears itself, so the reason has to outlive it -- but a setup-form error is not that reason")
+check("a hand-picked method lasts only as long as the screen",
+  /onVisibleChanged:\s*\{[\s\S]{0,500}?if \(!form\.vault\.pinentryActive\) form\.chosen = ""/.test(unlockFormSrc),
+  "a reopened lock screen starts at the leading method again; hiding for pinentry is not a close")
 check("dismissing the popup re-points every view's secret fields at the vault",
   /function clearSshPopupUnlockState\(\)[\s\S]{0,900}?syncLoginFieldsToState\(\)/.test(panelSrc),
   "the popup clears masterPassword and pinEntry; the fields must follow them")
@@ -752,6 +755,9 @@ check("approval defaults keyboard focus to Deny",
 check("hidden panel fields cannot steal focus from the popup",
   /function focusAppropriateField\(\)[\s\S]{0,120}?if \(sshApprovalPopupOpen\) return/.test(panelSrc),
   "status and unlock handlers can focus an input in the closed panel")
+check("approval actions opt into keyboard focus",
+  (approvalSrc.match(/focusable:\s*true/g) || []).length >= 2,
+  "approval buttons cannot be reached by Tab")
 check("popup unlock is accepted while the anchored panel is closed",
   /readonly property bool sshAuthSurfaceActive:\s*opened \|\| sshApprovalPopupOpen/.test(panelSrc)
     && /function prepareUnlock\(\)[\s\S]{0,180}?!sshAuthSurfaceActive/.test(panelSrc),
