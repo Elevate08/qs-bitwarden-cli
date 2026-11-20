@@ -6747,65 +6747,42 @@ Item {
         return
       }
       // A stored secret the vault rejects: say which method went stale.
-      if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
-        // Changed elsewhere: keep the method and remember the old password so
-        // the next typed unlock re-seals the envelope.
-        pendingUnlockFrom = ""
-        fingerprintFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        fingerprintMessage = "Your master password was changed. Unlock with the new one once; fingerprint unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fingerprint") {
-        pendingUnlockFrom = ""
-        requestMasterCredentialClear()
-        fingerprintStored = false
-        fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fido" && fidoFromEnvelope) {
-        // Changed elsewhere, as for fingerprint.
-        pendingUnlockFrom = ""
-        fidoFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        fidoUnlocker.failure = "Your master password was changed. Unlock with the new one once; FIDO2 unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "fido") {
-        pendingUnlockFrom = ""
-        fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "pin" && pinFromEnvelope) {
-        // Changed elsewhere, as for fingerprint.
-        pendingUnlockFrom = ""
-        pinFromEnvelope = false
-        rotationOldPassword = pendingUnlockPassword
-        pendingUnlockPassword = ""
-        pinUnlockError = "Your master password was changed. Unlock with the new one once; PIN unlock will follow it."
-        errorMessage = ""
-        focusAppropriateField()
-        Qt.callLater(prepareUnlock)
-        return
-      }
-      if (pendingUnlockFrom === "pin") {
-        pendingUnlockFrom = ""
-        clearPin()
-        pinUnlockError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
+      if (pendingUnlockFrom === "fingerprint" || pendingUnlockFrom === "fido" || pendingUnlockFrom === "pin") {
+        if (pendingUnlockFrom === "fingerprint" && fingerprintFromEnvelope) {
+          // Changed elsewhere: keep the method and remember the old password so
+          // the next typed unlock re-seals the envelope.
+          pendingUnlockFrom = ""
+          fingerprintFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          fingerprintMessage = "Your master password was changed. Unlock with the new one once; fingerprint unlock will follow it."
+        } else if (pendingUnlockFrom === "fingerprint") {
+          pendingUnlockFrom = ""
+          requestMasterCredentialClear()
+          fingerprintStored = false
+          fingerprintMessage = "Stored password no longer valid. Unlock with your master password to re-enable fingerprint unlock."
+        } else if (pendingUnlockFrom === "fido" && fidoFromEnvelope) {
+          // Changed elsewhere, as for fingerprint.
+          pendingUnlockFrom = ""
+          fidoFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          fidoUnlocker.failure = "Your master password was changed. Unlock with the new one once; FIDO2 unlock will follow it."
+        } else if (pendingUnlockFrom === "fido") {
+          pendingUnlockFrom = ""
+          fidoUnlocker.forget("Stored password no longer valid. Unlock with your master password to re-enable FIDO2 unlock.", false)
+        } else if (pendingUnlockFrom === "pin" && pinFromEnvelope) {
+          // Changed elsewhere, as for fingerprint.
+          pendingUnlockFrom = ""
+          pinFromEnvelope = false
+          rotationOldPassword = pendingUnlockPassword
+          pendingUnlockPassword = ""
+          pinUnlockError = "Your master password was changed. Unlock with the new one once; PIN unlock will follow it."
+        } else if (pendingUnlockFrom === "pin") {
+          pendingUnlockFrom = ""
+          clearPin()
+          pinUnlockError = "Your master password changed, so the PIN no longer works. Unlock with your password and set a new PIN."
+        }
         errorMessage = ""
         focusAppropriateField()
         Qt.callLater(prepareUnlock)
