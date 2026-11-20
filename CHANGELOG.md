@@ -323,20 +323,6 @@
 
 ### Fixed
 
-- **A Deny pressed as the vault opens reaches its SSH request.** A request
-  held for an unlock gets a new number once the keys are loaded; the helper
-  now names the request the new number belongs to and answers to the old one
-  until the panel has it, so the answer is no longer lost and the request no
-  longer shown a second time.
-- **A key load no longer fails an SSH request that is waiting.** A request
-  waiting for your answer when the list is re-read, or arriving during the
-  read, waits through it and is signed afterwards if its key is still there.
-- **A failed key load no longer empties the SSH agent.** The keys in service
-  stay loaded: in service when only the key batch was bad, and set aside
-  (signing nothing) when the vault read itself failed, until the panel's
-  retry of the read succeeds; they are dropped only if that fails too. A
-  lock, a logout or an account switch still drops every key at once. See
-  [Key loads, requests and locks](docs/ssh-agent.md#key-loads-requests-and-locks).
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.

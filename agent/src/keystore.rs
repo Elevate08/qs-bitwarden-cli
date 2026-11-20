@@ -244,7 +244,9 @@ impl KeyStore {
             seen_items: 0,
             failed: false,
             public: Vec::new(),
-            private: Vec::new(),
+            // Room for every key a load may hold, so adding one never moves
+            // the others out of an allocation freed without wiping them.
+            private: Vec::with_capacity(MAX_KEYS),
             skipped: Vec::new(),
         })
     }

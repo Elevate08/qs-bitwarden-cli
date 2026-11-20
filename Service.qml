@@ -2528,10 +2528,6 @@ Item {
   property string sshAgentPhase: "disabled"
   property bool sshAgentGateOpen: false
   property string sshAgentVersion: ""
-  // The running helper sets its keys aside on a failed key load and is told
-  // what becomes of them (settleSshAgentKeysAside()); false with none
-  // running, and with one from before that.
-  property bool sshAgentSetsKeysAside: false
   property string sshAgentErrorCode: ""
 
   function applySshAgentEvent(event) {
@@ -2540,7 +2536,6 @@ Item {
     root.sshAgentPhase = step.state.phase
     root.sshAgentGateOpen = step.state.gateOpen
     root.sshAgentVersion = step.state.agentVersion
-    root.sshAgentSetsKeysAside = step.state.gateOpen && Model.sshAgentSetsKeysAside(step.state.features)
     root.sshAgentErrorCode = step.state.errorCode
 
     // State is committed first: stopping the Process can re-enter with the
@@ -3055,12 +3050,6 @@ Item {
     return "unknown"
   }
 
-  // A request held for an unlock comes back, once the keys are loaded, as an
-  // approval_required under a new id. The helper says which request it is
-  // (`promotedFrom`: the id the unlock prompt had), and answers to that id
-  // until then, so the card the promotion put up is the request's own by its
-  // number. The three properties here are for a helper from before that,
-  // which names nothing: adoptSshPrompt() goes by what the request looks like.
   property var sshPromotedOldId: null
   // The unlock_required message the shown prompt was promoted from. An unlock
   // releases every held request in no fixed order, so the first approval_required
@@ -3076,20 +3065,15 @@ Item {
     // Only the card the promotion put up: once that one was answered and
     // another request is shown, an adoption would hand this request's id to
     // the other's card.
-    var named = typeof message.promotedFrom === "number"
-    var same = named
-      ? message.promotedFrom > 0 && root.sshPrompt && root.sshPrompt.requestId === message.promotedFrom
-      : root.sshPromotedOldId !== null && root.sshPrompt
+    if (root.sshPromotedOldId !== null && root.sshPrompt
         && root.sshPrompt.requestId === root.sshPromotedOldId
-        && Model.sshAgentSameRequest(root.sshPromotedRaw, message)
-    if (same) {
+        && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
       // A notification already up was shown for this request under its old
       // id: its Deny stays this request's, and no other's. Where this may be
-      // another request that looks the same (the helper did not name it),
-      // the notification is nobody's: its Deny does nothing, and the card is
-      // answered on the card.
+      // another request that looks the same, the notification is nobody's:
+      // its Deny does nothing, and the card is answered on the card.
       if (root.sshNotifyRequestId === root.sshPrompt.requestId) {
-        root.sshNotifyRequestId = !named && root.sshPromotedAmbiguous ? -1 : message.requestId
+        root.sshNotifyRequestId = root.sshPromotedAmbiguous ? -1 : message.requestId
       }
       root.sshPrompt.requestId = message.requestId
       root.sshPromptRaw = message
@@ -3138,9 +3122,7 @@ Item {
     }
     if (message.type === "request_cancelled") {
       // The request was cancelled by the client, timed out, released on
-      // unlock, or answered ("granted"): by a grant the user just approved,
-      // or by this panel under the id its unlock prompt had while its
-      // approval_required was still on the way here.
+      // unlock, or answered by a grant the user just approved ("granted").
       var live = root.sshPrompt || root.sshUnlockRequest
       if (live && live.requestId === message.requestId) {
         if (message.reason === "granted") {
@@ -3192,9 +3174,8 @@ Item {
       return
     }
     if (message.type === "load_failed") {
-      // The helper keeps serving, with the keys it had before the load (one
-      // from before 2.0: with none), unlike `locked`, the vault_locked ack.
-      // Ignore failures of older loads.
+      // The helper dropped its private keys but keeps serving (unlike
+      // `locked`, the vault_locked ack). Ignore failures of older loads.
       if (message.epoch !== root.sshAgentEpoch) return
       root.sshAgentLoadFailStreak += 1
       root.sshAgentLoadedForVaultEpoch = -1
@@ -3268,19 +3249,6 @@ Item {
       sshAgentProc.write(Model.sshAgentLoadEndLine(sshAgentEpoch, ok))
     }
     primeSshAgentLoadId()
-  }
-
-  // A key load ended as failed (its read of the vault failed) leaves the
-  // helper's keys loaded but set aside, signing nothing: the session may have
-  // ended elsewhere. A read of this vault that has just succeeded without
-  // the agent branch (the retry, as a rule) shows it has not (`alive`), and
-  // they are served again; a list read that failed for good shows nothing,
-  // and they are dropped. The helper ignores either line with nothing set
-  // aside, and a lock, a logout or an account change has dropped the keys by
-  // then. A helper from before 2.0 dropped them at the failed load, and is
-  // not told.
-  function settleSshAgentKeysAside(alive) {
-    if (root.sshAgentSetsKeysAside) sshAgentWrite(Model.sshAgentKeysAsideLine(alive))
   }
 
   // Abandon the loadId and stop the read; its process group takes bw, tee and
@@ -3370,9 +3338,7 @@ Item {
     // calls back when it lands.
     if (sshAgentLoadActive || listProc.running) return
     if (sshAgentLoadedForVaultEpoch === root.vaultEpoch) return
-    // A helper from before 2.0 fails every signing request waiting for
-    // approval when a load begins: after them. (This one keeps them waiting,
-    // and waiting for it here costs nothing.)
+    // A load fails every signing request waiting for approval: after them.
     if (sshPendingCount > 0) return
     // No nonce yet: onSshAgentLoadIdRead() calls back when it is ready.
     if (!Model.isValidLoadId(sshAgentNextLoadId)) {
@@ -7387,7 +7353,6 @@ Item {
     listAgentBranchActive = false
     listReadEarly = false
     endSshAgentLoad(exitCode === 0)
-    if (exitCode === 0 && !hadAgentBranch && !vaultReadIsStale("items")) settleSshAgentKeysAside(true)
     // An answer that will not be shown (a newer read is waiting, or it is a
     // snapshot from before a save, delete or sync) gave the SSH agent this
     // vault's keys as they were a moment ago. They are kept (ending the load
@@ -7457,7 +7422,6 @@ Item {
   // A list read that failed for good, or whose commit the helper refused
   // twice: what an accepted list would have settled is given up.
   function listReadFailed(stderrText, wasEarly) {
-    settleSshAgentKeysAside(false)
     listCommitRetried = false
     isLoading = false
     isSyncing = false

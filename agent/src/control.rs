@@ -53,17 +53,6 @@ pub enum ControlMessage {
         #[serde(rename = "unlockOnDemand")]
         unlock_on_demand: bool,
     },
-    /// The panel has just read the vault of the session whose keys a failed
-    /// `key_load_end` set aside: they are served again. Sent only to a helper
-    /// whose `ready` lists `keys-aside`, as is `keys_drop`.
-    KeysResume {
-        v: u8,
-    },
-    /// The panel's retry of the failed read failed too, so nothing shows
-    /// that session is still open: keys set aside are dropped.
-    KeysDrop {
-        v: u8,
-    },
     RevokeGrants {
         v: u8,
     },
@@ -97,8 +86,6 @@ impl ControlMessage {
         match self {
             Self::Hello { v }
             | Self::VaultLoggedOut { v }
-            | Self::KeysResume { v }
-            | Self::KeysDrop { v }
             | Self::RevokeGrants { v }
             | Self::Shutdown { v } => *v,
             Self::KeyLoadBegin { v, .. }
