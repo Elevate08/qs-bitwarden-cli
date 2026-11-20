@@ -570,8 +570,10 @@ check("grants are tracked from the companion",
   /message\.type === "grants_changed"/.test(panelSrc), "grants_changed is ignored")
 
 check("the card's approve and deny answer the request that is shown",
-  /function approveSshRequest\(grantSeconds\)[\s\S]{0,500}?sshAgentWrite\(Model\.sshAgentApproveLine\(sshPrompt\.requestId, grantSeconds\)\)/.test(panelSrc)
-    && /function denySshRequest\(\)[\s\S]{0,500}?if \(sshPrompt\) \{\s*sshAgentWrite\(Model\.sshAgentDenyLine\(sshPrompt\.requestId\)\)\s*root\.sshCooldown = Model\.sshAgentCooldownAfter\(root\.sshCooldown, "denied"/.test(panelSrc),
+  /function approveSshRequest\(grantSeconds\)[\s\S]{0,500}?sshAgentDecide\(Model\.sshAgentApproveLine\(sshPrompt\.requestId, grantSeconds\)\)/.test(panelSrc)
+    // First in the function: Deny answers the approval that is shown, not a
+    // request waiting for an unlock behind it.
+    && /function denySshRequest\(\) \{\s*(?:\/\/[^\n]*\n\s*)*if \(sshPrompt\) \{\s*sshAgentDecide\(Model\.sshAgentDenyLine\(sshPrompt\.requestId\)\)\s*root\.sshCooldown = Model\.sshAgentCooldownAfter\(root\.sshCooldown, "denied"/.test(panelSrc),
   "approve or deny on the card does not reach the companion")
 check("grants can be revoked individually and together",
   /sshAgentRevokeGrantLine\(/.test(panelSrc) && /sshAgentRevokeGrantsLine\(/.test(panelSrc),
@@ -584,7 +586,7 @@ check("entering the cooldown is announced once, not on every refusal",
   /sshCooldownAnnounced/.test(panelSrc), "nothing announces the cooldown")
 
 check("a request the cooldown refuses does not feed the cooldown",
-  /!sshAgentMayPrompt\(\)\)\s*\{\s*sshAgentWrite\(Model\.sshAgentDenyLine\(message\.requestId\)\)\s*return/.test(panelSrc),
+  /!sshAgentMayPrompt\(\)\)\s*\{\s*sshAgentDecide\(Model\.sshAgentDenyLine\(message\.requestId\)\)\s*return/.test(panelSrc),
   "a suppressed request records an outcome, so a busy process can hold the cooldown open")
 // SSH_AUTH_SOCK is fixed at login, so the notice reads the routing file, not
 // the environment.

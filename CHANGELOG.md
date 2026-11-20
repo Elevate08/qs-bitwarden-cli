@@ -323,6 +323,19 @@
 
 ### Fixed
 
+- **An answer given as the vault opens reaches its SSH request.** A request
+  held for an unlock gets a new number once the keys are loaded; the helper
+  now names the request the new number belongs to and answers to the old one
+  until the panel has it, so a Deny pressed in that instant (or sent with
+  `sshReply` under the old number) is no longer lost. The request also keeps
+  the two minutes it was first given instead of starting them again.
+- **A restarted SSH agent helper cannot be answered through an old card.**
+  When the helper stops, every approval card, queued prompt and notification
+  of its requests is withdrawn, and an answer is only sent for a card the
+  running helper raised. A helper also starts numbering its requests at a
+  random value, so two runs do not share numbers. Before, Allow on a card
+  left by a helper that had exited could approve a different request of the
+  next one.
 - **Listing SSH keys is not activity.** `ssh-add -l` and ssh connections that
   only ask for identities never move the auto-lock deadline; a test now holds
   that. Approving a signature, a person's own action, does.

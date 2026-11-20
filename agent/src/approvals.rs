@@ -236,6 +236,21 @@ impl ApprovalManager {
         released
     }
 
+    /// Number requests from `first` on. A helper that starts where the one
+    /// before it did would give a new request the id of one a panel may
+    /// still be showing from that helper.
+    pub fn start_ids_at(&mut self, first: RequestId) {
+        self.next_id = first.max(1);
+    }
+
+    /// A pending request is answered no later than `deadline_ms`: one that
+    /// was held for an unlock keeps the deadline it was held under.
+    pub fn limit_deadline(&mut self, id: RequestId, deadline_ms: u64) {
+        if let Some(request) = self.pending.iter_mut().find(|request| request.id == id) {
+            request.deadline_ms = request.deadline_ms.min(deadline_ms);
+        }
+    }
+
     pub fn disconnect(&mut self, id: RequestId) {
         self.pending.retain(|request| request.id != id);
     }

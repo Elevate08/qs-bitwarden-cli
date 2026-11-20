@@ -343,7 +343,8 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
 
 {
   const service = readPluginSource("Service.qml")
-  const names = ["adoptSshPrompt", "onSshAgentMessage", "promoteUnlockToApproval"]
+  const names = ["adoptSshPrompt", "onSshAgentMessage", "promoteUnlockToApproval", "sshCurrentRequestId",
+    "sshAgentDecide", "withdrawSshCards", "dismissSshApproval"]
   const unlockMessage = (requestId, extra) => Object.assign({
     type: "unlock_required", requestId: requestId, reason: "sign", keyName: "k",
     fingerprint: "SHA256:A", pid: 10, processPath: "/usr/bin/ssh-keygen",
@@ -359,6 +360,8 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
       sshPrompt: { requestId: shown.requestId }, sshPromptQueue: [], writes: [], shownNew: [],
       sshNotifyRequestId: shown.requestId,       // its notification is up
       sshPromotedAmbiguous: false,
+      sshAgentInstance: 0, sshCardsInstance: 0, sshUnlockRequest: null, sshUnlockQueue: [], sshPromptRaw: null,
+      currentScreen: "main", opened: false, stopSshNotifyFallback() { v.sshNotifyRequestId = -1 },
       sshAgentMayPrompt() { return true },
       sshAgentWrite(line) { v.writes.push(line) },
       showSshApproval(message) { v.shownNew.push(message) }
@@ -385,6 +388,55 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
   eq("and the promotion is finished", v.sshPromotedOldId, null)
   eq("the notification shown for it is still its own, so its Deny is not dropped", v.sshNotifyRequestId, 21)
   eq("the other request stays queued", v.sshPromptQueue.length, 1)
+
+  // A helper that names the request (`promotedFrom`) is taken at its word:
+  // a twin that looks the same is another request, and the card's own is
+  // adopted whatever it looks like, its notification with it. A terminal
+  // that read the old number before the adoption still names that request,
+  // on the card or in the queue.
+  {
+    const named = makeVault({ requestId: 1, raw: a })
+    named.sshPromotedAmbiguous = true
+    named.onSshAgentMessage(Object.assign(approvalOf(20, a), { promotedFrom: 2 }))
+    named.onSshAgentMessage(Object.assign(approvalOf(21, b), { promotedFrom: 1 }))
+    eq("a named release is adopted by the id it names, and nothing else is; the old numbers still name their requests",
+      [named.sshPrompt.requestId, named.sshNotifyRequestId, named.sshPromptQueue.map(m => m.requestId).join(),
+        named.sshCurrentRequestId(1), named.sshCurrentRequestId(2), named.sshCurrentRequestId(3)].join(),
+      "21,21,20,21,20,3")
+    // An ordinary approval says `promotedFrom: 0`; 0 names no request.
+    const plain = makeVault({ requestId: 5, raw: null })
+    plain.sshPromptRaw = Object.assign(approvalOf(5, a), { promotedFrom: 0 })
+    plain.sshPromptQueue = [Object.assign(approvalOf(6, b), { promotedFrom: 0 })]
+    eq("0 is never a request's number", [plain.sshCurrentRequestId(0),
+      Function("root", "Model", "with (root) {" + functionBody(service, "replySshRequest")
+        + "\nreturn replySshRequest('0', 'allow') }")(Object.assign(plain, { sshAgentTerminalApproval: true }), Model)].join(),
+      "0,invalid")
+    check("a terminal reply is resolved to the request's current number before it is looked up",
+      /return "disabled"\s*id = sshCurrentRequestId\(id\)/.test(functionBody(service, "replySshRequest")), "")
+  }
+
+  // The helper stops, or another is ready: its numbers mean nothing to the
+  // next one, which may give the same number to a request nobody has seen.
+  // Every card, queued prompt, promotion record and notification claim goes
+  // before anything else, and an answer for a card another run raised (were
+  // one ever left) is not sent.
+  {
+    const stale = makeVault({ requestId: 1, raw: a })
+    stale.sshPromptQueue = [approvalOf(2, b)]
+    stale.sshAgentInstance = 1                   // a new helper, the card not withdrawn
+    stale.sshAgentDecide(Model.sshAgentApproveLine(1, 0))
+    const leaked = stale.writes.length
+    stale.sshAgentInstance = 0
+    stale.withdrawSshCards()
+    stale.onSshAgentMessage(approvalOf(1, b))    // the new helper's own request 1
+    stale.sshAgentDecide(Model.sshAgentDenyLine(1))
+    eq("a helper restart withdraws every card first, and only the running helper's cards are answered",
+      [leaked, stale.sshPrompt, stale.sshPromptQueue.length, stale.sshPromotedOldId, stale.sshNotifyRequestId,
+        stale.shownNew.length, stale.writes.length,
+        /onSshAgentGateOpenChanged: \{\s*(\/\/[^\n]*\n\s*)*withdrawSshCards\(\)/.test(service),
+        /sshAgentWrite\(Model\.sshAgent(Approve|Deny|UnlockCancelled)Line/.test(service)].join(),
+      "0,,0,,-1,1,1,true,false")
+  }
 
   // Two held requests that look the same; the card is promoted from one. The
   // approval that arrives may be the other's: the notification is nobody's.

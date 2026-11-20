@@ -34,6 +34,12 @@ enum Output {
         v: u8,
         #[serde(rename = "requestId")]
         request_id: u64,
+        /// The id this request's `unlock_required` had, which still answers
+        /// it once (`addressed`); 0 for a request that was never held. Always
+        /// present, so the panel can tell this helper's "none" from an older
+        /// helper's silence.
+        #[serde(rename = "promotedFrom")]
+        promoted_from: u64,
         #[serde(rename = "keyId")]
         key_id: String,
         #[serde(rename = "keyName")]
@@ -156,6 +162,9 @@ struct PendingSign {
     reply: oneshot::Sender<Vec<u8>>,
     message: Vec<u8>,
     flags: u32,
+    /// The id of the `unlock_required` this request was held under, until a
+    /// decision has been taken by it (`addressed`).
+    promoted_from: Option<RequestId>,
 }
 
 /// A signature asked for while locked, kept whole so the unlock it triggers
@@ -340,6 +349,9 @@ async fn run() -> Result<(), ()> {
     let mut control = ControlReader::new();
     let mut store = KeyStore::new();
     let mut approvals = ApprovalManager::new(rustix::process::geteuid().as_raw());
+    // Ids do not start where the helper before this one started: a panel
+    // still holding that helper's prompt cannot name a request of this one.
+    approvals.start_ids_at(first_request_id());
     let mut pending = HashMap::<RequestId, PendingSign>::new();
     let mut held = HashMap::<RequestId, HeldSign>::new();
     let mut held_identities: Option<HeldIdentities> = None;
@@ -391,6 +403,7 @@ async fn run() -> Result<(), ()> {
                             request.approved = Some(grant_seconds);
                             continue;
                         }
+                        let request_id = addressed(&mut pending, request_id, &output_tx)?;
                         let Some(sign) = pending.remove(&request_id) else { continue };
                         let response = approvals
                             .approve(request_id, grant_seconds, elapsed_ms(started))
@@ -404,6 +417,7 @@ async fn run() -> Result<(), ()> {
                         }
                     }
                     ControlMessage::Deny { request_id, .. } | ControlMessage::UnlockCancelled { request_id, .. } => {
+                        let request_id = addressed(&mut pending, request_id, &output_tx)?;
                         approvals.disconnect(request_id);
                         if let Some(sign) = pending.remove(&request_id) { let _ = sign.reply.send(protocol::failure_response()); }
                         // The panel asked, so no request_cancelled back.
@@ -698,6 +712,7 @@ fn handle_client(
                         Output::ApprovalRequired {
                             v: 1,
                             request_id: id,
+                            promoted_from: 0,
                             key_id: key.item_id.clone(),
                             key_name: protocol::visible_text(&key.name),
                             fingerprint: key.fingerprint.clone(),
@@ -717,6 +732,7 @@ fn handle_client(
                             reply: event.reply,
                             message,
                             flags,
+                            promoted_from: None,
                         },
                     );
                 }
@@ -744,7 +760,22 @@ fn release_held(
     let mut released = held.drain().collect::<Vec<_>>();
     released.sort_by_key(|(old_id, _)| *old_id);
     for (old_id, request) in released {
-        // Withdraw the unlock prompt; an approval prompt with its own id follows.
+        // Past the deadline it was held under (the tick has not come round
+        // yet): the client is answered now, and nothing is asked or signed.
+        if request.deadline_ms <= elapsed_ms(started) {
+            let _ = request.reply.send(protocol::failure_response());
+            emit(
+                output,
+                Output::RequestCancelled {
+                    v: 1,
+                    request_id: old_id,
+                    reason: "withdrawn",
+                },
+            )?;
+            continue;
+        }
+        // Withdraw the unlock prompt; an approval prompt with its own id
+        // follows, naming this one (`promotedFrom`).
         emit(
             output,
             Output::RequestCancelled {
@@ -771,12 +802,17 @@ fn release_held(
                 Ok(Submit::Granted(authorization)) => {
                     authorized_signature(store, authorization, &request.message, request.flags)
                 }
-                Ok(Submit::Pending(id)) => approvals
-                    .approve(id, grant_seconds, elapsed_ms(started))
-                    .map(|authorization| {
-                        authorized_signature(store, authorization, &request.message, request.flags)
-                    })
-                    .unwrap_or_else(|_| protocol::failure_response()),
+                Ok(Submit::Pending(id)) => approve_released(
+                    approvals,
+                    id,
+                    grant_seconds,
+                    request.deadline_ms,
+                    elapsed_ms(started),
+                )
+                .map(|authorization| {
+                    authorized_signature(store, authorization, &request.message, request.flags)
+                })
+                .unwrap_or_else(|_| protocol::failure_response()),
                 Err(_) => protocol::failure_response(),
             };
             let _ = request.reply.send(response);
@@ -809,6 +845,7 @@ fn release_held(
                     Output::ApprovalRequired {
                         v: 1,
                         request_id: id,
+                        promoted_from: old_id,
                         key_id: key.item_id.clone(),
                         key_name: protocol::visible_text(&key.name),
                         fingerprint: key.fingerprint.clone(),
@@ -824,12 +861,16 @@ fn release_held(
                         grant_offered: request.scope.grantable(),
                     },
                 )?;
+                // The approval is the same request as the unlock: its client
+                // is answered within the time it was first given.
+                approvals.limit_deadline(id, request.deadline_ms);
                 pending.insert(
                     id,
                     PendingSign {
                         reply: request.reply,
                         message: request.message,
                         flags: request.flags,
+                        promoted_from: Some(old_id),
                     },
                 );
             }
@@ -841,6 +882,64 @@ fn release_held(
     // One approved with a grant may follow another from the same program that
     // has just been queued.
     settle_granted(approvals, pending, store, started, output)
+}
+
+/// Authorize a request approved while it was held, at `now_ms`: only inside
+/// the deadline it was held under, not the fresh one its resubmission got.
+fn approve_released(
+    approvals: &mut ApprovalManager,
+    id: RequestId,
+    grant_seconds: u64,
+    deadline_ms: u64,
+    now_ms: u64,
+) -> Result<Authorization, qs_bitwarden_ssh_agent::approvals::ApprovalError> {
+    approvals.limit_deadline(id, deadline_ms);
+    approvals.approve(id, grant_seconds, now_ms)
+}
+
+/// The request a decision is for. One released from an unlock is still
+/// answered under the id its unlock prompt had, exactly once: that id is the
+/// only one the panel knows until it has read the `approval_required` that
+/// replaced it. The prompt under the new id, on its way or already up, is
+/// withdrawn as "granted", which every panel reads as answered: it closes
+/// the prompt and counts nothing toward the cooldown.
+fn addressed(
+    pending: &mut HashMap<RequestId, PendingSign>,
+    id: RequestId,
+    output: &mpsc::Sender<Output>,
+) -> Result<RequestId, ()> {
+    let Some((&current, sign)) = pending
+        .iter_mut()
+        .find(|(_, sign)| sign.promoted_from == Some(id))
+    else {
+        return Ok(id);
+    };
+    sign.promoted_from = None;
+    emit(
+        output,
+        Output::RequestCancelled {
+            v: 1,
+            request_id: current,
+            reason: "granted",
+        },
+    )?;
+    Ok(current)
+}
+
+/// Where this process starts numbering requests: a random value from the
+/// kernel (`/dev/urandom`, as the signing code reads it) in 1..=2^30. Never
+/// 0, which is "none" in `promotedFrom`, and with a billion ids to go before
+/// 2^31, the most a 32-bit signed number in the panel can hold. With no
+/// random source, 1 as before.
+const FIRST_ID_SPAN: u32 = 1 << 30;
+
+fn first_request_id() -> RequestId {
+    use std::io::Read;
+    let mut bytes = [0_u8; 4];
+    match std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes)) {
+        Ok(()) => RequestId::from(u32::from_le_bytes(bytes) & (FIRST_ID_SPAN - 1)) + 1,
+        Err(_) => 1,
+    }
 }
 
 /// Answers the queued requests a grant just opened covers, and withdraws
@@ -1358,6 +1457,140 @@ mod tests {
             assert_eq!(prompt["forwarded"], true);
             assert_eq!(prompt["grantOffered"], false);
         }
+    }
+
+    /// A request released from an unlock gets a new id, and its prompt says
+    /// which id it had. A decision sent under that one, by a panel that has
+    /// not read the new id yet, still reaches the request, once, and the
+    /// prompt under the new id is withdrawn.
+    #[test]
+    fn a_decision_under_the_unlock_id_reaches_the_released_request_once() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let blob = key.public_key().to_bytes().unwrap();
+        let mut store = KeyStore::new();
+        load_key(&mut store, &key, 1);
+        store.lock(2);
+        let mut approvals = ApprovalManager::new(1000);
+        let (mut pending, mut held) = (HashMap::new(), HashMap::new());
+        let (output, mut outputs) = mpsc::channel(8);
+        let (event, _answer) = login_event(&blob, false, vec![]);
+        handle_client(
+            event,
+            false,
+            &store,
+            &mut approvals,
+            &mut pending,
+            &mut held,
+            &mut None,
+            true,
+            Instant::now(),
+            &output,
+        )
+        .unwrap();
+        let unlock_id = next(&mut outputs)["requestId"].as_u64().unwrap();
+        load_key(&mut store, &key, 3);
+        release_held(
+            &mut held,
+            &store,
+            &mut approvals,
+            &mut pending,
+            Instant::now(),
+            &output,
+        )
+        .unwrap();
+        assert_eq!(next(&mut outputs)["reason"], "released");
+        let prompt = next(&mut outputs);
+        let approval_id = prompt["requestId"].as_u64().unwrap();
+        assert_eq!(prompt["promotedFrom"], unlock_id);
+
+        assert_eq!(
+            addressed(&mut pending, unlock_id, &output).unwrap(),
+            approval_id
+        );
+        let withdrawn = next(&mut outputs);
+        assert_eq!(withdrawn["requestId"], approval_id);
+        assert_eq!(withdrawn["reason"], "granted");
+        assert_eq!(
+            addressed(&mut pending, unlock_id, &output).unwrap(),
+            unlock_id
+        );
+        assert!(outputs.try_recv().is_err());
+    }
+
+    /// A request held for an unlock and then asked about is still the request
+    /// its client made: the approval lapses when the hold would have, and one
+    /// already past that when the keys arrive is failed, not asked or signed.
+    #[test]
+    fn a_released_request_keeps_the_deadline_it_was_held_under() {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let blob = key.public_key().to_bytes().unwrap();
+        for (deadline_ms, asked) in [(60_000, true), (0, false)] {
+            let mut store = KeyStore::new();
+            load_key(&mut store, &key, 1);
+            store.lock(2);
+            let mut approvals = ApprovalManager::new(1000);
+            let (mut pending, mut held) = (HashMap::new(), HashMap::new());
+            let (output, mut outputs) = mpsc::channel(8);
+            let (event, mut answer) = login_event(&blob, false, vec![]);
+            let now = Instant::now();
+            handle_client(
+                event,
+                false,
+                &store,
+                &mut approvals,
+                &mut pending,
+                &mut held,
+                &mut None,
+                true,
+                now,
+                &output,
+            )
+            .unwrap();
+            let unlock_id = next(&mut outputs)["requestId"].as_u64().unwrap();
+            held.get_mut(&unlock_id).unwrap().deadline_ms = deadline_ms;
+            // Approved while held, which would sign as soon as keys arrive.
+            held.get_mut(&unlock_id).unwrap().approved = (!asked).then_some(0);
+            load_key(&mut store, &key, 3);
+            release_held(
+                &mut held,
+                &store,
+                &mut approvals,
+                &mut pending,
+                now,
+                &output,
+            )
+            .unwrap();
+            if !asked {
+                assert_eq!(next(&mut outputs)["reason"], "withdrawn");
+                assert_eq!(answer.try_recv().unwrap(), protocol::failure_response());
+                assert!(outputs.try_recv().is_err());
+                continue;
+            }
+            assert_eq!(next(&mut outputs)["reason"], "released");
+            let id = next(&mut outputs)["requestId"].as_u64().unwrap();
+            approvals.expire(deadline_ms - 1);
+            assert!(approvals.is_pending(id));
+            approvals.expire(deadline_ms);
+            assert!(!approvals.is_pending(id), "asked about past its deadline");
+
+            // Approved while held: authorized inside that deadline only.
+            for (now_ms, signs) in [(deadline_ms - 1, true), (deadline_ms, false)] {
+                let scope = SignScope {
+                    kind: protocol::classify(&blob, &login(&blob), &[]).kind,
+                    forwarded: false,
+                };
+                let peer = PeerContext::new(1000, 4242, 1, "/usr/bin/ssh").unwrap();
+                let Ok(Submit::Pending(id)) = approvals.submit(3, &blob, peer, scope, 0) else {
+                    panic!("no grant is open");
+                };
+                let authorized = approve_released(&mut approvals, id, 0, deadline_ms, now_ms);
+                assert_eq!(authorized.is_ok(), signs);
+            }
+        }
+        let first = (0..64).map(|_| first_request_id());
+        assert!(first.into_iter().all(|id| (1..=1 << 30).contains(&id)));
     }
 
     /// An identity listing's unlock prompt has no server, so nothing claimed.
