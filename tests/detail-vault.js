@@ -45,7 +45,7 @@ function makeVault(items, fallback) {
     detailItem: null, detailPassword: "", liveTotp: "", revealedFields: {}, errorMessage: "", isLoading: false,
     showDeleteConfirm: false, attachmentQueue: [], attachmentSaved: {},
     totpFollowupActive: false, totpFollowupItem: null, totpFollowupCode: "", totpCopyItemId: "",
-    totpRequestItemId: "", totpQueuedItemId: "", totpQueuedEpoch: -1, totpRestartPending: false, totpAfterSettle: false,
+    totpRequestItemId: "", totpQueuedItemId: "", totpQueuedEpoch: -1, totpRestartPending: false,
     getTotpProc: { running: false }, getItemProc: { running: false, command: [] },
     readEpochs: {}, queuedReads: {}, vaultChanges: 0, listReadChanges: 0, listRereadOwed: false,
     createdItemHandoff: null, screenBeforeSshApproval: "main", pendingDelete: null, itemPayloadJson: "",

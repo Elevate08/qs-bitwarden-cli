@@ -329,8 +329,6 @@
   does not when a PIN is set: every PIN unlock then began with a whole `bw`
   start (about 0.6 s). It now starts as the panel opens, as before holding
   no secret and stopped when the panel closes.
-  Beside the list, the arrows now show each item's detail at once instead
-  of 120 ms after the cursor stops, when the detail needs no `bw` read.
 - **An answer given as the vault opens reaches its SSH request.** A request
   held for an unlock gets a new number once the keys are loaded; the helper
   now names the request the new number belongs to and answers to the old one
