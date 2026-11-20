@@ -586,6 +586,12 @@ Panel {
     fontFamily: root.fontFamily
   }
 
+  // A paragraph as wide as what it sits in, wrapped at words.
+  component PanelNote: PanelText {
+    width: parent ? parent.width : 0
+    wrapMode: Text.WordWrap
+  }
+
   // An item-form caption.
   component FormCaption: PanelText {
     color: root.dim; font.pixelSize: Style.font.caption; font.bold: true
@@ -1392,13 +1398,11 @@ Panel {
               }
             }
 
-            PanelText {
+            PanelNote {
               visible: root.vault.sendError !== ""
-              width: parent.width
               text: root.vault.sendError
               color: root.urgent
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             // ---------------- list ----------------
@@ -1407,13 +1411,11 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              PanelText {
+              PanelNote {
                 visible: !root.vault.sendsLoading && root.vault.sends.length === 0
-                width: parent.width
                 text: "No Sends yet. A Send shares a secret through a link that expires on its own -- useful for handing someone a credential without it living in a chat log."
                 color: root.dim
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
               PanelText {
@@ -1630,13 +1632,11 @@ Panel {
             }
           }
 
-          PanelText {
+          PanelNote {
             visible: root.vault.accountRows.length === 0
-            width: parent.width
             text: "No accounts yet. Log in to add the first one."
             color: root.dim
             font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
           }
 
           Row {
@@ -1683,12 +1683,10 @@ Panel {
               title: "Enable fingerprint unlock"
               body: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "Honest limit: with fingerprint unlock on, a program running as you while you are logged in can open the stored password without your finger. A PIN or a FIDO2 key cannot be bypassed that way."
                 color: root.urgent
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
             }
 
@@ -1710,13 +1708,11 @@ Panel {
                 enabled: !root.vault.fpBusy
               }
 
-              PanelText {
+              PanelNote {
                 visible: root.vault.fpError !== ""
-                width: parent.width
                 text: root.vault.fpError
                 color: root.urgent
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
               Row {
@@ -2097,13 +2093,11 @@ Panel {
               foreground: root.vault.pinSetupWeak ? root.urgent : root.fg
             }
 
-            PanelText {
+            PanelNote {
               visible: root.vault.pinSetupWeak
-              width: parent.width
               text: "󰀪  " + Model.pinWeakWarning(root.vault.pinSetupPin)
               color: root.urgent
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             Text { textFormat: Text.PlainText; text: "CONFIRM PIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
@@ -2118,13 +2112,11 @@ Panel {
               enabled: !root.vault.pinBusy
             }
 
-            PanelText {
+            PanelNote {
               visible: root.vault.pinError !== ""
-              width: parent.width
               text: root.vault.pinError
               color: root.urgent
               font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
             }
 
             Row {
@@ -2225,43 +2217,35 @@ Panel {
                     }
                   }
 
-                  PanelText {
-                    width: parent.width
+                  PanelNote {
                     text: modelData.purpose
                     color: root.dim
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
-                  PanelText {
+                  PanelNote {
                     visible: !!modelData.note
-                    width: parent.width
                     text: modelData.note
                     color: root.urgent
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
                   // Auto-type needs a key as well as wtype; registering one
                   // is under its setting.
-                  PanelText {
+                  PanelNote {
                     visible: depCard.modelData.key === "wtype" && root.vault.autoTypeKeybind.setupNote !== ""
-                    width: parent.width
                     text: root.vault.autoTypeKeybind.setupNote
                     color: root.vault.autoTypeKeybind.bound ? root.dim : root.urgent
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
 
                   // A setup row needs more than the package (an enrolled
                   // finger, the PAM stack); only the setup command does that.
-                  PanelText {
+                  PanelNote {
                     visible: modelData.setup && modelData.installed && !modelData.ready
-                    width: parent.width
                     text: "Reader stack is installed, but no finger is enrolled yet."
                     color: root.urgent
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
                 }
 
@@ -2498,8 +2482,7 @@ Panel {
                       font.pixelSize: Style.font.body
                     }
 
-                    PanelText {
-                      width: parent.width
+                    PanelNote {
                       // `|| ""`: also evaluated for heading rows, which have no
                       // description.
                       text: blocked
@@ -2508,7 +2491,6 @@ Panel {
                           + (root.vault.settingNote(modelData) ? "\n\n" + root.vault.settingNote(modelData) : "")
                       color: root.dim
                       font.pixelSize: Style.font.caption
-                      wrapMode: Text.WordWrap
                     }
                   }
 
@@ -2615,31 +2597,25 @@ Panel {
               width: parent.width
               spacing: Style.space(4)
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "Plugin: " + (root.vault.pluginVersionLabel || "checking...")
                 color: root.fg
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "bw CLI: " + (root.vault.dependencies && root.vault.dependencies.bwVersion
                   ? root.vault.dependencies.bwVersion : "unknown")
                 color: root.fg
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
               }
 
-              PanelText {
+              PanelNote {
                 visible: root.vault.updateAvailableVersion !== ""
-                width: parent.width
                 text: "Update available: " + root.vault.updateAvailableVersion
                 color: Color.accent
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
-                wrapMode: Text.WordWrap
               }
 
               // Without a floating terminal helper there is nothing to
@@ -2736,31 +2712,25 @@ Panel {
 
             // Must run before removal: `omarchy plugin remove` has no
             // uninstall hook.
-            PanelText {
-              width: parent.width
+            PanelNote {
               visible: root.vault.pluginDataConfirmPending
               text: "This clears the stored master password, learned suggestions and exported public keys. "
                 + "Settings and your vault are untouched. It cannot be undone."
               color: root.urgent
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
-            PanelText {
-              width: parent.width
+            PanelNote {
               visible: root.vault.pluginDataFlash !== ""
               text: root.vault.pluginDataFlash
               color: root.fg
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
-            PanelText {
-              width: parent.width
+            PanelNote {
               text: "Saved to the plugin's entry in ~/.config/omarchy/shell.json via `omarchy bar set`."
               color: root.dim
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
                     }
           }
@@ -3030,13 +3000,11 @@ Panel {
                 font.bold: true
               }
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "Bitwarden has not seen this machine before and emailed a code to "
                   + "your login address. This is asked once per device."
                 color: root.dim
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
 
               LineField {
@@ -3094,13 +3062,11 @@ Panel {
                 font.bold: true
               }
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 text: "Which one do you use for this account? Bitwarden is asked for a code "
                   + "only after you choose, and the choice is remembered for next time."
                 color: root.dim
                 font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
               }
 
               Repeater {
@@ -3118,12 +3084,10 @@ Panel {
                     onClicked: root.vault.chooseTwoFactorMethod(modelData.method)
                   }
 
-                  PanelText {
-                    width: parent.width
+                  PanelNote {
                     text: modelData.hint
                     color: root.dim
                     font.pixelSize: Style.font.caption
-                    wrapMode: Text.WordWrap
                   }
                 }
               }
@@ -4603,10 +4567,8 @@ Panel {
                 font.bold: true
               }
 
-              PanelText {
-                width: parent.width
+              PanelNote {
                 horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
                 text: "Click an item, or press e on the highlighted one, to see its details here."
                 color: root.dim
                 font.pixelSize: Style.font.caption
@@ -5176,13 +5138,11 @@ Panel {
                       width: collectionList.width - root.scrollGutter
                       spacing: Style.space(2)
 
-                      PanelText {
+                      PanelNote {
                         visible: !root.vault.formCollectionsLoading && root.vault.formCollections.length === 0
-                        width: parent.width
                         text: "No collections available in this organization."
                         color: root.dim
                         font.pixelSize: Style.font.caption
-                        wrapMode: Text.WordWrap
                       }
 
                       Repeater {
