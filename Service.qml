@@ -4334,9 +4334,11 @@ Item {
   // inside onOpenedChanged) that binding has not been evaluated again yet and
   // still reads false, which left an opened lock screen without its prewarm.
   function prepareUnlock() {
-    if ((!opened && !sshAuthSurfaceActive) || status !== "locked" || unlockProc.running || unlockPrewarmQuit) return
-    // `unlockSubmitted` is left as it is: a submit made while the last run's
-    // scrub was still going is waiting for this very process.
+    if ((!opened && !sshAuthSurfaceActive) || status !== "locked" || unlockProc.running || unlockProc.runId || unlockPrewarmQuit) return
+    // `unlockSubmitted` is left as it is: a submit made while the last run
+    // was still ending or being scrubbed is waiting for this very process.
+    // (A stopped run keeps its runId until its exit; that exit's scrub
+    // comes back here.)
     unlockPrewarmStartRound = unlockPrewarmRound
     unlockProc.command = Model.unlockPrewarmCommand()
     unlockProc.running = true
@@ -10675,8 +10677,10 @@ Item {
         if (root.sshAuthSurfaceActive && root.status === "locked") Qt.callLater(root.prepareUnlock)
         return
       }
-      if (!root.unlockSubmitted) {
-        root.unlockPrewarmQuit = root.unlockPrewarmStartRound === root.unlockPrewarmRound
+      // A run from before the last cancel never carried a submit.
+      var staleRun = root.unlockPrewarmStartRound !== root.unlockPrewarmRound
+      if (staleRun || !root.unlockSubmitted) {
+        root.unlockPrewarmQuit = !staleRun
         root.clearProcessCollectorSoon(unlockProc)
         return
       }
