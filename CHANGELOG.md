@@ -215,7 +215,9 @@
   fails, alone, if they cannot be read. The advisory
   is fixed in `rsa` 0.10.0; this release is still on 0.9, so it stays listed
   in `deny.toml` until that upgrade. Ed25519 keys never
-  had the problem. This needs the rebuilt SSH agent helper.
+  had the problem. Known limit, to be fixed later: the generator's own
+  state is not wiped after a signature (`rand_chacha` 0.3 has no way to),
+  only dropped. This needs the rebuilt SSH agent helper.
 - **A forwarded login's server is shown as the remote host's claim when
   that is all it is.** With agent forwarding (`ssh -A`), everything after
   your own `ssh`'s forwarding bind is written by the remote host, and it
