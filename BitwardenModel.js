@@ -7635,80 +7635,75 @@ function sshAgentFailOnExit(state, next, action, nowMs) {
 // in, the next state and the side effects to perform out.
 function sshAgentReduce(state, event) {
   var current = state || sshAgentInitialState()
-  var next = sshAgentCopyState(current)
-  var action = sshAgentNoAction()
+  var result = { state: sshAgentCopyState(current), action: sshAgentNoAction() }
   var ev = event || {}
-  var nowMs = Number(ev.nowMs) || 0
-
   if (ev.kind === "enabled") {
-    if (!ev.value) {
-      if (current.phase === "disabled") return { state: next, action: action }
-      next = sshAgentInitialState()
-      action.stop = true
-      action.cancelRestart = true
-      return { state: next, action: action }
-    }
-    // Re-enabling is the deliberate reset: it clears a crash-loop verdict and
-    // the failure history that produced it. Nothing else does, so a broken
-    // helper stays off until the user says otherwise.
-    if (current.phase !== "disabled" && current.phase !== "failed") {
-      return { state: next, action: action }
-    }
-    next = sshAgentInitialState()
-    next.phase = "starting"
-    action.start = true
-    return { state: next, action: action }
+    sshAgentSetEnabled(current, result, ev.value)
+  } else if (current.phase !== "disabled" && current.phase !== "failed") {
+    sshAgentStep(current, result.state, result.action, ev)
   }
+  return result
+}
 
-  if (current.phase === "disabled" || current.phase === "failed") {
-    return { state: next, action: action }
+function sshAgentSetEnabled(current, result, on) {
+  if (!on) {
+    if (current.phase === "disabled") return
+    result.state = sshAgentInitialState()
+    result.action.stop = true
+    result.action.cancelRestart = true
+    return
   }
+  // Re-enabling is the deliberate reset: it clears a crash-loop verdict and
+  // the failure history that produced it. Nothing else does, so a broken
+  // helper stays off until the user says otherwise.
+  if (current.phase !== "disabled" && current.phase !== "failed") return
+  result.state = sshAgentInitialState()
+  result.state.phase = "starting"
+  result.action.start = true
+}
 
+// One event of a supervisor that is on, written into `next` and `action`.
+function sshAgentStep(current, next, action, ev) {
   switch (ev.kind) {
     case "started":
-      if (current.phase !== "starting") return { state: next, action: action }
+      if (current.phase !== "starting") return
       next.phase = "handshaking"
       action.writeHello = true
-      return { state: next, action: action }
+      return
 
     case "handshakeTimeout":
-      if (current.phase !== "starting" && current.phase !== "handshaking") {
-        return { state: next, action: action }
-      }
+      if (current.phase !== "starting" && current.phase !== "handshaking") return
       sshAgentFailMidRun(next, action, "HANDSHAKE_TIMEOUT")
-      return { state: next, action: action }
+      return
 
     case "line": {
-      if (current.phase !== "handshaking" && current.phase !== "ready") {
-        return { state: next, action: action }
-      }
+      if (current.phase !== "handshaking" && current.phase !== "ready") return
       var parsed = parseAgentEvent(ev.line)
       if (!parsed.ok) {
-        if (!parsed.fatal) return { state: next, action: action }
-        sshAgentFailMidRun(next, action, parsed.code)
-        return { state: next, action: action }
+        if (parsed.fatal) sshAgentFailMidRun(next, action, parsed.code)
+        return
       }
       var isReady = parsed.message.type === "ready"
       // `ready` answers `hello` exactly once; anything out of order fails.
       if (isReady !== (current.phase === "handshaking")) {
         sshAgentFailMidRun(next, action, "PROTOCOL")
-        return { state: next, action: action }
+        return
       }
-      if (isReady) {
-        next.phase = "ready"
-        next.gateOpen = true
-        next.socketPath = parsed.message.socketPath
-        next.fifoPath = parsed.message.fifoPath
-        next.agentVersion = parsed.message.agentVersion
-        next.readyAtMs = nowMs
-        // `failures` is not reset here: only a run that lasts
-        // SSH_AGENT_HEALTHY_MS clears it, at exit.
-        next.errorCode = ""
-        next.errorMessage = ""
-        return { state: next, action: action }
+      if (!isReady) {
+        action.message = parsed.message
+        return
       }
-      action.message = parsed.message
-      return { state: next, action: action }
+      next.phase = "ready"
+      next.gateOpen = true
+      next.socketPath = parsed.message.socketPath
+      next.fifoPath = parsed.message.fifoPath
+      next.agentVersion = parsed.message.agentVersion
+      next.readyAtMs = Number(ev.nowMs) || 0
+      // `failures` is not reset here: only a run that lasts
+      // SSH_AGENT_HEALTHY_MS clears it, at exit.
+      next.errorCode = ""
+      next.errorMessage = ""
+      return
     }
 
     case "exited":
@@ -7723,19 +7718,16 @@ function sshAgentReduce(state, event) {
         next.errorCode = "ELSEWHERE"
         next.errorMessage = sshAgentErrorMessage("ELSEWHERE")
         action.restartInMs = SSH_AGENT_ELSEWHERE_RETRY_MS
-        return { state: next, action: action }
+        return
       }
-      sshAgentFailOnExit(current, next, action, nowMs)
-      return { state: next, action: action }
+      sshAgentFailOnExit(current, next, action, Number(ev.nowMs) || 0)
+      return
 
     case "restartTimer":
-      if (current.phase !== "backoff" && current.phase !== "elsewhere") return { state: next, action: action }
+      if (current.phase !== "backoff" && current.phase !== "elsewhere") return
       next.phase = "starting"
       action.start = true
-      return { state: next, action: action }
-
-    default:
-      return { state: next, action: action }
+      return
   }
 }
 
