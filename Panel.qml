@@ -586,9 +586,16 @@ Panel {
     fontFamily: root.fontFamily
   }
 
+  // Text in the bar's font. Plain: vault values are untrusted and Text would
+  // otherwise render markup in them.
+  component PanelText: Text {
+    textFormat: Text.PlainText
+    font.family: root.fontFamily
+  }
+
   // An item-form caption.
-  component FormCaption: Text {
-    textFormat: Text.PlainText; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+  component FormCaption: PanelText {
+    color: root.dim; font.pixelSize: Style.font.caption; font.bold: true
   }
 
   // An item-form field: a caption over a LineField bound both ways by the
@@ -629,22 +636,18 @@ Panel {
     width: parent ? parent.width : 0
     spacing: Style.space(10)
 
-    Text {
-      textFormat: Text.PlainText
+    PanelText {
       anchors.verticalCenter: parent.verticalCenter
       width: parent.width - Style.space(170)
       text: numberRow.label
       color: root.fg
-      font.family: root.fontFamily
       font.pixelSize: Style.font.body
     }
-    Text {
-      textFormat: Text.PlainText
+    PanelText {
       anchors.verticalCenter: parent.verticalCenter
       visible: numberRow.note !== ""
       text: numberRow.note
       color: root.dim
-      font.family: root.fontFamily
       font.pixelSize: Style.font.caption
     }
     NumberEntry {
@@ -697,9 +700,8 @@ Panel {
         text: "󰞀"
       }
 
-      Text {
+      PanelText {
         id: shieldGlyph
-        textFormat: Text.PlainText
         // NativeRendering, like Omarchy's own glyphs; QtRendering fringed the
         // edges with colour.
         anchors.centerIn: parent
@@ -707,7 +709,6 @@ Panel {
           - (shieldGlyphMetrics.tightBoundingRect.x
             + shieldGlyphMetrics.tightBoundingRect.width / 2)
         text: "󰞀"
-        font.family: root.fontFamily
         font.pixelSize: Style.bar.iconFont
         color: root.vault.colorizeIcon ? Color.accent : (bar ? bar.barForeground : Color.foreground)
         renderType: Text.NativeRendering
@@ -729,11 +730,9 @@ Panel {
           color: bar ? bar.background : Color.background
         }
 
-        Text {
-          textFormat: Text.PlainText
+        PanelText {
           anchors.centerIn: parent
           text: "󰐕"
-          font.family: root.fontFamily
           font.pixelSize: Style.space(8)
           color: bar ? bar.urgent : Color.urgent
           renderType: Text.NativeRendering
@@ -756,11 +755,9 @@ Panel {
           color: bar ? bar.background : Color.background
         }
 
-        Text {
-          textFormat: Text.PlainText
+        PanelText {
           anchors.centerIn: parent
           text: "󰌾"
-          font.family: root.fontFamily
           font.pixelSize: Style.space(8)
           color: bar ? bar.barForeground : Color.foreground
           renderType: Text.NativeRendering
@@ -1191,12 +1188,10 @@ Panel {
             anchors.rightMargin: Style.space(10)
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               anchors.verticalCenter: parent.verticalCenter
               text: "󰄬"
               color: Color.accent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
 
@@ -1205,20 +1200,16 @@ Panel {
               width: parent.width - copyFollowupTotpBtn.width - Style.space(40)
               spacing: 1
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: "Password copied! Press Enter for TOTP"
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: root.vault.totpFollowupCode ? ("Code: " + root.vault.totpFollowupCode + " (expires in " + root.vault.totpSecRemaining + "s)") : "Fetching 2FA code..."
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
             }
@@ -1256,19 +1247,15 @@ Panel {
             anchors.centerIn: parent
             width: parent.width - Style.space(16)
             spacing: Style.space(8)
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "󰀪"
               color: Color.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
-            Text {
+            PanelText {
               id: sshDevHelperText
-              textFormat: Text.PlainText
               text: Model.sshAgentDevelopmentHelperWarning(root.vault.sshAgentHelper)
               color: root.fg
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.Wrap
               width: parent.width - Style.space(24)
@@ -1303,19 +1290,15 @@ Panel {
             anchors.centerIn: parent
             width: parent.width - Style.space(16)
             spacing: Style.space(8)
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "󰀪"
               color: Color.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
-            Text {
+            PanelText {
               id: vaultHelperText
-              textFormat: Text.PlainText
               text: root.vault.vaultHelperWarning
               color: root.fg
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.Wrap
               width: parent.width - Style.space(24)
@@ -1340,11 +1323,9 @@ Panel {
             anchors.centerIn: parent
             width: parent.width - Style.space(16)
             spacing: Style.space(8)
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "󰀪"
               color: Color.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
             Column {
@@ -1352,11 +1333,9 @@ Panel {
               width: parent.width - Style.space(24)
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: root.vault.sshCooldownStatus.message
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 wrapMode: Text.Wrap
                 width: parent.width
@@ -1435,13 +1414,11 @@ Panel {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               visible: root.vault.sendError !== ""
               width: parent.width
               text: root.vault.sendError
               color: root.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.WordWrap
             }
@@ -1452,23 +1429,19 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 visible: !root.vault.sendsLoading && root.vault.sends.length === 0
                 width: parent.width
                 text: "No Sends yet. A Send shares a secret through a link that expires on its own -- useful for handing someone a credential without it living in a chat log."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 wrapMode: Text.WordWrap
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 visible: root.vault.sendsLoading
                 text: "Loading Sends..."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
 
@@ -1497,12 +1470,10 @@ Panel {
                     anchors.margins: Style.space(8)
                     spacing: Style.space(8)
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       text: modelData.isFile ? "󰈤" : "󰈙"
                       color: Color.accent
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.subtitle
                     }
 
@@ -1511,12 +1482,10 @@ Panel {
                       width: parent.width - Style.space(110)
                       spacing: Style.space(2)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         width: parent.width
                         text: modelData.name
                         color: root.fg
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.body
                         font.bold: true
                         elide: Text.ElideRight
@@ -1525,26 +1494,20 @@ Panel {
                       Row {
                         spacing: Style.space(6)
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           text: Model.sendExpiryLabel(modelData, Date.now())
                           color: Model.sendExpiryLabel(modelData, Date.now()) === "expired" ? root.urgent : root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           text: "\u00b7 " + Model.sendAccessLabel(modelData)
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: modelData.passwordSet
                           text: "\u00b7 󰌾 password"
                           color: Color.accent
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
                       }
@@ -1691,13 +1654,11 @@ Panel {
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          PanelText {
             visible: root.vault.accountRows.length === 0
             width: parent.width
             text: "No accounts yet. Log in to add the first one."
             color: root.dim
-            font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
           }
@@ -1755,12 +1716,10 @@ Panel {
               title: "Enable fingerprint unlock"
               body: "A fingerprint proves you are present but releases no secret, so it cannot decrypt anything by itself. Your master password is already stored encrypted and sealed to this machine; enabling this adds a way for a verified fingerprint to open it."
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 width: parent.width
                 text: "Honest limit: with fingerprint unlock on, a program running as you while you are logged in can open the stored password without your finger. A PIN or a FIDO2 key cannot be bypassed that way."
                 color: root.urgent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
@@ -1784,13 +1743,11 @@ Panel {
                 enabled: !root.vault.fpBusy
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 visible: root.vault.fpError !== ""
                 width: parent.width
                 text: root.vault.fpError
                 color: root.urgent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 wrapMode: Text.WordWrap
               }
@@ -1895,13 +1852,11 @@ Panel {
                 anchors.rightMargin: Style.space(6)
                 spacing: Style.space(4)
 
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(90)
                   text: root.vault.genBusy ? "Generating..." : (root.vault.genValue || "-")
                   color: Color.accent
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.subtitle
                   font.bold: true
                   wrapMode: Text.WrapAnywhere
@@ -1938,20 +1893,16 @@ Panel {
 
               Row {
                 width: parent.width
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   text: parent.parent.strength.label
                   color: Color.accent
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   font.bold: true
                 }
                 Item { width: Style.space(6); height: 1 }
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   text: "~" + parent.parent.strength.bits + " bits of entropy"
                   color: root.dim
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
               }
@@ -2096,13 +2047,11 @@ Panel {
               Row {
                 width: parent.width
                 spacing: Style.space(10)
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(170)
                   text: "Word separator"
                   color: root.fg
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                 }
                 LineField {
@@ -2187,12 +2136,10 @@ Panel {
               enabled: !root.vault.pinBusy
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "PIN"
               // The label turns red too, visible while typing in Confirm.
               color: root.vault.pinSetupWeak ? root.urgent : root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
             }
@@ -2210,13 +2157,11 @@ Panel {
               foreground: root.vault.pinSetupWeak ? root.urgent : root.fg
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               visible: root.vault.pinSetupWeak
               width: parent.width
               text: "󰀪  " + Model.pinWeakWarning(root.vault.pinSetupPin)
               color: root.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.WordWrap
             }
@@ -2233,13 +2178,11 @@ Panel {
               enabled: !root.vault.pinBusy
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               visible: root.vault.pinError !== ""
               width: parent.width
               text: root.vault.pinError
               color: root.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.WordWrap
             }
@@ -2324,12 +2267,10 @@ Panel {
                 anchors.margins: Style.space(8)
                 spacing: Style.space(10)
 
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   anchors.verticalCenter: parent.verticalCenter
                   text: modelData.ready ? "󰄬" : (modelData.required ? "󰅖" : "󰋗")
                   color: modelData.ready ? Color.accent : (modelData.required ? root.urgent : root.dim)
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.subtitle
                 }
 
@@ -2339,67 +2280,55 @@ Panel {
 
                   Row {
                     spacing: Style.space(6)
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       text: modelData.label
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                       font.bold: true
                     }
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       text: modelData.required ? "required" : "optional"
                       color: root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     width: parent.width
                     text: modelData.purpose
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WordWrap
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     visible: !!modelData.note
                     width: parent.width
                     text: modelData.note
                     color: root.urgent
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WordWrap
                   }
 
                   // Auto-type needs a key as well as wtype; registering one
                   // is under its setting.
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     visible: depCard.modelData.key === "wtype" && root.vault.autoTypeKeybind.setupNote !== ""
                     width: parent.width
                     text: root.vault.autoTypeKeybind.setupNote
                     color: root.vault.autoTypeKeybind.bound ? root.dim : root.urgent
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WordWrap
                   }
 
                   // A setup row needs more than the package (an enrolled
                   // finger, the PAM stack); only the setup command does that.
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     visible: modelData.setup && modelData.installed && !modelData.ready
                     width: parent.width
                     text: "Reader stack is installed, but no finger is enrolled yet."
                     color: root.urgent
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WordWrap
                   }
@@ -2500,13 +2429,11 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.vault.settingsFlash !== ""
                 text: "󰄬 " + root.vault.settingsFlash
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
 
@@ -2638,17 +2565,14 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(2)
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       width: parent.width
                       text: modelData.label
                       color: blocked ? root.dim : root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                     }
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       width: parent.width
                       // `|| ""`: also evaluated for heading rows, which have no
                       // description.
@@ -2657,7 +2581,6 @@ Panel {
                         : (modelData.description || "")
                           + (root.vault.settingNote(modelData) ? "\n\n" + root.vault.settingNote(modelData) : "")
                       color: root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       wrapMode: Text.WordWrap
                     }
@@ -2698,13 +2621,11 @@ Panel {
                       }
                     }
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       visible: modelData.type === "int" && !!modelData.unit
                       text: modelData.unit || ""
                       color: root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
 
@@ -2723,12 +2644,10 @@ Panel {
                   }
                 }
 
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   visible: modelData.type === "int" && root.vault.settingValue(modelData) === 0 && !!modelData.zeroLabel
                   text: (modelData.zeroLabel || "") + " -- this is disabled."
                   color: root.urgent
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
 
@@ -2770,34 +2689,28 @@ Panel {
               width: parent.width
               spacing: Style.space(4)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 width: parent.width
                 text: "Plugin: " + (root.vault.pluginVersionLabel || "checking...")
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 wrapMode: Text.WordWrap
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 width: parent.width
                 text: "bw CLI: " + (root.vault.dependencies && root.vault.dependencies.bwVersion
                   ? root.vault.dependencies.bwVersion : "unknown")
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 wrapMode: Text.WordWrap
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 visible: root.vault.updateAvailableVersion !== ""
                 width: parent.width
                 text: "Update available: " + root.vault.updateAvailableVersion
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
                 wrapMode: Text.WordWrap
@@ -2805,13 +2718,11 @@ Panel {
 
               // Without a floating terminal helper there is nothing to
               // launch, so the command is shown to run by hand.
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 visible: root.vault.updateAvailableVersion !== "" && !root.vault.pluginUpdateCanLaunch
                 width: parent.width
                 text: "Run: " + root.vault.pluginUpdateCommandText
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WrapAnywhere
               }
@@ -2904,35 +2815,29 @@ Panel {
 
             // Must run before removal: `omarchy plugin remove` has no
             // uninstall hook.
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               width: parent.width
               visible: root.vault.pluginDataConfirmPending
               text: "This clears the stored master password, learned suggestions and exported public keys. "
                 + "Settings and your vault are untouched. It cannot be undone."
               color: root.urgent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               width: parent.width
               visible: root.vault.pluginDataFlash !== ""
               text: root.vault.pluginDataFlash
               color: root.fg
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               width: parent.width
               text: "Saved to the plugin's entry in ~/.config/omarchy/shell.json via `omarchy bar set`."
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
@@ -2950,12 +2855,10 @@ Panel {
 
           PanelSeparator { width: parent.width }
 
-          Text {
-            textFormat: Text.PlainText
+          PanelText {
             width: parent.width
             text: "󰌆  An SSH key is needed"
             color: Color.accent
-            font.family: root.fontFamily
             font.pixelSize: Style.font.body
           }
 
@@ -2993,12 +2896,10 @@ Panel {
               onClicked: root.vault.denySshRequest()
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               anchors.verticalCenter: parent.verticalCenter
               text: root.vault.sshPromptRemainingSec + "s left"
               color: root.vault.sshPromptRemainingSec <= 5 ? root.urgent : root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
           }
@@ -3028,13 +2929,11 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               anchors.verticalCenter: parent.verticalCenter
               width: parent.width - accountBackBtn.width - Style.space(8)
               text: root.vault.addingAccount ? "Sign in to add another account." : "This account is signed out."
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               elide: Text.ElideRight
             }
@@ -3087,11 +2986,9 @@ Panel {
             width: parent.width
             spacing: Style.space(5)
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "SERVER REGION"
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
             }
@@ -3213,22 +3110,18 @@ Panel {
               width: parent.width
               spacing: Style.space(3)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: "NEW DEVICE VERIFICATION"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 width: parent.width
                 text: "Bitwarden has not seen this machine before and emailed a code to "
                   + "your login address. This is asked once per device."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
@@ -3284,22 +3177,18 @@ Panel {
               width: parent.width
               spacing: Style.space(6)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: "TWO-STEP METHOD"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 width: parent.width
                 text: "Which one do you use for this account? Bitwarden is asked for a code "
                   + "only after you choose, and the choice is remembered for next time."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
@@ -3320,12 +3209,10 @@ Panel {
                     onClicked: root.vault.chooseTwoFactorMethod(modelData.method)
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     width: parent.width
                     text: modelData.hint
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WordWrap
                   }
@@ -3347,13 +3234,11 @@ Panel {
               width: parent.width
               spacing: Style.space(3)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 text: root.vault.login2faMethodLabel
                   ? "TWO-STEP CODE (" + root.vault.login2faMethodLabel.toUpperCase() + ")"
                   : "TWO-STEP VERIFICATION CODE (2FA)"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
@@ -3478,13 +3363,11 @@ Panel {
           Row {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: root.vault.loginDeviceVerification
                 ? "Device verification needs a terminal:"
                 : "Prefer interactive TTY login?"
               color: root.vault.loginDeviceVerification ? Color.accent : root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: root.vault.loginDeviceVerification
               anchors.verticalCenter: parent.verticalCenter
@@ -3645,24 +3528,20 @@ Panel {
               anchors.rightMargin: Style.space(6)
               spacing: Style.space(6)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 Layout.alignment: Qt.AlignVCenter
                 text: "󰌠"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 Layout.alignment: Qt.AlignVCenter
                 Layout.fillWidth: true
                 // "Title", not "site": a page writes its own title, so this
                 // names what the title says, never a verified address.
                 text: "Matches window title: " + (root.vault.detectedContext ? root.vault.detectedContext.displayName : "active window")
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 elide: Text.ElideRight
@@ -3778,11 +3657,9 @@ Panel {
                         spacing: Style.space(4)
                         width: parent.width
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           text: itemData.name
                           color: root.fg
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.body
                           font.bold: true
                           elide: Text.ElideRight
@@ -3802,23 +3679,19 @@ Panel {
                         }
 
                         // Asks for the master password before its secrets.
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: root.asksMasterPassword(itemData)
                           text: "\u{F033E}"
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                           anchors.verticalCenter: parent.verticalCenter
                         }
 
                         // Attachments badge; names are in the detail view.
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: Boolean(itemData.hasAttachments)
                           text: "󰏢"
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                           anchors.verticalCenter: parent.verticalCenter
                         }
@@ -3828,31 +3701,25 @@ Panel {
                         spacing: Style.space(4)
                         width: parent.width
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: Boolean(itemData.isSuggested)
                           text: root.vault.learnedIds[itemData.id] ? "󰐾 Suggested" : "󰌠 Suggested"
                           color: Color.accent
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                           font.bold: true
                         }
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           visible: Boolean(itemData.organizationId)
                           text: "󰓹 Org"
                           color: Color.accent
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                           font.bold: true
                         }
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           text: itemData.subtitle || Model.itemTypeLabel(itemData.typeCode)
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                           elide: Text.ElideRight
                           // Only what it needs, so the folder tag keeps its place.
@@ -3863,16 +3730,14 @@ Panel {
                               - (rowFolderTag.visible ? Style.space(90) : 0))
                         }
 
-                        Text {
+                        PanelText {
                           id: rowFolderTag
-                          textFormat: Text.PlainText
                           // Only worth showing when it is not already implied by the filter.
                           // Not beside the detail, which names it: the pane is
                           // too narrow for it and the username both.
                           visible: Boolean(itemData.folderId) && root.vault.selectedFolder === "all" && !root.splitView
                           text: "· 󰉋 " + Model.folderName(root.vault.folders, itemData.folderId)
                           color: Qt.darker(root.dim, 1.1)
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                           elide: Text.ElideRight
                           width: Math.min(implicitWidth, Style.space(90))
@@ -3974,12 +3839,10 @@ Panel {
                   anchors.centerIn: parent
                   spacing: Style.space(6)
 
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: root.vault.isLoading && root.vault.items.length === 0 ? "󰑐" : (root.vault.items.length === 0 ? "󰞀" : "󰍡")
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.space(36)
                     RotationAnimation on rotation {
                       running: root.vault.isLoading && root.vault.items.length === 0
@@ -3990,14 +3853,12 @@ Panel {
                     }
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: root.vault.isLoading && root.vault.items.length === 0
                       ? "Loading items..."
                       : root.vault.emptyListMessage()
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
                 }
@@ -4114,11 +3975,9 @@ Panel {
                 horizontalItemAlignment: Grid.AlignHCenter
                 verticalItemAlignment: Grid.AlignVCenter
 
-                Text {
-                  textFormat: Text.PlainText
+                PanelText {
                   text: "Permanently delete this item?"
                   color: root.fg
-                  font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
                   font.bold: true
                 }
@@ -4191,11 +4050,9 @@ Panel {
                       spacing: Style.space(6)
                       width: parent.width
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         text: root.vault.detailItem ? root.vault.detailItem.name : "Loading..."
                         color: root.fg
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.title
                         font.bold: true
                         elide: Text.ElideRight
@@ -4211,41 +4068,33 @@ Panel {
                         font.pixelSize: Style.font.body
                       }
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         visible: root.asksMasterPassword(root.vault.detailItem)
                         text: "\u{F033E}"
                         color: root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.body
                       }
                     }
 
                     Row {
                       spacing: Style.space(6)
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         text: root.vault.detailItem ? Model.itemTypeLabel(root.vault.detailItem.typeCode) : ""
                         color: root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                       }
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         visible: Boolean(root.vault.detailItem && root.vault.detailItem.organizationId)
                         text: "• Shared Organization"
                         color: Color.accent
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                       }
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         visible: Boolean(root.vault.detailItem && root.vault.detailItem.folderId)
                         text: root.vault.detailItem
                           ? "• 󰉋 " + Model.folderName(root.vault.folders, root.vault.detailItem.folderId)
                           : ""
                         color: root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                       }
                     }
@@ -4264,24 +4113,20 @@ Panel {
                     radius: Style.cornerRadius
                     color: Style.hoverFillFor(root.fg, Color.accent)
                     borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
-                    Text {
+                    PanelText {
                       id: sshPublicKeyText
-                      textFormat: Text.PlainText
                       anchors.fill: parent
                       anchors.margins: Style.space(10)
                       text: root.vault.detailItem ? (root.vault.detailItem.publicKey || "No public key") : ""
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       wrapMode: Text.WrapAnywhere
                     }
                   }
-                  Text {
-                    textFormat: Text.PlainText
+                  PanelText {
                     visible: Boolean(root.vault.detailItem && root.vault.detailItem.fingerprint)
                     text: "Fingerprint: " + (root.vault.detailItem ? root.vault.detailItem.fingerprint : "")
                     color: root.dim
-                    font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     wrapMode: Text.WrapAnywhere
                   }
@@ -4318,13 +4163,11 @@ Panel {
                       anchors.leftMargin: Style.space(10)
                       anchors.rightMargin: Style.space(6)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         text: root.vault.isFieldRevealed("password")
                           ? root.vault.shownSecret("password", "") : Model.maskString(root.vault.detailPassword || "password")
                         color: root.fg
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.body
                         elide: Text.ElideRight
                         width: parent.width - passActions.width - Style.space(10)
@@ -4363,11 +4206,9 @@ Panel {
                     width: parent.width
                     PanelSectionHeader { text: "VERIFICATION CODE (TOTP)" }
                     Item { Layout.fillWidth: true }
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       text: root.vault.totpSecRemaining + "s"
                       color: Color.accent
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       font.bold: true
                       Layout.alignment: Qt.AlignVCenter
@@ -4395,15 +4236,13 @@ Panel {
                       anchors.leftMargin: Style.space(12)
                       anchors.rightMargin: Style.space(6)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         // A flagged item's code stays hidden until revealed.
                         text: root.asksMasterPassword(root.vault.detailItem) && !root.vault.isFieldRevealed("totp")
                           ? "\u2022\u2022\u2022 \u2022\u2022\u2022"
                           : (root.vault.liveTotp ? (root.vault.liveTotp.length === 6 ? root.vault.liveTotp.slice(0, 3) + " " + root.vault.liveTotp.slice(3) : root.vault.liveTotp) : "Loading...")
                         color: Color.accent
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.title
                         font.bold: true
                         font.letterSpacing: 2.0
@@ -4459,12 +4298,10 @@ Panel {
                         anchors.leftMargin: Style.space(10)
                         anchors.rightMargin: Style.space(6)
 
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           anchors.verticalCenter: parent.verticalCenter
                           text: modelData
                           color: root.fg
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                           elide: Text.ElideRight
                           width: parent.width - openUriBtn.width - Style.space(10)
@@ -4526,36 +4363,30 @@ Panel {
                         anchors.rightMargin: Style.space(6)
                         spacing: Style.space(6)
 
-                        Text {
+                        PanelText {
                           id: attachmentGlyph
-                          textFormat: Text.PlainText
                           anchors.verticalCenter: parent.verticalCenter
                           text: "󰈔"
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                         }
 
                         // The file name is vault text, so it is drawn as text.
-                        Text {
-                          textFormat: Text.PlainText
+                        PanelText {
                           anchors.verticalCenter: parent.verticalCenter
                           text: modelData.fileName
                           color: root.fg
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
                           elide: Text.ElideRight
                           width: Math.max(0, parent.width - attachmentGlyph.width
                             - attachmentStatus.width - attachmentActions.width - Style.space(34))
                         }
 
-                        Text {
+                        PanelText {
                           id: attachmentStatus
-                          textFormat: Text.PlainText
                           anchors.verticalCenter: parent.verticalCenter
                           text: busy ? "Saving..." : queued ? "Queued" : modelData.sizeName
                           color: root.dim
-                          font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
                         }
 
@@ -4632,9 +4463,8 @@ Panel {
                     color: Style.hoverFillFor(root.fg, Color.accent)
                     borderSpec: Border.controlSpec("normal", root.fg, Color.accent)
 
-                    Text {
+                    PanelText {
                       id: notesText
-                      textFormat: Text.PlainText
                       anchors.fill: parent
                       anchors.margins: Style.space(10)
                       // Notes (a Secure Note's whole content) stay hidden until
@@ -4646,7 +4476,6 @@ Panel {
                             : "Hidden. Use the eye button to show the notes.")
                           : root.vault.shownSecret("notes", ""))
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
                       wrapMode: Text.Wrap
                     }
@@ -4797,13 +4626,11 @@ Panel {
                     anchors.margins: Style.space(8)
                     spacing: Style.space(6)
 
-                    Text {
+                    PanelText {
                       id: addressText
-                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.vault.detailIdentityAddress
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                       wrapMode: Text.Wrap
                       width: parent.width - copyAddressBtn.width - Style.space(10)
@@ -4876,34 +4703,28 @@ Panel {
               width: parent.width - Style.space(24)
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: "󰞀"
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.space(40)
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: "No item selected"
                 color: root.fg
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
                 text: "Click an item, or press e on the highlighted one, to see its details here."
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
             }
@@ -4943,38 +4764,32 @@ Panel {
               height: Style.space(30)
               spacing: Style.space(8)
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.vault.openFilterGroup === "folders" ? "󰉋"
                     : root.vault.openFilterGroup === "organizations" ? "󰦑"
                     : "󰀻"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.vault.openFilterGroup === "folders" ? "FOLDERS"
                     : root.vault.openFilterGroup === "organizations" ? "ORGANIZATIONS"
                     : "TYPES"
                 color: Color.accent
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
               }
 
               Item { width: parent.width - Style.space(190); height: 1 }
 
-              Text {
-                textFormat: Text.PlainText
+              PanelText {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.vault.currentFilterOptions.length > root.vault.currentFilterVisibleRows
                 text: root.vault.currentFilterOptions.length + " total"
                 color: root.dim
-                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
             }
@@ -5043,34 +4858,28 @@ Panel {
                       anchors.rightMargin: Style.space(10)
                       spacing: Style.space(8)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.icon
                         color: modelData.active ? Color.accent : root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.body
                       }
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width - Style.space(50)
                         text: modelData.label
                         color: modelData.active ? Color.accent : root.fg
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                         font.bold: modelData.active
                         elide: Text.ElideRight
                       }
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: modelData.active
                         text: "󰄬"
                         color: Color.accent
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
                       }
                     }
@@ -5143,12 +4952,10 @@ Panel {
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          PanelText {
             width: parent.width
             text: root.vault.detailItem ? "Password history: " + root.vault.detailItem.name : "Password history"
             color: root.fg
-            font.family: root.fontFamily
             font.pixelSize: Style.font.body
             font.bold: true
             elide: Text.ElideRight
@@ -5186,13 +4993,11 @@ Panel {
                     anchors.leftMargin: Style.space(10)
                     anchors.rightMargin: Style.space(6)
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.vault.isFieldRevealed(historyEntry.revealKey)
                         ? root.vault.shownSecret(historyEntry.revealKey, "") : Model.maskString(historyEntry.modelData.password || "password")
                       color: root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.body
                       elide: Text.ElideRight
                       width: parent.width - historyActions.width - Style.space(10)
@@ -5246,12 +5051,10 @@ Panel {
 
             Item { Layout.fillWidth: true }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               Layout.alignment: Qt.AlignVCenter
               text: root.vault.formIsEditing ? "Edit Item" : "New Vault Item"
               color: root.fg
-              font.family: root.fontFamily
               font.pixelSize: Style.font.title
               font.bold: true
             }
@@ -5498,23 +5301,19 @@ Panel {
                   Row {
                     width: parent.width
                     spacing: Style.space(6)
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       text: "COLLECTIONS"
                       color: root.vault.formCollectionIds.length === 0 ? root.urgent : root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       font.bold: true
                     }
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       text: root.vault.formCollectionsLoading
                         ? "loading..."
                         : (root.vault.formCollectionIds.length === 0
                             ? "pick at least one"
                             : root.vault.formCollectionIds.length + " selected")
                       color: root.vault.formCollectionIds.length === 0 ? root.urgent : root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
                   }
@@ -5537,13 +5336,11 @@ Panel {
                       width: collectionList.width - root.scrollGutter
                       spacing: Style.space(2)
 
-                      Text {
-                        textFormat: Text.PlainText
+                      PanelText {
                         visible: !root.vault.formCollectionsLoading && root.vault.formCollections.length === 0
                         width: parent.width
                         text: "No collections available in this organization."
                         color: root.dim
-                        font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                         wrapMode: Text.WordWrap
                       }
@@ -5982,11 +5779,9 @@ Panel {
             width: parent.width - Style.space(24)
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               text: "\u{F0AE7}  Actions"
               color: Color.accent
-              font.family: root.fontFamily
               font.pixelSize: Style.font.body
               font.bold: true
             }
@@ -6007,13 +5802,11 @@ Panel {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               visible: actionPalette.actions.length === 0
               width: parent.width
               text: actionPalette.all.length === 0 ? "This item has no actions." : "No matching action."
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
             }
 
@@ -6059,8 +5852,7 @@ Panel {
                       onClicked: actionPalette.runAt(index)
                     }
 
-                    Text {
-                      textFormat: Text.PlainText
+                    PanelText {
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.left: parent.left
                       anchors.leftMargin: Style.space(10)
@@ -6068,21 +5860,18 @@ Panel {
                       anchors.rightMargin: Style.space(8)
                       text: modelData.label
                       color: cursored ? Color.accent : root.fg
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
                       font.bold: cursored
                       elide: Text.ElideRight
                     }
 
-                    Text {
+                    PanelText {
                       id: keyHint
-                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.right: parent.right
                       anchors.rightMargin: Style.space(10)
                       text: modelData.key
                       color: root.dim
-                      font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                     }
                   }
@@ -6090,12 +5879,10 @@ Panel {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            PanelText {
               width: parent.width
               text: "Enter runs  ·  ↑↓ moves  ·  Esc closes"
               color: root.dim
-              font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
           }
