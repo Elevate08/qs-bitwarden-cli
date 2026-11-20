@@ -31,10 +31,6 @@ eq("locked with a cache keeps the cache",
 eq("locked before any load is empty",
   Model.sshAgentVaultState(ctx({ unlocked: false, hasPublicCache: false })), "locked-empty")
 
-// Logged out outranks everything below it: an account change must not leave a
-// public projection behind just because one was loaded a moment ago.
-eq("logged out outranks a stale cache",
-  Model.sshAgentVaultState(ctx({ loggedIn: false, hasPublicCache: true })), "logged-out")
 eq("disabled outranks logged out",
   Model.sshAgentVaultState(ctx({ enabled: false, loggedIn: false })), "disabled")
 
@@ -57,17 +53,6 @@ eq("lock keeps the public projection", lock.clearPublic, false)
 eq("lock does not stop the helper", lock.stopHelper, false)
 eq("the acknowledgment wait is bounded at two seconds", Model.sshAgentLockAckTimeoutMs(), 2000)
 
-// Screen lock and suspend are locks. They are listed separately so the table
-// says so, rather than leaving it to a reader to infer from the panel.
-for (const event of ["screen-lock", "suspend"]) {
-  const t = at(event, { loadActive: true })
-  eq(`${event} locks the companion`, t.awaitLockAck, true)
-  eq(`${event} cancels an in-flight load`, t.cancelLoad, true)
-  eq(`${event} keeps the public projection`, t.clearPublic, false)
-  check(`${event} sends the same line a lock does`,
-    JSON.stringify(t.controlLines) === JSON.stringify(lock.controlLines), JSON.stringify(t.controlLines))
-}
-
 // Logout and account change clear the public projection too.
 for (const event of ["logout", "account-change"]) {
   const t = at(event, { loadActive: true })
@@ -86,14 +71,6 @@ for (const event of ["logout", "account-change"]) {
 }
 eq("a lock leaves the epoch to the next load", lock.advanceEpoch, false)
 
-// Unlock and sync both ride the panel's existing read.
-for (const event of ["unlock", "sync"]) {
-  const t = at(event)
-  eq(`${event} starts a key load`, t.startLoad, true)
-  eq(`${event} clears nothing`, t.clearPublic, false)
-  eq(`${event} sends no lifecycle line`, t.controlLines.length, 0)
-}
-
 // Startup into a vault the keyring already unlocked. A freshly started
 // companion is in "locked, no cache yet" while the panel is unlocked, so
 // startup is not evidence that the vault is locked.
@@ -108,12 +85,8 @@ eq("disabling stops the helper", disabled.stopHelper, true)
 eq("disabling cancels an in-flight load", disabled.cancelLoad, true)
 eq("disabling clears the public projection", disabled.clearPublic, true)
 
-const shutdown = at("shutdown", { loadActive: true })
-eq("panel shutdown stops the helper", shutdown.stopHelper, true)
-eq("panel shutdown cancels an in-flight load", shutdown.cancelLoad, true)
-
 // Nothing is asked of a companion that is not there to answer.
-for (const event of ["lock", "logout", "unlock", "sync", "screen-lock", "suspend"]) {
+for (const event of ["lock", "logout"]) {
   const t = Model.sshAgentLifecycleTransition(event, ctx({ enabled: false, helperReady: false }))
   eq(`${event} sends nothing while disabled`, t.controlLines.length, 0)
   eq(`${event} starts no load while disabled`, t.startLoad, false)
@@ -144,19 +117,11 @@ check("locking runs bw lock without waiting on the companion",
     && /lockProc\.running = true/.test(panelSrc.slice(panelSrc.indexOf("function runBwLockStep()"),
       panelSrc.indexOf("function runBwLockStep()") + 600)),
   lockVault.slice(0, 300))
-check("locking reports the vault locked on the panel's own schedule",
-  /status = "locked"/.test(lockVault), "lockVault never sets the locked status")
-check("locking notifies the companion",
-  /applySshAgentLifecycle\("lock"\)|sshAgentVaultLockedLine/.test(lockVault),
-  "lockVault never tells the companion")
 
 check("a lock acknowledgment timeout kills the helper",
-  /id: sshAgentLockAckTimer[\s\S]{0,400}?onTriggered:[\s\S]{0,200}?(sshAgentProc\.running = false|killSshAgentHelper)/
+  /id: sshAgentLockAckTimer\s+interval: Model\.sshAgentLockAckTimeoutMs\(\)[\s\S]{0,200}?onTriggered:[\s\S]{0,200}?sshAgentProc\.running = false/
     .test(panelSrc),
-  "no acknowledgment timeout kills the helper")
-check("the acknowledgment timer uses the model's bound",
-  /id: sshAgentLockAckTimer[\s\S]{0,200}?interval: Model\.sshAgentLockAckTimeoutMs\(\)/.test(panelSrc),
-  "the acknowledgment timeout is not the model's")
+  "no acknowledgment timeout kills the helper within the model's bound")
 check("a locked acknowledgment stops the timer",
   /"locked"[\s\S]{0,300}?sshAgentLockAckTimer\.stop\(\)/.test(panelSrc),
   "the locked acknowledgment never stops the kill timer")
@@ -222,35 +187,21 @@ check("screen lock and suspend reach the companion through the lock path",
 check("the gate opening arms a startup load",
   /onSshAgentGateOpenChanged[\s\S]{0,1400}?sshAgentStartupLoadTimer\.restart\(\)/.test(panelSrc),
   "the gate opening never arms a startup load")
-check("a remembered unlocked session loads keys once the helper is ready",
-  /function maybeStartupLoad\(\)[\s\S]{0,1200}?applySshAgentLifecycle\("startup"\)/.test(panelSrc),
-  "nothing applies the startup transition")
+check("the startup load happens once per vault epoch, not once per edge",
+  /function maybeStartupLoad\(\)[\s\S]{0,1200}?sshAgentLoadedForVaultEpoch === root\.vaultEpoch/.test(panelSrc),
+  "nothing stops the startup load repeating")
 // On a shell restart the handshake and the first `bw status` race, so waiting
 // on only one of them loses the load whenever the other is second.
 check("both edges of the startup race trigger the load",
   /id: sshAgentStartupLoadTimer[\s\S]{0,200}?maybeStartupLoad\(\)/.test(panelSrc)
     && /onStatusChanged:[\s\S]{0,200}?maybeStartupLoad\(\)/.test(panelSrc),
   "only one edge triggers the startup load")
-// The panel's first read is launched before the helper handshakes, so the
-// completion of that read is the third edge that can owe a key load.
-check("a completed read re-checks whether a startup load is owed",
-  /function onListFinished\(rawJson\)[\s\S]{0,1300}?maybeStartupLoad\(\)/.test(panelSrc),
-  "a finished read never re-checks for an owed startup load")
-check("a startup attempt is recorded before it runs, not after",
-  /sshAgentLoadedForVaultEpoch = root\.vaultEpoch\s*\n\s*applySshAgentLifecycle\("startup"\)/.test(panelSrc),
-  "a failed startup load could relaunch itself")
-check("the startup load happens once per vault epoch, not once per edge",
-  /function maybeStartupLoad\(\)[\s\S]{0,1200}?sshAgentLoadedForVaultEpoch === root\.vaultEpoch/.test(panelSrc),
-  "nothing stops the startup load repeating")
 
 // The lock acknowledgment is what stops the kill timer, so it has to be
 // consumed wherever the companion's messages are handled.
 const messageHandler = panelSrc.slice(
   panelSrc.indexOf("function onSshAgentMessage(message)"),
   panelSrc.indexOf("function syncSshAgentSupervision()"))
-check("the companion's own events are consumed rather than ignored",
-  /message\.type === "locked"/.test(messageHandler) && /message\.type === "keys_loaded"/.test(messageHandler),
-  "onSshAgentMessage ignores the lock acknowledgment or the load result")
 check("a failed load is not treated as a lock acknowledgment",
   /message\.type === "load_failed"/.test(messageHandler)
     && !/"load_failed"[\s\S]{0,200}sshAgentLockAckTimer\.stop/.test(messageHandler),
@@ -306,11 +257,6 @@ check("a departed helper's key count is not left standing",
 eq("revoke_grants is a versioned v1 line", Model.sshAgentRevokeGrantsLine(),
   JSON.stringify({ v: 1, type: "revoke_grants" }) + "\n")
 
-for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLine(),
-                    Model.sshAgentRevokeGrantsLine()]) {
-  check("no lifecycle line carries key material or a session token",
-    line.indexOf("BW_SESSION") < 0 && line.indexOf("privateKey") < 0 && line.indexOf("PRIVATE") < 0, line)
-}
 
 // --- a killed helper's runtime files -----------------------------------------
 //

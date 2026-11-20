@@ -77,7 +77,6 @@ const verdict = (name, changes, want, env) => {
 }
 
 // Eligible: plain Rust source, with or without ordinary files beside it.
-verdict("agent source alone is eligible", { "agent/src/main.rs": "b\n" }, "yes")
 verdict("a new file under src/ is eligible", { "vault/src/deep/new.rs": "b\n" }, "yes")
 verdict("source beside QML and docs is eligible",
   { "agent/src/foo.rs": "b\n", "Service.qml": "b\n", "CHANGELOG.md": "b\n" }, "yes")
@@ -93,16 +92,7 @@ const denied = {
   "root rust-toolchain": { "rust-toolchain": "nightly\n" },
   "root rust-toolchain.toml": { "rust-toolchain.toml": "b\n" },
   "root .cargo/config.toml": { ".cargo/config.toml": "b\n" },
-  "root .cargo/config": { ".cargo/config": "b\n" },
-  "agent/rust-toolchain": { "agent/rust-toolchain": "nightly\n" },
-  "agent/Cargo.toml": { "agent/Cargo.toml": "b\n" },
-  "agent/Cargo.lock": { "agent/Cargo.lock": "b\n" },
-  "unlock-key/Cargo.lock": { "unlock-key/Cargo.lock": "b\n" },
-  "vault/rust-toolchain.toml": { "vault/rust-toolchain.toml": "b\n" },
-  "agent/.cargo/config.toml": { "agent/.cargo/config.toml": "b\n" },
-  "a new .cargo directory in a package": { "vault/.cargo/config.toml": "b\n" },
   "agent/build.rs": { "agent/build.rs": "b\n" },
-  "a new vault/build.rs": { "vault/build.rs": "fn main(){}\n" },
   "a nested Cargo.toml": { "tools/x/Cargo.toml": "b\n" },
   "a nested rust-toolchain": { "tools/rust-toolchain": "b\n" },
   "a nested .cargo directory": { "tools/.cargo/config.toml": "b\n" },

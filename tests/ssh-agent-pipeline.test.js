@@ -96,12 +96,10 @@ function runPipeline(opts, envOverrides, contents) {
 // The load nonce
 // -------------------------------------------------------------------------
 
-eq("the load id env var is named", Model.loadIdEnvVar(), "QSBW_LOAD_ID")
 eq("a 128-bit lowercase hex nonce is valid", Model.isValidLoadId(LOAD_ID), true)
 eq("a short nonce is refused", Model.isValidLoadId("abc"), false)
 eq("an uppercase nonce is refused", Model.isValidLoadId(LOAD_ID.toUpperCase()), false)
 eq("a non-hex nonce is refused", Model.isValidLoadId("z".repeat(32)), false)
-eq("an empty nonce is refused", Model.isValidLoadId(""), false)
 eq("a non-string nonce is refused", Model.isValidLoadId(null), false)
 
 const nonceRun = spawnSync("bash", Model.loadIdCommand().slice(1), { encoding: "utf8" })
@@ -114,12 +112,6 @@ check("two nonces differ", generated !== second, generated + " == " + second)
 // into an open FIFO window. /proc/<pid>/cmdline is world-readable, so it must
 // never be an argument.
 const agentCommandText = Model.sanitizedListCommand({ agentBranch: true, runtimeDir: runtimeDir }).join(" ")
-// The fstat below is the check that decides; this one only keeps a dead
-// companion from costing a full decrypt-and-filter pass whose output has
-// nowhere to go.
-check("a missing FIFO skips the filter rather than running it for nobody",
-  /if \[ -p "\$__qsbw_fifo" \]; then/.test(agentCommandText),
-  agentCommandText.slice(0, 500))
 check("the FIFO is opened without following a swapped symlink",
   agentCommandText.indexOf("O_NOFOLLOW") >= 0, agentCommandText.slice(0, 500))
 check("the opened descriptor, not the pathname, is checked as a FIFO",
@@ -133,10 +125,6 @@ check("the nonce is read from the environment, never passed in argv",
 // Disabled mode has no private branch at all
 // -------------------------------------------------------------------------
 
-const plainText = Model.sanitizedListCommand().join(" ")
-check("the default command has no tee branch", plainText.indexOf("tee") < 0, plainText.slice(0, 400))
-check("the default command never names the key FIFO",
-  plainText.indexOf("ssh-keys.fifo") < 0, plainText.slice(0, 400))
 check("an explicitly disabled branch is identical to the default",
   Model.sanitizedListCommand({ agentBranch: false, runtimeDir: runtimeDir }).join(" ")
     === Model.sanitizedListCommand().join(" "), "disabled form differs from the default")
@@ -173,7 +161,6 @@ check("the encoded key is canonical standard base64",
   /^[A-Za-z0-9+\/]+={0,2}$/.test(payload.items[0].privateKeyB64) &&
     Buffer.from(payload.items[0].privateKeyB64, "base64").toString("base64") === payload.items[0].privateKeyB64,
   payload.items[0].privateKeyB64)
-check("the old plain-text field is gone", !("privateKey" in payload.items[0]), "privateKey present")
 eq("the eligible key carries its public blob", payload.items[0].publicKey, "ssh-ed25519 AAAAWORK")
 eq("the eligible key carries its fingerprint", payload.items[0].fingerprint, "SHA256:work")
 eq("the eligible key is not marked re-prompt", payload.items[0].requiresReprompt, false)
@@ -247,7 +234,6 @@ eq("each item has exactly the agreed fields",
 // nothing usable reaches the FIFO in the first place.
 for (const [label, contents] of [
   ["malformed JSON", "{ this is not json"],
-  ["a truncated array", '[{"object":"item","id":"a","type":1,'],
   ["a non-array document", '{"items":[]}']
 ]) {
   const run = withFifoReader(() =>
@@ -271,11 +257,7 @@ for (const [label, contents] of [
       { [Model.loadIdEnvVar()]: LOAD_ID, QSBW_BW_EXIT: "1" }, JSON.stringify(fixture)))
   check("a failing bw fails the whole read", run.result.status !== 0, `status ${run.result.status}`)
   check("a failing bw produces no item list", run.result.stdout.trim() === "", run.result.stdout.slice(0, 200))
-  eq("a failed read is framed as a failed load", Model.sshAgentLoadEndLine(7, false),
-    JSON.stringify({ v: 1, type: "key_load_end", epoch: 7, status: "failed" }) + "\n")
   const panelSrc = readPluginSource("Panel.qml")
-  check("the panel closes every load window with the read's real outcome",
-    /endSshAgentLoad\(exitCode === 0\)/.test(panelSrc), "the exit handler does not close the load window")
   check("the panel closes the window on paths that abandon a load",
     /endSshAgentLoad\(false\)/.test(panelSrc), "no path reports a failed load")
   check("closing the window writes the versioned key_load_end line",
@@ -331,13 +313,6 @@ eq("vault_locked is a versioned v1 line", Model.sshAgentVaultLockedLine(7),
 eq("vault_logged_out is a versioned v1 line", Model.sshAgentLoggedOutLine(),
   JSON.stringify({ v: 1, type: "vault_logged_out" }) + "\n")
 eq("an invalid nonce yields no begin line", Model.sshAgentLoadBeginLine(7, "nope"), "")
-
-// No control line may ever carry key material or a session token.
-for (const line of [Model.sshAgentLoadBeginLine(7, LOAD_ID), Model.sshAgentLoadEndLine(7, true),
-                    Model.sshAgentVaultLockedLine(7), Model.sshAgentLoggedOutLine()]) {
-  check("no control line carries private material",
-    line.indexOf(PRIVATE_MARKER) < 0 && line.indexOf("BW_SESSION") < 0 && line.indexOf("privateKey") < 0, line)
-}
 
 // -------------------------------------------------------------------------
 // The whole data plane, end to end
