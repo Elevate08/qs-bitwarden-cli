@@ -4335,7 +4335,9 @@ Item {
   // still reads false, which left an opened lock screen without its prewarm.
   function prepareUnlock() {
     if ((!opened && !sshAuthSurfaceActive) || status !== "locked" || unlockProc.running || unlockPrewarmQuit) return
-    unlockSubmitted = false
+    // `unlockSubmitted` is left as it is: a submit made while the last run's
+    // scrub was still going is waiting for this very process.
+    unlockPrewarmStartRound = unlockPrewarmRound
     unlockProc.command = Model.unlockPrewarmCommand()
     unlockProc.running = true
   }
@@ -4343,14 +4345,16 @@ Item {
   // A prewarm that ended by itself before any submit (its FIFO could not be
   // made, say) is not started again by the scrub that follows it, which
   // would repeat for as long as the lock screen is up. The next submit, or
-  // whatever cancels the prewarm (a close, a lock), clears that. One stopped
-  // here is not such an end.
+  // whatever cancels the prewarm (a close, a lock), clears that. A cancel
+  // also starts a new round, so the late exit of a run it stopped, or of one
+  // from before it, is not counted as such an end.
   property bool unlockPrewarmQuit: false
-  property bool unlockPrewarmStopped: false
+  property int unlockPrewarmRound: 0
+  property int unlockPrewarmStartRound: 0
 
   function cancelAuthPrewarm() {
     unlockPrewarmQuit = false
-    if (unlockProc.running && !Model.isScrubCommand(unlockProc.command)) unlockPrewarmStopped = true
+    unlockPrewarmRound++
     authPasswordWriteTarget = ""
     authPasswordWriteValue = ""
     unlockSubmitted = false
@@ -10672,8 +10676,7 @@ Item {
         return
       }
       if (!root.unlockSubmitted) {
-        root.unlockPrewarmQuit = !root.unlockPrewarmStopped
-        root.unlockPrewarmStopped = false
+        root.unlockPrewarmQuit = root.unlockPrewarmStartRound === root.unlockPrewarmRound
         root.clearProcessCollectorSoon(unlockProc)
         return
       }

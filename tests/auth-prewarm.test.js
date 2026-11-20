@@ -251,7 +251,7 @@ const bodyOf = name => functionBody(panelSrc, name)
     secondFactorStartedAt: 0, pinentryAutoAsked: false, unlockProc: proc(), loginProc: proc(), authPasswordWriterProc: proc(),
     presenter: { focusField() {} }, fidoUnlocker: { releaseSurface() {} },
     resumeFromPinentry: () => false, pendingSecondFactorLogin: () => false,
-    unlockPrewarmQuit: false, unlockPrewarmStopped: false, unlockSubmitted: false, isUnlocking: false, errorMessage: "",
+    unlockPrewarmQuit: false, unlockPrewarmRound: 0, unlockPrewarmStartRound: 0, unlockSubmitted: false, isUnlocking: false, errorMessage: "",
     pendingUnlockPassword: "", unlockStdout: { text: "" }, unlockStderr: { text: "" }, scrubbing: false,
     Qt: { callLater(fn) { fn() } }, writeAuthPassword() {}, cancelFidoUnlock() {},
     // The scrub that follows an unsubmitted exit, and its own exit.
@@ -281,11 +281,15 @@ const bodyOf = name => functionBody(panelSrc, name)
   const afterQuit = starts.length
   v.unlockVaultWithPassword("typed")
   const onSubmit = starts.length
+  // A start that follows a scrub's end must not drop the waiting submit.
+  v.unlockProc.on = false
+  v.prepareUnlock()
+  const keptSubmit = v.unlockSubmitted === true && starts.length === 3
   v.opened = false
   v.openedChanged()
   check("a locked panel that opens starts one unlock prewarm, one that quits waits for a submit, and closing stops it",
-    prewarmed && afterQuit === 1 && onSubmit === 2 && !v.unlockProc.running && starts.length === 2,
-    `started as it opened: ${onOpen}, after it quit: ${afterQuit}, on submit: ${onSubmit}, running after close: ${v.unlockProc.running}`)
+    prewarmed && afterQuit === 1 && onSubmit === 2 && keptSubmit && !v.unlockProc.running && starts.length === 3,
+    `started as it opened: ${onOpen}, after it quit: ${afterQuit}, on submit: ${onSubmit}, submit kept: ${keptSubmit}, running after close: ${v.unlockProc.running}`)
 }
 check("submitting unlock writes to the prepared FIFO",
   /writeAuthPassword\("unlock",\s*p\)/.test(bodyOf("unlockVaultWithPassword")), bodyOf("unlockVaultWithPassword"))
