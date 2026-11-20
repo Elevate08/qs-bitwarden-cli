@@ -199,6 +199,10 @@ check("the checksum file is written relative to bin/ so sha256sum -c works there
   /listed\+=\("\$OUTPUT_ARCH\/\$name"\)/.test(script)
     && /cd "\$REPO_ROOT\/bin"/.test(writeSums) && /sha256sum "\$\{listed\[@\]\}"/.test(writeSums),
   "absolute or checkout-relative paths in SHA256SUMS would only verify here")
+check("a build replaces only its own architecture's lines in SHA256SUMS",
+  /grep -v "  \$OUTPUT_ARCH\/" "\$SUMS_FILE"/.test(writeSums) && /LC_ALL=C sort -k2/.test(writeSums)
+    && (script.match(/write_sums "\$\{listed\[@\]\}"/g) || []).length === 2,
+  "building one architecture would drop the other's checksums")
 // write_sums, run for real against a scratch bin/.
 {
   const fsx = require("fs"), osx = require("os")
@@ -442,6 +446,10 @@ check("a QML test is skipped only for a stated, detected reason",
 check("skipping every QML test fails the job",
   /every QML test was skipped, so this gate proved nothing/.test(workflow),
   "the gate could pass by running nothing at all")
+
+check("a same-repository run still fails on drift",
+  /::error::the tracked binary does not match/.test(workflow),
+  "drift is never fatal, so the comparison decides nothing")
 
 check("dependency updates are told the binary must be rebuilt",
   /needs-binary-rebuild/.test(read(".github/dependabot.yml")),

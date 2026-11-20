@@ -120,6 +120,12 @@ check("CI runs the reviewers' rebuild through the container re-exec",
     && /permissions:\n\s*contents: read/.test(reviewerJob)
     && /persist-credentials: false/.test(reviewerJob) && /timeout-minutes: \d+/.test(reviewerJob),
   "nothing in CI exercises the rebuild path REVIEWING.md tells reviewers to run")
+check("the end-to-end job retries a stalled Arch snapshot download",
+  /for attempt in 1 2 3; do\s*\n\s*pacman -Syu --noconfirm --needed --disable-download-timeout/.test(build),
+  "one slow response from archive.archlinux.org fails the whole gate")
+check("the panel tests job retries a failed apt index update",
+  /for attempt in 1 2 3; do\s*\n\s*sudo apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=3 && break/.test(build),
+  "one 429 from a runner mirror fails the whole gate")
 check("nothing publishes before those gates pass",
   /needs: gates/.test(jobs.get("verify") || "") && /needs: gates/.test(symbols)
     && /needs: \[verify, symbols, host-run\]/.test(jobs.get("release") || ""),

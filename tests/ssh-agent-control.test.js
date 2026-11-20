@@ -406,9 +406,14 @@ check("only the probe's conflict code means held",
 
 {
   const vaultSrc = readPluginSource("Panel.qml")
+  const exitHandler = vaultSrc.slice(vaultSrc.indexOf("function onSshAgentHelperExited("), vaultSrc.indexOf("function startSshAgentHelper("))
   check("the helper's exit goes through the lock probe rather than straight to the reducer",
     /id: sshAgentProc[\s\S]{0,900}onExited: function\(exitCode\) \{\s*sshAgentTerminateTimer\.stop\(\)\s*root\.onSshAgentHelperExited\(exitCode\)/.test(vaultSrc),
     "sshAgentProc.onExited must call onSshAgentHelperExited")
+  check("only an exit before the handshake is probed; anything else is reported at once",
+    /sshAgentPhase !== "starting" && root\.sshAgentPhase !== "handshaking"/.test(exitHandler)
+      && /kind: "exited", exitCode: exitCode/.test(exitHandler),
+    exitHandler)
   check("the probe's answer travels with the exit it explains",
     /id: sshAgentLockProbeProc[\s\S]{0,300}kind: "exited", exitCode: root\.sshAgentPendingExitCode,\s*lockHeld: Model\.sshAgentLockHeld\(exitCode\)/.test(vaultSrc),
     "probe exit must report lockHeld")

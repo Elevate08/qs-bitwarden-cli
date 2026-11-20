@@ -14,6 +14,9 @@ const { check, done } = createSuite("fido-unlock")
 
 // --- the probe --------------------------------------------------------------
 const probe = Fido.fidoProbeCommand()
+check("the probe is one shell invocation",
+  Array.isArray(probe) && probe[0] === "bash" && probe[1] === "-c" && probe.length === 3,
+  JSON.stringify(probe && probe.slice(0, 2)))
 const probeScript = probe[2] || ""
 check("the probe looks for libfido2's tools and a present device, and caps its own output",
   probeScript.includes("command -v fido2-assert") && probeScript.includes("command -v fido2-token")

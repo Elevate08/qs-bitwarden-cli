@@ -97,6 +97,10 @@ check("the legacy PIN migration forgets it when it ends, on every path",
     && /onDone: function\(code\) \{\s*root\.forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin"))
     && /function\(\) \{\s*root\.forgetHeldPassword\(password\)/.test(bodyOf("migrateLegacyPin")),
   bodyOf("migrateLegacyPin"))
+check("a refused unlock forgets the password, except the one kept for a re-seal",
+  /if \(!fromEnvelope\) \{\s*forgetHeldPassword\(pendingUnlockPassword\)\s*pendingUnlockPassword = ""/.test(unlockOutput)
+    && /rotationOldPassword = pendingUnlockPassword/.test(unlockOutput),
+  unlockOutput)
 check("the kept old password is forgotten when the re-seal ends",
   /var finish = function\(ok\) \{\s*root\.forgetHeldPassword\(oldPassword\)/.test(writer), writer)
 check("an unlock that returns no key, or whose password never reached bw, forgets it too",
@@ -196,6 +200,9 @@ check("PIN unlock opens the envelope when it has a PIN wrap",
 check("a wrong PIN counts against the attempts, as before",
   /code === 3\) \{\s*countWrongPin\(\)/.test(bodyOf("onEnvelopePinResult"))
     && /pinAttempts >= pinMaxAttempts\) \{[\s\S]{0,300}?clearPin\(\)/.test(bodyOf("countWrongPin")),
+  bodyOf("onEnvelopePinResult"))
+check("an envelope answer is only acted on for a live, submitted unlock",
+  /pinUnlockSubmitted && sshAuthSurfaceActive && status === "locked"/.test(bodyOf("onEnvelopePinResult")),
   bodyOf("onEnvelopePinResult"))
 check("a legacy blob's PIN is held only until that unlock settles, then migrated",
   /pendingPinForMigration = heldPin \? [^\n]*: String\(pinEntry \|\| ""\)/.test(bodyOf("onPinUnlockResult"))

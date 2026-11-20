@@ -69,5 +69,9 @@ check("the FIDO2 option is not gated on the lid",
     && /if \(name === "fido"\) return form\.vault\.fidoReady/.test(unlockForm)
     && !/fido[\s\S]{0,120}lidClosed/.test(unlockForm),
   "the FIDO2 button must stay independent of the lid")
+check("enrolment state is untouched, so the setting still reflects what is stored",
+  /property bool fingerprintStored: false/.test(service)
+    && /case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored/.test(service),
+  "the lid must not change whether a password is stored, nor what the toggle reads")
 
 done()

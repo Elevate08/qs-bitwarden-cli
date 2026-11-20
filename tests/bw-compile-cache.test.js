@@ -612,6 +612,11 @@ check("a bw that is given the master password or a login's credentials never get
 
 // The terminal hand-off: the script that runs inside the terminal.
 {
+  const cmd = Model.terminalLoginCommand("login", "https://vault.example.com", "default")
+  const outer = cmd[2]
+  check("the script the terminal runs unsets the variable itself, before any bw",
+    (outer.match(/set -u; unset NODE_COMPILE_CACHE; bw\(\) \{ command env -u NODE_COMPILE_CACHE bw "\$@"; \}; /g) || []).length === 2
+      && outer.split("bash -c ").slice(1).every(inner => inner.indexOf("unset NODE_COMPILE_CACHE; ") < inner.indexOf("bw ")), outer)
   // Run it: a launcher that, like a terminal started by the session manager,
   // gives the script an environment of its own with the variable set.
   const dir = fs.mkdtempSync(path.join(underTmp, "term-"))

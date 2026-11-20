@@ -11,7 +11,7 @@
 //
 //   node tests/reprompt-reload.test.js
 
-const { createSuite } = require("./harness")
+const { createSuite, read } = require("./harness")
 const { Model, makeVault: makeStandIn, answer, confirm } = require("./detail-vault")
 const { check, eq, done } = createSuite("reprompt-reload")
 
@@ -354,5 +354,10 @@ function makeVault(fallback) {
   v.reload(VAULT)
   check("an item that asked when it was armed stays armed", v.autoTypeArmed() && v.autoTypeItemId === "g1")
 }
+
+// --- wiring -----------------------------------------------------------------------------------
+const service = read("Service.qml")
+check("the code's refresh timer goes through totpWanted()",
+  /root\.detailItem\.hasTotp\s*&& root\.totpWanted\(root\.detailItem\)\) \{\s*root\.fetchTotp\(root\.detailItem\.id\)/.test(service))
 
 done()

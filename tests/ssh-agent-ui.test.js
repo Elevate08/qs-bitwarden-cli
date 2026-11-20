@@ -580,6 +580,8 @@ check("grants can be revoked individually and together",
 check("a locked screen or a running cooldown suppresses the prompt",
   /function sshAgentMayPrompt\(\)[\s\S]{0,200}?if \(!Model\.sshAgentShouldPrompt\([^\n]*\) return false\s+return !Model\.sshAgentCooldownActive\(root\.sshCooldown, Date\.now\(\)\)/.test(panelSrc),
   "the screen-lock rule or the cooldown is not applied")
+check("entering the cooldown is announced once, not on every refusal",
+  /sshCooldownAnnounced/.test(panelSrc), "nothing announces the cooldown")
 
 check("a request the cooldown refuses does not feed the cooldown",
   /!sshAgentMayPrompt\(\)\)\s*\{\s*sshAgentWrite\(Model\.sshAgentDenyLine\(message\.requestId\)\)\s*return/.test(panelSrc),
