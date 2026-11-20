@@ -405,8 +405,8 @@
   was recorded and drawn nowhere. It is now added to the line under **SSH
   agent status** in Settings until an export or a removal succeeds. A
   removal that could not delete a file no longer counts as one that
-  succeeded, and the message names the directory in use when
-  `XDG_DATA_HOME` puts it elsewhere.
+  succeeded, and the message names the directory the command itself
+  reports having used, which `XDG_DATA_HOME` can put elsewhere.
 - **Deny on the notification of a request that was waiting for an unlock.**
   A signing request that arrived while the vault was locked is shown on the
   card as soon as the vault opens and is given its final number when its
