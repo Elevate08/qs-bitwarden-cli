@@ -6974,8 +6974,8 @@ function parseSshExportResult(exitCode, stdout) {
   failures[SSH_EXPORT_EXIT_NO_HOME] = { code: "NO_HOME",
     message: "No data directory is set, so public key files cannot be written." }
   failures[SSH_EXPORT_EXIT_UNSAFE_DIR] = { code: "UNSAFE_DIR",
-    message: "The public key directory is not a directory this plugin will write to. "
-      + "Remove or rename whatever is in its place." }
+    message: "The public key directory, or a folder above it, is not a plain directory "
+      + "owned by you. Check that path." }
 
   return parseExitCodeResult(exitCode, stdout, function(out) {
     if (out === "exported" || out === "cleared" || out === "") {
@@ -8017,7 +8017,7 @@ var SETTINGS_SCHEMA = [
   { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
     description: "Use the active Omarchy theme accent for the primary menu-bar icon." },
   { key: "showWebsiteIcons", group: "general", type: "bool", label: "Show website icons", defaultValue: false,
-    description: "Show a login's website icon, and card brand marks, as Bitwarden does. With this on, for each login whose first URI holds a website host name, that host name is sent to the icon service when the login's icon is created for a list row or the detail header: Bitwarden's icon service for your region (icons.bitwarden.net or icons.bitwarden.eu), or your own server when self-hosted. The service so learns which sites you have saved, and a site whose icon is missing or unreadable is named in the system journal by Qt. Android and Apple app marks are built in and show either way." },
+    description: "Show a login's website icon, and card brand marks, as Bitwarden does. With this on, for each login whose first URI holds a website host name (none is sent for .onion, .i2p or non-ASCII names), that host name is sent to the icon service when its icon is shown for a list row or the detail header, or the setting is turned on: Bitwarden's icon service for your region (icons.bitwarden.net or icons.bitwarden.eu), or your own server when self-hosted. The service so learns which sites you have saved, and a site whose icon is missing or unreadable is named in the system journal by Qt. Android and Apple app marks are built in and show either way." },
   { key: "sideBySide", group: "general", type: "bool", label: "Show details beside the list", defaultValue: true,
     description: "Open items in a pane beside the vault list, as Bitwarden desktop does. Off keeps the compact panel, where an item replaces the list." },
   { key: "checkForUpdates", group: "general", type: "bool", label: "Check for updates", defaultValue: true,
