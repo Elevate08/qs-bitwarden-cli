@@ -267,6 +267,26 @@
   rebuilt vault helper (it says `staged-lists` in `--version`); with one from
   before it, or one restarted after it stopped and not checked again, the
   panel asks the old way and behaves as it did.
+- **A lock leaves less behind.** Found in a last review of what the shell
+  still holds after a lock, logout or account switch, and now dropped with
+  the rest: a save's form and a delete's row while their `bw` was still
+  running (another save or delete waits for it, as before); a legacy PIN
+  typed for an unlock the lock interrupted; the helper's last search answer,
+  and one arriving afterwards; a Send draft's name and error, a confirmed
+  re-prompt's item name, a save's or delete's error and a notice that named
+  a link or file; what a `bw status` check of a failed lock printed; and,
+  with the vault helper off, the environment (a password, the session key)
+  of every `bw` that has finished. A master password check still waiting or
+  running at the lock is cancelled, not left to finish with the password.
+  SSH approval and unlock cards and listed approvals the lock refused are
+  taken down when the agent confirms it, or stops. A Send still being made
+  or deleted at the lock no longer answers for one started after it (that
+  one waits), and a save or Send too large for the vault helper fails with
+  a reason instead of staying "Still saving" for good; a PIN or password
+  too large to send is not counted as a wrong one. And an unlock that the
+  vault helper kept no key for, because a lock overtook it, says "Unlock was
+  interrupted. Try again." where it used to show an unlocked vault that
+  could read nothing.
 
 ### Changed
 

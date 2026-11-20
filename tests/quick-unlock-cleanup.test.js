@@ -44,7 +44,7 @@ function vault() {
     quickUnlockAvailable: true, accountId: "synthetic-id", quickUnlockEnabledAt: {},
     quickUnlockEnableGraceMs: 60000, reconciledMethods: {},
     quickUnlockPurgeAttempts: {}, quickUnlockPurgePending: {}, quickUnlockPurgeMaxAttempts: 3,
-    quickUnlockPurgeFailures: {}, errorMessage: "",
+    quickUnlockPurgeFailures: {}, errorMessage: "", itemChangeError: "",
     autoSyncError: /readonly property string autoSyncError: "([^"]+)"/.exec(service)[1],
     listReadError: "",
     lastSyncAttemptAt: 0, backgroundSync: false, autoSyncReloadPending: false,
@@ -96,6 +96,18 @@ for (const [label, code, out] of [["wrong PIN", 1, ""], ["empty output", 0, ""]]
   eq(`legacy ${label}: held status is re-run`, v.statusChecks, 1)
   eq(`legacy ${label}: recheck flag cleared`, v.statusRecheckAfterUnlock, false)
   eq(`legacy ${label}: no unlock started`, v.unlocks.length, 0)
+}
+// A run the plugin did not send (too large for the vault helper) checked
+// nothing: four such PINs once removed PIN unlock.
+{
+  const refused = (legacy) => {
+    const v = vault(); let counted = 0
+    Object.assign(v, { sshAuthSurfaceActive: true, vaultRunRefusedMessage: "too large", countWrongPin() { counted++ } })
+    if (legacy) { v.pinUnlockProc.refused = true; v.onPinUnlockResult(1, "") }
+    else { v.envelopeProc.refused = true; v.onEnvelopePinResult(1, "") }
+    return counted === 0 && v.pinUnlockError === "too large" && v.unlocks.length === 0
+  }
+  check("a PIN run refused before it was sent is not counted as a wrong PIN (legacy or envelope)", refused(true) && refused(false))
 }
 {
   const v = vault()
@@ -239,6 +251,41 @@ for (const order of ["running PIN job exits first", "queued PIN job dropped last
   eq(`${order}: PIN busy cleared`, v.pinBusy, false)
   eq(`${order}: fingerprint authorization cleared`, v.fingerprintAuthorized, false)
   eq(`${order}: held status recheck ran`, v.statusChecks, 1)
+}
+// A master password check (a re-prompt's) waiting or running at a lock: its
+// password goes, its caller is told no, once, and its exit is nobody's.
+{
+  const cancelled = stage => {
+    const v = vault()
+    Object.assign(v, { status: "unlocked", forgets: 0, bwSecretEnv: env => env, beginEpochOperation() {},
+      epochOperationIsStale: () => false, storeCurrentSession() {}, forgetVault() { this.forgets++ } })
+    bind(v, service, ["verifyWithBw", "refuseVerifyJob"])
+    if (stage === "queued") v.envelopeProc.running = true // An unrelated write is in flight.
+    const answers = []
+    v.verifyWithBw("typed-master", ok => answers.push(ok))
+    const job = stage === "queued" ? v.envelopeJobs[0] : v.envelopeJob
+    if (stage === "popup") {
+      // An SSH popup answered, or the panel closed, while the vault stays
+      // open: authentication opens are given up, the check is not.
+      v.cancelEnvelopeUnlockJobs()
+      v.envelopeStdout.text = "A".repeat(88)
+      v.onEnvelopeJobExited(0)
+      return answers.join() === "true" && v.forgets === 0
+    }
+    v.dropVaultState()
+    v.status = "locked"
+    const stopped = stage === "queued" || v.envelopeProc.running === false
+    if (stage === "running") {
+      v.envelopeStdout.text = "A".repeat(88)
+      v.onEnvelopeJobExited(0)
+    }
+    return stopped && answers.join() === "false" && v.envelopeJobs.length === 0 && job.env === null
+      && !JSON.stringify(v.envelopeProc.environment || {}).includes("typed-master") && job.onDone === null
+      // The lock's own forget, and none after it from the late exit.
+      && v.forgets === 1 && v.session === ""
+  }
+  check("a lock cancels a master password check, queued or running; giving up an unlock in an open vault does not",
+    cancelled("queued") && cancelled("running") && cancelled("popup"))
 }
 for (const invalidate of ["lock", "account switch", "epoch change"]) {
   const v = vault()

@@ -81,7 +81,7 @@ function fixture() {
     autoSyncReloadPending: false, metadataLoadPending: false, metadataForceRefresh: false,
     statusRefreshAfterItems: false, sendsLoading: false, formCollectionsLoading: false,
     formCollections: [], formCollectionIds: [],
-    errorMessage: "", listReadError: "", autoSyncError: "auto", listReadMode: "", listReadEarly: false,
+    errorMessage: "", listReadError: "", itemChangeError: "", autoSyncError: "auto", listReadMode: "", listReadEarly: false,
     listAgentBranchActive: false, listRetriedWithoutAgent: false, sshCapability: "",
     sshAgentGateOpen: false, sshAgentNextLoadId: "", sshAgentEpoch: 0, sshAgentLoadId: "",
     sshAgentLoadActive: false, sshAgentLoadedForVaultEpoch: -1, sshAgentProc: { stdinEnabled: false },
@@ -531,7 +531,7 @@ const finishSave = (c, code, out) => {
   // not end it) is not the next vault's business.
   const c = saving(false)
   c.reopenAs("session-b")
-  check("premise: the old vault's save is still pending", c.pendingSave !== null && c.vaultReadIsStale("itemSave"))
+  check("premise: the old vault's save has left no form behind, and its answer will be stale", c.pendingSave === null && c.vaultReadIsStale("itemSave"))
   c.loadItems(false)
   c.exit("listProc", 0, listOf(stored("id-b", "B")), "")
   check("the next vault's list is shown, not held back for the old vault's save",

@@ -497,8 +497,9 @@ Item {
     repromptPending = true
   }
 
-  // `after(outcome)`, when given, is told "stale", "wrong" or "ok" once the
-  // password has been judged (before an accepted one's action runs).
+  // `after(outcome)`, when given, is told "stale", "wrong", "unchecked" (too
+  // large to send) or "ok" once the password has been judged (before an
+  // accepted one's action runs).
   function submitReprompt(password, after) {
     if (!repromptPending || repromptBusy) return
     var pw = String(password === undefined || password === null ? "" : password)
@@ -510,7 +511,7 @@ Item {
     repromptError = ""
     var id = repromptItemId
     var epoch = repromptEpoch
-    verifyMasterPassword(pw, function(ok) {
+    verifyMasterPassword(pw, function(ok, refused) {
       // Cancelled, replaced or locked meanwhile: nothing to run.
       if (!root.repromptPending || root.repromptItemId !== id || root.repromptEpoch !== epoch
           || root.vaultEpoch !== epoch || root.status !== "unlocked") {
@@ -520,8 +521,8 @@ Item {
       }
       root.repromptBusy = false
       if (!ok) {
-        root.repromptError = "That is not your master password."
-        if (after) after("wrong")
+        root.repromptError = refused ? root.vaultRunRefusedMessage : "That is not your master password."
+        if (after) after(refused ? "unchecked" : "wrong")
         return
       }
       if (after) after("ok")
@@ -612,22 +613,25 @@ Item {
   // answers first when quick unlock has one that is current (a stale one
   // holds an old password); anything but a match there, including a
   // mismatch (the password may have changed elsewhere), is decided by `bw`,
-  // which mints and adopts a new session (verifyWithBw()).
+  // which mints and adopts a new session (verifyWithBw()). `done(false,
+  // true)`: too large to send, so not checked at all.
   function verifyMasterPassword(password, done) {
     var pw = String(password || "")
     if (!pw) { done(false); return }
     if (!(quickUnlockAvailable && accountId && envelopeSummary && !envelopeSummary.stale)) {
-      verifyWithBw(pw, function(ok) { done(ok) })
+      verifyWithBw(pw, function(ok, refused) { done(ok, refused) })
       return
     }
     var env = {}
     env[Model.keyringSecretEnvVar()] = pw
     queueEnvelopeJob({
       command: Model.unlockEnvelopeCheckCommand(envelopeTool(), envelopeAccount()),
-      env: env,
+      env: env, verify: true,
+      onRefused: function() { done(false) },
       onDone: function(code) {
         if (code === 0) { done(true); return }
-        root.verifyWithBw(pw, function(ok) { done(ok) })
+        if (envelopeProc.refused) { done(false, true); return }
+        root.verifyWithBw(pw, function(ok, refused) { done(ok, refused) })
       }
     })
   }
@@ -712,6 +716,9 @@ Item {
   property var pendingSave: null
   // The delete in flight, with the removed row for restoring on refusal.
   property var pendingDelete: null
+  // The message a save or delete last put in errorMessage, which may name
+  // its item: a lock takes it down if it is still the one showing.
+  property string itemChangeError: ""
 
   // A refused save's form, kept so it can be reopened rather than retyped.
   property var failedSave: null
@@ -1327,14 +1334,36 @@ Item {
     }
     vaultRunSeq += 1
     var id = vaultRunSeq
+    // Decided here, as the request is written, for the helper it goes to.
+    var capture = proc.capture === "vault" && vaultHelperStaging ? "vaultStage" : proc.capture
+    var line = Model.vaultExecLine(id, proc.command, environment, inject, capture, proc.stdinText)
+    // The helper would drop it unanswered, and whatever waits for this
+    // process would wait for good: it fails here instead.
+    if (Model.vaultHelperLineTooLong(line)) {
+      refuseVaultStart(proc)
+      return
+    }
     var runs = Object.assign({}, vaultRuns)
     runs[id] = proc
     vaultRuns = runs
     proc.runId = id
-    // Decided here, as the request is written, for the helper it goes to.
-    var capture = proc.capture === "vault" && vaultHelperStaging ? "vaultStage" : proc.capture
-    vaultHelperProc.write(Model.vaultExecLine(id, proc.command, environment, inject, capture, proc.stdinText))
+    vaultHelperProc.write(line)
     proc.started()
+  }
+
+  // Ends a run that was never sent, once its start has returned, unless it
+  // was started again meanwhile; marked `refused`, so nothing it was given
+  // counts as checked (a wrong PIN or password). Made apart from vaultStart()
+  // so the wait holds none of that run's environment.
+  readonly property string vaultRunRefusedMessage: "Too large for the vault helper."
+
+  function refuseVaultStart(proc) {
+    var seq = proc.startSeq
+    Qt.callLater(function() {
+      if (proc.startSeq !== seq) return
+      proc.refused = true
+      proc.finish(1, "", root.vaultRunRefusedMessage, false, false)
+    })
   }
 
   // The environment a fallback run gets: held values resolved here.
@@ -1799,8 +1828,8 @@ Item {
     envelopeProc.environment = {}
     // The output was the master password: scrub the collector.
     if (job && job.secretOutput) clearProcessCollectorSoon(envelopeProc)
-    var accepting = job && !logoutPending && job.slot === activeSlot
-      && (!job.unlock || (!job.cancelled && job.epoch === vaultEpoch))
+    var accepting = job && !logoutPending && job.slot === activeSlot && !job.cancelled
+      && (!job.unlock || job.epoch === vaultEpoch)
     if (job && job.onDone && (accepting || job.alwaysDone)) job.onDone(exitCode, out)
     else {
       if (job && job.holdOutput) forgetHeldPassword(out)
@@ -1813,18 +1842,26 @@ Item {
     Qt.callLater(pumpEnvelopeJobs)
   }
 
-  // A lock cancels only authentication opens. Setup, re-seal and purge writes
-  // keep their place in the single-writer queue.
-  function cancelEnvelopeUnlockJobs() {
+  // Cancels only authentication opens; setup, re-seal and purge writes keep
+  // their place in the single-writer queue. With `withVerify`, which only
+  // the vault being dropped asks for (dropVaultState()), master password
+  // checks too (`verify`: the typed password is in their environment, and
+  // what they would allow is in the vault being closed). An unlock given up
+  // while the vault is open (an SSH popup answered, the panel closed)
+  // leaves them to finish.
+  function cancelEnvelopeUnlockJobs(withVerify) {
     envelopeJobs = envelopeJobs.filter(function(job) {
-      if (!job.unlock) return true
+      if (!job.unlock && !(withVerify && job.verify)) return true
       for (var key in job.env) root.forgetHeldPassword(job.env[key])
       job.env = null
+      if (job.verify) root.refuseVerifyJob(job)
       return false
     })
-    if (envelopeJob && envelopeJob.unlock) {
+    if (envelopeJob && (envelopeJob.unlock || (withVerify && envelopeJob.verify))) {
       envelopeJob.cancelled = true
+      if (envelopeJob.verify) refuseVerifyJob(envelopeJob)
       envelopeProc.running = false
+      envelopeProc.environment = {}
       // A run waiting for a helper has no id and will never send an exit.
       if (envelopeProc.runId === 0) {
         vaultKill(envelopeProc)
@@ -1838,6 +1875,18 @@ Item {
     // A status held back for a queued job, or one that never started, has no
     // exit to trigger the recheck. A running job's exit still does it.
     if (!(envelopeJob && envelopeJob.unlock)) recheckStatusAfterUnlock()
+  }
+
+  // A cancelled password check answers its caller "no", once: after the lock
+  // that cancelled it has gone through, so the caller finds the vault closed
+  // and does not take the answer for a wrong password. Its exit, if it was
+  // running, is then nobody's (onEnvelopeJobExited()).
+  function refuseVerifyJob(job) {
+    var refused = job.onRefused
+    job.onRefused = null
+    // What would have taken the answer holds the typed password with it.
+    job.onDone = null
+    if (refused) Qt.callLater(refused)
   }
 
   // Leaving an account or logging out invalidates its cleanup callbacks.
@@ -2072,8 +2121,8 @@ Item {
             return
           }
           if (code !== E.absent && code !== 6 && code !== E.unseal) { done(false, "failed", code); return }
-          root.verifyWithBw(pw, function(ok) {
-            if (!ok) { done(false, "wrong-password", 3); return }
+          root.verifyWithBw(pw, function(ok, refused) {
+            if (!ok) { done(false, refused ? "failed" : "wrong-password", refused ? 0 : 3); return }
             root.storeAcceptedMasterPassword(pw, function(stored) {
               if (!stored) { done(false, "failed", 0); return }
               var again = {}
@@ -2092,12 +2141,16 @@ Item {
   // No envelope: `bw` checks the password. The session key it mints replaces
   // the current one and is adopted like an unlock's.
   function verifyWithBw(password, done) {
+    // Closed already: `bw` is not given the password, and the answer would
+    // be refused below anyway.
+    if (status !== "unlocked" || logoutPending) { done(false); return }
     var env = {}
     env[Model.keyringSecretEnvVar()] = String(password || "")
     beginEpochOperation("bwVerify")
     queueEnvelopeJob({
       command: Model.bwVerifyPasswordCommand(),
-      env: bwSecretEnv(env), secretOutput: true, capture: "session",
+      env: bwSecretEnv(env), secretOutput: true, capture: "session", verify: true,
+      onRefused: function() { done(false) },
       onDone: function(code, out) {
         var s = code === 0 ? Model.extractSessionToken(out) : ""
         // Locked or logged out meanwhile: adopting the new session would
@@ -2109,7 +2162,7 @@ Item {
           if (root.status !== "unlocked") root.forgetVault()
           return
         }
-        if (!s) { done(false); return }
+        if (!s) { done(false, envelopeProc.refused); return }
         root.session = s
         root.storeCurrentSession()
         done(true)
@@ -2695,6 +2748,34 @@ Item {
         || root.sshPromptQueue.length > 0 || root.sshUnlockQueue.length > 0) dismissSshApproval()
   }
 
+  // The agent's lock ack (`locked`): every request raised before it was
+  // refused (approvals with no word of their own, ones held for an unlock
+  // each with a request_cancelled, which a card shown over it can hide, or
+  // after an unlock card was promoted), so every card comes down. Only that:
+  // nothing here ends an unlock under way, clears a message or closes the
+  // panel, as answering or dismissing a card does (dismissSshApproval()).
+  // One raised after the lock is announced after the ack.
+  function dropRefusedSshApprovals() {
+    if (root.sshPrompt === null && root.sshPromptQueue.length === 0
+        && root.sshUnlockRequest === null && root.sshUnlockQueue.length === 0) return
+    stopSshNotifyFallback()
+    root.sshPromptRaw = null
+    root.sshPrompt = null
+    root.sshPromptQueue = []
+    root.sshPromotedOldId = null
+    root.sshPromotedRaw = null
+    root.sshPromotedAmbiguous = false
+    root.sshUnlockRequest = null
+    root.sshUnlockRaw = null
+    root.sshUnlockQueue = []
+    // The panel a card opened stays open, as nobody's.
+    root.sshPromptOpenedPanel = false
+    if (root.currentScreen === "sshApproval") {
+      root.currentScreen = root.screenBeforeSshApproval === "sshApproval"
+        ? "main" : root.screenBeforeSshApproval
+    }
+  }
+
   // Announce a cooldown that may have just started: it is the only
   // explanation for suddenly failing SSH commands.
   function noteSshCooldown() {
@@ -3242,6 +3323,8 @@ Item {
     if (message.type === "locked") {
       // The lock ack: signing denied, grants and private keys dropped.
       sshAgentLockAckTimer.stop()
+      dropRefusedSshApprovals()
+      root.sshGrantsAnnounced = []
       return
     }
     if (message.type === "state_changed") {
@@ -3368,6 +3451,8 @@ Item {
     withdrawSshCards()
     if (sshAgentGateOpen) sendSshAgentOptions()
     if (!sshAgentGateOpen) {
+      // Its grants went with it, and it will not say so.
+      root.sshGrantsAnnounced = []
       endSshAgentLoad(false)
       // Its keys went with the process.
       root.sshAgentKeyCount = 0
@@ -5144,6 +5229,12 @@ Item {
       sendError = "Nothing to send -- enter some text"
       return
     }
+    // One from before a lock may still hold the process; its exit would
+    // answer for this one (as for a save, saveItemForm()).
+    if (vaultProcBusy(createSendProc)) {
+      sendError = "Still creating the last Send -- one moment"
+      return
+    }
     sendError = ""
     sendBusy = true
     sendPayloadJson = JSON.stringify(Model.buildSendPayload(
@@ -5184,6 +5275,11 @@ Item {
 
   function deleteSend(send) {
     if (!send || !send.id) return
+    if (vaultProcBusy(deleteSendProc)) {
+      sendError = "Still deleting the last Send -- one moment"
+      return
+    }
+    sendError = ""
     sendBusy = true
     beginVaultRead("sendDelete")
     deleteSendProc.command = Model.deleteSendCommand(send.id)
@@ -5643,6 +5739,10 @@ Item {
       return
     }
     pinEntry = ""
+    if (envelopeProc.refused) {
+      pinUnlockError = vaultRunRefusedMessage
+      return
+    }
     pinUnlockError = "Could not read the stored password. Unlock with your master password."
     refreshEnvelope()
   }
@@ -5674,6 +5774,13 @@ Item {
     }
     var pw = String(password || "")
 
+    if (pinUnlockProc.refused) {
+      releaseHeldPin()
+      pinEntry = ""
+      pinUnlockError = vaultRunRefusedMessage
+      recheckStatusAfterUnlock()
+      return
+    }
     if (exitCode !== 0 || !pw) {
       var viaPinentry = releaseHeldPin()
       countWrongPin()
@@ -6708,10 +6815,17 @@ Item {
     var out = String(stdoutText || "").trim()
     var err = String(stderrText || "").trim()
 
-    if (exitCode === 0 && out) {
+    // The helper's marker with no key kept behind it: a lock or another
+    // forget overtook this run, and the helper let its key go. Nothing is
+    // unlocked, and the password was not refused. (Without the helper the
+    // output is the key itself, never the marker.)
+    var keyDropped = exitCode === 0 && Model.extractSessionToken(out) === Model.vaultHeldSession()
+      && !unlockProc.sessionHeld
+
+    if (exitCode === 0 && out && !keyDropped) {
       fingerprintFromEnvelope = false
       onUnlockSuccess(out)
-    } else if (exitCode === 0 && !err) {
+    } else if (keyDropped || (exitCode === 0 && !err)) {
       // `bw` exits 0 with nothing at all when it never got a password (it
       // falls back to a prompt it cannot show): not a wrong one.
       pinentryMasterName = ""
@@ -6723,7 +6837,8 @@ Item {
       fingerprintFromEnvelope = false
       pinFromEnvelope = false
       fidoFromEnvelope = false
-      errorMessage = "Could not deliver the password to Bitwarden. Please try again."
+      errorMessage = keyDropped ? "Unlock was interrupted. Try again."
+        : "Could not deliver the password to Bitwarden. Please try again."
       Qt.callLater(prepareUnlock)
     } else {
       // A master password typed into pinentry that `bw` refused: forgotten,
@@ -6979,6 +7094,8 @@ Item {
     if (lockRun) forgetVaultSecret(lockRun.key)
     lockRun = null
     lockProc.environment = {}
+    // A `bw status` check's answer names the account.
+    lockStdout.text = ""
     Qt.callLater(pumpBwLock)
     maybeAckSleep()
   }
@@ -6997,12 +7114,17 @@ Item {
     // note of which message it was.
     if (listReadError !== "" && errorMessage === listReadError) errorMessage = ""
     listReadError = ""
+    // A refused or waiting save or delete names its item.
+    if (itemChangeError !== "" && errorMessage === itemChangeError) errorMessage = ""
+    itemChangeError = ""
+    // So can a notice (a link being opened, a file saved).
+    flashMessage = ""
     lastSyncAttemptAt = 0
     backgroundSync = false
     autoSyncReloadPending = false
     initialSyncAttempted = false
     pinUnlockSubmitted = false
-    cancelEnvelopeUnlockJobs()
+    cancelEnvelopeUnlockJobs(true)
     // A question for the old vault's password is no longer wanted.
     cancelPinentry()
     resetPinentryChoice()
@@ -7040,6 +7162,11 @@ Item {
     selectedFolder = "all"
     openFilterGroup = ""
     searchQuery = ""
+    // What the helper was asked and answered (invalidateHelperSearch(),
+    // spelled out): the text and the ids of the items it matched.
+    searchAnsweredQuery = ""
+    searchAnsweredIds = null
+    searchAskedQuery = ""
     selectedCategory = "all"
     selectedIndex = 0
     detailItem = null
@@ -7048,6 +7175,10 @@ Item {
     // A refused save's form holds what was typed (a password included) and
     // must not be reopenable after a lock, logout or account switch.
     failedSave = null
+    // A save or delete still running: its form (passwords, TOTP keys, notes)
+    // and the row it would put back. Its exit is refused as stale.
+    pendingSave = null
+    pendingDelete = null
     resetItemForm()
     totpFollowupActive = false
     isLoading = false
@@ -7092,8 +7223,13 @@ Item {
     itemPayloadJson = ""
     sends = []
     sendPayloadJson = ""
+    sendFormName = ""
     sendFormText = ""
     sendFormPassword = ""
+    sendError = ""
+    // A confirmed re-prompt leaves its item's name (cancelReprompt() runs
+    // only for one still waiting).
+    repromptItemName = ""
     // The old master password a refused quick unlock left for a re-seal
     // (storeAcceptedMasterPassword()). It used to outlive the lock; without
     // it the next re-seal falls back to the fingerprint wrap or marks the
@@ -7102,6 +7238,9 @@ Item {
     clearLoginAttempt()
     syncLoginFieldsToState()
     pinEntry = ""
+    // A legacy PIN kept for a migration whose unlock this lock interrupted
+    // (one the helper held went with forgetVault()).
+    pendingPinForMigration = ""
     pinSetupPin = ""
     pinSetupConfirm = ""
     pinSetupMaster = ""
@@ -8669,6 +8808,13 @@ Item {
   function saveItemForm() {
     if (pendingSave) {
       errorMessage = "Still saving " + pendingSave.name + " -- one moment"
+      itemChangeError = errorMessage
+      return
+    }
+    // A save from before a lock has dropped its note (dropVaultState()) but
+    // may still hold its process, whose exit would answer for this one.
+    if (vaultProcBusy(editItemProc) || vaultProcBusy(createItemProc)) {
+      errorMessage = "Still saving -- one moment"
       return
     }
 
@@ -8752,6 +8898,7 @@ Item {
       } else {
         errorMessage = stderrText || "Failed to save item"
       }
+      itemChangeError = errorMessage
       return
     }
 
@@ -8836,6 +8983,12 @@ Item {
     }
     if (pendingDelete) {
       errorMessage = "Still deleting " + pendingDelete.name + " -- one moment"
+      itemChangeError = errorMessage
+      return
+    }
+    // As for a save (saveItemForm()): one from before a lock.
+    if (vaultProcBusy(deleteItemProc)) {
+      errorMessage = "Still deleting -- one moment"
       return
     }
 
@@ -8889,6 +9042,7 @@ Item {
     } else {
       errorMessage = stderrText || "Failed to delete item"
     }
+    itemChangeError = errorMessage
   }
 
   // -------------------------------------------------------------------------
@@ -8927,17 +9081,32 @@ Item {
   property var searchAnsweredIds: null
   property string searchAskedQuery: ""
 
+  // Moves with every question and every invalidation: an answer is for the
+  // text in searchAskedQuery only while this is what it was when asked.
+  property int searchAskSeq: 0
+
   function invalidateHelperSearch() {
     searchAnsweredQuery = ""
     searchAnsweredIds = null
     searchAskedQuery = ""
+    searchAskSeq += 1
   }
 
   function askHelperSearch(query) {
     if (searchAskedQuery === query) return
     searchAskedQuery = query
-    vaultQuery("search", { query: query }, function(ok, ids) {
-      if (root.searchAskedQuery !== query) return
+    searchAskSeq += 1
+    vaultQuery("search", { query: query }, searchAnswered(searchAskSeq, vaultEpoch))
+  }
+
+  // Made in a function of its own, as commitAnswered() is: a closure made in
+  // askHelperSearch() would keep the search text until the helper answered,
+  // across a lock.
+  function searchAnswered(seq, epoch) {
+    return function(ok, ids) {
+      // An answer for a vault since closed is another vault's ids.
+      if (epoch !== root.vaultEpoch || seq !== root.searchAskSeq) return
+      var query = root.searchAskedQuery
       var found = {}
       var list = ok && Array.isArray(ids) ? ids
         : Model.filterItems(root.items, query, "all", "all", "all").map(function(it) { return it.id })
@@ -8945,7 +9114,7 @@ Item {
       root.searchAnsweredQuery = query
       root.searchAnsweredIds = found
       root.rebuildFilter()
-    })
+    }
   }
 
   function rebuildFilter() {

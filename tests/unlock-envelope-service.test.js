@@ -34,7 +34,7 @@ check("a typed, accepted password reaches the writer from the unlock path",
     .test(unlockSuccess), unlockSuccess)
 check("the only other caller is an enable form, after bw has checked the password",
   callers === 3 // the definition, onUnlockSuccess, addQuickUnlockMethodWith
-    && /verifyWithBw\(pw, function\(ok\)[\s\S]{0,200}?storeAcceptedMasterPassword\(pw/.test(bodyOf("addQuickUnlockMethodWith")),
+    && /verifyWithBw\(pw, function\(ok, refused\)[\s\S]{0,200}?storeAcceptedMasterPassword\(pw/.test(bodyOf("addQuickUnlockMethodWith")),
   `${callers} occurrences`)
 
 const loginOutput = bodyOf("onLoginOutput")

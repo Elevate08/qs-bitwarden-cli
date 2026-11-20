@@ -37,6 +37,9 @@ Item {
   // The staged id the helper was asked to take and has not answered for, 0 if
   // none: the list is not read again until it has (vault.commitStagedList()).
   property int committing: 0
+  // The vault never sent this run (vault.refuseVaultStart()): its exit says
+  // nothing about what it was given. Until the next start.
+  property bool refused: false
 
   signal started()
   signal exited(int exitCode, int exitStatus)
@@ -55,6 +58,7 @@ Item {
 
   function start() {
     startSeq += 1
+    refused = false
     sessionHeld = false
     outputHeld = false
     staged = 0
@@ -130,8 +134,10 @@ Item {
     onRunningChanged: {
       // Ended here as a command that was not found, so the caller's exit
       // handler runs and whatever waits for this process is not stranded.
-      if (!running && proc.runId === -1 && !proc.localStarted)
+      if (!running && proc.runId === -1 && !proc.localStarted) {
+        local.environment = ({})
         proc.finish(127, "", "The command could not be started.", false, false)
+      }
     }
     stdout: StdioCollector { id: localOut; waitForEnd: true }
     stderr: StdioCollector { id: localErr; waitForEnd: true }
@@ -147,6 +153,10 @@ Item {
       var scrub = Model.isScrubCommand(command)
       var out = localOut.text
       var err = localErr.text
+      // A settled run keeps no environment (a password, the session key):
+      // dropped before the caller hears of the exit and can start the next,
+      // which sets its own (launchLocal()).
+      local.environment = ({})
       // The copies here were only the way in; the caller's collector keeps them.
       if (!scrub) Qt.callLater(function() {
         if (local.running) return
