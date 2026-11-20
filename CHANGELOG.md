@@ -212,7 +212,8 @@
   signature is byte for byte the same. The factor comes from 64 bytes read
   from the kernel (`/dev/urandom`) before the key is touched, and a request
   fails, alone, if they cannot be read. The advisory
-  has no fixed release and stays listed in `deny.toml`. Ed25519 keys never
+  is fixed in `rsa` 0.10.0; this release is still on 0.9, so it stays listed
+  in `deny.toml` until that upgrade. Ed25519 keys never
   had the problem. This needs the rebuilt SSH agent helper.
 - **A forwarded login's server is shown as the remote host's claim when
   that is all it is.** With agent forwarding (`ssh -A`), everything after
