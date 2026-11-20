@@ -168,6 +168,10 @@ check("the account comes from bw status",
 check("argon2 and systemd-creds are probed at start",
   /root\.inspectQuickUnlockPrereqs\(\)/.test(service)
     && /quickUnlockAvailable: unlockKeyReady && quickUnlockPrereqs\.ready/.test(service), "")
+check("forgetting fingerprint deletes the envelope, whose key its wrap exposed, as well as any legacy entry",
+  /requestMasterCredentialClear\(\)[\s\S]{0,300}?envelopeSummary\.fingerprint\) \{\s*removeQuickUnlockMethod\(\{ kind: "delete" \}\)/
+    .test(bodyOf("forgetFingerprintUnlock")) && !/method: "fingerprint"/.test(bodyOf("forgetFingerprintUnlock")),
+  bodyOf("forgetFingerprintUnlock"))
 check("a wrap from a cancelled setup is still a plain removal",
   /epochOperationIsStale\("fingerprintAdd"\)[\s\S]{0,300}?removeQuickUnlockMethod\(\{ kind: "remove", method: "fingerprint" \}\)/
     .test(bodyOf("submitFingerprintSetup")), bodyOf("submitFingerprintSetup"))
