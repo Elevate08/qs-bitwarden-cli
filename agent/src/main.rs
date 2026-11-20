@@ -802,12 +802,17 @@ fn release_held(
                 Ok(Submit::Granted(authorization)) => {
                     authorized_signature(store, authorization, &request.message, request.flags)
                 }
-                Ok(Submit::Pending(id)) => approvals
-                    .approve(id, grant_seconds, elapsed_ms(started))
-                    .map(|authorization| {
-                        authorized_signature(store, authorization, &request.message, request.flags)
-                    })
-                    .unwrap_or_else(|_| protocol::failure_response()),
+                Ok(Submit::Pending(id)) => approve_released(
+                    approvals,
+                    id,
+                    grant_seconds,
+                    request.deadline_ms,
+                    elapsed_ms(started),
+                )
+                .map(|authorization| {
+                    authorized_signature(store, authorization, &request.message, request.flags)
+                })
+                .unwrap_or_else(|_| protocol::failure_response()),
                 Err(_) => protocol::failure_response(),
             };
             let _ = request.reply.send(response);
@@ -879,6 +884,19 @@ fn release_held(
     settle_granted(approvals, pending, store, started, output)
 }
 
+/// Authorize a request approved while it was held, at `now_ms`: only inside
+/// the deadline it was held under, not the fresh one its resubmission got.
+fn approve_released(
+    approvals: &mut ApprovalManager,
+    id: RequestId,
+    grant_seconds: u64,
+    deadline_ms: u64,
+    now_ms: u64,
+) -> Result<Authorization, qs_bitwarden_ssh_agent::approvals::ApprovalError> {
+    approvals.limit_deadline(id, deadline_ms);
+    approvals.approve(id, grant_seconds, now_ms)
+}
+
 /// The request a decision is for. One released from an unlock is still
 /// answered under the id its unlock prompt had, exactly once: that id is the
 /// only one the panel knows until it has read the `approval_required` that
@@ -908,15 +926,18 @@ fn addressed(
     Ok(current)
 }
 
-/// Where this process starts numbering requests: a random 32-bit value from
-/// the kernel (`/dev/urandom`, as the signing code reads it), at least 1 (0
-/// is "none" in `promotedFrom`). Ids stay far below what the panel reads as
-/// an exact number. With no random source, 1 as before.
+/// Where this process starts numbering requests: a random value from the
+/// kernel (`/dev/urandom`, as the signing code reads it) in 1..=2^30. Never
+/// 0, which is "none" in `promotedFrom`, and with a billion ids to go before
+/// 2^31, the most a 32-bit signed number in the panel can hold. With no
+/// random source, 1 as before.
+const FIRST_ID_SPAN: u32 = 1 << 30;
+
 fn first_request_id() -> RequestId {
     use std::io::Read;
     let mut bytes = [0_u8; 4];
     match std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes)) {
-        Ok(()) => RequestId::from(u32::from_le_bytes(bytes)).saturating_add(1),
+        Ok(()) => RequestId::from(u32::from_le_bytes(bytes) & (FIRST_ID_SPAN - 1)) + 1,
         Err(_) => 1,
     }
 }
@@ -1553,7 +1574,23 @@ mod tests {
             assert!(approvals.is_pending(id));
             approvals.expire(deadline_ms);
             assert!(!approvals.is_pending(id), "asked about past its deadline");
+
+            // Approved while held: authorized inside that deadline only.
+            for (now_ms, signs) in [(deadline_ms - 1, true), (deadline_ms, false)] {
+                let scope = SignScope {
+                    kind: protocol::classify(&blob, &login(&blob), &[]).kind,
+                    forwarded: false,
+                };
+                let peer = PeerContext::new(1000, 4242, 1, "/usr/bin/ssh").unwrap();
+                let Ok(Submit::Pending(id)) = approvals.submit(3, &blob, peer, scope, 0) else {
+                    panic!("no grant is open");
+                };
+                let authorized = approve_released(&mut approvals, id, 0, deadline_ms, now_ms);
+                assert_eq!(authorized.is_ok(), signs);
+            }
         }
+        let first = (0..64).map(|_| first_request_id());
+        assert!(first.into_iter().all(|id| (1..=1 << 30).contains(&id)));
     }
 
     /// An identity listing's unlock prompt has no server, so nothing claimed.
