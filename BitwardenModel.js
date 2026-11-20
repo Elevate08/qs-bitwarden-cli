@@ -4799,11 +4799,8 @@ function parseHost(host) {
     return { host: h, baseDomain: h, rootName: null, isIp: true }
   }
 
+  // A single label is its own root and base domain: rootIdx clamps to 0.
   var parts = h.split(".")
-  if (parts.length === 1) {
-    return { host: h, baseDomain: h, rootName: parts[0], isIp: false }
-  }
-
   var suffixCount = 1
   if (parts.length >= 3 && MULTI_SLD[parts[parts.length - 2]]) {
     suffixCount = 2
@@ -4919,42 +4916,28 @@ function getActiveWindowFromData(windowData) {
 function windowIdentity(cls, title) {
   var isBrowser = BROWSER_CLASS_RE.test(cls)
   var isTerminal = TERMINAL_CLASS_RE.test(cls)
+  function identity(cleanTitle, detectedDomain, displayName) {
+    return { cleanTitle: cleanTitle, detectedDomain: detectedDomain, displayName: displayName,
+      isBrowser: isBrowser, isTerminal: isTerminal }
+  }
 
   if (isBrowser) {
     var browserTitle = stripTitleNoise(title)
     var browserDomain = detectDomainInText(browserTitle)
-    return {
-      cleanTitle: browserTitle,
-      detectedDomain: browserDomain,
-      displayName: browserDomain ? browserDomain.baseDomain : browserTitle,
-      isBrowser: isBrowser,
-      isTerminal: isTerminal
-    }
+    return identity(browserTitle, browserDomain, browserDomain ? browserDomain.baseDomain : browserTitle)
   }
 
   if (isTerminal) {
     // Only remote sessions; a local shell title describes this machine.
     var remoteSession = title.match(REMOTE_SESSION_RE)
     if (!remoteSession) return null
-    return {
-      cleanTitle: remoteSession[1],
-      detectedDomain: parseHost(remoteSession[1]),
-      displayName: "SSH: " + remoteSession[1],
-      isBrowser: isBrowser,
-      isTerminal: isTerminal
-    }
+    return identity(remoteSession[1], parseHost(remoteSession[1]), "SSH: " + remoteSession[1])
   }
 
   // Native desktop app: the leading segment is the app, the rest is document state.
   var segments = splitSegments(stripTitleNoise(title))
   var appTitle = segments.length > 0 ? segments[0] : ""
-  return {
-    cleanTitle: appTitle,
-    detectedDomain: null,
-    displayName: appTitle || cls,
-    isBrowser: isBrowser,
-    isTerminal: isTerminal
-  }
+  return identity(appTitle, null, appTitle || cls)
 }
 
 function cleanWindowContext(windowData) {
@@ -5164,9 +5147,9 @@ function itemActions(item, context) {
   var card = type === 3 ? (item.card || {}) : null
   var identity = type === 4 ? (item.identity || {}) : null
 
+  if (hasPassword) push("copyPassword", "Copy password", "p")
+  if (login && item.username) push("copyUsername", "Copy username", "u")
   if (!detail) {
-    if (hasPassword) push("copyPassword", "Copy password", "p")
-    if (login && item.username) push("copyUsername", "Copy username", "u")
     if (login && item.hasTotp) push("copyTotp", "Copy TOTP code", "m")
     if (openable) push("openWebsite", "Open website", "w")
     push("openDetail", "Open details", "e")
@@ -5174,8 +5157,6 @@ function itemActions(item, context) {
   }
 
   var revealed = Boolean(context && context.revealed)
-  if (hasPassword) push("copyPassword", "Copy password", "p")
-  if (login && item.username) push("copyUsername", "Copy username", "u")
   if (identity && identity.username) push("copyUsername", "Copy username", "u")
   if (identity && identity.email) push("copyEmail", "Copy email", "c")
   if (login && item.hasTotp) push("copyTotp", "Copy TOTP code", "m")
@@ -7486,9 +7467,7 @@ function sshAgentLifecycleTransition(event, context) {
   if (SSH_AGENT_LOAD_EVENTS.indexOf(event) >= 0) {
     // A remembered session can start unlocked while the companion has no keys.
     action.startLoad = live && Boolean(ctx.unlocked)
-    return action
   }
-
   return action
 }
 
