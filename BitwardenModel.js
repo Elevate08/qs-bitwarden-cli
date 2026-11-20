@@ -75,6 +75,20 @@ function shellQuote(value) {
   return "'" + String(value || "").replace(/'/g, "'\\''") + "'"
 }
 
+// The first entry of `list` whose `key` is `value`, or null.
+function findBy(list, key, value) {
+  for (var i = 0; list && i < list.length; i++) {
+    if (list[i][key] === value) return list[i]
+  }
+  return null
+}
+
+function shallowCopy(source) {
+  var out = {}
+  for (var k in source) out[k] = source[k]
+  return out
+}
+
 // -------------------------------------------------------------------------
 // Accounts
 // -------------------------------------------------------------------------
@@ -210,9 +224,7 @@ function copyAccountRegistry(registry) {
 }
 
 function registryAccount(registry, slot) {
-  var list = registry && registry.accounts ? registry.accounts : []
-  for (var i = 0; i < list.length; i++) if (list[i].slot === slot) return list[i]
-  return null
+  return findBy(registry && registry.accounts, "slot", slot)
 }
 
 function registryHasAccount(registry, slot) {
@@ -866,29 +878,18 @@ var TWO_FACTOR_METHODS = [
 ]
 
 function twoFactorMethods() {
-  var out = []
-  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
-    var entry = {}
-    for (var k in TWO_FACTOR_METHODS[i]) entry[k] = TWO_FACTOR_METHODS[i][k]
-    out.push(entry)
-  }
-  return out
+  return TWO_FACTOR_METHODS.map(shallowCopy)
 }
 
 // --method is the only unquoted login argument, so only values from this
 // table may reach it.
 function isTwoFactorMethod(method) {
-  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
-    if (TWO_FACTOR_METHODS[i].method === method) return true
-  }
-  return false
+  return findBy(TWO_FACTOR_METHODS, "method", method) !== null
 }
 
 function twoFactorMethodLabel(method) {
-  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
-    if (TWO_FACTOR_METHODS[i].method === method) return TWO_FACTOR_METHODS[i].label
-  }
-  return ""
+  var entry = findBy(TWO_FACTOR_METHODS, "method", method)
+  return entry ? entry.label : ""
 }
 
 // Remembered two-step methods, keyed by a hash of the account email. The map
@@ -2543,8 +2544,7 @@ var PINENTRY_GIVE_UP_S = PINENTRY_TIMEOUT_S + 30
 var PINENTRY_EXIT = { cancelled: 1, empty: 3, failed: 4, short: 5, missing: 127 }
 
 function pinentryExitCodes() {
-  return { cancelled: PINENTRY_EXIT.cancelled, empty: PINENTRY_EXIT.empty,
-           failed: PINENTRY_EXIT.failed, short: PINENTRY_EXIT.short, missing: PINENTRY_EXIT.missing }
+  return shallowCopy(PINENTRY_EXIT)
 }
 
 // pinentry's own "operation cancelled" is GPG_ERR_CANCELED (99) from source
@@ -4529,8 +4529,7 @@ function editedUris(stored, typed) {
   var first = kept[0]
   if (text === String(first.uri === undefined || first.uri === null ? "" : first.uri)) return kept
   if (!text.trim()) return kept.slice(1)
-  var replaced = {}
-  for (var k in first) replaced[k] = first[k]
+  var replaced = shallowCopy(first)
   replaced.match = first.match === undefined ? null : first.match
   replaced.uri = text.trim()
   return [replaced].concat(kept.slice(1))
@@ -5448,9 +5447,7 @@ var MAX_ASSOC_WRITE_BYTES = MAX_ASSOC_BYTES / 2
 // words recorded (see associationEntryCounts()); an ordinary pick learns the
 // domain and app keys only.
 function recordAssociation(assoc, ctx, itemId, timestamp, pinned) {
-  var next = { version: ASSOC_VERSION, keys: {} }
-  var k
-  for (k in assoc.keys) next.keys[k] = assoc.keys[k]
+  var next = { version: ASSOC_VERSION, keys: shallowCopy(assoc.keys) }
 
   var keys = contextKeys(ctx, pinned === true)
   if (keys.length === 0 || !itemId) return next
@@ -5770,10 +5767,7 @@ function compareReleaseVersions(a, b) {
 
 function dependencyByKey(deps, key) {
   if (!deps || !Array.isArray(deps.items)) return null
-  for (var i = 0; i < deps.items.length; i++) {
-    if (deps.items[i].key === key) return deps.items[i]
-  }
-  return null
+  return findBy(deps.items, "key", key)
 }
 
 function dependencyInstalled(deps, key) {
@@ -6388,11 +6382,8 @@ function helperCandidates(pluginDir, spec, arch) {
 // guess: an unaccepted source launches nothing, and the shipped one needs the
 // architecture the inspection reported.
 function helperPath(pluginDir, spec, source, arch) {
-  var candidates = helperCandidates(pluginDir, spec, arch)
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i].source === source) return candidates[i].path
-  }
-  return ""
+  var accepted = findBy(helperCandidates(pluginDir, spec, arch), "source", source)
+  return accepted ? accepted.path : ""
 }
 
 // Banner text when a local build serves SSH keys: it has no digest or
@@ -7345,8 +7336,7 @@ function sshAgentGrantsAt(views, nowMs) {
     }
     var remaining = Math.max(0, Math.ceil((view.expiresAtMs - now) / 1000))
     if (remaining <= 0) continue
-    var copy = {}
-    for (var k in view) copy[k] = view[k]
+    var copy = shallowCopy(view)
     copy.remainingSec = remaining
     copy.remainingLabel = formatDuration(remaining) + " left"
     out.push(copy)
@@ -7937,8 +7927,7 @@ function groupedSettings() {
     var first = true
     for (var i = 0; i < SETTINGS_SCHEMA.length; i++) {
       if (SETTINGS_SCHEMA[i].group !== group.id) continue
-      var entry = {}
-      for (var k in SETTINGS_SCHEMA[i]) entry[k] = SETTINGS_SCHEMA[i][k]
+      var entry = shallowCopy(SETTINGS_SCHEMA[i])
       entry.groupLabel = first ? group.label : ""
       out.push(entry)
       first = false
@@ -7979,17 +7968,12 @@ function visibleSettings(deps, checked) {
 }
 
 function groupLabelFor(id) {
-  for (var i = 0; i < SETTINGS_GROUPS.length; i++) {
-    if (SETTINGS_GROUPS[i].id === id) return SETTINGS_GROUPS[i].label
-  }
-  return ""
+  var group = findBy(SETTINGS_GROUPS, "id", id)
+  return group ? group.label : ""
 }
 
 function settingSchemaEntry(key) {
-  for (var i = 0; i < SETTINGS_SCHEMA.length; i++) {
-    if (SETTINGS_SCHEMA[i].key === key) return SETTINGS_SCHEMA[i]
-  }
-  return null
+  return findBy(SETTINGS_SCHEMA, "key", key)
 }
 
 // Integer settings read from shell.json, which nothing validates. Unreadable
@@ -8303,9 +8287,7 @@ var GENERATOR_LIMITS = {
 }
 
 function generatorDefaults() {
-  var out = {}
-  for (var k in GENERATOR_DEFAULTS) out[k] = GENERATOR_DEFAULTS[k]
-  return out
+  return shallowCopy(GENERATOR_DEFAULTS)
 }
 
 function clampInt(value, limit) {
