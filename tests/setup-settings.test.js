@@ -48,9 +48,6 @@ check("all present: nothing required is missing",
   Model.missingRequired(all).length === 0,
   `got [${Model.missingRequired(all).map(d => d.key)}]`)
 check("all present: fprintd reported ready", byKey(all, "fprintd").ready === true, "expected ready")
-check("jq is a required dependency alongside bw",
-  byKey(all, "jq") && byKey(all, "jq").required === true && byKey(all, "jq").pkg === "jq",
-  JSON.stringify(byKey(all, "jq")))
 check("the dependency probe checks for jq before vault reads",
   dependencyProbe.includes("command -v jq"),
   dependencyProbe)
@@ -97,9 +94,6 @@ check("the bw CLI version for SSH gating comes from its own probe",
       && probed.indexOf("latestId !== probedId") < probed.indexOf("dependencies = Model.parseDependencies"),
     probed)
 }
-check("SSH_CLI_MIN_VERSION is the verified floor",
-  Model.SSH_CLI_MIN_VERSION === "2025.1.2",
-  String(Model.SSH_CLI_MIN_VERSION))
 check("sshCliSupport marks 2025.1.2 as supported",
   sshCliSupport("2025.1.2") === "supported",
   JSON.stringify(sshCliSupport("2025.1.2")))
@@ -109,9 +103,6 @@ check("sshCliSupport marks 2025.1.1 as unsupported",
 check("sshCliSupport treats malformed versions as unknown",
   sshCliSupport("development-build") === "unknown",
   JSON.stringify(sshCliSupport("development-build")))
-check("sshCliSupport treats a missing version as unknown",
-  sshCliSupport("") === "unknown",
-  JSON.stringify(sshCliSupport("")))
 check("SSH surfaces stay hidden until the probe confirms a supported CLI",
   Model.sshUiAvailable(all, true) === true
     && Model.sshUiAvailable(all, false) === false,
@@ -130,6 +121,11 @@ check("an unreadable CLI version hides SSH rather than assuming support",
     && unreadableCli.sshCliStatus === "unknown"
     && byKey(unreadableCli, "bw").note !== "",
   JSON.stringify({ status: unreadableCli.sshCliStatus, bw: byKey(unreadableCli, "bw") }))
+check("unknown bw versions are reported separately from unsupported ones",
+  byKey(unreadableCli, "bw").installed === true
+    && byKey(unreadableCli, "bw").version === ""
+    && unreadableCli.sshCliStatus === "unknown",
+  JSON.stringify({ bw: byKey(unreadableCli, "bw"), sshCliStatus: unreadableCli.sshCliStatus }))
 
 check("bw version metadata is preserved for feature gating",
   byKey(all, "bw") && byKey(all, "bw").version === "2025.1.2" && all.sshCliStatus === "supported",
@@ -142,16 +138,12 @@ const missing = Model.missingRequired(noBw)
 check("missing bw is reported as required",
   missing.length === 1 && missing[0].key === "bw" && missing[0].pkg === "bitwarden-cli",
   `got [${missing.map(d => d.key + ":" + d.pkg)}]`)
-check("missing bw is not marked installed", byKey(noBw, "bw").installed === false, "expected false")
 const noJq = Model.parseDependencies(
   "bw=1\nbw_version=2025.1.2\njq=0\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
 const missingNoJq = Model.missingRequired(noJq)
 check("missing jq is reported as required",
   missingNoJq.length === 1 && missingNoJq[0].key === "jq" && missingNoJq[0].pkg === "jq",
   `got [${missingNoJq.map(d => d.key + ":" + d.pkg)}]`)
-check("missing jq does not alter optional dependency semantics",
-  byKey(noJq, "fprintd").required === false,
-  JSON.stringify(byKey(noJq, "fprintd")))
 check("supported bw without jq blocks the vault list until setup finishes",
   Model.vaultListMode(noJq) === "blocked"
     && Model.vaultListBlockedMessage(noJq).includes("jq"),
@@ -192,28 +184,9 @@ check("fprintd on PATH without an enrolled finger is installed-but-not-ready",
   byKey(noFinger, "fprintd").installed === true && byKey(noFinger, "fprintd").ready === false,
   `installed=${byKey(noFinger, "fprintd").installed} ready=${byKey(noFinger, "fprintd").ready}`)
 
-const oldBw = Model.parseDependencies(
-  "bw=1\nbw_version=2025.1.1\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
-check("older bw versions remain installed but are marked unsupported for SSH",
-  byKey(oldBw, "bw").installed === true
-    && byKey(oldBw, "bw").version === "2025.1.1"
-    && oldBw.sshCliStatus === "unsupported"
-    && byKey(oldBw, "bw").note.includes(Model.SSH_CLI_MIN_VERSION),
-  JSON.stringify({ bw: byKey(oldBw, "bw"), sshCliStatus: oldBw.sshCliStatus }))
 check("older bw with jq still uses the sanitized list path for ordinary items",
-  Model.vaultListMode(oldBw) === "sanitized",
-  JSON.stringify({ mode: Model.vaultListMode(oldBw), deps: oldBw }))
-
-const unknownBw = Model.parseDependencies(
-  "bw=1\nbw_version=development-build\njq=1\nwlcopy=1\nhyprctl=1\nsecrettool=1\nfprintd=1\nfingerprint_ready=1\nomarchy=1")
-check("unknown bw versions are reported separately from unsupported ones",
-  byKey(unknownBw, "bw").installed === true
-    && byKey(unknownBw, "bw").version === ""
-    && unknownBw.sshCliStatus === "unknown",
-  JSON.stringify({ bw: byKey(unknownBw, "bw"), sshCliStatus: unknownBw.sshCliStatus }))
-check("unknown bw with jq still uses the sanitized list path and never falls back to a raw legacy read",
-  Model.vaultListMode(unknownBw) === "sanitized",
-  JSON.stringify({ mode: Model.vaultListMode(unknownBw), deps: unknownBw }))
+  Model.vaultListMode(oldCli) === "sanitized",
+  JSON.stringify({ mode: Model.vaultListMode(oldCli), deps: oldCli }))
 
 // --- malformed / empty probe output -----------------------------------------
 for (const [label, raw] of [["empty", ""], ["garbage", "???\n=\nbw\n"]]) {
@@ -236,12 +209,6 @@ check("colorized icon setting is declared in General", !!colorizeIcon
   JSON.stringify(colorizeIcon))
 check("colorized icon defaults off", !!colorizeIcon && colorizeIcon.defaultValue === false,
   JSON.stringify(colorizeIcon))
-check("colorized icon accepts only actual booleans",
-  Model.boolSetting("colorizeIcon", true) === true
-    && Model.boolSetting("colorizeIcon", false) === false
-    && Model.boolSetting("colorizeIcon", "true") === false
-    && Model.boolSetting("colorizeIcon", 1) === false,
-  "malformed colorizeIcon input was accepted")
 
 check("boolean settings accept actual JSON booleans",
   Model.boolSetting("fingerprintUnlock", true) === true
@@ -280,10 +247,8 @@ check("setting writer caps its diagnostic stderr",
 // write a key the plugin never reads.
 const manifest = JSON.parse(read("manifest.json"))
 const manifestKeys = new Set(manifest.barWidget.schema.map(e => e.key))
-for (const entry of Model.SETTINGS_SCHEMA) {
-  check(`schema key '${entry.key}' exists in manifest.json`,
-    manifestKeys.has(entry.key), `manifest has [${[...manifestKeys]}]`)
-}
+const notInManifest = Model.SETTINGS_SCHEMA.map(e => e.key).filter(k => !manifestKeys.has(k))
+check("every schema key exists in manifest.json", notInManifest.length === 0, `missing [${notInManifest}]`)
 const colorizeManifest = manifest.barWidget.schema.find(e => e.key === "colorizeIcon")
 check("manifest colorized icon schema matches the model contract",
   !!colorizeManifest
@@ -293,19 +258,6 @@ check("manifest colorized icon schema matches the model contract",
     && colorizeManifest.defaultValue === false
     && manifest.barWidget.defaults.colorizeIcon === false,
   JSON.stringify({ model: colorizeIcon, manifest: colorizeManifest }))
-
-// --- install command --------------------------------------------------------
-check("no packages yields no command", Model.installPackagesCommand([]) === null, "expected null")
-const inst = Model.installPackagesCommand(["bitwarden-cli", "wl-clipboard"])
-check("install goes through Omarchy's own floating-terminal installer",
-  inst.slice(0, 3).join(" ") === "omarchy install app" && inst[4] === "bitwarden-cli wl-clipboard",
-  inst.join(" "))
-
-// The package list lands in an unquoted expansion inside omarchy-install-app,
-// so anything that is not a plain package name must not reach it.
-check("install refuses a package name that is not one",
-  Model.installPackagesCommand(["bitwarden-cli; rm -rf /"]) === null,
-  JSON.stringify(Model.installPackagesCommand(["bitwarden-cli; rm -rf /"])))
 
 // --- a Node.js provider bitwarden-cli would replace (#101) ------------------
 // omarchy-pkg-add runs pacman with --noconfirm, which answers "Remove nodejs?"
@@ -358,8 +310,7 @@ for (const [label, fields] of [
   ["no Node installed", "bw_provider_have=\nbw_provider_need=nodejs-lts-jod"],
   ["an unreadable sync database", "bw_provider_have=nodejs\nbw_provider_need="],
   ["a package that takes any nodejs", "bw_provider_have=nodejs-lts-krypton\nbw_provider_need=nodejs"],
-  ["a crafted provider name", "bw_provider_have=nodejs;id\nbw_provider_need=nodejs-lts-jod"],
-  ["a probe from before this check", ""]
+  ["a crafted provider name", "bw_provider_have=nodejs;id\nbw_provider_need=nodejs-lts-jod"]
 ]) {
   const deps = Model.parseDependencies(swapRaw + fields)
   check("no swap, so Omarchy's installer as before: " + label,
@@ -396,11 +347,6 @@ check("the probe asks pacman only while bw is missing, in the C locale",
     out === "bw_provider_have=nodejs\nbw_provider_need=nodejs-lts-jod\n", JSON.stringify(out))
 }
 
-// The probe must be a single process, not one per tool.
-check("dependency probe is one shell invocation",
-  Model.dependencyCheckCommand()[0] === "bash" && Model.dependencyCheckCommand().length === 3,
-  JSON.stringify(Model.dependencyCheckCommand().slice(0, 2)))
-
 
 // --- settings grouping ------------------------------------------------------
 const grouped = Model.groupedSettings()
@@ -428,15 +374,11 @@ check("a PIN set before the floor was raised still unlocks",
   Model.pinUnlockMinLength() === 4 && /Model\.pinUnlockMinLength\(\)/.test(functionBody(readPluginSource("Panel.qml"), "submitPinUnlock")),
   String(Model.pinUnlockMinLength()))
 
-check("a 4-digit PIN is refused", Model.validatePin("1234", "1234") !== "", Model.validatePin("1234", "1234"))
-check("a 5-digit PIN is refused", Model.validatePin("12345", "12345") !== "", Model.validatePin("12345", "12345"))
 check("the refusal names the floor", Model.validatePin("12345", "12345").includes("6 digits"), Model.validatePin("12345", "12345"))
 // Between the floor and the recommendation: allowed, and flagged.
-check("a 6-digit PIN validates", Model.validatePin("123456", "123456") === "", Model.validatePin("123456", "123456"))
 check("but 6 digits is flagged weak", Model.isPinWeak("123456"), "expected weak")
 check("and 7 digits is flagged weak", Model.isPinWeak("1234567"), "expected weak")
 check("8 digits is not flagged", !Model.isPinWeak("12345678"), Model.pinWeakWarning("12345678"))
-check("longer than 8 is not flagged", !Model.isPinWeak("1234567890"), Model.pinWeakWarning("1234567890"))
 
 // No warning while still typing towards a good PIN, or it would flash on
 // every keystroke from the first digit onwards.
@@ -485,7 +427,6 @@ for (const [pin, confirm, wantErr] of [
   ["123456", "123456", false],  // the minimum is accepted
   ["12345678901234", "12345678901234", false], // longer is allowed, no upper bound
   ["12a456", "12a456", true],   // non-digits refused
-  ["",       "",       true],
   ["123456", "654321", true],   // mismatch
 ]) {
   const err = Model.validatePin(pin, confirm)

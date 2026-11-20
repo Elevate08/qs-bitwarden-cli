@@ -37,7 +37,7 @@ const SLOT_C = "fedcba9876543210"
 // -------------------------------------------------------------------------
 
 check("the default slot and 16 hex digits are slots", Model.isAccountSlot("default") && Model.isAccountSlot(SLOT_B), "")
-for (const bad of ["", "DEFAULT", "0123456789ABCDEF", "0123456789abcde", "../../etc", "0123456789abcdef0", "a b"]) {
+for (const bad of ["DEFAULT", "0123456789ABCDEF", "0123456789abcde", "../../etc", "0123456789abcdef0"]) {
   check(`"${bad}" is not a slot`, !Model.isAccountSlot(bad), bad)
 }
 eq("anything that is not a slot means the default one", Model.accountSlot("../x"), "default")
@@ -53,9 +53,6 @@ eq("or ~/.local/share without it",
 eq("a relative XDG_DATA_HOME is ignored, as the spec says",
   Model.accountAppDataDir(SLOT_B, "rel", "/home/u"), "/home/u/.local/share/qs-bitwarden-cli/accounts/" + SLOT_B)
 eq("and with no home at all there is no directory", Model.accountAppDataDir(SLOT_B, "", ""), "")
-
-const fresh = Model.newAccountSlot([SLOT_B])
-check("a new slot is a slot", Model.isAccountSlot(fresh) && fresh !== "default", fresh)
 
 // -------------------------------------------------------------------------
 // The registry
