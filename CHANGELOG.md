@@ -276,8 +276,11 @@
   of every `bw` that has finished. A master password check still waiting or
   running at the lock is cancelled, not left to finish with the password.
   SSH approval cards and listed approvals the lock refused are taken down
-  when the agent confirms it, or stops. And an unlock that the vault helper
-  kept no key for, because a lock overtook it, says "Unlock was
+  when the agent confirms it, or stops. A Send still being made or deleted
+  at the lock no longer answers for one started after it (that one waits),
+  and a save or Send too large for the vault helper fails with a reason
+  instead of staying "Still saving" for good. And an unlock that the vault
+  helper kept no key for, because a lock overtook it, says "Unlock was
   interrupted. Try again." where it used to show an unlocked vault that
   could read nothing.
 

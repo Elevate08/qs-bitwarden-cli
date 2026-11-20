@@ -169,13 +169,18 @@ check("a lock drops the old master password held for a re-seal",
 check("and a legacy PIN kept for a migration, a Send draft's name and error, a confirmed re-prompt's item name",
   ["pendingPinForMigration", "sendFormName", "sendError", "repromptItemName"]
     .every(name => new RegExp("\\n\\s*" + name + ' = ""').test(body("dropVaultSecrets"))), body("dropVaultSecrets"))
-check("a search answer for a vault since closed is not taken",
-  /var epoch = vaultEpoch\s*vaultQuery\("search"[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*if \(epoch !== root\.vaultEpoch \|\|/.test(body("askHelperSearch")),
-  body("askHelperSearch"))
+check("a search answer for a vault since closed is not taken, and what waits for it holds no search text",
+  /searchAnswered\(searchAskSeq, vaultEpoch\)/.test(body("askHelperSearch")) && !/function\s*\(/.test(body("askHelperSearch").slice(10))
+    && /if \(epoch !== root\.vaultEpoch \|\|/.test(body("searchAnswered")),
+  body("askHelperSearch") + "\n" + body("searchAnswered"))
 check("and so does closing the panel",
   /rotationOldPassword = ""/.test(body("abandonAuthSecrets")), body("abandonAuthSecrets"))
 check("a lock, logout or switch drops a refused save's form",
   /failedSave = null/.test(body("dropVaultState")), body("dropVaultState"))
+check("a Send from before a lock still holding its process is waited for, so its exit answers for no Send of the next vault",
+  [["submitCreateSend", "createSendProc"], ["deleteSend", "deleteSendProc"]].every(([fn, proc]) =>
+    new RegExp("if \\(vaultProcBusy\\(" + proc + "\\)\\) \\{[^}]*return\\s*\\}[\\s\\S]*sendBusy = true").test(body(fn))),
+  body("submitCreateSend") + "\n" + body("deleteSend"))
 // Suggestions are vault items, and the key they were matched under spells
 // out the focused window's title.
 {

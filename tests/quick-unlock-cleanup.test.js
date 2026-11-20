@@ -252,6 +252,14 @@ for (const order of ["running PIN job exits first", "queued PIN job dropped last
     const answers = []
     v.verifyWithBw("typed-master", ok => answers.push(ok))
     const job = stage === "queued" ? v.envelopeJobs[0] : v.envelopeJob
+    if (stage === "popup") {
+      // An SSH popup answered, or the panel closed, while the vault stays
+      // open: authentication opens are given up, the check is not.
+      v.cancelEnvelopeUnlockJobs()
+      v.envelopeStdout.text = "A".repeat(88)
+      v.onEnvelopeJobExited(0)
+      return answers.join() === "true" && v.forgets === 0
+    }
     v.dropVaultState()
     v.status = "locked"
     const stopped = stage === "queued" || v.envelopeProc.running === false
@@ -260,11 +268,12 @@ for (const order of ["running PIN job exits first", "queued PIN job dropped last
       v.onEnvelopeJobExited(0)
     }
     return stopped && answers.join() === "false" && v.envelopeJobs.length === 0 && job.env === null
-      && !JSON.stringify(v.envelopeProc.environment || {}).includes("typed-master")
+      && !JSON.stringify(v.envelopeProc.environment || {}).includes("typed-master") && job.onDone === null
       // The lock's own forget, and none after it from the late exit.
       && v.forgets === 1 && v.session === ""
   }
-  check("a lock cancels a master password check, queued or running", cancelled("queued") && cancelled("running"))
+  check("a lock cancels a master password check, queued or running; giving up an unlock in an open vault does not",
+    cancelled("queued") && cancelled("running") && cancelled("popup"))
 }
 for (const invalidate of ["lock", "account switch", "epoch change"]) {
   const v = vault()

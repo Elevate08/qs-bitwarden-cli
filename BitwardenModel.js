@@ -6660,6 +6660,24 @@ function vaultExecLine(id, argv, env, inject, capture, stdin) {
   return vaultHelperLine("exec", fields)
 }
 
+// The helper's longest request (vault/src/control.rs MAX_LINE), in bytes
+// without the newline. It reads a longer one to its end and drops it without
+// a word, so a run sent that way never exits.
+var VAULT_HELPER_MAX_LINE_BYTES = 4 * 1024 * 1024
+
+function vaultHelperLineTooLong(line) {
+  var text = String(line || "").replace(/\n$/, "")
+  // A UTF-16 unit is one to three bytes (a surrogate pair four for two).
+  if (text.length > VAULT_HELPER_MAX_LINE_BYTES) return true
+  if (text.length * 3 <= VAULT_HELPER_MAX_LINE_BYTES) return false
+  var bytes = 0
+  for (var i = 0; i < text.length; i++) {
+    var code = text.charCodeAt(i)
+    bytes += code < 0x80 ? 1 : (code < 0x800 || (code >= 0xd800 && code <= 0xdfff) ? 2 : 3)
+  }
+  return bytes > VAULT_HELPER_MAX_LINE_BYTES
+}
+
 // A reply line, or null if it is not one.
 function parseVaultHelperLine(line) {
   try {

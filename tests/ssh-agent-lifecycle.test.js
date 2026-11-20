@@ -149,10 +149,26 @@ check("a lock acknowledgment timeout kills the helper",
   /id: sshAgentLockAckTimer\s+interval: Model\.sshAgentLockAckTimeoutMs\(\)[\s\S]{0,200}?onTriggered:[\s\S]{0,200}?sshAgentProc\.running = false/
     .test(panelSrc),
   "no acknowledgment timeout kills the helper within the model's bound")
-check("a locked acknowledgment stops the timer, and takes down the cards and grants from before it (so does a helper that stops)",
-  /"locked"[\s\S]{0,300}?sshAgentLockAckTimer\.stop\(\)\s*(?:\/\/[^\n]*\s*)*withdrawSshCards\(\)\s*root\.sshGrantsAnnounced = \[\]/.test(panelSrc)
-    && /if \(!sshAgentGateOpen\) \{\s*(?:\/\/[^\n]*\s*)*root\.sshGrantsAnnounced = \[\]/.test(panelSrc),
-  "the locked acknowledgment never stops the kill timer, or leaves refused requests and dropped grants on screen")
+// The approvals' takedown as written, over a stand-in that records every
+// function it calls: an unlock started since the lock, a message and the
+// panel are not its to touch, nor is a card held for an unlock.
+const ackTakedown = (() => {
+  const calls = []
+  const state = { sshPrompt: { requestId: 7 }, sshPromptQueue: [{ requestId: 8 }], sshPromptRaw: {}, sshPromotedOldId: 6,
+    sshPromotedRaw: {}, sshPromotedAmbiguous: true, sshUnlockRequest: null, sshUnlockRaw: null, sshUnlockQueue: [],
+    sshPromptOpenedPanel: true, currentScreen: "locked", screenBeforeSshApproval: "main", opened: true,
+    errorMessage: "Bitwarden did not lock", isUnlocking: true, unlockSubmitted: true }
+  const v = new Proxy(state, { has: (t, k) => typeof k === "string",
+    get: (t, k) => k === "root" ? v : k in t ? t[k] : (typeof k === "string" ? () => { calls.push(k) } : undefined) })
+  const fn = functionBody(panelSrc, "dropRefusedSshApprovals")
+  if (fn) new Function("scope", "with (scope) {\n" + fn + "\ndropRefusedSshApprovals() }")(v)
+  return fn !== "" && calls.join() === "stopSshNotifyFallback" && state.sshPrompt === null && state.sshPromptQueue.length === 0
+    && state.errorMessage === "Bitwarden did not lock" && state.isUnlocking && state.unlockSubmitted && state.opened
+})()
+check("a locked acknowledgment stops the timer, and takes down the approvals and grants from before it and nothing else (a helper that stops takes its grants too)",
+  /"locked"[\s\S]{0,300}?sshAgentLockAckTimer\.stop\(\)\s*dropRefusedSshApprovals\(\)\s*root\.sshGrantsAnnounced = \[\]/.test(panelSrc)
+    && /if \(!sshAgentGateOpen\) \{\s*(?:\/\/[^\n]*\s*)*root\.sshGrantsAnnounced = \[\]/.test(panelSrc) && ackTakedown,
+  "the locked acknowledgment never stops the kill timer, leaves refused approvals and dropped grants on screen, or ends an unlock")
 
 check("the panel's epoch follows the companion's past a logout",
   /function applySshAgentLifecycle\(event\)[\s\S]{0,700}?if \(action\.advanceEpoch\) sshAgentEpoch \+= 1/.test(panelSrc),

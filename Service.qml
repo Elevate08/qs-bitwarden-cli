@@ -1331,14 +1331,31 @@ Item {
     }
     vaultRunSeq += 1
     var id = vaultRunSeq
+    // Decided here, as the request is written, for the helper it goes to.
+    var capture = proc.capture === "vault" && vaultHelperStaging ? "vaultStage" : proc.capture
+    var line = Model.vaultExecLine(id, proc.command, environment, inject, capture, proc.stdinText)
+    // The helper would drop it unanswered, and whatever waits for this
+    // process would wait for good: it fails here instead.
+    if (Model.vaultHelperLineTooLong(line)) {
+      refuseVaultStart(proc, "Too large for the vault helper.")
+      return
+    }
     var runs = Object.assign({}, vaultRuns)
     runs[id] = proc
     vaultRuns = runs
     proc.runId = id
-    // Decided here, as the request is written, for the helper it goes to.
-    var capture = proc.capture === "vault" && vaultHelperStaging ? "vaultStage" : proc.capture
-    vaultHelperProc.write(Model.vaultExecLine(id, proc.command, environment, inject, capture, proc.stdinText))
+    vaultHelperProc.write(line)
     proc.started()
+  }
+
+  // Ends a run that was never sent, once its start has returned, unless it
+  // was started again meanwhile. Made apart from vaultStart() so the wait
+  // holds none of that run's environment.
+  function refuseVaultStart(proc, why) {
+    var seq = proc.startSeq
+    Qt.callLater(function() {
+      if (proc.startSeq === seq) proc.finish(1, "", why, false, false)
+    })
   }
 
   // The environment a fallback run gets: held values resolved here.
@@ -1817,19 +1834,22 @@ Item {
     Qt.callLater(pumpEnvelopeJobs)
   }
 
-  // A lock cancels only authentication opens and master password checks
-  // (`verify`: the typed password is in their environment, and what they
-  // would allow is in the vault being closed). Setup, re-seal and purge
-  // writes keep their place in the single-writer queue.
-  function cancelEnvelopeUnlockJobs() {
+  // Cancels only authentication opens; setup, re-seal and purge writes keep
+  // their place in the single-writer queue. With `withVerify`, which only
+  // the vault being dropped asks for (dropVaultState()), master password
+  // checks too (`verify`: the typed password is in their environment, and
+  // what they would allow is in the vault being closed). An unlock given up
+  // while the vault is open (an SSH popup answered, the panel closed)
+  // leaves them to finish.
+  function cancelEnvelopeUnlockJobs(withVerify) {
     envelopeJobs = envelopeJobs.filter(function(job) {
-      if (!job.unlock && !job.verify) return true
+      if (!job.unlock && !(withVerify && job.verify)) return true
       for (var key in job.env) root.forgetHeldPassword(job.env[key])
       job.env = null
       if (job.verify) root.refuseVerifyJob(job)
       return false
     })
-    if (envelopeJob && (envelopeJob.unlock || envelopeJob.verify)) {
+    if (envelopeJob && (envelopeJob.unlock || (withVerify && envelopeJob.verify))) {
       envelopeJob.cancelled = true
       if (envelopeJob.verify) refuseVerifyJob(envelopeJob)
       envelopeProc.running = false
@@ -1856,6 +1876,8 @@ Item {
   function refuseVerifyJob(job) {
     var refused = job.onRefused
     job.onRefused = null
+    // What would have taken the answer holds the typed password with it.
+    job.onDone = null
     if (refused) Qt.callLater(refused)
   }
 
@@ -2718,6 +2740,30 @@ Item {
         || root.sshPromptQueue.length > 0 || root.sshUnlockQueue.length > 0) dismissSshApproval()
   }
 
+  // The agent's lock ack (`locked`): every approval raised before it was
+  // refused, with no word for each, so their cards come down. Only that: a
+  // request held for an unlock is cancelled by a request_cancelled of its
+  // own and its card is left to that, and nothing here ends an unlock under
+  // way, clears a message or closes the panel, as answering or dismissing a
+  // card does (dismissSshApproval()). One raised after the lock is announced
+  // after the ack.
+  function dropRefusedSshApprovals() {
+    if (root.sshPrompt === null && root.sshPromptQueue.length === 0) return
+    stopSshNotifyFallback()
+    root.sshPromptRaw = null
+    root.sshPrompt = null
+    root.sshPromptQueue = []
+    root.sshPromotedOldId = null
+    root.sshPromotedRaw = null
+    root.sshPromotedAmbiguous = false
+    // The panel a card opened stays open, as nobody's.
+    if (root.sshUnlockRequest === null) root.sshPromptOpenedPanel = false
+    if (root.currentScreen === "sshApproval") {
+      root.currentScreen = root.screenBeforeSshApproval === "sshApproval"
+        ? "main" : root.screenBeforeSshApproval
+    }
+  }
+
   // Announce a cooldown that may have just started: it is the only
   // explanation for suddenly failing SSH commands.
   function noteSshCooldown() {
@@ -3265,10 +3311,7 @@ Item {
     if (message.type === "locked") {
       // The lock ack: signing denied, grants and private keys dropped.
       sshAgentLockAckTimer.stop()
-      // Every request raised before this is refused by now: approvals with
-      // no word of their own, ones held for an unlock each with a
-      // request_cancelled. One held after the lock is announced after this.
-      withdrawSshCards()
+      dropRefusedSshApprovals()
       root.sshGrantsAnnounced = []
       return
     }
@@ -5174,6 +5217,12 @@ Item {
       sendError = "Nothing to send -- enter some text"
       return
     }
+    // One from before a lock may still hold the process; its exit would
+    // answer for this one (as for a save, saveItemForm()).
+    if (vaultProcBusy(createSendProc)) {
+      sendError = "Still creating the last Send -- one moment"
+      return
+    }
     sendError = ""
     sendBusy = true
     sendPayloadJson = JSON.stringify(Model.buildSendPayload(
@@ -5214,6 +5263,10 @@ Item {
 
   function deleteSend(send) {
     if (!send || !send.id) return
+    if (vaultProcBusy(deleteSendProc)) {
+      sendError = "Still deleting the last Send -- one moment"
+      return
+    }
     sendBusy = true
     beginVaultRead("sendDelete")
     deleteSendProc.command = Model.deleteSendCommand(send.id)
@@ -7047,7 +7100,7 @@ Item {
     autoSyncReloadPending = false
     initialSyncAttempted = false
     pinUnlockSubmitted = false
-    cancelEnvelopeUnlockJobs()
+    cancelEnvelopeUnlockJobs(true)
     // A question for the old vault's password is no longer wanted.
     cancelPinentry()
     resetPinentryChoice()
@@ -9004,19 +9057,32 @@ Item {
   property var searchAnsweredIds: null
   property string searchAskedQuery: ""
 
+  // Moves with every question and every invalidation: an answer is for the
+  // text in searchAskedQuery only while this is what it was when asked.
+  property int searchAskSeq: 0
+
   function invalidateHelperSearch() {
     searchAnsweredQuery = ""
     searchAnsweredIds = null
     searchAskedQuery = ""
+    searchAskSeq += 1
   }
 
   function askHelperSearch(query) {
     if (searchAskedQuery === query) return
     searchAskedQuery = query
-    var epoch = vaultEpoch
-    vaultQuery("search", { query: query }, function(ok, ids) {
+    searchAskSeq += 1
+    vaultQuery("search", { query: query }, searchAnswered(searchAskSeq, vaultEpoch))
+  }
+
+  // Made in a function of its own, as commitAnswered() is: a closure made in
+  // askHelperSearch() would keep the search text until the helper answered,
+  // across a lock.
+  function searchAnswered(seq, epoch) {
+    return function(ok, ids) {
       // An answer for a vault since closed is another vault's ids.
-      if (epoch !== root.vaultEpoch || root.searchAskedQuery !== query) return
+      if (epoch !== root.vaultEpoch || seq !== root.searchAskSeq) return
+      var query = root.searchAskedQuery
       var found = {}
       var list = ok && Array.isArray(ids) ? ids
         : Model.filterItems(root.items, query, "all", "all", "all").map(function(it) { return it.id })
@@ -9024,7 +9090,7 @@ Item {
       root.searchAnsweredQuery = query
       root.searchAnsweredIds = found
       root.rebuildFilter()
-    })
+    }
   }
 
   function rebuildFilter() {

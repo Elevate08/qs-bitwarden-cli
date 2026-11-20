@@ -183,6 +183,14 @@ check("quick unlock's master password stays in the helper",
     && /envelopeProc\.outputHeld \? Model\.heldSecretRef\(job\.heldName\)/.test(body("onEnvelopeJobExited")), "")
 check("a held reference in an environment travels by name",
   /Model\.heldSecretName\(proc\.environment\[key\]\)[\s\S]{0,80}inject\[key\] = "secret:" \+ held/.test(body("vaultStart")), body("vaultStart"))
+// The helper drops a longer line unanswered: a save sent that way never
+// ended, and the process stayed busy for good.
+check("a request longer than the helper reads (in bytes) is not sent; its run fails instead",
+  Model.vaultHelperLineTooLong("x".repeat(4194305) + "\n") && !Model.vaultHelperLineTooLong("x".repeat(4194304) + "\n")
+    && Model.vaultHelperLineTooLong("é".repeat(2097153)) && !Model.vaultHelperLineTooLong("é".repeat(2097152))
+    && /if \(Model\.vaultHelperLineTooLong\(line\)\) \{\s*refuseVaultStart\(proc, [^\n]*\n\s*return\s*\}\s*var runs/.test(body("vaultStart"))
+    && /proc\.finish\(1, /.test(body("refuseVaultStart")),
+  body("vaultStart"))
 check("a password copy goes from the helper to wl-copy",
   /vaultQuery\("copyPassword"/.test(body("copyPasswordNow")), body("copyPasswordNow"))
 check("only one place asks the helper for a whole item (the edit form: tests/detail-on-demand.test.js)",
@@ -190,7 +198,7 @@ check("only one place asks the helper for a whole item (the edit form: tests/det
 check("a TOTP key the helper does not mirror is asked of bw",
   /root\.fetchTotp\(requested, false, true\)/.test(body("fetchTotp")), "")
 check("search asks the helper, and an answer for old text is dropped",
-  /vaultQuery\("search"/.test(body("askHelperSearch")) && /root\.searchAskedQuery !== query\) return/.test(body("askHelperSearch")), "")
+  /vaultQuery\("search"/.test(body("askHelperSearch")) && /seq !== root\.searchAskSeq\) return/.test(body("searchAnswered")), "")
 // A lock of its own here once skipped the SSH agent, which kept signing with
 // the vault's keys behind a panel that said it was locked.
 check("a helper that stops locks a vault it held the key for, with the ordinary lock and not a copy of it",
