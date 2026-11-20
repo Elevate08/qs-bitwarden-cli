@@ -3426,16 +3426,11 @@ function itemTypeGlyph(type) {
   }
 }
 
+var ITEM_TYPE_LABELS = { login: "Login", secureNote: "Secure Note", card: "Card", identity: "Identity", sshKey: "SSH Key" }
+
 function itemTypeLabel(type) {
   var t = itemTypeName(type)
-  switch (t) {
-    case "login": return "Login"
-    case "secureNote": return "Secure Note"
-    case "card": return "Card"
-    case "identity": return "Identity"
-    case "sshKey": return "SSH Key"
-    default: return "Item"
-  }
+  return ITEM_TYPE_LABELS.hasOwnProperty(t) ? ITEM_TYPE_LABELS[t] : "Item"
 }
 
 // -------------------------------------------------------------------------
@@ -5769,16 +5764,8 @@ function normalizeReleaseVersion(raw) {
 function compareReleaseVersions(a, b) {
   var left = normalizeReleaseVersion(a)
   var right = normalizeReleaseVersion(b)
-  if (!left || !right) return null
-  var la = left.split(".")
-  var ra = right.split(".")
-  for (var i = 0; i < 3; i++) {
-    var lv = Number(la[i] || 0)
-    var rv = Number(ra[i] || 0)
-    if (lv < rv) return -1
-    if (lv > rv) return 1
-  }
-  return 0
+  // Normalized, each is three plain numbers, which compareSemver() orders.
+  return left && right ? compareSemver(left, right) : null
 }
 
 function dependencyByKey(deps, key) {
@@ -6242,30 +6229,22 @@ function parseExitCodeResult(exitCode, stdout, parseSuccess, failureMap, default
 }
 
 function parseUwsmInspection(raw) {
-  var verdict = String(raw === undefined || raw === null ? "" : raw).trim()
-  switch (verdict) {
-    case "managed":
-      return { state: "managed", removable: true,
-        message: "Routing is set up. " + uwsmFragmentDisplayPath() + " is the file this plugin wrote, "
-          + "and turning the agent off removes it." }
-    case "absent":
-      return { state: "absent", removable: false,
-        message: "No routing file. SSH clients will keep using whatever agent your session already has." }
-    case "symlink":
-      return { state: "symlink", removable: false,
-        message: uwsmFragmentDisplayPath() + " is a symlink, so this plugin will not write to it or "
-          + "remove it. Replace it with a regular file yourself if you want it managed here." }
-    case "unreadable":
-      return { state: "unreadable", removable: false,
-        message: uwsmFragmentDisplayPath() + " exists but cannot be read, so it is left alone." }
-    case "no-home":
-      return { state: "no-home", removable: false,
-        message: "No HOME is set, so there is nowhere to put a routing file." }
-    default:
-      return { state: "foreign", removable: false,
-        message: uwsmFragmentDisplayPath() + " already exists and is not the file this plugin writes, "
-          + "so it is left untouched. Remove or edit it yourself to change routing." }
+  var where = uwsmFragmentDisplayPath()
+  var messages = {
+    "managed": "Routing is set up. " + where + " is the file this plugin wrote, "
+      + "and turning the agent off removes it.",
+    "absent": "No routing file. SSH clients will keep using whatever agent your session already has.",
+    "symlink": where + " is a symlink, so this plugin will not write to it or "
+      + "remove it. Replace it with a regular file yourself if you want it managed here.",
+    "unreadable": where + " exists but cannot be read, so it is left alone.",
+    "no-home": "No HOME is set, so there is nowhere to put a routing file.",
+    "foreign": where + " already exists and is not the file this plugin writes, "
+      + "so it is left untouched. Remove or edit it yourself to change routing."
   }
+  var verdict = String(raw === undefined || raw === null ? "" : raw).trim()
+  // An unrecognised verdict reads as a file that is not this plugin's.
+  var state = messages.hasOwnProperty(verdict) ? verdict : "foreign"
+  return { state: state, removable: state === "managed", message: messages[state] }
 }
 
 // The status line about routing, judged by the fragment file (what the next
