@@ -1941,11 +1941,14 @@ Item {
   // else `otherwise()`.
   function withEnvelopeAccount(then, otherwise) {
     if (accountId) { then(); return }
+    var epoch = vaultEpoch
+    accountStatusEpoch = epoch
     queueEnvelopeJob({
       command: Model.statusCommand(),
       env: bwEnv(), session: true,
       onDone: function(code, out) {
         var st = code === 0 ? Model.parseStatus(out) : null
+        root.accountStatusAnswered(epoch, st)
         if (st && st.userId) {
           root.accountId = st.userId
           root.accountServer = st.serverUrl
@@ -1956,6 +1959,31 @@ Item {
         }
       }
     })
+  }
+
+  // The vault withEnvelopeAccount() last asked `bw status` about (-1: none),
+  // in flight or answered. The check that names a new sign-in once its list
+  // has painted (statusRefreshAfterItems) is after the same answer, so for
+  // that vault it starts no second `bw status` and notes that it is waiting.
+  // Both are generations: a lock, logout, account switch or new unlock moves
+  // `vaultEpoch` on, and nothing asked before it is used after it.
+  property int accountStatusEpoch: -1
+  property int accountStatusAwaitedEpoch: -1
+
+  // What a status check that is not authoritative takes from its answer
+  // (onStatusFinished()); one that failed is asked again if it was waited for.
+  function accountStatusAnswered(epoch, st) {
+    if (epoch !== vaultEpoch || accountStatusEpoch !== epoch) return
+    if (st && st.userId) {
+      Qt.callLater(maybeMigrateLegacyFingerprint)
+      if (st.userEmail) {
+        userEmail = st.userEmail
+        if (!loginEmail) loginEmail = st.userEmail
+      }
+      return
+    }
+    accountStatusEpoch = -1
+    if (accountStatusAwaitedEpoch === epoch && status === "unlocked") runStatusCheck(false)
   }
 
   // The only writer of the stored password: called when `bw` just accepted a
@@ -9706,7 +9734,9 @@ Item {
       root.loadPendingMetadata()
       if (root.statusRefreshAfterItems) {
         root.statusRefreshAfterItems = false
-        root.runStatusCheck(false)
+        // Already asked for this vault (withEnvelopeAccount()): that answer.
+        if (root.accountStatusEpoch === root.vaultEpoch) root.accountStatusAwaitedEpoch = root.vaultEpoch
+        else root.runStatusCheck(false)
       }
     }
   }

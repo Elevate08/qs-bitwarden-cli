@@ -331,6 +331,7 @@
   no secret and stopped when the panel closes.
   Beside the list, the arrows now show each item's detail at once instead
   of 120 ms after the cursor stops, when the detail needs no `bw` read.
+  And a first sign-in runs one `bw status` to name the account, not two.
 - **An answer given as the vault opens reaches its SSH request.** A request
   held for an unlock gets a new number once the keys are loaded; the helper
   now names the request the new number belongs to and answers to the old one
