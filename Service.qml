@@ -3045,7 +3045,11 @@ Item {
   property bool sshPromotedAmbiguous: false
 
   function adoptSshPrompt(message) {
+    // Only the card the promotion put up: once that one was answered and
+    // another request is shown, an adoption would hand this request's id to
+    // the other's card.
     if (root.sshPromotedOldId !== null && root.sshPrompt
+        && root.sshPrompt.requestId === root.sshPromotedOldId
         && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
       // A notification already up was shown for this request under its old
       // id: its Deny stays this request's, and no other's. Where this may be

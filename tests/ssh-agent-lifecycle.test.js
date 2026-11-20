@@ -430,8 +430,14 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
     check(`a different ${field} is not adopted`, w.sshPrompt.requestId === 1 && w.sshPromptQueue.length === 1,
       JSON.stringify(w.sshPrompt))
   }
-  eq("without the promoted message nothing is adopted",
-    makeVault({ requestId: 1, raw: null }).adoptSshPrompt(approvalOf(40, a)), false)
+  // The promoted card was answered and the next request is shown: the
+  // renumbered one must not take that card over.
+  const moved = makeVault({ requestId: 1, raw: a })
+  moved.sshPrompt = { requestId: 20 }
+  moved.onSshAgentMessage(approvalOf(21, a))
+  eq("without the promoted message, or with another request's card up, nothing is adopted",
+    [makeVault({ requestId: 1, raw: null }).adoptSshPrompt(approvalOf(40, a)), moved.sshPrompt.requestId,
+      moved.sshPromptQueue.map(m => m.requestId).join()].join(), "false,20,21")
 }
 
 done()
