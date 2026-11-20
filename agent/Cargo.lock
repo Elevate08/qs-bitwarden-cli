@@ -346,6 +346,7 @@ name = "qs-bitwarden-ssh-agent"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "rand_chacha",
  "rand_core",
  "rsa",
  "rustix",
