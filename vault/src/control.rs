@@ -112,6 +112,19 @@ pub enum Request {
         q: u64,
         query: String,
     },
+    /// The list read staged under `stage` (a `vaultStage` capture's exit
+    /// says which) becomes the store's items. Answered: a failure means
+    /// that read is no longer the one staged, and nothing changed.
+    CommitVault {
+        v: u8,
+        q: u64,
+        stage: u64,
+    },
+    /// Drop the list read staged under `stage`: the panel will not show it.
+    DiscardVault {
+        v: u8,
+        stage: u64,
+    },
     Shutdown {
         v: u8,
     },
@@ -134,6 +147,8 @@ impl Request {
             | Self::AutoType { v, .. }
             | Self::Totp { v, .. }
             | Self::Search { v, .. }
+            | Self::CommitVault { v, .. }
+            | Self::DiscardVault { v, .. }
             | Self::Shutdown { v } => *v,
         }
     }
@@ -149,6 +164,11 @@ pub enum Capture {
     Session,
     /// A vault read: keep the items, hand over the rest. Replaces the store.
     Vault,
+    /// As `Vault`, but the items are staged: the store is replaced only when
+    /// the panel commits the read (`Request::CommitVault`).
+    /// With the id the read is staged under, given when it is asked for
+    /// (0 as parsed).
+    VaultStage(u64),
     /// A saved item: as `Vault`, but updates only the items it names.
     VaultMerge,
     /// Keep stdout as a named secret.
@@ -165,6 +185,7 @@ impl Capture {
             "plain" => Some(Self::Plain),
             "session" => Some(Self::Session),
             "vault" => Some(Self::Vault),
+            "vaultStage" => Some(Self::VaultStage(0)),
             "vaultMerge" => Some(Self::VaultMerge),
             other => other
                 .strip_prefix("secret:")
@@ -239,6 +260,12 @@ mod tests {
         ));
         assert!(parse(r#"{"type":"forgetItem","v":1,"id":"a","extra":1}"#).is_err());
         assert!(parse(r#"{"type":"forgetItem","v":2,"id":"a"}"#).is_err());
+        assert!(matches!(
+            parse(r#"{"type":"commitVault","v":1,"q":2,"stage":7}"#),
+            Ok(Request::CommitVault { q: 2, stage: 7, .. })
+        ));
+        // A commit names the read it means.
+        assert!(parse(r#"{"type":"commitVault","v":1,"q":2}"#).is_err());
         let exec = parse(
             r#"{"type":"exec","v":1,"id":3,"argv":["bw","status"],"inject":{"BW_SESSION":"session"},"env":{"A":"b","C":null}}"#,
         );

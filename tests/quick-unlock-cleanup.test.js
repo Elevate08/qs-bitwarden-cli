@@ -27,7 +27,7 @@ function vault() {
     fingerprintAuthorized: true, pinAttempts: 1, pendingUnlockFrom: "", pinFromEnvelope: false,
     heldPinName: "", pinEntry: "", pendingPinForMigration: "", session: "", readEpochs: {},
     forgotten: [], unlocks: [], refreshes: 0, activeSlot: "default", vaultEpoch: 4,
-    logoutPending: false, allCredentialsClearPending: false,
+    logoutPending: false, allCredentialsClearPending: false, listProc: {},
     loginSubmitted: false, unlockSubmitted: false, statusRecheckAfterUnlock: false, statusChecks: 0,
     runStatusCheck() { this.statusChecks++ }, pinUnlockError: "", fingerprintError: "", fingerprintMessage: "",
     envelopeJobs: [], envelopeJob: null, envelopeProc: { running: false, outputHeld: true },

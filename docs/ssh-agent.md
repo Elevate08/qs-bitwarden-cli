@@ -116,6 +116,10 @@ omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 
 `omarchy-shell io.github.elevate08.qs-bitwarden-cli sshAgentStatus` reports `helperSource`, `helperChecksum` and `helperState` if you want the verdict without opening the panel.
 
+#### Known limits
+
+When a list read's key batch failed and the read that replaces it fails as well, the agent has no keys until the next list read (a refresh, a sync or a save) succeeds. A signing request that arrives in the instant the last approval is answered can be failed by the key load that follows it, and has to be run again.
+
 #### What this does not defend against
 
 - **Anything running as you.** The socket enforces the peer's UID and nothing more. A process running as you can ask for signatures -- it gets a prompt, and the cooldown limits how often it can raise one -- and it can equally replace the helper, the checksum file, and the QML that checks them. It can also answer a prompt without you: the helper takes `approve` from whoever holds its stdin, and a same-UID program can open the panel's end of that pipe through `/proc/<panel pid>/fd/` (Yama's `ptrace_scope=1` does not block that) and approve a request that is waiting. A per-request secret in the prompt would not stop it, because the prompt reaches the panel over the helper's stdout pipe, which that program can open and read the same way. Filesystem permissions own that boundary; the plugin cannot defend itself against a same-UID attacker, and neither can any other agent.

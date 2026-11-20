@@ -23,7 +23,7 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
   "onDeleteItemFinished", "reconcileOpenDetail", "totpWanted",
-  "isFieldRevealed", "itemChangeRunning"]
+  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "discardStagedList", "listReadFailed"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
 // a run only when none is held (runId 0); to false it asks for a kill, and
@@ -71,7 +71,7 @@ function fixture() {
   const c = {
     Model, runs, console,
     session: "session-a", status: "unlocked", vaultEpoch: 1, readEpochs: {}, queuedReads: {},
-    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, createdItemHandoff: null,
+    vaultChanges: 0, listReadChanges: 0, listRereadOwed: false, listCommitRetried: false, createdItemHandoff: null,
     pendingSave: null, pendingDelete: null, recheckArmedAutoType() {}, recheckTotpFollowup() {}, sshTotalPendingCount: 0,
     vaultHelperActive: true, dependencies: deps,
     items: [], filteredItems: [], organizations: [], folders: [], sends: [], sendIndex: 0,
@@ -101,17 +101,55 @@ function fixture() {
     "listSendsStdout", "getItemStdout", "getItemStderr"]) c[id] = { text: "" }
   for (const name of ["cancelEnvelopeUnlockJobs", "cancelPinentry", "resetPinentryChoice", "cancelFingerprintUnlock",
     "cancelFidoUnlock", "cancelAttachmentDownloads", "forgetVault", "resetItemForm", "dropVaultSecrets"]) c[name] = () => {}
+  // The vault helper's items, as far as list reads go (vault/src/store.rs).
+  // One that stages sets a read aside under an id and answers from what it
+  // held until that id is committed; one from before staging takes each read
+  // as it is printed. A save's answer goes into what is held and ends a read
+  // staged before it; a forgotten item leaves both; a forget drops everything.
+  const helper = c.helper = { staging: true, held: [], staged: null, seq: 0, lines: [] }
+  helper.read = rows => {
+    if (!helper.staging) { helper.held = rows; return 0 }
+    helper.staged = { id: ++helper.seq, rows }
+    return helper.seq
+  }
+  helper.merge = rows => { helper.staged = null; helper.held = helper.held.filter(id => !rows.includes(id)).concat(rows) }
+  // `defer`: it has dealt with a request, and its answer is still on the
+  // way to the panel until answer().
+  c.vaultQuery = (type, fields, done) => {
+    helper.lines.push(type)
+    const ok = type === "commitVault" && !!helper.staged && helper.staged.id === fields.stage
+    if (ok) { helper.held = helper.staged.rows; helper.staged = null }
+    helper.answer = () => done(ok, ok ? true : null)
+    if (!helper.defer) helper.answer()
+  }
+  c.vaultHelperProc = { write(line) {
+    const m = JSON.parse(line)
+    helper.lines.push(m.type)
+    if (m.type === "discardVault" && helper.staged && helper.staged.id === m.stage) helper.staged = null
+  } }
+  c.forgetVaultItem = id => {
+    c.forgotten.push(id)
+    helper.held = helper.held.filter(held => held !== id)
+    if (helper.staged) helper.staged.rows = helper.staged.rows.filter(row => row !== id)
+  }
+  c.forgetVault = () => { helper.held = []; helper.staged = null }
+  const rowIds = out => { try { return JSON.parse(out).items.map(i => i.id) } catch (e) { return null } }
+  c.rowIds = rowIds
   c.root = c
   vm.createContext(c)
   vm.runInContext(functions.map(n => functionBody(source, n)).join("\n"), c)
   for (const id of ["listProc", "listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"])
     vm.runInContext(`function exit_${id}(exitCode) {\n${exitHandler(id)}\n}`, c)
   // A run of `id` ends: its output is in the collectors, then exited().
-  c.exit = (id, code, out, err) => {
+  // `between`: what happens after the helper has dealt with the output and
+  // before the panel reads the exit.
+  c.exit = (id, code, out, err, between) => {
     const stem = id.replace(/Proc$/, "")
     c[stem + "Stdout"].text = out || ""
     if (c[stem + "Stderr"]) c[stem + "Stderr"].text = err || ""
     c[id].end()
+    if (id === "listProc") c.listProc.staged = code === 0 && rowIds(out) ? helper.read(rowIds(out)) : 0
+    if (between) between()
     c["exit_" + id](code)
   }
   // Lock, logout or account switch, then another vault opened.
@@ -369,8 +407,8 @@ for (const [name, id, out, starter] of READERS) {
 // --- a save or delete while a list refresh is in flight -------------------------------
 // The save's answer and the refresh's can arrive in either order. The saved
 // item goes in once, under the id the save answered with, and a snapshot
-// started before the save (or delete) finished is read again, not shown: it
-// has replaced the helper's items as well, so only a new read puts both right.
+// started before the save (or delete) finished is read again, not shown, and
+// the helper drops what it set aside of it.
 const draft = { type: 1, name: "New login", notes: "", favorite: false, login: { username: "me", password: "pw", uris: [] } }
 const provisionalId = Model.pendingItemId(777)
 const savedId = "55555555-5555-5555-5555-555555555555"
@@ -389,7 +427,10 @@ function saving(open) {
   if (open) { c.currentScreen = "detail"; c.detailItem = { id: provisionalId, name: "New login", pending: true } }
   return c
 }
-const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFinished(code, out, code ? "refused" : "") }
+const finishSave = (c, code, out) => {
+  if (code === 0 && c.rowIds(out)) c.helper.merge(c.rowIds(out))      // the helper keeps a save's answer as the run ends
+  c.createItemProc = null; c.onSaveItemFinished(code, out, code ? "refused" : "")
+}
 {
   // (a) The refresh, which already lists the saved item, answers first.
   const c = saving(true)
@@ -507,6 +548,82 @@ const finishSave = (c, code, out) => { c.createItemProc = null; c.onSaveItemFini
   c.loadItems(false)
   c.exit("listProc", 0, listOf(stored(oldId, "Old"), stored(savedId, "New login")), "")
   check("and the next list is accepted", c.items.length === 2)
+}
+{
+  // What the helper answers from is the last list both sides accepted.
+  const c = saving(false)
+  c.loadItems(false)
+  finishSave(c, 0, savedAnswer)
+  c.exit("listProc", 0, listOf(stored(oldId, "Old")), "")           // from before the save: refused
+  c.exit("listProc", 1, "", "Could not safely read vault items.")    // and its re-read fails
+  eq("a refused snapshot whose re-read fails leaves the helper on the list before it, the saved item included",
+    c.helper.held.join() + "/" + JSON.stringify(c.helper.staged), [oldId, savedId].join() + "/null")
+  const u = fixture()
+  u.loadItems(false); u.vaultChanges += 1; u.loadItems(false)
+  u.exit("listProc", 0, vaultOf("old"), "")
+  const dropped = u.helper.held.length === 0 && u.helper.staged === null
+  u.exit("listProc", 0, vaultOf("new"), "")
+  check("a superseded read is dropped by the helper, and the read that is shown is the one it takes",
+    dropped && u.helper.held.join() === "id-new" && names(u) === "new", JSON.stringify(u.helper))
+  // The helper refuses the commit (the read is no longer the one staged).
+  const r = fixture()
+  r.syncReloadPending = true; r.isSyncing = true
+  r.loadItems(false)
+  r.exit("listProc", 0, vaultOf("x"), "", () => { r.helper.staged = null })
+  const reread = names(r) === "" && r.isSyncing && r.runsOf("listProc").length === 2
+  r.exit("listProc", 0, vaultOf("x"), "", () => { r.helper.staged = null })
+  check("a list whose commit the helper refuses is not shown: it is read again once, and then is a failed read",
+    reread && names(r) === "" && r.runsOf("listProc").length === 2 && r.errorMessage !== "" && r.itemsLoadedAt === 0 && !r.isSyncing,
+    JSON.stringify({ reread, runs: r.runsOf("listProc").length, error: r.errorMessage }))
+  // The helper has taken the list and its answer is on the way: what it
+  // took is shown whatever happens meanwhile, and nothing reads the list
+  // until then.
+  const w = fixture()
+  w.helper.defer = true
+  w.loadItems(false)
+  w.exit("listProc", 0, listOf(stored("id-a", "a"), stored("id-b", "b")), "")
+  w.pendingDelete = { id: "id-a", name: "a", previous: null }; w.readEpochs.itemDelete = w.vaultEpoch
+  w.onDeleteItemFinished(0, "", "")                      // a delete in this vault finishes meanwhile
+  const before = names(w) === "" && w.runsOf("listProc").length === 1
+  w.helper.answer()
+  const shown = names(w) === "a,b" && w.forgotten.join() === "id-a" && w.runsOf("listProc").length === 2
+  w.exit("listProc", 0, listOf(stored("id-b", "b")), ""); w.helper.answer()
+  check("a list the helper has taken is always shown, and a delete finished meanwhile has it read again",
+    before && shown && names(w) === "b" && w.helper.held.join() === "id-b", JSON.stringify({ before, shown, now: names(w) }))
+  const g = fixture()
+  g.helper.defer = true
+  g.loadItems(false); g.exit("listProc", 0, vaultOf("a"), "")
+  g.loadItems(true)                                      // a refresh asked for meanwhile
+  const waited = g.runsOf("listProc").length === 1
+  g.helper.answer()
+  check("a read asked for while the helper's answer is awaited waits for it, then runs",
+    waited && names(g) === "a" && g.runsOf("listProc").length === 2 && g.isLoading, JSON.stringify({ waited, runs: g.runsOf("listProc").length }))
+  // The account before had a delete running, of an item this account has
+  // too; it ends while this account's list is staged.
+  const d = fixture()
+  d.pendingDelete = { id: "id-shared", name: "shared", previous: null }; d.readEpochs.itemDelete = d.vaultEpoch
+  d.reopenAs("session-b")
+  d.loadItems(false)
+  d.exit("listProc", 0, vaultOf("shared"), "", () => d.onDeleteItemFinished(0, "", ""))
+  check("a delete left over from the vault before tells the helper nothing: the row shown is one it holds",
+    d.forgotten.length === 0 && d.helper.held.join() === "id-shared" && names(d) === "shared", JSON.stringify(d.helper) + names(d))
+  Object.assign(u.listProc, { staged: 7, committing: 7 }); u.listCommitRetried = true
+  u.dropVaultState()
+  check("a lock drops the staged read's id, the commit awaited and its retry",
+    u.listProc.staged === 0 && !u.listProc.committing && !u.listCommitRetried)
+  // Another session is handed over (a terminal sign-in) while the helper's
+  // answer is on the way: its read waits for that answer, which is for a
+  // vault no longer open.
+  const h = fixture()
+  h.helper.defer = true
+  h.loadItems(false); h.exit("listProc", 0, vaultOf("before"), "")
+  h.session = "session-b"; h.vaultEpoch += 1
+  h.loadItems(true)
+  h.helper.answer()
+  const started = names(h) === "" && h.runsOf("listProc").length === 2
+  h.exit("listProc", 0, vaultOf("after"), ""); h.helper.answer()
+  check("a session handed over while the helper's answer is awaited is not left waiting: the answer shows nothing and its read runs",
+    started && names(h) === "after", JSON.stringify({ started, runs: h.runsOf("listProc").length, now: names(h) }))
   const q = fixture()
   q.loadItems(false); q.vaultChanges += 1; q.loadItems(false)
   q.exit("listProc", 0, vaultOf("old"), "")
