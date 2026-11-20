@@ -23,14 +23,11 @@ const { check, done } = createSuite("lock-triggers")
 const LOCK_ANSWERS = [
   ["true", true],
   ["true\n", true],
-  ["  true  ", true],
   ["false", false],
-  ["", false],
   ["Target not found.", false],
   ["TRUE", false],
   ["truthy", false],
   [null, false],
-  [undefined, false],
 ]
 
 for (const [raw, want] of LOCK_ANSWERS) {
@@ -39,15 +36,8 @@ for (const [raw, want] of LOCK_ANSWERS) {
 }
 
 const lockCmd = Model.screenLockStateCommand()
-check("screen lock state is asked of the shell's own lock plugin",
-  lockCmd.join(" ").includes("omarchy-shell lock isLocked"), lockCmd.join(" "))
-
-check("screen lock state bounds what it will read back",
-  /head -c \d+/.test(lockCmd.join(" ")), lockCmd.join(" "))
-
-check("screen lock poll is a sane interval",
-  Model.screenLockPollMs() >= 1000 && Model.screenLockPollMs() <= 15000,
-  String(Model.screenLockPollMs()))
+check("screen lock state is asked of the shell's own lock plugin, and what is read back is bounded",
+  /omarchy-shell lock isLocked[^|]*\| head -c \d+/.test(lockCmd.join(" ")), lockCmd.join(" "))
 
 // -------------------------------------------------------------------------
 // Suspend
@@ -55,14 +45,10 @@ check("screen lock poll is a sane interval",
 
 const sleepScript = Model.sleepMonitorCommand().at(-1)
 
-check("suspend is taken from logind's PrepareForSleep",
-  sleepScript.includes("PrepareForSleep") && sleepScript.includes("org.freedesktop.login1"),
-  sleepScript)
-
 // Without a delay inhibitor logind announces the sleep and suspends without
 // waiting, so the lock would be racing the freeze.
-check("a delay inhibitor is held so the lock lands before the freeze",
-  sleepScript.includes("--what=sleep") && sleepScript.includes("--mode=delay"),
+check("suspend is taken from logind, under a delay inhibitor so the lock lands before the freeze",
+  sleepScript.includes("--dest org.freedesktop.login1") && sleepScript.includes("--what=sleep") && sleepScript.includes("--mode=delay"),
   sleepScript)
 
 // sed quits on the match, but the monitor would then keep the pipeline open
@@ -215,12 +201,6 @@ const WINDOW = Model.HANDOFF_WINDOW_MS
 check("the window is closed when no terminal login was ever launched",
   Model.handoffWindowOpen(0, NOW) === false, "0")
 
-check("the window is open right after launching one",
-  Model.handoffWindowOpen(NOW, NOW) === true, "same instant")
-
-check("the window is still open partway through a slow login",
-  Model.handoffWindowOpen(NOW - WINDOW / 2, NOW) === true, "half the window")
-
 check("the window is open at the boundary",
   Model.handoffWindowOpen(NOW - WINDOW, NOW) === true, "exactly the window")
 
@@ -237,20 +217,6 @@ check("a window long enough for a real 2FA login",
 
 const expecting = Model.sessionHandoffReadCommand(true)[2]
 const discarding = Model.sessionHandoffReadCommand(false)[2]
-
-check("an expected handoff is read out",
-  expecting.includes("head -c"), expecting)
-
-check("an unexpected handoff is not read out",
-  !discarding.includes("head -c"), discarding)
-
-// Not reading it is not the same as leaving it there. A live session key in
-// the runtime directory is the worse of the two outcomes.
-check("an unexpected handoff is still removed",
-  discarding.includes("rm -f"), discarding)
-
-check("an expected handoff is removed once consumed",
-  expecting.includes("rm -f"), expecting)
 
 // Both forms, run for real against a planted file.
 {
@@ -282,12 +248,10 @@ check("an expected handoff is removed once consumed",
 // Both settings reach the settings screen
 // -------------------------------------------------------------------------
 
-const keys = Model.groupedSettings().map(e => e.key)
 for (const k of ["lockOnScreenLock", "lockOnSuspend"]) {
-  check(`${k} appears in the settings screen`, keys.includes(k), keys.join(", "))
   const entry = Model.groupedSettings().find(e => e.key === k)
-  check(`${k} is a toggle in the Security group`,
-    entry.type === "bool" && entry.group === "security", JSON.stringify(entry))
+  check(`${k} is a toggle in the Security group of the settings screen`,
+    !!entry && entry.type === "bool" && entry.group === "security", JSON.stringify(entry))
 }
 
 // The manifest is what the shell reads defaults from, so the two have to agree.

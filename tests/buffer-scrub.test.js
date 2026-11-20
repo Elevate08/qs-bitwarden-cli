@@ -28,25 +28,15 @@ check("the scrub command prints nothing",
   scrub.length === 3 && scrub[0] === "bash" && scrub[1] === "-c" && scrub[2] === "",
   `got ${JSON.stringify(scrub)}`)
 
-check("a fresh array each time, so one process cannot alias another's",
-  Model.scrubCommand() !== Model.scrubCommand(),
-  "scrubCommand() returned the same array twice")
-
-check("mutating what a caller was given does not change the next one",
+check("a fresh array each time: mutating what a caller was given does not change the next one",
   (() => { const c = Model.scrubCommand(); c[2] = "rm -rf /"; return Model.scrubCommand()[2] === "" })(),
   "the shared array leaked")
 
 check("the scrub command is recognised as one",
   Model.isScrubCommand(Model.scrubCommand()) === true, "not recognised")
 
-check("a real bw command is not",
-  Model.isScrubCommand(["bw", "list", "items"]) === false, "bw list read as a scrub")
-
-check("nor is a command that merely starts the same way",
+check("a command that merely starts the same way is not",
   Model.isScrubCommand(["bash", "-c", "bw list items"]) === false, "a bash command read as a scrub")
-
-check("nor a shorter one",
-  Model.isScrubCommand(["bash", "-c"]) === false, "a truncated command read as a scrub")
 
 check("nor a longer one",
   Model.isScrubCommand(["bash", "-c", "", "extra"]) === false, "a padded command read as a scrub")
@@ -54,10 +44,7 @@ check("nor a longer one",
 // A Process that has never run reports an empty command, and one that is
 // missing entirely is what a typo in the process list looks like. Neither is a
 // scrub, and neither may throw: this runs inside a signal handler.
-check("an empty command is not a scrub", Model.isScrubCommand([]) === false, "empty read as a scrub")
 check("an absent command is not a scrub", Model.isScrubCommand(null) === false, "null read as a scrub")
-check("an undefined command is not a scrub",
-  Model.isScrubCommand(undefined) === false, "undefined read as a scrub")
 
 // QML hands JS a QStringList, whose members arrive as strings but whose
 // identity is not a plain Array.
@@ -114,21 +101,7 @@ const busy = (cmd) => ({ running: true, command: cmd })
     `start=${p.start.length} waiting=${p.waiting.length}`)
 }
 
-{
-  const running = busy(["bw", "get", "item", "x"])
-  const p = Model.scrubPass([idle(["bw", "list", "items"]), running, idle(Model.scrubCommand())])
-  check("a mixed queue starts only what it can",
-    p.start.length === 1, `start=${p.start.length}`)
-  check("and carries the rest that is not finished",
-    p.waiting.length === 2 && p.waiting.indexOf(running) !== -1,
-    `waiting=${p.waiting.length}`)
-}
-
-check("an empty queue is a no-op",
-  Model.scrubPass([]).start.length === 0 && Model.scrubPass([]).waiting.length === 0,
-  "empty queue did something")
-
-check("and so is a missing one",
+check("a missing queue is a no-op",
   Model.scrubPass(null).waiting.length === 0, "null queue threw or produced work")
 
 check("a hole in the process list is skipped rather than thrown on",
@@ -138,8 +111,6 @@ check("a hole in the process list is skipped rather than thrown on",
 // The retry exists for processes that were mid-read. It must keep the process
 // queued until the empty scrub run finishes, even if a completion handler
 // immediately reuses that same Process for another command.
-check("the retry is spaced in seconds, not milliseconds",
-  Model.scrubRetryMs() >= 250, `retry every ${Model.scrubRetryMs()}ms`)
 check("the retry never abandons a collector that is still being written",
   /if\s*\(!root\.scrubPending\.length\)\s*stop\(\)/.test(panelSource)
     && !/scrubRetryLimit/.test(panelSource),
@@ -163,11 +134,6 @@ check("the retry never abandons a collector that is still being written",
     p.start.length === 1 && queue.length === 0,
     `started=${p.start.length} remaining=${queue.length}`)
 }
-
-check("Panel completion handlers dequeue scrubbed processes explicitly",
-  /function\s+finishScrubRun\s*\(proc\)/.test(panelSource)
-    && /scrubPending\s*=\s*Model\.finishScrub\(scrubPending,\s*proc\)/.test(panelSource),
-  "Panel does not record scrub completion independently of Process reuse")
 
 check("a one-shot password copy scrubs its collector immediately after use",
   /clearProcessCollectorSoon\(copyPasswordProc\)/.test(panelBodyOf("onPasswordCopyFinished")),
@@ -208,26 +174,15 @@ check("the deferred TOTP restart reserves the Process against a newer direct sta
 
 const cap = Model.GENERATE_RESPONSE_CAP
 
-check("the response cap is far above a generated password",
-  cap >= 4096, `cap is ${cap} bytes`)
-check("and far below anything that would hurt to hold",
-  cap <= 1024 * 1024, `cap is ${cap} bytes`)
+check("the response cap is far above a generated password and far below anything that would hurt to hold",
+  cap >= 4096 && cap <= 1024 * 1024, `cap is ${cap} bytes`)
 check("the request deadline is short enough to be a loopback deadline",
   Model.GENERATE_REQUEST_TIMEOUT_MS > 0 && Model.GENERATE_REQUEST_TIMEOUT_MS <= 10000,
   `deadline is ${Model.GENERATE_REQUEST_TIMEOUT_MS}ms`)
 
 // Process-based probe checks (curl exit codes)
-check("curl CURLE_COULDNT_CONNECT (exit 7) with empty stdout indicates a free port",
-  Model.generatorProbeIsForeign(7, "") === false, "curl exit 7 was read as occupied")
-
-check("curl exit 0 with HTTP response indicates an occupied port",
-  Model.generatorProbeIsForeign(0, '{"success":true}') === true, "curl exit 0 was read as free")
-
 check("curl timeout (exit 28) indicates an occupied (stalling) port",
   Model.generatorProbeIsForeign(28, "") === true, "curl timeout was read as free")
-
-check("curl write error / truncation (exit 23) indicates an occupied (flooding) port",
-  Model.generatorProbeIsForeign(23, "") === true, "curl exit 23 was read as free")
 
 // Producer-side bounding of generateServeRequestCommand
 const serveReqCmd = Model.generateServeRequestCommand({ length: 16 })

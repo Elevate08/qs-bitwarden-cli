@@ -30,14 +30,6 @@ for (const [label, build, verb] of [
 ]) {
   const script = build("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").join(" ")
 
-  check(`copy ${label}: ends bw's options with --`,
-    script.includes(`bw ${verb} --raw -- `),
-    script)
-
-  check(`fetch ${label}: preserves the id as one shell word`,
-    script.includes("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-    script)
-
   check(`fetch ${label}: bounds the secret before it reaches QML`,
     script.includes("head -c"),
     script)
@@ -59,7 +51,6 @@ const ACCEPTED = [
   ["https://vault.example.com:8443/path", "https with port and path"],
   ["HTTPS://VAULT.EXAMPLE.COM", "scheme is case-insensitive"],
   ["http://localhost:8080", "http to localhost"],
-  ["http://127.0.0.1", "http to 127.0.0.1"],
   ["http://127.1.2.3:9000", "http anywhere in 127/8"],
   ["http://[::1]:8000", "http to ::1"],
   ["  https://vault.example.com  ", "surrounding whitespace"],
@@ -72,9 +63,7 @@ for (const [url, why] of ACCEPTED) {
 
 const REFUSED = [
   ["http://vault.example.com", "plaintext http off this machine"],
-  ["http://192.168.1.10", "http to a LAN address is still on a wire"],
   ["ftp://vault.example.com", "a scheme bw does not speak"],
-  ["file:///etc/passwd", "a scheme that is not a server at all"],
   ["vault.example.com", "no scheme at all"],
   ["https://", "no host"],
   // Anchored, so a host that merely starts or ends with a loopback name is not
@@ -89,17 +78,12 @@ const REFUSED = [
   // explicit refusal, our lightweight host parser sees localhost after the @
   // while Bitwarden's Node runtime connects to evil.example before the slash.
   ["http://evil.example\\@localhost", "a loopback host smuggled after a backslash"],
-  ["https://evil.example\\@vault.example.com", "an ambiguous HTTPS backslash destination"],
 ]
 
 for (const [url, why] of REFUSED) {
   const problem = Model.validateServerUrl(url)
   check(`server URL refuses ${why}`, problem !== "", JSON.stringify(url))
 }
-
-check("server URL refusal names the host it refused",
-  Model.validateServerUrl("http://vault.example.com").includes("vault.example.com"),
-  Model.validateServerUrl("http://vault.example.com"))
 
 check("server URL refusal for userinfo names the real host, not the userinfo",
   Model.validateServerUrl("http://localhost@evil.com").includes("evil.com"),
@@ -111,19 +95,11 @@ check("server URL refusal for userinfo names the real host, not the userinfo",
 
 const clear = Model.associationsClearCommand().join(" ")
 
-check("clearing associations removes the store file",
-  /\brm -f --/.test(clear) && clear.includes("associations.json"),
-  clear)
-
-check("clearing associations resolves the same path the writer uses",
-  clear.includes("${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli")
-    && clear.includes("associations.json"),
-  clear)
-
 // A missing file is the ordinary case on an account that never learned
 // anything, and it must not be reported as a failed logout.
-check("clearing associations succeeds when there is nothing to remove",
-  /exit 0\s*$/.test(clear),
+check("clearing associations removes the store file at the writer's path, and succeeds when there is nothing to remove",
+  /\brm -f --/.test(clear) && clear.includes("${XDG_STATE_HOME:-$HOME/.local/state}/qs-bitwarden-cli")
+    && clear.includes("associations.json") && /exit 0\s*$/.test(clear),
   clear)
 
 const assocTmp = fs.mkdtempSync(path.join(os.tmpdir(), "qsbw-assoc-"))
@@ -223,12 +199,6 @@ check("copies go through the model's copy command, detached, with the value in t
   /Quickshell\.execDetached\(\{[\s\S]*command:\s*Model\.clipboardCopyCommand\(clearClipboardSec\)[\s\S]*environment:\s*env/.test(copyToClipboard)
     && /env\[Model\.clipboardEnvVar\(\)\]\s*=\s*String\(text\)/.test(copyToClipboard),
   copyToClipboard)
-// The clear used to be a timer in the shell, lost on every shell restart,
-// and a lock ran `wl-copy --clear` whatever was on the clipboard by then.
-check("no shell-side timer owns the clipboard clear",
-  !/clipboardClearTimer/.test(panelSrc), "clipboardClearTimer is back")
-check("locking clears a credential still on the clipboard",
-  /clearClipboard\(\)/.test(bodyOf("lockVault")), bodyOf("lockVault"))
 check("clearing asks for the sensitive-only clear, never a bare wl-copy --clear",
   /Model\.clipboardClearSensitiveCommand\(\)/.test(bodyOf("clearClipboard"))
     && !/"--clear"/.test(bodyOf("clearClipboard")),

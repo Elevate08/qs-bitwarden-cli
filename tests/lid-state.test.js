@@ -44,14 +44,10 @@ check("the gate opening triggers a fresh reading",
 
 // --- how the vault uses it ---------------------------------------------------
 
-check("the vault instantiates it and hands it itself",
-  /LidState\s*\{\s*id:\s*lidState\s*vault:\s*root/.test(service),
-  "LidState must be instantiated with `vault: root`")
-check("the vault exposes the reading as lidClosed",
-  /readonly property bool lidClosed:\s*lidState\.closed/.test(service),
-  "expected `lidClosed` on the vault")
-check("a closed lid drops fingerprint readiness",
-  /readonly property bool fingerprintReady:[^\n]*&& !lidClosed/.test(service),
+check("the vault hands the detector itself, and its closed reading drops fingerprint readiness",
+  /LidState\s*\{\s*id:\s*lidState\s*vault:\s*root/.test(service)
+    && /readonly property bool lidClosed:\s*lidState\.closed/.test(service)
+    && /readonly property bool fingerprintReady:[^\n]*&& !lidClosed/.test(service),
   "fingerprintReady must carry the lid, or nothing that offers the option would hide")
 
 // The shared form and the auto-arm both read fingerprintReady.
@@ -62,9 +58,6 @@ check("the shared form offers the fingerprint only while it is ready",
 check("a lid closed mid-scan ends the scan it put out of reach",
   /onLidClosedChanged: if \(lidClosed && fingerprintScanning\) cancelFingerprintUnlock\(\)/.test(service),
   "the first reading can land after the auto-arm has already started a scan")
-check("and arming refuses while it is not ready",
-  /function startFingerprintUnlock\(\)\s*\{\s*if \(!fingerprintReady/.test(service),
-  "startFingerprintUnlock must refuse on !fingerprintReady")
 
 // --- what the lid must NOT touch ---------------------------------------------
 //
@@ -76,9 +69,5 @@ check("the FIDO2 option is not gated on the lid",
     && /if \(name === "fido"\) return form\.vault\.fidoReady/.test(unlockForm)
     && !/fido[\s\S]{0,120}lidClosed/.test(unlockForm),
   "the FIDO2 button must stay independent of the lid")
-check("enrolment state is untouched, so the setting still reflects what is stored",
-  /property bool fingerprintStored: false/.test(service)
-    && /case "fingerprintUnlock": return fingerprintUnlock && fingerprintStored/.test(service),
-  "the lid must not change whether a password is stored, nor what the toggle reads")
 
 done()

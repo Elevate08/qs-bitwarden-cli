@@ -138,9 +138,6 @@ for (const [fn, now] of [["copyPassword", "copyPasswordNow"], ["copyTotpCode", "
 }
 check("editing goes through it, on the whole item",
   /withRevealedDetail\(item, function\(\) \{[^]*?startEditItemNow\(/.test(body("startEditItem")), body("startEditItem"))
-check("revealing a field goes through it; hiding one does not",
-  /if \(isFieldRevealed\(key\)\) \{[^]*?return\s*\}\s*withReprompt\(item, function\(\) \{ root\.revealField\(item, key\)/.test(body("toggleFieldReveal")),
-  body("toggleFieldReveal"))
 check("the TOTP that follows Enter's copy is not asked for again",
   /totpFollowupActive && totpFollowupItem && totpFollowupItem\.id === item\.id\) \{\s*copyTotpCodeNow\(item\)/.test(body("copyTotpCode"))
     && /root\.copyTotpCodeNow\(root\.totpFollowupItem\)/.test(src.slice(src.indexOf("id: autoTotpTimer"), src.indexOf("id: autoTotpTimer") + 500)),

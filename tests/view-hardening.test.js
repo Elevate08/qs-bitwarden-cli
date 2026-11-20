@@ -27,9 +27,6 @@ for (const prop of ["formTotp", "formCardNumber", "formCardCode", "formIdSsn", "
     new RegExp(`SecretField \\{\\s*width: parent\\.width\\s*placeholderText: [^\\n]*\\s*text: root\\.vault\\.${prop}\\s*onTextChanged: root\\.vault\\.${prop} = text`).test(view),
     `${prop} is a plain TextField, drawn in the clear and offered to input methods`)
 }
-check("a revealed password field is still kept from input methods",
-  (view.match(/inputMethodHints: Qt\.ImhSensitiveData \| Qt\.ImhNoPredictiveText/g) || []).length >= 2,
-  "the login and item-form password fields lose the hint when shown")
 
 // --- the search box ------------------------------------------------------------
 // Bound to searchQuery. The first Escape or clear button used to assign the

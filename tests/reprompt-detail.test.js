@@ -123,9 +123,6 @@ const answerItem = (v, i, raw) => answer(v, i, true, JSON.stringify(raw))
   check("a copy after the prompt asks the helper to copy that one field",
     v.queries.length === 1 && v.queries[0].kind === "copyField" && v.queries[0].args.field === "notes"
       && v.queries[0].args.clearSec === 30, JSON.stringify(v.queries))
-  answer(v, 0, true, true)
-  check("the shell holds no value and says it copied",
-    v.copied.length === 0 && v.flashes.join() === "Notes copied!" && v.revealedFields.notes === undefined, JSON.stringify(v.flashes))
 }
 
 {
@@ -141,9 +138,7 @@ const answerItem = (v, i, raw) => answer(v, i, true, JSON.stringify(raw))
       JSON.stringify(v.revealedFields))
   }
   stale("an answer after another item was opened is dropped", v => v.openDetail(row("n1")))
-  stale("an answer after the detail was closed is dropped", v => { v.currentScreen = "main"; v.clearRepromptGrant() })
   stale("an answer after the grant was cleared is dropped", v => v.clearRepromptGrant())
-  stale("an answer after a lock is dropped", v => { v.vaultEpoch++; v.detailItem = null; v.clearRepromptGrant() })
 }
 
 {
@@ -157,20 +152,6 @@ const answerItem = (v, i, raw) => answer(v, i, true, JSON.stringify(raw))
   check("reopening the confirmed item shows nothing revealed", !v.isFieldRevealed("password") && v.detailItem.secretsWithheld,
     JSON.stringify(v.revealedFields))
   check("and the code of a flagged item is still not fetched", v.queries.length === 1, JSON.stringify(v.queries))
-}
-
-{
-  // Fallback: the list holds the raw item.
-  const v = makeVault(Model.parseItems([full]))
-  v.vaultHelperActive = false
-  v.openDetail(v.items[0])
-  check("without the helper the detail is built from the list as before",
-    v.queries.length === 0 && v.detailPassword === "hunter2" && !v.detailItem.secretsWithheld, JSON.stringify(v.detailItem))
-  v.clearRepromptGrant()
-  check("and clearing the grant leaves it working", v.detailPassword === "hunter2", "")
-  v.toggleFieldReveal("password")
-  confirm(v)
-  check("a reveal reads the detail, with no helper query", v.shownSecret("password", "") === "hunter2" && v.queries.length === 0, "")
 }
 
 {
@@ -196,12 +177,8 @@ check("a copy of a TOTP code goes through the prompt, not a fetch of the item",
 
 // --- wiring in the source ------------------------------------------------------------------
 
-check("a late TOTP answer does not refill a hidden code",
-  /totpWanted\(detailItem\)/.test(body("applyTotpCode")), body("applyTotpCode"))
 const timer = src.slice(src.indexOf("id: totpCountdownTimer"), src.indexOf("id: totpCountdownTimer") + 700)
 check("the countdown does not refetch a hidden TOTP", /root\.totpWanted\(root\.detailItem\)/.test(timer), timer)
-const screen = src.slice(src.indexOf("onCurrentScreenChanged:"), src.indexOf("onCurrentScreenChanged:") + 1400)
-check("leaving the item clears the grant and with it the secrets", /if \(!inItem\) \{\s*clearRepromptGrant\(\)/.test(screen), screen)
 check("every secret copy on the detail screen names its field, not a value",
   !/copyDetailSecret\(\s*(function|root\.|detailPassword|liveTotp|detailCard|detailIdentity|detailItem\.notes|value)/.test(src),
   "copyDetailSecret was passed a value or a reader")

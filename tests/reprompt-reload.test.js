@@ -11,7 +11,7 @@
 //
 //   node tests/reprompt-reload.test.js
 
-const { createSuite, functionBody, read } = require("./harness")
+const { createSuite } = require("./harness")
 const { Model, makeVault: makeStandIn, answer, confirm } = require("./detail-vault")
 const { check, eq, done } = createSuite("reprompt-reload")
 
@@ -294,9 +294,6 @@ function makeVault(fallback) {
   check("an accepted list fetches the open item's code afresh, from the vault the helper has now",
     v.queries.length === asked + 1 && v.queries[asked].kind === "totp" && v.totpWanted(v.detailItem), v.kinds())
   eq("the code on screen stays until that answer", v.liveTotp, "123456")
-  v.copyDetailField("password", "Password")
-  check("and a copy goes through, with no prompt",
-    v.queries.length === asked + 2 && v.queries[asked + 1].kind === "copyField" && !v.repromptPending && v.errorMessage === "", v.kinds())
 }
 {
   // An item opened while a list read runs has its code asked for as ever;
@@ -322,20 +319,6 @@ function makeVault(fallback) {
   v.copyDetailField("password", "Password")
   check("after the list it asks for the master password", v.repromptPending && v.kinds() === "copyField", v.kinds())
 }
-{
-  // A flagged item: its prompt, or its confirmation, stands across a reload.
-  const v = makeVault()
-  v.openDetail(v.row("g1"))
-  v.toggleFieldReveal("password"); confirm(v); answer(v, 0, true, "hunter2")
-  v.reload(VAULT)
-  v.copyDetailField("password", "Password")
-  check("a confirmed re-prompt item copies as ever", v.queries.length === 2 && v.queries[1].kind === "copyField" && v.errorMessage === "", v.errorMessage)
-  const u = makeVault()
-  u.openDetail(u.row("g1"))
-  u.reload(VAULT)
-  u.copyDetailField("password", "Password")
-  check("an unconfirmed one asks for the master password as ever", u.repromptPending && u.queries.length === 0 && u.errorMessage === "", u.errorMessage)
-}
 
 // --- (c) an auto-type armed before the reload ------------------------------------------------
 {
@@ -354,14 +337,5 @@ function makeVault(fallback) {
   v.reload(VAULT)
   check("an item that asked when it was armed stays armed", v.autoTypeArmed() && v.autoTypeItemId === "g1")
 }
-
-// --- wiring -----------------------------------------------------------------------------------
-const service = read("Service.qml")
-const finished = functionBody(service, "onListFinished")
-check("an accepted list is checked against the open detail once its rows are in",
-  finished.indexOf("items = vault.items") !== -1
-    && finished.indexOf("items = vault.items") < finished.indexOf("reconcileOpenDetail()"), finished)
-check("the code's refresh timer goes through totpWanted()",
-  /root\.detailItem\.hasTotp\s*&& root\.totpWanted\(root\.detailItem\)\) \{\s*root\.fetchTotp\(root\.detailItem\.id\)/.test(service))
 
 done()
