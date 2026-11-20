@@ -125,11 +125,20 @@ omarchy plugin add https://github.com/Elevate08/qs-bitwarden-cli --enable
 - **Erasure.** Secret memory is zeroized on a best-effort basis and the helper disables core dumps and `PR_SET_DUMPABLE` before the first key is read, but nothing can guarantee that a page freed by an allocator or swapped by the kernel is gone. The helper does not lock its memory, so a key can be written to swap while it is loaded; encrypted swap, or zram with no disk swap, avoids that.
 - **Root, and the vault itself.** Root reads any process's memory. Separately, `bw` is the source of the keys and holds its own decrypted copies while it runs.
 
+#### Key loads, requests and locks
+
+The helper's keys are replaced by each list read of the unlocked vault (a *key load*), and three rules hold across one:
+
+- **A request waits through a key load.** A signing request that is waiting for your answer when a load begins, or that arrives during one, is neither failed nor asked about twice. Nothing is signed while the load runs; an approval given meanwhile is kept and the signature made when the load ends. A request whose key the load took away (the item was deleted, or now asks for the master password) fails then. Grants end when a load begins, as before.
+- **A failed key load is not a lock.** The new keys are put together aside and replace the old ones only whole, so a load that fails leaves the keys that were in service loaded. When the vault was read and only the key batch was bad, they stay in service. When the read of the vault itself failed, the helper cannot tell a passing error from a session that was ended elsewhere (`bw lock` in a terminal), so the keys are set aside: still loaded, signing nothing, with requests left waiting. The panel retries the read at once without the keys; when that reads the vault they are back in service, and when it fails too they are dropped, as every failed read dropped them before.
+- **Only a lock drops keys, and it always does.** Locking (by you, the timer, the screen lock, suspend, or the panel finding the vault locked elsewhere), logging out and switching account each tell the helper to drop every private key, grant and waiting request at once, whatever a load was doing and whether or not keys were set aside. Nothing a failed load keeps outlives that.
+
+A request held for an unlock is given a new number once the vault opens, and the helper says which request the new number belongs to. It also goes on answering to the old number until the panel has the new one, so a **Deny** or **Allow** pressed in that instant reaches the request it was pressed on.
+
 #### Known limits
 
-- When a list read's key batch failed and the read that replaces it fails as well, the agent has no keys until the next list read (a refresh, a sync or a save) succeeds.
-- A signing request that arrives in the instant the last approval is answered can be failed by the key load that follows it, and has to be run again.
-- A signing request that waited for an unlock is given a new number by the helper once the vault opens; a **Deny** pressed in the instant between the helper retiring the old number and the panel learning the new one is lost, and the request is shown again, after any other request already waiting, to be denied again.
+- While the vault cannot be read at all (a list read that carries the keys fails, and so does its retry), the agent has no keys until a list read (a refresh, a sync or a save) succeeds.
+- With an SSH agent helper from before 2.0 -- which the panel only meets when the two do not come from the same release -- three older limits remain. A failed key load leaves the agent with no keys until the next list read succeeds. A signing request that arrives in the instant the last approval is answered can be failed by the key load that follows it, and has to be run again. And a **Deny** pressed in the instant a request that waited for an unlock is renumbered is lost, and the request is shown again to be denied again.
 
 #### Turning it off
 
