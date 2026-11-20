@@ -1409,13 +1409,17 @@ Item {
   // shows nothing and the list is read again, once; refused again, it is a
   // failed read.
   function commitStagedList(stage, rawJson) {
-    var epoch = vaultEpoch
-    var changes = vaultChanges
     listProc.committing = stage
     // The list itself waits in listCommitText, not in the answer's closure:
-    // a lock clears it, and a late answer then has nothing to show.
+    // a lock clears it, and a late answer then has nothing to show. The
+    // answer is made in commitAnswered(), a function of its own, because a
+    // closure made here would keep this call's `rawJson` alive with it.
     listCommitText = rawJson
-    vaultQuery("commitVault", { stage: stage }, function(ok) {
+    vaultQuery("commitVault", { stage: stage }, commitAnswered(stage, vaultEpoch, vaultChanges))
+  }
+
+  function commitAnswered(stage, epoch, changes) {
+    return function(ok) {
       // First, whatever the answer and whatever has happened since (the
       // vault closed, another session handed over, the helper gone): the
       // reader is free again, and a read that waited for this answer runs,
@@ -1445,7 +1449,7 @@ Item {
       }
       if (root.itemChangeRunning()) root.listRereadOwed = true
       else if (changes !== root.vaultChanges) root.loadItems(false)
-    })
+    }
   }
 
   // The list read staged under `stage` will not be shown: the helper drops

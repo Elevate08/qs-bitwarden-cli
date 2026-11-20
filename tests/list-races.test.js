@@ -23,7 +23,7 @@ const functions = ["beginEpochOperation", "invalidateEpochOperation", "beginVaul
   "openDetail", "onDetailFinished", "itemNeedsReprompt", "dropVaultState", "listSnapshotOutdated",
   "settleOwedListRead", "onSaveItemFinished", "followCreatedItem", "resumeCreatedItem", "leaveProvisionalDetail",
   "onDeleteItemFinished", "reconcileOpenDetail", "totpWanted",
-  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "discardStagedList", "listReadFailed",
+  "isFieldRevealed", "itemChangeRunning", "commitStagedList", "commitAnswered", "discardStagedList", "listReadFailed",
   "queueAttachment", "pumpAttachmentQueue", "onAttachmentDownloaded", "cancelAttachmentDownloads"]
 
 // VaultProcess, as far as starting goes: a change of `running` to true starts
