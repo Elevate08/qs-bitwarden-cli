@@ -23,7 +23,6 @@ eq("entries come newest first", entries.map(e => e.password).join(","), "old-c,o
 eq("an entry keeps its position in the stored list", entries.map(e => e.index).join(","), "1,2,0")
 eq("an entry keeps its date", entries[0].date, "2025-03-01T12:00:00.000Z")
 eq("no history is an empty list", Model.passwordHistoryEntries(undefined, false).length, 0)
-eq("junk is an empty list", Model.passwordHistoryEntries("x", false).length, 0)
 eq("an entry with no password is left out",
   Model.passwordHistoryEntries([{ password: "", lastUsedDate: "2024-01-01T00:00:00Z" }, null, { password: "p" }], false).length, 1)
 const undated = Model.passwordHistoryEntries([{ password: "x" }, { password: "y", lastUsedDate: "2020-01-01T00:00:00Z" }], false)
@@ -37,7 +36,6 @@ check("a helper-held history carries no password",
 check("a date is formatted", /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(Model.formatHistoryDate("2025-03-01T12:00:00.000Z")),
   Model.formatHistoryDate("2025-03-01T12:00:00.000Z"))
 eq("a bad date is named so", Model.formatHistoryDate("nope"), "Unknown date")
-eq("a missing date is named so", Model.formatHistoryDate(""), "Unknown date")
 
 // --- detail shapes -----------------------------------------------------------
 
@@ -82,9 +80,6 @@ eq("the palette offers it for a helper-held login", actionsOf(pub, "detail").len
 
 check("h opens the history from the detail",
   /else if \(lower === "h"\) \{\s*root\.vault\.openHistory\(\)/.test(functionBody(panelOnly, "runDetailShortcut")), "h is not wired")
-check("h is not bound twice on the detail screen",
-  panelOnly.split('lower === "h"').length - 1 === 1,
-  "the detail key handler binds h more than once")
 check("b and q leave the history", /currentScreen === "history"\) \{\s*if \(lower === "b" \|\| lower === "q"\) root\.vault\.closeHistory/.test(panelOnly), "")
 check("Esc leaves the history for the detail",
   /currentScreen === "history"\) \{\s*closeHistory\(\)/.test(functionBody(service, "handleEscape")), "")

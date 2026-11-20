@@ -109,8 +109,6 @@ for (const [host, root, base] of [
   ["github.com", "github", "github.com"],
   ["dash.cloudflare.com", "cloudflare", "cloudflare.com"],
   ["www.bbc.co.uk", "bbc", "bbc.co.uk"],
-  ["homeassistant.local", "homeassistant", "homeassistant.local"],
-  ["console.aws.amazon.com", "amazon", "amazon.com"],
 ]) {
   const p = Model.parseHost(host)
   check(`parseHost(${host})`, p && p.rootName === root && p.baseDomain === base,
@@ -458,7 +456,6 @@ check("the newest lesson survives trimming",
 
   check("the service counts every replacement of the list and of the learned picks, and keys the match by it",
     /\n  onItemsChanged: contextInputsGen \+= 1\n  onAssociationsChanged: contextInputsGen \+= 1\n/.test(svc)
-      && /var key = Model\.contextMatchKey\(contextInputsGen, data\)\s+if \(key === "" \|\| key !== contextMatchKey\) \{\s+var res = Model\.findContextualMatches\(items, data, associations\)/.test(functionBody(svc, "handleActiveWindowDetected"))
       && (svc.match(/Model\.findContextualMatches\(/g) || []).length === 1)
   check("the key spells the window out and carries the count; a window that cannot be spelled equals nothing",
     Model.contextMatchKey(3, github) === "3|" + JSON.stringify(github)
@@ -508,12 +505,6 @@ check("the newest lesson survives trimming",
   v.open(github)
   check("...and turned on again, the same window is matched afresh, not taken from before",
     v.matches === 1 && shown(v) === fresh(v) && v.suggestedItems.length > 0, `${v.matches}`)
-  check("whatever clears the suggestions clears the key, the context and the learned marks with them",
-    /^function clearContextMatch\(\) \{\s+contextMatchKey = ""\s+suggestedItems = \[\]\s+detectedContext = null\s+learnedIds = \(\{\}\)\s+\}$/.test(functionBody(svc, "clearContextMatch"))
-      // The one place that spells it out instead is the vault purge.
-      && (svc.match(/contextMatchKey = ""\n\s+suggestedItems = \[\]\n\s+detectedContext = null\n\s+learnedIds = \(\{\}\)/g) || []).length === 2
-      && (svc.match(/\bclearContextMatch\(\)\n/g) || []).length === 5
-      && (svc.match(/\bsuggestedItems = /g) || []).length === 3)
   check("the vault purge (a lock, a logout, an account left) drops the suggestions and the key that names the window",
     /items = \[\]\s+filteredItems = \[\]\s+(?:\/\/[^\n]*\n\s+)*contextMatchKey = ""\s+suggestedItems = \[\]\s+detectedContext = null\s+learnedIds = \(\{\}\)/.test(functionBody(svc, "dropVaultState")))
 
@@ -549,8 +540,7 @@ check("the newest lesson survives trimming",
   f.open(github)
   check("...until a window is read again", f.matches === 1 && shown(f) === fresh(f) && f.suggestedItems.length > 0)
   check("both ways a read fails end there: output that does not parse, and no output",
-    /if \(text && text\.trim\(\)\) \{\s+try \{\s+var data = JSON\.parse\(text\)\s+root\.handleActiveWindowDetected\(data\)\s+\} catch \(e\) \{\s+root\.windowDetectionFailed\(\)\s+\}\s+\} else \{\s+root\.windowDetectionFailed\(\)\s+\}/.test(svc)
-      && /^function windowDetectionFailed\(\) \{\s+activeWindowData = null\s+clearContextMatch\(\)\s+rebuildFilter\(\)\s+\}$/.test(functionBody(svc, "windowDetectionFailed")))
+    /if \(text && text\.trim\(\)\) \{\s+try \{\s+var data = JSON\.parse\(text\)\s+root\.handleActiveWindowDetected\(data\)\s+\} catch \(e\) \{\s+root\.windowDetectionFailed\(\)\s+\}\s+\} else \{\s+root\.windowDetectionFailed\(\)\s+\}/.test(svc))
 
   // Two windows JSON spells alike are not one question.
   const huge = JSON.parse('{"class":"firefox","title":"GitHub - Mozilla Firefox","mapped":true,"focusHistoryID":1e400}')

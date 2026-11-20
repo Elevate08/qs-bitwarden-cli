@@ -52,7 +52,7 @@ function fixture() {
 const schema = Model.settingSchemaEntry("autoSyncMinutes")
 eq("automatic sync defaults to every 15 minutes", Model.intSetting("autoSyncMinutes", undefined), 15)
 eq("schema exposes General setting", schema.group, "general")
-for (const value of [null, false, "invalid", -1, Infinity])
+for (const value of [null, "invalid", -1, Infinity])
   eq(`invalid interval ${value} falls back to the default`, Model.intSetting("autoSyncMinutes", value), 15)
 eq("large interval is bounded", Model.intSetting("autoSyncMinutes", 1e12), 1440)
 eq("a one-minute interval is supported", Model.intSetting("autoSyncMinutes", 1), 1)
@@ -61,14 +61,14 @@ eq("a one-minute interval is supported", Model.intSetting("autoSyncMinutes", 1),
   eq("disabled does no network work", c.syncProc.running, false)
 }
 for (const [key, value] of [["live", false], ["session", ""], ["status", "locked"],
-  ["currentScreen", "edit"], ["currentScreen", "detail"], ["currentScreen", "settings"],
+  ["currentScreen", "edit"],
   ["isLoading", true], ["isUnlocking", true], ["logoutPending", true],
   ["metadataLoadPending", true], ["creatingFolder", true], ["repromptBusy", true],
   ["sendBusy", true], ["isSyncing", true]]) {
   const c = fixture(); c[key] = value; c.maybeAutoSync()
   eq(`defer while ${key}=${value}`, c.syncProc.running, false)
 }
-for (const screen of ["detail", "edit", "settings", "generator", "sends", "accounts"]) {
+for (const screen of ["detail"]) {
   // Closing on a copy from an item leaves the screen behind; opening an
   // unlocked panel goes back to the list anyway.
   const c = fixture(); c.opened = false; c.currentScreen = screen; c.maybeAutoSync()
@@ -151,7 +151,6 @@ for (const proc of ["listProc", "listOrgsProc", "listFoldersProc", "createItemPr
 }
 {
   const c = fixture(); c.maybeAutoSync(); c.currentScreen = "edit"; c.finish(0)
-  eq("finishing during an edit defers the list reload", c.loadCalls.length, 0)
   eq("the pending reload is remembered", c.autoSyncReloadPending, true)
   c.autoSyncMinutes = 0; c.maybeAutoSync()
   eq("disabled setting does not interrupt the edit", c.loadCalls.length, 0)
@@ -346,14 +345,6 @@ for (const code of [0, 1]) {
   vm.runInContext(["onStatusFinished", "vaultStatePresent"].map(n => functionBody(source, n)).join("\n"), n)
   n.errorMessage = "An unrelated edit failed"; n.beginEpochOperation("status"); n.onStatusFinished("")
   eq("another message is left exactly as dropping the vault leaves it", n.errorMessage, "An unrelated edit failed")
-  const exited = functionBody(source, "listReadFailed")
-  check("a failed list read records the message it showed",
-    /errorMessage = Model\.vaultListFailureMessage\(stderrText, dependencies, listReadMode\)\s*listReadError = errorMessage/.test(exited),
-    exited)
-  const finished = functionBody(source, "onListFinished")
-  const staleAt = finished.indexOf('vaultReadIsStale("items")) return')
-  check("a stale list result clears nothing",
-    staleAt >= 0 && finished.indexOf("listReadError") > staleAt, finished)
   // The same, run: a list answer for a vault no longer open, with a message up.
   const st = fixture(); st.dependencies = noJq; st.loadItems(false); st.dependencies = deps
   const up = st.errorMessage

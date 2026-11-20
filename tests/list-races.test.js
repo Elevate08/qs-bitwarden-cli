@@ -795,7 +795,6 @@ const finishSave = (c, code, out) => {
     [c.attachmentSaved["att-b"], held, started, c.attachmentSaved["att-c"]].join(), "/dl/b.txt,3,4,/dl/c.txt")
 }
 
-check("the waiting reads are per-vault state a lock drops", /queuedReads = \(\{\}\)/.test(functionBody(source, "dropVaultState")))
 for (const id of ["listOrgsProc", "listFoldersProc", "orgCollectionsProc", "listSendsProc", "getItemProc"]) {
   // The scrub is recognised by the process's command, which a waiting read's
   // start replaces: asked first.

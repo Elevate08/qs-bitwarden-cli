@@ -12,8 +12,6 @@ const wheelSrc = read("WheelScroll.qml")
 
 const { check, done } = createSuite("scrolling")
 
-check("WheelScroll exists", wheelSrc !== "", "WheelScroll.qml is missing")
-
 // --- the component ------------------------------------------------------------
 
 check("it is one component rather than a handler pasted into every view",

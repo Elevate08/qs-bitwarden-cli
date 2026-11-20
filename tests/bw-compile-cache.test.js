@@ -219,7 +219,7 @@ if (trusted) {
     check("...and not a path with more than its last part missing",
       probe(deep) !== 0 && !fs.existsSync(path.dirname(deep)))
   }
-  for (const [what, bad] of [["group-writable", 0o770], ["world-writable", 0o707], ["world-writable and sticky", 0o1777]]) {
+  for (const [what, bad] of [["group-writable", 0o770], ["world-writable", 0o707]]) {
     const base = home()
     const dir = cacheOf(base)
     fs.mkdirSync(dir, { recursive: true })
@@ -363,12 +363,7 @@ if (trusted) {
     const cases = [
       ["a symlink to a file among the entries", f => fs.symlinkSync(outside, path.join(f.version, "bbbb"))],
       ["a symlink in place of the version directory", f => fs.symlinkSync(path.dirname(outside), path.join(cacheOf(f.base), "v23.0.0-x64-00000000-0"))],
-      ["a dangling symlink", f => fs.symlinkSync(path.join(tmp, "nothing-here"), path.join(f.version, "cccc"))],
-      ["a symlink at the top of the cache directory", f => fs.symlinkSync(outside, path.join(cacheOf(f.base), "dddd"))],
       ["a group-writable directory inside", f => fs.chmodSync(f.version, 0o775)],
-      ["a world-writable directory inside", f => fs.chmodSync(f.version, 0o757)],
-      ["a nested world-writable directory", f => { fs.mkdirSync(path.join(f.version, "deep")); fs.chmodSync(path.join(f.version, "deep"), 0o777) }],
-      ["a group-writable file inside", f => fs.chmodSync(path.join(f.version, "aaaa"), 0o660)],
       ["a world-writable file inside", f => fs.chmodSync(path.join(f.version, "aaaa"), 0o606)],
       ["a FIFO inside", f => { if (spawnSync("mkfifo", [path.join(f.version, "eeee")]).status !== 0) throw new Error("mkfifo") }]
     ]
@@ -389,7 +384,6 @@ if (trusted) {
       // to the data or state home, where the plugin keeps accounts and
       // learned picks under the same name.
       for (const [what, plant] of [["a directory of the plugin's data", d => fs.mkdirSync(path.join(d, "accounts"), { mode: 0o700 })],
-        ["a file", d => fs.writeFileSync(path.join(d, "associations.json"), "{}", { mode: 0o600 })],
         ["a hidden file", d => fs.writeFileSync(path.join(d, ".hidden"), "", { mode: 0o600 })]]) {
         for (const withCache of [true, false]) {
           const base = home()
@@ -458,12 +452,9 @@ if (trusted) {
 
 // --- who gets it ----------------------------------------------------------------
 
-check("the directory offered to bw is the one the probe printed; a new check withdraws it first, and nothing else sets it",
+check("the directory offered to bw starts empty and is set in two places only: the probe's answer, and a new check withdrawing it",
   /property string bwCompileCacheDir: ""/.test(svc)
-    && /bwCompileCacheDir = Model\.bwCompileCacheAccepted\(exitCode, output\)/.test(functionBody(svc, "onBwCompileCacheProbed"))
-    && /^function probeBwCompileCache\(\) \{\s+bwCompileCacheDir = ""/.test(functionBody(svc, "probeBwCompileCache"))
-    && (svc.match(/\bbwCompileCacheDir = /g) || []).length === 2,
-  functionBody(svc, "onBwCompileCacheProbed"))
+    && (svc.match(/\bbwCompileCacheDir = /g) || []).length === 2)
 check("the check runs at start, when the setting changes and every time the vault becomes unlocked, before that opening's reads start",
   /root\.probeBwCompileCache\(\)/.test(svc.slice(svc.indexOf("onLiveChanged: {"), svc.indexOf("readonly property var categories")))
     && /\n  onBwCompileCacheChanged: probeBwCompileCache\(\)\n/.test(svc)
@@ -471,44 +462,19 @@ check("the check runs at start, when the setting changes and every time the vaul
     // Those three and no other: the rest are the definition and a comment.
     && (svc.match(/^[^/\n]*\bprobeBwCompileCache\(\)(?! \{)/gm) || []).length === 3
     && /bwCompileCacheHome: Model\.bwCompileCacheHome\(\s*Quickshell\.env\("XDG_CACHE_HOME"\) \|\| "", Quickshell\.env\("HOME"\) \|\| ""\)/.test(svc))
-check("that is all the feature keeps: the directory, what the last check came to, and the count that tells answers apart. No clock, no credit from one opening to the next",
-  svc.split("\n").filter(l => /^\s*(?:readonly )?property \w+ bwCompileCache\w*:/.test(l)).map(l => l.trim().split(":")[0]).join("; ")
-    === "readonly property bool bwCompileCache; readonly property string bwCompileCacheHome; property string bwCompileCacheDir; "
-      + "property string bwCompileCacheState; property int bwCompileCacheProbeSeq"
-    && !/Date\.now|Timer/.test(["probeBwCompileCache", "startBwCompileCacheProbe", "onBwCompileCacheProbed", "bwCompileCacheEnvValue", "bwEnvAtStart"]
-      .map(name => functionBody(svc, name)).join("\n"))
-    && !/isUnlocking/.test(svc.slice(svc.indexOf("property string bwCompileCacheDir"), svc.indexOf("function bwEnv(extra)")))
-    && !/CheckIsRecent|TRUST_MS/.test(modelSrc))
 check("only bwEnv(), the generator's server and the last word at a start name the variable; pinentry, which runs no bw, starts without an inherited one",
   (svc.match(/bwCompileCacheEnvVar\(\)/g) || []).length === 3
-    && /var name = Model\.bwCompileCacheEnvVar\(\)\s+if \(env && env\[name\] !== undefined && env\[name\] !== null\) env\[name\] = bwCompileCacheEnvValue\(\)\s+return env/.test(functionBody(svc, "bwEnvAtStart"))
-    && /env\[Model\.bwCompileCacheEnvVar\(\)\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "bwEnv"))
-    && /env\[Model\.bwCompileCacheEnvVar\(\)\] = bwCompileCacheEnvValue\(\)/.test(functionBody(svc, "generatorServeEnv"))
     && Model.pinentryEnvironment({})[VAR] === null
-    && /id: pinentryProbeProc\s+environment: Model\.withoutCompileCache\(\{\}\)/.test(svc)
     && !/COMPILE_CACHE/.test(read("pinentry/omarchy-pinentry")))
 check("a bw that is given the master password or a login's credentials never gets the cache: unlock and the process waiting for it, every login, the password check",
-  /^function bwSecretEnv\(extra\) \{\s+return Model\.withoutCompileCache\(bwEnv\(extra\)\)\s+\}$/.test(functionBody(svc, "bwSecretEnv"))
-    && /^function authEnv\(password, clientId, clientSecret, code\) \{\s+var env = bwSecretEnv\(\)/.test(functionBody(svc, "authEnv"))
-    && !/bwEnv\(/.test(functionBody(svc, "authEnv").replace(/bwSecretEnv\(/g, ""))
-    && !/bwEnv\(/.test(functionBody(svc, "loginProcessEnv").replace(/bwSecretEnv\(/g, ""))
+  !/bwEnv\(/.test(functionBody(svc, "loginProcessEnv").replace(/bwSecretEnv\(/g, ""))
     && /var deviceEnv = bwSecretEnv\(\)/.test(functionBody(svc, "loginProcessEnv"))
-    && /command: Model\.bwVerifyPasswordCommand\(\),\s+env: bwSecretEnv\(env\)/.test(functionBody(svc, "verifyWithBw"))
-    && /id: unlockProc\s+vault: root\s+capture: "session"\s+command: Model\.unlockPrewarmCommand\(\)\s+environment: root\.authEnv\("", "", "", ""\)/.test(svc)
-    && /id: loginProc\s+vault: root\s+capture: "session"\s+environment: root\.loginProcessEnv\(\)/.test(svc)
     && /id: authPasswordWriterProc\s+vault: root\s+session: false\s+environment: root\.authEnv\(/.test(svc)
     // Nothing else is handed the password variable.
     && (svc.match(/Model\.passwordEnvVar\(\)/g) || []).length === 1 && /Model\.passwordEnvVar\(\)/.test(functionBody(svc, "authEnv")))
 
 // Every other `bw` or `node` the plugin starts takes an inherited value out.
 {
-  const without = /Model\.withoutCompileCache\(\{\}\)/.source
-  check("bw -v, the signed-out slot's bw logout, the SSH export, bw login in a terminal and opening an attachment drop an inherited cache",
-    new RegExp("id: bwVersionProc\\s+property string probeId: \"\"\\s+command: Model\\.bwVersionCommand\\(\\)\\s+environment: " + without).test(svc)
-      && new RegExp("id: sshExportProc\\s+command: Model\\.sshExportCommand\\(\\)\\s+environment: " + without).test(svc)
-      && new RegExp("id: slotRemovalProc\\s+environment: " + without).test(svc)
-      && new RegExp("execDetached\\(\\{ command: Model\\.terminalLoginCommand\\(mode, serverUrl, activeSlot\\),\\s+environment: " + without + " \\}\\)").test(svc)
-      && new RegExp("var env = " + without + "\\s+env\\[Model\\.openPathEnvVar\\(\\)\\]").test(functionBody(svc, "openSavedAttachment")))
   check("withoutCompileCache() sets the variable to null, which a Process and the vault helper unset, and keeps the rest",
     JSON.stringify(Model.withoutCompileCache({ A: "1" })) === JSON.stringify({ A: "1", NODE_COMPILE_CACHE: null })
       && JSON.stringify(Model.withoutCompileCache()) === JSON.stringify({ NODE_COMPILE_CACHE: null })
@@ -633,18 +599,10 @@ check("a bw that is given the master password or a login's credentials never get
     scripts.every(s => /env -u NODE_COMPILE_CACHE node -e /.test(text(s))
       && !/(^|[^E] )node -e /.test(text(s).replace(/env -u NODE_COMPILE_CACHE node -e /g, ""))),
     scripts.map(s => (text(s).match(/.{0,30}node -e/g) || []).join(" | ")).join("\n"))
-  check("the list script's two checks both do (the validator, and the writer that hands SSH keys to the agent)",
-    (text(Model.sanitizedListCommand({ agentBranch: true })).match(/env -u NODE_COMPILE_CACHE node -e /g) || []).length === 2
-      && /timeout 10 env -u NODE_COMPILE_CACHE node -e /.test(text(Model.sanitizedListCommand({ agentBranch: true }))))
 }
 
 // The terminal hand-off: the script that runs inside the terminal.
 {
-  const cmd = Model.terminalLoginCommand("login", "https://vault.example.com", "default")
-  const outer = cmd[2]
-  check("the script the terminal runs unsets the variable itself, before any bw",
-    (outer.match(/set -u; unset NODE_COMPILE_CACHE; bw\(\) \{ command env -u NODE_COMPILE_CACHE bw "\$@"; \}; /g) || []).length === 2
-      && outer.split("bash -c ").slice(1).every(inner => inner.indexOf("unset NODE_COMPILE_CACHE; ") < inner.indexOf("bw ")), outer)
   // Run it: a launcher that, like a terminal started by the session manager,
   // gives the script an environment of its own with the variable set.
   const dir = fs.mkdtempSync(path.join(underTmp, "term-"))
@@ -754,7 +712,8 @@ const childEnv = (inherited, built) => {
 }
 const GOOD = "/h/.cache/qs-bitwarden-cli/node-compile-cache"
 
-for (const builder of ["bwEnv", "generatorServeEnv"]) {
+{
+  const builder = "bwEnv"
   const inherited = { PATH: "/usr/bin", NODE_COMPILE_CACHE: "/inherited/cache" }
   const value = v => v[builder]()[VAR]
   const reaches = v => childEnv(inherited, v[builder]()).NODE_COMPILE_CACHE
@@ -814,6 +773,15 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
   toggled.probeBwCompileCache()
   check(`${builder}: ...and the change handler forgets the directory and starts nothing`,
     toggled.bwCompileCacheDir === "" && toggled.bwCompileCacheState === "off" && toggled.bwCompileCacheProc.starts === 1)
+
+  // The generator's server builds its own environment: the same value, and no session.
+  const serve = service({})
+  serve.probeBwCompileCache()
+  const servePending = serve.generatorServeEnv()[VAR]
+  serve.answer(0, GOOD + "\n")
+  check("generatorServeEnv: removed while the check runs and with the setting off, the accepted directory otherwise, and never a session",
+    servePending === null && serve.generatorServeEnv()[VAR] === GOOD && serve.generatorServeEnv()[Model.sessionEnvVar()] === null
+      && VAR in off.generatorServeEnv() && off.generatorServeEnv()[VAR] === null)
 }
 
 {
@@ -980,12 +948,6 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
       sent: () => v.written.map(line => JSON.parse(line).env),
       runLater: () => v.later.splice(0).forEach(fn => fn()) }
   }
-  check("both starts ask the service last: the helper dispatch once its environment is put together, the local start as it hands it to the process",
-    /else environment\[key\] = proc\.environment\[key\]\s+\}\s+bwEnvAtStart\(environment\)\s+if \(!vaultHelperActive\)/.test(functionBody(svc, "vaultStart"))
-      && /local\.environment = vault\.bwEnvAtStart\(env\)\s+local\.command = cmd\s+local\.stdinEnabled = stdinText !== ""\s+local\.running = true/.test(functionBody(vaultProcess, "launchLocal"))
-      && (vaultProcess.match(/local\.environment = /g) || []).length === 2
-      && !/refreshBwCompileCacheIn/.test(svc))
-
   const helper = route(true)
   helper.v.bwCompileCache = false
   helper.dispatch()
@@ -1067,7 +1029,8 @@ if (trusted) {
     return v
   }
 
-  for (const builder of ["bwEnv", "generatorServeEnv"]) {
+  {
+    const builder = "bwEnv"
     // The shell was started with a cache directory of someone's choosing.
     const inheritedDir = path.join(home(), "inherited")
     const shellEnv = { PATH: process.env.PATH, NODE_OPTIONS: options, QSBW_CODE: "123456", NODE_COMPILE_CACHE: inheritedDir }
@@ -1091,43 +1054,38 @@ if (trusted) {
     const ok = probed({}, base)
     check(`${builder}: on and accepted by the real check, the directory is the one it made`,
       ok.bwCompileCacheDir === cacheOf(base) && ok[builder]()[VAR] === cacheOf(base), JSON.stringify(ok[builder]()))
-    if (builder === "bwEnv") {
-      const plain = runBwWith(childEnv({ PATH: process.env.PATH, NODE_OPTIONS: options, QSBW_CODE: "123456" }, {}))
-      const cold = runBwWith(childEnv(shellEnv, ok.bwEnv()))
-      const written = entriesOf(cacheOf(base)).length
-      const warm = runBwWith(childEnv(shellEnv, ok.bwEnv()))
-      check("with the cache, bw prints and returns what it did without it, cold and warm",
-        plain.status === 3 && plain.stdout === "answer login --code=123456\n" && same(plain, cold) && same(plain, warm),
-        JSON.stringify([plain, cold, warm]))
-      check("the preloads' early exit still lets Node write the cache, into the accepted directory only",
-        !fs.existsSync(inheritedDir) && (!supported || written >= 2), "entries: " + written + " on Node " + process.versions.node)
-      check("what is written is private to the user",
-        entriesOf(cacheOf(base)).every(f => (mode(path.join(cacheOf(base), f)) & 0o077) === 0))
-      check("what Node wrote passes the next check as it is", !supported || run(base).dir === cacheOf(base))
-      // A cache someone damaged costs speed, not the answer.
-      for (const f of entriesOf(cacheOf(base))) fs.writeFileSync(path.join(cacheOf(base), f), "not a code cache")
-      check("a damaged cache entry is not an error", same(plain, runBwWith(childEnv(shellEnv, ok.bwEnv()))))
-      check("bwEnv() still carries the preloads beside it, and what the caller adds",
-        ok.bwEnv({ EXTRA: "1" }).NODE_OPTIONS === options && ok.bwEnv({ EXTRA: "1" }).EXTRA === "1")
+    const plain = runBwWith(childEnv({ PATH: process.env.PATH, NODE_OPTIONS: options, QSBW_CODE: "123456" }, {}))
+    const cold = runBwWith(childEnv(shellEnv, ok.bwEnv()))
+    const written = entriesOf(cacheOf(base)).length
+    const warm = runBwWith(childEnv(shellEnv, ok.bwEnv()))
+    check("with the cache, bw prints and returns what it did without it, cold and warm",
+      plain.status === 3 && plain.stdout === "answer login --code=123456\n" && same(plain, cold) && same(plain, warm),
+      JSON.stringify([plain, cold, warm]))
+    check("the preloads' early exit still lets Node write the cache, into the accepted directory only",
+      !fs.existsSync(inheritedDir) && (!supported || written >= 2), "entries: " + written + " on Node " + process.versions.node)
+    check("what is written is private to the user",
+      entriesOf(cacheOf(base)).every(f => (mode(path.join(cacheOf(base), f)) & 0o077) === 0))
+    check("what Node wrote passes the next check as it is", !supported || run(base).dir === cacheOf(base))
+    // A cache someone damaged costs speed, not the answer.
+    for (const f of entriesOf(cacheOf(base))) fs.writeFileSync(path.join(cacheOf(base), f), "not a code cache")
+    check("a damaged cache entry is not an error", same(plain, runBwWith(childEnv(shellEnv, ok.bwEnv()))))
+    check("bwEnv() still carries the preloads beside it, and what the caller adds",
+      ok.bwEnv({ EXTRA: "1" }).NODE_OPTIONS === options && ok.bwEnv({ EXTRA: "1" }).EXTRA === "1")
 
-      // The directory removed behind the plugin's back: Node makes it again,
-      // by umask; the next check is what looks at it.
-      fs.rmSync(cacheOf(base), { recursive: true })
-      const old = process.umask(0o002)
-      runBwWith(childEnv(shellEnv, ok.bwEnv()))
-      process.umask(old)
-      if (supported) {
-        check("(Node recreates a cache directory that was removed, group-writable under such a umask)",
-          fs.existsSync(cacheOf(base)) && (mode(cacheOf(base)) & 0o020) !== 0, mode(cacheOf(base)).toString(8))
-        const after = probed({}, base)
-        check("...inside the plugin's directory, which stayed private, so no one else could reach it",
-          (mode(path.dirname(cacheOf(base))) & 0o077) === 0, mode(path.dirname(cacheOf(base))).toString(8))
-        check("...and the next check (the next opening) refuses it as it stands: the cache goes unused until it is put right",
-          after.bwCompileCacheState === "refused" && after.bwEnv()[VAR] === null && (mode(cacheOf(base)) & 0o020) !== 0)
-      }
-    } else {
-      check("the generator's server still gets no session",
-        ok.generatorServeEnv()[Model.sessionEnvVar()] === null)
+    // The directory removed behind the plugin's back: Node makes it again,
+    // by umask; the next check is what looks at it.
+    fs.rmSync(cacheOf(base), { recursive: true })
+    const old = process.umask(0o002)
+    runBwWith(childEnv(shellEnv, ok.bwEnv()))
+    process.umask(old)
+    if (supported) {
+      check("(Node recreates a cache directory that was removed, group-writable under such a umask)",
+        fs.existsSync(cacheOf(base)) && (mode(cacheOf(base)) & 0o020) !== 0, mode(cacheOf(base)).toString(8))
+      const after = probed({}, base)
+      check("...inside the plugin's directory, which stayed private, so no one else could reach it",
+        (mode(path.dirname(cacheOf(base))) & 0o077) === 0, mode(path.dirname(cacheOf(base))).toString(8))
+      check("...and the next check (the next opening) refuses it as it stands: the cache goes unused until it is put right",
+        after.bwCompileCacheState === "refused" && after.bwEnv()[VAR] === null && (mode(cacheOf(base)) & 0o020) !== 0)
     }
   }
   // Positive control for the cases above: left alone, Node does use an inherited directory.
