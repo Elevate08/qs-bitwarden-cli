@@ -178,8 +178,45 @@ check("arrows walk the list with an item open beside it",
 check("browsing does not teach suggestions",
   /function openDetail\(item, browsing\)/.test(service) && /if \(!browsing\) learnFromPick\(item\)/.test(service)
     && /openDetail\(item, true\)/.test(service))
-check("browsing waits for the cursor to settle",
-  /browseDetailTimer\.restart\(\)/.test(service) && /onTriggered: root\.openBrowsedDetail\(\)/.test(service))
+// The real walk, against the stand-in vault of detail-vault.js. A row the
+// helper holds needs no `bw get item`: its detail follows the cursor with no
+// wait, and one code is asked for once the cursor rests. Without the helper
+// the detail is a `bw` read, and waits for the cursor as before.
+{
+  const { Model: M, makeVault, body, handlerBody } = require("./detail-vault")
+  const held = id => ({ id, type: 1, name: id, reprompt: 0, login: { username: "me" },
+    qsbwHeld: { password: true, totp: true, notes: false } })
+  const walker = fallback => {
+    const v = makeVault(M.parseItems(["a", "b", "c"].map(held)), fallback)
+    Object.assign(v, { filteredItems: v.items, selectedIndex: 0,
+      browseDetailTimer: { interval: 120, restart() {} }, browseTotpTimer: { restarts: 0, restart() { this.restarts++ } },
+      moveCursor(delta) { v.selectedIndex += delta } })
+    const names = ["browseDetail", "openBrowsedDetail", "detailNeedsNoBw", "getSelectedItem"]
+    Object.assign(v, new Function("root", "with (root) {\n" + names.map(body).join("\n") + "\nreturn { " + names.join(", ")
+      + ", settle() {" + handlerBody(service.slice(service.indexOf("id: browseTotpTimer")), "onTriggered") + "} } }")(v))
+    return v
+  }
+  const v = walker(false)
+  v.openDetail(v.items[0])
+  v.queries.length = 0
+  const waits = []
+  for (let step = 0; step < 2; step++) {
+    v.browseDetail(1)
+    waits.push(v.browseDetailTimer.interval)
+    v.openBrowsedDetail()
+  }
+  const whileMoving = v.queries.length
+  v.settle()
+  const bw = walker(true)
+  bw.currentScreen = "detail"
+  bw.browseDetail(1)
+  check("browsing follows the cursor at once when no bw read is needed, asks for one code when it rests, and otherwise waits for it to settle",
+    waits.join() === "0,0" && v.detailItem.id === "c" && whileMoving === 0 && v.browseTotpTimer.restarts === 2
+      && v.queries.length === 1 && v.queries[0].kind === "totp" && v.queries[0].args.id === "c"
+      && bw.browseDetailTimer.interval === 120
+      && /id: browseDetailTimer\s+interval: 120\s+onTriggered: root\.openBrowsedDetail\(\)/.test(service),
+    JSON.stringify({ waits, shown: v.detailItem && v.detailItem.id, whileMoving, queries: v.queries, bw: bw.browseDetailTimer.interval }))
+}
 
 
 done()

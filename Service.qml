@@ -8000,7 +8000,10 @@ Item {
     // it; the key does not come here. A re-prompt item's code is fetched when
     // it is revealed or copied.
     if (item.hasTotp && !itemNeedsReprompt(item)) {
-      fetchTotp(item.id)
+      // Walked to with no wait (openBrowsedDetail()): its code is asked for
+      // once the cursor settles.
+      if (totpAfterSettle) browseTotpTimer.restart()
+      else fetchTotp(item.id)
     }
   }
 
@@ -9099,12 +9102,20 @@ Item {
 
   // Side by side, the arrows move through the list with an item open, and the
   // detail follows the cursor.
-  // The cursor moves at once; the detail opens once it settles, so holding an
-  // arrow down does not start a read per row passed.
+  // The cursor moves at once. A detail drawn without `bw` follows it at once;
+  // one that needs a read opens once the cursor settles, so holding an arrow
+  // down does not start a read per row passed.
   function browseDetail(delta) {
     if (filteredItems.length === 0) return
     moveCursor(delta)
+    browseDetailTimer.interval = detailNeedsNoBw(getSelectedItem()) ? 0 : 120
     browseDetailTimer.restart()
+  }
+
+  // Whether openDetail() draws this row with no `bw get item`: the row has
+  // its record, or the helper holds its secrets.
+  function detailNeedsNoBw(item) {
+    return !!item && (!!item.rawObject || (!!item.secretsHeld && vaultHelperActive))
   }
 
   function openBrowsedDetail() {
@@ -9113,13 +9124,29 @@ Item {
     if (!item || (detailItem && String(detailItem.id) === String(item.id))) return
     // SSH keys without their record have no detail view; the last item stays.
     if (item.typeCode === 5 && !item.rawObject) return
+    totpAfterSettle = detailNeedsNoBw(item)
     openDetail(item, true)
+    totpAfterSettle = false
   }
+
+  // Set while openBrowsedDetail() opens a detail that needed no wait.
+  property bool totpAfterSettle: false
 
   Timer {
     id: browseDetailTimer
     interval: 120
     onTriggered: root.openBrowsedDetail()
+  }
+
+  // The code of the detail the cursor came to rest on: one question for a
+  // held arrow, not one per row passed.
+  Timer {
+    id: browseTotpTimer
+    interval: 120
+    onTriggered: {
+      var shown = root.detailItem
+      if (root.currentScreen === "detail" && shown && shown.hasTotp && root.totpWanted(shown)) root.fetchTotp(shown.id)
+    }
   }
 
   function getSelectedItem() {
