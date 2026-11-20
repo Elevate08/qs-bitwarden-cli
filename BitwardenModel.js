@@ -3860,40 +3860,27 @@ function loginUriEntries(login) {
   return out
 }
 
+// A card's and an identity's fields, in the order they are read and written.
+var CARD_FIELDS = ["cardholderName", "brand", "number", "expMonth", "expYear", "code"]
+var IDENTITY_FIELDS = ["title", "firstName", "middleName", "lastName", "username",
+  "company", "email", "phone", "ssn", "passportNumber",
+  "licenseNumber", "address1", "address2", "address3",
+  "city", "state", "postalCode", "country"]
+
+// `keys` of `source` as strings, "" for one it lacks; null without a source.
+function stringFields(source, keys) {
+  if (!source) return null
+  var out = {}
+  for (var i = 0; i < keys.length; i++) out[keys[i]] = String(source[keys[i]] || "")
+  return out
+}
+
 function cardDetail(card) {
-  if (!card) return null
-  return {
-    cardholderName: String(card.cardholderName || ""),
-    brand: String(card.brand || ""),
-    number: String(card.number || ""),
-    expMonth: String(card.expMonth || ""),
-    expYear: String(card.expYear || ""),
-    code: String(card.code || "")
-  }
+  return stringFields(card, CARD_FIELDS)
 }
 
 function identityDetail(identity) {
-  if (!identity) return null
-  return {
-    title: String(identity.title || ""),
-    firstName: String(identity.firstName || ""),
-    middleName: String(identity.middleName || ""),
-    lastName: String(identity.lastName || ""),
-    username: String(identity.username || ""),
-    company: String(identity.company || ""),
-    email: String(identity.email || ""),
-    phone: String(identity.phone || ""),
-    ssn: String(identity.ssn || ""),
-    passportNumber: String(identity.passportNumber || ""),
-    licenseNumber: String(identity.licenseNumber || ""),
-    address1: String(identity.address1 || ""),
-    address2: String(identity.address2 || ""),
-    address3: String(identity.address3 || ""),
-    city: String(identity.city || ""),
-    state: String(identity.state || ""),
-    postalCode: String(identity.postalCode || ""),
-    country: String(identity.country || "")
-  }
+  return stringFields(identity, IDENTITY_FIELDS)
 }
 
 function identityFullName(identity) {
@@ -4554,25 +4541,21 @@ function editedUris(stored, typed) {
   return [replaced].concat(kept.slice(1))
 }
 
-// Shared by create and edit. Absent fields are written as "" (not left
-// undefined) so a cleared box clears the value.
-function updateCardFields(card, fields) {
+// A card's or identity's form fields, for create and edit. Absent fields are
+// written as "" (not left undefined) so a cleared box clears the value.
+function writeTypeFields(target, fields, keys) {
   var f = fields || {}
-  var keys = ["cardholderName", "brand", "number", "expMonth", "expYear", "code"]
   for (var i = 0; i < keys.length; i++) {
-    card[keys[i]] = formValue(card[keys[i]], f[keys[i]], trimmedText)
+    target[keys[i]] = formValue(target[keys[i]], f[keys[i]], trimmedText)
   }
 }
 
+function updateCardFields(card, fields) {
+  writeTypeFields(card, fields, CARD_FIELDS)
+}
+
 function updateIdentityFields(identity, fields) {
-  var f = fields || {}
-  var keys = ["title", "firstName", "middleName", "lastName", "username",
-              "company", "email", "phone", "ssn", "passportNumber",
-              "licenseNumber", "address1", "address2", "address3",
-              "city", "state", "postalCode", "country"]
-  for (var i = 0; i < keys.length; i++) {
-    identity[keys[i]] = formValue(identity[keys[i]], f[keys[i]], trimmedText)
-  }
+  writeTypeFields(identity, fields, IDENTITY_FIELDS)
 }
 
 // Drops form-only state and writes values as Bitwarden clients do: booleans as
