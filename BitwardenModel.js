@@ -75,6 +75,20 @@ function shellQuote(value) {
   return "'" + String(value || "").replace(/'/g, "'\\''") + "'"
 }
 
+// The first entry of `list` whose `key` is `value`, or null.
+function findBy(list, key, value) {
+  for (var i = 0; list && i < list.length; i++) {
+    if (list[i][key] === value) return list[i]
+  }
+  return null
+}
+
+function shallowCopy(source) {
+  var out = {}
+  for (var k in source) out[k] = source[k]
+  return out
+}
+
 // -------------------------------------------------------------------------
 // Accounts
 // -------------------------------------------------------------------------
@@ -210,9 +224,7 @@ function copyAccountRegistry(registry) {
 }
 
 function registryAccount(registry, slot) {
-  var list = registry && registry.accounts ? registry.accounts : []
-  for (var i = 0; i < list.length; i++) if (list[i].slot === slot) return list[i]
-  return null
+  return findBy(registry && registry.accounts, "slot", slot)
 }
 
 function registryHasAccount(registry, slot) {
@@ -866,29 +878,18 @@ var TWO_FACTOR_METHODS = [
 ]
 
 function twoFactorMethods() {
-  var out = []
-  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
-    var entry = {}
-    for (var k in TWO_FACTOR_METHODS[i]) entry[k] = TWO_FACTOR_METHODS[i][k]
-    out.push(entry)
-  }
-  return out
+  return TWO_FACTOR_METHODS.map(shallowCopy)
 }
 
 // --method is the only unquoted login argument, so only values from this
 // table may reach it.
 function isTwoFactorMethod(method) {
-  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
-    if (TWO_FACTOR_METHODS[i].method === method) return true
-  }
-  return false
+  return findBy(TWO_FACTOR_METHODS, "method", method) !== null
 }
 
 function twoFactorMethodLabel(method) {
-  for (var i = 0; i < TWO_FACTOR_METHODS.length; i++) {
-    if (TWO_FACTOR_METHODS[i].method === method) return TWO_FACTOR_METHODS[i].label
-  }
-  return ""
+  var entry = findBy(TWO_FACTOR_METHODS, "method", method)
+  return entry ? entry.label : ""
 }
 
 // Remembered two-step methods, keyed by a hash of the account email. The map
@@ -2543,8 +2544,7 @@ var PINENTRY_GIVE_UP_S = PINENTRY_TIMEOUT_S + 30
 var PINENTRY_EXIT = { cancelled: 1, empty: 3, failed: 4, short: 5, missing: 127 }
 
 function pinentryExitCodes() {
-  return { cancelled: PINENTRY_EXIT.cancelled, empty: PINENTRY_EXIT.empty,
-           failed: PINENTRY_EXIT.failed, short: PINENTRY_EXIT.short, missing: PINENTRY_EXIT.missing }
+  return shallowCopy(PINENTRY_EXIT)
 }
 
 // pinentry's own "operation cancelled" is GPG_ERR_CANCELED (99) from source
@@ -3426,16 +3426,11 @@ function itemTypeGlyph(type) {
   }
 }
 
+var ITEM_TYPE_LABELS = { login: "Login", secureNote: "Secure Note", card: "Card", identity: "Identity", sshKey: "SSH Key" }
+
 function itemTypeLabel(type) {
   var t = itemTypeName(type)
-  switch (t) {
-    case "login": return "Login"
-    case "secureNote": return "Secure Note"
-    case "card": return "Card"
-    case "identity": return "Identity"
-    case "sshKey": return "SSH Key"
-    default: return "Item"
-  }
+  return ITEM_TYPE_LABELS.hasOwnProperty(t) ? ITEM_TYPE_LABELS[t] : "Item"
 }
 
 // -------------------------------------------------------------------------
@@ -3860,40 +3855,27 @@ function loginUriEntries(login) {
   return out
 }
 
+// A card's and an identity's fields, in the order they are read and written.
+var CARD_FIELDS = ["cardholderName", "brand", "number", "expMonth", "expYear", "code"]
+var IDENTITY_FIELDS = ["title", "firstName", "middleName", "lastName", "username",
+  "company", "email", "phone", "ssn", "passportNumber",
+  "licenseNumber", "address1", "address2", "address3",
+  "city", "state", "postalCode", "country"]
+
+// `keys` of `source` as strings, "" for one it lacks; null without a source.
+function stringFields(source, keys) {
+  if (!source) return null
+  var out = {}
+  for (var i = 0; i < keys.length; i++) out[keys[i]] = String(source[keys[i]] || "")
+  return out
+}
+
 function cardDetail(card) {
-  if (!card) return null
-  return {
-    cardholderName: String(card.cardholderName || ""),
-    brand: String(card.brand || ""),
-    number: String(card.number || ""),
-    expMonth: String(card.expMonth || ""),
-    expYear: String(card.expYear || ""),
-    code: String(card.code || "")
-  }
+  return stringFields(card, CARD_FIELDS)
 }
 
 function identityDetail(identity) {
-  if (!identity) return null
-  return {
-    title: String(identity.title || ""),
-    firstName: String(identity.firstName || ""),
-    middleName: String(identity.middleName || ""),
-    lastName: String(identity.lastName || ""),
-    username: String(identity.username || ""),
-    company: String(identity.company || ""),
-    email: String(identity.email || ""),
-    phone: String(identity.phone || ""),
-    ssn: String(identity.ssn || ""),
-    passportNumber: String(identity.passportNumber || ""),
-    licenseNumber: String(identity.licenseNumber || ""),
-    address1: String(identity.address1 || ""),
-    address2: String(identity.address2 || ""),
-    address3: String(identity.address3 || ""),
-    city: String(identity.city || ""),
-    state: String(identity.state || ""),
-    postalCode: String(identity.postalCode || ""),
-    country: String(identity.country || "")
-  }
+  return stringFields(identity, IDENTITY_FIELDS)
 }
 
 function identityFullName(identity) {
@@ -4547,32 +4529,27 @@ function editedUris(stored, typed) {
   var first = kept[0]
   if (text === String(first.uri === undefined || first.uri === null ? "" : first.uri)) return kept
   if (!text.trim()) return kept.slice(1)
-  var replaced = {}
-  for (var k in first) replaced[k] = first[k]
+  var replaced = shallowCopy(first)
   replaced.match = first.match === undefined ? null : first.match
   replaced.uri = text.trim()
   return [replaced].concat(kept.slice(1))
 }
 
-// Shared by create and edit. Absent fields are written as "" (not left
-// undefined) so a cleared box clears the value.
-function updateCardFields(card, fields) {
+// A card's or identity's form fields, for create and edit. Absent fields are
+// written as "" (not left undefined) so a cleared box clears the value.
+function writeTypeFields(target, fields, keys) {
   var f = fields || {}
-  var keys = ["cardholderName", "brand", "number", "expMonth", "expYear", "code"]
   for (var i = 0; i < keys.length; i++) {
-    card[keys[i]] = formValue(card[keys[i]], f[keys[i]], trimmedText)
+    target[keys[i]] = formValue(target[keys[i]], f[keys[i]], trimmedText)
   }
 }
 
+function updateCardFields(card, fields) {
+  writeTypeFields(card, fields, CARD_FIELDS)
+}
+
 function updateIdentityFields(identity, fields) {
-  var f = fields || {}
-  var keys = ["title", "firstName", "middleName", "lastName", "username",
-              "company", "email", "phone", "ssn", "passportNumber",
-              "licenseNumber", "address1", "address2", "address3",
-              "city", "state", "postalCode", "country"]
-  for (var i = 0; i < keys.length; i++) {
-    identity[keys[i]] = formValue(identity[keys[i]], f[keys[i]], trimmedText)
-  }
+  writeTypeFields(identity, fields, IDENTITY_FIELDS)
 }
 
 // Drops form-only state and writes values as Bitwarden clients do: booleans as
@@ -4822,11 +4799,8 @@ function parseHost(host) {
     return { host: h, baseDomain: h, rootName: null, isIp: true }
   }
 
+  // A single label is its own root and base domain: rootIdx clamps to 0.
   var parts = h.split(".")
-  if (parts.length === 1) {
-    return { host: h, baseDomain: h, rootName: parts[0], isIp: false }
-  }
-
   var suffixCount = 1
   if (parts.length >= 3 && MULTI_SLD[parts[parts.length - 2]]) {
     suffixCount = 2
@@ -4942,42 +4916,28 @@ function getActiveWindowFromData(windowData) {
 function windowIdentity(cls, title) {
   var isBrowser = BROWSER_CLASS_RE.test(cls)
   var isTerminal = TERMINAL_CLASS_RE.test(cls)
+  function identity(cleanTitle, detectedDomain, displayName) {
+    return { cleanTitle: cleanTitle, detectedDomain: detectedDomain, displayName: displayName,
+      isBrowser: isBrowser, isTerminal: isTerminal }
+  }
 
   if (isBrowser) {
     var browserTitle = stripTitleNoise(title)
     var browserDomain = detectDomainInText(browserTitle)
-    return {
-      cleanTitle: browserTitle,
-      detectedDomain: browserDomain,
-      displayName: browserDomain ? browserDomain.baseDomain : browserTitle,
-      isBrowser: isBrowser,
-      isTerminal: isTerminal
-    }
+    return identity(browserTitle, browserDomain, browserDomain ? browserDomain.baseDomain : browserTitle)
   }
 
   if (isTerminal) {
     // Only remote sessions; a local shell title describes this machine.
     var remoteSession = title.match(REMOTE_SESSION_RE)
     if (!remoteSession) return null
-    return {
-      cleanTitle: remoteSession[1],
-      detectedDomain: parseHost(remoteSession[1]),
-      displayName: "SSH: " + remoteSession[1],
-      isBrowser: isBrowser,
-      isTerminal: isTerminal
-    }
+    return identity(remoteSession[1], parseHost(remoteSession[1]), "SSH: " + remoteSession[1])
   }
 
   // Native desktop app: the leading segment is the app, the rest is document state.
   var segments = splitSegments(stripTitleNoise(title))
   var appTitle = segments.length > 0 ? segments[0] : ""
-  return {
-    cleanTitle: appTitle,
-    detectedDomain: null,
-    displayName: appTitle || cls,
-    isBrowser: isBrowser,
-    isTerminal: isTerminal
-  }
+  return identity(appTitle, null, appTitle || cls)
 }
 
 function cleanWindowContext(windowData) {
@@ -5187,9 +5147,9 @@ function itemActions(item, context) {
   var card = type === 3 ? (item.card || {}) : null
   var identity = type === 4 ? (item.identity || {}) : null
 
+  if (hasPassword) push("copyPassword", "Copy password", "p")
+  if (login && item.username) push("copyUsername", "Copy username", "u")
   if (!detail) {
-    if (hasPassword) push("copyPassword", "Copy password", "p")
-    if (login && item.username) push("copyUsername", "Copy username", "u")
     if (login && item.hasTotp) push("copyTotp", "Copy TOTP code", "m")
     if (openable) push("openWebsite", "Open website", "w")
     push("openDetail", "Open details", "e")
@@ -5197,8 +5157,6 @@ function itemActions(item, context) {
   }
 
   var revealed = Boolean(context && context.revealed)
-  if (hasPassword) push("copyPassword", "Copy password", "p")
-  if (login && item.username) push("copyUsername", "Copy username", "u")
   if (identity && identity.username) push("copyUsername", "Copy username", "u")
   if (identity && identity.email) push("copyEmail", "Copy email", "c")
   if (login && item.hasTotp) push("copyTotp", "Copy TOTP code", "m")
@@ -5470,9 +5428,7 @@ var MAX_ASSOC_WRITE_BYTES = MAX_ASSOC_BYTES / 2
 // words recorded (see associationEntryCounts()); an ordinary pick learns the
 // domain and app keys only.
 function recordAssociation(assoc, ctx, itemId, timestamp, pinned) {
-  var next = { version: ASSOC_VERSION, keys: {} }
-  var k
-  for (k in assoc.keys) next.keys[k] = assoc.keys[k]
+  var next = { version: ASSOC_VERSION, keys: shallowCopy(assoc.keys) }
 
   var keys = contextKeys(ctx, pinned === true)
   if (keys.length === 0 || !itemId) return next
@@ -5786,24 +5742,13 @@ function normalizeReleaseVersion(raw) {
 function compareReleaseVersions(a, b) {
   var left = normalizeReleaseVersion(a)
   var right = normalizeReleaseVersion(b)
-  if (!left || !right) return null
-  var la = left.split(".")
-  var ra = right.split(".")
-  for (var i = 0; i < 3; i++) {
-    var lv = Number(la[i] || 0)
-    var rv = Number(ra[i] || 0)
-    if (lv < rv) return -1
-    if (lv > rv) return 1
-  }
-  return 0
+  // Normalized, each is three plain numbers, which compareSemver() orders.
+  return left && right ? compareSemver(left, right) : null
 }
 
 function dependencyByKey(deps, key) {
   if (!deps || !Array.isArray(deps.items)) return null
-  for (var i = 0; i < deps.items.length; i++) {
-    if (deps.items[i].key === key) return deps.items[i]
-  }
-  return null
+  return findBy(deps.items, "key", key)
 }
 
 function dependencyInstalled(deps, key) {
@@ -5990,33 +5935,28 @@ function utf8ByteLength(text) {
 // fatal}. Only a blank line (SplitParser's remainder) is non-fatal; anything
 // not a well-formed v1 known-type object closes the gate.
 function parseAgentEvent(line) {
+  function fatal(code) { return { ok: false, code: code, fatal: true } }
   var text = (line === undefined || line === null) ? "" : String(line)
   if (text.charAt(text.length - 1) === "\n") text = text.slice(0, text.length - 1)
   if (text.charAt(text.length - 1) === "\r") text = text.slice(0, text.length - 1)
   if (text === "") return { ok: false, code: "EMPTY", fatal: false }
-  if (utf8ByteLength(text) > SSH_AGENT_MAX_LINE_BYTES) {
-    return { ok: false, code: "LINE_TOO_LONG", fatal: true }
-  }
+  if (utf8ByteLength(text) > SSH_AGENT_MAX_LINE_BYTES) return fatal("LINE_TOO_LONG")
   var parsed
   try {
     parsed = JSON.parse(text)
   } catch (e) {
-    return { ok: false, code: "MALFORMED", fatal: true }
+    return fatal("MALFORMED")
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { ok: false, code: "MALFORMED", fatal: true }
-  }
-  if (parsed.v !== SSH_AGENT_CONTROL_VERSION) {
-    return { ok: false, code: "VERSION_MISMATCH", fatal: true }
-  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fatal("MALFORMED")
+  if (parsed.v !== SSH_AGENT_CONTROL_VERSION) return fatal("VERSION_MISMATCH")
   if (typeof parsed.type !== "string" || SSH_AGENT_EVENT_TYPES.indexOf(parsed.type) < 0) {
-    return { ok: false, code: "UNKNOWN_TYPE", fatal: true }
+    return fatal("UNKNOWN_TYPE")
   }
   if (parsed.type === "ready") {
     if (typeof parsed.socketPath !== "string" || parsed.socketPath === ""
         || typeof parsed.fifoPath !== "string" || parsed.fifoPath === ""
         || typeof parsed.agentVersion !== "string" || parsed.agentVersion === "") {
-      return { ok: false, code: "MALFORMED", fatal: true }
+      return fatal("MALFORMED")
     }
   }
   return { ok: true, message: parsed }
@@ -6259,30 +6199,22 @@ function parseExitCodeResult(exitCode, stdout, parseSuccess, failureMap, default
 }
 
 function parseUwsmInspection(raw) {
-  var verdict = String(raw === undefined || raw === null ? "" : raw).trim()
-  switch (verdict) {
-    case "managed":
-      return { state: "managed", removable: true,
-        message: "Routing is set up. " + uwsmFragmentDisplayPath() + " is the file this plugin wrote, "
-          + "and turning the agent off removes it." }
-    case "absent":
-      return { state: "absent", removable: false,
-        message: "No routing file. SSH clients will keep using whatever agent your session already has." }
-    case "symlink":
-      return { state: "symlink", removable: false,
-        message: uwsmFragmentDisplayPath() + " is a symlink, so this plugin will not write to it or "
-          + "remove it. Replace it with a regular file yourself if you want it managed here." }
-    case "unreadable":
-      return { state: "unreadable", removable: false,
-        message: uwsmFragmentDisplayPath() + " exists but cannot be read, so it is left alone." }
-    case "no-home":
-      return { state: "no-home", removable: false,
-        message: "No HOME is set, so there is nowhere to put a routing file." }
-    default:
-      return { state: "foreign", removable: false,
-        message: uwsmFragmentDisplayPath() + " already exists and is not the file this plugin writes, "
-          + "so it is left untouched. Remove or edit it yourself to change routing." }
+  var where = uwsmFragmentDisplayPath()
+  var messages = {
+    "managed": "Routing is set up. " + where + " is the file this plugin wrote, "
+      + "and turning the agent off removes it.",
+    "absent": "No routing file. SSH clients will keep using whatever agent your session already has.",
+    "symlink": where + " is a symlink, so this plugin will not write to it or "
+      + "remove it. Replace it with a regular file yourself if you want it managed here.",
+    "unreadable": where + " exists but cannot be read, so it is left alone.",
+    "no-home": "No HOME is set, so there is nowhere to put a routing file.",
+    "foreign": where + " already exists and is not the file this plugin writes, "
+      + "so it is left untouched. Remove or edit it yourself to change routing."
   }
+  var verdict = String(raw === undefined || raw === null ? "" : raw).trim()
+  // An unrecognised verdict reads as a file that is not this plugin's.
+  var state = messages.hasOwnProperty(verdict) ? verdict : "foreign"
+  return { state: state, removable: state === "managed", message: messages[state] }
 }
 
 // The status line about routing, judged by the fragment file (what the next
@@ -6426,11 +6358,8 @@ function helperCandidates(pluginDir, spec, arch) {
 // guess: an unaccepted source launches nothing, and the shipped one needs the
 // architecture the inspection reported.
 function helperPath(pluginDir, spec, source, arch) {
-  var candidates = helperCandidates(pluginDir, spec, arch)
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i].source === source) return candidates[i].path
-  }
-  return ""
+  var accepted = findBy(helperCandidates(pluginDir, spec, arch), "source", source)
+  return accepted ? accepted.path : ""
 }
 
 // Banner text when a local build serves SSH keys: it has no digest or
@@ -7383,8 +7312,7 @@ function sshAgentGrantsAt(views, nowMs) {
     }
     var remaining = Math.max(0, Math.ceil((view.expiresAtMs - now) / 1000))
     if (remaining <= 0) continue
-    var copy = {}
-    for (var k in view) copy[k] = view[k]
+    var copy = shallowCopy(view)
     copy.remainingSec = remaining
     copy.remainingLabel = formatDuration(remaining) + " left"
     out.push(copy)
@@ -7534,9 +7462,7 @@ function sshAgentLifecycleTransition(event, context) {
   if (SSH_AGENT_LOAD_EVENTS.indexOf(event) >= 0) {
     // A remembered session can start unlocked while the companion has no keys.
     action.startLoad = live && Boolean(ctx.unlocked)
-    return action
   }
-
   return action
 }
 
@@ -7683,80 +7609,75 @@ function sshAgentFailOnExit(state, next, action, nowMs) {
 // in, the next state and the side effects to perform out.
 function sshAgentReduce(state, event) {
   var current = state || sshAgentInitialState()
-  var next = sshAgentCopyState(current)
-  var action = sshAgentNoAction()
+  var result = { state: sshAgentCopyState(current), action: sshAgentNoAction() }
   var ev = event || {}
-  var nowMs = Number(ev.nowMs) || 0
-
   if (ev.kind === "enabled") {
-    if (!ev.value) {
-      if (current.phase === "disabled") return { state: next, action: action }
-      next = sshAgentInitialState()
-      action.stop = true
-      action.cancelRestart = true
-      return { state: next, action: action }
-    }
-    // Re-enabling is the deliberate reset: it clears a crash-loop verdict and
-    // the failure history that produced it. Nothing else does, so a broken
-    // helper stays off until the user says otherwise.
-    if (current.phase !== "disabled" && current.phase !== "failed") {
-      return { state: next, action: action }
-    }
-    next = sshAgentInitialState()
-    next.phase = "starting"
-    action.start = true
-    return { state: next, action: action }
+    sshAgentSetEnabled(current, result, ev.value)
+  } else if (current.phase !== "disabled" && current.phase !== "failed") {
+    sshAgentStep(current, result.state, result.action, ev)
   }
+  return result
+}
 
-  if (current.phase === "disabled" || current.phase === "failed") {
-    return { state: next, action: action }
+function sshAgentSetEnabled(current, result, on) {
+  if (!on) {
+    if (current.phase === "disabled") return
+    result.state = sshAgentInitialState()
+    result.action.stop = true
+    result.action.cancelRestart = true
+    return
   }
+  // Re-enabling is the deliberate reset: it clears a crash-loop verdict and
+  // the failure history that produced it. Nothing else does, so a broken
+  // helper stays off until the user says otherwise.
+  if (current.phase !== "disabled" && current.phase !== "failed") return
+  result.state = sshAgentInitialState()
+  result.state.phase = "starting"
+  result.action.start = true
+}
 
+// One event of a supervisor that is on, written into `next` and `action`.
+function sshAgentStep(current, next, action, ev) {
   switch (ev.kind) {
     case "started":
-      if (current.phase !== "starting") return { state: next, action: action }
+      if (current.phase !== "starting") return
       next.phase = "handshaking"
       action.writeHello = true
-      return { state: next, action: action }
+      return
 
     case "handshakeTimeout":
-      if (current.phase !== "starting" && current.phase !== "handshaking") {
-        return { state: next, action: action }
-      }
+      if (current.phase !== "starting" && current.phase !== "handshaking") return
       sshAgentFailMidRun(next, action, "HANDSHAKE_TIMEOUT")
-      return { state: next, action: action }
+      return
 
     case "line": {
-      if (current.phase !== "handshaking" && current.phase !== "ready") {
-        return { state: next, action: action }
-      }
+      if (current.phase !== "handshaking" && current.phase !== "ready") return
       var parsed = parseAgentEvent(ev.line)
       if (!parsed.ok) {
-        if (!parsed.fatal) return { state: next, action: action }
-        sshAgentFailMidRun(next, action, parsed.code)
-        return { state: next, action: action }
+        if (parsed.fatal) sshAgentFailMidRun(next, action, parsed.code)
+        return
       }
       var isReady = parsed.message.type === "ready"
       // `ready` answers `hello` exactly once; anything out of order fails.
       if (isReady !== (current.phase === "handshaking")) {
         sshAgentFailMidRun(next, action, "PROTOCOL")
-        return { state: next, action: action }
+        return
       }
-      if (isReady) {
-        next.phase = "ready"
-        next.gateOpen = true
-        next.socketPath = parsed.message.socketPath
-        next.fifoPath = parsed.message.fifoPath
-        next.agentVersion = parsed.message.agentVersion
-        next.readyAtMs = nowMs
-        // `failures` is not reset here: only a run that lasts
-        // SSH_AGENT_HEALTHY_MS clears it, at exit.
-        next.errorCode = ""
-        next.errorMessage = ""
-        return { state: next, action: action }
+      if (!isReady) {
+        action.message = parsed.message
+        return
       }
-      action.message = parsed.message
-      return { state: next, action: action }
+      next.phase = "ready"
+      next.gateOpen = true
+      next.socketPath = parsed.message.socketPath
+      next.fifoPath = parsed.message.fifoPath
+      next.agentVersion = parsed.message.agentVersion
+      next.readyAtMs = Number(ev.nowMs) || 0
+      // `failures` is not reset here: only a run that lasts
+      // SSH_AGENT_HEALTHY_MS clears it, at exit.
+      next.errorCode = ""
+      next.errorMessage = ""
+      return
     }
 
     case "exited":
@@ -7771,19 +7692,16 @@ function sshAgentReduce(state, event) {
         next.errorCode = "ELSEWHERE"
         next.errorMessage = sshAgentErrorMessage("ELSEWHERE")
         action.restartInMs = SSH_AGENT_ELSEWHERE_RETRY_MS
-        return { state: next, action: action }
+        return
       }
-      sshAgentFailOnExit(current, next, action, nowMs)
-      return { state: next, action: action }
+      sshAgentFailOnExit(current, next, action, Number(ev.nowMs) || 0)
+      return
 
     case "restartTimer":
-      if (current.phase !== "backoff" && current.phase !== "elsewhere") return { state: next, action: action }
+      if (current.phase !== "backoff" && current.phase !== "elsewhere") return
       next.phase = "starting"
       action.start = true
-      return { state: next, action: action }
-
-    default:
-      return { state: next, action: action }
+      return
   }
 }
 
@@ -7975,8 +7893,7 @@ function groupedSettings() {
     var first = true
     for (var i = 0; i < SETTINGS_SCHEMA.length; i++) {
       if (SETTINGS_SCHEMA[i].group !== group.id) continue
-      var entry = {}
-      for (var k in SETTINGS_SCHEMA[i]) entry[k] = SETTINGS_SCHEMA[i][k]
+      var entry = shallowCopy(SETTINGS_SCHEMA[i])
       entry.groupLabel = first ? group.label : ""
       out.push(entry)
       first = false
@@ -8017,17 +7934,12 @@ function visibleSettings(deps, checked) {
 }
 
 function groupLabelFor(id) {
-  for (var i = 0; i < SETTINGS_GROUPS.length; i++) {
-    if (SETTINGS_GROUPS[i].id === id) return SETTINGS_GROUPS[i].label
-  }
-  return ""
+  var group = findBy(SETTINGS_GROUPS, "id", id)
+  return group ? group.label : ""
 }
 
 function settingSchemaEntry(key) {
-  for (var i = 0; i < SETTINGS_SCHEMA.length; i++) {
-    if (SETTINGS_SCHEMA[i].key === key) return SETTINGS_SCHEMA[i]
-  }
-  return null
+  return findBy(SETTINGS_SCHEMA, "key", key)
 }
 
 // Integer settings read from shell.json, which nothing validates. Unreadable
@@ -8341,9 +8253,7 @@ var GENERATOR_LIMITS = {
 }
 
 function generatorDefaults() {
-  var out = {}
-  for (var k in GENERATOR_DEFAULTS) out[k] = GENERATOR_DEFAULTS[k]
-  return out
+  return shallowCopy(GENERATOR_DEFAULTS)
 }
 
 function clampInt(value, limit) {
@@ -8614,7 +8524,7 @@ function buildSendPayload(name, text, hidden, deleteInDays, maxAccessCount, pass
   var deletion = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
 
   var max = Number(maxAccessCount)
-  var payload = {
+  return {
     object: "send",
     name: String(name || "").trim() || "Untitled Send",
     notes: notes && String(notes).trim() ? String(notes).trim() : null,
@@ -8629,7 +8539,6 @@ function buildSendPayload(name, text, hidden, deleteInDays, maxAccessCount, pass
     disabled: false,
     hideEmail: false
   }
-  return payload
 }
 
 function parseSends(raw) {

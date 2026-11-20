@@ -24,8 +24,9 @@ check("a locked panel focuses whichever field the offered unlock method uses",
 
 // The wtype row says whether a key runs auto-type, from the model's text.
 check("the setup screen's wtype row carries the keybinding note",
-  /visible: depCard\.modelData\.key === "wtype" && root\.autoTypeKeybind\.setupNote !== ""\s*\n\s*width: parent\.width\s*\n\s*text: root\.autoTypeKeybind\.setupNote/.test(panelSrc),
-  "expected the wtype card to show autoTypeKeybind.setupNote")
+  /PanelNote \{\s*visible: depCard\.modelData\.key === "wtype" && root\.autoTypeKeybind\.setupNote !== ""\s*\n\s*text: root\.autoTypeKeybind\.setupNote/.test(panelSrc)
+    && /component PanelNote: PanelText \{\s*width: parent \? parent\.width : 0\s*wrapMode: Text\.WordWrap/.test(panelSrc),
+  "expected the wtype card to show autoTypeKeybind.setupNote, full width and wrapped")
 check("the setup screen reads the binding while auto-type is on",
   /onCurrentScreenChanged: \{\s*\n\s*if \(currentScreen === "setup" && autoTypeEnabled\) inspectAutoTypeKeybind\(\)/.test(panelSrc)
     && /function checkDependencies\(\)[\s\S]{0,260}if \(autoTypeEnabled && currentScreen === "setup"\) inspectAutoTypeKeybind\(\)/.test(panelSrc),

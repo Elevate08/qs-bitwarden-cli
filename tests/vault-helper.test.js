@@ -43,8 +43,8 @@ check("bwEnv() carries no session: a VaultProcess adds it",
   !/sessionEnvVar/.test(body("bwEnv")), body("bwEnv"))
 // Every process whose environment is a `bw` one must be a VaultProcess.
 const bwEnvFns = /root\.(bwEnv|authEnv|itemEnv|folderEnv|sendEnv|loginProcessEnv)\(/
-const plainProcesses = service.split(/\n  (?=Process \{|VaultProcess \{)/)
-  .filter(block => block.indexOf("Process {") === 0)
+const plainProcesses = service.split(/\n  (?=(?:Text)?Process \{|VaultProcess \{)/)
+  .filter(block => /^(?:Text)?Process \{/.test(block))
   .map(block => block.slice(0, block.indexOf("\n  }\n") + 1))
 const leaking = plainProcesses.filter(block => bwEnvFns.test(block)).map(block => (/id: (\w+)/.exec(block) || [])[1])
 eq("no plain Process runs with a bw environment", leaking.join(), "")

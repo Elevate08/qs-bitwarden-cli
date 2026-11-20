@@ -463,22 +463,16 @@ Item {
 
   // -------------------------------------------------------------------------
 
-  Process {
+  TextProcess {
     id: probeProc
     command: Fido.fidoProbeCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: fido.onProbe(text)
-    }
+    onCollected: function(text) { fido.onProbe(text) }
   }
 
-  Process {
+  TextProcess {
     id: hasProc
     command: Model.keyringHasFidoPasswordCommand(fido.vault ? fido.vault.activeSlot : "")
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: fido.onHasChecked(text)
-    }
+    onCollected: function(text) { fido.onHasChecked(text) }
   }
 
   // One touch; the password is the only output. See Model.fidoUnlockCommand().
@@ -486,9 +480,7 @@ Item {
     id: assertProc
     vault: fido.vault
     session: false
-    stdout: VaultCollector {
-      id: assertStdout
-    }
+    stdout: VaultCollector { id: assertStdout }
     onExited: function(exitCode) { fido.onAssertExited(exitCode) }
   }
 
