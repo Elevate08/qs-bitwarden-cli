@@ -342,7 +342,7 @@ check("a learned-association read cannot repopulate account metadata after logou
   bodyOf("loadAssociations") + "\n" + bodyOf("onAssociationsLoaded")
     + "\n" + bodyOf("forgetStoredCredentials"))
 check("credential clears requested during another clear are repeated afterward",
-  /sessionClearPending\s*=\s*true/.test(bodyOf("requestSessionCredentialClear"))
+  /sessionClearSlots = sessionClearSlots\.concat\(\[target\]\)/.test(bodyOf("requestSessionCredentialClear"))
     && /pinClearPending\s*=\s*true/.test(bodyOf("requestPinCredentialClear"))
     && /masterClearPending\s*=\s*true/.test(bodyOf("requestMasterCredentialClear"))
     && /allCredentialsClearPending\s*=\s*true/.test(bodyOf("requestAllCredentialClear")),

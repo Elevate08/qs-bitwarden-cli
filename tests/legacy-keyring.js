@@ -3,7 +3,8 @@
 // install's keyring.
 
 function legacyKeyring(Model) {
-  const store = (label, account) => ["bash", "-c", Model.keyringStoreScript(label, account)]
+  const store = (label, account) => ["bash", "-c", "printf '%s' \"$" + Model.KEYRING_SECRET_ENV
+    + "\" | secret-tool store --label=" + Model.shellQuote(label) + Model.keyringAttributes(account)]
   return {
     storeMasterPassword: () => store("Bitwarden Master Password (fingerprint unlock)", Model.KEYRING_MASTER),
     storeFidoPassword: () => store("Bitwarden Master Password (FIDO2 unlock)", Model.KEYRING_FIDO),

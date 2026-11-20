@@ -172,14 +172,14 @@ check("no outcome approves",
     count++
     const hex = cp.toString(16)
     const want = "a" + (cp > 0xffff ? "\\u{" + hex + "}" : "\\u" + ("0000" + hex).slice(-4)) + "b"
-    if (Model.visibleText("a" + c + "b") !== want) missed.push("U+" + hex.toUpperCase())
+    if (Model.boundedText("a" + c + "b", 64) !== want) missed.push("U+" + hex.toUpperCase())
   }
   check(`all ${count} Default_Ignorable_Code_Point characters (Unicode ${process.versions.unicode}) are written out`,
     count > 4000 && missed.length === 0, missed.slice(0, 20).join(" "))
   check("the shorthand format controls and musical symbol controls are among them",
     ["\u{1bca0}", "\u{1bca3}", "\u{1d173}", "\u{1d17a}"].every(c =>
-      Model.visibleText(c) === "\\u{" + c.codePointAt(0).toString(16) + "}")
-    && Model.visibleText("\u{1bc9f}\u{1bca4}\u{1d172}\u{1d17b}") === "\u{1bc9f}\u{1bca4}\u{1d172}\u{1d17b}")
+      Model.boundedText(c, 64) === "\\u{" + c.codePointAt(0).toString(16) + "}")
+    && Model.boundedText("\u{1bc9f}\u{1bca4}\u{1d172}\u{1d17b}", 64) === "\u{1bc9f}\u{1bca4}\u{1d172}\u{1d17b}")
 }
 
 // The limits cut between whole characters and never inside a written-out one.

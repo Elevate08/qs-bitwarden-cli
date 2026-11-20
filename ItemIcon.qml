@@ -67,9 +67,8 @@ Item {
     fillMode: Image.PreserveAspectFit
     smooth: true
     // Decoded at the screen pixels it covers, so the service's 32-64 px icon
-    // is scaled once, smoothly, and drawn about 1:1. sourceSize is in device
-    // pixels for a raster image: plain `size` decoded a 20 px image that a
-    // 1.33x display then stretched to 27, which is what looked blurry.
+    // is scaled once and drawn about 1:1. sourceSize is in device pixels for a
+    // raster image: plain `size` is stretched blurry on a scaled display.
     sourceSize.width: icon.pixelSize
     sourceSize.height: icon.pixelSize
   }
