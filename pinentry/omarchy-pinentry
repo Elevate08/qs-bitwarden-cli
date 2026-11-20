@@ -299,6 +299,10 @@ function uiEnvironment(dir) {
   // into ~/.cache/quickshell/crashes, past the zero core-file limit this
   // process and the prompt inherit from the vault helper.
   env.QS_DISABLE_CRASH_HANDLER = "1"
+  // Wayland or nothing. A session's own value is often "wayland;xcb", and
+  // unset means the same: were the compositor unreachable, the prompt would
+  // open as an X11 window, where every X client can read what is typed.
+  env.QT_QPA_PLATFORM = "wayland"
   return env
 }
 

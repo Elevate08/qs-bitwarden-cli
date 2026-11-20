@@ -216,7 +216,18 @@ children of the helper and have its zero core-file limit; Quickshell's crash
 handler, which would write a dump and its log under `~/.cache/quickshell`, is
 turned off for that process. It needs `quickshell`, `node` (which `bw` needs
 anyway), the Omarchy shell kit and a Wayland display, and is not installed
-separately: it ships in the plugin.
+separately: it ships in the plugin. It is started with
+`QT_QPA_PLATFORM=wayland`, whatever the session sets: a prompt that cannot
+reach the compositor fails instead of opening as an X11 window, where other
+X11 programs could read what is typed.
+
+The two are your own processes and take no special protection from other
+programs running as you: such a program can already change the plugin's
+files, and can as well take the answer socket's place before the prompt
+connects, or draw a prompt of its own. The frontend honours
+`QSBW_PINENTRY_TEST_UI` (a program run in place of Quickshell, for the test
+suites) from the environment the shell was started with; a program that can
+set that can equally put its own `quickshell` on `PATH`.
 
 Before 1.12.0 the plugin ran `pinentry-qt` or `pinentry` from `PATH`, and on
 some systems `pinentry` picks `pinentry-gnome3`, which hands the prompt to

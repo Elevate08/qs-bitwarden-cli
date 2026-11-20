@@ -129,7 +129,7 @@ Item {
   readonly property bool suggestOnOpen: Model.boolSetting("suggestOnOpen", setting("suggestOnOpen", true))
   // Bitwarden's "Show website icons", on by default as there; see
   // websiteIconUrl() in BitwardenModel.js.
-  readonly property bool showWebsiteIcons: Model.boolSetting("showWebsiteIcons", setting("showWebsiteIcons", true))
+  readonly property bool showWebsiteIcons: Model.boolSetting("showWebsiteIcons", setting("showWebsiteIcons", false))
   // The vault list and an item's detail side by side (the view decides
   // whether the screen is wide enough).
   readonly property bool sideBySide: Model.boolSetting("sideBySide", setting("sideBySide", true))
@@ -3038,14 +3038,31 @@ Item {
   // releases every held request in no fixed order, so the first approval_required
   // to arrive is adopted only if it is this same request.
   property var sshPromotedRaw: null
+  // Another request held with it looked the same (same key, process and
+  // operation), or more were held than were kept: the approval that arrives
+  // first and looks like the card's may be the other one's (a helper from
+  // before the release order was fixed).
+  property bool sshPromotedAmbiguous: false
 
   function adoptSshPrompt(message) {
+    // Only the card the promotion put up: once that one was answered and
+    // another request is shown, an adoption would hand this request's id to
+    // the other's card.
     if (root.sshPromotedOldId !== null && root.sshPrompt
+        && root.sshPrompt.requestId === root.sshPromotedOldId
         && Model.sshAgentSameRequest(root.sshPromotedRaw, message)) {
+      // A notification already up was shown for this request under its old
+      // id: its Deny stays this request's, and no other's. Where this may be
+      // another request that looks the same, the notification is nobody's:
+      // its Deny does nothing, and the card is answered on the card.
+      if (root.sshNotifyRequestId === root.sshPrompt.requestId) {
+        root.sshNotifyRequestId = root.sshPromotedAmbiguous ? -1 : message.requestId
+      }
       root.sshPrompt.requestId = message.requestId
       root.sshPromptRaw = message
       root.sshPromotedOldId = null
       root.sshPromotedRaw = null
+      root.sshPromotedAmbiguous = false
       return true
     }
     return false
@@ -3333,6 +3350,8 @@ Item {
     var raw = root.sshUnlockRaw
     root.sshPromotedOldId = raw.requestId
     root.sshPromotedRaw = raw
+    root.sshPromotedAmbiguous = root.sshUnlockQueue.length >= 4
+      || root.sshUnlockQueue.some(function(other) { return Model.sshAgentSameRequest(raw, other) })
     root.sshUnlockRequest = null
     root.sshUnlockRaw = null
     root.sshUnlockQueue = []
@@ -3352,7 +3371,8 @@ Item {
     enabled: sshAgentEnabled,
     supervisable: sshAgentSupervisable,
     phase: sshAgentPhase,
-    errorCode: sshAgentErrorCode
+    errorCode: sshAgentErrorCode,
+    exportError: sshExportError
   })
 
   // -------------------------------------------------------------------------
@@ -8018,6 +8038,10 @@ Item {
       errorMessage = "Vault is locked or session expired. Please unlock your vault."
       return
     }
+    // A cancelled download still holds the process until its exit arrives:
+    // starting now would start nothing, and that run's answer would be taken
+    // for this one's. The job waits in the queue; the exit pumps again.
+    if (vaultProcBusy(attachmentProc)) return
     var next = attachmentQueue.slice()
     var job = next.shift()
     attachmentQueue = next
@@ -8032,6 +8056,12 @@ Item {
     var id = attachmentBusyId
     attachmentBusyId = ""
     attachmentBusyName = ""
+    // The exit of a cancelled download: nobody's answer. One asked for
+    // meanwhile starts now.
+    if (id === "") {
+      pumpAttachmentQueue()
+      return
+    }
     if (vaultReadIsStale("attachment")) return
     var path = String(savedPath || "").trim()
 
@@ -10105,7 +10135,10 @@ Item {
     stdout: VaultCollector { id: attachmentStdout }
     stderr: VaultCollector { id: attachmentStderr }
     onExited: function(exitCode) {
-      if (root.finishScrubRun(attachmentProc)) return
+      if (root.finishScrubRun(attachmentProc)) {
+        root.pumpAttachmentQueue()
+        return
+      }
       root.onAttachmentDownloaded(exitCode, attachmentStdout.text, attachmentStderr.text)
     }
   }

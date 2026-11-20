@@ -51,7 +51,7 @@ const what = fs.readFileSync(process.env.FAKE_UI_ANSWER, "utf8")
 const core = (fs.readFileSync("/proc/self/limits", "utf8").match(/^Max core file size\\s+(\\S+)\\s+(\\S+)/m) || []).slice(1).join("/")
 fs.appendFileSync(process.env.FAKE_UI_LOG, JSON.stringify({ ask, argv: process.argv.slice(1), pid: process.pid,
   dirMode: fs.statSync(dir).mode & 0o777, fileMode: fs.statSync(path.join(dir, "prompt.json")).mode & 0o777,
-  dir, core, crashHandler: process.env.QS_DISABLE_CRASH_HANDLER || "", desc: process.env.QSBW_PE_DESC || "" }) + "\\n")
+  dir, core, crashHandler: process.env.QS_DISABLE_CRASH_HANDLER || "", platform: process.env.QT_QPA_PLATFORM || "", desc: process.env.QSBW_PE_DESC || "" }) + "\\n")
 if (what === "crash") process.exit(3)
 const s = net.connect(path.join(dir, "answer.sock"), () => {
   if (what.startsWith("answer:")) s.end("D " + encodeURIComponent(what.slice(7)) + "\\n")
@@ -64,8 +64,10 @@ s.on("error", () => process.exit(1))
 setInterval(() => {}, 1000)
 `, { mode: 0o755 })
 
+// The platform a session commonly hands down, whatever this run inherited.
 const baseEnv = Object.assign({}, process.env, {
-  XDG_RUNTIME_DIR: runtime, QSBW_PINENTRY_TEST_UI: fakeUi, FAKE_UI_LOG: uiLog, FAKE_UI_ANSWER: answerFile
+  XDG_RUNTIME_DIR: runtime, QSBW_PINENTRY_TEST_UI: fakeUi, FAKE_UI_LOG: uiLog, FAKE_UI_ANSWER: answerFile,
+  QT_QPA_PLATFORM: "wayland;xcb"
 })
 
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -118,6 +120,10 @@ eq("an answer comes back as a D line and OK", r.lines.slice(4).join("|"), "D hun
   check("the private directory is under XDG_RUNTIME_DIR", String(start.dir).startsWith(runtime + "/qsbw-pinentry-"), start.dir)
   eq("and is gone afterwards", leftovers().join(","), "")
   eq("Quickshell's crash handler is off for the prompt", start.crashHandler, "1")
+  // The session's own value is often "wayland;xcb": with the compositor
+  // unreachable the prompt would open as an X11 window, whose keys any X
+  // client can read.
+  eq("the prompt may only open on Wayland, never fall back to X11", start.platform, "wayland")
 }
 {
   // As under the vault helper: no core files, soft or hard.

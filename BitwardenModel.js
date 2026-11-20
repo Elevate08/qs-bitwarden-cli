@@ -5416,6 +5416,14 @@ function associationKeyWeight(key) {
   return 0
 }
 
+// A number field of the learned-picks file: a number, or digits in a string
+// (as a hand-edited file might hold); NaN for anything else. Never coerced:
+// Number() of an object calls its toString, which the file can set to null.
+function associationNumber(value) {
+  if (typeof value === "number") return value
+  return typeof value === "string" && /^[0-9]{1,9}$/.test(value) ? Number(value) : NaN
+}
+
 function cleanAssociationEntry(key, entry) {
   var weight = associationKeyWeight(key)
   if (!weight || !entry || typeof entry !== "object" || Array.isArray(entry)) return null
@@ -5424,7 +5432,7 @@ function cleanAssociationEntry(key, entry) {
       || entry.itemId.length === 0 || entry.itemId.length > 256
       || /[\x00-\x1f\x7f]/.test(entry.itemId)) return null
 
-  var count = Number(entry.count)
+  var count = associationNumber(entry.count)
   if (!isFinite(count) || count < 1) count = 1
   count = Math.min(1000000, Math.floor(count))
 
@@ -5444,9 +5452,10 @@ function parseAssociations(raw) {
   } catch (e) {
     return emptyAssociations()
   }
-  var version = Number(parsed && parsed.version === undefined ? ASSOC_VERSION : parsed.version)
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
-      || version !== ASSOC_VERSION || !parsed.keys
+  // Before anything is read from it: `null` parses, and is not an object.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return emptyAssociations()
+  var version = parsed.version === undefined ? ASSOC_VERSION : associationNumber(parsed.version)
+  if (version !== ASSOC_VERSION || !parsed.keys
       || typeof parsed.keys !== "object" || Array.isArray(parsed.keys)) {
     return emptyAssociations()
   }
@@ -6814,10 +6823,6 @@ function unlockKeyPath(pluginDir, source, arch) {
 // plugin must not manage). Private material never goes here.
 var SSH_EXPORT_SUBDIR = "qs-bitwarden-cli/ssh"
 
-function sshExportDisplayDir() {
-  return "~/.local/share/" + SSH_EXPORT_SUBDIR
-}
-
 // Vault item names are untrusted: sanitized like attachment names, then
 // ".pub" added. Duplicate names get the item id instead of overwriting.
 function sshExportFileName(name, itemId, taken) {
@@ -6954,26 +6959,30 @@ function sshExportClearCommand() {
     // in argv. Unlike the glob, find's * matches a leading dot, so hidden
     // *.pub files are excluded by name.
     + "find \"$__dir\" -mindepth 1 -maxdepth 1 \\( -name '[!.]*.pub' -o -name '.export.*' \\) "
-    + "! -type d -delete 2>/dev/null; "
+    // A file that could not be removed is a failure, not "cleared". A
+    // directory left because something else is in it is not.
+    + "! -type d -delete 2>/dev/null || exit " + SSH_EXPORT_EXIT_WRITE + "; "
     + "rmdir -- \"$__dir\" 2>/dev/null; "
     + "echo cleared"
   return ["bash", "-c", cappedScript(script, MAX_STDERR_BYTES)]
 }
 
+// The messages name no path: the scripts resolve the directory from their
+// own environment, which is not this one's to restate.
 function parseSshExportResult(exitCode, stdout) {
   var failures = {}
   failures[SSH_EXPORT_EXIT_NO_HOME] = { code: "NO_HOME",
     message: "No data directory is set, so public key files cannot be written." }
   failures[SSH_EXPORT_EXIT_UNSAFE_DIR] = { code: "UNSAFE_DIR",
-    message: sshExportDisplayDir() + " is not a directory this plugin will write to. "
-      + "Remove or rename whatever is at that path." }
+    message: "The public key directory is not a directory this plugin will write to. "
+      + "Remove or rename whatever is in its place." }
 
   return parseExitCodeResult(exitCode, stdout, function(out) {
     if (out === "exported" || out === "cleared" || out === "") {
       return { ok: true, code: "OK", message: "" }
     }
     return null
-  }, failures, "Could not write public key files to " + sshExportDisplayDir() + ".")
+  }, failures, "Could not write or remove files in the public key directory.")
 }
 
 // -------------------------------------------------------------------------
@@ -7602,8 +7611,17 @@ function sshAgentLifecycleTransition(event, context) {
 //   error     stopped or backing off; the vault is unaffected
 //
 // Routing (SSH_AUTH_SOCK) does not affect it; see sshAuthSockDiagnostic().
+// `exportError` (parseSshExportResult()'s message: the public key files
+// could not be written or removed) is added to whichever message it is; the
+// export runs unattended and this line is the only place it is drawn.
 function sshAgentSetupState(opts) {
-  var o = opts || {}
+  var setup = sshAgentSetupOf(opts || {})
+  var exportError = String((opts && opts.exportError) || "")
+  if (exportError) setup.message += " " + exportError
+  return setup
+}
+
+function sshAgentSetupOf(o) {
   if (!o.enabled) {
     return {
       state: "disabled", busy: false,
@@ -7998,8 +8016,8 @@ var SETTINGS_SCHEMA = [
     description: "Off by default: whatever window has focus when it types gets your password, and while an entry is armed any program running as you can make it type. With it on, Ctrl+C in the panel copies the highlighted login's password and arms it for 30 seconds; the autoType command, bound to a key, then types its username, Tab and password into the focused window, once. Needs wtype." },
   { key: "colorizeIcon", group: "general", type: "bool", label: "Colorize menu-bar icon", defaultValue: false,
     description: "Use the active Omarchy theme accent for the primary menu-bar icon." },
-  { key: "showWebsiteIcons", group: "general", type: "bool", label: "Show website icons", defaultValue: true,
-    description: "Show a recognizable image beside each login, and card brand marks, as Bitwarden does. Each login's website name is sent to your server's icon service (icons.bitwarden.net on Bitwarden's cloud), which so learns which sites you have saved." },
+  { key: "showWebsiteIcons", group: "general", type: "bool", label: "Show website icons", defaultValue: false,
+    description: "Show a login's website icon, and card brand marks, as Bitwarden does. With this on, for each login whose first URI holds a website host name, that host name is sent to the icon service when the login's icon is created for a list row or the detail header: Bitwarden's icon service for your region (icons.bitwarden.net or icons.bitwarden.eu), or your own server when self-hosted. The service so learns which sites you have saved, and a site whose icon is missing or unreadable is named in the system journal by Qt. Android and Apple app marks are built in and show either way." },
   { key: "sideBySide", group: "general", type: "bool", label: "Show details beside the list", defaultValue: true,
     description: "Open items in a pane beside the vault list, as Bitwarden desktop does. Off keeps the compact panel, where an item replaces the list." },
   { key: "checkForUpdates", group: "general", type: "bool", label: "Check for updates", defaultValue: true,

@@ -227,9 +227,27 @@ check("associations survive a save/load round trip",
   Model.findContextualMatches(withAuthentik, authentikWindow, roundTripped).matches.map(m => m.id).join() === "auth-1",
   "expected the learned item after reload")
 
-check("corrupt association file degrades to empty",
-  Model.parseAssociations("{{not json").keys && Object.keys(Model.parseAssociations("{{not json").keys).length === 0,
-  "expected an empty store")
+// Not JSON, or JSON that is not an object: the empty store, never a throw
+// (which would leave the panel without its learned picks' property at all).
+{
+  const emptied = ["{{not json", "null", "5", "\"text\"", "[]", "true"].map(raw => {
+    try { return JSON.stringify(Model.parseAssociations(raw)) } catch (e) { return raw + " threw" }
+  })
+  check("a corrupt association file, or one holding anything but an object, degrades to empty",
+    emptied.every(got => got === JSON.stringify(Model.emptyAssociations())), emptied.join(" | "))
+  // A field of the wrong type is not coerced: an object there can make
+  // Number() throw, and `true` is not version 1.
+  const entry = count => `{"version":1,"keys":{"word:w":{"itemId":"x","count":${count}}}}`
+  const counts = [entry('{"toString":null}'), entry("true"), entry('"7"')].map(raw => {
+    try { return Model.parseAssociations(raw).keys["word:w"].count } catch (e) { return "threw" }
+  })
+  const versions = ['{"toString":null}', "true", '"1"'].map(version => {
+    try { return Object.keys(Model.parseAssociations(`{"version":${version},"keys":{"word:w":{"itemId":"x"}}}`).keys).length }
+    catch (e) { return "threw" }
+  })
+  check("a version or count of the wrong type reads as none; digits in a string still count",
+    counts.join() + " " + versions.join() === "1,1,7 0,0,1", counts.join() + " " + versions.join())
+}
 
 const hostileAssociations = Model.parseAssociations(
   '{"version":1,"keys":{"__proto__":{"polluted":true},"arbitrary":{"itemId":"x"},'

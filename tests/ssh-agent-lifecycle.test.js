@@ -365,7 +365,7 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
 
 {
   const service = readPluginSource("Service.qml")
-  const names = ["adoptSshPrompt", "onSshAgentMessage"]
+  const names = ["adoptSshPrompt", "onSshAgentMessage", "promoteUnlockToApproval"]
   const unlockMessage = (requestId, extra) => Object.assign({
     type: "unlock_required", requestId: requestId, reason: "sign", keyName: "k",
     fingerprint: "SHA256:A", pid: 10, processPath: "/usr/bin/ssh-keygen",
@@ -379,6 +379,8 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
     const v = {
       Model: Model, sshPromotedOldId: shown.requestId, sshPromotedRaw: shown.raw,
       sshPrompt: { requestId: shown.requestId }, sshPromptQueue: [], writes: [], shownNew: [],
+      sshNotifyRequestId: shown.requestId,       // its notification is up
+      sshPromotedAmbiguous: false,
       sshAgentMayPrompt() { return true },
       sshAgentWrite(line) { v.writes.push(line) },
       showSshApproval(message) { v.shownNew.push(message) }
@@ -403,7 +405,20 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
   v.onSshAgentMessage(approvalOf(21, a))
   eq("the matching approval is adopted", v.sshPrompt.requestId, 21)
   eq("and the promotion is finished", v.sshPromotedOldId, null)
+  eq("the notification shown for it is still its own, so its Deny is not dropped", v.sshNotifyRequestId, 21)
   eq("the other request stays queued", v.sshPromptQueue.length, 1)
+
+  // Two held requests that look the same; the card is promoted from one. The
+  // approval that arrives may be the other's: the notification is nobody's.
+  {
+    const twin = makeVault({ requestId: 1, raw: a })
+    Object.assign(twin, { status: "unlocked", sshPrompt: null, sshUnlockRaw: a, sshUnlockQueue: [unlockMessage(2)],
+      showSshApproval(message) { twin.sshPrompt = { requestId: message.requestId } } })
+    twin.promoteUnlockToApproval()
+    twin.onSshAgentMessage(approvalOf(21, a))
+    eq("an ambiguous adoption leaves the notification unclaimed, so its Deny does nothing",
+      [twin.sshPrompt.requestId, twin.sshNotifyRequestId].join(), "21,-1")
+  }
 
   // Each field that tells two requests apart is compared.
   const differing = [["fingerprint", "SHA256:Z"], ["pid", 99], ["processPath", "/tmp/x"],
@@ -415,8 +430,14 @@ for (const line of [Model.sshAgentVaultLockedLine(3), Model.sshAgentLoggedOutLin
     check(`a different ${field} is not adopted`, w.sshPrompt.requestId === 1 && w.sshPromptQueue.length === 1,
       JSON.stringify(w.sshPrompt))
   }
-  eq("without the promoted message nothing is adopted",
-    makeVault({ requestId: 1, raw: null }).adoptSshPrompt(approvalOf(40, a)), false)
+  // The promoted card was answered and the next request is shown: the
+  // renumbered one must not take that card over.
+  const moved = makeVault({ requestId: 1, raw: a })
+  moved.sshPrompt = { requestId: 20 }
+  moved.onSshAgentMessage(approvalOf(21, a))
+  eq("without the promoted message, or with another request's card up, nothing is adopted",
+    [makeVault({ requestId: 1, raw: null }).adoptSshPrompt(approvalOf(40, a)), moved.sshPrompt.requestId,
+      moved.sshPromptQueue.map(m => m.requestId).join()].join(), "false,20,21")
 }
 
 done()
