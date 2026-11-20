@@ -131,13 +131,8 @@ impl SignKind {
 /// Classify the data to be signed with `public_blob`. Both shapes must parse
 /// whole or it is `Other`; they cannot be confused (`SSHS` as a login's
 /// length prefix exceeds the frame limit). `binds` are the connection's
-/// session binds, which name the server a login goes to.
-pub fn classify_sign(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> SignKind {
-    classify(public_blob, message, binds).kind
-}
-
-/// `classify_sign`, and whether a login's server is only the remote host's
-/// claim.
+/// session binds, which name the server a login goes to, and say whether
+/// that is only the remote host's claim.
 pub fn classify(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> Classified {
     if let Some(namespace) = sshsig_namespace(message) {
         return Classified {
@@ -380,15 +375,11 @@ pub fn identities_response(public: &[(&[u8], &str)]) -> Vec<u8> {
 }
 
 pub fn failure_response() -> Vec<u8> {
-    response(failure_payload())
+    response(vec![FAILURE])
 }
 
 pub fn success_response() -> Vec<u8> {
     response(vec![SUCCESS])
-}
-
-fn failure_payload() -> Vec<u8> {
-    vec![FAILURE]
 }
 
 fn response(payload: Vec<u8>) -> Vec<u8> {
@@ -407,17 +398,15 @@ fn response(payload: Vec<u8>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify, classify_sign, decode_request, failure_payload, host_key_fingerprint, response,
-        signature_payload, visible_text, AgentRequest, Classified, SessionBinding, SignKind,
-        MAX_FRAME_LEN,
+        classify, decode_request, host_key_fingerprint, response, signature_payload, visible_text,
+        AgentRequest, Classified, SessionBinding, SignKind, MAX_FRAME_LEN,
     };
     use crate::signing;
     use rand_core::OsRng;
     use signature::Verifier;
     use ssh_encoding::{Decode, Encode};
     use ssh_key::private::RsaKeypair;
-    use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, Signature};
-    use std::fmt;
+    use ssh_key::{Algorithm, HashAlg, PrivateKey, Signature};
 
     /// A private identity for testing the wire handling directly; production
     /// signing goes through `KeyStore` and `ApprovalManager`.
@@ -428,52 +417,46 @@ mod tests {
     }
 
     impl Identity {
-        /// Construct an identity for one of the two v1 key algorithms.
-        fn new(key: PrivateKey, comment: impl Into<String>) -> Result<Self, ProtocolError> {
-            if !matches!(key.algorithm(), Algorithm::Ed25519 | Algorithm::Rsa { .. }) {
-                return Err(ProtocolError);
-            }
-            let comment = comment.into();
-            if comment.len() > MAX_FRAME_LEN {
-                return Err(ProtocolError);
-            }
-            let public_blob = key.public_key().to_bytes().map_err(|_| ProtocolError)?;
-            Ok(Self {
+        fn new(key: PrivateKey, comment: &str) -> Self {
+            let public_blob = key.public_key().to_bytes().unwrap();
+            let comment = comment.to_owned();
+            Self {
                 key,
                 public_blob,
                 comment,
-            })
-        }
-
-        /// OpenSSH public-key blob used to select and advertise this identity.
-        fn public_blob(&self) -> &[u8] {
-            &self.public_blob
-        }
-
-        /// Human-readable identity comment.
-        fn comment(&self) -> &str {
-            &self.comment
-        }
-
-        /// Public half of this identity.
-        fn public_key(&self) -> &PublicKey {
-            self.key.public_key()
-        }
-    }
-
-    /// An intentionally opaque construction error.
-    struct ProtocolError;
-
-    impl fmt::Debug for ProtocolError {
-        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("invalid SSH identity")
+            }
         }
     }
 
     /// Handle one length-prefixed frame. The length is checked before
     /// anything is sliced or allocated; the reply always fits the cap.
     fn handle_frame(frame: &[u8], identities: &[Identity]) -> Vec<u8> {
-        response(handle(frame, identities).unwrap_or_else(failure_payload))
+        response(handle(frame, identities).unwrap_or_else(|| vec![FAILURE]))
+    }
+
+    /// The kind alone, for a request whose server nobody claimed.
+    fn classify_sign(public_blob: &[u8], message: &[u8], binds: &[SessionBinding]) -> SignKind {
+        classify(public_blob, message, binds).kind
+    }
+
+    fn assert_refused(frame: &[u8], identities: &[Identity]) {
+        assert_eq!(
+            response_payload(&handle_frame(frame, identities)),
+            &[FAILURE]
+        );
+    }
+
+    /// A login as `git`, to the server with this host key fingerprint.
+    fn git_login(host: &str) -> SignKind {
+        SignKind::UserAuth {
+            user: "git".into(),
+            host: host.into(),
+        }
+    }
+
+    fn hostbound(key: &[u8], host: &[u8]) -> Vec<u8> {
+        let method = b"publickey-hostbound-v00@openssh.com";
+        userauth(b"git", method, key, Some(host))
     }
 
     fn handle(frame: &[u8], identities: &[Identity]) -> Option<Vec<u8>> {
@@ -568,8 +551,8 @@ mod tests {
         let ed25519 = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
         let rsa = PrivateKey::from(RsaKeypair::random(&mut OsRng, 2048).unwrap());
         let identities = [
-            Identity::new(ed25519, "vault ed25519").unwrap(),
-            Identity::new(rsa, "vault rsa").unwrap(),
+            Identity::new(ed25519, "vault ed25519"),
+            Identity::new(rsa, "vault rsa"),
         ];
 
         let response = handle_frame(&frame(&[REQUEST_IDENTITIES]), &identities);
@@ -580,9 +563,9 @@ mod tests {
         for identity in identities.iter() {
             assert_eq!(
                 Vec::<u8>::decode(&mut fields).unwrap(),
-                identity.public_blob()
+                identity.public_blob
             );
-            assert_eq!(String::decode(&mut fields).unwrap(), identity.comment());
+            assert_eq!(String::decode(&mut fields).unwrap(), identity.comment);
         }
         assert!(fields.is_empty());
     }
@@ -590,27 +573,24 @@ mod tests {
     #[test]
     fn signs_ed25519_requests_and_rejects_nonzero_flags() {
         let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-        let identity = Identity::new(key, "ed25519").unwrap();
+        let identity = Identity::new(key, "ed25519");
         let message = b"bounded agent protocol vector";
 
         let signed = signature(&handle_frame(
-            &sign_request(identity.public_blob(), message, 0),
+            &sign_request(&identity.public_blob, message, 0),
             std::slice::from_ref(&identity),
         ));
         assert_eq!(signed.algorithm(), Algorithm::Ed25519);
-        Verifier::verify(identity.public_key(), message, &signed).unwrap();
+        Verifier::verify(identity.key.public_key(), message, &signed).unwrap();
 
-        let rejected = handle_frame(
-            &sign_request(identity.public_blob(), message, RSA_SHA2_256),
-            &[identity],
-        );
-        assert_eq!(response_payload(&rejected), &[FAILURE]);
+        let request = sign_request(&identity.public_blob, message, RSA_SHA2_256);
+        assert_refused(&request, &[identity]);
     }
 
     #[test]
     fn signs_rsa_with_exactly_the_requested_sha2_algorithm() {
         let key = PrivateKey::from(RsaKeypair::random(&mut OsRng, 2048).unwrap());
-        let identity = Identity::new(key, "rsa").unwrap();
+        let identity = Identity::new(key, "rsa");
         let message = b"rsa protocol vector";
 
         for (flags, hash) in [
@@ -618,19 +598,16 @@ mod tests {
             (RSA_SHA2_512, HashAlg::Sha512),
         ] {
             let signed = signature(&handle_frame(
-                &sign_request(identity.public_blob(), message, flags),
+                &sign_request(&identity.public_blob, message, flags),
                 std::slice::from_ref(&identity),
             ));
             assert_eq!(signed.algorithm(), Algorithm::Rsa { hash: Some(hash) });
-            Verifier::verify(identity.public_key(), message, &signed).unwrap();
+            Verifier::verify(identity.key.public_key(), message, &signed).unwrap();
         }
 
         for flags in [0, RSA_SHA2_256 | RSA_SHA2_512, 8] {
-            let rejected = handle_frame(
-                &sign_request(identity.public_blob(), message, flags),
-                std::slice::from_ref(&identity),
-            );
-            assert_eq!(response_payload(&rejected), &[FAILURE]);
+            let request = sign_request(&identity.public_blob, message, flags);
+            assert_refused(&request, std::slice::from_ref(&identity));
         }
     }
 
@@ -654,39 +631,27 @@ mod tests {
         ];
 
         for request in cases {
-            assert_eq!(response_payload(&handle_frame(&request, &[])), &[FAILURE]);
+            assert_refused(&request, &[]);
         }
     }
 
     #[test]
     fn lengths_are_rejected_before_body_allocation_or_parsing() {
         let oversized_header = u32::try_from(MAX_FRAME_LEN + 1).unwrap().to_be_bytes();
-        assert_eq!(
-            response_payload(&handle_frame(&oversized_header, &[])),
-            &[FAILURE]
-        );
+        assert_refused(&oversized_header, &[]);
 
         let mut invalid_string = vec![SIGN_REQUEST];
         invalid_string.extend_from_slice(&u32::MAX.to_be_bytes());
-        assert_eq!(
-            response_payload(&handle_frame(&frame(&invalid_string), &[])),
-            &[FAILURE]
-        );
+        assert_refused(&frame(&invalid_string), &[]);
 
         let mut unknown_key = vec![SIGN_REQUEST];
         string(b"not an advertised public key", &mut unknown_key);
         string(b"message", &mut unknown_key);
         0_u32.encode(&mut unknown_key).unwrap();
-        assert_eq!(
-            response_payload(&handle_frame(&frame(&unknown_key), &[])),
-            &[FAILURE]
-        );
+        assert_refused(&frame(&unknown_key), &[]);
 
         unknown_key.push(0);
-        assert_eq!(
-            response_payload(&handle_frame(&frame(&unknown_key), &[])),
-            &[FAILURE]
-        );
+        assert_refused(&frame(&unknown_key), &[]);
     }
     fn session_bind(name: &[u8], forwarding: u8, trailing: &[u8]) -> Vec<u8> {
         let mut payload = vec![27];
@@ -747,7 +712,7 @@ mod tests {
             session_bind(b"session-bind@openssh.com", 1, b"x"),
         ] {
             assert_eq!(decode_request(&malformed), None);
-            assert_eq!(response_payload(&handle_frame(&malformed, &[])), &[FAILURE]);
+            assert_refused(&malformed, &[]);
         }
     }
 
@@ -849,10 +814,7 @@ mod tests {
         );
         assert_eq!(
             classify_sign(key, &userauth(b"git", b"publickey", key, None), &[]),
-            SignKind::UserAuth {
-                user: "git".into(),
-                host: String::new()
-            }
+            git_login("")
         );
         assert_eq!(
             classify_sign(
@@ -906,43 +868,15 @@ mod tests {
             bound(&[9; 32], b"first hop host key"),
             bound(&[7; 32], b"github host key"),
         ];
-        assert_eq!(
-            classify_sign(key, &login, &binds),
-            SignKind::UserAuth {
-                user: "git".into(),
-                host: host_key_fingerprint(b"github host key")
-            }
-        );
-
+        let github = git_login(&host_key_fingerprint(b"github host key"));
+        assert_eq!(classify_sign(key, &login, &binds), github);
         // A bind for another session says nothing about this login.
-        assert_eq!(
-            classify_sign(key, &login, &binds[..1]),
-            SignKind::UserAuth {
-                user: "git".into(),
-                host: String::new()
-            }
-        );
+        assert_eq!(classify_sign(key, &login, &binds[..1]), git_login(""));
 
         // Host-bound logins must name the host their session is bound to.
-        let hostbound = |host: &[u8]| {
-            userauth(
-                b"git",
-                b"publickey-hostbound-v00@openssh.com",
-                key,
-                Some(host),
-            )
-        };
-        assert_eq!(
-            classify_sign(key, &hostbound(b"github host key"), &binds),
-            SignKind::UserAuth {
-                user: "git".into(),
-                host: host_key_fingerprint(b"github host key")
-            }
-        );
-        assert_eq!(
-            classify_sign(key, &hostbound(b"some other host key"), &binds),
-            SignKind::Other
-        );
+        let signed = |host: &[u8]| classify_sign(key, &hostbound(key, host), &binds);
+        assert_eq!(signed(b"github host key"), github);
+        assert_eq!(signed(b"some other host key"), SignKind::Other);
     }
 
     /// The forwarded-agent case: after the local client's forwarding bind
@@ -954,10 +888,6 @@ mod tests {
         let key = b"the requested key";
         let login = userauth(b"git", b"publickey", key, None);
         let github = host_key_fingerprint(b"github host key");
-        let as_git_to = |host: &str| SignKind::UserAuth {
-            user: "git".into(),
-            host: host.into(),
-        };
         let binds = [
             bound(&[9; 32], b"first hop host key"),
             relayed(&[7; 32], b"github host key"),
@@ -965,12 +895,10 @@ mod tests {
         assert_eq!(
             classify(key, &login, &binds),
             Classified {
-                kind: as_git_to(&github),
+                kind: git_login(&github),
                 host_claimed: true
             }
         );
-        // `classify_sign` is the same kind, without the mark.
-        assert_eq!(classify_sign(key, &login, &binds), as_git_to(&github));
 
         // The local client's own bind for the session is its report, not a
         // claim; so is no bind at all (nothing is named).
@@ -985,19 +913,11 @@ mod tests {
         // A host-bound login carries the host key in the data that is
         // signed, so the signature works nowhere else: not a claim, whoever
         // sent the bind, and none is needed.
-        let hostbound = |host: &[u8]| {
-            userauth(
-                b"git",
-                b"publickey-hostbound-v00@openssh.com",
-                key,
-                Some(host),
-            )
-        };
         for with in [&binds[..], &[]] {
             assert_eq!(
-                classify(key, &hostbound(b"github host key"), with),
+                classify(key, &hostbound(key, b"github host key"), with),
                 Classified {
-                    kind: as_git_to(&github),
+                    kind: git_login(&github),
                     host_claimed: false
                 }
             );
@@ -1005,7 +925,7 @@ mod tests {
         // A relayed bind that disagrees with the signed host is still
         // unrecognised data, as a local one is.
         assert_eq!(
-            classify(key, &hostbound(b"some other host key"), &binds),
+            classify(key, &hostbound(key, b"some other host key"), &binds),
             Classified {
                 kind: SignKind::Other,
                 host_claimed: false
@@ -1037,10 +957,7 @@ mod tests {
         let key = b"the requested key";
         let login = userauth(b"git", b"publickey", key, None);
         let to = |host: &[u8], host_claimed: bool| Classified {
-            kind: SignKind::UserAuth {
-                user: "git".into(),
-                host: host_key_fingerprint(host),
-            },
+            kind: git_login(&host_key_fingerprint(host)),
             host_claimed,
         };
         assert_eq!(
@@ -1081,10 +998,7 @@ mod tests {
 
     #[test]
     fn logins_to_different_hosts_are_different_kinds() {
-        let to = |host: &str| SignKind::UserAuth {
-            user: "git".into(),
-            host: host.into(),
-        };
+        let to = git_login;
         assert_ne!(to("SHA256:a"), to("SHA256:b"));
         assert_ne!(to("SHA256:a"), to(""));
         assert_eq!(to("SHA256:a").host(), "SHA256:a");
