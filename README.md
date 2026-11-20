@@ -888,9 +888,10 @@ image and commits them to the PR branch. It does so only when the Rust
 changes are plain source under `agent/src/`, `unlock-key/src/` or `vault/src/`
 (QML, JS and docs beside them are fine). Any `Cargo.toml`, `Cargo.lock`,
 `rust-toolchain` or `rust-toolchain.toml` at any depth (the repo root
-included), any `.cargo` directory, a `build.rs`, `.gitattributes`, the build
-script, a symlink, or any other file inside a package directory makes the PR
-ineligible, as do Dependabot and forks.
+included), any `.cargo` directory, a `build.rs`, `.gitattributes`, anything
+under `scripts/` (the build script is there) or `.github/`, a symlink, or any
+other file inside a package directory makes the PR ineligible, as do
+Dependabot and forks.
 `--compare-tracked` proves the committed bytes are what the committed source
 builds; it cannot tell you whether that source is trustworthy, and a malicious
 crate builds just as reproducibly as an honest one. Reading the `Cargo.lock`

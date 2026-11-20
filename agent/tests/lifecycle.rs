@@ -1060,6 +1060,10 @@ fn a_login_grant_covers_only_the_server_it_was_approved_for() {
 
     let approval = agent.read();
     assert_eq!(approval["operation"], "ssh-auth");
+    assert_eq!(
+        approval["hostKeyClaimed"], false,
+        "the local client's own bind named the server"
+    );
     let github = approval["hostKey"].as_str().unwrap().to_owned();
     assert!(github.starts_with("SHA256:"));
     let request_id = approval["requestId"].as_u64().unwrap();
@@ -1288,6 +1292,12 @@ fn a_refused_bind_fails_closed_and_never_rides_a_local_grant() {
         );
         assert_eq!(relayed["forwarded"], true, "{case}");
         assert_eq!(relayed["grantOffered"], false, "{case}");
+        // Only a bind sent after the forwarding one names the second server.
+        assert_eq!(
+            relayed["hostKeyClaimed"],
+            case == "login after a later bind",
+            "{case}"
+        );
         assert_eq!(
             relayed["hostKey"],
             github.as_str(),

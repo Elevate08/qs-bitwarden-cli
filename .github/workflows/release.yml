@@ -24,7 +24,7 @@ on:
     tags:
       - 'v*'
   # Every gate and report on any ref, without publishing (the release job
-  # refuses non-tags): a safe rehearsal.
+  # refuses anything but a `v*` tag): a safe rehearsal.
   workflow_dispatch:
 
 # Read-only by default; the release job raises its own.
@@ -50,6 +50,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      # The digest of the bin/SHA256SUMS this job checked every binary
+      # against. The release job compares its own checkout with it.
+      sums_sha256: ${{ steps.bytes.outputs.sums_sha256 }}
     defaults:
       run:
         # A container job defaults to `sh`; the steps below use bash arrays.
@@ -93,6 +97,7 @@ jobs:
           echo "version $VERSION agrees across the tag, manifest.json and CHANGELOG.md"
 
       - name: The committed bytes are the ones the committed checksum names
+        id: bytes
         # The panel's launch-time question: does the shipped SHA256SUMS still
         # describe each binary (the gates proved source -> bytes).
         # Every architecture the release ships, and the ELF machine `file`
@@ -121,6 +126,16 @@ jobs:
           # would ship unchecked.
           extra="$(cd bin && find . -type f ! -name SHA256SUMS ! -path './x86_64-linux/*' ! -path './aarch64-linux/*')"
           [ -z "$extra" ] || { echo "::error::unexpected files in bin/: $extra"; exit 1; }
+          # Recorded here, before this job installs or runs any build tool.
+          # A command of its own, so a failed sha256sum fails this step, and
+          # with it a rehearsal, not only the release job that reads this.
+          sums="$(sha256sum bin/SHA256SUMS)"
+          sums="${sums%% *}"
+          [[ "$sums" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::no digest of bin/SHA256SUMS to record"
+            exit 1
+          }
+          echo "sums_sha256=$sums" >> "$GITHUB_OUTPUT"
 
       - name: Collect the dependency and licence report
         # The gates' dependency policy, published as evidence.
@@ -348,13 +363,16 @@ jobs:
   release:
     name: attest and publish
     needs: [verify, symbols, host-run]
-    # Only a tag publishes; a dispatch run stops after verification.
-    if: github.ref_type == 'tag'
+    # Only a `v*` tag publishes, the pattern of `on:` above; a dispatch run on
+    # a branch, or on a tag of any other name, stops after verification.
+    # startsWith ignores case, so the job's first step asks again in shell.
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-24.04
     # The only job asking for more than read. No reviewer click: the work was
     # reviewed on the release branch, and this only makes a draft. The
-    # environment scopes these permissions, records the deployment, and only
-    # admits `v*` tags.
+    # environment scopes these permissions and records the deployment; its
+    # own `v*` tag rule is repository configuration, so the `if` above says
+    # the same in this file.
     environment:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
@@ -364,6 +382,20 @@ jobs:
       attestations: write   # record the provenance attestation
 
     steps:
+      - name: Only a tag named v and a digit is a release
+        # Case-sensitive, unlike the `if` above: `V2.0.0` on a manual run
+        # stops here, before anything is checked out, attested or uploaded.
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *)
+              echo "::error::$TAG is not a release tag: those are a lowercase v and a version"
+              exit 1
+              ;;
+          esac
+
       - name: Check out the tagged commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -373,9 +405,55 @@ jobs:
       - name: Collect the reports and debug symbols
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          # Each artifact in a directory of its own name, so one job's
+          # artifact cannot replace another's files and the next step sees
+          # which artifact brought what.
           pattern: release-*
-          path: dist
-          merge-multiple: true
+          # Outside the checkout, whose bin/ is attested below.
+          path: ${{ runner.temp }}/dist
+          merge-multiple: false
+
+      - name: Only the files this workflow makes may be published
+        # verify and symbols run dependency build scripts and tools fetched
+        # from crates.io, and any job of the run can upload an artifact named
+        # release-something. So the artifacts must be exactly the three this
+        # workflow uploads, each holding exactly the files its job makes, as
+        # regular files: a missing one or one too many fails the release.
+        # .github/release-assets.txt is the list; publish-on-master.yml holds
+        # the draft to the same file before it takes it public.
+        working-directory: ${{ runner.temp }}
+        run: |
+          # A find that fails must not leave a shorter listing that passes.
+          set -o pipefail
+          # The expected listing comes from .github/release-assets.txt as
+          # checked out at the tag: "f <artifact>/<file>" for each line that
+          # names an artifact, and "d <artifact>" once for each artifact.
+          expected="$(awk '
+            /^#/ || !NF { next }
+            $0 !~ /^(checkout|release-[a-z0-9_-]+) [A-Za-z0-9._-]+$/ { exit 1 }
+            $1 != "checkout" { print "f " $1 "/" $2; print "d " $1 }
+          ' "$GITHUB_WORKSPACE/.github/release-assets.txt" | LC_ALL=C sort -u)" && [ -n "$expected" ] || {
+            echo "::error::.github/release-assets.txt is missing, empty or has a line that is not '<source> <name>'"
+            exit 1
+          }
+          # Compared as NUL-ended records in files: a name with a newline in
+          # it stays one record and matches nothing expected.
+          printf '%s\n' "$expected" | tr '\n' '\0' > expected.list
+          ( cd dist && find . -mindepth 1 -printf '%y %P\0' ) | LC_ALL=C sort -z > actual.list
+          if ! cmp -s expected.list actual.list; then
+            echo "::error::the run's release-* artifacts are not exactly the reports and symbols this workflow makes"
+            # "<" is expected and missing, ">" is present and unexpected.
+            # Shown with every character outside a plain path's as "?".
+            show() { LC_ALL=C tr -c 'A-Za-z0-9._/ \0-' '?' < "$1" | tr '\0' '\n'; }
+            diff <(show expected.list) <(show actual.list) || true
+            exit 1
+          fi
+          # One flat directory from here on: every name is known and no two
+          # are the same.
+          for dir in dist/release-*/; do
+            mv "$dir"* dist/
+            rmdir "$dir"
+          done
 
       - name: Refuse to publish anything that looks like key material
         # Here, on exactly the files about to be published (the reports and
@@ -390,6 +468,7 @@ jobs:
         #                        helper's own PEM labels are compiled in).
         #
         # Compressed artifacts are decompressed for the scan.
+        working-directory: ${{ runner.temp }}
         run: |
           found=0
           for f in dist/*; do
@@ -417,9 +496,21 @@ jobs:
           [ "$found" -eq 0 ] || exit 1
           ls -l dist/
 
-      - name: Check the bytes to attest against SHA256SUMS
+      - name: Check the bytes to attest against the digest verify recorded
         # Only the check: the binaries ran in host-run, without the token.
+        # SHA256SUMS sits beside the binaries, so by itself it shows nothing
+        # about a checkout something has written to since. It must first be
+        # the file verify hashed in its own checkout, where that job proved
+        # it has a line for every binary: that digest arrives as a job
+        # output, not as a file.
+        env:
+          SUMS_SHA256: ${{ needs.verify.outputs.sums_sha256 }}
         run: |
+          [[ "$SUMS_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::the verify job recorded no digest of bin/SHA256SUMS"
+            exit 1
+          }
+          echo "$SUMS_SHA256  bin/SHA256SUMS" | sha256sum -c -
           ( cd bin && sha256sum -c SHA256SUMS )
 
       - name: Attest the shipped bytes
@@ -446,18 +537,20 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           version="${TAG#v}"
+          # Where the reports and symbols were unpacked and checked.
+          dist="$RUNNER_TEMP/dist"
           # Only this version's changelog section.
           awk -v v="## [$version]" '
             index($0, v) == 1 { inside = 1; next }
             inside && /^## \[/ { exit }
             inside { print }
-          ' CHANGELOG.md > dist/release-notes.md
-          [ -s dist/release-notes.md ] || {
+          ' CHANGELOG.md > "$dist/release-notes.md"
+          [ -s "$dist/release-notes.md" ] || {
             echo "::error::no changelog section for $version"
             exit 1
           }
-          cp bin/SHA256SUMS dist/SHA256SUMS
-          notes=dist/release-notes.md
+          cp bin/SHA256SUMS "$dist/SHA256SUMS"
+          notes="$dist/release-notes.md"
           # How a reviewer checks the bundled binaries, under the changelog.
           # Placeholders, so the dynamic values never become shell source.
           section="$(cat <<'EOF'
@@ -479,27 +572,111 @@ jobs:
           section="${section//@RUN_URL@/$RUN_URL}"
           section="${section//@REPO@/$REPO}"
           printf '\n%s\n' "$section" >> "$notes"
+          # The commit these assets were built from, as the notes' last
+          # line: an HTML comment, so the release page does not show it.
+          # publish-on-master.yml and a re-run of this job read it back from
+          # the release's body. Exactly one may exist.
+          ! grep -q 'built-from:' "$notes" || {
+            echo "::error::the changelog section for $version contains 'built-from:', which the release's commit marker uses"
+            exit 1
+          }
+          printf '\n<!-- built-from: %s -->\n' "$GITHUB_SHA" >> "$notes"
           # A release asset is named by its file name alone, and every
           # architecture's helper has the same one, so each is attached as
           # <name>-<arch>-linux: the same bytes as bin/<arch>-linux/<name>.
-          binaries=()
           for arch in x86_64 aarch64; do
             for name in qs-bitwarden-ssh-agent qs-bitwarden-unlock-key qs-bitwarden-vault; do
-              cp "bin/$arch-linux/$name" "dist/$name-$arch-linux"
-              cmp "bin/$arch-linux/$name" "dist/$name-$arch-linux"
-              binaries+=("dist/$name-$arch-linux")
+              cp "bin/$arch-linux/$name" "$dist/$name-$arch-linux"
+              cmp "bin/$arch-linux/$name" "$dist/$name-$arch-linux"
             done
           done
-          assets=(dist/*.json dist/*.txt dist/*.gz dist/DEBUG-SYMBOLS.md dist/SHA256SUMS
-                  "${binaries[@]}")
+          # Every asset by name, never by pattern: the names in
+          # .github/release-assets.txt and nothing else that may be lying
+          # beside them. publish-on-master.yml requires the same names.
+          names="$(awk '!/^#/ && NF == 2 { print $2 }' .github/release-assets.txt)"
+          assets=()
+          for name in $names; do
+            [ -f "$dist/$name" ] || { echo "::error::$name is listed as an asset but was not made"; exit 1; }
+            assets+=("$dist/$name")
+          done
+          [ "${#assets[@]}" -gt 0 ] || { echo "::error::.github/release-assets.txt names no asset"; exit 1; }
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           # A draft: the tag is on a release branch not yet merged to master.
-          # publish-on-master.yml publishes it when the commit lands there.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::notice::release $TAG exists; uploading assets to it"
-            gh release upload "$TAG" "${assets[@]}" --clobber
-          else
-            gh release create "$TAG" "${assets[@]}" --draft \
-              --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
-          fi
+          # publish-on-master.yml publishes it when the commit lands there,
+          # after checking the draft again: its assets against the same list,
+          # and the tag against the commit the notes' marker records.
+          # Every job checked, built and attested GITHUB_SHA, but a release
+          # goes by tag name: the tag must still name that commit. Asked of
+          # the remote without credentials (the repository is public); an
+          # annotated tag's commit is on its ^{} line.
+          refs="$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"
+          tagged=""
+          while read -r sha ref; do
+            case "$ref" in
+              "refs/tags/$TAG^{}") tagged="$sha"; break ;;
+              "refs/tags/$TAG")    tagged="$sha" ;;
+            esac
+          done <<< "$refs"
+          [ "$tagged" = "$GITHUB_SHA" ] || {
+            echo "::error::tag $TAG names ${tagged:-no commit}, not the $GITHUB_SHA this run built"
+            exit 1
+          }
+          # One lookup: the repository's releases, drafts included, as the
+          # API lists them. A failed call fails the step here; it is never
+          # read as "no release" or as "published".
+          releases="$(gh api --paginate "repos/$REPO/releases?per_page=100")"
+          mine="$(jq -cs --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)]' <<< "$releases")"
+          state="$(jq -r 'if length == 0 then "absent"
+                          elif length > 1 then "several"
+                          elif .[0].draft == true then "draft"
+                          elif .[0].draft == false then "published"
+                          else "unknown" end' <<< "$mine")"
+          case "$state" in
+            absent)
+              gh release create "$TAG" "${assets[@]}" --draft --verify-tag \
+                --title "$TAG" --notes-file "$notes" "${prerelease[@]}"
+              ;;
+            draft)
+              # Only a draft is refilled, which is what re-running this job
+              # does: one whose notes carry exactly one marker, naming this
+              # commit, and which holds nothing this workflow does not make
+              # (--clobber replaces by name and would leave any other asset
+              # where it is). Its notes are left as they are.
+              built="$(jq -r '(.[0].body // "") as $body
+                               | [$body | scan("<!-- built-from: ([0-9a-f]{40}) -->") | .[0]] as $marked
+                               | if ([$body | scan("built-from:")] | length) == 1 and ($marked | length) == 1
+                                 then $marked[0] else "" end' <<< "$mine")"
+              [ "$built" = "$GITHUB_SHA" ] || {
+                echo "::error::draft release $TAG was made for ${built:-an unrecorded commit}, not for $GITHUB_SHA; delete the draft and run again"
+                exit 1
+              }
+              # A jq or grep that fails stops the job. Only grep's "nothing
+              # selected" (status 1) means the draft holds no other asset.
+              have="$(jq -r '.[0].assets[].name' <<< "$mine")"
+              extra=""
+              if [ -n "$have" ]; then
+                status=0
+                extra="$(grep -vxF -e "$names" <<< "$have")" || status=$?
+                [ "$status" -le 1 ] || {
+                  echo "::error::could not compare draft release $TAG's assets with the list (grep status $status)"
+                  exit 1
+                }
+              fi
+              [ -z "$extra" ] || {
+                echo "::error::draft release $TAG holds assets this workflow does not make: $(tr '\n' ' ' <<< "$extra")"
+                exit 1
+              }
+              echo "::notice::draft release $TAG exists; uploading assets to it"
+              gh release upload "$TAG" "${assets[@]}" --clobber
+              ;;
+            published)
+              # A published release is never rewritten.
+              echo "::error::release $TAG is already published; its assets are not replaced"
+              exit 1
+              ;;
+            *)
+              echo "::error::cannot tell whether release $TAG is absent, a draft or published (${state:-no answer})"
+              exit 1
+              ;;
+          esac
