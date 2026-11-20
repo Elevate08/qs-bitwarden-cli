@@ -9862,9 +9862,7 @@ Item {
   VaultProcess {
     id: envelopeProc
     vault: root
-    stdout: VaultCollector {
-      id: envelopeStdout
-    }
+    stdout: VaultCollector { id: envelopeStdout }
     onExited: function(exitCode) { root.onEnvelopeJobExited(exitCode) }
   }
 
@@ -10051,9 +10049,7 @@ Item {
     id: statusProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: statusStdout
-    }
+    stdout: VaultCollector { id: statusStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(statusProc)) {
         root.onStatusProbeProcessFreed()
@@ -10075,9 +10071,7 @@ Item {
     // Set by refreshStatus(). Defaults to the discard form, so a run not
     // started there can never adopt a key.
     command: Model.sessionHandoffReadCommand(false)
-    stdout: VaultCollector {
-      id: sessionHandoffStdout
-    }
+    stdout: VaultCollector { id: sessionHandoffStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(sessionHandoffProc)) {
         root.onStatusProbeProcessFreed()
@@ -10093,9 +10087,7 @@ Item {
     capture: "session"
     session: false
     command: Model.keyringLookupCommand(root.activeSlot)
-    stdout: VaultCollector {
-      id: keyringLookupStdout
-    }
+    stdout: VaultCollector { id: keyringLookupStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupProc)) {
         root.onStatusProbeProcessFreed()
@@ -10132,9 +10124,7 @@ Item {
     id: listFoldersProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listFoldersStdout
-    }
+    stdout: VaultCollector { id: listFoldersStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listFoldersProc)
       if (root.supersededVaultRead("folders") || scrub) return
@@ -10146,9 +10136,7 @@ Item {
     id: orgCollectionsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: orgCollectionsStdout
-    }
+    stdout: VaultCollector { id: orgCollectionsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(orgCollectionsProc)
       if (root.supersededVaultRead("collections") || scrub) return
@@ -10187,9 +10175,7 @@ Item {
     id: listSendsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listSendsStdout
-    }
+    stdout: VaultCollector { id: listSendsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listSendsProc)
       if (root.supersededVaultRead("sends") || scrub) return
@@ -10358,10 +10344,7 @@ Item {
     property string probeId: ""
     command: Model.bwVersionCommand()
     environment: Model.withoutCompileCache({})
-    stdout: StdioCollector {
-      id: bwVersionStdout
-      waitForEnd: true
-    }
+    stdout: StdioCollector { id: bwVersionStdout; waitForEnd: true }
     onExited: function(exitCode) { root.onBwVersionProbed(bwVersionStdout.text, bwVersionProc.probeId) }
   }
 
@@ -10411,10 +10394,7 @@ Item {
 
   Process {
     id: settingWriteProc
-    stderr: StdioCollector {
-      id: settingWriteStderr
-      waitForEnd: true
-    }
+    stderr: StdioCollector { id: settingWriteStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
         root.settingsFlash = ""
@@ -10468,9 +10448,7 @@ Item {
     vault: root
     session: false
     command: Model.keyringLookupMasterPasswordCommand(root.activeSlot)
-    stdout: VaultCollector {
-      id: keyringLookupMasterStdout
-    }
+    stdout: VaultCollector { id: keyringLookupMasterStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(keyringLookupMasterProc)) return
       if (exitCode === 0) {
@@ -10663,12 +10641,8 @@ Item {
     vault: root
     capture: "session"
     environment: root.loginProcessEnv()
-    stdout: VaultCollector {
-      id: loginStdout
-    }
-    stderr: VaultCollector {
-      id: loginStderr
-    }
+    stdout: VaultCollector { id: loginStdout }
+    stderr: VaultCollector { id: loginStderr }
     onExited: function(exitCode) {
       // A scrub started here briefly holds the process; a submit arriving then
       // is dispatched when the scrub exits (else it would need a second click).
@@ -10699,12 +10673,8 @@ Item {
     capture: "session"
     command: Model.unlockPrewarmCommand()
     environment: root.authEnv("", "", "", "")
-    stdout: VaultCollector {
-      id: unlockStdout
-    }
-    stderr: VaultCollector {
-      id: unlockStderr
-    }
+    stdout: VaultCollector { id: unlockStdout }
+    stderr: VaultCollector { id: unlockStderr }
     onExited: function(exitCode) {
       if (root.finishScrubRun(unlockProc)) {
         if (root.sshAuthSurfaceActive && root.status === "locked") Qt.callLater(root.prepareUnlock)
@@ -10731,12 +10701,8 @@ Item {
     vault: root
     capture: "vault"
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listStdout
-    }
-    stderr: VaultCollector {
-      id: listStderr
-    }
+    stdout: VaultCollector { id: listStdout }
+    stderr: VaultCollector { id: listStderr }
     onExited: function(exitCode) {
       root.onListProcessExited(exitCode, listStdout.text, listStderr.text)
     }
@@ -10746,9 +10712,7 @@ Item {
     id: listOrgsProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: listOrgsStdout
-    }
+    stdout: VaultCollector { id: listOrgsStdout }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(listOrgsProc)
       if (root.supersededVaultRead("organizations") || scrub) return
@@ -10760,12 +10724,8 @@ Item {
     id: getItemProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: getItemStdout
-    }
-    stderr: VaultCollector {
-      id: getItemStderr
-    }
+    stdout: VaultCollector { id: getItemStdout }
+    stderr: VaultCollector { id: getItemStderr }
     onExited: function(exitCode) {
       var scrub = root.finishScrubRun(getItemProc)
       if (root.supersededVaultRead("detail") || scrub) return
@@ -10784,9 +10744,7 @@ Item {
     id: getTotpProc
     vault: root
     environment: root.bwEnv()
-    stdout: VaultCollector {
-      id: getTotpStdout
-    }
+    stdout: VaultCollector { id: getTotpStdout }
     onExited: function(exitCode) {
       if (root.finishScrubRun(getTotpProc)) {
         root.continueTotpQueue(true)

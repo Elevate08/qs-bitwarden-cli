@@ -480,9 +480,7 @@ Item {
     id: assertProc
     vault: fido.vault
     session: false
-    stdout: VaultCollector {
-      id: assertStdout
-    }
+    stdout: VaultCollector { id: assertStdout }
     onExited: function(exitCode) { fido.onAssertExited(exitCode) }
   }
 
