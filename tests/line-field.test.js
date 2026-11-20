@@ -124,8 +124,15 @@ check("the form's Enter Shortcut saves through submitForm()",
 
 // A field whose own Return does something else (a new folder, a custom field)
 // must not also save the item; every other field must.
+// FormLine and FormSecret rows are held to it, and so are the inputs inside
+// those two components, which are what actually takes the key.
+const rowInputs = ["component FormLine: Column {", "component FormSecret: Column {"]
+  .map(opener => panel.indexOf(opener) < 0 ? "" : balanced(panel, panel.indexOf(opener)))
+  .flatMap(def => [...blocks(def, "LineField"), ...blocks(def, "SecretField")])
+check("the form's row components each wrap one input", rowInputs.length === 2, `${rowInputs.length} inputs`)
 const formFields = [itemForm, read("CustomFieldsEditor.qml")]
   .flatMap(src => ["LineField", "SecretField", "FormLine", "FormSecret"].flatMap(type => blocks(src, type)))
+  .concat(rowInputs)
 check("the item form has its fields", formFields.length > 30, `${formFields.length} fields`)
 for (const field of formFields) {
   const ownReturn = /\bonAccepted:/.test(field)
