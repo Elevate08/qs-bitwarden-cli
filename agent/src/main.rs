@@ -4,9 +4,10 @@ use qs_bitwarden_ssh_agent::approvals::{
 use qs_bitwarden_ssh_agent::control::{
     parse_control_line, ControlMessage, LoadStatus, MAX_CONTROL_LINE,
 };
-use qs_bitwarden_ssh_agent::keystore::{KeyStore, MAX_KEYS};
+use qs_bitwarden_ssh_agent::keystore::{KeyStore, PublicIdentity, MAX_KEYS};
 use qs_bitwarden_ssh_agent::lifecycle::harden_process;
 use qs_bitwarden_ssh_agent::load::LoadWindow;
+use qs_bitwarden_ssh_agent::peer::PeerContext;
 use qs_bitwarden_ssh_agent::protocol::{self, AgentRequest};
 use qs_bitwarden_ssh_agent::runtime::{read_payload_async, Runtime, RuntimeError, ServiceRuntime};
 use qs_bitwarden_ssh_agent::server::{self, ClientEvent};
@@ -19,50 +20,42 @@ use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
 #[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 enum Output {
     Ready {
         v: u8,
-        #[serde(rename = "socketPath")]
         socket_path: String,
-        #[serde(rename = "fifoPath")]
         fifo_path: String,
-        #[serde(rename = "agentVersion")]
         agent_version: String,
     },
     ApprovalRequired {
         v: u8,
-        #[serde(rename = "requestId")]
         request_id: u64,
         /// The id this request's `unlock_required` had, which still answers
         /// it once (`addressed`); 0 for a request that was never held. Always
         /// present, so the panel can tell this helper's "none" from an older
         /// helper's silence.
-        #[serde(rename = "promotedFrom")]
         promoted_from: u64,
-        #[serde(rename = "keyId")]
         key_id: String,
-        #[serde(rename = "keyName")]
         key_name: String,
         fingerprint: String,
         pid: u32,
-        #[serde(rename = "processPath")]
         process_path: String,
         /// `sshsig`, `ssh-auth`, or `ssh-sign` for data not recognised.
         operation: &'static str,
         /// The SSHSIG namespace or the login name; empty for `ssh-sign`.
-        #[serde(rename = "operationDetail")]
         operation_detail: String,
         /// For `ssh-auth`, the server host key fingerprint the client bound
         /// the session to, unverified; "" when it reported none.
-        #[serde(rename = "hostKey")]
         host_key: String,
         /// The fingerprint is only what the remote host of a forwarded
         /// connection said (`protocol::Classified::host_claimed`).
-        #[serde(rename = "hostKeyClaimed")]
         host_key_claimed: bool,
         forwarded: bool,
-        #[serde(rename = "grantOffered")]
         grant_offered: bool,
     },
     Locked {
@@ -78,44 +71,32 @@ enum Output {
     KeysLoaded {
         v: u8,
         epoch: u64,
-        #[serde(rename = "keyCount")]
         key_count: usize,
     },
     /// A signature asked for against a locked vault whose public cache knows
     /// the key; held until the panel unlocks or cancels.
     UnlockRequired {
         v: u8,
-        #[serde(rename = "requestId")]
         request_id: u64,
         reason: &'static str,
-        #[serde(rename = "keyName")]
         key_name: String,
         fingerprint: String,
         pid: u32,
-        #[serde(rename = "processPath")]
         process_path: String,
         /// As on `approval_required`; empty for an identity listing.
         operation: &'static str,
-        #[serde(rename = "operationDetail")]
         operation_detail: String,
-        /// For `ssh-auth`, the server host key fingerprint the client bound
-        /// the session to, unverified; "" when it reported none.
-        #[serde(rename = "hostKey")]
+        /// As on `approval_required`.
         host_key: String,
-        /// The fingerprint is only what the remote host of a forwarded
-        /// connection said (`protocol::Classified::host_claimed`).
-        #[serde(rename = "hostKeyClaimed")]
         host_key_claimed: bool,
         forwarded: bool,
         /// Whether approving may also open a grant, so the panel never assumes.
-        #[serde(rename = "grantOffered")]
         grant_offered: bool,
     },
     /// A request the panel may still be prompting for is gone (client left,
     /// deadline passed, or a lock), so the prompt can close.
     RequestCancelled {
         v: u8,
-        #[serde(rename = "requestId")]
         request_id: u64,
         reason: &'static str,
     },
@@ -125,11 +106,9 @@ enum Output {
     PublicKey {
         v: u8,
         epoch: u64,
-        #[serde(rename = "itemId")]
         item_id: String,
         name: String,
         fingerprint: String,
-        #[serde(rename = "publicKey")]
         public_key: String,
     },
     /// The live grant set, whenever it changes. Public metadata only.
@@ -140,21 +119,16 @@ enum Output {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GrantView {
-    #[serde(rename = "grantId")]
     grant_id: u64,
-    #[serde(rename = "keyName")]
     key_name: String,
     fingerprint: String,
     pid: u32,
-    #[serde(rename = "processPath")]
     process_path: String,
     operation: &'static str,
-    #[serde(rename = "operationDetail")]
     operation_detail: String,
-    #[serde(rename = "hostKey")]
     host_key: String,
-    #[serde(rename = "expiresInSec")]
     expires_in_sec: u64,
 }
 
@@ -174,7 +148,7 @@ struct HeldSign {
     public_blob: Vec<u8>,
     message: Vec<u8>,
     flags: u32,
-    peer: qs_bitwarden_ssh_agent::peer::PeerContext,
+    peer: PeerContext,
     scope: SignScope,
     /// As on the `unlock_required` sent for it, for the `approval_required`
     /// that follows the load.
@@ -419,9 +393,9 @@ async fn run() -> Result<(), ()> {
                     ControlMessage::Deny { request_id, .. } | ControlMessage::UnlockCancelled { request_id, .. } => {
                         let request_id = addressed(&mut pending, request_id, &output_tx)?;
                         approvals.disconnect(request_id);
-                        if let Some(sign) = pending.remove(&request_id) { let _ = sign.reply.send(protocol::failure_response()); }
+                        if let Some(sign) = pending.remove(&request_id) { refuse(sign.reply); }
                         // The panel asked, so no request_cancelled back.
-                        if let Some(request) = held.remove(&request_id) { let _ = request.reply.send(protocol::failure_response()); }
+                        if let Some(request) = held.remove(&request_id) { refuse(request.reply); }
                         if held_identities.as_ref().is_some_and(|w| w.request_id == request_id) {
                             release_held_identities(&mut held_identities, &store, &output_tx, "cancelled")?;
                         }
@@ -460,16 +434,7 @@ async fn run() -> Result<(), ()> {
                         } else {
                             load.end_received = true;
                             load.payload_deadline_ms = Some(elapsed_ms(started).saturating_add(LOAD_END_GRACE_MS));
-                            settle_load(
-                                finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
-                                &mut held,
-                                &mut held_identities,
-                                &store,
-                                &mut approvals,
-                                &mut pending,
-                                started,
-                                &output_tx,
-                            )?;
+                            finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &mut held, &mut held_identities, &mut approvals, &mut pending, started, &output_tx)?;
                         }
                     }
                 }
@@ -479,16 +444,7 @@ async fn run() -> Result<(), ()> {
                 let Some(load) = active_load.as_mut() else { continue };
                 if load.epoch != epoch { continue; }
                 load.payload = Some(result);
-                settle_load(
-                    finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
-                    &mut held,
-                    &mut held_identities,
-                    &store,
-                    &mut approvals,
-                    &mut pending,
-                    started,
-                    &output_tx,
-                )?;
+                finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &mut held, &mut held_identities, &mut approvals, &mut pending, started, &output_tx)?;
             }
             _ = tick.tick() => {
                 let now = elapsed_ms(started);
@@ -498,30 +454,21 @@ async fn run() -> Result<(), ()> {
                 if let Some(load) = active_load.as_mut() {
                     if load.payload.is_none() && load.payload_deadline_ms.is_some_and(|deadline| now >= deadline) {
                         load.payload = Some(Err(RuntimeError::ReadTimeout));
-                        settle_load(
-                            finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &output_tx)?,
-                            &mut held,
-                            &mut held_identities,
-                            &store,
-                            &mut approvals,
-                            &mut pending,
-                            started,
-                            &output_tx,
-                        )?;
+                        finish_load_if_ready(&mut active_load, &mut store, &mut gate_open, runtime.runtime(), &mut held, &mut held_identities, &mut approvals, &mut pending, started, &output_tx)?;
                     }
                 }
                 let expired: Vec<_> = pending.iter().filter_map(|(id, sign)| (sign.reply.is_closed() || !approvals.is_pending(*id)).then_some(*id)).collect();
                 for id in expired {
                     approvals.disconnect(id);
-                    if let Some(sign) = pending.remove(&id) { let _ = sign.reply.send(protocol::failure_response()); }
+                    if let Some(sign) = pending.remove(&id) { refuse(sign.reply); }
                     // Client left or deadline passed; the panel may still be
                     // prompting.
-                    emit(&output_tx, Output::RequestCancelled { v: 1, request_id: id, reason: "withdrawn" })?;
+                    cancelled(&output_tx, id, "withdrawn")?;
                 }
                 let stale: Vec<_> = held.iter().filter_map(|(id, request)| (request.reply.is_closed() || request.deadline_ms <= now).then_some(*id)).collect();
                 for id in stale {
-                    if let Some(request) = held.remove(&id) { let _ = request.reply.send(protocol::failure_response()); }
-                    emit(&output_tx, Output::RequestCancelled { v: 1, request_id: id, reason: "withdrawn" })?;
+                    if let Some(request) = held.remove(&id) { refuse(request.reply); }
+                    cancelled(&output_tx, id, "withdrawn")?;
                 }
                 if held_identities.as_ref().is_some_and(|w| {
                     w.deadline_ms <= now || w.waiting.iter().all(|(reply, _)| reply.is_closed())
@@ -560,9 +507,7 @@ fn handle_client(
 ) -> Result<(), ()> {
     match event.request {
         // The server answers binds itself and never forwards one here.
-        AgentRequest::SessionBind { .. } => {
-            let _ = event.reply.send(protocol::failure_response());
-        }
+        AgentRequest::SessionBind { .. } => refuse(event.reply),
         // Not behind `gate_open`: public keys are not secret, and listing them
         // while locked keeps unrelated `ssh` connections from raising unlock
         // prompts. The cache is empty when logged out or never loaded.
@@ -587,9 +532,7 @@ fn handle_client(
                             key_name: String::new(),
                             fingerprint: String::new(),
                             pid: event.peer.pid,
-                            process_path: protocol::visible_text(
-                                &event.peer.executable.to_string_lossy(),
-                            ),
+                            process_path: process_path(&event.peer),
                             operation: "",
                             operation_detail: String::new(),
                             host_key: String::new(),
@@ -626,22 +569,14 @@ fn handle_client(
             if !gate_open {
                 // Locked but the cache knows the key: ask the panel to unlock
                 // and hold the request. Unknown keys are not ours.
-                let Some(key) = store
-                    .public_identities()
-                    .iter()
-                    .find(|key| key.public_blob() == public_blob)
+                let key = identity(store, &public_blob).filter(|_| {
+                    approvals.expects_uid(event.peer.uid)
+                        && approvals.capacity_remaining(held.len()) > 0
+                });
+                let Some((key, id)) =
+                    key.and_then(|key| Some((key, approvals.reserve_request_id().ok()?)))
                 else {
-                    let _ = event.reply.send(protocol::failure_response());
-                    return Ok(());
-                };
-                if !approvals.expects_uid(event.peer.uid)
-                    || approvals.capacity_remaining(held.len()) == 0
-                {
-                    let _ = event.reply.send(protocol::failure_response());
-                    return Ok(());
-                }
-                let Ok(id) = approvals.reserve_request_id() else {
-                    let _ = event.reply.send(protocol::failure_response());
+                    refuse(event.reply);
                     return Ok(());
                 };
                 emit(
@@ -653,9 +588,7 @@ fn handle_client(
                         key_name: protocol::visible_text(&key.name),
                         fingerprint: key.fingerprint.clone(),
                         pid: event.peer.pid,
-                        process_path: protocol::visible_text(
-                            &event.peer.executable.to_string_lossy(),
-                        ),
+                        process_path: process_path(&event.peer),
                         operation: scope.kind.operation(),
                         operation_detail: scope.kind.detail().to_owned(),
                         host_key: scope.kind.host().to_owned(),
@@ -681,7 +614,7 @@ fn handle_client(
                 return Ok(());
             }
             if store.authorize(&public_blob).is_none() {
-                let _ = event.reply.send(protocol::failure_response());
+                refuse(event.reply);
                 return Ok(());
             }
             match approvals.submit(
@@ -696,35 +629,14 @@ fn handle_client(
                     let _ = event.reply.send(response);
                 }
                 Ok(Submit::Pending(id)) => {
-                    let Some(key) = store
-                        .public_identities()
-                        .iter()
-                        .find(|key| key.public_blob() == public_blob)
-                    else {
+                    let Some(key) = identity(store, &public_blob) else {
                         approvals.disconnect(id);
-                        let _ = event.reply.send(protocol::failure_response());
+                        refuse(event.reply);
                         return Ok(());
                     };
-                    let process_path =
-                        protocol::visible_text(&event.peer.executable.to_string_lossy());
                     emit(
                         output,
-                        Output::ApprovalRequired {
-                            v: 1,
-                            request_id: id,
-                            promoted_from: 0,
-                            key_id: key.item_id.clone(),
-                            key_name: protocol::visible_text(&key.name),
-                            fingerprint: key.fingerprint.clone(),
-                            pid: event.peer.pid,
-                            process_path,
-                            operation: scope.kind.operation(),
-                            operation_detail: scope.kind.detail().to_owned(),
-                            host_key: scope.kind.host().to_owned(),
-                            host_key_claimed: host_claimed,
-                            forwarded: scope.forwarded,
-                            grant_offered: scope.grantable(),
-                        },
+                        approval_required(id, 0, key, &event.peer, &scope, host_claimed),
                     )?;
                     pending.insert(
                         id,
@@ -736,13 +648,65 @@ fn handle_client(
                         },
                     );
                 }
-                Err(_) => {
-                    let _ = event.reply.send(protocol::failure_response());
-                }
+                Err(_) => refuse(event.reply),
             }
         }
     }
     Ok(())
+}
+
+fn refuse(reply: oneshot::Sender<Vec<u8>>) {
+    let _ = reply.send(protocol::failure_response());
+}
+
+fn cancelled(
+    output: &mpsc::Sender<Output>,
+    request_id: RequestId,
+    reason: &'static str,
+) -> Result<(), ()> {
+    let message = Output::RequestCancelled {
+        v: 1,
+        request_id,
+        reason,
+    };
+    emit(output, message)
+}
+
+fn identity<'a>(store: &'a KeyStore, public_blob: &[u8]) -> Option<&'a PublicIdentity> {
+    let mut identities = store.public_identities().iter();
+    identities.find(|key| key.public_blob() == public_blob)
+}
+
+fn process_path(peer: &PeerContext) -> String {
+    protocol::visible_text(&peer.executable.to_string_lossy())
+}
+
+/// The approval prompt for request `id`, which was held for an unlock as
+/// `promoted_from` (0: never held).
+fn approval_required(
+    id: RequestId,
+    promoted_from: RequestId,
+    key: &PublicIdentity,
+    peer: &PeerContext,
+    scope: &SignScope,
+    host_claimed: bool,
+) -> Output {
+    Output::ApprovalRequired {
+        v: 1,
+        request_id: id,
+        promoted_from,
+        key_id: key.item_id.clone(),
+        key_name: protocol::visible_text(&key.name),
+        fingerprint: key.fingerprint.clone(),
+        pid: peer.pid,
+        process_path: process_path(peer),
+        operation: scope.kind.operation(),
+        operation_detail: scope.kind.detail().to_owned(),
+        host_key: scope.kind.host().to_owned(),
+        host_key_claimed: host_claimed,
+        forwarded: scope.forwarded,
+        grant_offered: scope.grantable(),
+    }
 }
 
 /// Release requests held for an unlock. Each goes through the ordinary
@@ -763,59 +727,15 @@ fn release_held(
         // Past the deadline it was held under (the tick has not come round
         // yet): the client is answered now, and nothing is asked or signed.
         if request.deadline_ms <= elapsed_ms(started) {
-            let _ = request.reply.send(protocol::failure_response());
-            emit(
-                output,
-                Output::RequestCancelled {
-                    v: 1,
-                    request_id: old_id,
-                    reason: "withdrawn",
-                },
-            )?;
+            refuse(request.reply);
+            cancelled(output, old_id, "withdrawn")?;
             continue;
         }
         // Withdraw the unlock prompt; an approval prompt with its own id
         // follows, naming this one (`promotedFrom`).
-        emit(
-            output,
-            Output::RequestCancelled {
-                v: 1,
-                request_id: old_id,
-                reason: "released",
-            },
-        )?;
+        cancelled(output, old_id, "released")?;
         if store.authorize(&request.public_blob).is_none() {
-            let _ = request.reply.send(protocol::failure_response());
-            continue;
-        }
-        // Approved during the load: submit at the new epoch and consume the
-        // approval. The ordinary checks (key present, unlocked, current epoch)
-        // still run.
-        if let Some(grant_seconds) = request.approved {
-            let response = match approvals.submit(
-                store.epoch(),
-                &request.public_blob,
-                request.peer.clone(),
-                request.scope.clone(),
-                elapsed_ms(started),
-            ) {
-                Ok(Submit::Granted(authorization)) => {
-                    authorized_signature(store, authorization, &request.message, request.flags)
-                }
-                Ok(Submit::Pending(id)) => approve_released(
-                    approvals,
-                    id,
-                    grant_seconds,
-                    request.deadline_ms,
-                    elapsed_ms(started),
-                )
-                .map(|authorization| {
-                    authorized_signature(store, authorization, &request.message, request.flags)
-                })
-                .unwrap_or_else(|_| protocol::failure_response()),
-                Err(_) => protocol::failure_response(),
-            };
-            let _ = request.reply.send(response);
+            refuse(request.reply);
             continue;
         }
         match approvals.submit(
@@ -831,36 +751,35 @@ fn release_held(
                 let _ = request.reply.send(response);
             }
             Ok(Submit::Pending(id)) => {
-                let Some(key) = store
-                    .public_identities()
-                    .iter()
-                    .find(|key| key.public_blob() == request.public_blob)
-                else {
+                // Approved during the load: the approval is consumed now. The
+                // ordinary checks (key present, unlocked, current epoch) still
+                // run.
+                if let Some(grant_seconds) = request.approved {
+                    let (deadline_ms, now_ms) = (request.deadline_ms, elapsed_ms(started));
+                    let response =
+                        approve_released(approvals, id, grant_seconds, deadline_ms, now_ms)
+                            .map(|authorization| {
+                                let (message, flags) = (&request.message, request.flags);
+                                authorized_signature(store, authorization, message, flags)
+                            })
+                            .unwrap_or_else(|_| protocol::failure_response());
+                    let _ = request.reply.send(response);
+                    continue;
+                }
+                let Some(key) = identity(store, &request.public_blob) else {
                     approvals.disconnect(id);
-                    let _ = request.reply.send(protocol::failure_response());
+                    refuse(request.reply);
                     continue;
                 };
-                emit(
-                    output,
-                    Output::ApprovalRequired {
-                        v: 1,
-                        request_id: id,
-                        promoted_from: old_id,
-                        key_id: key.item_id.clone(),
-                        key_name: protocol::visible_text(&key.name),
-                        fingerprint: key.fingerprint.clone(),
-                        pid: request.peer.pid,
-                        process_path: protocol::visible_text(
-                            &request.peer.executable.to_string_lossy(),
-                        ),
-                        operation: request.scope.kind.operation(),
-                        operation_detail: request.scope.kind.detail().to_owned(),
-                        host_key: request.scope.kind.host().to_owned(),
-                        host_key_claimed: request.host_claimed,
-                        forwarded: request.scope.forwarded,
-                        grant_offered: request.scope.grantable(),
-                    },
-                )?;
+                let prompt = approval_required(
+                    id,
+                    old_id,
+                    key,
+                    &request.peer,
+                    &request.scope,
+                    request.host_claimed,
+                );
+                emit(output, prompt)?;
                 // The approval is the same request as the unlock: its client
                 // is answered within the time it was first given.
                 approvals.limit_deadline(id, request.deadline_ms);
@@ -874,9 +793,7 @@ fn release_held(
                     },
                 );
             }
-            Err(_) => {
-                let _ = request.reply.send(protocol::failure_response());
-            }
+            Err(_) => refuse(request.reply),
         }
     }
     // One approved with a grant may follow another from the same program that
@@ -915,14 +832,7 @@ fn addressed(
         return Ok(id);
     };
     sign.promoted_from = None;
-    emit(
-        output,
-        Output::RequestCancelled {
-            v: 1,
-            request_id: current,
-            reason: "granted",
-        },
-    )?;
+    cancelled(output, current, "granted")?;
     Ok(current)
 }
 
@@ -956,14 +866,7 @@ fn settle_granted(
             let response = authorized_signature(store, authorization, &sign.message, sign.flags);
             let _ = sign.reply.send(response);
         }
-        emit(
-            output,
-            Output::RequestCancelled {
-                v: 1,
-                request_id: id,
-                reason: "granted",
-            },
-        )?;
+        cancelled(output, id, "granted")?;
     }
     Ok(())
 }
@@ -1000,14 +903,7 @@ fn release_held_identities(
     for (reply, is_forwarded) in waiters.waiting {
         let _ = reply.send(if is_forwarded { &forwarded } else { &local }.clone());
     }
-    emit(
-        output,
-        Output::RequestCancelled {
-            v: 1,
-            request_id: waiters.request_id,
-            reason,
-        },
-    )
+    cancelled(output, waiters.request_id, reason)
 }
 
 /// Fail every held request and tell the panel to take its prompts down.
@@ -1017,15 +913,8 @@ fn cancel_held(
     output: &mpsc::Sender<Output>,
 ) -> Result<(), ()> {
     for (id, request) in held.drain().collect::<Vec<_>>() {
-        let _ = request.reply.send(protocol::failure_response());
-        emit(
-            output,
-            Output::RequestCancelled {
-                v: 1,
-                request_id: id,
-                reason,
-            },
-        )?;
+        refuse(request.reply);
+        cancelled(output, id, reason)?;
     }
     Ok(())
 }
@@ -1047,10 +936,7 @@ fn emit_grants_if_changed(
         .grants()
         .iter()
         .map(|grant| {
-            let key = store
-                .public_identities()
-                .iter()
-                .find(|key| key.public_blob() == grant.public_blob);
+            let key = identity(store, &grant.public_blob);
             GrantView {
                 grant_id: grant.id,
                 key_name: key
@@ -1058,7 +944,7 @@ fn emit_grants_if_changed(
                     .unwrap_or_default(),
                 fingerprint: key.map(|key| key.fingerprint.clone()).unwrap_or_default(),
                 pid: grant.peer.pid,
-                process_path: protocol::visible_text(&grant.peer.executable.to_string_lossy()),
+                process_path: process_path(&grant.peer),
                 operation: grant.kind.operation(),
                 operation_detail: grant.kind.detail().to_owned(),
                 host_key: grant.kind.host().to_owned(),
@@ -1071,7 +957,7 @@ fn emit_grants_if_changed(
 
 fn fail_pending(pending: &mut HashMap<RequestId, PendingSign>) {
     for (_, sign) in pending.drain() {
-        let _ = sign.reply.send(protocol::failure_response());
+        refuse(sign.reply);
     }
 }
 
@@ -1085,48 +971,26 @@ fn cancel_load(active: &mut Option<ActiveLoad>, runtime: &Runtime) {
     runtime.discard_buffered();
 }
 
-enum LoadOutcome {
-    Pending,
-    Published,
-    Failed,
-}
-
+/// Once a load has both its end and its payload: publishes it and releases
+/// what was held for the unlock, or fails it and cancels that.
 #[allow(clippy::too_many_arguments)]
-fn settle_load(
-    outcome: LoadOutcome,
-    held: &mut HashMap<RequestId, HeldSign>,
-    held_identities: &mut Option<HeldIdentities>,
-    store: &KeyStore,
-    approvals: &mut ApprovalManager,
-    pending: &mut HashMap<RequestId, PendingSign>,
-    started: Instant,
-    output: &mpsc::Sender<Output>,
-) -> Result<(), ()> {
-    match outcome {
-        LoadOutcome::Pending => Ok(()),
-        LoadOutcome::Published => {
-            release_held(held, store, approvals, pending, started, output)?;
-            release_held_identities(held_identities, store, output, "released")
-        }
-        LoadOutcome::Failed => {
-            cancel_held(held, "load-failed", output)?;
-            release_held_identities(held_identities, store, output, "load-failed")
-        }
-    }
-}
-
 fn finish_load_if_ready(
     active: &mut Option<ActiveLoad>,
     store: &mut KeyStore,
     gate_open: &mut bool,
     runtime: &Runtime,
+    held: &mut HashMap<RequestId, HeldSign>,
+    held_identities: &mut Option<HeldIdentities>,
+    approvals: &mut ApprovalManager,
+    pending: &mut HashMap<RequestId, PendingSign>,
+    started: Instant,
     output: &mpsc::Sender<Output>,
-) -> Result<LoadOutcome, ()> {
+) -> Result<(), ()> {
     let ready = active
         .as_ref()
         .is_some_and(|load| load.end_received && load.payload.is_some());
     if !ready {
-        return Ok(LoadOutcome::Pending);
+        return Ok(());
     }
     let mut load = active.take().ok_or(())?;
     load.task.abort();
@@ -1154,15 +1018,18 @@ fn finish_load_if_ready(
                     },
                 )?;
             }
+            let key_count = report.loaded;
+            let epoch = load.epoch;
             emit(
                 output,
                 Output::KeysLoaded {
                     v: 1,
-                    epoch: load.epoch,
-                    key_count: report.loaded,
+                    epoch,
+                    key_count,
                 },
             )?;
-            Ok(LoadOutcome::Published)
+            release_held(held, store, approvals, pending, started, output)?;
+            release_held_identities(held_identities, store, output, "released")
         }
         Err(()) => {
             // A bad FIFO payload is a failed load (retryable), not a lock ack.
@@ -1173,14 +1040,10 @@ fn finish_load_if_ready(
             // it anyway; wiping it now keeps keys from sitting in the pipe.
             runtime.discard_buffered();
             eprintln!("qs-bitwarden-ssh-agent: key load failed");
-            emit(
-                output,
-                Output::LoadFailed {
-                    v: 1,
-                    epoch: load.epoch,
-                },
-            )?;
-            Ok(LoadOutcome::Failed)
+            let epoch = load.epoch;
+            emit(output, Output::LoadFailed { v: 1, epoch })?;
+            cancel_held(held, "load-failed", output)?;
+            release_held_identities(held_identities, store, output, "load-failed")
         }
     }
 }
@@ -1205,20 +1068,91 @@ fn elapsed_ms(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qs_bitwarden_ssh_agent::peer::PeerContext;
+    use protocol::SessionBinding;
 
-    /// A sign request from a client of the expected uid.
-    fn sign(uid: u32) -> (ClientEvent, oneshot::Receiver<Vec<u8>>) {
+    type Answer = oneshot::Receiver<Vec<u8>>;
+
+    /// What `handle_client` and `release_held` work on, and what they send.
+    struct Agent {
+        store: KeyStore,
+        approvals: ApprovalManager,
+        pending: HashMap<RequestId, PendingSign>,
+        held: HashMap<RequestId, HeldSign>,
+        started: Instant,
+        output: mpsc::Sender<Output>,
+        outputs: mpsc::Receiver<Output>,
+    }
+
+    impl Agent {
+        fn new() -> Self {
+            let (output, outputs) = mpsc::channel(8);
+            Self {
+                store: KeyStore::new(),
+                approvals: ApprovalManager::new(1000),
+                pending: HashMap::new(),
+                held: HashMap::new(),
+                started: Instant::now(),
+                output,
+                outputs,
+            }
+        }
+
+        /// `key` loaded at epoch 1.
+        fn with(key: &ssh_key::PrivateKey) -> Self {
+            let mut agent = Self::new();
+            load_key(&mut agent.store, key, 1);
+            agent
+        }
+
+        fn client(&mut self, event: ClientEvent, gate_open: bool) {
+            handle_client(
+                event,
+                gate_open,
+                &self.store,
+                &mut self.approvals,
+                &mut self.pending,
+                &mut self.held,
+                &mut None,
+                true,
+                self.started,
+                &self.output,
+            )
+            .unwrap();
+        }
+
+        /// The keys arrive again, at epoch 3, and what was held is released.
+        fn unlock(&mut self, key: &ssh_key::PrivateKey) {
+            load_key(&mut self.store, key, 3);
+            release_held(
+                &mut self.held,
+                &self.store,
+                &mut self.approvals,
+                &mut self.pending,
+                self.started,
+                &self.output,
+            )
+            .unwrap();
+        }
+
+        /// The line the panel reads for the next message.
+        fn next(&mut self) -> serde_json::Value {
+            serde_json::to_value(self.outputs.try_recv().expect("a message was sent")).unwrap()
+        }
+    }
+
+    /// A request from `/usr/bin/ssh`, run by the expected uid.
+    fn event(
+        request: AgentRequest,
+        forwarded: bool,
+        binds: Vec<SessionBinding>,
+    ) -> (ClientEvent, Answer) {
         let (reply, answer) = oneshot::channel();
+        let peer = PeerContext::new(1000, 4242, 1, "/usr/bin/ssh").unwrap();
         let event = ClientEvent {
-            peer: PeerContext::new(uid, 4242, 1, "/usr/bin/ssh").unwrap(),
-            forwarded: false,
-            binds: Vec::new(),
-            request: AgentRequest::Sign {
-                public_blob: vec![0; 32],
-                message: vec![1; 32],
-                flags: 0,
-            },
+            peer,
+            forwarded,
+            binds,
+            request,
             reply,
         };
         (event, answer)
@@ -1230,28 +1164,28 @@ mod tests {
     #[test]
     fn a_sign_before_any_load_is_refused_without_a_prompt() {
         for gate_open in [false, true] {
-            let store = KeyStore::new();
-            let mut approvals = ApprovalManager::new(1000);
-            let (output, mut outputs) = mpsc::channel(8);
-            let (event, mut answer) = sign(1000);
-            handle_client(
-                event,
-                gate_open,
-                &store,
-                &mut approvals,
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut None,
-                true,
-                Instant::now(),
-                &output,
-            )
-            .unwrap();
+            let mut agent = Agent::new();
+            let request = AgentRequest::Sign {
+                public_blob: vec![0; 32],
+                message: vec![1; 32],
+                flags: 0,
+            };
+            let (event, mut answer) = event(request, false, Vec::new());
+            agent.client(event, gate_open);
             assert_eq!(answer.try_recv().unwrap(), protocol::failure_response());
-            assert!(outputs.try_recv().is_err(), "gate open: {gate_open}");
+            assert!(agent.outputs.try_recv().is_err(), "gate open: {gate_open}");
         }
     }
-    /// One Ed25519 key loaded at `epoch`, generated here.
+
+    /// An Ed25519 key generated here, and its public blob.
+    fn new_key() -> (ssh_key::PrivateKey, Vec<u8>) {
+        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .unwrap();
+        let blob = key.public_key().to_bytes().unwrap();
+        (key, blob)
+    }
+
+    /// `key` loaded at `epoch`, as the store's one key.
     fn load_key(store: &mut KeyStore, key: &ssh_key::PrivateKey, epoch: u64) {
         use qs_bitwarden_ssh_agent::keystore::CandidateItem;
         let mut load = store.begin_load(epoch, 4096).unwrap();
@@ -1290,8 +1224,8 @@ mod tests {
         data
     }
 
-    fn bind(host_key: &[u8], relayed: bool) -> protocol::SessionBinding {
-        protocol::SessionBinding {
+    fn bind(host_key: &[u8], relayed: bool) -> SessionBinding {
+        SessionBinding {
             session_id: vec![7; 32],
             host_key: protocol::host_key_fingerprint(host_key),
             relayed,
@@ -1301,26 +1235,14 @@ mod tests {
     fn login_event(
         public_blob: &[u8],
         forwarded: bool,
-        binds: Vec<protocol::SessionBinding>,
-    ) -> (ClientEvent, oneshot::Receiver<Vec<u8>>) {
-        let (reply, answer) = oneshot::channel();
-        let event = ClientEvent {
-            peer: PeerContext::new(1000, 4242, 1, "/usr/bin/ssh").unwrap(),
-            forwarded,
-            binds,
-            request: AgentRequest::Sign {
-                public_blob: public_blob.to_vec(),
-                message: login(public_blob),
-                flags: 0,
-            },
-            reply,
+        binds: Vec<SessionBinding>,
+    ) -> (ClientEvent, Answer) {
+        let request = AgentRequest::Sign {
+            public_blob: public_blob.to_vec(),
+            message: login(public_blob),
+            flags: 0,
         };
-        (event, answer)
-    }
-
-    /// The line the panel reads for the next message.
-    fn next(outputs: &mut mpsc::Receiver<Output>) -> serde_json::Value {
-        serde_json::to_value(outputs.try_recv().expect("a message was sent")).unwrap()
+        event(request, forwarded, binds)
     }
 
     /// The prompt for a forwarded login whose server only the remote host
@@ -1330,11 +1252,7 @@ mod tests {
     /// panel can tell this helper's "no" from an older helper's silence.
     #[test]
     fn a_prompt_says_when_the_remote_host_named_the_server() {
-        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
-            .unwrap();
-        let blob = key.public_key().to_bytes().unwrap();
-        let mut store = KeyStore::new();
-        load_key(&mut store, &key, 1);
+        let (key, blob) = new_key();
         let github = protocol::host_key_fingerprint(b"github host key");
 
         for (case, forwarded, binds, host, claimed, shown_forwarded) in [
@@ -1375,23 +1293,10 @@ mod tests {
             ),
             ("no bind", false, vec![], String::new(), false, false),
         ] {
-            let mut approvals = ApprovalManager::new(1000);
-            let (output, mut outputs) = mpsc::channel(8);
+            let mut agent = Agent::with(&key);
             let (event, _answer) = login_event(&blob, forwarded, binds);
-            handle_client(
-                event,
-                true,
-                &store,
-                &mut approvals,
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut None,
-                true,
-                Instant::now(),
-                &output,
-            )
-            .unwrap();
-            let prompt = next(&mut outputs);
+            agent.client(event, true);
+            let prompt = agent.next();
             assert_eq!(prompt["type"], "approval_required", "{case}");
             assert_eq!(prompt["operation"], "ssh-auth", "{case}");
             assert_eq!(prompt["hostKey"], host.as_str(), "{case}");
@@ -1405,57 +1310,27 @@ mod tests {
     /// does the approval prompt the held request becomes after the load.
     #[test]
     fn a_held_request_keeps_the_claim_through_the_unlock() {
-        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
-            .unwrap();
-        let blob = key.public_key().to_bytes().unwrap();
+        let (key, blob) = new_key();
         let github = protocol::host_key_fingerprint(b"github host key");
 
         for claimed in [true, false] {
-            let mut store = KeyStore::new();
-            load_key(&mut store, &key, 1);
-            store.lock(2);
-            let mut approvals = ApprovalManager::new(1000);
-            let (mut pending, mut held) = (HashMap::new(), HashMap::new());
-            let (output, mut outputs) = mpsc::channel(8);
+            let mut agent = Agent::with(&key);
+            agent.store.lock(2);
             let (event, _answer) =
                 login_event(&blob, true, vec![bind(b"github host key", claimed)]);
-            handle_client(
-                event,
-                false,
-                &store,
-                &mut approvals,
-                &mut pending,
-                &mut held,
-                &mut None,
-                true,
-                Instant::now(),
-                &output,
-            )
-            .unwrap();
-            let unlock = next(&mut outputs);
+            agent.client(event, false);
+            let unlock = agent.next();
             assert_eq!(unlock["type"], "unlock_required");
-            assert_eq!(unlock["hostKey"], github.as_str());
-            assert_eq!(unlock["hostKeyClaimed"], claimed);
-            assert_eq!(unlock["forwarded"], true);
-            assert_eq!(unlock["grantOffered"], false);
-
-            load_key(&mut store, &key, 3);
-            release_held(
-                &mut held,
-                &store,
-                &mut approvals,
-                &mut pending,
-                Instant::now(),
-                &output,
-            )
-            .unwrap();
-            assert_eq!(next(&mut outputs)["type"], "request_cancelled");
-            let prompt = next(&mut outputs);
+            agent.unlock(&key);
+            assert_eq!(agent.next()["type"], "request_cancelled");
+            let prompt = agent.next();
             assert_eq!(prompt["type"], "approval_required");
-            assert_eq!(prompt["hostKey"], github.as_str());
-            assert_eq!(prompt["hostKeyClaimed"], claimed);
-            assert_eq!(prompt["forwarded"], true);
-            assert_eq!(prompt["grantOffered"], false);
+            for message in [unlock, prompt] {
+                assert_eq!(message["hostKey"], github.as_str());
+                assert_eq!(message["hostKeyClaimed"], claimed);
+                assert_eq!(message["forwarded"], true);
+                assert_eq!(message["grantOffered"], false);
+            }
         }
     }
 
@@ -1465,57 +1340,25 @@ mod tests {
     /// prompt under the new id is withdrawn.
     #[test]
     fn a_decision_under_the_unlock_id_reaches_the_released_request_once() {
-        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
-            .unwrap();
-        let blob = key.public_key().to_bytes().unwrap();
-        let mut store = KeyStore::new();
-        load_key(&mut store, &key, 1);
-        store.lock(2);
-        let mut approvals = ApprovalManager::new(1000);
-        let (mut pending, mut held) = (HashMap::new(), HashMap::new());
-        let (output, mut outputs) = mpsc::channel(8);
+        let (key, blob) = new_key();
+        let mut agent = Agent::with(&key);
+        agent.store.lock(2);
         let (event, _answer) = login_event(&blob, false, vec![]);
-        handle_client(
-            event,
-            false,
-            &store,
-            &mut approvals,
-            &mut pending,
-            &mut held,
-            &mut None,
-            true,
-            Instant::now(),
-            &output,
-        )
-        .unwrap();
-        let unlock_id = next(&mut outputs)["requestId"].as_u64().unwrap();
-        load_key(&mut store, &key, 3);
-        release_held(
-            &mut held,
-            &store,
-            &mut approvals,
-            &mut pending,
-            Instant::now(),
-            &output,
-        )
-        .unwrap();
-        assert_eq!(next(&mut outputs)["reason"], "released");
-        let prompt = next(&mut outputs);
+        agent.client(event, false);
+        let unlock_id = agent.next()["requestId"].as_u64().unwrap();
+        agent.unlock(&key);
+        assert_eq!(agent.next()["reason"], "released");
+        let prompt = agent.next();
         let approval_id = prompt["requestId"].as_u64().unwrap();
         assert_eq!(prompt["promotedFrom"], unlock_id);
 
-        assert_eq!(
-            addressed(&mut pending, unlock_id, &output).unwrap(),
-            approval_id
-        );
-        let withdrawn = next(&mut outputs);
+        let mut addressed = || addressed(&mut agent.pending, unlock_id, &agent.output).unwrap();
+        assert_eq!(addressed(), approval_id);
+        let withdrawn = serde_json::to_value(agent.outputs.try_recv().unwrap()).unwrap();
         assert_eq!(withdrawn["requestId"], approval_id);
         assert_eq!(withdrawn["reason"], "granted");
-        assert_eq!(
-            addressed(&mut pending, unlock_id, &output).unwrap(),
-            unlock_id
-        );
-        assert!(outputs.try_recv().is_err());
+        assert_eq!(addressed(), unlock_id);
+        assert!(agent.outputs.try_recv().is_err());
     }
 
     /// A request held for an unlock and then asked about is still the request
@@ -1523,53 +1366,27 @@ mod tests {
     /// already past that when the keys arrive is failed, not asked or signed.
     #[test]
     fn a_released_request_keeps_the_deadline_it_was_held_under() {
-        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
-            .unwrap();
-        let blob = key.public_key().to_bytes().unwrap();
+        let (key, blob) = new_key();
         for (deadline_ms, asked) in [(60_000, true), (0, false)] {
-            let mut store = KeyStore::new();
-            load_key(&mut store, &key, 1);
-            store.lock(2);
-            let mut approvals = ApprovalManager::new(1000);
-            let (mut pending, mut held) = (HashMap::new(), HashMap::new());
-            let (output, mut outputs) = mpsc::channel(8);
+            let mut agent = Agent::with(&key);
+            agent.store.lock(2);
             let (event, mut answer) = login_event(&blob, false, vec![]);
-            let now = Instant::now();
-            handle_client(
-                event,
-                false,
-                &store,
-                &mut approvals,
-                &mut pending,
-                &mut held,
-                &mut None,
-                true,
-                now,
-                &output,
-            )
-            .unwrap();
-            let unlock_id = next(&mut outputs)["requestId"].as_u64().unwrap();
-            held.get_mut(&unlock_id).unwrap().deadline_ms = deadline_ms;
+            agent.client(event, false);
+            let unlock_id = agent.next()["requestId"].as_u64().unwrap();
+            let held = agent.held.get_mut(&unlock_id).unwrap();
+            held.deadline_ms = deadline_ms;
             // Approved while held, which would sign as soon as keys arrive.
-            held.get_mut(&unlock_id).unwrap().approved = (!asked).then_some(0);
-            load_key(&mut store, &key, 3);
-            release_held(
-                &mut held,
-                &store,
-                &mut approvals,
-                &mut pending,
-                now,
-                &output,
-            )
-            .unwrap();
+            held.approved = (!asked).then_some(0);
+            agent.unlock(&key);
             if !asked {
-                assert_eq!(next(&mut outputs)["reason"], "withdrawn");
+                assert_eq!(agent.next()["reason"], "withdrawn");
                 assert_eq!(answer.try_recv().unwrap(), protocol::failure_response());
-                assert!(outputs.try_recv().is_err());
+                assert!(agent.outputs.try_recv().is_err());
                 continue;
             }
-            assert_eq!(next(&mut outputs)["reason"], "released");
-            let id = next(&mut outputs)["requestId"].as_u64().unwrap();
+            assert_eq!(agent.next()["reason"], "released");
+            let id = agent.next()["requestId"].as_u64().unwrap();
+            let approvals = &mut agent.approvals;
             approvals.expire(deadline_ms - 1);
             assert!(approvals.is_pending(id));
             approvals.expire(deadline_ms);
@@ -1585,7 +1402,7 @@ mod tests {
                 let Ok(Submit::Pending(id)) = approvals.submit(3, &blob, peer, scope, 0) else {
                     panic!("no grant is open");
                 };
-                let authorized = approve_released(&mut approvals, id, 0, deadline_ms, now_ms);
+                let authorized = approve_released(approvals, id, 0, deadline_ms, now_ms);
                 assert_eq!(authorized.is_ok(), signs);
             }
         }
@@ -1596,34 +1413,12 @@ mod tests {
     /// An identity listing's unlock prompt has no server, so nothing claimed.
     #[test]
     fn an_identity_listings_unlock_prompt_claims_no_server() {
-        let key = ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
-            .unwrap();
-        let mut store = KeyStore::new();
-        load_key(&mut store, &key, 1);
-        store.logout(2);
-        let mut approvals = ApprovalManager::new(1000);
-        let (output, mut outputs) = mpsc::channel(8);
-        let (reply, _answer) = oneshot::channel();
-        handle_client(
-            ClientEvent {
-                peer: PeerContext::new(1000, 4242, 1, "/usr/bin/ssh").unwrap(),
-                forwarded: true,
-                binds: vec![bind(b"github host key", true)],
-                request: AgentRequest::Identities,
-                reply,
-            },
-            false,
-            &store,
-            &mut approvals,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut None,
-            true,
-            Instant::now(),
-            &output,
-        )
-        .unwrap();
-        let unlock = next(&mut outputs);
+        let mut agent = Agent::with(&new_key().0);
+        agent.store.logout(2);
+        let binds = vec![bind(b"github host key", true)];
+        let (event, _answer) = event(AgentRequest::Identities, true, binds);
+        agent.client(event, false);
+        let unlock = agent.next();
         assert_eq!(unlock["type"], "unlock_required");
         assert_eq!(unlock["hostKey"], "");
         assert_eq!(unlock["hostKeyClaimed"], false);

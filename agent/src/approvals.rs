@@ -150,11 +150,7 @@ impl ApprovalManager {
         if self.pending.len() >= MAX_PENDING {
             return Err(ApprovalError::QueueFull);
         }
-        let id = self.next_id;
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .ok_or(ApprovalError::IdExhausted)?;
+        let id = self.reserve_request_id()?;
         self.pending.push(Pending {
             id,
             epoch,

@@ -433,21 +433,15 @@ impl Envelope {
 
     fn dek(&self, via: &Via) -> Result<Key> {
         let account = &self.account;
+        let password = |wrap: &PasswordWrap, input: &[u8; KEY_LEN], purpose: &str| {
+            let kek = derive_kek(input, purpose)?;
+            let aad = wrap_aad(account, purpose, &wrap.kdf);
+            open(&kek, &wrap.n, &wrap.c, &aad)
+        };
         let opened = match via {
-            Via::Master(input) => {
-                let wrap = &self.wraps.master;
-                let kek = derive_kek(input, "master")?;
-                open(
-                    &kek,
-                    &wrap.n,
-                    &wrap.c,
-                    &wrap_aad(account, "master", &wrap.kdf),
-                )?
-            }
+            Via::Master(input) => password(&self.wraps.master, input, "master")?,
             Via::Pin(input) => {
-                let wrap = self.wraps.pin.as_ref().ok_or(Error::Missing)?;
-                let kek = derive_kek(input, "pin")?;
-                open(&kek, &wrap.n, &wrap.c, &wrap_aad(account, "pin", &wrap.kdf))?
+                password(self.wraps.pin.as_ref().ok_or(Error::Missing)?, input, "pin")?
             }
             Via::Fingerprint => {
                 let wrap = self.wraps.fingerprint.as_ref().ok_or(Error::Missing)?;
@@ -817,6 +811,28 @@ mod tests {
         Envelope::create(account(), b"correct horse", params(SALT_A), &key(1)).unwrap()
     }
 
+    /// The FIDO2 wrap `add_fido` writes, as a way in.
+    const VIA_FIDO: Via = Via::Fido {
+        credential: CRED,
+        hmac: &[3; KEY_LEN],
+    };
+
+    /// Adds a PIN wrap under `key(2)`, authorized by the master key.
+    fn add_pin(envelope: &mut Envelope) {
+        let pin = pin_params(SALT_B);
+        envelope
+            .add_pin(&Via::Master(&key(1)), pin, &key(2))
+            .unwrap();
+    }
+
+    /// Adds the FIDO2 wrap for `CRED` under `key(3)`, likewise.
+    fn add_fido(envelope: &mut Envelope) {
+        let auth = Via::Master(&key(1));
+        envelope
+            .add_fido(&auth, CRED, "pam://host", FIDO_SALT, &key(3))
+            .unwrap();
+    }
+
     fn reparse(envelope: &Envelope) -> Envelope {
         Envelope::parse(&envelope.to_json().unwrap()).unwrap()
     }
@@ -837,8 +853,7 @@ mod tests {
             );
         }
         assert!(env.summary().pin.is_none());
-        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
-            .unwrap();
+        add_pin(&mut env);
 
         // A PIN wrap written at the general floor, before this one existed,
         // still parses and opens: the floor is for new wraps only.
@@ -856,26 +871,15 @@ mod tests {
     #[test]
     fn every_method_opens_the_one_stored_password() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
-            .unwrap();
+        add_pin(&mut env);
         env.add_fingerprint(&Via::Master(&key(1))).unwrap();
-        env.add_fido(
-            &Via::Master(&key(1)),
-            CRED,
-            "pam://host",
-            FIDO_SALT,
-            &key(3),
-        )
-        .unwrap();
+        add_fido(&mut env);
         let env = reparse(&env);
         for via in [
             Via::Master(&key(1)),
             Via::Pin(&key(2)),
             Via::Fingerprint,
-            Via::Fido {
-                credential: CRED,
-                hmac: &key(3),
-            },
+            VIA_FIDO,
         ] {
             assert_eq!(env.open(&via).unwrap().as_slice(), b"correct horse");
         }
@@ -884,16 +888,8 @@ mod tests {
     #[test]
     fn a_wrong_key_never_opens_anything() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
-            .unwrap();
-        env.add_fido(
-            &Via::Master(&key(1)),
-            CRED,
-            "pam://host",
-            FIDO_SALT,
-            &key(3),
-        )
-        .unwrap();
+        add_pin(&mut env);
+        add_fido(&mut env);
         let mut wrong = [0_u8; KEY_LEN];
         for _ in 0..10_000 {
             getrandom::getrandom(&mut wrong).unwrap();
@@ -922,14 +918,7 @@ mod tests {
         let env = envelope();
         assert_eq!(env.open(&Via::Pin(&key(2))).unwrap_err(), Error::Missing);
         assert_eq!(env.open(&Via::Fingerprint).unwrap_err(), Error::Missing);
-        assert_eq!(
-            env.open(&Via::Fido {
-                credential: CRED,
-                hmac: &key(3)
-            })
-            .unwrap_err(),
-            Error::Missing
-        );
+        assert_eq!(env.open(&VIA_FIDO).unwrap_err(), Error::Missing);
     }
 
     #[test]
@@ -951,16 +940,8 @@ mod tests {
     #[test]
     fn a_flipped_byte_anywhere_fails() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
-            .unwrap();
-        env.add_fido(
-            &Via::Master(&key(1)),
-            CRED,
-            "pam://host",
-            FIDO_SALT,
-            &key(3),
-        )
-        .unwrap();
+        add_pin(&mut env);
+        add_fido(&mut env);
         let fields = [
             env.ct.c.clone(),
             env.ct.n.clone(),
@@ -984,10 +965,7 @@ mod tests {
                 raw[position] ^= 1;
                 let via = match index {
                     3 => Via::Pin(&key(2)),
-                    4 => Via::Fido {
-                        credential: CRED,
-                        hmac: &key(3),
-                    },
+                    4 => VIA_FIDO,
                     _ => Via::Master(&key(1)),
                 };
                 assert_eq!(
@@ -1002,14 +980,7 @@ mod tests {
     #[test]
     fn bound_fields_cannot_be_swapped() {
         let mut env = envelope();
-        env.add_fido(
-            &Via::Master(&key(1)),
-            CRED,
-            "pam://host",
-            FIDO_SALT,
-            &key(3),
-        )
-        .unwrap();
+        add_fido(&mut env);
 
         // Another account or server: the AEAD fails even if the check below
         // were skipped.
@@ -1041,30 +1012,14 @@ mod tests {
         // Nor can a FIDO wrap be pointed at another relying party.
         let mut moved = env.clone();
         moved.wraps.fido[0].rp = "pam://elsewhere".into();
-        assert_eq!(
-            moved
-                .open(&Via::Fido {
-                    credential: CRED,
-                    hmac: &key(3)
-                })
-                .unwrap_err(),
-            Error::WrongKey
-        );
+        assert_eq!(moved.open(&VIA_FIDO).unwrap_err(), Error::WrongKey);
     }
 
     #[test]
     fn rotation_keeps_every_method() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
-            .unwrap();
-        env.add_fido(
-            &Via::Master(&key(1)),
-            CRED,
-            "pam://host",
-            FIDO_SALT,
-            &key(3),
-        )
-        .unwrap();
+        add_pin(&mut env);
+        add_fido(&mut env);
         env.mark_stale();
         assert!(reparse(&env).summary().stale);
 
@@ -1082,15 +1037,7 @@ mod tests {
             env.open(&Via::Pin(&key(2))).unwrap().as_slice(),
             b"new password"
         );
-        assert_eq!(
-            env.open(&Via::Fido {
-                credential: CRED,
-                hmac: &key(3)
-            })
-            .unwrap()
-            .as_slice(),
-            b"new password"
-        );
+        assert_eq!(env.open(&VIA_FIDO).unwrap().as_slice(), b"new password");
         assert_eq!(
             env.open(&Via::Master(&key(1))).unwrap_err(),
             Error::WrongKey
@@ -1100,17 +1047,9 @@ mod tests {
     #[test]
     fn removing_methods_leaves_the_master_wrap() {
         let mut env = envelope();
-        env.add_pin(&Via::Master(&key(1)), pin_params(SALT_B), &key(2))
-            .unwrap();
+        add_pin(&mut env);
         env.add_fingerprint(&Via::Master(&key(1))).unwrap();
-        env.add_fido(
-            &Via::Master(&key(1)),
-            CRED,
-            "pam://host",
-            FIDO_SALT,
-            &key(3),
-        )
-        .unwrap();
+        add_fido(&mut env);
         env.remove(&Method::Pin).unwrap();
         env.remove(&Method::Fingerprint).unwrap();
         env.remove(&Method::Fido { credential: CRED }).unwrap();
@@ -1127,14 +1066,7 @@ mod tests {
     #[test]
     fn re_adding_a_fido_credential_replaces_it() {
         let mut env = envelope();
-        env.add_fido(
-            &Via::Master(&key(1)),
-            CRED,
-            "pam://host",
-            FIDO_SALT,
-            &key(3),
-        )
-        .unwrap();
+        add_fido(&mut env);
         env.add_fido(
             &Via::Master(&key(1)),
             CRED,
@@ -1144,10 +1076,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(env.summary().fido.len(), 1);
-        let old = Via::Fido {
-            credential: CRED,
-            hmac: &key(3),
-        };
+        let old = VIA_FIDO;
         assert_eq!(env.open(&old).unwrap_err(), Error::WrongKey);
     }
 

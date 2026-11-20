@@ -6,7 +6,12 @@ pub const CONTROL_VERSION: u8 = 1;
 pub const MAX_CONTROL_LINE: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ControlMessage {
     Hello {
         v: u8,
@@ -14,7 +19,6 @@ pub enum ControlMessage {
     KeyLoadBegin {
         v: u8,
         epoch: u64,
-        #[serde(rename = "loadId")]
         load_id: String,
     },
     KeyLoadEnd {
@@ -31,26 +35,21 @@ pub enum ControlMessage {
     },
     Approve {
         v: u8,
-        #[serde(rename = "requestId")]
         request_id: u64,
-        #[serde(rename = "grantSeconds")]
         grant_seconds: u64,
     },
     Deny {
         v: u8,
-        #[serde(rename = "requestId")]
         request_id: u64,
     },
     UnlockCancelled {
         v: u8,
-        #[serde(rename = "requestId")]
         request_id: u64,
         reason: String,
     },
     /// Settings the companion acts on; sent after the handshake and on change.
     Options {
         v: u8,
-        #[serde(rename = "unlockOnDemand")]
         unlock_on_demand: bool,
     },
     RevokeGrants {
@@ -58,7 +57,6 @@ pub enum ControlMessage {
     },
     RevokeGrant {
         v: u8,
-        #[serde(rename = "grantId")]
         grant_id: u64,
     },
     Shutdown {
