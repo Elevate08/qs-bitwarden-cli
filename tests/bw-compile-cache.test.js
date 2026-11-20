@@ -992,7 +992,7 @@ for (const builder of ["bwEnv", "generatorServeEnv"]) {
       && ["lockProc", "envelopeProc", "listProc"].every(id => new RegExp("VaultProcess \\{\\s*id: " + id + "\\b").test(svc)))
   // What is not a VaultProcess reads its environment as a binding when it
   // starts, so there is no earlier copy to go stale.
-  const plain = svc.split(/\n  (?=Process \{)/).slice(1).map(block => block.slice(0, block.indexOf("\n  }\n")))
+  const plain = svc.split(/\n  (?=(?:Text)?Process \{)/).slice(1).map(block => block.slice(0, block.indexOf("\n  }\n")))
     .filter(block => /environment: root\.(?:bwEnv|generatorServeEnv)\(/.test(block)).map(block => (block.match(/id: (\w+)/) || [])[1])
   check("the one plain Process that may use the cache (the generator's server) takes its environment from a binding",
     plain.join() === "generateServeProc", plain.join())

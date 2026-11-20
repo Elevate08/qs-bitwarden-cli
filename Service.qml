@@ -9820,37 +9820,25 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: screenLockStateProc
     command: Model.screenLockStateCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onScreenLockState(text)
-    }
+    onCollected: function(text) { root.onScreenLockState(text) }
   }
 
-  Process {
+  TextProcess {
     id: sshAgentHelperProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onSshAgentHelperInspected(text)
-    }
+    onCollected: function(text) { root.onSshAgentHelperInspected(text) }
   }
 
-  Process {
+  TextProcess {
     id: unlockKeyProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUnlockKeyInspected(text)
-    }
+    onCollected: function(text) { root.onUnlockKeyInspected(text) }
   }
 
-  Process {
+  TextProcess {
     id: vaultHelperInspectProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onVaultHelperInspected(text)
-    }
+    onCollected: function(text) { root.onVaultHelperInspected(text) }
   }
 
   // The vault helper itself: requests on stdin, replies one per line.
@@ -9864,13 +9852,10 @@ Item {
     onExited: function(exitCode) { root.onVaultHelperExited(exitCode) }
   }
 
-  Process {
+  TextProcess {
     id: quickUnlockPrereqProc
     command: Model.quickUnlockPrereqCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onQuickUnlockPrereqs(text)
-    }
+    onCollected: function(text) { root.onQuickUnlockPrereqs(text) }
   }
 
   // Every envelope operation, one at a time; see queueEnvelopeJob().
@@ -9902,24 +9887,18 @@ Item {
     onExited: function(exitCode) { root.onSshExportFinished(exitCode, sshExportClearStdout.text) }
   }
 
-  Process {
+  TextProcess {
     id: loadIdProc
     command: Model.loadIdCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onSshAgentLoadIdRead(text)
-    }
+    onCollected: function(text) { root.onSshAgentLoadIdRead(text) }
   }
 
-  Process {
+  TextProcess {
     id: uwsmInspectProc
     command: Model.uwsmInspectCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.uwsmFragment = Model.parseUwsmInspection(text)
-        root.applyUwsmRestore()
-      }
+    onCollected: function(text) {
+      root.uwsmFragment = Model.parseUwsmInspection(text)
+      root.applyUwsmRestore()
     }
   }
 
@@ -9937,13 +9916,10 @@ Item {
     onExited: function(exitCode) { root.onUwsmActionFinished(exitCode, uwsmWriteStdout.text) }
   }
 
-  Process {
+  TextProcess {
     id: autoTypeKeybindInspectProc
     command: Model.autoTypeKeybindInspectCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onAutoTypeKeybindInspected(text)
-    }
+    onCollected: function(text) { root.onAutoTypeKeybindInspected(text) }
   }
 
   Process {
@@ -10357,13 +10333,10 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: keyringHasPinProc
     command: Model.keyringHasPinCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onPinConfiguredChecked(text)
-    }
+    onCollected: function(text) { root.onPinConfiguredChecked(text) }
   }
 
   Process {
@@ -10374,13 +10347,10 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: depsCheckProc
     command: Model.dependencyCheckCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onDependenciesChecked(text)
-    }
+    onCollected: function(text) { root.onDependenciesChecked(text) }
   }
 
   Process {
@@ -10418,20 +10388,14 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: pluginVersionProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.pluginVersionInfo = Model.parsePluginVersionProbe(text)
-    }
+    onCollected: function(text) { root.pluginVersionInfo = Model.parsePluginVersionProbe(text) }
   }
 
-  Process {
+  TextProcess {
     id: updateCheckStateProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUpdateCheckStateRead(text)
-    }
+    onCollected: function(text) { root.onUpdateCheckStateRead(text) }
   }
 
   Process {
@@ -10440,12 +10404,9 @@ Item {
     stdinEnabled: true
   }
 
-  Process {
+  TextProcess {
     id: updateCheckProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onUpdateCheckFinished(text)
-    }
+    onCollected: function(text) { root.onUpdateCheckFinished(text) }
   }
 
   Process {
@@ -10496,13 +10457,10 @@ Item {
     onTriggered: root.settingsFlash = ""
   }
 
-  Process {
+  TextProcess {
     id: keyringHasMasterProc
     command: Model.keyringHasMasterPasswordCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onFingerprintStoredChecked(text)
-    }
+    onCollected: function(text) { root.onFingerprintStoredChecked(text) }
   }
 
   VaultProcess {
@@ -10586,13 +10544,10 @@ Item {
     onExited: function(exitCode) { root.onBwCompileCacheProbed(probeSeq, exitCode, bwCompileCacheOut.text) }
   }
 
-  Process {
+  TextProcess {
     id: accountsReadProc
     command: Model.accountRegistryReadCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onAccountRegistryLoaded(text)
-    }
+    onCollected: function(text) { root.onAccountRegistryLoaded(text) }
   }
 
   Process {
@@ -10613,15 +10568,12 @@ Item {
 
   // ---- Learned associations ----
 
-  Process {
+  TextProcess {
     id: associationsReadProc
     command: Model.associationsReadCommand(root.activeSlot)
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        if (root.finishScrubRun(associationsReadProc)) return
-        root.onAssociationsLoaded(text)
-      }
+    onCollected: function(text) {
+      if (root.finishScrubRun(associationsReadProc)) return
+      root.onAssociationsLoaded(text)
     }
   }
 
@@ -10904,22 +10856,19 @@ Item {
     }
   }
 
-  Process {
+  TextProcess {
     id: activeWindowProc
     command: Model.activeWindowCommand()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        if (text && text.trim()) {
-          try {
-            var data = JSON.parse(text)
-            root.handleActiveWindowDetected(data)
-          } catch (e) {
-            root.windowDetectionFailed()
-          }
-        } else {
+    onCollected: function(text) {
+      if (text && text.trim()) {
+        try {
+          var data = JSON.parse(text)
+          root.handleActiveWindowDetected(data)
+        } catch (e) {
           root.windowDetectionFailed()
         }
+      } else {
+        root.windowDetectionFailed()
       }
     }
   }

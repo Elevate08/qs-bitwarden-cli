@@ -120,8 +120,8 @@ check("the item process waits for onExited instead of racing its stdout and stde
 const processBlock = id => {
   const idAt = panelSrc.indexOf(`id: ${id}`)
   if (idAt === -1) return ""
-  const next = panelSrc.indexOf("\n  Process {", idAt)
-  return panelSrc.slice(idAt, next === -1 ? panelSrc.length : next)
+  const next = panelSrc.slice(idAt).search(/\n  (?:Text)?Process \{/)
+  return panelSrc.slice(idAt, next === -1 ? panelSrc.length : idAt + next)
 }
 const racing = ["statusProc", "sessionHandoffProc", "listOrgsProc", "listFoldersProc",
                   "orgCollectionsProc", "listSendsProc", "keyringLookupMasterProc",
