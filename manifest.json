@@ -134,7 +134,7 @@
         "key": "showWebsiteIcons",
         "type": "boolean",
         "label": "Show website icons",
-        "description": "Show a login's website icon, and card brand marks, as Bitwarden does. With this on, the host name in the first URI of a login is sent to your server's icon service (icons.bitwarden.net on Bitwarden's cloud) when its row or its detail header is shown, so the service learns which sites you have saved, and a site whose icon is missing or unreadable is named in the system journal by Qt. Android and Apple app marks are built in and show either way.",
+        "description": "Show a login's website icon, and card brand marks, as Bitwarden does. With this on, for each login whose first URI holds a website host name, that host name is sent to the icon service when the login's icon is created for a list row or the detail header: Bitwarden's icon service for your region (icons.bitwarden.net or icons.bitwarden.eu), or your own server when self-hosted. The service so learns which sites you have saved, and a site whose icon is missing or unreadable is named in the system journal by Qt. Android and Apple app marks are built in and show either way.",
         "defaultValue": false
       },
       {
