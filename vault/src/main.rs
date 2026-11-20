@@ -140,14 +140,7 @@ fn main() {
         }
     });
 
-    let helper = Helper {
-        store: Arc::default(),
-        runs: Arc::default(),
-        detached: Arc::default(),
-        typing: Arc::default(),
-        typing_group: Arc::default(),
-        out,
-    };
+    let helper = Helper::new(Arc::default(), out);
     let mut input = BufReader::new(std::io::stdin().lock());
     loop {
         let Some(line) = read_line(&mut input) else {
@@ -240,6 +233,18 @@ fn grow(buffer: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) {
 }
 
 impl Helper {
+    /// With nothing running, answering on `out`.
+    fn new(store: Shared<Store>, out: Sender<Line>) -> Self {
+        Self {
+            store,
+            runs: Arc::default(),
+            detached: Arc::default(),
+            typing: Arc::default(),
+            typing_group: Arc::default(),
+            out,
+        }
+    }
+
     /// A reply with no secret in it.
     fn send(&self, message: Value) {
         let _ = self.out.send(Zeroizing::new(message.to_string()));
@@ -444,11 +449,10 @@ impl Helper {
             .into_iter()
             .map(|(k, v)| (k, v.map(Zeroizing::new)))
             .collect();
-        let refuse = |reason: &str| {
-            self.send(
-                json!({ "type": "exit", "id": id, "code": EXIT_REFUSED, "out": "", "err": reason }),
-            )
+        let exit = |code: i32, err: &str| {
+            self.send(json!({ "type": "exit", "id": id, "code": code, "out": "", "err": err }))
         };
+        let refuse = |reason: &str| exit(EXIT_REFUSED, reason);
         let Some(capture) = Capture::parse(capture) else {
             return refuse("unknown capture");
         };
@@ -548,11 +552,8 @@ impl Helper {
             Stdio::null()
         });
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let child = match command.spawn() {
-            Ok(child) => child,
-            Err(_) => {
-                return self.send(json!({ "type": "exit", "id": id, "code": 127, "out": "", "err": "could not start" }))
-            }
+        let Ok(child) = command.spawn() else {
+            return exit(127, "could not start");
         };
         self.runs.lock().unwrap().insert(id, child.id());
 
@@ -1204,14 +1205,7 @@ mod tests {
         // So does one that is asked for and cannot start.
         let (_, _, _, _, staged) = keep(&store, now, &stage(), 0, &read("new"));
         let (out, lines) = mpsc::channel();
-        let helper = Helper {
-            store: Arc::clone(&store),
-            runs: Arc::default(),
-            detached: Arc::default(),
-            typing: Arc::default(),
-            typing_group: Arc::default(),
-            out,
-        };
+        let helper = Helper::new(Arc::clone(&store), out);
         let argv = vec!["/nonexistent/qsbw-no-such-program".to_owned()];
         let (env, inject) = (BTreeMap::new(), BTreeMap::new());
         helper.exec(9, argv, env, inject, Some("vaultStage"), None, false);
