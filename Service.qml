@@ -10677,8 +10677,8 @@ Item {
         if (root.sshAuthSurfaceActive && root.status === "locked") Qt.callLater(root.prepareUnlock)
         return
       }
+      // Unsubmitted: a quit, unless a cancel stopped it (an earlier round).
       if (!root.unlockSubmitted) {
-        // Not a quit when a cancel stopped it (a run from an earlier round).
         root.unlockPrewarmQuit = root.unlockPrewarmStartRound === root.unlockPrewarmRound
         root.clearProcessCollectorSoon(unlockProc)
         return
